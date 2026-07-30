@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""无需安装即可使用的 relayctl 入口。"""
+
+from relay_control import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

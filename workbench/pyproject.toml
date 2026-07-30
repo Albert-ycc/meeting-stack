@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meeting-workbench"
+version = "0.1.0"
+description = "Local-first meeting recording library and editing workbench"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.136,<0.137",
+  "uvicorn[standard]>=0.48,<0.49",
+  "pydantic>=2.13,<3",
+  "pydantic-settings>=2.12,<3",
+  "python-multipart>=0.0.22,<0.1",
+  "numpy>=2.4,<3",
+]
+
+[project.optional-dependencies]
+semantic = [
+  "sentence-transformers>=5.2,<6",
+]
+test = [
+  "httpx>=0.28,<0.29",
+  "pytest>=9,<10",
+  "pytest-cov>=7,<8",
+  "ruff>=0.15,<0.16",
+]
+
+[project.scripts]
+meeting-workbench = "meeting_workbench.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/meeting_workbench"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
