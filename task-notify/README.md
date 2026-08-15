@@ -1,16 +1,21 @@
-# task-notify：任务推送与确认闭环（参考实现）
+# task-notify：飞书通知与任务确认闭环（参考实现）
 
-1.1 新增。会议纪要生成后，本地 AI 提取任务草稿，推送飞书「会后任务确认」卡片，
+1.1 起承载任务确认闭环：会议纪要生成后，本地 AI 提取任务草稿，推送飞书「会后任务确认」卡片，
 用户在飞书里逐条点「确认 / 驳回」，回调经长连接回到本机，任务状态落库，卡片原地更新。
 
-本目录是**脱敏参考实现**，聚焦两个核心文件：
+1.2 起补上通知的中间一环：纪要写好时先推一张「纪要写好」卡，把摘要和决议直接摊在群里。
+一场会在群里的节奏是三条消息——转写完成、纪要写好、任务待确认。
+
+本目录是**脱敏参考实现**，聚焦三个文件：
 
 | 文件 | 作用 |
 |---|---|
-| [`cards.py`](cards.py) | 卡片 2.0 构造：每条任务灰底信息块（标题/建议/原话）+ 确认/驳回按钮，确认后重建状态卡 |
+| [`cards.py`](cards.py) | 任务卡构造：每条任务灰底信息块（标题/建议/原话）+ 确认/驳回按钮，确认后重建状态卡 |
+| [`minutes_card.py`](minutes_card.py) | 纪要写好卡构造：把纪要压成摘要 + 决议 + 下一步，抽不到就留空 |
 | [`card_listener.py`](card_listener.py) | 长连接回调监听：收 card.action → 校验操作者 → 落库 → 原地刷新卡片 |
 
-完整逻辑与设计决策见 [../docs/task-notification-push.md](../docs/task-notification-push.md)。
+完整逻辑与设计决策见 [../docs/task-notification-push.md](../docs/task-notification-push.md) 与
+[../docs/notification-triple-touch.md](../docs/notification-triple-touch.md)。
 
 ## 运行
 

@@ -76,6 +76,19 @@ def _send_card(card: dict) -> dict:
     )
 
 
+def _send_text(text: str) -> dict:
+    """发一条纯文本消息，用于把写失败显性化（不让用户以为按钮坏了）。"""
+    return _cli(
+        "POST",
+        "/open-apis/im/v1/messages",
+        {
+            "receive_id": CHAT_ID,
+            "msg_type": "text",
+            "content": json.dumps({"text": text}, ensure_ascii=False),
+        },
+    )
+
+
 def _update_card(message_id: str, card: dict) -> dict:
     """原地更新一张已发的交互卡片。"""
     return _cli(
@@ -102,7 +115,9 @@ class WorkbenchClient:
             data = json.loads(resp.read())
         self.token = data["csrf_token"]
 
-    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _request(
+        self, method: str, path: str, body: dict | None = None, *, retried: bool = False
+    ) -> dict:
         if self.token is None:
             self._bootstrap()
         headers = {"X-CSRF-Token": self.token, "Origin": WORKBENCH_BASE}
@@ -118,9 +133,24 @@ class WorkbenchClient:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as error:
             try:
-                return json.loads(error.read())
+                payload = json.loads(error.read())
             except Exception:
-                return {"error": f"HTTP {error.code}"}
+                payload = {"error": f"HTTP {error.code}"}
+            # 工作台每次启动重新随机生成 CSRF token 且不落盘。本进程常驻，
+            # 只要工作台重启过一次，缓存的 token 就永久失效，之后每次点按钮
+            # 都被挡在 403，表现为「卡片点了没反应」。遇到 CSRF 类 403 必须
+            # 重新握手一次再重试，不能把 token 当常量。
+            if (
+                error.code == 403
+                and not retried
+                and "CSRF" in str(payload.get("detail", ""))
+            ):
+                log.warning("CSRF 失效，重新握手后重试：%s %s", method, path)
+                self.token = None
+                self.cookiejar.clear()
+                self._bootstrap()
+                return self._request(method, path, body, retried=True)
+            return payload
 
     def list_tasks(self, extraction_id: int) -> list[dict]:
         data = self._request("GET", f"/api/tasks?extraction_id={extraction_id}&limit=200")
@@ -130,7 +160,9 @@ class WorkbenchClient:
         return self._request("POST", f"/api/tasks/{task_id}/confirm", {})
 
     def reject(self, task_id: str) -> dict:
-        return self._request("POST", f"/api/tasks/{task_id}/reject")
+        # 空 body 也要发 {}：不带 Content-Type 的写请求会被服务端挡在
+        # 「写操作只接受 application/json」上，卡片按钮点了没反应。
+        return self._request("POST", f"/api/tasks/{task_id}/reject", {})
 
 
 # ------------------------------------------------------------------ 事件处理
@@ -166,7 +198,15 @@ def handle_event(client: WorkbenchClient, event: dict) -> None:
         result = client.confirm(task_id) if act == "confirm" else client.reject(task_id)
     except Exception as error:  # noqa: BLE001
         result = {"error": str(error)}
-    status = result.get("status") or result.get("error") or result.get("detail") or result
+    # 写失败时必须让用户看见。此前失败也照常重绘卡片，卡片长得跟点之前一模一样，
+    # 用户只能得出「按钮坏了」，连排查线索都没有。
+    failure = result.get("detail") or result.get("error")
+    if failure:
+        log.error("%s %s 失败：%s", act, task_id, failure)
+        label = "确认" if act == "confirm" else "驳回"
+        _send_text(f"⚠️ 任务{label}失败：{failure}\n（任务 {task_id}，卡片状态未变更）")
+        return
+    status = result.get("status") or result
     log.info("%s %s → %s", act, task_id, status)
     extraction_id = result.get("extraction_id") or extraction_id
     # 重建卡片并原地刷新（关键：绝不能重建出空卡把原卡「收起来」）
