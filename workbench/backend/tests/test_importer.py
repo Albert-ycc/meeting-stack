@@ -747,18 +747,18 @@ def test_minutes_are_imported_and_html_is_sanitized(tmp_path):
 
 def test_topic_named_markdown_and_html_pair_is_imported_as_minutes(tmp_path):
     archive = tmp_path / "archive"
-    meeting_dir = archive / "260709 直播预约二期需求评审"
+    meeting_dir = archive / "260709 产品二期需求评审"
     meeting_dir.mkdir(parents=True)
     meeting_id = "vm-20260709-120000-1212ABAB"
     (meeting_dir / f"{meeting_id}.m4a").write_bytes(b"audio")
     (meeting_dir / f"{meeting_id}.srt").write_text(
         "1\n00:00:00,000 --> 00:00:01,000\n逐字稿正文\n", encoding="utf-8"
     )
-    (meeting_dir / "直播预约二期需求评审.md").write_text(
-        "# 直播预约二期需求评审\n\n- 已确认二期排期", encoding="utf-8"
+    (meeting_dir / "产品二期需求评审.md").write_text(
+        "# 产品二期需求评审\n\n- 已确认二期排期", encoding="utf-8"
     )
-    (meeting_dir / "直播预约二期需求评审.html").write_text(
-        '<h1 onclick="bad()">直播预约二期需求评审</h1>'
+    (meeting_dir / "产品二期需求评审.html").write_text(
+        '<h1 onclick="bad()">产品二期需求评审</h1>'
         "<script>alert(1)</script><p>已确认二期排期</p>",
         encoding="utf-8",
     )
