@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     staging_root: Path = Field(
         default_factory=lambda: Path.home() / "Movies/meeting-relay-products"
     )
+    # 项目 → 需求材料目录的可浏览范围（260915 新增）：浏览、挂根目录、选材料文件夹全部
+    # 限制在它之下，避免服务在 Tailnet 可达时被拿来列任意目录。
+    # 默认是用户主目录；项目材料放在外置存储时指向其挂载点。
+    material_browse_root: Path = Field(default_factory=Path.home)
     database_path: Path | None = None
     # 默认指向本仓库内的 relay 组件；独立部署时用 MEETING_WORKBENCH_RELAY_REPO 覆盖。
     relay_repo: Path = Field(default_factory=lambda: REPO_ROOT / "relay")
@@ -52,6 +56,35 @@ class Settings(BaseSettings):
     qwen_timeout_seconds: int = 4 * 60 * 60
     qwen_heartbeat_seconds: float = 10.0
     qwen_lease_seconds: float = 45.0
+    # —— 任务抽取与飞书通知（260804 新增）——
+    llm_api_base: str = "https://api.deepseek.com"
+    llm_api_key_file: Path = Field(default_factory=lambda: Path.home() / ".config/ds/api-key")
+    llm_model: str = "deepseek-chat"
+    llm_timeout_seconds: float = 120.0
+    llm_max_retries: int = 2
+    # 飞书群自定义机器人 webhook；留空 = 通知整体关闭
+    lark_webhook_url: str = ""
+    # 应用机器人通道：非空时优先于 webhook，经本机 lark-cli 以 bot 身份发到该群，
+    # 凭证完全复用 lark-cli 的 keychain，本服务不接触 app secret。
+    lark_chat_id: str = ""
+    lark_cli_bin: str = "lark-cli"
+    # 自建应用直连通道（260827 新增）：配了 app_id 与 secret 文件时直接调开放
+    # 平台 API 发卡片，不经 lark-cli、不依赖 GUI 会话 tmux 里的 keychain。多实例
+    # 部署时各实例用各自的应用机器人走这条路，互不干扰。
+    lark_app_id: str = ""
+    lark_app_secret_file: Path | None = None
+    # 声档服务跑在 ssh→tmux（keychain 锁定）里，lark-cli 调用必须经 GUI 会话的
+    # tmux run-shell 转发；默认指向 GUI 会话里 tmux 的 cc 套接字。
+    lark_tmux_socket: str = "~/.tmux-socket/cc"
+    # 通知卡片跳转用的本机地址；Tailnet 域名可配
+    public_base_url: str = "http://127.0.0.1:8765"
+    # 停滞督办阈值（天）；同一任务督办冷却（天）
+    task_stall_after_days: float = 3.0
+    # 待确认草稿放多少天没处理就自动归入「已过期」；<=0 关闭。
+    task_draft_expire_days: float = 7.0
+    task_stall_cooldown_days: float = 2.0
+    # 项目归属语义匹配相似度阈值（0~1）
+    project_similarity_threshold: float = 0.62
 
     def model_post_init(self, __context: object) -> None:
         positive_values = {
@@ -85,9 +118,12 @@ class Settings(BaseSettings):
         self.data_dir = self.data_dir.expanduser()
         self.archive_root = self.archive_root.expanduser()
         self.staging_root = self.staging_root.expanduser()
+        self.material_browse_root = self.material_browse_root.expanduser()
         self.relay_repo = self.relay_repo.expanduser()
         self.relay_jobs_db = self.relay_jobs_db.expanduser()
         self.qwen_binary = self.qwen_binary.expanduser()
+        if self.lark_app_secret_file is not None:
+            self.lark_app_secret_file = self.lark_app_secret_file.expanduser()
         if self.qwen_model != "Qwen/Qwen3-ASR-0.6B":
             raise ValueError("qwen_model 固定为 Qwen/Qwen3-ASR-0.6B")
         if self.qwen_heartbeat_seconds >= self.qwen_lease_seconds:

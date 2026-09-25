@@ -6,7 +6,8 @@ import re
 import sqlite3
 import subprocess
 import uuid
-from dataclasses import dataclass
+from contextlib import closing
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from typing import Any
 from .archive_lock import ArchiveLock
 from .config import Settings
 from .db import Database, utc_now
+from .minutes_evidence import is_manifest_exempt_path, manifest_meeting_id_matches
 from .parsers import (
     load_json_file,
     parse_funasr_json,
@@ -26,6 +28,7 @@ from .rendering import (
     render_transcript_txt,
     safe_imported_minutes_html,
 )
+from .speaker_backfill import apply_speaker_labels_with_connection
 
 
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".qta", ".mp4"}
@@ -58,8 +61,6 @@ def input_transcript_name(manifest: dict[str, Any]) -> str:
     if type(version) is int and version >= 3:
         return "input-transcript.srt"
     return "input-transcript.txt"
-
-
 SUPPORT_DIRECTORIES = {".obsidian", "funasr-poc-260708", "待校对"}
 DEGRADED_MARKERS = {
     "_hallucinated_backup",
@@ -101,6 +102,18 @@ class ScanReport:
     artifacts_seen: int = 0
     conflicts: int = 0
     errors: int = 0
+    # 隔离≠错误：目录身份对不上时只是这一个目录不参与导入，索引本身仍然可信。
+    # 混进 errors 会让「往归档目录里多放一个文件」阻断全库的失效记录清理。
+    quarantined: int = 0
+    quarantine_details: list[dict[str, str]] = field(default_factory=list)
+    # 说话人补标是降级安全的旁路：没补上不算导入失败，这里只统计不进 errors。
+    speaker_backfill_applied: int = 0
+    speaker_backfill_skipped: int = 0
+
+    def quarantine(self, directory: Path, reason: str) -> None:
+        self.quarantined += 1
+        if len(self.quarantine_details) < 50:
+            self.quarantine_details.append({"directory": str(directory), "reason": reason})
 
 
 @dataclass(slots=True)
@@ -110,6 +123,8 @@ class SourceBundle:
     source_root: str
     priority: int
     files: list[Path]
+    # 同一个目录被切出多场会时置位：目录名不再唯一对应某场会，不能当标题用。
+    shared_directory: bool = False
 
 
 def normalize_meeting_id(value: str) -> str:
@@ -197,24 +212,65 @@ def artifact_kind(path: Path) -> str:
     return "json" if path.suffix.lower() == ".json" else "other"
 
 
+def manifest_registered_paths(files: list[Path]) -> set[Path]:
+    """同目录 workbench-manifest.json 里 relay 登记过的产物路径。
+
+    登记过的文件身份由写侧确定，不该再按文件名关键词去猜。
+    """
+    registered: set[Path] = set()
+    for manifest in (path for path in files if path.name == "workbench-manifest.json"):
+        try:
+            payload = load_json_file(manifest)
+        except (OSError, ValueError, RecursionError):
+            continue
+        entries = payload.get("artifacts") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            value = entry.get("path") if isinstance(entry, dict) else None
+            if not isinstance(value, str):
+                continue
+            relative = Path(value)
+            if relative.is_absolute() or ".." in relative.parts:
+                continue
+            registered.add(manifest.parent / relative)
+    return registered
+
+
 def topic_minutes_pair(files: list[Path]) -> tuple[Path, Path] | None:
     markdown_by_stem: dict[tuple[Path, str], Path] = {}
     html_by_stem: dict[tuple[Path, str], Path] = {}
+    registered = manifest_registered_paths(files)
     for path in files:
         if is_degraded(path):
             continue
         key = (path.parent, path.stem.casefold())
-        if path.suffix.lower() == ".md" and artifact_kind(path) == "document_md":
+        # artifact_kind 也按文件名猜（带「转写」「原文」的 md 会被归成逐字稿），登记过的 md 不受影响。
+        if path.suffix.lower() == ".md" and (
+            artifact_kind(path) == "document_md" or path in registered
+        ):
             markdown_by_stem.setdefault(key, path)
         elif path.suffix.lower() in {".html", ".htm"}:
             html_by_stem.setdefault(key, path)
-    for key in sorted(markdown_by_stem, key=lambda item: (str(item[0]), item[1])):
+
+    def is_registered(key: tuple[Path, str]) -> bool:
+        html_path = html_by_stem.get(key)
+        return markdown_by_stem[key] in registered and html_path in registered
+
+    # relay 按会议标题给纪要命名，标题里带「协议」「合同」「转写」这类词很正常；
+    # 关键词排除只用于没有 manifest 登记的历史目录，登记过的纪要对优先且不过滤。
+    for key in sorted(
+        markdown_by_stem, key=lambda item: (not is_registered(item), str(item[0]), item[1])
+    ):
         html_path = html_by_stem.get(key)
         if not html_path:
             continue
-        normalized_stem = re.sub(r"[\W_]+", "", key[1], flags=re.UNICODE)
-        if any(marker.casefold() in normalized_stem for marker in NON_MINUTES_DOCUMENT_MARKERS):
-            continue
+        if not is_registered(key):
+            normalized_stem = re.sub(r"[\W_]+", "", key[1], flags=re.UNICODE)
+            if any(
+                marker.casefold() in normalized_stem for marker in NON_MINUTES_DOCUMENT_MARKERS
+            ):
+                continue
         return markdown_by_stem[key], html_path
     return None
 
@@ -331,10 +387,10 @@ class ArchiveImporter:
             except RECOVERABLE_SOURCE_ERRORS:
                 report.errors += 1
         if report.errors == 0:
-            self._cleanup_stale_artifacts(all_bundles)
+            self._cleanup_stale_artifacts(all_bundles, report)
         return report
 
-    def _cleanup_stale_artifacts(self, bundles: list[SourceBundle]) -> None:
+    def _cleanup_stale_artifacts(self, bundles: list[SourceBundle], report: ScanReport) -> None:
         discovered = {str(path) for bundle in bundles for path in bundle.files}
         available_roots = set()
         if self.settings.archive_root.is_dir():
@@ -343,12 +399,22 @@ class ArchiveImporter:
             available_roots.add("staging")
         if not available_roots:
             return
+        # 隔离目录本次没被遍历进 discovered，但它的文件仍在磁盘上。若不豁免，
+        # 清理会把这些会议的 artifact 记录一并删掉，界面上音频直接断链。
+        quarantined = [Path(item["directory"]) for item in report.quarantine_details]
         rows = self.db.query_all(
             "SELECT id, path, source_root FROM artifacts WHERE source_root IN (%s)"
             % ",".join("?" for _ in available_roots),
             tuple(sorted(available_roots)),
         )
-        stale = [row["id"] for row in rows if row["path"] not in discovered]
+        stale = []
+        for row in rows:
+            if row["path"] in discovered:
+                continue
+            candidate = Path(row["path"])
+            if any(candidate.is_relative_to(directory) for directory in quarantined):
+                continue
+            stale.append(row["id"])
         if not stale:
             return
         with self.db.transaction() as connection:
@@ -402,72 +468,37 @@ class ArchiveImporter:
                     continue
                 files = self._validated_source_files(child, report)
                 manifest_path = child / "workbench-manifest.json"
-                managed_manifest = self._validated_managed_unreviewed_manifest(
+                managed_manifest, quarantine_reason = self._validated_managed_unreviewed_manifest(
                     child,
                     manifest_path,
                     files,
                 )
                 if managed_manifest:
-                    manifest_meeting_id = managed_manifest.get("meeting_id")
-                    normalized_manifest_id = None
-                    if manifest_meeting_id is not None:
-                        if (
-                            not isinstance(manifest_meeting_id, str)
-                            or not manifest_meeting_id.strip()
-                        ):
-                            if report is not None:
-                                report.errors += 1
-                            continue
-                        normalized_manifest_id = normalize_meeting_id(manifest_meeting_id)
                     discovered = self._partition_directory(
                         child,
                         files,
                         "draft",
                         min(99, 50 + managed_manifest["attempt"]),
                     )
-                    if (
-                        len(discovered) != 1
-                        or (
-                            normalized_manifest_id is not None
-                            and discovered[0].meeting_id != normalized_manifest_id
-                        )
-                        or (
-                            normalized_manifest_id is None
-                            and not discovered[0].meeting_id.startswith("vm-")
-                        )
+                    if len(discovered) != 1 or not manifest_meeting_id_matches(
+                        managed_manifest, discovered[0].meeting_id
                     ):
                         if report is not None:
-                            report.errors += 1
+                            report.quarantine(child, "目录内容切出的会议身份与 manifest 不一致")
                         continue
                     bundles.extend(discovered)
                     continue
-                if self._looks_like_managed_unreviewed_manifest(manifest_path):
-                    # 一级受管目录身份或 Relay 状态异常时必须隔离，不能回退成
-                    # 普通 archive/100 并被误标为已发布。
+                if quarantine_reason:
+                    # 一级受管目录本身已经确认损坏或与 Relay 记录对不上，必须
+                    # 隔离，不能回退成普通 archive/100 并被误标为已发布。
                     if report is not None:
-                        report.errors += 1
+                        report.quarantine(child, quarantine_reason)
                     continue
                 bundles.extend(self._partition_directory(child, files, "archive", 100))
             except RECOVERABLE_SOURCE_ERRORS:
                 if report is not None:
                     report.errors += 1
         return bundles
-
-    @staticmethod
-    def _looks_like_managed_unreviewed_manifest(manifest_path: Path) -> bool:
-        if manifest_path.is_symlink() or not manifest_path.is_file():
-            return False
-        try:
-            manifest = load_json_file(manifest_path)
-        except (OSError, ValueError, RecursionError):
-            return False
-        return bool(
-            isinstance(manifest, dict)
-            and manifest.get("schema_version") == 1
-            and isinstance(manifest.get("job_id"), str)
-            and type(manifest.get("attempt")) is int
-            and manifest.get("status") != "published"
-        )
 
     def _discover_pending_reviews(
         self, root: Path, *, report: ScanReport | None = None
@@ -489,32 +520,25 @@ class ArchiveImporter:
                 ):
                     continue
                 files = self._validated_source_files(directory, report)
-                manifest = self._validated_managed_unreviewed_manifest(
+                # 「待校对」目录校验失败时刻意不隔离：一份未完工的受管草稿
+                # （比如只生成了纪要、还没audio）是正常状态而非损坏，隔离会
+                # 让 `_cleanup_stale_artifacts` 误把它当豁免对象保留旧记录。
+                manifest, _reason = self._validated_managed_unreviewed_manifest(
                     directory,
                     directory / "workbench-manifest.json",
                     files,
                 )
                 if not manifest:
                     continue
-                manifest_meeting_id = manifest.get("meeting_id")
-                normalized_manifest_id = None
-                if manifest_meeting_id is not None:
-                    if not isinstance(manifest_meeting_id, str) or not manifest_meeting_id.strip():
-                        continue
-                    normalized_manifest_id = normalize_meeting_id(manifest_meeting_id)
                 discovered = self._partition_directory(
                     directory,
                     files,
                     "draft",
                     min(99, 50 + manifest["attempt"]),
                 )
-                if len(discovered) != 1:
-                    continue
-                discovered_id = discovered[0].meeting_id
-                if normalized_manifest_id is not None:
-                    if discovered_id != normalized_manifest_id:
-                        continue
-                elif not discovered_id.startswith("vm-"):
+                if len(discovered) != 1 or not manifest_meeting_id_matches(
+                    manifest, discovered[0].meeting_id
+                ):
                     continue
                 bundles.extend(discovered)
             except RECOVERABLE_SOURCE_ERRORS:
@@ -552,17 +576,22 @@ class ArchiveImporter:
                         report.errors += 1
             for attempt_dir in attempt_dirs:
                 try:
-                    manifest = attempt_dir / "workbench-manifest.json"
+                    manifest_path = attempt_dir / "workbench-manifest.json"
                     files = self._validated_source_files(attempt_dir, report)
                     match = re.search(r"attempt-(\d+)$", attempt_dir.name)
                     attempt_no = int(match.group(1)) if match else 0
-                    if not self._validated_managed_unreviewed_manifest(
+                    # 同一场会的多个 attempt 目录是正常状态（重转写、只重生成
+                    # 纪要都会留下旧 attempt）：这里不隔离，只让 discover_archive
+                    # 那条一级路径隔离，否则 `_cleanup_stale_artifacts` 会把
+                    # 本该随旧 attempt 一起清理的 artifact 记录豁免保留下来。
+                    manifest, _reason = self._validated_managed_unreviewed_manifest(
                         attempt_dir,
-                        manifest,
+                        manifest_path,
                         files,
                         expected_job_id=job_dir.name,
                         expected_attempt=attempt_no,
-                    ):
+                    )
+                    if not manifest:
                         continue
                     bundles.extend(
                         self._partition_directory(
@@ -585,18 +614,26 @@ class ArchiveImporter:
         *,
         expected_job_id: str | None = None,
         expected_attempt: int | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """校验一份疑似"受管未复核"manifest。
+
+        返回 `(manifest, None)` 表示校验通过；`(None, reason)` 表示这个目录
+        已经确认是损坏或与 Relay 记录不一致的受管目录，必须隔离，`reason`
+        是给排障用的具体原因（不再是一句话糊弄过去）；`(None, None)` 表示
+        这份 manifest 压根不构成"受管未复核"候选（不存在、格式不对、或已
+        发布），调用方应把目录当普通归档内容处理，不隔离。
+        """
         if (
             directory.is_symlink()
             or manifest_path.is_symlink()
             or not manifest_path.is_file()
             or not self.settings.relay_jobs_db.is_file()
         ):
-            return None
+            return None, None
         try:
             manifest = load_json_file(manifest_path)
         except (OSError, ValueError, RecursionError):
-            return None
+            return None, None
         schema_version = manifest.get("schema_version") if isinstance(manifest, dict) else None
         job_id = manifest.get("job_id") if isinstance(manifest, dict) else None
         attempt_no = manifest.get("attempt") if isinstance(manifest, dict) else None
@@ -605,38 +642,55 @@ class ArchiveImporter:
             or type(schema_version) is not int
             or schema_version != 1
             or not isinstance(job_id, str)
-            or not job_id.strip()
             or type(attempt_no) is not int
+        ):
+            # 形状都对不上受管 manifest 协议，不是候选，交给普通归档处理。
+            return None, None
+        if self._is_committed_publish_manifest(directory, manifest):
+            return None, None
+        if manifest.get("status") == "published":
+            # 自称已发布但没被 _is_committed_publish_manifest 证实：宁可当
+            # 普通归档内容索引，也不要当成还在走查的草稿去覆盖已有记录。
+            return None, None
+        # 到这里，目录已经具备"受管未复核 manifest"的基本形状：后续任何一处
+        # 校验失败都必须隔离并带上可排障的具体原因，不能再静默放行成普通
+        # 归档，也不能生造出第五种不带原因的失败路径。
+        if (
+            not job_id.strip()
             or attempt_no <= 0
             or (expected_job_id is not None and job_id != expected_job_id)
             or (expected_attempt is not None and attempt_no != expected_attempt)
         ):
-            return None
-        if self._is_committed_publish_manifest(directory, manifest):
-            return None
+            return None, "manifest 结构不合法（job_id / attempt 不符合要求）"
         minutes_only = manifest.get("requested_stage") == "minutes_generating"
         input_transcript_sha256 = manifest.get("input_transcript_sha256")
         if minutes_only and (
             not isinstance(input_transcript_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", input_transcript_sha256)
         ):
-            return None
+            return None, "manifest 结构不合法（缺少合法的 input_transcript_sha256）"
         entries = manifest.get("artifacts")
         if not isinstance(entries, list) or not entries:
-            return None
-        listed: set[str] = set()
+            return None, "manifest 结构不合法（artifacts 字段缺失或为空）"
         for entry in entries:
             if not isinstance(entry, dict):
-                return None
+                return None, "manifest 结构不合法（artifacts 条目不是对象）"
             value = entry.get("path")
             if not isinstance(value, str):
-                return None
+                return None, "manifest 结构不合法（artifacts 条目缺少合法 path）"
             relative = Path(value)
             if relative.is_absolute() or ".." in relative.parts:
-                return None
+                return None, f"manifest 登记路径越界：{value}"
+            if relative.parts and is_manifest_exempt_path(relative):
+                # Whisper 对照转写是异步子状态：manifest 落盘后 whisper.log 还在追加，
+                # 拿它的哈希卡校验会把长录音的归档目录永久判成无效 manifest。写侧
+                # （relay_control 的归档校验）本来就跳过 whisper-ref，读侧必须同口径。
+                continue
             candidate = directory / relative
-            if candidate.is_symlink() or not candidate.is_file():
-                return None
+            if candidate.is_symlink():
+                return None, f"manifest 登记路径指向 symlink：{value}"
+            if not candidate.is_file():
+                return None, f"manifest 登记的文件缺失：{value}"
             expected_bytes = entry.get("bytes")
             expected_sha256 = entry.get("sha256")
             if (
@@ -644,40 +698,38 @@ class ArchiveImporter:
                 or expected_bytes < 0
                 or not isinstance(expected_sha256, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
-                or expected_bytes != candidate.stat().st_size
-                or expected_sha256 != sha256_file(candidate)
             ):
-                return None
-            if not relative.parts or relative.parts[0] != "whisper-ref":
-                listed.add(str(relative))
-        physical = {
-            str(path.relative_to(directory))
-            for path in files
-            if path.name != "workbench-manifest.json"
-            and path.relative_to(directory).parts[0] != "whisper-ref"
-        }
-        if listed != physical:
-            return None
+                return None, f"manifest 结构不合法（{value} 的哈希字段非法）"
+            if artifact_kind(candidate) != "audio":
+                # 非音频产物（纪要/逐字稿/字幕等）允许被外部改写：交给既有的
+                # 「外部版本冲突」机制判定是静默更新还是开草稿冲突，这里不再
+                # 因为内容变了就拒收整个目录。
+                continue
+            if expected_bytes != candidate.stat().st_size or expected_sha256 != self._cached_sha256(
+                candidate
+            ):
+                return None, f"音频文件与登记不符：{value}"
         kinds = {artifact_kind(path) for path in files}
         required = (
             {"audio"}
             if minutes_only
             else {"audio", "srt", "txt", "speaker_map", "funasr_json", "funasr_log"}
         )
-        if required - kinds:
-            return None
+        missing_kinds = required - kinds
+        if missing_kinds:
+            return None, f"manifest 登记的必需产物缺失：{'/'.join(sorted(missing_kinds))}"
         if minutes_only:
             input_transcript = directory / input_transcript_name(manifest)
-            if (
-                input_transcript.is_symlink()
-                or not input_transcript.is_file()
-                or sha256_file(input_transcript) != input_transcript_sha256
-            ):
-                return None
+            if input_transcript.is_symlink():
+                return None, "manifest 登记的输入逐字稿快照指向 symlink"
+            if not input_transcript.is_file():
+                return None, "manifest 登记的输入逐字稿快照缺失"
+            if self._cached_sha256(input_transcript) != input_transcript_sha256:
+                return None, "输入逐字稿快照与登记不符"
         if not topic_minutes_pair(files) and not ({"minutes_md", "minutes_html"} <= kinds):
-            return None
+            return None, "manifest 登记的纪要产物缺失"
         uri = f"file:{self.settings.relay_jobs_db.resolve()}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=5) as connection:
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as connection:
             connection.row_factory = sqlite3.Row
             job_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
@@ -690,25 +742,25 @@ class ArchiveImporter:
                       FROM jobs WHERE job_id = ?""",
                 (job_id,),
             ).fetchone()
-        if (
-            not job
-            or job["status"] not in {"completed_unreviewed", "draft_modified"}
-            or job["failure_stage"] == "pending_archive"
-        ):
-            return None
+        if not job:
+            return None, "受管任务在 Relay 库中不存在"
+        if job["status"] not in {"completed_unreviewed", "draft_modified"}:
+            return None, f"受管任务状态与预期不符：{job['status']}"
+        if job["failure_stage"] == "pending_archive":
+            return None, "受管任务归档未完成（pending_archive）"
         try:
             archived = Path(job["archive_dir"]).expanduser().resolve()
         except (TypeError, OSError):
-            return None
-        if (
-            type(job["current_attempt"]) is not int
-            or job["current_attempt"] != attempt_no
-            or archived != directory.resolve()
-        ):
-            return None
-        return manifest
+            return None, "受管任务的 archive_dir 非法"
+        if type(job["current_attempt"]) is not int or job["current_attempt"] != attempt_no:
+            return None, "受管任务的 current_attempt 与 manifest 不符"
+        if archived != directory.resolve():
+            return None, "受管任务的 archive_dir 与目录不符"
+        return manifest, None
 
-    def _is_committed_publish_manifest(self, directory: Path, manifest: dict[str, Any]) -> bool:
+    def _is_committed_publish_manifest(
+        self, directory: Path, manifest: dict[str, Any]
+    ) -> bool:
         if manifest.get("status") != "published":
             return False
         meeting_id = manifest.get("meeting_id")
@@ -797,6 +849,19 @@ class ArchiveImporter:
         return valid
 
     def _partition_directory(
+        self,
+        directory: Path,
+        files: list[Path],
+        source_root: str,
+        priority: int,
+    ) -> list[SourceBundle]:
+        bundles = self._split_directory(directory, files, source_root, priority)
+        if len(bundles) > 1:
+            for bundle in bundles:
+                bundle.shared_directory = True
+        return bundles
+
+    def _split_directory(
         self,
         directory: Path,
         files: list[Path],
@@ -990,6 +1055,25 @@ class ArchiveImporter:
         )
         return sha, pcm
 
+    def _cached_sha256(self, path: Path) -> str:
+        """按 (path, size, mtime_ns) 复用 fingerprint_cache 里已经算过的 sha256。
+
+        只读不写：这张表同时被 `_audio_fingerprints` 用来存音频的 pcm 归一化
+        指纹，这里要是插一行只有 sha256、没有 pcm_sha256 的记录，后续
+        `_audio_fingerprints` 命中缓存时会把 `pcm_sha256 or sha256` 的空值兜底
+        误当成真实指纹，污染音频去重。只读意味着这里永远不会写坏那张表，
+        代价是首次扫描到的新目录仍会算一次——可接受，稳态下每轮扫描的
+        `_partition_directory` 早就替真正的音频写好了缓存行。
+        """
+        stat = path.stat()
+        cached = self.db.query_one(
+            "SELECT sha256 FROM fingerprint_cache WHERE path = ? AND size_bytes = ? AND mtime_ns = ?",
+            (str(path), stat.st_size, stat.st_mtime_ns),
+        )
+        if cached:
+            return cached["sha256"]
+        return sha256_file(path)
+
     def _transcript_hash(self, path: Path) -> str | None:
         _, segments = self._parse_transcript(path)
         text = "".join(re.sub(r"\W+", "", segment.get("text", "")) for segment in segments)
@@ -1092,15 +1176,20 @@ class ArchiveImporter:
             and not indexed_sources_changed
         ):
             self._upsert_artifacts(meeting_id, bundles, report)
-            # 源文件没变也要修掉历史遗留的编号标题：纪要一旦补上，签名会变，
-            # 这里的占位会在完整路径里被真实标题覆盖。
-            if str(existing["title"] or "").casefold() == meeting_id.casefold() and not (
-                self._has_manual_title(meeting_id)
-            ):
-                self.db.execute(
-                    "UPDATE meetings SET title = ?, updated_at = ? WHERE id = ?",
-                    (self._untitled_label(meeting_id), utc_now(), meeting_id),
-                )
+            # 源文件没变也要修掉不可信的历史标题：一是遗留的编号占位，二是被共用素材
+            # 目录刷成同一个目录名的整批会。两种都不是人取的名字，按当前规则重算一次。
+            current_title = str(existing["title"] or "")
+            unreliable_title = current_title.casefold() == meeting_id.casefold() or (
+                canonical.shared_directory
+                and current_title.strip() == canonical.directory.name.strip()
+            )
+            if unreliable_title and not self._has_manual_title(meeting_id):
+                refreshed = self._resolve_title(canonical, meeting_id)
+                if refreshed != current_title:
+                    self.db.execute(
+                        "UPDATE meetings SET title = ?, updated_at = ? WHERE id = ?",
+                        (refreshed, utc_now(), meeting_id),
+                    )
             # 历史记录里编号时间戳被当成 UTC 存过，会让日期整体偏一个时区。
             recorded_at = self._recording_date(meeting_id, canonical.directory)
             if recorded_at and recorded_at != existing["recording_date"]:
@@ -1185,7 +1274,7 @@ class ArchiveImporter:
                     # 重生成的纪要写在新归档目录里，它才是这场会的规范位置；
                     # 标题也要跟着从纪要里取，否则会一直停在占位名上。
                     if int(existing["source_priority"] or 0) < minutes_bundle.priority:
-                        regenerated_title = self._display_title(minutes_bundle, meeting_id)
+                        regenerated_title = self._resolve_title(minutes_bundle, meeting_id)
                         keep_title = self._has_manual_title(meeting_id) or self.is_untitled(
                             regenerated_title, meeting_id
                         )
@@ -1243,7 +1332,7 @@ class ArchiveImporter:
         audio = self._preferred_file(bundles, {"audio"})
         audio_hash = sha256_file(audio) if audio else None
         recording_date = self._recording_date(meeting_id, canonical.directory)
-        title = self._display_title(canonical, meeting_id)
+        title = self._resolve_title(canonical, meeting_id)
         if existing and self._has_manual_title(meeting_id):
             title = existing["title"]
         with self.db.transaction() as connection:
@@ -1337,7 +1426,9 @@ class ArchiveImporter:
         if old_directory != new_directory:
             if old_directory.exists():
                 return False
-            if not self._is_managed_draft_relocation_path(old_directory, new_directory):
+            if not self._is_managed_draft_relocation_path(
+                old_directory, new_directory
+            ):
                 return False
 
         indexed_content, indexed_whisper = self._indexed_refresh_snapshots(
@@ -1348,7 +1439,9 @@ class ArchiveImporter:
             return False
         return indexed_whisper.keys() <= current_whisper.keys()
 
-    def _is_managed_draft_relocation_path(self, old_directory: Path, new_directory: Path) -> bool:
+    def _is_managed_draft_relocation_path(
+        self, old_directory: Path, new_directory: Path
+    ) -> bool:
         archive_root = self.settings.archive_root
         try:
             old_directory.relative_to(archive_root / ".workbench-drafts")
@@ -1770,6 +1863,27 @@ class ArchiveImporter:
                 return True
         return False
 
+    def _resolve_title(self, bundle: SourceBundle, meeting_id: str) -> str:
+        """目录/纪要都给不出标题时，退回库里已生成的纪要正文标题。
+
+        纪要一旦写好，它的一级标题就是这场会最准的名字；素材目录怎么挪都不该动它。
+        """
+        title = self._display_title(bundle, meeting_id)
+        if not self.is_untitled(title, meeting_id):
+            return title
+        return self._title_from_stored_minutes(meeting_id) or title
+
+    def _title_from_stored_minutes(self, meeting_id: str) -> str | None:
+        row = self.db.query_one(
+            """SELECT v.markdown FROM meetings m
+               JOIN minutes_versions v ON v.id = m.current_minutes_version_id
+               WHERE m.id = ?""",
+            (meeting_id,),
+        )
+        if not row:
+            return None
+        return self._heading_title(str(row.get("markdown") or ""))
+
     def _has_manual_title(self, meeting_id: str) -> bool:
         rows = self.db.query_all(
             """SELECT payload_json FROM events
@@ -1921,6 +2035,19 @@ class ArchiveImporter:
                 )
         if make_current:
             self._sync_speakers_and_duration(meeting_id, segments)
+            # 补标失败只是这场会没有说话人标签，不能反过来影响已经落地的逐字稿——
+            # 单独开一个事务、包 try/except，绝不让这一步的异常冒泡回扫描主流程。
+            try:
+                with self.db.transaction() as connection:
+                    backfill = apply_speaker_labels_with_connection(
+                        connection, meeting_id, version_id
+                    )
+                if backfill.applied:
+                    report.speaker_backfill_applied += 1
+                else:
+                    report.speaker_backfill_skipped += 1
+            except (OSError, ValueError, UnicodeError, sqlite3.Error):
+                report.speaker_backfill_skipped += 1
         if created:
             report.versions_imported += 1
         return version_id
@@ -2252,25 +2379,36 @@ class ArchiveImporter:
                 minutes = pair[0] if pair else None
             if minutes:
                 try:
-                    heading = re.search(
-                        r"(?m)^#\s+(.+?)\s*$",
-                        minutes.read_text(encoding="utf-8-sig", errors="replace")[:20_000],
+                    title = cls._heading_title(
+                        minutes.read_text(encoding="utf-8-sig", errors="replace")
                     )
-                    if heading:
-                        title = re.sub(
-                            r"^(?:会议纪要[：:]?\s*)|(?:会议纪要|纪要)$",
-                            "",
-                            heading.group(1).strip(),
-                        ).strip()
-                        if title:
-                            return title
+                    if title:
+                        return title
                 except OSError:
                     pass
+            return cls._untitled_label(meeting_id)
+        # 一个目录被切成多场会时（例如一堆原始录音平铺在同一个文件夹里），
+        # 目录名描述的是这一批素材而不是某一场会，拿它当标题会让整批会重名。
+        if bundle.shared_directory:
             return cls._untitled_label(meeting_id)
         name = bundle.directory.name.strip()
         if not name or name.casefold() == meeting_id.casefold():
             return cls._untitled_label(meeting_id)
         return name
+
+    @staticmethod
+    def _heading_title(markdown: str) -> str | None:
+        heading = re.search(r"(?m)^#\s+(.+?)\s*$", markdown[:20_000])
+        if not heading:
+            return None
+        title = re.sub(
+            r"^(?:会议纪要[：:]?\s*)|(?:会议纪要|纪要)$",
+            "",
+            heading.group(1).strip(),
+        ).strip()
+        # 「议题 · 会议纪要」剥掉后缀会剩下半个分隔符，跟着标题一路显示到列表里。
+        title = title.rstrip(" ·・-—–|:：、")
+        return title or None
 
     @staticmethod
     def _untitled_label(meeting_id: str) -> str:

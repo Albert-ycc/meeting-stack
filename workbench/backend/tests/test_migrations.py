@@ -122,10 +122,18 @@ def test_version_five_migration_adds_asr_quality_tables(tmp_path):
     with sqlite3.connect(database_path) as connection:
         tables = {
             row[0]
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
         }
-        gold_columns = {row[1] for row in connection.execute("PRAGMA table_info(asr_gold_samples)")}
-        run_columns = {row[1] for row in connection.execute("PRAGMA table_info(asr_shadow_runs)")}
+        gold_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(asr_gold_samples)")
+        }
+        run_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(asr_shadow_runs)")
+        }
 
     assert {"asr_gold_samples", "asr_shadow_runs"} <= tables
     assert {
@@ -162,6 +170,167 @@ def test_version_six_migration_adds_qwen_owner_lease_and_heartbeat(tmp_path):
 
     assert {"owner_id", "lease_expires_at", "heartbeat_at"} <= columns
     assert db.user_version() == SCHEMA_VERSION
+
+
+def test_version_nine_migration_backfills_manual_project_origin(tmp_path):
+    database_path = tmp_path / "workbench.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE meetings (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                recording_date TEXT,
+                duration_ms INTEGER,
+                status TEXT NOT NULL DEFAULT 'completed_unreviewed',
+                project_id TEXT,
+                canonical_dir TEXT,
+                source_priority INTEGER NOT NULL DEFAULT 0,
+                source_signature TEXT,
+                current_transcript_version_id TEXT,
+                current_minutes_version_id TEXT,
+                conflict INTEGER NOT NULL DEFAULT 0,
+                original_audio_sha256 TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO meetings(id, title, project_id) VALUES ('m-manual', '已归属会议', 'p1');
+            INSERT INTO meetings(id, title, project_id) VALUES ('m-unassigned', '未归属会议', NULL);
+            PRAGMA user_version=8;
+            """
+        )
+
+    db = Database(database_path)
+    db.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        origins = dict(connection.execute("SELECT id, project_origin FROM meetings"))
+
+    assert origins["m-manual"] == "manual"
+    assert origins["m-unassigned"] is None
+    assert db.user_version() == SCHEMA_VERSION
+
+
+def test_version_ten_migration_backfills_project_id_from_matching_scope_name(tmp_path):
+    database_path = tmp_path / "workbench.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                color TEXT NOT NULL DEFAULT '#667085',
+                origin TEXT NOT NULL DEFAULT 'manual',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE glossary_terms (
+                id TEXT PRIMARY KEY,
+                term TEXT NOT NULL UNIQUE,
+                aliases TEXT NOT NULL DEFAULT '[]',
+                scope TEXT NOT NULL DEFAULT '通用',
+                category TEXT NOT NULL DEFAULT '其他',
+                source TEXT NOT NULL DEFAULT 'manual',
+                confirmed INTEGER NOT NULL DEFAULT 1,
+                hit_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO projects(id, name, created_at) VALUES ('proj-mdt', 'MDT', '2026-01-01');
+            INSERT INTO glossary_terms(id, term, scope, created_at, updated_at)
+                VALUES ('gt-1', 'MDT专家', 'MDT', '2026-01-01', '2026-01-01');
+            INSERT INTO glossary_terms(id, term, scope, created_at, updated_at)
+                VALUES ('gt-2', '云图', '云图', '2026-01-01', '2026-01-01');
+            PRAGMA user_version=9;
+            """
+        )
+
+    db = Database(database_path)
+    db.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = {
+            row["id"]: dict(row)
+            for row in connection.execute("SELECT id, scope, project_id FROM glossary_terms")
+        }
+
+    # scope 与项目名精确相等（MDT）的补上 project_id
+    assert rows["gt-1"]["project_id"] == "proj-mdt"
+    assert rows["gt-1"]["scope"] == "MDT"
+    # 没有同名项目（云图）的保持 project_id 为空，scope 原样不动
+    assert rows["gt-2"]["project_id"] is None
+    assert rows["gt-2"]["scope"] == "云图"
+    assert db.user_version() == SCHEMA_VERSION
+
+
+def test_version_twelve_migration_adds_requirement_tables_and_task_column(tmp_path):
+    """v11→v12：项目→需求→任务三层，新表 + tasks.requirement_id 只加不改。"""
+    database_path = tmp_path / "workbench.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                color TEXT NOT NULL DEFAULT '#667085',
+                origin TEXT NOT NULL DEFAULT 'manual',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending_confirm',
+                origin TEXT NOT NULL DEFAULT 'ai',
+                assignee TEXT NOT NULL DEFAULT 'me',
+                meeting_id TEXT,
+                project_id TEXT,
+                status_changed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO projects(id, name, created_at) VALUES ('proj-1', '存量项目', '2026-01-01');
+            INSERT INTO tasks(id, title, status_changed_at, created_at, updated_at)
+                VALUES ('task-1', '存量任务', '2026-01-01', '2026-01-01', '2026-01-01');
+            PRAGMA user_version=11;
+            """
+        )
+
+    db = Database(database_path)
+    db.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        task_columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)")}
+        # 存量数据原样保留，只加列不改行。
+        task_row = dict(
+            connection.execute("SELECT id, title, requirement_id FROM tasks WHERE id='task-1'").fetchone()
+        )
+
+    assert {"project_material_roots", "requirements", "requirement_folders", "requirement_meetings"} <= tables
+    assert "requirement_id" in task_columns
+    assert task_row == {"id": "task-1", "title": "存量任务", "requirement_id": None}
+    assert db.user_version() == SCHEMA_VERSION
+
+    # 需求名唯一索引：同项目同名（大小写/首尾空格不敏感）第二次插入应报冲突。
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """INSERT INTO requirements(id, project_id, title, priority, status, created_at, updated_at)
+               VALUES ('req-1', 'proj-1', '需求名', 'P1', 'active', '2026-01-01', '2026-01-01')"""
+        )
+        try:
+            connection.execute(
+                """INSERT INTO requirements(id, project_id, title, priority, status, created_at, updated_at)
+                   VALUES ('req-2', 'proj-1', '  需求名  ', 'P2', 'active', '2026-01-01', '2026-01-01')"""
+            )
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError("同项目同名需求应该撞唯一索引")
 
 
 def test_real_version_five_running_shadow_migrates_and_completes_idempotently(

@@ -79,7 +79,7 @@ describe("SearchResults", () => {
             segment_id: "seg-1",
             meeting_id: "vm-20260729",
             title: "ACME 内容征集流程走查",
-            canonical_dir: "~/MeetingArchive/260729 季度产品评审",
+            canonical_dir: "/Volumes/资料盘/会议纪要与录音/260729 ACME内容征集流程走查",
             recording_date: "2026-07-29T02:09:03+00:00",
             start_ms: 92_000,
             end_ms: 101_000,
@@ -96,7 +96,7 @@ describe("SearchResults", () => {
     await userEvent.click(screen.getByRole("button", { name: "复制文件夹路径" }));
 
     expect(writeText).toHaveBeenCalledWith(
-      "~/MeetingArchive/260729 季度产品评审",
+      "/Volumes/资料盘/会议纪要与录音/260729 ACME内容征集流程走查",
     );
     expect(onOpen).not.toHaveBeenCalled();
     expect(await screen.findByRole("button", { name: "文件夹路径已复制" })).toBeInTheDocument();

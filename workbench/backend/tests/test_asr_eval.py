@@ -124,7 +124,9 @@ def test_evaluate_asr_uses_longest_non_overlapping_number_matches(tmp_path):
 
     report = evaluate_asr(gold, {"funasr": engine})
 
-    details = {sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]}
+    details = {
+        sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]
+    }
     assert details["long"]["number_hits"] == 1
     assert details["long"]["number_predictions"] == 1
     assert details["short"]["number_hits"] == 1
@@ -155,7 +157,9 @@ def test_evaluate_asr_requires_unicode_numeric_boundaries(tmp_path):
 
     report = evaluate_asr(gold, {"funasr": engine})
 
-    details = {sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]}
+    details = {
+        sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]
+    }
     assert details["inside-longer"]["number_hits"] == 0
     assert details["inside-longer"]["number_predictions"] == 0
     assert details["unicode-longer"]["number_hits"] == 0
@@ -194,7 +198,9 @@ def test_evaluate_asr_preserves_numeric_semantic_symbols_end_to_end(tmp_path):
 
     report = evaluate_asr(gold, {"funasr": engine})
 
-    details = {sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]}
+    details = {
+        sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]
+    }
     assert details["decimal-correct"]["number_hits"] == 1
     assert details["decimal-wrong"]["number_hits"] == 0
     assert details["negative-correct"]["number_hits"] == 1
@@ -227,7 +233,9 @@ def test_evaluate_asr_uses_longest_non_overlapping_entity_matches(tmp_path):
 
     report = evaluate_asr(gold, {"funasr": engine})
 
-    details = {sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]}
+    details = {
+        sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]
+    }
     assert details["long"]["entity_hits"] == 1
     assert details["long"]["entity_predictions"] == 1
     assert details["short"]["entity_hits"] == 1
@@ -268,7 +276,9 @@ def test_evaluate_asr_strictly_validates_optional_gold_metadata(tmp_path, metada
         ("tags", ["Medical", "medical"]),
     ],
 )
-def test_evaluate_asr_rejects_duplicate_normalized_annotations(tmp_path, field, values):
+def test_evaluate_asr_rejects_duplicate_normalized_annotations(
+    tmp_path, field, values
+):
     gold = tmp_path / "gold.jsonl"
     row = {"id": "sample", "reference": "有效参考", field: values}
     gold.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -304,7 +314,9 @@ def test_evaluate_asr_detects_explainable_hallucination_and_repetition(tmp_path)
 
     report = evaluate_asr(gold, {"funasr": engine})
 
-    details = {sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]}
+    details = {
+        sample["id"]: sample["engines"]["funasr"] for sample in report["samples"]
+    }
     assert details["hallucination"]["hallucination"] is True
     assert details["repeat-three"]["repetition"] is False
     assert details["repeat-four"]["repetition"] is True
@@ -315,20 +327,30 @@ def test_evaluate_asr_detects_explainable_hallucination_and_repetition(tmp_path)
 def test_hallucination_extra_character_threshold_boundary():
     assert asr_eval.HALLUCINATION_MIN_EXTRA_CHARS == 10
     assert asr_eval._is_hallucination("a" * 10, "x" * 20, 20) is True
-    assert asr_eval._is_hallucination("a" * 10, "x" * 19, 19) is False
+    assert (
+        asr_eval._is_hallucination("a" * 10, "x" * 19, 19) is False
+    )
 
 
 def test_hallucination_length_ratio_threshold_boundary():
     assert asr_eval.HALLUCINATION_LENGTH_RATIO == 1.5
     assert asr_eval._is_hallucination("a" * 30, "x" * 45, 45) is True
-    assert asr_eval._is_hallucination("a" * 30, "x" * 44, 44) is False
+    assert (
+        asr_eval._is_hallucination("a" * 30, "x" * 44, 44) is False
+    )
 
 
 def test_hallucination_alignment_threshold_boundary():
     assert asr_eval.HALLUCINATION_MAX_ALIGNED_RATIO == 0.5
     reference = "abcdefghijklmnopqrst"
-    assert asr_eval._is_hallucination(reference, reference[:15] + "z" * 15, 15) is True
-    assert asr_eval._is_hallucination(reference, reference[:16] + "z" * 14, 14) is False
+    assert (
+        asr_eval._is_hallucination(reference, reference[:15] + "z" * 15, 15)
+        is True
+    )
+    assert (
+        asr_eval._is_hallucination(reference, reference[:16] + "z" * 14, 14)
+        is False
+    )
 
 
 def test_evaluate_asr_rejects_duplicate_gold_ids(tmp_path):
@@ -442,7 +464,9 @@ def test_evaluate_asr_does_not_match_chinese_one_inside_one_hundred(tmp_path):
 def test_evaluate_asr_rejects_single_sample_over_reasonable_character_limit(tmp_path):
     gold = tmp_path / "gold.jsonl"
     gold.write_text(
-        json.dumps({"id": "sample", "reference": "a" * (asr_eval.MAX_SAMPLE_CHARACTERS + 1)}),
+        json.dumps(
+            {"id": "sample", "reference": "a" * (asr_eval.MAX_SAMPLE_CHARACTERS + 1)}
+        ),
         encoding="utf-8",
     )
 
@@ -458,7 +482,9 @@ def test_evaluate_asr_accepts_single_sample_at_character_limit(tmp_path):
     )
     engine = tmp_path / "engine"
     engine.mkdir()
-    (engine / "sample.txt").write_text("a" * asr_eval.MAX_SAMPLE_CHARACTERS, encoding="utf-8")
+    (engine / "sample.txt").write_text(
+        "a" * asr_eval.MAX_SAMPLE_CHARACTERS, encoding="utf-8"
+    )
 
     report = evaluate_asr(gold, {"funasr": engine})
 
@@ -468,13 +494,10 @@ def test_evaluate_asr_accepts_single_sample_at_character_limit(tmp_path):
 def test_edit_distance_at_character_cap_finishes_within_loose_budget():
     started = time.monotonic()
 
-    assert (
-        asr_eval._edit_distance(
-            "a" * asr_eval.MAX_SAMPLE_CHARACTERS,
-            "b" * asr_eval.MAX_SAMPLE_CHARACTERS,
-        )
-        == asr_eval.MAX_SAMPLE_CHARACTERS
-    )
+    assert asr_eval._edit_distance(
+        "a" * asr_eval.MAX_SAMPLE_CHARACTERS,
+        "b" * asr_eval.MAX_SAMPLE_CHARACTERS,
+    ) == asr_eval.MAX_SAMPLE_CHARACTERS
 
     assert time.monotonic() - started < 8
 
@@ -492,7 +515,9 @@ def test_asr_evaluate_cli_prints_json_report(tmp_path, capsys):
     (engine / "sample-1.txt").write_text("云图项目金额是120万元", encoding="utf-8")
     (engine / "sample-2.txt").write_text("ACME需求下周确认", encoding="utf-8")
 
-    exit_code = cli.main(["asr-evaluate", "--gold", str(gold), "--engine", f"funasr={engine}"])
+    exit_code = cli.main(
+        ["asr-evaluate", "--gold", str(gold), "--engine", f"funasr={engine}"]
+    )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)

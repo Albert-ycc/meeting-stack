@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -10,6 +11,8 @@ from typing import Any, Iterator
 
 from .config import Settings
 from .hotwords import normalize_hotwords
+
+logger = logging.getLogger("meeting_workbench.relay_client")
 
 
 class RelayUnavailable(RuntimeError):
@@ -47,10 +50,12 @@ class RelayClient:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as error:
-            raise RelayUnavailable(f"relayctl 调用失败：{error}") from error
+            logger.error("relayctl 调用失败：%s", error)
+            raise RelayUnavailable("relayctl 调用失败，详见服务日志") from error
         if result.returncode not in allowed_returncodes:
-            message = result.stderr.strip() or result.stdout.strip() or "relayctl 返回失败"
-            raise RelayUnavailable(message)
+            detail = result.stderr.strip() or result.stdout.strip() or "无输出"
+            logger.error("relayctl 返回码 %s：%s", result.returncode, detail)
+            raise RelayUnavailable("relayctl 返回失败，详见服务日志")
         return result.stdout.strip()
 
     def health(self) -> dict[str, Any]:
@@ -106,10 +111,13 @@ class RelayClient:
         stage: str | None = None,
         transcript_path: str | Path | None = None,
         hotwords: list[str] | None = None,
+        backend: str | None = None,
     ) -> str:
         arguments = ["enqueue", str(Path(audio_path).expanduser())]
         if stage:
             arguments.extend(["--stage", stage])
+        if backend:
+            arguments.extend(["--backend", backend])
         if transcript_path:
             arguments.extend(["--transcript", str(Path(transcript_path).expanduser())])
         with self._hotword_file(hotwords) as hotword_path:
@@ -144,10 +152,13 @@ class RelayClient:
         *,
         transcript_path: str | Path | None = None,
         hotwords: list[str] | None = None,
+        backend: str | None = None,
     ) -> dict[str, Any]:
         arguments = ["retry", job_id, "--stage", stage]
         if transcript_path:
             arguments.extend(["--transcript", str(Path(transcript_path).expanduser())])
+        if backend:
+            arguments.extend(["--backend", backend])
         with self._hotword_file(hotwords) as hotword_path:
             if hotword_path:
                 arguments.extend(["--hotwords", str(hotword_path)])

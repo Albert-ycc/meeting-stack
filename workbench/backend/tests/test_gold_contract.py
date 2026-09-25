@@ -66,10 +66,9 @@ def test_gold_save_rejects_normalized_empty_or_duplicate_annotations(tmp_path, b
     )
 
     assert response.status_code == 422
-    assert (
-        client.app.state.db.query_one("SELECT COUNT(*) AS count FROM asr_gold_samples")["count"]
-        == 0
-    )
+    assert client.app.state.db.query_one("SELECT COUNT(*) AS count FROM asr_gold_samples")[
+        "count"
+    ] == 0
 
 
 def test_gold_save_rejects_non_positive_source_duration(tmp_path):

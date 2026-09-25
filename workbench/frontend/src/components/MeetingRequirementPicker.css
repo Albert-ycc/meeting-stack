@@ -1,0 +1,179 @@
+/* 会议详情「归档归属」卡片里的关联需求控件：chips + 下拉勾选浮层 */
+
+/* 自带的字段标签，视觉对齐同卡片里「主项目」<label> 的间距和字号，
+ * 但不能真的用 <label> 包一整个控件树——浏览器会把里面第一个按钮当成
+ * label 关联的控件，算它的可访问名时把按钮自身的文案吞掉。 */
+.requirement-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.requirement-picker {
+  position: relative;
+}
+
+.requirement-picker--disabled {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 2px;
+}
+
+.requirement-picker__placeholder {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.requirement-picker__chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 跟 trigger 同一个坑：胶囊也是 `.edit-inspector`/`.inspector-section` 底下的
+ * <button>，光靠 `.requirement-chip`（0-1-0）压不过那两条全局重置（0-1-1），
+ * 圆角会被拍成 8px 方角、宽度被拍成 100%，同样要靠父级类名叠特异度压回去。 */
+.requirement-field button.requirement-chip {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  gap: 6px;
+  padding: 3px 8px 3px 3px;
+  color: var(--ink-2);
+  font-size: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+}
+
+.requirement-field button.requirement-chip:hover {
+  border-color: var(--line-strong);
+}
+
+/* 就是一个跟着 chips 排的行内文字链接，不是又一个胶囊按钮——
+ * 不给背景/描边，padding 也只留到不影响点击热区的最小值。
+ * 这张卡片同时落在全局 `.edit-inspector button` 和 `.inspector-section button`
+ * 两条规则的命中范围里（styles.css，都是 0-1-1 特异度，撑成通栏描边按钮），
+ * 单靠 `.requirement-picker__trigger`（0-1-0）压不过，必须用更高特异度的
+ * `.requirement-field button.requirement-picker__trigger`（0-2-1）整条覆盖。
+ * display 改 inline-flex 而不是 inline：flex 子项的 display 会被「块化」，
+ * inline/inline-block 块化后计算值变成纯 block，只有 inline-flex 块化后还是 flex，
+ * 用 getComputedStyle 量出来才不会又是一个 block。 */
+.requirement-field button.requirement-picker__trigger {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  padding: 2px;
+  color: var(--signal-dark);
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.requirement-field button.requirement-picker__trigger:hover {
+  text-decoration: underline;
+}
+
+/* 这张卡片贴在会议详情视口最右侧，420px 宽的浮层要是照 left:0 向右展开
+ * 会被窗口右边裁掉一半（原型 A-03-2 是向左展开、右边缘跟字段对齐）。 */
+.requirement-picker__flyout {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: auto;
+  z-index: 40;
+  width: 420px;
+  padding: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.requirement-picker__search {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 9px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.requirement-picker__list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.requirement-picker__empty {
+  padding: 10px 4px;
+  color: var(--faint);
+  font-size: 11px;
+  text-align: center;
+}
+
+.requirement-picker__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 4px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+.requirement-picker__row:hover {
+  background: var(--stage);
+}
+
+.requirement-picker__row input {
+  margin: 0;
+}
+
+.requirement-picker__row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.requirement-picker__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+/* 之前没给这个按钮上类名，靠 `:first-child` 结构选择器扛，颜色/背景/边框
+ * 特异度够用没被吞，但没声明 width，`.inspector-section button{width:100%}`
+ * 照样把它撑满一行——现在补类名，跟同文件其它按钮一样叠特异度整条覆盖。 */
+.requirement-picker__footer button.requirement-picker__create {
+  width: auto;
+  padding: 4px 2px;
+  color: var(--ok);
+  font-size: 11px;
+  background: transparent;
+  border: 0;
+}
+
+/* 同一个坑：浮层也挂在 `.inspector-section` 底下，「确定」按钮的橙色底
+ * 会被全局按钮重置吃掉，补一层父级类名叠特异度。 */
+.requirement-picker__footer button.requirement-picker__confirm {
+  width: auto;
+  padding: 6px 12px;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--signal);
+  border: 1px solid var(--signal);
+  border-radius: 8px;
+}

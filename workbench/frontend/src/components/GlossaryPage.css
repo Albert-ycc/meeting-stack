@@ -1,0 +1,451 @@
+/* 词典页：术语库 + 待确认队列。底色由 body 的 --paper-deep 提供。 */
+
+.glossary-heading {
+  align-items: center;
+}
+
+.glossary-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 22px;
+  padding: 3px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.glossary-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  border-radius: 12px;
+  transition: color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.glossary-tabs button span {
+  min-width: 17px;
+  padding: 1px 5px;
+  color: var(--ink-faint);
+  font-size: 9px;
+  text-align: center;
+  background: var(--bg);
+  border-radius: 12px;
+}
+
+.glossary-tabs button[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--paper);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.48);
+}
+
+.glossary-tabs button[aria-selected="true"] span {
+  color: var(--ink);
+  background: var(--signal);
+}
+
+/* 术语库工具条：chips 筛选 + 搜索 + 新增，两行在窄屏各自换行 */
+.glossary-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+/* 归属 chips：全部 / 通用 / 各项目（带识别色小圆点）/ 其他桶 */
+.glossary-chipbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.glossary-chipbar__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.glossary-chipbar__item i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.glossary-chipbar__item span {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+.glossary-chipbar__item:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.glossary-chipbar__item[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--signal-bg);
+  border-color: var(--signal-line);
+}
+
+.glossary-chipbar__item[aria-selected="true"] span {
+  color: var(--signal-dark);
+}
+
+.glossary-toolbar__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.glossary-search {
+  min-height: 34px;
+  width: 200px;
+  padding: 7px 12px;
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.glossary-create {
+  flex: none;
+  padding: 10px 16px;
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+  background: var(--signal);
+  border: 1px solid var(--signal);
+  border-radius: 12px;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+.glossary-create:hover:not(:disabled) {
+  background: var(--signal-dark);
+  border-color: var(--signal-dark);
+}
+
+.glossary-create:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* 「全部」分组浏览：每个 chip 对应的分组一个小节 */
+.glossary-group {
+  margin-bottom: 22px;
+}
+
+.glossary-group:last-child {
+  margin-bottom: 0;
+}
+
+.glossary-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.glossary-group__dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--ink-faint);
+  border-radius: 50%;
+}
+
+.glossary-group__head strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.glossary-group__head span {
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+/* 卡片网格：一屏能同时看到 20+ 张，比原来拉满整行的列表可读得多 */
+.glossary-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.glossary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 13px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 12px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.glossary-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.glossary-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.glossary-card__term {
+  overflow: hidden;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.019em;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.glossary-card__aliases {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+/* 别名小圆片：视觉上弱于主术语，仍可点读 */
+.glossary-alias {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  color: var(--ink-soft);
+  font-size: 9px;
+  background: var(--bg);
+  border-radius: 12px;
+}
+
+.glossary-card__alias-more {
+  color: var(--ink-faint);
+  font-size: 9px;
+}
+
+.glossary-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  color: var(--ink-soft);
+  font-size: 9px;
+  background: var(--bg);
+  border: 0;
+  border-radius: 12px;
+}
+
+.glossary-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.glossary-card__hits {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+/* 编辑/删除桌面端 hover 才出现，卡片够紧凑，常驻按钮会太挤 */
+.glossary-card__ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.glossary-card:hover .glossary-card__ops,
+.glossary-card:focus-within .glossary-card__ops {
+  opacity: 1;
+}
+
+/* 待确认子页签 */
+.glossary-subtabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 18px;
+  padding: 3px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.glossary-subtabs button {
+  padding: 6px 13px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.glossary-subtabs button[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--paper);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.48);
+}
+
+/* 建议列表 */
+.glossary-suggestion-list {
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24);
+  overflow: hidden;
+}
+
+.glossary-suggestion {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--line);
+  transition: background 140ms ease;
+}
+
+.glossary-suggestion:last-child {
+  border-bottom: 0;
+}
+
+.glossary-suggestion:hover {
+  background: var(--surface-2);
+}
+
+.glossary-suggestion__body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* wrong → correct：错写法删除线弱化，权威写法用主色强调 */
+.glossary-suggestion__pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+}
+
+.glossary-suggestion__wrong {
+  color: var(--ink-faint);
+  font-size: 14px;
+  text-decoration: line-through;
+}
+
+.glossary-suggestion__arrow {
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.glossary-suggestion__correct {
+  color: var(--signal-dark);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.glossary-suggestion__context {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.55;
+  font-style: normal;
+}
+
+.glossary-suggestion__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+.glossary-suggestion__ops {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 9px;
+  margin-top: 1px;
+}
+
+@media (max-width: 767px) {
+  .glossary-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .glossary-toolbar {
+    align-items: stretch;
+  }
+
+  .glossary-toolbar__actions {
+    flex-wrap: wrap;
+  }
+
+  .glossary-search {
+    width: 100%;
+  }
+
+  .glossary-tabs,
+  .glossary-subtabs {
+    overflow-x: auto;
+  }
+
+  .glossary-tabs button,
+  .glossary-subtabs button {
+    flex: 1;
+    justify-content: center;
+    white-space: nowrap;
+  }
+
+  .glossary-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* 移动端没有 hover，操作按钮常驻会挤爆紧凑卡片，直接不展示（编辑走桌面端） */
+  .glossary-card__ops {
+    display: none;
+  }
+
+  .glossary-suggestion {
+    gap: 10px;
+    padding: 13px 12px;
+  }
+
+  .glossary-suggestion__ops {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}

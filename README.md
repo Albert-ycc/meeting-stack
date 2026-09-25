@@ -122,6 +122,31 @@ SaaS 的数据库里，你的代码、需求文档、项目记录躺在自己电
 完整设计决策见 [docs/glossary-correction.md](docs/glossary-correction.md)，参考实现见
 [glossary/](glossary/)。
 
+## 1.5：从「任务池」到「项目 → 需求 → 任务」
+
+1.1–1.4 以参考实现和设计文档的形式发布，`workbench/` 本身一直停在首发快照。1.5 把工作台的完整代码
+同步进来，参考实现里讲的东西现在都在 `workbench/` 里真实跑着：任务抽取与飞书通知
+（`notify.py` / `tasks.py`）、说话人补标（`speaker_backfill.py`）、术语词典（`glossary.py`）。
+
+**任务池之上多了两层。** 项目挂「材料根目录」，需求归属项目、挂材料文件夹、关联多场会议。优先级
+P0–P3 只挂在需求上，任务不单设优先级，从所属需求派生；任务挂需求后项目跟着需求走，改动全部写进
+任务的讨论轨迹。材料目录的浏览限制在 `MEETING_WORKBENCH_MATERIAL_BROWSE_ROOT` 之下，拒绝 `..` 和
+指向外部的符号链接。
+
+**会议自动归属项目。** 纪要写好后，AI 看标题 + 纪要 + 项目列表给出项目名，只认高置信；再退到「这场会
+已归属任务的多数项目」；都没有就留空，不瞎猜。人工改过一次，自动归类就再也不碰这场会。
+
+**待确认闸门减负。** 草稿放 7 天没处理自动归入「已过期」（不删，可恢复）；任务页服务端计数与分页；
+支持勾选批量驳回和撤销；抽取收窄，少出笼统任务。
+
+**失败不再沉默。** 资料库新增「需要处理」：转写失败、纪要失败、目录被隔离的录音逐条写清原因和下一步，
+处理完可确认归档；界面不再露内部状态码。
+
+**两个稳定性修复。** SQLite 连接显式关闭，修掉句柄泄漏导致的周期性宕机；manifest 登记过的纪要不再
+按文件名关键词排除，标题撞词的会议不会被误隔离。
+
+完整说明见 [workbench/README.md](workbench/README.md) 与 [CHANGELOG.md](CHANGELOG.md)。
+
 ---
 
 ## 历史与设计理念
@@ -220,7 +245,7 @@ Agent，那场会的全部文本立刻可用。这是前面说的方法论的落
    归档根 <YYMMDD 主题>/   音频、逐字稿、字幕、说话人分组、纪要
         │
         ▼
-   workbench/  资料库、全文与语义检索、播放、逐字稿编辑、任务看板、通知、复制路径给 Agent
+   workbench/  资料库、全文与语义检索、播放、逐字稿编辑、项目/需求/任务、术语词典、通知、复制路径给 Agent
         │
         ▼
    task-notify/  纪要卡 + 任务抽取 → 飞书卡片（确认/驳回按钮）→ 长连接回调 → 状态落库 → 卡片原地更新
@@ -288,7 +313,8 @@ python3 task-notify/card_listener.py             # 任务确认卡片回调监�
 | `MEETING_RELAY_WATCH_DIR` | `~/Downloads` | 监听目录 |
 | `MEETING_RELAY_AGENT` | `claude` | 派单目标，`claude` 或 `codex` |
 | `TRANSCRIBE_ENGINE` | `observe` | `observe`=双跑、`funasr`=只主稿、`whisper`=只对照稿 |
-| `LARK_CHAT_ID` | 空 | 飞书任务确认卡发送到的群；留空则确认闭环在网页内完成 |
+| `MEETING_WORKBENCH_LARK_CHAT_ID` | 空 | 飞书任务确认卡发送到的群；留空则确认闭环在网页内完成 |
+| `MEETING_WORKBENCH_MATERIAL_BROWSE_ROOT` | `~` | 项目材料目录可浏览、可挂靠的范围 |
 | `LARK_CLI_BIN` | `lark-cli` | 发卡/收回调用的飞书 CLI 路径 |
 
 完整清单见 [.env.example](.env.example) 与各组件 README。

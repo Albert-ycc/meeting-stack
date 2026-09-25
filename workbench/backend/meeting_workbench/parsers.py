@@ -144,11 +144,17 @@ def parse_whisper_json(path: Path) -> list[dict[str, Any]]:
 
 
 def parse_funasr_json(path: Path) -> list[dict[str, Any]]:
-    def collect(payload: Any, inherited_offset_ms: int = 0) -> list[tuple[dict[str, Any], int]]:
+    # 切块长会（.funasr.json 顶层是 [{chunk, offset_sec, result:{sentence_info}}, ...]）里
+    # spk 是每块从 0 重编号的裸整数，不带块信息直转 SPEAKER_NN 会把不同块里的同号说话人
+    # 静默合并成一个人。chunk_index 只在顶层列表长度 >1 时赋值，随递归原样下传，
+    # 单块（含无 chunk 包装的旧格式）保持 chunk_index=None，label 不加前缀。
+    def collect(
+        payload: Any, inherited_offset_ms: int = 0, chunk_index: int | None = None
+    ) -> list[tuple[dict[str, Any], int, int | None]]:
         if isinstance(payload, list):
-            collected: list[tuple[dict[str, Any], int]] = []
+            collected: list[tuple[dict[str, Any], int, int | None]] = []
             for item in payload:
-                collected.extend(collect(item, inherited_offset_ms))
+                collected.extend(collect(item, inherited_offset_ms, chunk_index))
             return collected
         if not isinstance(payload, dict):
             return []
@@ -158,16 +164,26 @@ def parse_funasr_json(path: Path) -> list[dict[str, Any]]:
             if isinstance(value, list):
                 if not all(isinstance(item, dict) for item in value):
                     raise ValueError(f"{key} segment list contains a non-object item")
-                return [(item, offset_ms) for item in value]
+                return [(item, offset_ms, chunk_index) for item in value]
         collected = []
         for key in ("result", "data", "output"):
             if key in payload:
-                collected.extend(collect(payload[key], offset_ms))
+                collected.extend(collect(payload[key], offset_ms, chunk_index))
         return collected
 
-    raw_segments = collect(_load_json(path))
+    top_level = _load_json(path)
+    if isinstance(top_level, list) and len(top_level) > 1:
+        raw_segments: list[tuple[dict[str, Any], int, int | None]] = []
+        for index, block in enumerate(top_level):
+            chunk_number = block.get("chunk") if isinstance(block, dict) else None
+            if not isinstance(chunk_number, int):
+                chunk_number = index
+            raw_segments.extend(collect(block, 0, chunk_number + 1))
+    else:
+        raw_segments = collect(top_level)
+
     segments = []
-    for item, offset_ms in raw_segments:
+    for item, offset_ms, chunk_index in raw_segments:
         text = str(item.get("text") or item.get("sentence") or "").strip()
         if not text:
             continue
@@ -179,6 +195,8 @@ def parse_funasr_json(path: Path) -> list[dict[str, Any]]:
                 label = f"SPEAKER_{int(value):02d}"
             else:
                 label, _ = _speaker_and_text(f"{value} x")
+            if label is not None and chunk_index is not None:
+                label = f"C{chunk_index}_{label}"
         start = item.get("start", item.get("start_time", item.get("begin", 0)))
         end = item.get("end", item.get("end_time", item.get("finish", start)))
         segments.append(

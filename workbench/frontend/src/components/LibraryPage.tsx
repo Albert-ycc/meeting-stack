@@ -1,10 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { AsyncState } from "./AsyncState";
 import { CopyFolderPathButton } from "./CopyFolderPathButton";
 import {
   dayStamp,
   formatClock,
+  formatDate,
   formatDurationText,
   formatTime,
   isDoneStatus,
@@ -14,12 +15,15 @@ import {
   type DayStamp,
 } from "../format";
 import type {
+  AttentionPayload,
   LoadState,
   MeetingFilters,
   MeetingSummary,
   Project,
   Tag,
 } from "../types";
+import { BlurText } from "./motion/BlurText";
+import { ScrollReveal } from "./motion/ScrollReveal";
 
 interface LibraryPageProps {
   filters: MeetingFilters;
@@ -33,6 +37,100 @@ interface LibraryPageProps {
   state: LoadState;
   tags: Tag[];
   total: number;
+  /** 没能正常入库的录音（失败任务 + 隔离目录）；为空不渲染 */
+  attention?: AttentionPayload | null;
+  /** 桌面端才给：确认归档一条失败任务 */
+  onAcknowledgeJob?: (jobId: string) => Promise<void>;
+  /** 桌面端才给：去「转写录音」页处理 */
+  onOpenJobs?: () => void;
+}
+
+function AttentionSection({
+  attention,
+  onAcknowledgeJob,
+  onOpen,
+  onOpenJobs,
+}: {
+  attention: AttentionPayload;
+  onAcknowledgeJob?: (jobId: string) => Promise<void>;
+  onOpen: (meetingId: string) => void;
+  onOpenJobs?: () => void;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const total = attention.jobs.length + attention.quarantined.length;
+  if (total === 0) return null;
+
+  const acknowledge = async (jobId: string) => {
+    if (!onAcknowledgeJob || busyId) return;
+    setBusyId(jobId);
+    setError("");
+    try {
+      await onAcknowledgeJob(jobId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "归档失败，请稍后重试");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <section aria-label="需要处理" className="attention-panel">
+      <header className="attention-panel__head">
+        <strong>需要处理</strong>
+        <span>{total} 条录音没能正常入库</span>
+      </header>
+      <ul className="attention-list">
+        {attention.jobs.map((job) => (
+          <li className="attention-item" key={job.job_id}>
+            <div className="attention-item__body">
+              <strong>{job.meeting_title || `${formatDate(job.created_at) || "未知日期"} 的录音`}</strong>
+              <p>{job.summary}</p>
+              <small>下一步：{job.next_step}</small>
+            </div>
+            <div className="attention-item__ops">
+              {job.meeting_id && (
+                <button className="text-button" onClick={() => onOpen(job.meeting_id!)} type="button">
+                  打开会议
+                </button>
+              )}
+              {onOpenJobs && (
+                <button className="text-button" onClick={onOpenJobs} type="button">
+                  去处理
+                </button>
+              )}
+              {onAcknowledgeJob && (
+                <button
+                  className="text-button text-button--muted"
+                  disabled={busyId !== null}
+                  onClick={() => void acknowledge(job.job_id)}
+                  type="button"
+                >
+                  知道了，归档
+                </button>
+              )}
+            </div>
+          </li>
+        ))}
+        {attention.quarantined.map((item) => (
+          <li className="attention-item" key={item.directory}>
+            <div className="attention-item__body">
+              <strong>{item.name}</strong>
+              <p>
+                {item.summary}：{item.reason}
+              </p>
+              <small>下一步：{item.next_step}</small>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {error && (
+        <p className="attention-panel__error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
 }
 
 const statusOptions = [
@@ -74,6 +172,9 @@ export function LibraryPage({
   state,
   tags,
   total,
+  attention,
+  onAcknowledgeJob,
+  onOpenJobs,
 }: LibraryPageProps) {
   const groups = useMemo(() => groupByDay(meetings), [meetings]);
   const thisYear = new Date().getFullYear();
@@ -86,7 +187,7 @@ export function LibraryPage({
         <header className="page-heading">
           <div>
             <span className="eyebrow">ARCHIVE / 资料库</span>
-            <h1>会议录音档案</h1>
+            <h1><BlurText text="会议录音档案" /></h1>
             <p>按录音日期倒序排列。原音频、逐字稿与纪要都在同一个文件夹里。</p>
           </div>
           <div className="record-count">
@@ -138,13 +239,32 @@ export function LibraryPage({
           )}
         </div>
 
+        {attention && (
+          <AttentionSection
+            attention={attention}
+            onAcknowledgeJob={onAcknowledgeJob}
+            onOpen={onOpen}
+            onOpenJobs={onOpenJobs}
+          />
+        )}
+
         {state === "loading" && <AsyncState state="loading" />}
         {state === "error" && <AsyncState message="资料库读取失败" state="error" />}
-        {state === "empty" && <AsyncState state="empty" />}
+        {state === "empty" && (
+          <AsyncState
+            message={
+              filters.status === "failed" && attention && attention.jobs.length + attention.quarantined.length > 0
+                ? "没有处理失败的会议记录；没能入库的录音列在上方「需要处理」里。"
+                : undefined
+            }
+            state="empty"
+          />
+        )}
         {state === "ready" && (
           <div className="archive-timeline">
             {groups.map((group, groupIndex) => (
-              <section className="archive-day" key={group.stamp.key}>
+              <ScrollReveal key={group.stamp.key}>
+                <section className="archive-day">
                 <header className="archive-day__head">
                   <div className="archive-day__date">
                     <strong>{group.stamp.monthDay}</strong>
@@ -185,9 +305,10 @@ export function LibraryPage({
                           </span>
                           <span className="archive-row__project">
                             {meeting.project_name ? (
-                              <span className="project-mark">
-                                <i style={{ background: meeting.project_color || "#64736e" }} />
+                              <span className="project-mark" title={meeting.project_origin === "ai" ? "AI 自动归属" : undefined}>
+                                <i style={{ background: meeting.project_color || "#767676" }} />
                                 {meeting.project_name}
+                                {meeting.project_origin === "ai" && <em className="untitled-chip">AI</em>}
                               </span>
                             ) : (
                               <span className="muted">未归项目</span>
@@ -218,7 +339,8 @@ export function LibraryPage({
                     );
                   })}
                 </div>
-              </section>
+                </section>
+              </ScrollReveal>
             ))}
           </div>
         )}

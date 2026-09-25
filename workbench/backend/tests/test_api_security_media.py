@@ -154,6 +154,39 @@ def test_media_endpoint_supports_byte_ranges(tmp_path):
     assert response.headers["accept-ranges"] == "bytes"
 
 
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("audio.m4a", "audio/mp4"),
+        ("audio.qta", "audio/mp4"),
+        ("audio.wav", "audio/wav"),
+        ("audio.mp3", "audio/mpeg"),
+    ],
+)
+def test_media_endpoint_serves_browser_playable_mime(tmp_path, filename, expected):
+    """MIME 不能交给系统猜：macOS 会把 .m4a 猜成 Chrome 不认的 audio/mp4a-latm，
+    浏览器直接拒绝解码，播放器永远停在 0:00。"""
+    client, settings = make_client(tmp_path)
+    audio = settings.archive_root / "meeting" / filename
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"0123456789")
+    db = Database(settings.database_path)
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-mime', 'Mime', 'completed_unreviewed')"
+    )
+    artifact_id = db.execute(
+        """INSERT INTO artifacts
+           (meeting_id, kind, role, source_root, path, size_bytes, mtime_ns, created_at)
+           VALUES ('vm-mime', 'audio', 'source', 'archive', ?, 10, ?, ?)""",
+        (str(audio), audio.stat().st_mtime_ns, utc_now()),
+    )
+
+    response = client.get(f"/api/media/{artifact_id}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].split(";")[0] == expected
+
+
 def test_loopback_binding_is_the_default():
     assert Settings().host == "127.0.0.1"
     assert Settings().port == 8765
@@ -589,6 +622,34 @@ def test_transcript_save_rejects_stale_base_version_without_writes(tmp_path):
         )["count"]
         == before
     )
+
+
+def test_transcript_save_ignores_client_supplied_duplicate_ordinal(tmp_path):
+    """段落 ordinal 由服务端按提交顺序重排；客户端传重复值不该撞 UNIQUE 索引 500。"""
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(settings.database_path)
+    _meeting_dir, _audio, current_version = seed_editable_meeting(db, settings.archive_root)
+
+    response = client.put(
+        "/api/meetings/vm-20260102-101500/transcript",
+        json={
+            "base_version_id": current_version,
+            "segments": [
+                {"ordinal": 0, "start_ms": 0, "end_ms": 1000, "text": "第一段"},
+                {"ordinal": 0, "start_ms": 1000, "end_ms": 2000, "text": "第二段"},
+            ],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    version_id = response.json()["version_id"]
+    rows = db.query_all(
+        "SELECT ordinal, text FROM segments WHERE version_id=? ORDER BY ordinal",
+        (version_id,),
+    )
+    assert [(row["ordinal"], row["text"]) for row in rows] == [(0, "第一段"), (1, "第二段")]
 
 
 def test_minutes_save_requires_matching_nullable_base_version(tmp_path):

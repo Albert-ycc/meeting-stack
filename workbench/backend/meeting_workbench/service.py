@@ -32,7 +32,10 @@ from .minutes_evidence import (
     MinutesEvidenceError,
     load_minutes_manifest,
     load_relay_attempt,
+    relay_attempt_matches_minutes,
+    select_source_srt_entry,
 )
+from .glossary import record_corrections_from_diff
 
 
 _BASE_VERSION_UNSET = object()
@@ -110,14 +113,19 @@ def atomic_copy_verified(source: Path, destination: Path, expected_sha256: str) 
     if source.is_symlink() or not source.is_file() or sha256_file(source) != expected_sha256:
         raise PublishValidationError("attempt 来源文件已变化，禁止发布")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent
+    )
     try:
         with source.open("rb") as input_handle, os.fdopen(descriptor, "wb") as output_handle:
             shutil.copyfileobj(input_handle, output_handle)
             output_handle.flush()
             os.fsync(output_handle.fileno())
         temporary_path = Path(temporary)
-        if sha256_file(temporary_path) != expected_sha256 or sha256_file(source) != expected_sha256:
+        if (
+            sha256_file(temporary_path) != expected_sha256
+            or sha256_file(source) != expected_sha256
+        ):
             raise PublishValidationError("attempt 来源文件在复制期间发生变化，禁止发布")
         os.replace(temporary_path, destination)
         fsync_directory(destination.parent)
@@ -464,6 +472,8 @@ class MeetingService:
         minutes_id = f"mv-{uuid.uuid4().hex}"
         rendered_html = render_safe_markdown(markdown)
         content_sha256 = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        old_markdown: str | None = None
+        scope = "通用"
         with self.db.transaction() as connection:
             meeting = connection.execute(
                 "SELECT current_minutes_version_id FROM meetings WHERE id=?", (meeting_id,)
@@ -483,6 +493,14 @@ class MeetingService:
                 if current_id
                 else None
             )
+            old_markdown = based_on["markdown"] if based_on else None
+            project_row = connection.execute(
+                """SELECT p.name FROM projects p
+                   JOIN meetings m ON m.project_id = p.id
+                   WHERE m.id=?""",
+                (meeting_id,),
+            ).fetchone()
+            scope = project_row["name"] if project_row and project_row["name"] else "通用"
             version_no = connection.execute(
                 "SELECT COALESCE(MAX(version_no), 0) + 1 FROM minutes_versions WHERE meeting_id = ?",
                 (meeting_id,),
@@ -516,6 +534,10 @@ class MeetingService:
             )
         self.db.add_event(
             "minutes_saved", meeting_id=meeting_id, actor="user", payload={"version_id": minutes_id}
+        )
+        # 编辑纪要时捕获疑似错字更正，写入待确认队列（不影响纪要保存本身）
+        record_corrections_from_diff(
+            self.db, old_markdown, markdown, meeting_id=meeting_id, scope=scope
         )
         return minutes_id
 
@@ -640,7 +662,8 @@ class MeetingService:
                 archive_dir = self._validated_archive_directory(canonical_dir)
                 installing_new_directory = False
                 work_dir = (
-                    archive_dir.parent / f".{archive_dir.name}.workbench-publish-{publish_token}"
+                    archive_dir.parent
+                    / f".{archive_dir.name}.workbench-publish-{publish_token}"
                 )
             else:
                 archive_dir = self._new_archive_directory(meeting)
@@ -678,9 +701,7 @@ class MeetingService:
         managed_canonical_dir = (
             attempt_provenance.source_directory
             if copying_managed_sources and attempt_provenance
-            else None
-            if copying_managed_sources
-            else archive_dir
+            else None if copying_managed_sources else archive_dir
         )
         self._validate_source_artifacts(
             artifacts,
@@ -698,7 +719,9 @@ class MeetingService:
             canonical_dir=archive_dir,
             meeting_id=meeting_id,
             preferred_directory=(
-                attempt_provenance.source_directory if promoting and attempt_provenance else None
+                attempt_provenance.source_directory
+                if promoting and attempt_provenance
+                else None
             ),
         )
         audio_path = Path(audio_row["path"]) if audio_row else None
@@ -713,7 +736,9 @@ class MeetingService:
         segments_snapshot = self._publish_segments_snapshot(segments)
         transcript_text = self._normalized_transcript_text(segments)
         minutes_input = (
-            self._normalized_transcript_srt(segments) if attempt_provenance else transcript_text
+            self._normalized_transcript_srt(segments)
+            if attempt_provenance
+            else transcript_text
         )
         if (
             minutes_only_metadata
@@ -1640,7 +1665,9 @@ class MeetingService:
     ) -> dict[str, Any] | None:
         ranks = {"archive": 4, "draft": 3, "staging": 2, "history": 1}
         canonical_root = Path(os.path.abspath(canonical_dir))
-        preferred_root = Path(os.path.abspath(preferred_directory)) if preferred_directory else None
+        preferred_root = (
+            Path(os.path.abspath(preferred_directory)) if preferred_directory else None
+        )
         candidates = [
             row
             for row in artifacts
@@ -1793,7 +1820,9 @@ class MeetingService:
             atomic_copy_verified(sources[0], destination / "input-transcript.srt", expected_source)
 
     @staticmethod
-    def _copy_attempt_sidecars(provenance: AttemptPublishProvenance, destination: Path) -> None:
+    def _copy_attempt_sidecars(
+        provenance: AttemptPublishProvenance, destination: Path
+    ) -> None:
         for target_name, (source, expected_sha256) in provenance.files.items():
             atomic_copy_verified(source, destination / target_name, expected_sha256)
 
@@ -1923,16 +1952,17 @@ class MeetingService:
                 requested_stage=minutes.get("requested_stage"),
                 input_transcript_sha256=minutes.get("input_transcript_sha256"),
             )
-            relay_attempt = load_relay_attempt(self.relay_jobs_db, job_id=job_id, attempt=attempt)
+            relay_attempt = load_relay_attempt(
+                self.relay_jobs_db, job_id=job_id, attempt=attempt
+            )
         except MinutesEvidenceError as error:
             raise PublishValidationError(str(error)) from error
         payload = manifest["payload"]
         entries = manifest["entries"]
-        if (
-            relay_attempt.get("minutes_protocol_version") != 3
-            or relay_attempt.get("requested_stage") != minutes.get("requested_stage")
-            or relay_attempt.get("input_transcript_sha256")
-            != minutes.get("input_transcript_sha256")
+        if not relay_attempt_matches_minutes(
+            relay_attempt,
+            requested_stage=minutes.get("requested_stage"),
+            input_transcript_sha256=minutes.get("input_transcript_sha256"),
         ):
             raise PublishValidationError("当前纪要与 Relay attempt 来源不一致")
 
@@ -1950,22 +1980,16 @@ class MeetingService:
         source_srt_sha256 = trusted_hash("source_srt_sha256")
         plan_entry = entries.get("minutes-plan.json")
         evidence_entry = entries.get("minutes-evidence.json")
-        source_entries = [
-            entry
-            for relative, entry in entries.items()
-            if Path(relative).parent == Path(".")
-            and Path(relative).suffix.casefold() == ".srt"
-            and entry["sha256"] == source_srt_sha256
-        ]
+        source_entry = select_source_srt_entry(
+            entries,
+            expected_sha256=source_srt_sha256,
+            requested_stage=minutes.get("requested_stage"),
+        )
         if (
             plan_entry is None
             or plan_entry["sha256"] != plan_sha256
             or evidence_entry is None
-            or len(source_entries) != 1
-            or (
-                minutes.get("requested_stage") == "minutes_generating"
-                and source_entries[0]["path"] != "input-transcript.srt"
-            )
+            or source_entry is None
         ):
             raise PublishValidationError("v3 attempt 的证据、计划或来源 SRT 不完整")
         source_directory = manifest_path.parent
@@ -1979,8 +2003,8 @@ class MeetingService:
                 plan_entry["sha256"],
             ),
             "input-transcript.srt": (
-                source_directory / source_entries[0]["path"],
-                source_entries[0]["sha256"],
+                source_directory / source_entry["path"],
+                source_entry["sha256"],
             ),
         }
         provenance = AttemptPublishProvenance(
@@ -2000,11 +2024,14 @@ class MeetingService:
         self._validate_attempt_provenance(provenance)
         return provenance
 
-    def _validate_attempt_provenance(self, provenance: AttemptPublishProvenance) -> None:
+    def _validate_attempt_provenance(
+        self, provenance: AttemptPublishProvenance
+    ) -> None:
         if (
             provenance.source_manifest_path.is_symlink()
             or not provenance.source_manifest_path.is_file()
-            or sha256_file(provenance.source_manifest_path) != provenance.source_manifest_sha256
+            or sha256_file(provenance.source_manifest_path)
+            != provenance.source_manifest_sha256
         ):
             raise PublishValidationError("attempt manifest 已变化，禁止发布")
         for source, expected_sha256 in provenance.files.values():

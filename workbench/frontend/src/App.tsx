@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ApiError, type ApiClient } from "./api";
 import type {
+  AttentionPayload,
   HealthPayload,
   Job,
   LoadState,
@@ -14,12 +15,20 @@ import type {
 } from "./types";
 import { AppShell, type AppView } from "./components/AppShell";
 import { AsyncState } from "./components/AsyncState";
+import { FadeContent } from "./components/motion/FadeContent";
+import { MagneticButton } from "./components/motion/MagneticButton";
+import { GlossaryPage } from "./components/GlossaryPage";
 import { JobsPage } from "./components/JobsPage";
 import { LibraryPage } from "./components/LibraryPage";
 import { MeetingDetailPage } from "./components/MeetingDetailPage";
 import { OverviewPage } from "./components/OverviewPage";
+import { ProjectDetailPage } from "./components/ProjectDetailPage";
 import { ProjectsPage } from "./components/ProjectsPage";
+import { RequirementDetailPage } from "./components/RequirementDetailPage";
+import { RequirementsPage } from "./components/RequirementsPage";
 import { SearchPage } from "./components/SearchPage";
+import { TaskDrawer } from "./components/TaskDrawer";
+import { TasksPage } from "./components/TasksPage";
 import { uploadRecordingInChunks } from "./upload";
 
 interface AppProps {
@@ -56,18 +65,33 @@ export function useMobileBreakpoint() {
 
 export default function App({ apiClient = api }: AppProps) {
   const isMobile = useMobileBreakpoint();
-  // 实际使用方式是按日期回忆某场会，所以落地页直接是资料库。
-  const [view, setView] = useState<AppView>("library");
+  // 落地页是工作台（最近的会、待确认任务、处理中的录音）；按日期回忆某场会走侧栏「录音档案」。
+  const [view, setView] = useState<AppView>("overview");
+  // 冷加载时地址栏里的 #tasks 等锚点要先被读进视图，之后才允许把视图反写回地址栏，
+  // 否则首帧 view=overview 会先把 hash 清空，applyHash 再也读不到（冷加载 #tasks 被拉回工作台）。
+  const hashReadyRef = useRef(false);
   const [health, setHealth] = useState<HealthPayload | null>(null);
+  const [healthUnreachable, setHealthUnreachable] = useState(false);
+  const healthFailureCount = useRef(0);
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [meetingOffset, setMeetingOffset] = useState(0);
   const [meetingTotal, setMeetingTotal] = useState(0);
   const [projects, setProjects] = useState<Project[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
+  const [openProjectId, setOpenProjectId] = useState<string | null>(null);
+  const [openRequirementId, setOpenRequirementId] = useState<string | null>(null);
+  // 从项目详情页跳进词典时预选中的项目 chip；普通侧栏导航进词典时为 null（不预筛）。
+  const [glossaryProjectId, setGlossaryProjectId] = useState<string | null>(null);
+  const [taskDrawerId, setTaskDrawerId] = useState<string | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [glossaryPending, setGlossaryPending] = useState(0);
+  const [mobileTaskWrite, setMobileTaskWrite] = useState(true);
+  const [boardVersion, setBoardVersion] = useState(0);
   const [filters, setFilters] = useState<MeetingFilters>({});
   const [libraryState, setLibraryState] = useState<LoadState>("loading");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsAvailable, setJobsAvailable] = useState(false);
+  const [attention, setAttention] = useState<AttentionPayload | null>(null);
   const [jobsState, setJobsState] = useState<LoadState>("loading");
   const [jobsMessage, setJobsMessage] = useState("");
   const [jobsStale, setJobsStale] = useState(false);
@@ -155,11 +179,70 @@ export default function App({ apiClient = api }: AppProps) {
     setProjects(payload);
   }, [apiClient]);
 
+  const loadPendingCount = useCallback(async (silent = false) => {
+    try {
+      const payload = await apiClient.tasks({ status: "pending_confirm", limit: 1 });
+      setPendingCount(payload.total);
+    } catch {
+      if (!silent) setPendingCount(0);
+    }
+  }, [apiClient]);
+
+  // 词典待确认建议数只影响侧栏角标；接口不可用（旧后端）时静默为 0，不打断主链。
+  const loadGlossaryPending = useCallback(async () => {
+    try {
+      const items = await apiClient.glossarySuggestions?.("pending");
+      setGlossaryPending(Array.isArray(items) ? items.length : 0);
+    } catch {
+      setGlossaryPending(0);
+    }
+  }, [apiClient]);
+
+  // 资料库「需要处理」：失败任务 + 隔离目录。拿不到时保留上一份，不影响资料库主体。
+  const loadAttention = useCallback(async () => {
+    try {
+      const payload = await apiClient.attention?.();
+      if (payload) setAttention(payload);
+    } catch {
+      // 忽略：下一轮轮询再取
+    }
+  }, [apiClient]);
+
+  const applyHash = useCallback(() => {
+    const hash = window.location.hash;
+    if (hash.startsWith("#projects/")) {
+      const projectId = decodeURIComponent(hash.slice("#projects/".length));
+      if (projectId) {
+        setOpenProjectId(projectId);
+        setView("projectDetail");
+      }
+    } else if (hash.startsWith("#requirements/")) {
+      const requirementId = decodeURIComponent(hash.slice("#requirements/".length));
+      if (requirementId) {
+        setOpenRequirementId(requirementId);
+        setView("requirementDetail");
+      }
+    } else if (hash === "#requirements") {
+      setView("requirements");
+    } else if (hash === "#tasks") {
+      setView("tasks");
+    } else if (hash.startsWith("#glossary/project/")) {
+      const projectId = decodeURIComponent(hash.slice("#glossary/project/".length));
+      if (projectId) {
+        setGlossaryProjectId(projectId);
+        setView("glossary");
+      }
+    } else if (hash === "#glossary") {
+      setGlossaryProjectId(null);
+      setView("glossary");
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     const initialize = async () => {
       try {
-        await apiClient.bootstrap();
+        const boot = await apiClient.bootstrap();
         const [healthPayload, projectPayload, tagPayload] = await Promise.all([
           apiClient.health(),
           apiClient.projects(),
@@ -169,20 +252,27 @@ export default function App({ apiClient = api }: AppProps) {
         setHealth(healthPayload);
         setProjects(projectPayload);
         setTags(tagPayload);
+        setMobileTaskWrite(boot.mobile_task_write);
+        setPendingCount(boot.pending_confirm_count);
+        applyHash();
+        hashReadyRef.current = true;
       } catch (error) {
+        hashReadyRef.current = true;
         if (!active) return;
         setLibraryState("error");
         setDetailError(error instanceof Error ? error.message : "无法连接本地工作台");
       }
       if (active) {
         await Promise.all([loadMeetings({}, 0), loadJobs()]);
+        void loadGlossaryPending();
+        void loadAttention();
       }
     };
     void initialize();
     return () => {
       active = false;
     };
-  }, [apiClient, loadJobs, loadMeetings]);
+  }, [apiClient, applyHash, loadAttention, loadGlossaryPending, loadJobs, loadMeetings]);
 
   const hasActiveJobs = useMemo(
     () => jobs.some((job) => !terminalJobStates.has(job.state)),
@@ -192,8 +282,21 @@ export default function App({ apiClient = api }: AppProps) {
   useEffect(() => {
     const refresh = () => {
       if (document.hidden) return;
-      void apiClient.health().then(setHealth).catch(() => undefined);
+      void apiClient
+        .health()
+        .then((payload) => {
+          healthFailureCount.current = 0;
+          setHealthUnreachable(false);
+          setHealth(payload);
+        })
+        .catch(() => {
+          healthFailureCount.current += 1;
+          if (healthFailureCount.current >= 2) setHealthUnreachable(true);
+        });
       void loadJobs(true);
+      void loadPendingCount(true);
+      void loadGlossaryPending();
+      void loadAttention();
     };
     const interval = window.setInterval(
       refresh,
@@ -207,7 +310,7 @@ export default function App({ apiClient = api }: AppProps) {
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [apiClient, hasActiveJobs, loadJobs, view]);
+  }, [apiClient, hasActiveJobs, loadAttention, loadGlossaryPending, loadJobs, loadPendingCount, view]);
 
   useEffect(() => {
     if (view !== "library" || detail || searchActive) return;
@@ -277,6 +380,9 @@ export default function App({ apiClient = api }: AppProps) {
     setDetailNavigationLocked(false);
     setDetailState("idle");
     setSearchActive(false);
+    setTaskDrawerId(null);
+    // 默认清空词典预筛；openGlossaryForProject 会在这之后同一批更新里重新设上。
+    setGlossaryProjectId(null);
   };
 
   const navigate = (nextView: AppView) => {
@@ -291,6 +397,50 @@ export default function App({ apiClient = api }: AppProps) {
     }
     performNavigate(nextView);
   };
+
+  const openProjectDetail = (projectId: string) => {
+    setOpenProjectId(projectId);
+    performNavigate("projectDetail");
+  };
+
+  const openRequirementDetail = (requirementId: string) => {
+    setOpenRequirementId(requirementId);
+    performNavigate("requirementDetail");
+  };
+
+  // 项目详情页「在词典中查看 →」：跳去词典页并预选中这个项目的 chip。
+  const openGlossaryForProject = (projectId: string) => {
+    performNavigate("glossary");
+    setGlossaryProjectId(projectId);
+  };
+
+  // 与 #tasks / #glossary(/project/<id>) / #projects/<id> / #requirements(/<id>) 锚点同步，供飞书卡片跳转直达对应视图。
+  useEffect(() => {
+    if (!hashReadyRef.current) return;
+    const path =
+      view === "tasks"
+        ? "#tasks"
+        : view === "glossary"
+          ? glossaryProjectId
+            ? `#glossary/project/${glossaryProjectId}`
+            : "#glossary"
+          : view === "projectDetail" && openProjectId
+            ? `#projects/${openProjectId}`
+            : view === "requirementDetail" && openRequirementId
+              ? `#requirements/${openRequirementId}`
+              : view === "requirements"
+                ? "#requirements"
+                : "";
+    if (window.location.hash !== path) {
+      history.replaceState(null, "", window.location.pathname + window.location.search + path);
+    }
+  }, [glossaryProjectId, openProjectId, openRequirementId, view]);
+
+  // 浏览器前进/后退或手动改地址栏 hash 时反向同步视图。
+  useEffect(() => {
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, [applyHash]);
 
   const submitSearch = async () => {
     if (detailNavigationLocked) return;
@@ -326,10 +476,11 @@ export default function App({ apiClient = api }: AppProps) {
   };
 
   const healthLevel = useMemo(() => {
+    if (healthUnreachable) return "failed" as const;
     if (!health) return "unknown" as const;
     if (health.status === "ok") return "healthy" as const;
     return "degraded" as const;
-  }, [health]);
+  }, [health, healthUnreachable]);
 
   const searchSlot = (
     <form
@@ -340,7 +491,12 @@ export default function App({ apiClient = api }: AppProps) {
       }}
       role="search"
     >
-      <span aria-hidden="true" className="search-glyph">⌕</span>
+      <span aria-hidden="true" className="search-glyph">
+        <svg fill="none" stroke="currentColor" strokeWidth="1.6" viewBox="0 0 14 14">
+          <circle cx="6.2" cy="6.2" r="4.6" />
+          <path d="M9.7 9.7 13 13" strokeLinecap="round" />
+        </svg>
+      </span>
       <input
         aria-label="全局检索"
         disabled={detailNavigationLocked}
@@ -352,7 +508,9 @@ export default function App({ apiClient = api }: AppProps) {
         <button aria-pressed={searchMode === "exact"} disabled={detailNavigationLocked} onClick={() => setSearchMode("exact")} type="button">原句</button>
         <button aria-pressed={searchMode === "semantic"} disabled={detailNavigationLocked} onClick={() => setSearchMode("semantic")} type="button">语义</button>
       </div>
-      <button className="search-submit" disabled={detailNavigationLocked} type="submit">检索</button>
+      <MagneticButton className="search-submit" disabled={detailNavigationLocked} type="submit">
+        检索
+      </MagneticButton>
     </form>
   );
 
@@ -365,6 +523,7 @@ export default function App({ apiClient = api }: AppProps) {
     content = (
       <MeetingDetailPage
         apiClient={apiClient}
+        canWriteTasks={!isMobile || mobileTaskWrite}
         initialSeekMs={initialSeekMs}
         isMobile={isMobile}
         meeting={detail}
@@ -372,10 +531,13 @@ export default function App({ apiClient = api }: AppProps) {
         onClassificationSaved={refreshProjects}
         onDirtyChange={setDetailDirty}
         onNavigationLockChange={setDetailNavigationLocked}
+        onOpenRequirement={openRequirementDetail}
+        onOpenTasks={() => navigate("tasks")}
         onReload={async () => {
           await Promise.all([
             loadDetail(detail.id),
             loadMeetings(filters, meetingOffset, true),
+            loadPendingCount(),
           ]);
         }}
         projects={projects}
@@ -396,6 +558,7 @@ export default function App({ apiClient = api }: AppProps) {
   } else if (view === "overview") {
     content = (
       <OverviewPage
+        apiClient={apiClient}
         health={health}
         jobs={jobs}
         jobsAvailable={jobsAvailable}
@@ -404,6 +567,7 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenJobs={() => navigate("jobs")}
         onOpenLibrary={() => navigate("library")}
         onOpenMeeting={openMeeting}
+        onOpenTasks={() => navigate("tasks")}
       />
     );
   } else if (view === "library") {
@@ -423,6 +587,85 @@ export default function App({ apiClient = api }: AppProps) {
         state={libraryState}
         tags={tags}
         total={meetingTotal}
+        attention={attention}
+        onAcknowledgeJob={
+          isMobile
+            ? undefined
+            : async (jobId) => {
+                await apiClient.acknowledgeJob(jobId);
+                await loadAttention();
+                setHealth(await apiClient.health());
+              }
+        }
+        onOpenJobs={isMobile ? undefined : () => navigate("jobs")}
+      />
+    );
+  } else if (view === "requirements") {
+    content = (
+      <RequirementsPage
+        apiClient={apiClient}
+        canPickFolders={!isMobile}
+        canWrite={!isMobile || mobileTaskWrite}
+        onOpenProject={openProjectDetail}
+        onOpenRequirement={openRequirementDetail}
+        onProjectsChanged={refreshProjects}
+        projects={projects}
+      />
+    );
+  } else if (view === "requirementDetail" && openRequirementId) {
+    content = (
+      <RequirementDetailPage
+        apiClient={apiClient}
+        canPickFolders={!isMobile}
+        canWrite={!isMobile || mobileTaskWrite}
+        onBack={() => navigate("requirements")}
+        onOpenMeeting={openMeeting}
+        onOpenProject={openProjectDetail}
+        onOpenTask={setTaskDrawerId}
+        onProjectsChanged={refreshProjects}
+        projects={projects}
+        reloadKey={boardVersion}
+        requirementId={openRequirementId}
+      />
+    );
+  } else if (view === "tasks") {
+    content = (
+      <TasksPage
+        apiClient={apiClient}
+        canWrite={!isMobile || mobileTaskWrite}
+        onOpenMeeting={openMeeting}
+        onOpenProject={openProjectDetail}
+        onOpenRequirement={openRequirementDetail}
+        projects={projects}
+      />
+    );
+  } else if (view === "glossary") {
+    content = (
+      <GlossaryPage
+        apiClient={apiClient}
+        canWrite={!isMobile || mobileTaskWrite}
+        initialProjectId={glossaryProjectId}
+        meetings={meetings}
+        onPendingChange={loadGlossaryPending}
+        projects={projects}
+      />
+    );
+  } else if (view === "projectDetail" && openProjectId) {
+    content = (
+      <ProjectDetailPage
+        apiClient={apiClient}
+        canPickFolders={!isMobile}
+        canWrite={!isMobile || mobileTaskWrite}
+        onBack={() => navigate("projects")}
+        onOpenGlossary={openGlossaryForProject}
+        onOpenMeeting={openMeeting}
+        onOpenRequirement={openRequirementDetail}
+        onOpenTask={setTaskDrawerId}
+        onProjectUpdated={refreshProjects}
+        onProjectsChanged={refreshProjects}
+        projectId={openProjectId}
+        projects={projects}
+        reloadKey={boardVersion}
       />
     );
   } else if (view === "jobs") {
@@ -449,20 +692,15 @@ export default function App({ apiClient = api }: AppProps) {
   } else {
     content = (
       <ProjectsPage
+        apiClient={apiClient}
         canEdit={!isMobile}
         meetings={meetings}
-        onCreateProject={async (name, color) => {
-          const created = await apiClient.createProject(name, color);
-          setProjects((current) => [...current, created].sort((left, right) => left.name.localeCompare(right.name, "zh-CN")));
-        }}
         onCreateTag={async (name, color) => {
           const created = await apiClient.createTag(name, color);
           setTags((current) => [...current, created].sort((left, right) => left.name.localeCompare(right.name, "zh-CN")));
         }}
-        onOpenProject={(projectId) => {
-          applyFilters({ project_id: projectId });
-          navigate("library");
-        }}
+        onOpenProject={openProjectDetail}
+        onProjectsChanged={refreshProjects}
         projects={projects}
         tags={tags}
       />
@@ -472,13 +710,30 @@ export default function App({ apiClient = api }: AppProps) {
   return (
     <AppShell
       activeView={view}
+      glossaryBadge={glossaryPending}
       health={healthLevel}
       isMobile={isMobile}
       navigationLocked={detailNavigationLocked}
       onNavigate={navigate}
       searchSlot={searchSlot}
+      taskBadge={pendingCount}
     >
-      {content}
+      <FadeContent transitionKey={view}>{content}</FadeContent>
+      {taskDrawerId && (
+        <TaskDrawer
+          apiClient={apiClient}
+          canWrite={!isMobile || mobileTaskWrite}
+          onChanged={() => {
+            void loadPendingCount();
+            void refreshProjects();
+            setBoardVersion((version) => version + 1); // 任务状态变了，刷新看板 KPI 与任务卡
+          }}
+          onClose={() => setTaskDrawerId(null)}
+          onOpenMeeting={openMeeting}
+          onOpenRequirement={openRequirementDetail}
+          taskId={taskDrawerId}
+        />
+      )}
     </AppShell>
   );
 }

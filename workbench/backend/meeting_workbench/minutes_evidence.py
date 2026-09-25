@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -32,8 +33,80 @@ class MinutesEvidenceError(ValueError):
     pass
 
 
+def manifest_meeting_id_matches(manifest: dict[str, Any], meeting_id: str) -> bool:
+    """判定 manifest 声明的 meeting_id 是否与目标会议一致。
+
+    relay 写侧从不写这个字段——真实归档 manifest 用 vm-/fp- 前缀的内容派生
+    身份代替显式声明，导入器与证据加载器都必须认这条口径，否则会把「manifest
+    没写这个字段」误判成「身份不一致」。字段存在时按精确匹配，不做归一化。
+    """
+    declared = manifest.get("meeting_id")
+    if declared is None:
+        return meeting_id.startswith(("vm-", "fp-"))
+    return declared == meeting_id
+
+
+def relay_attempt_matches_minutes(
+    relay_attempt: dict[str, Any],
+    *,
+    requested_stage: str | None,
+    input_transcript_sha256: str | None,
+) -> bool:
+    """判定纪要版本与 relay attempts 表里的记录是否同源。
+
+    relay 对全流程 attempt 记 requested_stage="discovered"，而 manifest 与 minutes_versions
+    只在纪要重生成（minutes_generating）时才写这个字段；库里为 None 表示「没声明」，
+    只能跳过、不能当成不一致，否则首轮生成的纪要永远拿不到可验证证据。
+    """
+    if relay_attempt.get("minutes_protocol_version") != 3:
+        return False
+    if requested_stage is not None and relay_attempt.get("requested_stage") != requested_stage:
+        return False
+    return relay_attempt.get("input_transcript_sha256") == input_transcript_sha256
+
+
+def select_source_srt_entry(
+    entries: dict[str, dict[str, Any]],
+    *,
+    expected_sha256: str,
+    requested_stage: str | None,
+) -> dict[str, Any] | None:
+    """从 manifest 登记项里挑出纪要来源 SRT。
+
+    首轮 attempt 会把同一份 SRT 同时写成 `vm-*.srt` 与 `input-transcript.srt`，哈希相同就是
+    同一来源，不算「不唯一」；纪要重生成（minutes_generating）的来源必须是快照
+    `input-transcript.srt`。没有匹配项时返回 None。
+    """
+    candidates = [
+        entry
+        for relative, entry in entries.items()
+        if Path(relative).parent == Path(".")
+        and Path(relative).suffix.casefold() == ".srt"
+        and entry["sha256"] == expected_sha256
+    ]
+    snapshot = next(
+        (entry for entry in candidates if entry["path"] == "input-transcript.srt"), None
+    )
+    if requested_stage == "minutes_generating":
+        return snapshot
+    return snapshot or (candidates[0] if candidates else None)
+
+
+def is_manifest_exempt_path(relative: Path | str) -> bool:
+    """whisper-ref/ 下的产物是异步子状态：manifest 落盘后 whisper.log 还在
+    追加。写侧（relay_control 的归档校验）本来就跳过它，导入器与证据加载器
+    的完整性比对必须同口径，否则长录音的归档目录会被永久判成无效 manifest。
+    """
+    parts = Path(relative).parts
+    return bool(parts) and parts[0] == "whisper-ref"
+
+
 def _number(value: Any) -> int | float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+    ):
         raise MinutesEvidenceError("纪要证据结构无效")
     return value
 
@@ -105,7 +178,7 @@ def load_minutes_manifest(
         or payload.get("schema_version") != 1
         or type(payload.get("minutes_protocol_version")) is not int
         or payload.get("minutes_protocol_version") != 3
-        or payload.get("meeting_id") != meeting_id
+        or not manifest_meeting_id_matches(payload, meeting_id)
         or payload.get("job_id") != source_job_id
         or type(payload.get("attempt")) is not int
         or payload.get("attempt") != source_attempt
@@ -143,6 +216,9 @@ def load_minutes_manifest(
             or relative_value in entries
         ):
             raise MinutesEvidenceError("纪要 manifest 产物路径无效")
+        if is_manifest_exempt_path(relative_path):
+            # whisper-ref/ 是异步子状态，落盘后仍在追加，不参与哈希校验。
+            continue
         artifact_path = root / relative_path
         if artifact_path.is_symlink() or not artifact_path.is_file():
             raise MinutesEvidenceError("纪要 manifest 产物不可用")
@@ -166,16 +242,8 @@ def load_minutes_manifest(
         raise MinutesEvidenceError("纪要 manifest 目录不可用") from error
     if any(candidate.is_symlink() for candidate in actual_entries):
         raise MinutesEvidenceError("纪要 manifest 目录包含符号链接")
-    actual_paths = {
-        candidate.relative_to(root).as_posix()
-        for candidate in actual_entries
-        if candidate.is_file()
-        and candidate != path
-        and not candidate.name.startswith("._")
-        and ".workbench-history" not in candidate.relative_to(root).parts
-    }
-    if actual_paths != set(entries):
-        raise MinutesEvidenceError("纪要 manifest 产物清单不完整")
+    # 登记的产物已经在上面逐条校验过存在性与哈希；目录里多出未登记的文件
+    # （用户笔记、事后纠错留下的旁路文件）不是证据链缺陷，不在这里拒收。
     return {"payload": payload, "entries": entries}
 
 
@@ -184,7 +252,9 @@ def load_relay_attempt(path: Path, *, job_id: str, attempt: int) -> dict[str, An
         raise MinutesEvidenceError("暂无可验证证据：Relay attempt 不可用")
     try:
         resolved = path.resolve(strict=True)
-        with sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True, timeout=2) as connection:
+        with closing(
+            sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True, timeout=2)
+        ) as connection:
             connection.row_factory = sqlite3.Row
             row = connection.execute(
                 """SELECT requested_stage, input_transcript_sha256,
@@ -231,14 +301,22 @@ def _parse_source_srt(path: Path, *, expected_sha256: str) -> list[dict[str, Any
         start = _seconds_from_srt_parts(tuple(timing.groups()[:4]))
         end = _seconds_from_srt_parts(tuple(timing.groups()[4:]))
         cue_text = "\n".join(lines[2:]).strip()
-        if start is None or end is None or start < previous_end or end <= start or not cue_text:
+        if (
+            start is None
+            or end is None
+            or start < previous_end
+            or end <= start
+            or not cue_text
+        ):
             raise MinutesEvidenceError("纪要来源逐字稿结构无效")
         cues.append(
             {
                 "cue_index": sequence,
                 "source_start_sec": start,
                 "source_end_sec": end,
-                "source_text_sha256": hashlib.sha256(cue_text.encode("utf-8")).hexdigest(),
+                "source_text_sha256": hashlib.sha256(
+                    cue_text.encode("utf-8")
+                ).hexdigest(),
             }
         )
         previous_end = end
@@ -308,7 +386,10 @@ def _load_plan(
             or end_sec <= start_sec
             or end_sec > total_duration
             or not window["cues"]
-            or (total_duration >= 480 and not 480 <= float(end_sec) - float(start_sec) <= 720)
+            or (
+                total_duration >= 480
+                and not 480 <= float(end_sec) - float(start_sec) <= 720
+            )
             or (
                 total_duration < 480
                 and (
@@ -330,15 +411,11 @@ def _load_plan(
             cue_end = _number(cue.get("source_end_sec"))
             digest = cue.get("source_text_sha256")
             binding = (
-                (
-                    window_id,
-                    digest,
-                    float(cue_start),
-                    float(cue_end),
-                )
-                if isinstance(digest, str)
-                else None
-            )
+                window_id,
+                digest,
+                float(cue_start),
+                float(cue_end),
+            ) if isinstance(digest, str) else None
             if (
                 not isinstance(cue_index, int)
                 or isinstance(cue_index, bool)
@@ -362,14 +439,14 @@ def _load_plan(
                     "source_text_sha256": digest,
                 }
             )
-    if abs(previous_window_end - float(total_duration)) > 0.001 or cue_indices != list(
-        range(1, plan["cue_count"] + 1)
+    if (
+        abs(previous_window_end - float(total_duration)) > 0.001
+        or cue_indices != list(range(1, plan["cue_count"] + 1))
     ):
         raise MinutesEvidenceError("纪要计划覆盖无效")
-    if (
-        _parse_source_srt(source_srt_path, expected_sha256=expected_source_srt_sha256)
-        != planned_cues
-    ):
+    if _parse_source_srt(
+        source_srt_path, expected_sha256=expected_source_srt_sha256
+    ) != planned_cues:
         raise MinutesEvidenceError("纪要计划与来源逐字稿不一致")
     return plan, cue_bindings
 
@@ -543,7 +620,9 @@ def load_minutes_evidence(
             if status == "included":
                 minutes_anchor = item.get("minutes_anchor")
                 anchor_seconds = (
-                    _anchor_seconds(minutes_anchor) if isinstance(minutes_anchor, str) else None
+                    _anchor_seconds(minutes_anchor)
+                    if isinstance(minutes_anchor, str)
+                    else None
                 )
                 if (
                     anchor_seconds is None

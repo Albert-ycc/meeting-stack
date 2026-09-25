@@ -1,4 +1,4 @@
-import { formatDate, formatTime } from "../format";
+import { formatDate, formatSpeakerLabel, formatTime } from "../format";
 import type { SearchItem } from "../types";
 import { CopyFolderPathButton } from "./CopyFolderPathButton";
 
@@ -42,7 +42,7 @@ export function SearchResults({ items, mode, onOpen, query }: SearchResultsProps
               )}
             </div>
             <p>
-              <span className="speaker-name">{item.speaker_name || item.speaker_label || "未标记说话人"}</span>
+              <span className="speaker-name">{item.speaker_name || formatSpeakerLabel(item.speaker_label) || "未标记说话人"}</span>
               {highlight(
                 item.text,
                 query,

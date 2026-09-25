@@ -1,0 +1,82 @@
+/* 抖动图表：网点必须是硬边，任何平滑都会把 Bayer 矩阵糊成灰块 */
+.dither-canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+.dither-host {
+  position: relative;
+  width: 100%;
+}
+
+/* 热力图按格子尺寸定宽，不跟随容器拉伸 */
+.dither-host--fit {
+  width: auto;
+}
+
+.dither-host--interactive {
+  cursor: crosshair;
+}
+
+/* —— hover 读数 —— */
+.dither-crosshair {
+  position: absolute;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.22);
+  pointer-events: none;
+}
+
+.dither-marker {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  background: var(--signal);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(240, 120, 59, 0.22);
+  pointer-events: none;
+}
+
+.dither-cell-ring {
+  position: absolute;
+  border: 1px solid var(--signal);
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.dither-tip {
+  display: flex;
+  position: absolute;
+  z-index: 3;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 11px;
+  transform: translateX(-50%);
+  background: #242424;
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 8px 22px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* 靠近右缘时把气泡拉回来，别被卡片裁掉 */
+.dither-tip--flip {
+  transform: translateX(-88%);
+}
+
+.dither-tip strong {
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.dither-tip em {
+  color: var(--muted-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-style: normal;
+}

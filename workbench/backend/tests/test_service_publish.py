@@ -291,9 +291,12 @@ def test_top_level_unreviewed_directory_publishes_in_place(tmp_path):
         """UPDATE meetings SET source_priority=51, status='completed_unreviewed'
            WHERE id='vm-20260102-101500'"""
     )
-    db.execute("UPDATE artifacts SET source_root='draft' WHERE meeting_id='vm-20260102-101500'")
     db.execute(
-        "UPDATE meetings SET source_job_id='job-top-level-publish' WHERE id='vm-20260102-101500'"
+        "UPDATE artifacts SET source_root='draft' WHERE meeting_id='vm-20260102-101500'"
+    )
+    db.execute(
+        "UPDATE meetings SET source_job_id='job-top-level-publish' "
+        "WHERE id='vm-20260102-101500'"
     )
     source_manifest = meeting_dir / "workbench-manifest.json"
     source_manifest.write_text(
@@ -315,7 +318,9 @@ def test_top_level_unreviewed_directory_publishes_in_place(tmp_path):
     )
     service = MeetingService(db, archive_root=archive)
     service.ensure_draft("vm-20260102-101500")
-    minutes_id = service.save_minutes("vm-20260102-101500", "# 一级目录正式纪要")
+    minutes_id = service.save_minutes(
+        "vm-20260102-101500", "# 一级目录正式纪要"
+    )
     db.execute(
         "UPDATE minutes_versions SET source_job_id='job-top-level-publish', "
         "source_attempt=1 WHERE id=?",
@@ -327,10 +332,9 @@ def test_top_level_unreviewed_directory_publishes_in_place(tmp_path):
     assert result.archive_dir == str(meeting_dir)
     assert meeting_dir.is_dir()
     assert hashlib.sha256(audio.read_bytes()).hexdigest() == original_hash
-    assert (
-        json.loads((meeting_dir / "workbench-manifest.json").read_text(encoding="utf-8"))["status"]
-        == "published"
-    )
+    assert json.loads(
+        (meeting_dir / "workbench-manifest.json").read_text(encoding="utf-8")
+    )["status"] == "published"
     relay_db = tmp_path / "relay.sqlite3"
     with sqlite3.connect(relay_db) as connection:
         connection.execute(
@@ -350,10 +354,13 @@ def test_top_level_unreviewed_directory_publishes_in_place(tmp_path):
     importer = ArchiveImporter(db, settings)
     importer.scan()
     edited_transcript = service.ensure_draft("vm-20260102-101500")
-    edited_minutes = service.save_minutes("vm-20260102-101500", "# 发布后继续人工编辑")
+    edited_minutes = service.save_minutes(
+        "vm-20260102-101500", "# 发布后继续人工编辑"
+    )
     with sqlite3.connect(relay_db) as connection:
         connection.execute(
-            "UPDATE jobs SET status='draft_modified' WHERE job_id='job-top-level-publish'"
+            "UPDATE jobs SET status='draft_modified' "
+            "WHERE job_id='job-top-level-publish'"
         )
 
     importer.scan()
@@ -372,7 +379,9 @@ def test_top_level_unreviewed_directory_publishes_in_place(tmp_path):
     }
 
 
-def test_top_level_unreviewed_publish_uses_staged_recovery_on_enotsup(tmp_path, monkeypatch):
+def test_top_level_unreviewed_publish_uses_staged_recovery_on_enotsup(
+    tmp_path, monkeypatch
+):
     archive = tmp_path / "archive"
     db = Database(tmp_path / "workbench.sqlite3")
     db.initialize()
@@ -382,7 +391,10 @@ def test_top_level_unreviewed_publish_uses_staged_recovery_on_enotsup(tmp_path, 
         "UPDATE meetings SET source_priority=51, status='completed_unreviewed' "
         "WHERE id='vm-20260102-101500'"
     )
-    db.execute("UPDATE artifacts SET source_root='draft' WHERE meeting_id='vm-20260102-101500'")
+    db.execute(
+        "UPDATE artifacts SET source_root='draft' "
+        "WHERE meeting_id='vm-20260102-101500'"
+    )
     service = MeetingService(db, archive_root=archive)
     service.ensure_draft("vm-20260102-101500")
     service.save_minutes("vm-20260102-101500", "# 一级目录 exFAT 纪要")
@@ -397,7 +409,9 @@ def test_top_level_unreviewed_publish_uses_staged_recovery_on_enotsup(tmp_path, 
     result = service.publish("vm-20260102-101500")
 
     assert result.archive_dir == str(meeting_dir)
-    assert "一级目录 exFAT 纪要" in (meeting_dir / "会议纪要.md").read_text(encoding="utf-8")
+    assert "一级目录 exFAT 纪要" in (meeting_dir / "会议纪要.md").read_text(
+        encoding="utf-8"
+    )
     assert hashlib.sha256(audio.read_bytes()).hexdigest() == original_hash
     assert not list(archive.glob(".workbench-publish-journal-*.json"))
     assert not list(archive.glob(".*.workbench-backup-*"))
@@ -1327,7 +1341,9 @@ def test_minutes_only_v3_publish_preserves_attempt_provenance_through_scan_and_a
                         "source_start_sec": 1,
                         "source_end_sec": 3,
                         "source_window_id": "W001",
-                        "source_text_sha256": plan["windows"][0]["cues"][0]["source_text_sha256"],
+                        "source_text_sha256": plan["windows"][0]["cues"][0][
+                            "source_text_sha256"
+                        ],
                         "minutes_anchor": "[00:00:01]",
                         "status": "included",
                     }
@@ -1463,7 +1479,9 @@ def test_managed_initial_or_retranscribe_v3_publish_preserves_exact_attempt_prov
     minutes_id = service.save_minutes(meeting_id, markdown)
     source_srt = service._normalized_transcript_srt(service._current_segments(meeting_id))
     source_sha256 = hashlib.sha256(source_srt.encode("utf-8")).hexdigest()
-    source_text_sha256 = hashlib.sha256("SPEAKER_00：第一段内容".encode("utf-8")).hexdigest()
+    source_text_sha256 = hashlib.sha256(
+        "SPEAKER_00：第一段内容".encode("utf-8")
+    ).hexdigest()
     attempt_dir = archive / ".workbench-drafts" / "job-retranscribe-v3" / "attempt-3"
     attempt_dir.mkdir(parents=True)
     source_path = attempt_dir / "input-transcript.srt"

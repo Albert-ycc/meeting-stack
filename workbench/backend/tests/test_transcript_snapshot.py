@@ -49,9 +49,7 @@ def test_transcript_snapshot_rejects_non_monotonic_timing(tmp_path):
     _directory, _audio, version = seed_editable_meeting(
         db, tmp_path / "archive", meeting_id="vm-timing"
     )
-    db.execute(
-        "UPDATE segments SET start_ms=500, end_ms=800 WHERE version_id=? AND ordinal=1", (version,)
-    )
+    db.execute("UPDATE segments SET start_ms=500, end_ms=800 WHERE version_id=? AND ordinal=1", (version,))
 
     with pytest.raises(PublishValidationError, match="时间顺序"):
         meetings.create_transcript_snapshot("vm-timing", tmp_path / "snapshots")

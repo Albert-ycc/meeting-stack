@@ -18,6 +18,11 @@ import fcntl
 from .config import Settings
 from .db import Database
 
+# 可从 segments 重算的派生数据，备份时清空。embeddings 占主库七成体积，
+# 而服务启动后的后台循环会调 SemanticIndex.rebuild() 自动补齐，
+# 留在备份里只是把同一批向量复制 retention 份。
+DERIVED_TABLES: tuple[str, ...] = ("embeddings",)
+
 
 @dataclass(frozen=True, slots=True)
 class BackupResult:
@@ -27,6 +32,7 @@ class BackupResult:
     local_sha256: str
     mirror_sha256: str | None = None
     mirror_error: str | None = None
+    derived_stripped: bool = False
 
 
 class BackupManager:
@@ -43,7 +49,7 @@ class BackupManager:
                 f"workbench-{now.strftime('%Y%m%dT%H%M%S.%fZ')}-{secrets.token_hex(4)}.sqlite3"
             )
             local_path = self.settings.backup_dir / filename
-            self._online_backup(local_path)
+            derived_stripped = self._online_backup(local_path)
             local_sha256 = self._sha256(local_path)
             self._verify_database(local_path)
             self._rotate(self.settings.backup_dir)
@@ -93,6 +99,8 @@ class BackupManager:
                 "mirror_sha256": mirror_sha256,
                 "mirror_ok": mirror_path is not None,
                 "mirror_error": mirror_error,
+                "derived_stripped": derived_stripped,
+                "derived_tables": list(DERIVED_TABLES) if derived_stripped else [],
             }
             self._atomic_text(
                 self.settings.backup_dir / "last-backup.json",
@@ -105,6 +113,7 @@ class BackupManager:
                 local_sha256=local_sha256,
                 mirror_sha256=mirror_sha256,
                 mirror_error=mirror_error,
+                derived_stripped=derived_stripped,
             )
 
     @contextmanager
@@ -117,7 +126,7 @@ class BackupManager:
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
-    def _online_backup(self, destination: Path) -> None:
+    def _online_backup(self, destination: Path) -> bool:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{destination.name}.", dir=destination.parent
         )
@@ -128,6 +137,7 @@ class BackupManager:
             destination_connection = sqlite3.connect(temporary)
             try:
                 source_connection.backup(destination_connection, pages=256)
+                stripped = self._strip_derived_tables(destination_connection)
                 result = destination_connection.execute("PRAGMA integrity_check").fetchone()[0]
                 if result != "ok":
                     raise sqlite3.DatabaseError(f"backup integrity check failed: {result}")
@@ -137,9 +147,39 @@ class BackupManager:
             os.replace(temporary, destination)
             self._fsync_file(destination)
             self._fsync_directory(destination.parent)
+            return stripped
         except Exception:
             temporary.unlink(missing_ok=True)
             raise
+
+    @staticmethod
+    def _strip_derived_tables(connection: sqlite3.Connection) -> bool:
+        """清空 DERIVED_TABLES 并回收页面，让备份只留业务数据本身。
+
+        清理失败不该拖垮备份 —— 宁可留一份完整副本，也不能因为省空间没备份成。
+        """
+        placeholders = ",".join("?" * len(DERIVED_TABLES))
+        try:
+            present = [
+                row[0]
+                for row in connection.execute(
+                    f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})",
+                    DERIVED_TABLES,
+                )
+            ]
+            if not present:
+                return False
+            for table in present:
+                connection.execute(f'DELETE FROM "{table}"')
+            connection.commit()
+        except sqlite3.DatabaseError:
+            with suppress(sqlite3.DatabaseError):
+                connection.rollback()
+            return False
+        # VACUUM 必须在事务外执行；它失败只是没回收到页面，备份内容已经是干净的。
+        with suppress(sqlite3.DatabaseError):
+            connection.execute("VACUUM")
+        return True
 
     @staticmethod
     def _atomic_copy(source: Path, destination: Path) -> None:
@@ -180,8 +220,11 @@ class BackupManager:
     @staticmethod
     def _verify_database(path: Path) -> None:
         uri = f"file:{path.resolve()}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=5) as connection:
+        connection = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
             result = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            connection.close()
         if result != "ok":
             raise sqlite3.DatabaseError(f"backup integrity check failed: {result}")
 

@@ -1,0 +1,298 @@
+/* 需求池：查询区 + 状态页签 + 表格 */
+
+.requirements-create {
+  flex: none;
+  padding: 10px 16px;
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+  background: var(--signal);
+  border: 1px solid var(--signal);
+  border-radius: 12px;
+}
+
+.requirements-create:hover:not(:disabled) {
+  background: var(--signal-dark);
+  border-color: var(--signal-dark);
+}
+
+/* 查询区：标签跟控件同一行左边，不是叠在控件上方——跟样板屏 27:3 对齐，
+ * 卡片高度也是跟着「一行」自然撑出来的 76px，不用另写死高度。 */
+.requirements-query {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 20px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.requirements-query label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.requirements-query select,
+.requirements-query input {
+  min-width: 140px;
+  min-height: 36px;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.requirements-query__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.requirements-query__submit,
+.requirements-query__reset {
+  min-height: 36px;
+  padding: 0 18px;
+  font-size: 12px;
+  border-radius: 999px;
+}
+
+.requirements-query__submit {
+  color: var(--bg);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+}
+
+.requirements-query__reset {
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+}
+
+/* 页签挂在表格卡片里面（跟样板屏一致，不是浮在卡片外面单独一块），
+ * 这一层只管跟表身分个界，页签自己的胶囊样式不变。 */
+.requirements-tabs-bar {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.requirements-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  width: max-content;
+}
+
+.requirements-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  color: var(--muted);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  border-radius: 12px;
+}
+
+.requirements-tabs button span {
+  min-width: 17px;
+  padding: 1px 5px;
+  color: var(--faint);
+  font-size: 9px;
+  text-align: center;
+  background: var(--bg);
+  border-radius: 12px;
+}
+
+.requirements-tabs button[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.48);
+}
+
+.requirements-tabs button[aria-selected="true"] span {
+  color: var(--ink);
+  background: var(--signal);
+}
+
+.requirements-state {
+  padding: 40px 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.requirements-state--error {
+  color: var(--danger);
+}
+
+/* 表头依旧露着（跟原型一致），只有表身换成空态插画 */
+.requirements-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 60px 0;
+}
+
+.requirements-empty__icon {
+  color: var(--faint);
+}
+
+.requirements-empty p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.requirements-empty button {
+  padding: 9px 16px;
+  color: var(--ink);
+  font-size: 12px;
+  background: var(--signal);
+  border: 1px solid var(--signal);
+  border-radius: 12px;
+}
+
+.requirements-table {
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.requirements-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.1fr) 60px 76px 92px 84px 84px 96px 92px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+  min-height: 52px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+.requirements-row:last-child {
+  border-bottom: 0;
+}
+
+.requirements-row--head {
+  min-height: 44px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--stage);
+}
+
+.requirements-row__title {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.requirements-row__project {
+  display: inline-flex;
+  overflow: hidden;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+}
+
+.requirements-row__project i {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.requirements-row__actions {
+  display: flex;
+  gap: 10px;
+}
+
+.requirements-row__actions button {
+  padding: 0;
+  color: var(--signal-dark);
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  border: 0;
+}
+
+.requirements-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 窄屏：9 列硬挤成一行会把「需求名称/所属项目」两个文本列直接挤没，
+ * 表头也叠成乱码。改成一行一条：名称/项目单独占一整行，
+ * 其余字段横排 wrap，靠 ::before 补回列名（不用改 JSX 结构）。 */
+@media (max-width: 767px) {
+  .requirements-query {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .requirements-query__actions {
+    margin-left: 0;
+  }
+
+  .requirements-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    padding: 14px 16px;
+  }
+
+  /* .requirements-row 和 .requirements-row--head 同时扣在表头这一个元素上，
+   * 两条规则特异度相同，写在后面才赢——单写 .requirements-row--head 会被上面
+   * 那条 display:flex 盖掉，表头就藏不住。 */
+  .requirements-row.requirements-row--head {
+    display: none;
+  }
+
+  .requirements-row__title,
+  .requirements-row__project,
+  .requirements-row__actions {
+    flex-basis: 100%;
+  }
+
+  .requirements-row > span:not(.requirements-row__title):not(.requirements-row__actions) {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+  }
+
+  .requirements-row > span:nth-child(3)::before { content: "优先级"; color: var(--faint); }
+  .requirements-row > span:nth-child(4)::before { content: "状态"; color: var(--faint); }
+  .requirements-row > span:nth-child(5)::before { content: "未完成任务"; color: var(--faint); }
+  .requirements-row > span:nth-child(6)::before { content: "关联会议"; color: var(--faint); }
+  .requirements-row > span:nth-child(7)::before { content: "最近会议"; color: var(--faint); }
+  .requirements-row > span:nth-child(8)::before { content: "材料文件夹"; color: var(--faint); }
+}

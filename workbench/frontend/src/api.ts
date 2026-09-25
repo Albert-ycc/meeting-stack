@@ -1,4 +1,5 @@
 import type {
+  AttentionPayload,
   BootstrapPayload,
   HealthPayload,
   Job,
@@ -6,16 +7,36 @@ import type {
   JobSubstateName,
   JobSubstateStatus,
   JobsPayload,
+  MaterialBrowsePayload,
+  MaterialRoot,
+  ProjectMeetingRow,
+  ProjectSubfoldersPayload,
+  RequirementDetail,
+  RequirementFilesPayload,
+  RequirementFilters,
+  RequirementPriority,
+  RequirementStatus,
+  RequirementsPayload,
   AsrGoldSample,
   AsrShadowRun,
+  GlossaryScope,
+  GlossarySuggestion,
+  GlossaryTerm,
   MeetingDetail,
   MeetingFilters,
+  MinutesBackend,
   MeetingSummary,
   MeetingsPayload,
   Project,
+  ProjectBoard,
   SearchItem,
   Segment,
   Tag,
+  Task,
+  TaskConfirmResult,
+  TaskDetail,
+  TaskFilters,
+  TasksPayload,
   TranscriptComparisonPayload,
   MinutesEvidence,
   TranscriptVersion,
@@ -27,6 +48,7 @@ interface RelayJobPayload {
   job_id: string;
   status: Job["state"];
   meeting_id?: string | null;
+  meeting_title?: string | null;
   stop_after_stage?: boolean;
   failure_stage?: string | null;
   last_error?: string | null;
@@ -42,6 +64,7 @@ function normalizeJob(job: RelayJobPayload): Job {
   return {
     id: job.job_id,
     meeting_id: job.meeting_id,
+    meeting_title: job.meeting_title,
     state: job.status,
     stop_after_stage: job.stop_after_stage ? 1 : 0,
     failure_stage: job.failure_stage,
@@ -171,6 +194,13 @@ export const api = {
     return payload;
   },
   health: () => read<HealthPayload>("/api/health"),
+  attention: () => read<AttentionPayload>("/api/attention"),
+  acknowledgeJob: (jobId: string) =>
+    write<{ job_id: string; acknowledged_at: string }>(
+      `/api/jobs/${encodeURIComponent(jobId)}/acknowledge`,
+      "POST",
+      {},
+    ),
   meetings: (filters: MeetingFilters = {}) =>
     read<MeetingsPayload>(
       `/api/meetings${queryString(filters)}`,
@@ -206,14 +236,164 @@ export const api = {
     ),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
-  createProject: (name: string, color: string) =>
-    write<Project>("/api/projects", "POST", { name, color }),
+  createProject: (name: string, color: string, materialRoots?: string[]) =>
+    write<Project>(
+      "/api/projects",
+      "POST",
+      materialRoots ? { name, color, material_roots: materialRoots } : { name, color },
+    ),
   createTag: (name: string, color: string) =>
     write<Tag>("/api/tags", "POST", { name, color }),
+  updateProject: (
+    projectId: string,
+    data: { name?: string; color?: string; material_roots?: string[] },
+  ) =>
+    write<Project>(`/api/projects/${encodeURIComponent(projectId)}`, "PATCH", data),
+  projectBoard: (projectId: string) =>
+    read<ProjectBoard>(`/api/projects/${encodeURIComponent(projectId)}/board`),
+  tasks: (filters: TaskFilters = {}) =>
+    read<TasksPayload>(`/api/tasks${queryString(filters)}`),
+  task: (taskId: string) => read<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}`),
+  createTask: (data: {
+    title: string;
+    detail?: string;
+    project_id?: string | null;
+    requirement_id?: string | null;
+    assignee?: string;
+  }) =>
+    write<TaskDetail>("/api/tasks", "POST", data),
+  updateTask: (
+    taskId: string,
+    data: {
+      title?: string;
+      detail?: string;
+      project_id?: string | null;
+      requirement_id?: string | null;
+      assignee?: string;
+    },
+  ) => write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}`, "PATCH", data),
+  confirmTask: (
+    taskId: string,
+    data: {
+      title?: string;
+      detail?: string;
+      project_id?: string | null;
+      requirement_id?: string | null;
+      assignee?: string;
+    } = {},
+  ) => write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/confirm`, "POST", data),
+  rejectTask: (taskId: string) =>
+    write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/reject`, "POST", {}),
+  setTaskStatus: (taskId: string, status: Task["status"]) =>
+    write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/status`, "POST", { status }),
+  batchConfirmTasks: (taskIds: string[]) =>
+    write<TaskConfirmResult>("/api/tasks/batch-confirm", "POST", { task_ids: taskIds }),
+  batchRejectTasks: (taskIds: string[]) =>
+    write<{ rejected: string[]; failed: Array<{ task_id: string; error: string }> }>(
+      "/api/tasks/batch-reject",
+      "POST",
+      { task_ids: taskIds },
+    ),
+  undoTaskReview: (taskIds: string[]) =>
+    write<{ reverted: string[]; failed: Array<{ task_id: string; error: string }> }>(
+      "/api/tasks/undo-review",
+      "POST",
+      { task_ids: taskIds },
+    ),
+  addTaskComment: (taskId: string, body: string) =>
+    write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/comments`, "POST", { body }),
+  addDeliverable: (
+    taskId: string,
+    data: { kind: string; url: string; title?: string; note?: string; mark_done?: boolean },
+  ) => write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/deliverables`, "POST", data),
+  reExtractTasks: (meetingId: string, supplement: string) =>
+    write<{ status: string }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/tasks/re-extract`,
+      "POST",
+      { supplement },
+    ),
   updateMeeting: (
     meetingId: string,
-    metadata: { project_id?: string; tag_ids?: string[]; title?: string },
+    metadata: { project_id?: string; tag_ids?: string[]; title?: string; requirement_ids?: string[] },
   ) => write<MeetingDetail>(`/api/meetings/${meetingId}`, "PATCH", metadata),
+  // ---------------------------------------------------------------- 项目 → 需求 → 任务三层
+  browseMaterials: (path?: string) =>
+    read<MaterialBrowsePayload>(`/api/materials/browse${queryString({ path })}`),
+  projectMaterialSubfolders: (projectId: string) =>
+    read<ProjectSubfoldersPayload>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-subfolders`,
+    ),
+  addProjectMaterialRoot: (projectId: string, path: string) =>
+    write<MaterialRoot>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots`,
+      "POST",
+      { path },
+    ),
+  removeProjectMaterialRoot: (projectId: string, rootId: number) =>
+    write<{ ok: boolean }>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}`,
+      "DELETE",
+      {},
+    ),
+  projectMeetings: (projectId: string) =>
+    read<ProjectMeetingRow[]>(`/api/projects/${encodeURIComponent(projectId)}/meetings`),
+  requirements: (filters: RequirementFilters = {}) =>
+    read<RequirementsPayload>(`/api/requirements${queryString(filters)}`),
+  requirement: (requirementId: string) =>
+    read<RequirementDetail>(`/api/requirements/${encodeURIComponent(requirementId)}`),
+  createRequirement: (data: {
+    project_id: string;
+    title: string;
+    priority: RequirementPriority;
+    folder_paths?: string[];
+  }) => write<RequirementDetail>("/api/requirements", "POST", data),
+  updateRequirement: (
+    requirementId: string,
+    data: {
+      title?: string;
+      project_id?: string;
+      priority?: RequirementPriority;
+      status?: RequirementStatus;
+      folder_paths?: string[];
+    },
+  ) =>
+    write<RequirementDetail>(
+      `/api/requirements/${encodeURIComponent(requirementId)}`,
+      "PATCH",
+      data,
+    ),
+  requirementFolderFiles: (
+    requirementId: string,
+    folderId: number,
+    params: { limit?: number; offset?: number } = {},
+  ) =>
+    read<RequirementFilesPayload>(
+      `/api/requirements/${encodeURIComponent(requirementId)}/folders/${folderId}/files${queryString(params)}`,
+    ),
+  removeRequirementFolder: (requirementId: string, folderId: number) =>
+    write<RequirementDetail>(
+      `/api/requirements/${encodeURIComponent(requirementId)}/folders/${folderId}`,
+      "DELETE",
+      {},
+    ),
+  setRequirementMeetings: (requirementId: string, meetingIds: string[]) =>
+    write<RequirementDetail>(
+      `/api/requirements/${encodeURIComponent(requirementId)}/meetings`,
+      "PUT",
+      { meeting_ids: meetingIds },
+    ),
+  removeRequirementMeeting: (requirementId: string, meetingId: string) =>
+    write<RequirementDetail>(
+      `/api/requirements/${encodeURIComponent(requirementId)}/meetings/${encodeURIComponent(meetingId)}`,
+      "DELETE",
+      {},
+    ),
+  attachRequirementTasks: (requirementId: string, taskIds: string[]) =>
+    write<RequirementDetail>(
+      `/api/requirements/${encodeURIComponent(requirementId)}/tasks`,
+      "POST",
+      { task_ids: taskIds },
+    ),
   jobs: async () => {
     const payload = await read<{ items: RelayJobPayload[]; counts?: Record<string, number> }>("/api/jobs");
     return { ...payload, items: payload.items.map(normalizeJob) } satisfies JobsPayload;
@@ -255,8 +435,12 @@ export const api = {
       base_version_id: baseVersionId,
       markdown,
     }),
-  regenerateMinutes: (meetingId: string) =>
-    write<{ status: string }>(`/api/meetings/${meetingId}/minutes/regenerate`, "POST", {}),
+  regenerateMinutes: (meetingId: string, backend?: MinutesBackend) =>
+    write<{ status: string }>(
+      `/api/meetings/${meetingId}/minutes/regenerate`,
+      "POST",
+      backend ? { backend } : {},
+    ),
   retranscribe: (meetingId: string, hotwords: string[] = []) =>
     write<{ status: string; job_id?: string }>(
       `/api/meetings/${meetingId}/retranscribe`,
@@ -300,6 +484,56 @@ export const api = {
       "POST",
       {},
     ),
+  glossaryTerms: (params: { scope?: string; project_id?: string } = {}) =>
+    read<GlossaryTerm[]>(`/api/glossary/terms${queryString(params)}`),
+  glossaryScopes: () => read<GlossaryScope[]>("/api/glossary/scopes"),
+  createGlossaryTerm: (data: {
+    term: string;
+    aliases?: string[];
+    scope?: string;
+    project_id?: string | null;
+    category?: string;
+    source?: string;
+    confirmed?: boolean;
+  }) => write<GlossaryTerm>("/api/glossary/terms", "POST", data),
+  updateGlossaryTerm: (
+    termId: string,
+    data: {
+      term?: string;
+      aliases?: string[];
+      scope?: string;
+      project_id?: string | null;
+      category?: string;
+      confirmed?: boolean;
+    },
+  ) =>
+    write<GlossaryTerm>(
+      `/api/glossary/terms/${encodeURIComponent(termId)}`,
+      "PUT",
+      data,
+    ),
+  deleteGlossaryTerm: (termId: string) =>
+    write<{ ok: boolean }>(
+      `/api/glossary/terms/${encodeURIComponent(termId)}`,
+      "DELETE",
+      {},
+    ),
+  glossarySuggestions: (status?: "pending" | "confirmed" | "rejected") =>
+    read<GlossarySuggestion[]>(
+      `/api/glossary/suggestions${queryString({ status })}`,
+    ),
+  confirmGlossarySuggestion: (suggestionId: string) =>
+    write<{ ok: boolean }>(
+      `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/confirm`,
+      "POST",
+      {},
+    ),
+  rejectGlossarySuggestion: (suggestionId: string) =>
+    write<{ ok: boolean }>(
+      `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/reject`,
+      "POST",
+      {},
+    ),
   startUpload: (filename: string, sizeBytes: number, hotwords: string[] = []) =>
     write<UploadSession>("/api/uploads/start", "POST", {
       filename,
@@ -318,6 +552,7 @@ export const api = {
       "POST",
       {},
     ),
+
 };
 
 export type ApiClient = typeof api;

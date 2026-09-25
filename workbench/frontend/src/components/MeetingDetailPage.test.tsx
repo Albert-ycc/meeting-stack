@@ -554,7 +554,194 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(updateMeeting).toHaveBeenCalledWith("vm-1", {
       project_id: "project-b",
       tag_ids: ["tag-a", "tag-b"],
+      requirement_ids: [],
     });
+  });
+
+  it("disables the requirement picker with a placeholder until a project is chosen", async () => {
+    const apiClient = { transcriptVersionSegments: vi.fn() } as unknown as ApiClient;
+    render(
+      <MeetingDetailPage
+        apiClient={apiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={meeting(false)}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[{ id: "project-a", name: "项目甲", color: "#376f68" }]}
+        tags={[]}
+      />,
+    );
+
+    expect(screen.getByText("先选择主项目")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "＋ 关联需求" })).not.toBeInTheDocument();
+
+    await userEvent.selectOptions(screen.getByLabelText("主项目"), "project-a");
+    expect(screen.queryByText("先选择主项目")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "＋ 关联需求" })).toBeInTheDocument();
+  });
+
+  it("links requirements through the picker and saves them together with the classification", async () => {
+    const requirements = vi.fn().mockResolvedValue({
+      items: [
+        {
+          id: "req-1",
+          project_id: "project-a",
+          project_name: "项目甲",
+          project_color: "#376f68",
+          title: "北辰仓快递配送",
+          priority: "P0",
+          status: "active",
+          created_at: "2026-09-07T00:00:00Z",
+          updated_at: "2026-09-07T00:00:00Z",
+          open_task_count: 3,
+          meeting_count: 2,
+          latest_meeting_date: "2026-09-09T00:00:00Z",
+          folder_count: 2,
+        },
+      ],
+      total: 1,
+      limit: 200,
+      offset: 0,
+      counts: { active: 1, done: 0, shelved: 0, all: 1 },
+    });
+    const updateMeeting = vi.fn().mockResolvedValue(meeting());
+    const apiClient = {
+      transcriptVersionSegments: vi.fn(),
+      requirements,
+      updateMeeting,
+    } as unknown as ApiClient;
+    render(
+      <MeetingDetailPage
+        apiClient={apiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{ ...meeting(false), project_id: "project-a" }}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[{ id: "project-a", name: "项目甲", color: "#376f68" }]}
+        tags={[]}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "＋ 关联需求" }));
+    expect(requirements).toHaveBeenCalledWith({ project_id: "project-a", status: "active", limit: 200 });
+    await userEvent.click(await screen.findByRole("checkbox", { name: /北辰仓快递配送/ }));
+    await userEvent.click(screen.getByRole("button", { name: "确定" }));
+
+    expect(screen.getByRole("button", { name: "保存归档归属" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
+
+    expect(updateMeeting).toHaveBeenCalledWith("vm-1", {
+      project_id: "project-a",
+      tag_ids: [],
+      requirement_ids: ["req-1"],
+    });
+  });
+
+  it("D24：保存归档归属时后端 404（关联的需求已不存在），就地显示原因、选择保留、按钮仍可再点", async () => {
+    const requirements = vi.fn().mockResolvedValue({
+      items: [
+        {
+          id: "req-2", project_id: "project-a", project_name: "项目甲", project_color: "#376f68",
+          title: "库存盘点", priority: "P3", status: "active",
+          created_at: "2026-09-07T00:00:00Z", updated_at: "2026-09-07T00:00:00Z",
+          open_task_count: 1, meeting_count: 1, latest_meeting_date: "2026-09-08T00:00:00Z", folder_count: 1,
+        },
+      ],
+      total: 1, limit: 200, offset: 0, counts: { active: 1, done: 0, shelved: 0, all: 1 },
+    });
+    const updateMeeting = vi.fn().mockRejectedValue(new ApiError("需求不存在", 404));
+    const apiClient = { transcriptVersionSegments: vi.fn(), requirements, updateMeeting } as unknown as ApiClient;
+    render(
+      <MeetingDetailPage
+        apiClient={apiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{
+          ...meeting(false),
+          project_id: "project-a",
+          requirements: [{ id: "req-1", title: "北辰仓快递配送", priority: "P0", status: "active", project_id: "project-a" }],
+        }}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[{ id: "project-a", name: "项目甲", color: "#376f68" }]}
+        tags={[]}
+      />,
+    );
+
+    // 加勾一个需求，让归档归属真正处于「未保存」态，才能验证保存失败后选择原样留着。
+    await userEvent.click(screen.getByRole("button", { name: "编辑" }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: /库存盘点/ }));
+    await userEvent.click(screen.getByRole("button", { name: "确定" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
+
+    expect(await screen.findByText("需求不存在")).toBeInTheDocument();
+    expect(screen.getByText("北辰仓快递配送")).toBeInTheDocument();
+    expect(screen.getByText("库存盘点")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存归档归属" })).toBeEnabled();
+  });
+
+  it("opens the requirement detail page when a linked requirement chip is clicked", () => {
+    const onOpenRequirement = vi.fn();
+    const apiClient = { transcriptVersionSegments: vi.fn() } as unknown as ApiClient;
+    render(
+      <MeetingDetailPage
+        apiClient={apiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{
+          ...meeting(false),
+          project_id: "project-a",
+          requirements: [{ id: "req-1", title: "北辰仓快递配送", priority: "P0", status: "active", project_id: "project-a" }],
+        }}
+        onBack={vi.fn()}
+        onOpenRequirement={onOpenRequirement}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[{ id: "project-a", name: "项目甲", color: "#376f68" }]}
+        tags={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /北辰仓快递配送/ }));
+    expect(onOpenRequirement).toHaveBeenCalledWith("req-1");
+  });
+
+  it("marks an AI-matched project with an origin badge and hides it once the assignment is manual", () => {
+    const apiClient = { transcriptVersionSegments: vi.fn() } as unknown as ApiClient;
+    const projects = [{ id: "project-a", name: "原项目", color: "#376f68" }];
+    const { rerender } = render(
+      <MeetingDetailPage
+        apiClient={apiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{ ...meeting(false), project_id: "project-a", project_origin: "ai" }}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={projects}
+        tags={[]}
+      />,
+    );
+
+    expect(screen.getByText("AI 归属")).toBeInTheDocument();
+    expect(screen.getByText("由会议纪要自动匹配；保存一次后不再自动改动")).toBeInTheDocument();
+
+    rerender(
+      <MeetingDetailPage
+        apiClient={apiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{ ...meeting(false), project_id: "project-a", project_origin: "manual" }}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={projects}
+        tags={[]}
+      />,
+    );
+
+    expect(screen.queryByText("AI 归属")).not.toBeInTheDocument();
+    expect(screen.queryByText("由会议纪要自动匹配；保存一次后不再自动改动")).not.toBeInTheDocument();
   });
 
   it("offers retranscription and all three explicit conflict resolutions on desktop", async () => {
@@ -1030,6 +1217,37 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(updateMeeting).toHaveBeenLastCalledWith("vm-1", {
       project_id: "project-b",
       tag_ids: [],
+      requirement_ids: [],
     });
+  });
+
+  it("regenerates minutes on the default backend, or pins Claude on demand", async () => {
+    const regenerateMinutes = vi.fn().mockResolvedValue({ status: "queued" });
+    const apiClient = {
+      transcriptVersionSegments: vi.fn(),
+      regenerateMinutes,
+    } as unknown as ApiClient;
+    render(
+      <MeetingDetailPage
+        apiClient={apiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={meeting(false)}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[]}
+        tags={[]}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: /会议纪要/ }));
+
+    // 默认入口不带后端，跟 relay 的全局默认走
+    await userEvent.click(screen.getByRole("button", { name: "重新生成纪要" }));
+    expect(regenerateMinutes).toHaveBeenLastCalledWith("vm-1");
+
+    // Claude 入口必须显式钉住后端，否则又落回 DeepSeek
+    await userEvent.click(screen.getByRole("button", { name: /用 Claude 重写/ }));
+    expect(regenerateMinutes).toHaveBeenLastCalledWith("vm-1", "claude");
   });
 });

@@ -84,7 +84,9 @@ def test_transcript_comparison_aligns_candidate_and_marks_risks(tmp_path):
 def test_gold_sample_is_idempotently_saved_from_a_meeting_segment(tmp_path):
     client = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    seed_editable_meeting(db, client.app.state.settings.archive_root, meeting_id="vm-gold")
+    seed_editable_meeting(
+        db, client.app.state.settings.archive_root, meeting_id="vm-gold"
+    )
     headers = write_headers(client)
 
     first = client.post(
@@ -124,7 +126,9 @@ def test_gold_sample_rejects_a_segment_from_another_meeting(tmp_path):
     client = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
     seed_editable_meeting(db, client.app.state.settings.archive_root, meeting_id="vm-one")
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-two', '第二场会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-two', '第二场会', 'published')"
+    )
     headers = write_headers(client)
 
     response = client.post(

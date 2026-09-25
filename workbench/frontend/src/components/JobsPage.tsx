@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 
 import type { Job, JobSubstateName, JobSubstateStatus, LoadState } from "../types";
-import { formatDate, statusLabel, statusTone } from "../format";
+import { formatDate, statusLabel, statusTone, failureStageLabel } from "../format";
 import { parseHotwordsInput, validateHotwordsInput } from "../hotwords";
 import { AsyncState } from "./AsyncState";
 
@@ -190,12 +190,17 @@ export function JobsPage({
                 <div className="job-card__head">
                   <div>
                     <span className="archive-code">{job.id}</span>
-                    <h2>{job.meeting_id || "等待关联会议"}</h2>
+                    <h2>{job.meeting_title || job.meeting_id || "等待关联会议"}</h2>
                     <small>{formatDate(job.created_at)}</small>
                   </div>
-                  <span className={`status-badge status-badge--${statusTone(job.state)}`}>
-                    {statusLabel(statusTone(job.state))}
-                  </span>
+                  {job.failure_stage === "pending_archive" ? (
+                    // relay 把这类任务记成已完成，但纪要没放进会议文件夹，不能挂绿色「已完成」
+                    <span className="status-badge status-badge--failed">归档未完成</span>
+                  ) : (
+                    <span className={`status-badge status-badge--${statusTone(job.state)}`}>
+                      {statusLabel(statusTone(job.state))}
+                    </span>
+                  )}
                 </div>
                 <ol className="stage-track" aria-label="处理阶段">
                   {pipeline.map((stage, index) => (
@@ -211,7 +216,7 @@ export function JobsPage({
                 </ol>
                 {job.failure_reason && (
                   <div className="failure-reason">
-                    <strong>{job.failure_stage ? `${job.failure_stage}：` : ""}</strong>
+                    <strong>{job.failure_stage ? `${failureStageLabel(job.failure_stage)}这一步：` : ""}</strong>
                     {job.failure_reason}
                   </div>
                 )}

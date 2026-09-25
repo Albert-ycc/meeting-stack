@@ -364,4 +364,33 @@ describe("API write protection", () => {
     expect(payload.items[0].state).toBe("completed_unreviewed");
     expect(payload.items[0].substates?.qwen?.status).toBe("queued");
   });
+
+  it("按 project_id 查询词典术语、拉取分组 chips、按归属三态写 project_id/scope", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("glossary-token");
+
+    await api.glossaryTerms({ project_id: "project-1" });
+    await api.glossaryScopes();
+    await api.createGlossaryTerm({ term: "生长激素", project_id: "project-1" });
+    await api.updateGlossaryTerm("term-1", { project_id: null, scope: "儿科" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/glossary/terms?project_id=project-1", expect.any(Object));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/glossary/scopes", expect.any(Object));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/glossary/terms",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ term: "生长激素", project_id: "project-1" }) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/glossary/terms/term-1",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ project_id: null, scope: "儿科" }) }),
+    );
+  });
 });

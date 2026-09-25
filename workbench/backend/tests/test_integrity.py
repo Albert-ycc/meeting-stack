@@ -90,6 +90,71 @@ def test_audio_integrity_missing_uses_archive_artifact_and_deduplicates_event(tm
     )
 
 
+def test_flowing_meeting_falls_back_to_surviving_copy_when_index_path_vanished(tmp_path):
+    """流转态会议：索引里残留的已删路径不该盖过磁盘上还在的完好副本。
+
+    中转目录被清理后，artifacts 表里会留下指向空气的 archive 记录。旧实现只按
+    source_root 排优先级、不看文件在不在，于是整批录音被误报「原音频缺失」。
+    """
+    verifier, db, settings, meeting_dir, audio = make_verifier(tmp_path)
+    db.execute("UPDATE meetings SET source_priority=51 WHERE id='vm-20260102-101500'")
+    expected = db.query_one("SELECT original_audio_sha256 FROM meetings")["original_audio_sha256"]
+    survivor = settings.staging_root / "survivor.m4a"
+    survivor.write_bytes(audio.read_bytes())
+    stat = survivor.stat()
+    db.execute(
+        """INSERT INTO artifacts
+           (meeting_id, kind, role, source_root, path, sha256, size_bytes, mtime_ns, created_at)
+           VALUES ('vm-20260102-101500', 'audio', 'source', 'draft', ?, ?, ?, ?, ?)""",
+        (str(survivor), expected, stat.st_size, stat.st_mtime_ns, utc_now()),
+    )
+    # 优先级最高的 archive 记录指向已被删除的中转副本。
+    ghost = meeting_dir / "ghost-copy.m4a"
+    db.execute(
+        """INSERT INTO artifacts
+           (meeting_id, kind, role, source_root, path, sha256, size_bytes, mtime_ns, created_at)
+           VALUES ('vm-20260102-101500', 'audio', 'source', 'archive', ?, ?, ?, ?, ?)""",
+        (str(ghost), expected, 123, 0, utc_now()),
+    )
+    audio.unlink()
+
+    result = verifier.verify()
+
+    assert result.missing == 0
+    assert result.issues == 0
+    assert not db.conflicts.has("vm-20260102-101500", "audio_integrity")
+
+
+def test_flowing_meeting_reports_missing_when_every_copy_is_gone(tmp_path):
+    verifier, db, _settings, meeting_dir, audio = make_verifier(tmp_path)
+    db.execute("UPDATE meetings SET source_priority=51 WHERE id='vm-20260102-101500'")
+    expected = db.query_one("SELECT original_audio_sha256 FROM meetings")["original_audio_sha256"]
+    db.execute(
+        """INSERT INTO artifacts
+           (meeting_id, kind, role, source_root, path, sha256, size_bytes, mtime_ns, created_at)
+           VALUES ('vm-20260102-101500', 'audio', 'source', 'archive', ?, ?, ?, ?, ?)""",
+        (str(meeting_dir / "ghost-copy.m4a"), expected, 123, 0, utc_now()),
+    )
+    audio.unlink()
+
+    result = verifier.verify()
+
+    assert result.missing == 1
+    assert db.conflicts.has("vm-20260102-101500", "audio_integrity")
+
+
+def test_flowing_meeting_still_reports_tampering_when_copy_survives_but_differs(tmp_path):
+    verifier, db, _settings, _meeting_dir, audio = make_verifier(tmp_path)
+    db.execute("UPDATE meetings SET source_priority=51 WHERE id='vm-20260102-101500'")
+    audio.write_bytes(b"tampered-audio-payload")
+
+    result = verifier.verify()
+
+    assert result.mismatched == 1
+    assert result.missing == 0
+    assert db.conflicts.has("vm-20260102-101500", "audio_integrity")
+
+
 def test_audio_integrity_detects_same_size_same_mtime_replacement(tmp_path):
     verifier, db, _settings, _meeting_dir, audio = make_verifier(tmp_path)
     expected = db.query_one("SELECT original_audio_sha256 FROM meetings")["original_audio_sha256"]

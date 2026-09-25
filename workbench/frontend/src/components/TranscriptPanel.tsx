@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { formatTime } from "../format";
+import { formatSpeakerLabel, formatTime } from "../format";
 import type { Segment } from "../types";
 
 interface TranscriptPanelProps {
@@ -86,7 +86,7 @@ export function TranscriptPanel({
               </button>
               <div className="segment-body">
                 <span className="segment-speaker">
-                  {segment.speaker_name || segment.speaker_label || "说话人"}
+                  {segment.speaker_name || formatSpeakerLabel(segment.speaker_label) || "说话人"}
                 </span>
                 {editable ? (
                   <textarea
