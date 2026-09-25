@@ -1,8 +1,8 @@
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import App, { MOBILE_READ_ONLY_QUERY, useMobileBreakpoint } from "./App";
+import App, { MEETING_PAGE_SIZE, MOBILE_READ_ONLY_QUERY, useMobileBreakpoint } from "./App";
 import { ApiError, type ApiClient } from "./api";
 import type { MeetingDetail, MeetingSummary } from "./types";
 
@@ -54,7 +54,9 @@ function client(overrides: Partial<ApiClient> = {}) {
     bootstrap: vi.fn().mockResolvedValue({
       csrf_token: "token",
       mobile_read_only: true,
+      mobile_task_write: true,
       semantic_enabled: true,
+      pending_confirm_count: 0,
     }),
     health: vi.fn().mockResolvedValue({
       status: "ok",
@@ -67,6 +69,7 @@ function client(overrides: Partial<ApiClient> = {}) {
       { id: "project-b", name: "项目乙", color: "#f0783b", meeting_count: 3 },
     ]),
     tags: vi.fn().mockResolvedValue([]),
+    tasks: vi.fn().mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 }),
     jobs: vi.fn().mockResolvedValue({ items: [] }),
     meeting: vi.fn().mockResolvedValue(detail),
     search: vi.fn().mockResolvedValue({ mode: "exact", items: [] }),
@@ -125,8 +128,8 @@ describe("App refresh and navigation safety", () => {
     });
     render(<App apiClient={client({ meetings } as Partial<ApiClient>)} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
     await screen.findByText("会议录音档案");
-    fireEvent.click(screen.getByRole("button", { name: "资料库" }));
     await screen.findByText("第1页会议");
     await userEvent.click(screen.getByRole("button", { name: "下一页" }));
     await screen.findByText("第2页会议");
@@ -158,8 +161,8 @@ describe("App refresh and navigation safety", () => {
     });
     render(<App apiClient={client({ meetings } as Partial<ApiClient>)} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
     await screen.findByText("会议录音档案");
-    fireEvent.click(screen.getByRole("button", { name: "资料库" }));
     expect(await screen.findByText("第一页会议")).toBeInTheDocument();
     expect(meetings).toHaveBeenCalledWith({ limit: 50, offset: 0 });
 
@@ -187,8 +190,8 @@ describe("App refresh and navigation safety", () => {
       return Promise.resolve({ items: [firstMeeting], limit: 50, offset: 0, total: 1 });
     });
     render(<App apiClient={client({ meetings } as Partial<ApiClient>)} />);
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
     await screen.findByText("会议录音档案");
-    fireEvent.click(screen.getByRole("button", { name: "资料库" }));
 
     fireEvent.change(screen.getByLabelText("筛选项目"), { target: { value: "project-a" } });
     fireEvent.change(screen.getByLabelText("筛选项目"), { target: { value: "project-b" } });
@@ -236,7 +239,7 @@ describe("App refresh and navigation safety", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "转写录音" }));
     expect(screen.getByText("vm-job")).toBeInTheDocument();
 
     await act(async () => {
@@ -277,22 +280,28 @@ describe("App refresh and navigation safety", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    fireEvent.click(screen.getByRole("button", { name: "资料库" }));
-    expect(meetings).toHaveBeenCalledTimes(1);
+    // 工作台的抖动图表也走 meetings 接口（自己取一次大范围做按天聚合），
+    // 这里只关心资料库列表的刷新节奏，按分页尺寸把两种请求分开数。
+    const libraryCalls = () =>
+      meetings.mock.calls.filter(
+        ([filters]) => (filters as { limit?: number } | undefined)?.limit === MEETING_PAGE_SIZE,
+      ).length;
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
+    expect(libraryCalls()).toBe(1);
 
     await act(async () => {
       vi.advanceTimersByTime(15_000);
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(meetings).toHaveBeenCalledTimes(2);
+    expect(libraryCalls()).toBe(2);
 
     Object.defineProperty(document, "hidden", { configurable: true, value: true });
     await act(async () => {
       vi.advanceTimersByTime(15_000);
       await Promise.resolve();
     });
-    expect(meetings).toHaveBeenCalledTimes(2);
+    expect(libraryCalls()).toBe(2);
 
     Object.defineProperty(document, "hidden", { configurable: true, value: false });
     await act(async () => {
@@ -300,7 +309,52 @@ describe("App refresh and navigation safety", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(meetings).toHaveBeenCalledTimes(3);
+    expect(libraryCalls()).toBe(3);
+  });
+
+  it("marks the health indicator unreachable after two consecutive failed polls and clears it on the next success", async () => {
+    vi.useFakeTimers();
+    const okPayload = {
+      status: "ok" as const,
+      services: {},
+      counts: { meetings: 1, unreviewed: 0, failed_jobs: 0, scan_errors: 0 },
+    };
+    const health = vi
+      .fn()
+      .mockResolvedValueOnce(okPayload)
+      .mockRejectedValueOnce(new Error("network"))
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(okPayload);
+    render(<App apiClient={client({ health } as Partial<ApiClient>)} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("服务正常")).toBeInTheDocument();
+
+    // 第一次轮询失败：网络层不可达还没确认，保留上一次的健康态。
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("服务正常")).toBeInTheDocument();
+
+    // 连续两次失败才判定不可达，避免单次抖动就报警。
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("服务异常")).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("服务正常")).toBeInTheDocument();
   });
 
   it("blocks main navigation and global search while detail edits are dirty", async () => {
@@ -308,14 +362,14 @@ describe("App refresh and navigation safety", () => {
     const search = vi.fn().mockResolvedValue({ mode: "exact", items: [] });
     render(<App apiClient={client({ search } as Partial<ApiClient>)} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
     await screen.findByText("会议录音档案");
-    fireEvent.click(screen.getByRole("button", { name: "资料库" }));
     await userEvent.click(await screen.findByRole("button", { name: /第一页会议/ }));
     expect(await screen.findByRole("heading", { name: "可编辑会议" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "编辑逐字稿" }));
     await userEvent.type(screen.getByLabelText("00:00 逐字稿"), "本地修改");
 
-    await userEvent.click(screen.getByRole("button", { name: "项目" }));
+    await userEvent.click(screen.getByRole("button", { name: "项目管理" }));
     expect(confirm).toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "可编辑会议" })).toBeInTheDocument();
 
@@ -331,16 +385,16 @@ describe("App refresh and navigation safety", () => {
       () => new Promise<MeetingDetail>((resolve) => { resolveDetail = resolve; }),
     );
     render(<App apiClient={client({ meeting } as Partial<ApiClient>)} />);
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
     await screen.findByText("会议录音档案");
-    fireEvent.click(screen.getByRole("button", { name: "资料库" }));
     await userEvent.click(await screen.findByRole("button", { name: /第一页会议/ }));
     expect(screen.getByText("正在读取本地档案…")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "项目" }));
+    fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
 
     await act(async () => {
       resolveDetail(detail);
     });
-    expect(screen.getByRole("heading", { name: "项目与档案标签" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "项目" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "可编辑会议" })).not.toBeInTheDocument();
   });
 
@@ -350,16 +404,17 @@ describe("App refresh and navigation safety", () => {
       () => new Promise<{ mode: "exact"; items: [] }>((resolve) => { resolveSearch = resolve; }),
     );
     render(<App apiClient={client({ search } as Partial<ApiClient>)} />);
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
     await screen.findByText("会议录音档案");
     await userEvent.type(screen.getByLabelText("全局检索"), "发布");
     fireEvent.click(screen.getByRole("button", { name: "检索" }));
     expect(screen.getByText("正在读取本地档案…")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "项目" }));
+    fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
 
     await act(async () => {
       resolveSearch({ mode: "exact", items: [] });
     });
-    expect(screen.getByRole("heading", { name: "项目与档案标签" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "项目" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "“发布”" })).not.toBeInTheDocument();
   });
 
@@ -369,15 +424,15 @@ describe("App refresh and navigation safety", () => {
       () => new Promise<{ version_id: string }>((resolve) => { resolveSave = resolve; }),
     );
     render(<App apiClient={client({ saveTranscript } as Partial<ApiClient>)} />);
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
     await screen.findByText("会议录音档案");
-    fireEvent.click(screen.getByRole("button", { name: "资料库" }));
     await userEvent.click(await screen.findByRole("button", { name: /第一页会议/ }));
     await screen.findByRole("heading", { name: "可编辑会议" });
     await userEvent.click(screen.getByRole("button", { name: "编辑逐字稿" }));
     await userEvent.type(screen.getByLabelText("00:00 逐字稿"), "保存中");
     await userEvent.click(screen.getByRole("button", { name: "保存草稿" }));
 
-    expect(screen.getByRole("button", { name: "项目" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "项目管理" })).toBeDisabled();
     expect(screen.getByLabelText("全局检索")).toBeDisabled();
     expect(screen.getByRole("button", { name: "检索" })).toBeDisabled();
 
@@ -395,8 +450,8 @@ describe("App refresh and navigation safety", () => {
       ]);
     const updateMeeting = vi.fn().mockResolvedValue(detail);
     render(<App apiClient={client({ projects, updateMeeting } as Partial<ApiClient>)} />);
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
     await screen.findByText("会议录音档案");
-    fireEvent.click(screen.getByRole("button", { name: "资料库" }));
     await userEvent.click(await screen.findByRole("button", { name: /第一页会议/ }));
     await screen.findByRole("heading", { name: "可编辑会议" });
 
@@ -404,7 +459,9 @@ describe("App refresh and navigation safety", () => {
     await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
     await waitFor(() => expect(projects).toHaveBeenCalledTimes(2));
 
-    fireEvent.click(screen.getByRole("button", { name: "项目" }));
-    expect(await screen.findByText("2 场会议")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
+    // 项目管理页 260915 起改成表格（D18），会议数是「会议」列里的数字，不再是「N 场会议」文案。
+    const row = await screen.findByRole("row", { name: /项目甲/ });
+    expect(within(row).getByText("2")).toBeInTheDocument();
   });
 });

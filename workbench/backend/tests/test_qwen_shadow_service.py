@@ -74,19 +74,14 @@ def test_qwen_shadow_runs_offline_imports_srt_as_noncurrent_reference(tmp_path, 
     assert service.run_once() is True
     saved = db.query_one("SELECT * FROM asr_shadow_runs WHERE id=?", (run["id"],))
     assert saved["state"] == "ready"
-    version = db.query_one(
-        "SELECT * FROM transcript_versions WHERE id=?", (saved["transcript_version_id"],)
-    )
+    version = db.query_one("SELECT * FROM transcript_versions WHERE id=?", (saved["transcript_version_id"],))
     assert version["kind"] == "qwen_reference"
-    assert (
-        db.query_one("SELECT current_transcript_version_id FROM meetings WHERE id='vm-qwen'")[
-            "current_transcript_version_id"
-        ]
-        == current_version
+    assert db.query_one("SELECT current_transcript_version_id FROM meetings WHERE id='vm-qwen'")[
+        "current_transcript_version_id"
+    ] == current_version
+    assert db.query_one("SELECT text FROM segments WHERE version_id=?", (version["id"],))["text"] == (
+        "Qwen影子稿"
     )
-    assert db.query_one("SELECT text FROM segments WHERE version_id=?", (version["id"],))[
-        "text"
-    ] == ("Qwen影子稿")
     command, kwargs = calls[0]
     assert command[:2] == [str(settings.qwen_binary), str(audio)]
     assert "Qwen/Qwen3-ASR-0.6B" in command
@@ -106,12 +101,9 @@ def test_qwen_missing_binary_is_unavailable_without_path_or_transcript_leak(tmp_
 
     assert run["state"] == "unavailable"
     assert str(settings.qwen_binary) not in (run["error"] or "")
-    assert (
-        db.query_one("SELECT current_transcript_version_id FROM meetings WHERE id='vm-qwen'")[
-            "current_transcript_version_id"
-        ]
-        == current_version
-    )
+    assert db.query_one("SELECT current_transcript_version_id FROM meetings WHERE id='vm-qwen'")[
+        "current_transcript_version_id"
+    ] == current_version
 
 
 def test_qwen_audio_mutation_fails_closed_and_creates_no_version(tmp_path, monkeypatch):
@@ -134,12 +126,9 @@ def test_qwen_audio_mutation_fails_closed_and_creates_no_version(tmp_path, monke
     assert saved["error"] == "原音频完整性校验失败"
     assert "不得导入" not in (saved["error"] or "")
     assert saved["transcript_version_id"] is None
-    assert (
-        db.query_one("SELECT current_transcript_version_id FROM meetings WHERE id='vm-qwen'")[
-            "current_transcript_version_id"
-        ]
-        == current_version
-    )
+    assert db.query_one("SELECT current_transcript_version_id FROM meetings WHERE id='vm-qwen'")[
+        "current_transcript_version_id"
+    ] == current_version
 
 
 def test_qwen_skips_while_relay_transcribes_and_recovers_orphaned_running(tmp_path):
@@ -180,7 +169,9 @@ def test_qwen_retry_creates_new_run_and_rejects_output_symlink(tmp_path, monkeyp
 
     monkeypatch.setattr("meeting_workbench.qwen_shadow.subprocess.run", fake_run)
     assert service.run_once() is True
-    failed = db.query_one("SELECT state, error FROM asr_shadow_runs WHERE id=?", (original["id"],))
+    failed = db.query_one(
+        "SELECT state, error FROM asr_shadow_runs WHERE id=?", (original["id"],)
+    )
     assert failed["state"] == "failed"
     assert str(tmp_path) not in (failed["error"] or "")
 
@@ -196,16 +187,12 @@ def test_qwen_rejects_non_utf8_srt_and_checks_audio_after_timeout(tmp_path, monk
     monkeypatch.setattr("meeting_workbench.qwen_shadow.subprocess.run", invalid_utf8)
     first = service.request("vm-qwen")
     assert service.run_once() is True
-    assert (
-        db.query_one("SELECT state FROM asr_shadow_runs WHERE id=?", (first["id"],))["state"]
-        == "failed"
-    )
-    assert (
-        db.query_one("SELECT current_transcript_version_id FROM meetings WHERE id='vm-qwen'")[
-            "current_transcript_version_id"
-        ]
-        == current_version
-    )
+    assert db.query_one("SELECT state FROM asr_shadow_runs WHERE id=?", (first["id"],))[
+        "state"
+    ] == "failed"
+    assert db.query_one("SELECT current_transcript_version_id FROM meetings WHERE id='vm-qwen'")[
+        "current_transcript_version_id"
+    ] == current_version
 
     def timeout_after_mutation(_command, **_kwargs):
         audio.write_bytes(b"mutated-on-timeout")
@@ -214,9 +201,9 @@ def test_qwen_rejects_non_utf8_srt_and_checks_audio_after_timeout(tmp_path, monk
     monkeypatch.setattr("meeting_workbench.qwen_shadow.subprocess.run", timeout_after_mutation)
     second = service.request("vm-qwen")
     assert service.run_once() is True
-    assert db.query_one("SELECT error FROM asr_shadow_runs WHERE id=?", (second["id"],))[
-        "error"
-    ] == ("原音频完整性校验失败")
+    assert db.query_one("SELECT error FROM asr_shadow_runs WHERE id=?", (second["id"],))["error"] == (
+        "原音频完整性校验失败"
+    )
 
 
 def test_qwen_api_exposes_sanitized_runs_and_job_substate_and_retry(tmp_path):
@@ -287,15 +274,14 @@ def test_qwen_request_is_idempotent_while_same_meeting_has_active_run(tmp_path):
 
     assert second["id"] == first["id"]
     assert db.query_one("SELECT COUNT(*) AS count FROM asr_shadow_runs")["count"] == 1
-    assert (
-        db.query_one(
-            "SELECT COUNT(*) AS count FROM events WHERE event_type='qwen_shadow_requested'"
-        )["count"]
-        == 1
-    )
+    assert db.query_one(
+        "SELECT COUNT(*) AS count FROM events WHERE event_type='qwen_shadow_requested'"
+    )["count"] == 1
 
 
-def test_qwen_global_worker_lease_limits_two_different_runs_to_one_process(tmp_path, monkeypatch):
+def test_qwen_global_worker_lease_limits_two_different_runs_to_one_process(
+    tmp_path, monkeypatch
+):
     settings, db, _audio, _current, first = setup(tmp_path)
     second_dir = settings.archive_root / "vm-qwen-two"
     second_dir.mkdir()
@@ -361,10 +347,9 @@ def test_qwen_global_worker_lease_limits_two_different_runs_to_one_process(tmp_p
     assert first.run_once() is True
     assert calls == 2
     assert peak == 1
-    assert (
-        db.query_one("SELECT COUNT(*) AS count FROM asr_shadow_runs WHERE state='ready'")["count"]
-        == 2
-    )
+    assert db.query_one("SELECT COUNT(*) AS count FROM asr_shadow_runs WHERE state='ready'")[
+        "count"
+    ] == 2
 
 
 def test_qwen_request_and_ready_event_failures_roll_back_data(tmp_path, monkeypatch):
@@ -400,16 +385,12 @@ def test_qwen_request_and_ready_event_failures_roll_back_data(tmp_path, monkeypa
     monkeypatch.setattr(db, "add_event", fail_ready)
 
     assert service.run_once() is True
-    assert (
-        db.query_one("SELECT state FROM asr_shadow_runs WHERE id=?", (run["id"],))["state"]
-        == "failed"
-    )
-    assert (
-        db.query_one(
-            "SELECT COUNT(*) AS count FROM transcript_versions WHERE kind='qwen_reference'"
-        )["count"]
-        == 0
-    )
+    assert db.query_one("SELECT state FROM asr_shadow_runs WHERE id=?", (run["id"],))[
+        "state"
+    ] == "failed"
+    assert db.query_one(
+        "SELECT COUNT(*) AS count FROM transcript_versions WHERE kind='qwen_reference'"
+    )["count"] == 0
 
 
 def test_recovery_waits_for_live_lease_and_only_requeues_expired_lease(tmp_path):
@@ -426,10 +407,9 @@ def test_recovery_waits_for_live_lease_and_only_requeues_expired_lease(tmp_path)
 
     assert restarted.recover_orphaned() == 0
     db.initialize()
-    assert (
-        db.query_one("SELECT state FROM asr_shadow_runs WHERE id=?", (run["id"],))["state"]
-        == "running"
-    )
+    assert db.query_one("SELECT state FROM asr_shadow_runs WHERE id=?", (run["id"],))[
+        "state"
+    ] == "running"
 
     db.execute(
         "UPDATE asr_shadow_runs SET lease_expires_at=? WHERE id=?",
@@ -442,7 +422,9 @@ def test_recovery_waits_for_live_lease_and_only_requeues_expired_lease(tmp_path)
 
 
 @pytest.mark.parametrize("missing_field", ["owner_id", "heartbeat_at", "lease_expires_at"])
-def test_recovery_requeues_incomplete_legacy_running_lease_idempotently(tmp_path, missing_field):
+def test_recovery_requeues_incomplete_legacy_running_lease_idempotently(
+    tmp_path, missing_field
+):
     settings, db, _audio, _current, service = setup(tmp_path)
     run = service.request("vm-qwen")
     now = datetime.now(UTC)
@@ -569,12 +551,9 @@ def test_late_success_from_expired_owner_cannot_pollute_reclaimed_run(tmp_path, 
         "owner_id": second.owner_id,
         "transcript_version_id": None,
     }
-    assert (
-        db.query_one(
-            "SELECT COUNT(*) AS count FROM transcript_versions WHERE kind='qwen_reference'"
-        )["count"]
-        == 0
-    )
+    assert db.query_one(
+        "SELECT COUNT(*) AS count FROM transcript_versions WHERE kind='qwen_reference'"
+    )["count"] == 0
 
     release_second.set()
     second_worker.join(3)
@@ -586,18 +565,12 @@ def test_late_success_from_expired_owner_cannot_pollute_reclaimed_run(tmp_path, 
     assert saved["state"] == "ready"
     assert saved["owner_id"] is None
     assert saved["transcript_version_id"] is not None
-    assert (
-        db.query_one(
-            "SELECT COUNT(*) AS count FROM transcript_versions WHERE kind='qwen_reference'"
-        )["count"]
-        == 1
-    )
-    assert (
-        db.query_one(
-            "SELECT text FROM segments WHERE version_id=?", (saved["transcript_version_id"],)
-        )["text"]
-        == "有效所有者B"
-    )
+    assert db.query_one(
+        "SELECT COUNT(*) AS count FROM transcript_versions WHERE kind='qwen_reference'"
+    )["count"] == 1
+    assert db.query_one(
+        "SELECT text FROM segments WHERE version_id=?", (saved["transcript_version_id"],)
+    )["text"] == "有效所有者B"
 
 
 def test_long_qwen_subprocess_refreshes_heartbeat_lease(tmp_path, monkeypatch):

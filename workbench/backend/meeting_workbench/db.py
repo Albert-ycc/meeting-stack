@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 12
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -26,6 +26,23 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def escape_like_pattern(value: str) -> str:
+    """转义 LIKE 通配符，供 `... LIKE ? ESCAPE '\\\\'` 场景使用；main/tasks/requirements 三处共用。"""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def dedupe_preserve_order(values: list[str]) -> list[str]:
+    """去重且保留首次出现的顺序（D24）；批量 id 类入参（task_ids/meeting_ids/requirement_ids）
+    在 main/requirements 三处共用这一份实现。"""
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -35,6 +52,7 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     color TEXT NOT NULL DEFAULT '#667085',
+    origin TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL
 );
 
@@ -45,6 +63,7 @@ CREATE TABLE IF NOT EXISTS meetings (
     duration_ms INTEGER,
     status TEXT NOT NULL DEFAULT 'completed_unreviewed',
     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    project_origin TEXT,
     canonical_dir TEXT,
     source_priority INTEGER NOT NULL DEFAULT 0,
     source_signature TEXT,
@@ -302,6 +321,160 @@ CREATE TABLE IF NOT EXISTS runtime_leases (
     heartbeat_at TEXT NOT NULL,
     lease_expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending_confirm',
+    origin TEXT NOT NULL DEFAULT 'ai',
+    assignee TEXT NOT NULL DEFAULT 'me',
+    meeting_id TEXT REFERENCES meetings(id) ON DELETE SET NULL,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    extraction_id INTEGER,
+    anchor_ms INTEGER,
+    anchor_quote TEXT,
+    suggested_project_name TEXT,
+    status_changed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_meeting ON tasks(meeting_id);
+
+CREATE TABLE IF NOT EXISTS task_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
+
+-- v11：用户确认「知道了」的失败/归档未完成任务。job_updated_at 记确认时任务的更新时间，
+-- 任务之后又有变化（重试后再次失败）就不再算已确认，会重新出现在「需要处理」里。
+CREATE TABLE IF NOT EXISTS job_acknowledgements (
+    job_id TEXT PRIMARY KEY,
+    job_updated_at TEXT NOT NULL DEFAULT '',
+    acknowledged_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS deliverables (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    url TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deliverables_task ON deliverables(task_id);
+
+CREATE TABLE IF NOT EXISTS task_extractions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    minutes_version_id TEXT NOT NULL,
+    supplement TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    raw_response TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    finished_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_unique
+    ON task_extractions(meeting_id, minutes_version_id, supplement);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    ref_key TEXT NOT NULL,
+    sent_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_unique ON notifications(kind, ref_key);
+
+CREATE TABLE IF NOT EXISTS project_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    minutes_version_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    method TEXT,
+    project_id TEXT,
+    raw_response TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    finished_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_links_unique
+    ON project_links(meeting_id, minutes_version_id);
+
+CREATE TABLE IF NOT EXISTS glossary_terms (
+    id TEXT PRIMARY KEY,
+    term TEXT NOT NULL UNIQUE,
+    aliases TEXT NOT NULL DEFAULT '[]',
+    scope TEXT NOT NULL DEFAULT '通用',
+    category TEXT NOT NULL DEFAULT '其他',
+    source TEXT NOT NULL DEFAULT 'manual',
+    confirmed INTEGER NOT NULL DEFAULT 1,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_glossary_terms_scope ON glossary_terms(scope);
+
+CREATE TABLE IF NOT EXISTS glossary_suggestions (
+    id TEXT PRIMARY KEY,
+    wrong TEXT NOT NULL,
+    correct TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '通用',
+    meeting_id TEXT,
+    context TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_glossary_suggestions_status ON glossary_suggestions(status);
+CREATE INDEX IF NOT EXISTS idx_glossary_suggestions_pair ON glossary_suggestions(wrong, correct);
+
+-- v12：项目 → 需求 → 任务三层（260915 新增）。
+CREATE TABLE IF NOT EXISTS project_material_roots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(project_id, path)
+);
+CREATE TABLE IF NOT EXISTS requirements (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    priority TEXT NOT NULL CHECK (priority IN ('P0','P1','P2','P3')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done','shelved')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- 同一项目下需求名（忽略大小写、去首尾空格）唯一，创建/改名时靠这条索引兜底判重。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_requirements_project_title
+    ON requirements(project_id, lower(trim(title)));
+CREATE INDEX IF NOT EXISTS idx_requirements_project_status ON requirements(project_id, status);
+CREATE TABLE IF NOT EXISTS requirement_folders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requirement_id TEXT NOT NULL REFERENCES requirements(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(requirement_id, path)
+);
+CREATE TABLE IF NOT EXISTS requirement_meetings (
+    requirement_id TEXT NOT NULL REFERENCES requirements(id) ON DELETE CASCADE,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (requirement_id, meeting_id)
+);
 """
 
 
@@ -322,8 +495,11 @@ class Database:
         if not self.path.is_file() or self.path.stat().st_size == 0:
             return 0
         uri = f"file:{self.path.resolve()}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=5) as connection:
+        connection = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
             return int(connection.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            connection.close()
 
     def initialize(self, *, before_migrate: Callable[[], Any] | None = None) -> None:
         had_database = self.path.is_file() and self.path.stat().st_size > 0
@@ -334,7 +510,7 @@ class Database:
             )
         if had_database and current_version < SCHEMA_VERSION and before_migrate:
             before_migrate()
-        with self.connect() as connection:
+        with self.autocommit() as connection:
             connection.executescript(SCHEMA)
             connection.execute("BEGIN EXCLUSIVE")
             transcript_columns = {
@@ -350,6 +526,41 @@ class Database:
             }
             if "source_job_id" not in meeting_columns:
                 connection.execute("ALTER TABLE meetings ADD COLUMN source_job_id TEXT")
+            if "project_origin" not in meeting_columns:
+                connection.execute("ALTER TABLE meetings ADD COLUMN project_origin TEXT")
+            project_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(projects)").fetchall()
+            }
+            if "origin" not in project_columns:
+                connection.execute(
+                    "ALTER TABLE projects ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'"
+                )
+            glossary_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(glossary_terms)").fetchall()
+            }
+            if "project_id" not in glossary_columns:
+                connection.execute(
+                    "ALTER TABLE glossary_terms ADD COLUMN project_id "
+                    "TEXT REFERENCES projects(id) ON DELETE SET NULL"
+                )
+            # 建索引放到列存在之后：executescript(SCHEMA) 早于这里执行，SCHEMA 里若
+            # 直接带这条 CREATE INDEX，旧库补列之前就会报 "no such column"。
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_terms_project "
+                "ON glossary_terms(project_id)"
+            )
+            task_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            if "requirement_id" not in task_columns:
+                connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN requirement_id "
+                    "TEXT REFERENCES requirements(id) ON DELETE SET NULL"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_requirement ON tasks(requirement_id)"
+            )
             minutes_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(minutes_versions)").fetchall()
@@ -465,6 +676,28 @@ class Database:
                    )"""
             )
             connection.execute("UPDATE segments SET end_ms = start_ms WHERE end_ms < start_ms")
+            if current_version < 9:
+                # v9 之前挂了项目的会议一律是人工填的（会议自动归属项目功能上线前，
+                # 只有 PATCH /api/meetings 这一条写入路径），origin 补 manual。
+                connection.execute(
+                    """UPDATE meetings SET project_origin='manual'
+                        WHERE project_id IS NOT NULL AND project_origin IS NULL"""
+                )
+            if current_version < 10:
+                # 词典范围与项目打通：scope 与某个项目名精确相等的术语补上 project_id，
+                # 之后 project_id 才是范围的唯一来源、scope 变成随项目改名同步的派生标签。
+                # 名字不一致的旧桶（如「云图」vs 项目名「云图科研用药」）不在此处处理，
+                # 交给一次性 SQL 按业务口径迁移。
+                connection.execute(
+                    """UPDATE glossary_terms
+                          SET project_id = (
+                              SELECT id FROM projects WHERE projects.name = glossary_terms.scope
+                          )
+                        WHERE project_id IS NULL
+                          AND EXISTS (
+                              SELECT 1 FROM projects WHERE projects.name = glossary_terms.scope
+                          )"""
+                )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @contextmanager
@@ -480,18 +713,39 @@ class Database:
         finally:
             connection.close()
 
+    @contextmanager
+    def autocommit(self) -> Iterator[sqlite3.Connection]:
+        """成功提交、异常回滚，并且一定关闭连接。
+
+        sqlite3.Connection 的语句缓存反向引用连接本身，`with connect()` 只提交不关闭，
+        句柄要等循环 GC 才释放；扫描高峰叠加页面请求会冲破进程句柄上限（2026-09-07、
+        09-14 两次 EMFILE 宕机）。凡是不需要 BEGIN IMMEDIATE 的地方都走这里。
+        """
+        connection = self.connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
-        with self.connect() as connection:
+        with self.autocommit() as connection:
             cursor = connection.execute(sql, params)
             return cursor.lastrowid
 
+    def execute_rowcount(self, sql: str, params: Sequence[Any] = ()) -> int:
+        """执行 UPDATE/DELETE 并返回实际命中的行数（原子认领等需要）。"""
+        with self.autocommit() as connection:
+            cursor = connection.execute(sql, params)
+            return cursor.rowcount
+
     def query_one(self, sql: str, params: Sequence[Any] = ()) -> dict[str, Any] | None:
-        with self.connect() as connection:
+        with self.autocommit() as connection:
             row = connection.execute(sql, params).fetchone()
         return dict(row) if row else None
 
     def query_all(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
-        with self.connect() as connection:
+        with self.autocommit() as connection:
             rows = connection.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
@@ -597,7 +851,9 @@ class Database:
                 segment_id,
                 version_id,
                 meeting_id,
-                int(segment.get("ordinal", ordinal)),
+                # ordinal 由服务端按传入顺序重排，不采信客户端字段：否则两段都传同一个
+                # ordinal 会撞 UNIQUE(version_id, ordinal) 直接 500。
+                ordinal,
                 start_ms,
                 end_ms,
                 segment.get("speaker_label"),

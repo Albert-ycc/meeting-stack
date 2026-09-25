@@ -222,3 +222,39 @@ def test_health_preserves_unavailable_json_from_exit_code_two(tmp_path, monkeypa
     )
 
     assert RelayClient(settings).health() == payload
+
+
+def test_relayctl_stderr_stays_in_server_log_not_in_client_facing_error(tmp_path, monkeypatch, caplog):
+    """relayctl 失败时 stderr（可能带绝对路径/完整 traceback）只进日志，不回灌给客户端。"""
+    relay_repo = tmp_path / "meeting-relay"
+    executable = relay_repo / "quickstart" / "relayctl"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        relay_repo=relay_repo,
+        relay_jobs_db=tmp_path / "jobs.sqlite3",
+        semantic_enabled=False,
+    )
+    sensitive_stderr = (
+        f"Traceback (most recent call last):\n  File \"{tmp_path}/relayctl\", line 12\n"
+        "KeyError: 'job-secret-internal-path'"
+    )
+
+    monkeypatch.setattr(
+        "meeting_workbench.relay_client.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr=sensitive_stderr
+        ),
+    )
+
+    with caplog.at_level("ERROR", logger="meeting_workbench.relay_client"):
+        with pytest.raises(RelayUnavailable) as excinfo:
+            RelayClient(settings).status("job-abc")
+
+    assert str(tmp_path) not in str(excinfo.value)
+    assert "Traceback" not in str(excinfo.value)
+    assert str(excinfo.value) == "relayctl 返回失败，详见服务日志"
+    assert sensitive_stderr in caplog.text

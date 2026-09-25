@@ -1,0 +1,156 @@
+.meeting-tasks-panel {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  max-width: 720px;
+}
+
+.meeting-tasks-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meeting-tasks-panel__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.meeting-tasks-panel__count {
+  background: var(--signal);
+  color: var(--ink);
+  font-size: 11px;
+  font-style: normal;
+  border-radius: 12px;
+  padding: 1px 7px;
+}
+
+.meeting-tasks-panel__group {
+  margin-top: 12px;
+}
+
+.meeting-tasks-panel__group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-faint);
+}
+
+.meeting-tasks-panel__list {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+}
+
+.meeting-tasks-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+
+.meeting-tasks-panel__row:first-child {
+  border-top: 0;
+}
+
+.meeting-tasks-panel__dot {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border: 1.5px solid var(--signal);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.meeting-tasks-panel__copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.meeting-tasks-panel__copy strong {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-tasks-panel__copy small {
+  font-size: 11px;
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 只读行的状态标签；色调沿用现有 token，不另起配色 */
+.meeting-tasks-panel__status {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 12px;
+}
+
+.meeting-tasks-panel__status--teal {
+  color: var(--teal);
+  background: rgba(62, 207, 142, 0.12);
+}
+
+.meeting-tasks-panel__status--neutral {
+  color: var(--ink-soft);
+  background: rgba(255, 255, 255, 0.108);
+}
+
+.meeting-tasks-panel__status--muted {
+  color: var(--ink-faint);
+  background: rgba(255, 255, 255, 0.049);
+}
+
+/* 已取消整行标灰 */
+.meeting-tasks-panel__row--muted .meeting-tasks-panel__copy strong {
+  color: var(--ink-faint);
+}
+
+.meeting-tasks-panel__actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.meeting-tasks-panel__empty {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.meeting-tasks-panel__more {
+  margin-top: 10px;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--teal);
+  cursor: pointer;
+  padding: 0;
+}
+
+.meeting-tasks-panel__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--ink-faint);
+}

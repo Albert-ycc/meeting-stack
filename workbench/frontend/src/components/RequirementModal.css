@@ -1,0 +1,344 @@
+/* 需求「新建 / 编辑」弹窗，视觉同 task-edit-modal 一套体系。
+ * 这个弹窗有两条打开路径：需求池页面顶层打开（DOM 不受影响），和会议详情
+ * 「归档归属」卡片里内联「＋新建需求」打开（DOM 挂在 .edit-inspector /
+ * .inspector-section 底下，会被 styles.css 里 `.edit-inspector button`
+ * `.inspector-section button` 两条全局重置（0-1-1）吞掉）。下面所有按钮选择器
+ * 统一叠 `.requirement-modal__card` 祖先类把特异度提到 0-2-0/0-2-1 以上，
+ * 该显式写 width:auto 顶掉 `width:100%` 的都写了。 */
+
+.requirement-modal__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  overflow-y: auto;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.requirement-modal__card {
+  position: relative;
+  width: min(500px, 100%);
+  margin: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.requirement-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 0;
+}
+
+.requirement-modal__head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.requirement-modal__card button.requirement-modal__close {
+  width: auto;
+  padding: 6px 10px;
+  color: var(--faint);
+  font-size: 14px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+}
+
+.requirement-modal__card button.requirement-modal__close:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.requirement-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 20px 4px;
+}
+
+.requirement-modal__field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.requirement-modal__label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.requirement-modal__field > input {
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 12px;
+  font-size: 13px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.requirement-modal__card button.requirement-modal__select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  text-align: left;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.requirement-modal__select-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.requirement-modal__select-placeholder {
+  color: var(--faint);
+}
+
+.requirement-modal__dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.requirement-modal__caret {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.requirement-modal__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  z-index: 70;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.55);
+}
+
+.requirement-modal__card button.requirement-modal__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  color: var(--ink);
+  text-align: left;
+  font-size: 13px;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+}
+
+.requirement-modal__card button.requirement-modal__option:hover {
+  background: var(--bg);
+}
+
+.requirement-modal__option.is-selected {
+  color: var(--signal-dark);
+  background: var(--signal-bg);
+}
+
+.requirement-modal__option-name {
+  display: inline-flex;
+  overflow: hidden;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.requirement-modal__check {
+  color: var(--signal);
+  font-weight: 600;
+}
+
+.requirement-modal__segmented {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.requirement-modal__segmented--status {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.requirement-modal__card .requirement-modal__segmented button {
+  min-height: 36px;
+  padding: 6px 8px;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.requirement-modal__segmented button[data-priority="P0"][aria-pressed="true"] {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
+}
+
+.requirement-modal__segmented button[data-priority="P1"][aria-pressed="true"] {
+  color: var(--signal-dark);
+  background: var(--signal-bg);
+  border-color: var(--signal-line);
+}
+
+.requirement-modal__segmented button[data-priority="P2"][aria-pressed="true"] {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+}
+
+.requirement-modal__segmented button[data-priority="P3"][aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--line);
+  border-color: var(--line-strong);
+}
+
+.requirement-modal__segmented button[data-status="active"][aria-pressed="true"] {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: var(--ok-line);
+}
+
+.requirement-modal__segmented button[data-status="done"][aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--line);
+  border-color: var(--line-strong);
+}
+
+.requirement-modal__segmented button[data-status="shelved"][aria-pressed="true"] {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+}
+
+.requirement-modal__card button.requirement-modal__pick-folder {
+  width: auto;
+  align-self: flex-start;
+  padding: 8px 12px;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+}
+
+.requirement-modal__folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  margin: 6px 0 0;
+  list-style: none;
+}
+
+.requirement-modal__folder-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.requirement-modal__folder-name {
+  overflow: hidden;
+  flex: 1;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.requirement-modal__folder-count {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.requirement-modal__card .requirement-modal__folder-list button {
+  width: auto;
+  flex: none;
+  padding: 2px 4px;
+  color: var(--faint);
+  font-size: 11px;
+  background: transparent;
+  border: 0;
+}
+
+.requirement-modal__card .requirement-modal__folder-list button:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+.requirement-modal__error {
+  margin: 0;
+  padding: 10px 20px 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.requirement-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 20px 20px;
+}
+
+.requirement-modal__card button.requirement-modal__cancel,
+.requirement-modal__card button.requirement-modal__submit {
+  width: auto;
+  padding: 9px 16px;
+  font-size: 13px;
+  border-radius: 12px;
+}
+
+.requirement-modal__card button.requirement-modal__cancel {
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+.requirement-modal__card button.requirement-modal__cancel:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.requirement-modal__card button.requirement-modal__submit {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--signal);
+  border: 1px solid var(--signal);
+}
+
+.requirement-modal__card button.requirement-modal__submit:hover:not(:disabled) {
+  background: var(--signal-dark);
+  border-color: var(--signal-dark);
+}

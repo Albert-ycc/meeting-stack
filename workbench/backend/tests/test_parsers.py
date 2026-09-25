@@ -93,6 +93,65 @@ def test_parse_funasr_multichunk_applies_offset_seconds(tmp_path):
     assert segments[1]["end_ms"] == 2_489_132
 
 
+def test_parse_funasr_single_block_wrapped_in_list_keeps_bare_label(tmp_path):
+    # 真实单块会议的 .funasr.json 顶层仍是长度为 1 的列表（不是裸 dict），
+    # 必须和历史裸 dict 格式一样不带块前缀，否则所有单块会议的标签都会变。
+    path = tmp_path / "single.funasr.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "chunk": 0,
+                    "offset_sec": 0,
+                    "result": {
+                        "sentence_info": [
+                            {"start": 300, "end": 900, "spk": 0, "text": "第一句"},
+                            {"start": 1000, "end": 1600, "spk": 1, "text": "第二句"},
+                        ]
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    segments = parse_funasr_json(path)
+
+    assert [segment["speaker_label"] for segment in segments] == ["SPEAKER_00", "SPEAKER_01"]
+
+
+def test_parse_funasr_multichunk_labels_get_chunk_prefix_and_dont_collide(tmp_path):
+    # 两块各自的 spk 都从 0 重编号，块前缀是区分两个不同人的唯一手段——
+    # 不加前缀会让 chunk0 的 SPEAKER_00 和 chunk1 的 SPEAKER_00 被判定成同一个人。
+    path = tmp_path / "multi-collide.funasr.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "chunk": 0,
+                    "offset_sec": 0,
+                    "result": {
+                        "sentence_info": [{"start": 100, "end": 800, "spk": 0, "text": "块一说话人0"}]
+                    },
+                },
+                {
+                    "chunk": 1,
+                    "offset_sec": 2000,
+                    "result": {
+                        "sentence_info": [{"start": 200, "end": 900, "spk": 0, "text": "块二说话人0"}]
+                    },
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    segments = parse_funasr_json(path)
+
+    assert [segment["speaker_label"] for segment in segments] == ["C1_SPEAKER_00", "C2_SPEAKER_00"]
+    assert segments[0]["speaker_label"] != segments[1]["speaker_label"]
+
+
 def test_json_source_larger_than_64_mib_is_rejected_before_parsing(tmp_path):
     path = tmp_path / "oversized.funasr.json"
     with path.open("wb") as handle:

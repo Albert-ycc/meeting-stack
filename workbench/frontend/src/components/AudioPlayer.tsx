@@ -71,6 +71,13 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(funct
     let wavesurfer: WaveSurfer | null = null;
     let unsubReady: () => void = () => {};
     let unsubError: () => void = () => {};
+    // wavesurfer 的颜色只能给字面值，读一次 :root 的 token，
+    // 换主题时波形跟着走，不用在两个地方各维护一份色值。
+    const token = (name: string, fallback: string) =>
+      getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+    const signalColor = token("--signal", "#f0783b");
+    const waveIdle = token("--wave-idle", "#585858");
+
     const createWaveform = (peaks?: number[], seconds?: number) => {
       wavesurfer = WaveSurfer.create({
         container,
@@ -79,11 +86,11 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(funct
         barGap: 2,
         barRadius: 2,
         barWidth: 2,
-        cursorColor: "#ff7a3d",
+        cursorColor: signalColor,
         cursorWidth: 2,
         dragToSeek: true,
-        progressColor: "#ff7a3d",
-        waveColor: "#5c6e69",
+        progressColor: signalColor,
+        waveColor: waveIdle,
         normalize: true,
         ...(peaks && seconds ? { peaks: [peaks], duration: seconds } : {}),
       });

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager, suppress
 import hashlib
 import json
 import secrets
+import threading
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import Settings
 from .backup import BackupManager
-from .db import ConflictStore, Database, utc_now
+from .db import ConflictStore, Database, dedupe_preserve_order, escape_like_pattern, utc_now
 from .importer import SAFE_MEETING_ID_RE, ArchiveImporter
 from .security import WriteProtectionMiddleware
 from .relay_client import RelayClient, RelayUnavailable
@@ -33,15 +34,77 @@ from .service import (
 from .uploads import UploadError, UploadManager
 from .waveform import WaveformError, WaveformPeaks
 from .quality import align_transcript_segments
+from .notify import LarkNotifier
+from .project_linking import ProjectLinker
+from . import materials, requirements
+from .tasks import TaskService
 from .hotwords import hotword_audit, normalize_hotwords
+from .attention import (
+    ATTENTION_KINDS,
+    describe_job,
+    describe_quarantine,
+    manifest_job_id,
+    needs_attention,
+)
+
+
 from .gold_schema import GoldSchemaError, validate_gold_sample
+from .glossary import (
+    GlossaryError,
+    confirm_suggestion,
+    create_term,
+    delete_term,
+    get_term,
+    list_scopes,
+    list_suggestions,
+    list_terms,
+    read_snapshot,
+    reject_suggestion,
+    update_term,
+)
 from .minutes_evidence import (
     MinutesEvidenceError,
     load_minutes_evidence,
     load_minutes_manifest,
     load_relay_attempt,
+    relay_attempt_matches_minutes,
+    select_source_srt_entry,
 )
 from .qwen_shadow import QwenShadowError, QwenShadowService
+
+
+def process_file_handles() -> dict[str, int | None]:
+    # 句柄逼近软上限就是 EMFILE 宕机前兆（2026-09-07、09-14 两次），health 里要能直接看到。
+    import os
+    import resource
+
+    try:
+        open_files: int | None = len(os.listdir("/dev/fd"))
+    except OSError:
+        open_files = None
+    soft_limit = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    return {
+        "open_files": open_files,
+        "open_files_limit": None if soft_limit == resource.RLIM_INFINITY else int(soft_limit),
+    }
+
+
+# 播放用的音频 MIME 必须自己定，不能交给 mimetypes.guess_type()：macOS 的系统
+# mime.types 把 .m4a 猜成 audio/mp4a-latm，Chrome 对它 canPlayType 返回空字符串，
+# 于是整段录音在播放器里永远停在 0:00 —— 文件本身是好的，只是浏览器拒绝解码。
+AUDIO_MEDIA_TYPES = {
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".qta": "audio/mp4",
+    ".aac": "audio/aac",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+}
+
+
+def audio_media_type(path: Path) -> str:
+    return AUDIO_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
 
 # 界面上的会议状态只保留“已完成”和“失败”。历史库里三种完成态语义不同，
@@ -49,9 +112,15 @@ from .qwen_shadow import QwenShadowError, QwenShadowService
 MEETING_DONE_STATUSES = ("completed_unreviewed", "draft_modified", "published")
 MEETING_STATUS_GROUPS: dict[str, tuple[str, ...]] = {"done": MEETING_DONE_STATUSES}
 # 纪要阶段自动兜底：这些失败停在“逐字稿已好、纪要没生成”，重派一次即可救回。
+# 纪要可指定的模型后端，与 relay_control.LLM_BACKENDS 一致
+MINUTES_BACKENDS = frozenset({"claude", "deepseek"})
 RECOVERABLE_MINUTES_FAILURE_STAGES = frozenset({"codex_callback", "archive_validation"})
 MINUTES_AUTO_RECOVERY_MAX_ATTEMPTS = 2
 MINUTES_AUTO_RECOVERY_COOLDOWN_SECONDS = 20 * 60
+# 「需要处理」清单要调 relayctl list，放在 relay 探测循环里按这个间隔刷新，health 轮询只读缓存。
+ATTENTION_REFRESH_SECONDS = 60.0
+# 归档接口遇到快照里没有的任务号时，这个间隔内不重复调 relayctl（防伪造任务号放大负载）。
+ACKNOWLEDGE_REFRESH_MIN_SECONDS = 10.0
 
 
 class HotwordsModel(BaseModel):
@@ -104,6 +173,30 @@ class MinutesInput(BaseModel):
     markdown: str
 
 
+class GlossaryTermInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    term: str
+    aliases: list[str] = Field(default_factory=list)
+    scope: str = "通用"
+    category: str = "其他"
+    source: str = "manual"
+    confirmed: bool = True
+    project_id: str | None = None
+
+
+class GlossaryTermUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    term: str | None = None
+    aliases: list[str] | None = None
+    scope: str | None = None
+    category: str | None = None
+    confirmed: bool | None = None
+    # None 是合法目标值（解绑），必须靠 model_fields_set 区分「没传」与「传了 null」
+    project_id: str | None = None
+
+
 class RollbackInput(BaseModel):
     version_id: str
 
@@ -111,6 +204,52 @@ class RollbackInput(BaseModel):
 class ProjectInput(BaseModel):
     name: str
     color: str = "#667085"
+    material_roots: list[str] | None = None
+
+
+class ProjectUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    color: str | None = None
+    material_roots: list[str] | None = None
+
+
+class MaterialRootInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class RequirementCreateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=200)
+    priority: str = Field(max_length=8)
+    folder_paths: list[str] = Field(default_factory=list, max_length=100)
+
+
+class RequirementUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    project_id: str | None = Field(default=None, max_length=64)
+    priority: str | None = Field(default=None, max_length=8)
+    status: str | None = Field(default=None, max_length=16)
+    folder_paths: list[str] | None = Field(default=None, max_length=100)
+
+
+class RequirementMeetingsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    meeting_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+class RequirementTasksInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_ids: list[str] = Field(default_factory=list, max_length=200)
 
 
 class TagInput(BaseModel):
@@ -118,10 +257,66 @@ class TagInput(BaseModel):
     color: str = "#667085"
 
 
+class TaskCreateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+    detail: str = Field(default="", max_length=8000)
+    project_id: str | None = Field(default=None, max_length=64)
+    requirement_id: str | None = Field(default=None, max_length=64)
+    assignee: str = "me"
+
+
+class TaskUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    detail: str | None = Field(default=None, max_length=8000)
+    project_id: str | None = Field(default=None, max_length=64)
+    # None 是合法目标值（移出需求），必须靠 model_fields_set 区分「没传」与「传了 null」。
+    requirement_id: str | None = Field(default=None, max_length=64)
+    assignee: str | None = None
+
+
+class TaskStatusInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(max_length=32)
+
+
+class TaskCommentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class BatchConfirmInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_ids: list[str] = Field(max_length=500)
+
+
+class DeliverableInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(max_length=16)
+    url: str = Field(min_length=1, max_length=2000)
+    title: str = Field(default="", max_length=200)
+    note: str = Field(default="", max_length=2000)
+    mark_done: bool = False
+
+
+class ReExtractInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    supplement: str = Field(default="", max_length=8000)
+
+
 class MeetingMetadataInput(BaseModel):
     title: str | None = None
     project_id: str | None = None
     tag_ids: list[str] | None = None
+    requirement_ids: list[str] | None = None
 
 
 class UploadStartInput(HotwordsModel):
@@ -146,17 +341,12 @@ class GoldSampleInput(BaseModel):
     numbers: list[str] = Field(default_factory=list, max_length=100)
     tags: list[str] = Field(default_factory=list, max_length=100)
 
-
 class JobRetryInput(HotwordsModel):
     stage: Literal["stabilizing", "transcribing", "transcript_ready", "minutes_generating"]
 
 
 class ConflictResolutionInput(BaseModel):
     action: Literal["keep_draft", "accept_external", "discard_draft"]
-
-
-def _escape_like(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _has_forbidden_control_character(value: str) -> bool:
@@ -259,7 +449,25 @@ def _meeting_detail(db: Database, meeting_id: str) -> dict[str, Any] | None:
         for conflict in conflicts
     ]
     meeting["conflict"] = int(bool(conflicts))
+    meeting["requirements"] = db.query_all(
+        """SELECT r.id, r.title, r.priority, r.status, r.project_id
+             FROM requirement_meetings rm JOIN requirements r ON r.id=rm.requirement_id
+            WHERE rm.meeting_id=?
+            ORDER BY r.created_at""",
+        (meeting_id,),
+    )
     return meeting
+
+
+def _read_lark_app_secret(settings: Settings) -> str:
+    """自建应用的 secret 只落在本机文件里（跟 LLM key 一个规矩），读不到就当没配。"""
+    path = settings.lark_app_secret_file
+    if not path:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def create_app(
@@ -280,6 +488,21 @@ def create_app(
     semantic = SemanticIndex(db, settings)
     waveforms = WaveformPeaks(settings)
     relay = relay_client or RelayClient(settings)
+    notifier = LarkNotifier(
+        db,
+        webhook_url=settings.lark_webhook_url,
+        public_base_url=settings.public_base_url,
+        stall_cooldown_days=settings.task_stall_cooldown_days,
+        chat_id=settings.lark_chat_id,
+        lark_cli_bin=settings.lark_cli_bin,
+        lark_tmux_socket=settings.lark_tmux_socket,
+        app_id=settings.lark_app_id,
+        app_secret=_read_lark_app_secret(settings),
+    )
+    task_service = TaskService(
+        db, settings, semantic=semantic, notifier=notifier
+    )
+    project_linker = ProjectLinker(db, settings, semantic=semantic)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
     csrf_token = secrets.token_urlsafe(32)
@@ -498,6 +721,34 @@ def create_app(
                 except Exception as error:
                     # 兜底是旁路，失败只记账，不影响扫描与语义索引。
                     phase_errors.append(error)
+                try:
+                    await asyncio.to_thread(task_service.expire_stale_drafts)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 草稿过期归档是旁路，失败只记账。
+                    phase_errors.append(error)
+                try:
+                    await asyncio.to_thread(task_service.extract_pending)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 任务抽取是旁路，失败只记账，不影响扫描与纪要主链。
+                    phase_errors.append(error)
+                try:
+                    await asyncio.to_thread(project_linker.link_pending)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 会议项目归属是旁路，失败只记账，不影响扫描与任务抽取主链。
+                    phase_errors.append(error)
+                try:
+                    await asyncio.to_thread(task_service.run_notifications)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 通知失败只记账，由 notifications 台账在下轮自然补发。
+                    phase_errors.append(error)
                 record_scanner_phase_errors(phase_errors, previous_failures)
                 if not settings.semantic_enabled:
                     continue
@@ -535,8 +786,26 @@ def create_app(
             application.state.scanner_state["loop_alive"] = False
 
     async def relay_health_loop(application: FastAPI) -> None:
+        last_attention_refresh: float | None = None
         while True:
             application.state.relay_health = await probe_relay()
+            now = time.monotonic()
+            if (
+                last_attention_refresh is None
+                or now - last_attention_refresh >= ATTENTION_REFRESH_SECONDS
+            ):
+                last_attention_refresh = now
+                try:
+                    refreshed = await asyncio.wait_for(
+                        asyncio.to_thread(refresh_attention_jobs), timeout=15
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    refreshed = None
+                if refreshed is not None:
+                    application.state.attention_jobs = refreshed
+                    application.state.attention_refreshed_at = time.monotonic()
             await asyncio.sleep(5)
 
     async def qwen_shadow_loop(application: FastAPI) -> None:
@@ -647,6 +916,8 @@ def create_app(
     app.state.scanner_state = new_scanner_state()
     app.state.semantic_details = new_semantic_state()
     app.state.qwen_worker_state = new_qwen_worker_state()
+    app.state.attention_jobs = None
+    app.state.attention_refreshed_at = None
     app.state.relay_health = {
         "status": "unavailable",
         "mode": "unknown",
@@ -662,7 +933,24 @@ def create_app(
         max_request_bytes=settings.max_json_request_bytes,
     )
 
+    def checked_manual_audio_path(raw: str) -> Path:
+        """手动入队走用户直接填的路径，未经上传/归档流程钉过盘，必须先按同一套受管根校验，
+        否则 `/etc/passwd`、`--help` 这类值会原样交给 relayctl 当 argv。"""
+        if not raw or raw.startswith("-"):
+            raise HTTPException(400, "音频路径不在允许范围")
+        path = Path(raw).expanduser().resolve()
+        allowed_roots = [
+            settings.archive_root.resolve(),
+            settings.staging_root.resolve(),
+            settings.data_dir.resolve(),
+        ]
+        if not any(path.is_relative_to(root) for root in allowed_roots):
+            raise HTTPException(400, "音频路径不在允许范围")
+        return path
+
     def checked_audio_artifact(artifact_id: int) -> tuple[dict[str, Any], Path]:
+        if not -(2**63) <= artifact_id <= 2**63 - 1:
+            raise HTTPException(404, "音频不存在")
         artifact = db.query_one("SELECT * FROM artifacts WHERE id = ?", (artifact_id,))
         if not artifact or artifact["kind"] != "audio":
             raise HTTPException(404, "音频不存在")
@@ -680,10 +968,12 @@ def create_app(
         if not job.get("job_id"):
             return job
         meeting = db.query_one(
-            "SELECT id, status FROM meetings WHERE source_job_id=? LIMIT 1", (job["job_id"],)
+            "SELECT id, status, title FROM meetings WHERE source_job_id=? LIMIT 1",
+            (job["job_id"],),
         )
         if meeting:
-            job = {**job, "meeting_id": meeting["id"]}
+            # 转写录音页卡片标题用会议名，不再只显示一串会议编号。
+            job = {**job, "meeting_id": meeting["id"], "meeting_title": meeting["title"]}
             latest_shadow = db.query_one(
                 """SELECT state, updated_at, error FROM asr_shadow_runs
                    WHERE meeting_id=? ORDER BY created_at DESC, id DESC LIMIT 1""",
@@ -740,7 +1030,12 @@ def create_app(
             {
                 "csrf_token": csrf_token,
                 "mobile_read_only": True,
+                # 任务域（确认/状态/交付物/备注）对移动端放开写，其余写仍限桌面端。
+                "mobile_task_write": True,
                 "semantic_enabled": settings.semantic_enabled,
+                "pending_confirm_count": task_service.list_tasks(
+                    status="pending_confirm", limit=1
+                )["total"],
             }
         )
         response.set_cookie(
@@ -751,6 +1046,7 @@ def create_app(
             secure=request.url.scheme == "https",
             path="/",
         )
+        response.headers["Cache-Control"] = "no-store"
         return response
 
     @app.get("/api/health")
@@ -760,6 +1056,10 @@ def create_app(
         staging_ok = settings.staging_root.is_dir() and not settings.staging_root.is_symlink()
         last_scan = getattr(app.state, "last_scan", {}) or {}
         scan_errors = int(last_scan.get("errors") or 0)
+        # 隔离目录只说明那一个目录没被导入，不代表扫描本身有问题，所以不进
+        # scanner 状态；但必须能查到是哪个目录、卡在哪，否则只剩一个数字没法排障。
+        quarantined_count = int(last_scan.get("quarantined") or 0)
+        quarantine_details = list(last_scan.get("quarantine_details") or [])
         fatal_scan_error = getattr(app.state, "last_scan_error", None)
         scanner_details = dict(getattr(app.state, "scanner_state", new_scanner_state()))
         stale_scan = bool(
@@ -785,10 +1085,24 @@ def create_app(
             else "degraded"
         )
         relay_counts = dict(relay_health.get("counts") or {})
-        qwen_details = dict(getattr(app.state, "qwen_worker_state", new_qwen_worker_state()))
-        qwen_counts = (
-            db.query_one(
-                """SELECT SUM(state='queued') AS queued_count,
+        attention_state = unacknowledged_attention()
+        # relay 因「归档未完成」降级、而这些任务都已被确认过时，不再算降级：旧失败没有出口时
+        # 健康灯常年是黄的，真出新问题反而显不出来（260914）。数量对得上才放行，防快照滞后漏掉新增。
+        pending_archive_total = int(relay_counts.get("pending_archive_failures") or 0)
+        if (
+            relay_status == "degraded"
+            and worker_state in {"idle", "busy"}
+            and attention_state is not None
+            and pending_archive_total > 0
+            and attention_state["acknowledged_archive"] == pending_archive_total
+        ):
+            relay_status = "healthy"
+            relay_worker_status = "healthy"
+        qwen_details = dict(
+            getattr(app.state, "qwen_worker_state", new_qwen_worker_state())
+        )
+        qwen_counts = db.query_one(
+            """SELECT SUM(state='queued') AS queued_count,
                       SUM(state='running') AS running_count,
                       SUM(state='running' AND (
                           owner_id IS NULL OR heartbeat_at IS NULL
@@ -796,9 +1110,7 @@ def create_app(
                       )) AS orphaned_running_count,
                       MIN(CASE WHEN state='queued' THEN created_at END) AS oldest_queued_at
                  FROM asr_shadow_runs"""
-            )
-            or {}
-        )
+        ) or {}
         queued_count = int(qwen_counts.get("queued_count") or 0)
         running_count = int(qwen_counts.get("running_count") or 0)
         orphaned_running_count = int(qwen_counts.get("orphaned_running_count") or 0)
@@ -826,7 +1138,9 @@ def create_app(
                 cycle_stale = bool(started is not None and monotonic_now - float(started) > 180)
             elif not qwen_details.get("in_progress"):
                 completed = qwen_details.get("last_completed_monotonic")
-                cycle_stale = bool(completed is not None and monotonic_now - float(completed) > 180)
+                cycle_stale = bool(
+                    completed is not None and monotonic_now - float(completed) > 180
+                )
         qwen_failures = int(qwen_details.get("consecutive_failures") or 0)
         qwen_worker_status = (
             "failed"
@@ -874,6 +1188,14 @@ def create_app(
             except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 backup_status = "degraded"
         scanner_details.pop("last_completed_monotonic", None)
+        process_details = process_file_handles()
+        process_status = (
+            "degraded"
+            if process_details["open_files"] is not None
+            and process_details["open_files_limit"]
+            and process_details["open_files"] > process_details["open_files_limit"] * 0.8
+            else "healthy"
+        )
         return {
             "status": "ok"
             if database_ok
@@ -884,8 +1206,10 @@ def create_app(
             and scanner_status == "healthy"
             and qwen_worker_status == "healthy"
             and backup_status == "healthy"
+            and process_status == "healthy"
             else "degraded",
             "services": {
+                "process": process_status,
                 "database": "healthy" if database_ok else "failed",
                 "archive": "healthy" if archive_ok else "unavailable",
                 "staging": "healthy" if staging_ok else "unavailable",
@@ -905,12 +1229,28 @@ def create_app(
                 "unreviewed": db.query_one(
                     "SELECT COUNT(*) AS count FROM meetings WHERE status = 'completed_unreviewed'"
                 )["count"],
-                "failed_jobs": int(relay_counts.get("failed") or 0),
+                "failed_jobs": (
+                    attention_state["failed"]
+                    if attention_state is not None
+                    else int(relay_counts.get("failed") or 0)
+                ),
+                "attention_jobs": (
+                    len(attention_state["items"]) if attention_state is not None else None
+                ),
+                "acknowledged_jobs": (
+                    attention_state["acknowledged"] if attention_state is not None else 0
+                ),
                 "queued_jobs": int(relay_counts.get("queued") or 0),
                 "scan_errors": scan_errors,
+                "quarantined_dirs": quarantined_count,
             },
             "details": {
-                "scanner": scanner_details,
+                "process": process_details,
+                "attention": {
+                    "by_kind": attention_state["by_kind"] if attention_state is not None else None,
+                    "quarantined": quarantined_count,
+                },
+                "scanner": {**scanner_details, "quarantined": quarantine_details},
                 "semantic": dict(getattr(app.state, "semantic_details", new_semantic_state())),
                 "relay_worker": {
                     "state": worker_state,
@@ -930,7 +1270,9 @@ def create_app(
                     "orphaned_running_count": orphaned_running_count,
                     "queued_stale": queued_stale,
                     "oldest_queued_age_seconds": (
-                        round(queued_age_seconds, 3) if queued_age_seconds is not None else None
+                        round(queued_age_seconds, 3)
+                        if queued_age_seconds is not None
+                        else None
                     ),
                 },
                 "backup": backup_details,
@@ -962,7 +1304,9 @@ def create_app(
             # 界面只区分“已完成 / 失败”；历史库里三种完成态都算已完成。
             grouped = MEETING_STATUS_GROUPS.get(status)
             if grouped:
-                clauses.append(f"m.status IN ({', '.join('?' for _ in grouped)})")
+                clauses.append(
+                    f"m.status IN ({', '.join('?' for _ in grouped)})"
+                )
                 params.extend(grouped)
             else:
                 clauses.append("m.status = ?")
@@ -986,7 +1330,7 @@ def create_app(
                 """EXISTS (SELECT 1 FROM speakers sp WHERE sp.meeting_id = m.id
                    AND sp.display_name LIKE ? ESCAPE '\\')"""
             )
-            params.append(f"%{_escape_like(participant)}%")
+            params.append(f"%{escape_like_pattern(participant)}%")
         if q:
             clauses.append(
                 """(m.title LIKE ? ESCAPE '\\' OR EXISTS (
@@ -994,7 +1338,7 @@ def create_app(
                     AND s.version_id = m.current_transcript_version_id
                     AND s.text LIKE ? ESCAPE '\\'))"""
             )
-            escaped_query = _escape_like(q)
+            escaped_query = escape_like_pattern(q)
             params.extend((f"%{escaped_query}%", f"%{escaped_query}%"))
         count_sql = f"""
             SELECT COUNT(DISTINCT m.id) AS count
@@ -1052,7 +1396,8 @@ def create_app(
             or isinstance(source_attempt, bool)
             or not isinstance(content_sha256, str)
             or not isinstance(current_markdown, str)
-            or hashlib.sha256(current_markdown.encode("utf-8")).hexdigest() != content_sha256
+            or hashlib.sha256(current_markdown.encode("utf-8")).hexdigest()
+            != content_sha256
         ):
             raise HTTPException(409, "该会议当前纪要缺少可验证来源")
         try:
@@ -1102,11 +1447,10 @@ def create_app(
                 job_id=source_job_id,
                 attempt=source_attempt,
             )
-            if (
-                relay_attempt.get("minutes_protocol_version") != 3
-                or relay_attempt.get("requested_stage") != current.get("requested_stage")
-                or relay_attempt.get("input_transcript_sha256")
-                != current.get("input_transcript_sha256")
+            if not relay_attempt_matches_minutes(
+                relay_attempt,
+                requested_stage=current.get("requested_stage"),
+                input_transcript_sha256=current.get("input_transcript_sha256"),
             ):
                 raise MinutesEvidenceError("纪要版本与 Relay attempt 不一致")
 
@@ -1132,23 +1476,17 @@ def create_app(
                 and Path(relative).suffix.casefold() == ".md"
                 and entry["sha256"] == content_sha256
             ]
-            source_entries = [
-                entry
-                for relative, entry in entries.items()
-                if Path(relative).parent == Path(".")
-                and Path(relative).suffix.casefold() == ".srt"
-                and entry["sha256"] == expected_source_srt_sha256
-            ]
+            source_entry = select_source_srt_entry(
+                entries,
+                expected_sha256=expected_source_srt_sha256,
+                requested_stage=current.get("requested_stage"),
+            )
             if (
                 evidence_entry is None
                 or plan_entry is None
                 or plan_entry["sha256"] != expected_plan_sha256
                 or len(minutes_entries) != 1
-                or len(source_entries) != 1
-                or (
-                    current.get("requested_stage") == "minutes_generating"
-                    and source_entries[0]["path"] != "input-transcript.srt"
-                )
+                or source_entry is None
             ):
                 raise MinutesEvidenceError("暂无可验证证据：manifest 关联产物不唯一")
 
@@ -1174,8 +1512,12 @@ def create_app(
 
             evidence_path = indexed_artifact(evidence_entry, {"minutes_evidence"})
             plan_path = indexed_artifact(plan_entry, {"minutes_plan"})
-            minutes_path = indexed_artifact(minutes_entries[0], {"minutes_md", "document_md"})
-            source_srt_path = indexed_artifact(source_entries[0], {"srt", "whisper_srt"})
+            minutes_path = indexed_artifact(
+                minutes_entries[0], {"minutes_md", "document_md"}
+            )
+            source_srt_path = indexed_artifact(
+                source_entry, {"srt", "whisper_srt"}
+            )
             return load_minutes_evidence(
                 evidence_path,
                 expected_sha256=evidence_entry["sha256"],
@@ -1185,7 +1527,9 @@ def create_app(
                 expected_minutes_sha256=content_sha256,
                 source_srt_path=source_srt_path,
                 expected_source_srt_sha256=expected_source_srt_sha256,
-                expected_input_transcript_sha256=current.get("input_transcript_sha256"),
+                expected_input_transcript_sha256=current.get(
+                    "input_transcript_sha256"
+                ),
             )
         except (OSError, MinutesEvidenceError) as error:
             raise HTTPException(409, str(error)) from error
@@ -1197,7 +1541,9 @@ def create_app(
         except QwenShadowError as error:
             raise HTTPException(409, str(error)) from error
 
-    @app.post("/api/meetings/{meeting_id}/asr-shadow/qwen/{run_id}/retry", status_code=202)
+    @app.post(
+        "/api/meetings/{meeting_id}/asr-shadow/qwen/{run_id}/retry", status_code=202
+    )
     def retry_qwen_shadow(meeting_id: str, run_id: str, _body: dict[str, Any]):
         try:
             return _serialize_shadow_run(qwen.retry(meeting_id, run_id))
@@ -1320,7 +1666,9 @@ def create_app(
             entities_json = json.dumps(
                 sample["entities"], ensure_ascii=False, separators=(",", ":")
             )
-            numbers_json = json.dumps(sample["numbers"], ensure_ascii=False, separators=(",", ":"))
+            numbers_json = json.dumps(
+                sample["numbers"], ensure_ascii=False, separators=(",", ":")
+            )
             tags_json = json.dumps(sample["tags"], ensure_ascii=False, separators=(",", ":"))
             if existing:
                 connection.execute(
@@ -1403,7 +1751,12 @@ def create_app(
     @app.get("/api/media/{artifact_id}")
     def media(artifact_id: int):
         _artifact, path = checked_audio_artifact(artifact_id)
-        return FileResponse(path, filename=path.name, content_disposition_type="inline")
+        return FileResponse(
+            path,
+            filename=path.name,
+            content_disposition_type="inline",
+            media_type=audio_media_type(path),
+        )
 
     @app.get("/api/media/{artifact_id}/peaks")
     def media_peaks(artifact_id: int):
@@ -1436,8 +1789,9 @@ def create_app(
 
     @app.post("/api/jobs/enqueue")
     def enqueue_job(body: JobEnqueueInput):
+        audio_path = checked_manual_audio_path(body.audio_path)
         try:
-            job_id = relay.enqueue(body.audio_path, hotwords=body.hotwords)
+            job_id = relay.enqueue(audio_path, hotwords=body.hotwords)
             db.add_event(
                 "job_enqueued",
                 job_id=job_id,
@@ -1581,6 +1935,8 @@ def create_app(
         path = Path(artifact["path"])
         return path if path.is_file() and not path.is_symlink() else None
 
+    retranscribe_lock = threading.Lock()
+
     def ensure_relay_job(
         meeting_id: str, hotwords: list[str] | None = None
     ) -> tuple[dict[str, Any], bool]:
@@ -1595,16 +1951,37 @@ def create_app(
         audio = preferred_audio_path(meeting_id)
         if not audio:
             raise HTTPException(409, "该历史会议没有可用原音频，无法重新处理")
+        # 「查 source_job_id → 起 relay job → 回写」在进程内串行化：并发/连拍的重转写请求
+        # 在这里排队而不是各自 enqueue。锁不落在 SQLite 上——relay.enqueue 是子进程调用，
+        # 不能拿着数据库写锁等它把扫描循环的写全部堵住；回写仍带 IS NULL 守卫兜底。
+        with retranscribe_lock:
+            current = db.query_one(
+                "SELECT source_job_id FROM meetings WHERE id = ?", (meeting_id,)
+            )
+            existing_job_id = current["source_job_id"] if current else None
+            if existing_job_id:
+                job_id, created = existing_job_id, False
+            else:
+                try:
+                    job_id = relay.enqueue(audio, hotwords=hotwords)
+                except RelayUnavailable as error:
+                    raise HTTPException(409, str(error)) from error
+                rowcount = db.execute(
+                    "UPDATE meetings SET source_job_id=?, updated_at=? WHERE id=? "
+                    "AND source_job_id IS NULL",
+                    (job_id, utc_now(), meeting_id),
+                )
+                if rowcount == 0:
+                    current = db.query_one(
+                        "SELECT source_job_id FROM meetings WHERE id = ?", (meeting_id,)
+                    )
+                    job_id = current["source_job_id"]
+                created = rowcount > 0
         try:
-            job_id = relay.enqueue(audio, hotwords=hotwords)
             status = relay.status(job_id)
         except RelayUnavailable as error:
             raise HTTPException(409, str(error)) from error
-        db.execute(
-            "UPDATE meetings SET source_job_id=?, updated_at=? WHERE id=?",
-            (job_id, utc_now(), meeting_id),
-        )
-        return status, True
+        return status, created
 
     def request_minutes_regeneration(
         meeting_id: str,
@@ -1612,6 +1989,7 @@ def create_app(
         actor: str = "user",
         event_type: str = "minutes_regeneration_requested",
         extra_payload: dict[str, Any] | None = None,
+        backend: str | None = None,
     ) -> dict[str, Any]:
         meeting = db.query_one("SELECT id, source_job_id FROM meetings WHERE id=?", (meeting_id,))
         if not meeting:
@@ -1648,6 +2026,7 @@ def create_app(
                         job_id,
                         "minutes_generating",
                         transcript_path=snapshot_path,
+                        backend=backend,
                     )
                 except RelayUnavailable as error:
                     raise HTTPException(409, str(error)) from error
@@ -1658,6 +2037,7 @@ def create_app(
                         audio,
                         stage="minutes_generating",
                         transcript_path=snapshot_path,
+                        backend=backend,
                     )
                 except RelayUnavailable as error:
                     raise HTTPException(409, str(error)) from error
@@ -1673,13 +2053,30 @@ def create_app(
             meeting_id=meeting_id,
             job_id=job_id,
             actor=actor,
-            payload={"input_transcript_sha256": snapshot_sha256, **(extra_payload or {})},
+            payload={
+                "input_transcript_sha256": snapshot_sha256,
+                **({"llm_backend": backend} if backend else {}),
+                **(extra_payload or {}),
+            },
         )
-        return {"status": "queued", "meeting_id": meeting_id, **result}
+        return {
+            "status": "queued",
+            "meeting_id": meeting_id,
+            **({"llm_backend": backend} if backend else {}),
+            **result,
+        }
 
     @app.post("/api/meetings/{meeting_id}/minutes/regenerate")
-    def regenerate_minutes(meeting_id: str, _body: dict[str, Any]):
-        return request_minutes_regeneration(meeting_id)
+    def regenerate_minutes(meeting_id: str, body: dict[str, Any]):
+        # backend 缺省 = 跟 relay 的全局默认（当前 DeepSeek）；前端「用 Claude 重写
+        # 纪要」会显式传 claude，让这一场不吃默认后端。
+        backend = body.get("backend") if isinstance(body, dict) else None
+        if backend is not None:
+            if not isinstance(backend, str) or backend not in MINUTES_BACKENDS:
+                raise HTTPException(
+                    422, f"backend 只能是 {'/'.join(sorted(MINUTES_BACKENDS))}"
+                )
+        return request_minutes_regeneration(meeting_id, backend=backend)
 
     def find_meeting_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
         """把 relay 任务对回工作台会议。
@@ -1752,7 +2149,9 @@ def create_app(
             last_at = history.get("last_at") if history else None
             if last_at:
                 try:
-                    elapsed = (datetime.now(UTC) - datetime.fromisoformat(last_at)).total_seconds()
+                    elapsed = (
+                        datetime.now(UTC) - datetime.fromisoformat(last_at)
+                    ).total_seconds()
                 except ValueError:
                     elapsed = MINUTES_AUTO_RECOVERY_COOLDOWN_SECONDS
                 if elapsed < MINUTES_AUTO_RECOVERY_COOLDOWN_SECONDS:
@@ -1773,6 +2172,137 @@ def create_app(
         return recovered
 
     app.state.recover_stalled_minutes = recover_stalled_minutes
+
+    def refresh_attention_jobs() -> list[dict[str, Any]] | None:
+        """失败或归档未完成的 relay 任务快照；relay 不可用时返回 None（保留上一份）。"""
+        try:
+            jobs = relay.list_jobs(limit=500)
+        except (RelayUnavailable, AttributeError):
+            return None
+        items: list[dict[str, Any]] = []
+        for job in jobs:
+            if not needs_attention(job):
+                continue
+            job_id = str(job.get("job_id") or "")
+            if not job_id:
+                continue
+            meeting = db.query_one(
+                "SELECT id, title FROM meetings WHERE source_job_id=? LIMIT 1", (job_id,)
+            )
+            auto_recovery_left = False
+            if job.get("failure_stage") in RECOVERABLE_MINUTES_FAILURE_STAGES:
+                linked = find_meeting_for_job(job)
+                if (
+                    linked
+                    and int(linked["segment_count"] or 0) > 0
+                    and int(linked["minutes_count"] or 0) == 0
+                ):
+                    attempts = db.query_one(
+                        """SELECT COUNT(*) AS count FROM events
+                            WHERE job_id=? AND event_type='minutes_auto_recovery_requested'""",
+                        (job_id,),
+                    )
+                    auto_recovery_left = (
+                        int(attempts["count"] or 0) < MINUTES_AUTO_RECOVERY_MAX_ATTEMPTS
+                    )
+                    if meeting is None:
+                        meeting = db.query_one(
+                            "SELECT id, title FROM meetings WHERE id=?", (linked["id"],)
+                        )
+            items.append(
+                describe_job(job, meeting=meeting, auto_recovery_left=auto_recovery_left)
+            )
+        return items
+
+    app.state.refresh_attention_jobs = refresh_attention_jobs
+
+    def unacknowledged_attention() -> dict[str, Any] | None:
+        snapshot = app.state.attention_jobs
+        if snapshot is None:
+            return None
+        acknowledged = {
+            row["job_id"]: row["job_updated_at"]
+            for row in db.query_all("SELECT job_id, job_updated_at FROM job_acknowledgements")
+        }
+        open_items: list[dict[str, Any]] = []
+        by_kind = {kind: 0 for kind in ATTENTION_KINDS}
+        failed = acknowledged_count = acknowledged_archive = 0
+        for item in snapshot:
+            if acknowledged.get(item["job_id"]) == item["updated_at"]:
+                acknowledged_count += 1
+                if item["kind"] == "archive":
+                    acknowledged_archive += 1
+                continue
+            open_items.append(item)
+            by_kind[item["kind"]] += 1
+            if item.get("status") == "failed":
+                failed += 1
+        return {
+            "items": open_items,
+            "by_kind": by_kind,
+            "failed": failed,
+            "acknowledged": acknowledged_count,
+            "acknowledged_archive": acknowledged_archive,
+        }
+
+    @app.get("/api/attention")
+    def attention():
+        if app.state.attention_jobs is None:
+            refreshed = refresh_attention_jobs()
+            if refreshed is not None:
+                app.state.attention_jobs = refreshed
+                app.state.attention_refreshed_at = time.monotonic()
+        state = unacknowledged_attention()
+        last_scan = getattr(app.state, "last_scan", {}) or {}
+        # 隔离目录对应的转写任务已经在清单里（含已确认归档的）就不再单列：同一段录音算两次，
+        # 两条下一步还互相矛盾，归档了任务那条隔离也消不掉（260914 验收）。
+        known_job_ids = {item["job_id"] for item in app.state.attention_jobs or []}
+        quarantined = [
+            describe_quarantine(item)
+            for item in last_scan.get("quarantine_details") or []
+            if manifest_job_id(item.get("directory")) not in known_job_ids
+        ]
+        return {
+            "jobs": state["items"] if state else [],
+            "jobs_available": state is not None,
+            "acknowledged_count": state["acknowledged"] if state else 0,
+            "quarantined": quarantined,
+        }
+
+    @app.post("/api/jobs/{job_id}/acknowledge")
+    def acknowledge_job(job_id: str):
+        def find(snapshot: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+            return next((entry for entry in snapshot or [] if entry["job_id"] == job_id), None)
+
+        item = find(app.state.attention_jobs)
+        refreshed_at = app.state.attention_refreshed_at
+        if item is None and (
+            refreshed_at is None
+            or time.monotonic() - refreshed_at >= ACKNOWLEDGE_REFRESH_MIN_SECONDS
+        ):
+            refreshed = refresh_attention_jobs()
+            if refreshed is not None:
+                app.state.attention_jobs = refreshed
+                app.state.attention_refreshed_at = time.monotonic()
+            item = find(refreshed)
+        if item is None:
+            raise HTTPException(404, "这条任务已经不需要处理")
+        now = utc_now()
+        db.execute(
+            """INSERT INTO job_acknowledgements(job_id, job_updated_at, acknowledged_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(job_id) DO UPDATE SET
+                   job_updated_at=excluded.job_updated_at,
+                   acknowledged_at=excluded.acknowledged_at""",
+            (job_id, item["updated_at"], now),
+        )
+        db.add_event(
+            "job_acknowledged",
+            job_id=job_id,
+            actor="user",
+            payload={"failure_stage": item.get("stage"), "kind": item.get("kind")},
+        )
+        return {"job_id": job_id, "acknowledged_at": now}
 
     @app.post("/api/meetings/{meeting_id}/retranscribe")
     def retranscribe(meeting_id: str, body: HotwordsModel):
@@ -2002,12 +2532,20 @@ def create_app(
                 changed_fields.append("title")
                 event_payload["title"] = normalized_title
             if body.project_id is not None:
+                if body.project_id:
+                    task_service._assert_project(connection, body.project_id)
+                # 人工改项目（含清空）一律标 manual，与自动归属（ai）互斥、永不覆盖。
                 connection.execute(
-                    "UPDATE meetings SET project_id=?, updated_at=? WHERE id=?",
+                    "UPDATE meetings SET project_id=?, project_origin='manual', updated_at=? WHERE id=?",
                     (body.project_id or None, utc_now(), meeting_id),
                 )
                 changed_fields.append("project_id")
             if body.tag_ids is not None:
+                for tag_id in body.tag_ids:
+                    if connection.execute(
+                        "SELECT 1 FROM tags WHERE id=?", (tag_id,)
+                    ).fetchone() is None:
+                        raise NotFoundError(f"标签不存在：{tag_id}")
                 connection.execute("DELETE FROM meeting_tags WHERE meeting_id=?", (meeting_id,))
                 for tag_id in body.tag_ids:
                     connection.execute(
@@ -2015,6 +2553,25 @@ def create_app(
                         (meeting_id, tag_id),
                     )
                 changed_fields.append("tag_ids")
+            if body.requirement_ids is not None:
+                # D24：先去重，任一不存在整批 404、这条 PATCH 一条都不写
+                # （NotFoundError 在 UPDATE/INSERT 之前抛出，靠外层事务整体回滚）。
+                requirement_ids = dedupe_preserve_order(body.requirement_ids)
+                for requirement_id in requirement_ids:
+                    if connection.execute(
+                        "SELECT 1 FROM requirements WHERE id=?", (requirement_id,)
+                    ).fetchone() is None:
+                        raise NotFoundError(f"需求不存在：{requirement_id}")
+                connection.execute(
+                    "DELETE FROM requirement_meetings WHERE meeting_id=?", (meeting_id,)
+                )
+                for requirement_id in requirement_ids:
+                    connection.execute(
+                        """INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at)
+                           VALUES (?, ?, ?)""",
+                        (requirement_id, meeting_id, utc_now()),
+                    )
+                changed_fields.append("requirement_ids")
         event_payload["fields"] = changed_fields
         db.add_event(
             "meeting_metadata_updated",
@@ -2026,24 +2583,278 @@ def create_app(
 
     @app.get("/api/projects")
     def projects():
-        return db.query_all(
-            """SELECT p.*, COUNT(m.id) AS meeting_count
-                 FROM projects p LEFT JOIN meetings m ON m.project_id=p.id
-                GROUP BY p.id ORDER BY p.name"""
-        )
+        return task_service.list_projects()
 
     @app.post("/api/projects")
     def create_project(body: ProjectInput):
-        project_id = f"project-{secrets.token_hex(8)}"
-        db.execute(
-            "INSERT INTO projects(id, name, color, created_at) VALUES (?, ?, ?, ?)",
-            (project_id, body.name.strip(), body.color, utc_now()),
-        )
-        db.add_event("project_created", actor="user", payload={"project_id": project_id})
-        project = db.query_one("SELECT * FROM projects WHERE id = ?", (project_id,))
-        assert project is not None
-        project["meeting_count"] = 0
-        return project
+        try:
+            return task_service.create_project(
+                name=body.name, color=body.color, origin="manual",
+                material_roots=body.material_roots,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.patch("/api/projects/{project_id}")
+    def update_project(project_id: str, body: ProjectUpdateInput):
+        try:
+            return task_service.update_project(
+                project_id, name=body.name, color=body.color,
+                material_roots=body.material_roots,
+                material_roots_given="material_roots" in body.model_fields_set,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/projects/{project_id}/board")
+    def project_board(project_id: str):
+        return task_service.project_board(project_id)
+
+    @app.get("/api/projects/{project_id}/meetings")
+    def project_meetings_endpoint(project_id: str):
+        return requirements.project_meetings(db, project_id)
+
+    @app.post("/api/projects/{project_id}/material-roots")
+    def add_project_material_root(project_id: str, body: MaterialRootInput):
+        try:
+            return materials.add_material_root(
+                db, settings.material_browse_root, project_id, body.path
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.delete("/api/projects/{project_id}/material-roots/{root_id}")
+    def remove_project_material_root(project_id: str, root_id: int):
+        materials.remove_material_root(db, project_id, root_id)
+        return {"ok": True}
+
+    @app.get("/api/projects/{project_id}/material-subfolders")
+    def project_material_subfolders(project_id: str):
+        roots = materials.list_material_roots(db, project_id)
+        return {
+            "roots": [
+                {
+                    "root_id": root["id"],
+                    "root_path": root["path"],
+                    **materials.project_subfolder_stats(Path(root["path"])),
+                }
+                for root in roots
+            ]
+        }
+
+    @app.get("/api/materials/browse")
+    def browse_materials(path: str | None = None):
+        try:
+            return materials.browse_directory(settings.material_browse_root, path)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/requirements")
+    def list_requirements_endpoint(
+        project_id: str | None = None,
+        status: str | None = None,
+        priority: str | None = None,
+        q: str | None = None,
+        limit: int = Query(default=10, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ):
+        try:
+            return requirements.list_requirements(
+                db, project_id=project_id, status=status, priority=priority, q=q,
+                limit=limit, offset=offset,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/requirements")
+    def create_requirement(body: RequirementCreateInput):
+        try:
+            return requirements.create_requirement(
+                task_service,
+                project_id=body.project_id,
+                title=body.title,
+                priority=body.priority,
+                folder_paths=body.folder_paths,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/requirements/{requirement_id}")
+    def requirement_detail(requirement_id: str):
+        return requirements.get_requirement(task_service, requirement_id)
+
+    @app.patch("/api/requirements/{requirement_id}")
+    def update_requirement(requirement_id: str, body: RequirementUpdateInput):
+        try:
+            return requirements.update_requirement(
+                task_service,
+                requirement_id,
+                title=body.title,
+                project_id=body.project_id,
+                priority=body.priority,
+                status=body.status,
+                folder_paths=body.folder_paths,
+                folder_paths_given="folder_paths" in body.model_fields_set,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/requirements/{requirement_id}/folders/{folder_id}/files")
+    def requirement_folder_files(
+        requirement_id: str,
+        folder_id: int,
+        limit: int = Query(default=2000, ge=1, le=2000),
+        offset: int = Query(default=0, ge=0),
+    ):
+        return requirements.folder_files(db, requirement_id, folder_id, limit=limit, offset=offset)
+
+    @app.delete("/api/requirements/{requirement_id}/folders/{folder_id}")
+    def remove_requirement_folder(requirement_id: str, folder_id: int):
+        return requirements.remove_folder(task_service, requirement_id, folder_id)
+
+    @app.put("/api/requirements/{requirement_id}/meetings")
+    def set_requirement_meetings(requirement_id: str, body: RequirementMeetingsInput):
+        return requirements.set_meetings(task_service, requirement_id, body.meeting_ids)
+
+    @app.delete("/api/requirements/{requirement_id}/meetings/{meeting_id}")
+    def remove_requirement_meeting(requirement_id: str, meeting_id: str):
+        return requirements.remove_meeting(task_service, requirement_id, meeting_id)
+
+    @app.post("/api/requirements/{requirement_id}/tasks")
+    def attach_requirement_tasks(requirement_id: str, body: RequirementTasksInput):
+        try:
+            return requirements.attach_tasks(task_service, requirement_id, body.task_ids)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/tasks")
+    def tasks(
+        status: str | None = None,
+        project_id: str | None = None,
+        meeting_id: str | None = None,
+        extraction_id: int | None = None,
+        requirement_id: str | None = None,
+        assignee: str | None = None,
+        meeting_date_from: str | None = None,
+        meeting_date_to: str | None = None,
+        q: str | None = None,
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ):
+        try:
+            return task_service.list_tasks(
+                status=status,
+                project_id=project_id,
+                meeting_id=meeting_id,
+                extraction_id=extraction_id,
+                requirement_id=requirement_id,
+                assignee=assignee,
+                meeting_date_from=meeting_date_from,
+                meeting_date_to=meeting_date_to,
+                q=q,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/tasks/{task_id}")
+    def task_detail(task_id: str):
+        return task_service.get_task(task_id)
+
+    @app.post("/api/tasks")
+    def create_task(body: TaskCreateInput):
+        try:
+            return task_service.create_task(
+                title=body.title,
+                detail=body.detail,
+                project_id=body.project_id,
+                requirement_id=body.requirement_id,
+                assignee=body.assignee,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.patch("/api/tasks/{task_id}")
+    def update_task(task_id: str, body: TaskUpdateInput):
+        try:
+            return task_service.update_task(
+                task_id,
+                title=body.title,
+                detail=body.detail,
+                project_id=body.project_id,
+                assignee=body.assignee,
+                requirement_id=body.requirement_id,
+                requirement_id_given="requirement_id" in body.model_fields_set,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/tasks/batch-confirm")
+    def batch_confirm(body: BatchConfirmInput):
+        return task_service.batch_confirm(body.task_ids)
+
+    @app.post("/api/tasks/batch-reject")
+    def batch_reject(body: BatchConfirmInput):
+        return task_service.batch_reject(body.task_ids)
+
+    @app.post("/api/tasks/undo-review")
+    def undo_review(body: BatchConfirmInput):
+        return task_service.undo_review(body.task_ids)
+
+    @app.post("/api/tasks/{task_id}/confirm")
+    def confirm_task(task_id: str, body: TaskUpdateInput):
+        try:
+            return task_service.confirm_task(
+                task_id,
+                title=body.title,
+                detail=body.detail,
+                project_id=body.project_id,
+                assignee=body.assignee,
+                requirement_id=body.requirement_id,
+                requirement_id_given="requirement_id" in body.model_fields_set,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/reject")
+    def reject_task(task_id: str):
+        return task_service.reject_task(task_id)
+
+    @app.post("/api/tasks/{task_id}/status")
+    def task_status(task_id: str, body: TaskStatusInput):
+        try:
+            return task_service.set_status(task_id, body.status)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/comments")
+    def task_comment(task_id: str, body: TaskCommentInput):
+        try:
+            return task_service.add_comment(task_id, body.body)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/deliverables")
+    def task_deliverable(task_id: str, body: DeliverableInput):
+        try:
+            return task_service.add_deliverable(
+                task_id,
+                kind=body.kind,
+                url=body.url,
+                title=body.title,
+                note=body.note,
+                mark_done=body.mark_done,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/meetings/{meeting_id}/tasks/re-extract")
+    def re_extract(meeting_id: str, body: ReExtractInput):
+        try:
+            return task_service.re_extract(meeting_id, body.supplement)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
 
     @app.get("/api/tags")
     def tags():
@@ -2051,10 +2862,13 @@ def create_app(
 
     @app.post("/api/tags")
     def create_tag(body: TagInput):
+        name = body.name.strip()
+        if db.query_one("SELECT 1 FROM tags WHERE name=?", (name,)):
+            raise HTTPException(400, "标签已存在")
         tag_id = f"tag-{secrets.token_hex(8)}"
         db.execute(
             "INSERT INTO tags(id, name, color, created_at) VALUES (?, ?, ?, ?)",
-            (tag_id, body.name.strip(), body.color, utc_now()),
+            (tag_id, name, body.color, utc_now()),
         )
         db.add_event("tag_created", actor="user", payload={"tag_id": tag_id})
         return db.query_one("SELECT * FROM tags WHERE id = ?", (tag_id,))
@@ -2177,6 +2991,109 @@ def create_app(
             payload={"upload_id": upload_id},
         )
         return {"ok": True, "upload_id": upload_id}
+
+    snapshot_path = settings.data_dir / "glossary-snapshot.json"
+
+    @app.get("/api/glossary/terms")
+    def glossary_terms(scope: str | None = None, project_id: str | None = None):
+        return list_terms(db, scope=scope, project_id=project_id)
+
+    @app.get("/api/glossary/scopes")
+    def glossary_scopes():
+        return list_scopes(db)
+
+    @app.post("/api/glossary/terms")
+    def glossary_create_term(body: GlossaryTermInput):
+        scope = body.scope
+        if body.project_id:
+            project_row = db.query_one(
+                "SELECT name FROM projects WHERE id=?", (body.project_id,)
+            )
+            if project_row is None:
+                raise NotFoundError(f"项目不存在：{body.project_id}")
+            scope = project_row["name"]  # 挂了项目，scope 由项目名派生，忽略请求里的 scope
+        try:
+            return create_term(
+                db,
+                term=body.term,
+                aliases=body.aliases,
+                scope=scope,
+                category=body.category,
+                source=body.source,
+                confirmed=body.confirmed,
+                project_id=body.project_id or None,
+                snapshot_path=snapshot_path,
+            )
+        except GlossaryError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.put("/api/glossary/terms/{term_id}")
+    def glossary_update_term(term_id: str, body: GlossaryTermUpdate):
+        existing = get_term(db, term_id)
+        if existing is None:
+            raise HTTPException(404, "术语不存在")
+        update_kwargs: dict[str, Any] = {}
+        if "project_id" in body.model_fields_set:
+            if body.project_id:
+                project_row = db.query_one(
+                    "SELECT name FROM projects WHERE id=?", (body.project_id,)
+                )
+                if project_row is None:
+                    raise NotFoundError(f"项目不存在：{body.project_id}")
+                update_kwargs["project_id"] = body.project_id
+                update_kwargs["scope"] = project_row["name"]
+            else:
+                # 解绑：回到请求里给的 scope 桶，没给就落回通用
+                update_kwargs["project_id"] = None
+                update_kwargs["scope"] = body.scope or "通用"
+        elif body.scope is not None and existing["project_id"] is None:
+            # 已挂项目的术语 scope 由项目名派生，不接受脱离 project_id 单独改 scope
+            update_kwargs["scope"] = body.scope
+        try:
+            updated = update_term(
+                db,
+                term_id,
+                term=body.term,
+                aliases=body.aliases,
+                category=body.category,
+                confirmed=body.confirmed,
+                snapshot_path=snapshot_path,
+                **update_kwargs,
+            )
+        except GlossaryError as error:
+            raise HTTPException(400, str(error)) from error
+        if updated is None:
+            raise HTTPException(404, "术语不存在")
+        return updated
+
+    @app.delete("/api/glossary/terms/{term_id}")
+    def glossary_delete_term(term_id: str):
+        if not delete_term(db, term_id, snapshot_path=snapshot_path):
+            raise HTTPException(404, "术语不存在")
+        return {"ok": True}
+
+    @app.get("/api/glossary/suggestions")
+    def glossary_suggestions(status: str | None = None):
+        if status is not None and status not in {"pending", "confirmed", "rejected"}:
+            raise HTTPException(400, "status 必须是 pending/confirmed/rejected")
+        return list_suggestions(db, status=status)
+
+    @app.post("/api/glossary/suggestions/{suggestion_id}/confirm")
+    def glossary_confirm_suggestion(suggestion_id: str):
+        if not confirm_suggestion(db, suggestion_id, snapshot_path=snapshot_path):
+            raise HTTPException(404, "待确认建议不存在或已处理")
+        return {"ok": True}
+
+    @app.post("/api/glossary/suggestions/{suggestion_id}/reject")
+    def glossary_reject_suggestion(suggestion_id: str):
+        if not reject_suggestion(db, suggestion_id):
+            raise HTTPException(404, "待确认建议不存在或已处理")
+        return {"ok": True}
+
+    @app.get("/api/glossary/snapshot")
+    def glossary_snapshot():
+        return read_snapshot(snapshot_path)
+
 
     frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     if frontend_dist.is_dir():

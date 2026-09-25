@@ -83,6 +83,13 @@ class SemanticIndex:
         self._model()
         return True
 
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """把一批短文本编码为归一化向量（项目归属语义匹配用，复用同一模型实例）。"""
+        if not texts:
+            return []
+        vectors = self._normalize(self._model().encode(texts, show_progress_bar=False))
+        return vectors.tolist()
+
     @staticmethod
     def _normalize(vectors: np.ndarray) -> np.ndarray:
         vectors = np.asarray(vectors, dtype=np.float32)

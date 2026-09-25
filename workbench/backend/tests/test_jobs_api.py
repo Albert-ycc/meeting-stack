@@ -35,6 +35,7 @@ class FakeRelayClient:
         self.draft_modified = []
         self.draft_modified_error = None
         self.hotword_calls = []
+        self.backend_calls = []
 
     def list_jobs(self, *, status=None, limit=200):
         jobs = [
@@ -58,7 +59,9 @@ class FakeRelayClient:
             "events": [],
         }
 
-    def enqueue(self, audio_path, *, stage=None, transcript_path=None, hotwords=None):
+    def enqueue(
+        self, audio_path, *, stage=None, transcript_path=None, hotwords=None, backend=None
+    ):
         if self.enqueue_error:
             raise RelayUnavailable(self.enqueue_error)
         self.enqueued.append(str(audio_path))
@@ -67,13 +70,15 @@ class FakeRelayClient:
             (stage, str(transcript_path) if transcript_path else None, snapshot)
         )
         self.hotword_calls.append(("enqueue", list(hotwords or [])))
+        self.backend_calls.append(("enqueue", backend))
         return "job-new"
 
-    def retry(self, job_id, stage, *, transcript_path=None, hotwords=None):
+    def retry(self, job_id, stage, *, transcript_path=None, hotwords=None, backend=None):
         self.retried.append((job_id, stage))
         snapshot = Path(transcript_path).read_text(encoding="utf-8") if transcript_path else None
         self.retry_transcripts.append((str(transcript_path) if transcript_path else None, snapshot))
         self.hotword_calls.append(("retry", list(hotwords or [])))
+        self.backend_calls.append(("retry", backend))
         return {"job_id": job_id, "attempt": 2}
 
     def mark_draft_modified(self, job_id):
@@ -152,6 +157,8 @@ def test_jobs_api_reflects_workbench_draft_modified_status(tmp_path):
     job = client.get("/api/jobs").json()["items"][0]
 
     assert job["meeting_id"] == "vm-draft"
+    # 转写录音页卡片标题用会议名，不再只有会议编号
+    assert job["meeting_title"] == "草稿会"
     assert job["status"] == "draft_modified"
     assert job["relay_status"] == "completed_unreviewed"
 
@@ -256,7 +263,9 @@ def test_concurrent_upload_completion_allows_only_one_relay_enqueue_owner(tmp_pa
     assert second_response.json()["status"] == "enqueueing"
 
 
-def test_upload_recovers_relay_success_before_receipt_commit_with_same_job(tmp_path, monkeypatch):
+def test_upload_recovers_relay_success_before_receipt_commit_with_same_job(
+    tmp_path, monkeypatch
+):
     client, relay = make_client(tmp_path)
     headers = write_headers(client)
     payload = b"audio-data"
@@ -300,13 +309,30 @@ def test_upload_recovers_relay_success_before_receipt_commit_with_same_job(tmp_p
 def test_manual_path_enqueue_is_json_and_returns_job_id(tmp_path):
     client, relay = make_client(tmp_path)
     headers = write_headers(client)
+    audio_path = client.app.state.settings.staging_root / "meeting.m4a"
 
     response = client.post(
-        "/api/jobs/enqueue", json={"audio_path": "/tmp/meeting.m4a"}, headers=headers
+        "/api/jobs/enqueue", json={"audio_path": str(audio_path)}, headers=headers
     )
 
     assert response.json() == {"job_id": "job-new", "status": "queued"}
-    assert relay.enqueued == ["/tmp/meeting.m4a"]
+    assert relay.enqueued == [str(audio_path.resolve())]
+
+
+@pytest.mark.parametrize(
+    "audio_path",
+    ["/etc/passwd", "", "--help", "~/x.m4a"],
+)
+def test_manual_path_enqueue_rejects_paths_outside_managed_roots(tmp_path, audio_path):
+    client, relay = make_client(tmp_path)
+    headers = write_headers(client)
+
+    response = client.post(
+        "/api/jobs/enqueue", json={"audio_path": audio_path}, headers=headers
+    )
+
+    assert response.status_code == 400
+    assert relay.enqueued == []
 
 
 def test_hotwords_reach_manual_upload_retry_and_retranscribe_without_event_plaintext(tmp_path):
@@ -316,7 +342,10 @@ def test_hotwords_reach_manual_upload_retry_and_retranscribe_without_event_plain
 
     manual = client.post(
         "/api/jobs/enqueue",
-        json={"audio_path": "/tmp/meeting.m4a", "hotwords": [" ＡＣＭＥ ", "ACME", "云图"]},
+        json={
+            "audio_path": str(client.app.state.settings.staging_root / "meeting.m4a"),
+            "hotwords": [" ＡＣＭＥ ", "ACME", "云图"],
+        },
         headers=headers,
     )
     retried = client.post(
@@ -345,12 +374,7 @@ def test_hotwords_reach_manual_upload_retry_and_retranscribe_without_event_plain
         headers=headers,
     )
 
-    assert (
-        manual.status_code,
-        retried.status_code,
-        uploaded.status_code,
-        retranscribed.status_code,
-    ) == (
+    assert (manual.status_code, retried.status_code, uploaded.status_code, retranscribed.status_code) == (
         200,
         200,
         200,
@@ -362,10 +386,47 @@ def test_hotwords_reach_manual_upload_retry_and_retranscribe_without_event_plain
         ("enqueue", ["药品名"]),
         ("retry", ["术语甲"]),
     ]
-    event_payload = "\n".join(
-        row["payload_json"] for row in db.query_all("SELECT payload_json FROM events")
-    )
+    event_payload = "\n".join(row["payload_json"] for row in db.query_all("SELECT payload_json FROM events"))
     assert all(term not in event_payload for term in ["ACME", "云图", "客户A", "药品名", "术语甲"])
+
+
+def test_concurrent_retranscribe_of_legacy_meeting_enqueues_relay_job_once(tmp_path, monkeypatch):
+    client, relay = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(client.app.state.settings.database_path)
+    seed_editable_meeting(db, client.app.state.settings.archive_root, meeting_id="vm-race")
+
+    original_enqueue = relay.enqueue
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_enqueue(*args, **kwargs):
+        started.set()
+        assert release.wait(3)
+        return original_enqueue(*args, **kwargs)
+
+    monkeypatch.setattr(relay, "enqueue", slow_enqueue)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            client.post, "/api/meetings/vm-race/retranscribe", json={}, headers=headers
+        )
+        assert started.wait(3)
+        second = executor.submit(
+            client.post, "/api/meetings/vm-race/retranscribe", json={}, headers=headers
+        )
+        release.set()
+        first_response = first.result(timeout=3)
+        second_response = second.result(timeout=3)
+
+    assert len(relay.enqueued) == 1
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json()["job_id"] == second_response.json()["job_id"] == "job-new"
+
+    # 连拍第三次：source_job_id 已落库，不应再触发新的 enqueue。
+    third = client.post("/api/meetings/vm-race/retranscribe", json={}, headers=headers)
+    assert third.status_code == 200
+    assert len(relay.enqueued) == 1
 
 
 def test_minutes_regeneration_requires_and_retries_linked_relay_job(tmp_path):
@@ -399,6 +460,45 @@ def test_minutes_regeneration_requires_and_retries_linked_relay_job(tmp_path):
     assert not Path(snapshot_path).exists()
     assert legacy.status_code == 409
     assert "没有可用原音频" in legacy.json()["detail"]
+
+
+def test_minutes_regeneration_pins_the_requested_backend(tmp_path):
+    """「用 Claude 重写纪要」必须把后端透传到 relay，并挡住乱填的值。"""
+    client, relay = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(client.app.state.settings.database_path)
+    meeting_dir, _audio, _version = seed_editable_meeting(
+        db, client.app.state.settings.archive_root, meeting_id="vm-linked"
+    )
+    db.execute(
+        """UPDATE meetings SET source_job_id='job-linked', canonical_dir=?
+           WHERE id='vm-linked'""",
+        (str(meeting_dir),),
+    )
+    relay.statuses["job-linked"] = "completed_unreviewed"
+
+    default = client.post(
+        "/api/meetings/vm-linked/minutes/regenerate", json={}, headers=headers
+    )
+    assert default.status_code == 200
+    assert relay.backend_calls[-1] == ("retry", None)
+
+    pinned = client.post(
+        "/api/meetings/vm-linked/minutes/regenerate",
+        json={"backend": "claude"},
+        headers=headers,
+    )
+    assert pinned.status_code == 200
+    assert relay.backend_calls[-1] == ("retry", "claude")
+    assert pinned.json()["llm_backend"] == "claude"
+
+    rejected = client.post(
+        "/api/meetings/vm-linked/minutes/regenerate",
+        json={"backend": "gpt5"},
+        headers=headers,
+    )
+    assert rejected.status_code == 422
+    assert relay.backend_calls[-1] == ("retry", "claude")
 
 
 def test_minutes_regeneration_enqueues_historical_audio_at_minutes_stage(tmp_path):
@@ -460,7 +560,7 @@ def test_minutes_snapshot_is_removed_when_relay_rejects_regeneration(tmp_path):
     db.execute("UPDATE meetings SET source_job_id='job-cleanup' WHERE id='vm-cleanup'")
     relay.statuses["job-cleanup"] = "published"
 
-    def fail_retry(job_id, stage, *, transcript_path=None, hotwords=None):
+    def fail_retry(job_id, stage, *, transcript_path=None, hotwords=None, backend=None):
         relay.retry_transcripts.append((str(transcript_path), Path(transcript_path).read_text()))
         raise RelayUnavailable("rejected")
 
@@ -639,12 +739,9 @@ def test_auto_recovery_links_a_job_to_its_meeting_by_recording_name(tmp_path):
 
     assert client.app.state.recover_stalled_minutes() == 1
     assert relay.retried == [("job-abc", "minutes_generating")]
-    assert (
-        client.app.state.db.query_one(
-            "SELECT source_job_id FROM meetings WHERE id='vm-20260102-101500'"
-        )["source_job_id"]
-        == "job-abc"
-    )
+    assert client.app.state.db.query_one(
+        "SELECT source_job_id FROM meetings WHERE id='vm-20260102-101500'"
+    )["source_job_id"] == "job-abc"
 
 
 def test_auto_recovery_ignores_an_unrelated_recording_name(tmp_path):

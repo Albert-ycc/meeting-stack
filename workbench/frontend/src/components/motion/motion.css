@@ -1,0 +1,93 @@
+/* ============================================================
+ * 微动效组件库（react-bits 适配 · 纯 CSS + 轻 JS，零新依赖）
+ * 色 token 全部沿用 styles.css 的 :root 变量，不另起配色。
+ * ============================================================ */
+
+/* --- BlurText 标题模糊渐入 --- */
+.blur-text {
+  display: inline-block;
+  opacity: 0;
+  filter: blur(8px);
+  transform: translateY(6px);
+  animation: blur-text-in 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes blur-text-in {
+  to { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+/* --- FadeContent 视图切换淡入 --- */
+.fade-content {
+  animation: motion-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes motion-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* --- ScrollReveal 滚动浮现 --- */
+.scroll-reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity 0.55s cubic-bezier(0.16, 1, 0.3, 1), transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.scroll-reveal--visible {
+  opacity: 1;
+  transform: none;
+}
+
+/* --- SpotlightCard 卡片追光（适用于深色卡片） --- */
+.spotlight-card {
+  --mx: 50%;
+  --my: 50%;
+  position: relative;
+  overflow: hidden;
+}
+.spotlight-card__glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(460px circle at var(--mx) var(--my), rgba(240, 120, 59, 0.14), transparent 46%);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.spotlight-card:hover .spotlight-card__glow {
+  opacity: 1;
+}
+
+/* --- BorderGlow 描边流光（纯 CSS，hover 自动转圈） --- */
+@property --border-glow-a {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.border-glow {
+  position: relative;
+}
+.border-glow::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(from var(--border-glow-a), transparent 0%, var(--signal) 12%, var(--teal) 24%, transparent 38%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.border-glow:hover::before {
+  opacity: 1;
+  animation: border-glow-spin 2.6s linear infinite;
+}
+@keyframes border-glow-spin {
+  to { --border-glow-a: 360deg; }
+}
+
+/* --- GradualBlur 列表底部渐隐（纯 CSS，用于长滚动容器底部暗示） --- */
+.gradual-blur {
+  -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+}

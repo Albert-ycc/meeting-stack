@@ -187,3 +187,80 @@ def test_rotation_discards_corrupt_snapshots_before_counting_retention(tmp_path)
     assert result.status == "healthy"
     assert not corrupt.exists()
     assert list(mirror_dir.glob("workbench-*.sqlite3")) == [result.mirror_path]
+
+
+def _seed_segments_with_embeddings(db: Database, count: int) -> None:
+    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-emb', '向量验证', 'published')")
+    db.execute(
+        """INSERT INTO transcript_versions(id, meeting_id, version_no, kind, published, created_at)
+           VALUES ('ver-emb', 'vm-emb', 1, 'asr', 1, '2026-08-09T00:00:00Z')"""
+    )
+    for ordinal in range(count):
+        segment_id = f"seg-{ordinal}"
+        db.execute(
+            """INSERT INTO segments(id, version_id, meeting_id, ordinal, start_ms, end_ms, text)
+               VALUES (?, 'ver-emb', 'vm-emb', ?, ?, ?, ?)""",
+            (segment_id, ordinal, ordinal * 1000, ordinal * 1000 + 900, f"第 {ordinal} 句转写"),
+        )
+        db.execute(
+            """INSERT INTO embeddings(segment_id, model, dimensions, vector, created_at)
+               VALUES (?, 'bge-small-zh-v1.5', 512, ?, '2026-08-09T00:00:00Z')""",
+            (segment_id, b"\x00" * 2048),
+        )
+
+
+def test_backup_excludes_embeddings_and_keeps_business_data(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        archive_root=archive,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    _seed_segments_with_embeddings(db, 400)
+
+    result = BackupManager(db, settings).create()
+
+    with sqlite3.connect(result.local_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 0
+        # segments 是重算 embeddings 的源，必须原样保留
+        assert connection.execute("SELECT COUNT(*) FROM segments").fetchone()[0] == 400
+        assert (
+            connection.execute("SELECT text FROM segments WHERE id='seg-7'").fetchone()[0]
+            == "第 7 句转写"
+        )
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert result.derived_stripped is True
+    assert result.local_path.stat().st_size < settings.database_path.stat().st_size
+    receipt = json.loads((settings.backup_dir / "last-backup.json").read_text())
+    assert receipt["derived_stripped"] is True
+    assert receipt["derived_tables"] == ["embeddings"]
+
+
+def test_backup_survives_when_derived_table_is_absent(tmp_path):
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        archive_root=archive,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-noemb', '无向量表', 'published')")
+    db.execute("DROP TABLE embeddings")
+
+    result = BackupManager(db, settings).create()
+
+    assert result.status == "healthy"
+    assert result.derived_stripped is False
+    with sqlite3.connect(result.local_path) as connection:
+        assert (
+            connection.execute("SELECT title FROM meetings WHERE id='vm-noemb'").fetchone()[0]
+            == "无向量表"
+        )
+    receipt = json.loads((settings.backup_dir / "last-backup.json").read_text())
+    assert receipt["derived_stripped"] is False
+    assert receipt["derived_tables"] == []

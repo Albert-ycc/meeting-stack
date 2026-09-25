@@ -23,7 +23,7 @@ def export_gold_jsonl(
         params.append(meeting_id)
     rows = db.query_all(
         f"""SELECT * FROM asr_gold_samples
-             WHERE {" AND ".join(clauses)}
+             WHERE {' AND '.join(clauses)}
              ORDER BY meeting_id, start_ms, end_ms, id""",
         params,
     )

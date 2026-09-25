@@ -248,7 +248,10 @@ class UploadManager:
                 raise UploadError("上传完成回执损坏") from error
             if not isinstance(receipt, dict):
                 raise UploadError("上传完成回执损坏")
-            if receipt.get("status") != "enqueueing" or receipt.get("enqueue_owner") != owner_id:
+            if (
+                receipt.get("status") != "enqueueing"
+                or receipt.get("enqueue_owner") != owner_id
+            ):
                 return
             receipt["status"] = "saved_pending_enqueue"
             for key in ("enqueue_owner", "enqueue_started_at", "enqueue_lease_expires_at"):
@@ -274,7 +277,8 @@ class UploadManager:
                     raise UploadError("上传已绑定其他 Relay 任务")
                 return receipt
             if owner_id is not None and (
-                receipt.get("status") != "enqueueing" or receipt.get("enqueue_owner") != owner_id
+                receipt.get("status") != "enqueueing"
+                or receipt.get("enqueue_owner") != owner_id
             ):
                 raise UploadError("上传入队所有权已变化")
             receipt.update({"status": "queued", "job_id": job_id})
@@ -357,10 +361,10 @@ class UploadManager:
                         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
                     except (OSError, json.JSONDecodeError):
                         receipt = None
-                    if isinstance(receipt, dict) and receipt.get("status") in {
-                        "saved_pending_enqueue",
-                        "enqueueing",
-                    }:
+                    if (
+                        isinstance(receipt, dict)
+                        and receipt.get("status") in {"saved_pending_enqueue", "enqueueing"}
+                    ):
                         continue
                 shutil.rmtree(session_dir)
                 removed += 1

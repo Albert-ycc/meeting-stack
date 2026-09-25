@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 import sqlite3
@@ -799,6 +800,20 @@ def test_draft_title_uses_topic_named_minutes_heading(tmp_path):
     assert title == "工作台端到端验收测试"
 
 
+def test_minutes_heading_suffix_does_not_leave_a_dangling_separator(tmp_path):
+    draft = tmp_path / "attempt-1"
+    draft.mkdir()
+    markdown = draft / "麻醉MDT病例分享会需求沟通 · 会议纪要.md"
+    html = draft / "麻醉MDT病例分享会需求沟通 · 会议纪要.html"
+    markdown.write_text("# 麻醉MDT病例分享会需求沟通 · 会议纪要\n", encoding="utf-8")
+    html.write_text("<h1>麻醉MDT病例分享会需求沟通 · 会议纪要</h1>", encoding="utf-8")
+    bundle = SourceBundle("vm-20260806-024252-41ea3066", draft, "draft", 51, [markdown, html])
+
+    title = ArchiveImporter._display_title(bundle, bundle.meeting_id)
+
+    assert title == "麻醉MDT病例分享会需求沟通"
+
+
 def test_missing_minutes_fall_back_to_a_dated_placeholder_title(tmp_path):
     draft = tmp_path / "attempt-1"
     draft.mkdir()
@@ -1082,6 +1097,60 @@ def test_top_level_managed_directory_remains_unreviewed_draft_source(tmp_path):
     ) == {"source_root": "draft"}
 
 
+def test_managed_directory_survives_stale_whisper_reference_hash(tmp_path):
+    archive = tmp_path / "archive"
+    meeting_id = "vm-20260803-200807-2baec05c"
+    directory = write_managed_unreviewed_bundle(
+        archive / "260803 长录音会议",
+        meeting_id,
+        "job-whisper-async",
+        text="长录音未校对正文",
+    )
+    whisper = write_complete_whisper_reference(directory, meeting_id)
+    manifest_path = directory / "workbench-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"].append(
+        {
+            "path": "whisper-ref/whisper.log",
+            "bytes": 3,
+            "sha256": hashlib.sha256(b"old").hexdigest(),
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    # Whisper 是异步子状态：manifest 落盘后它还在追加日志，快照哈希从此永远对不上。
+    # 这不该把整个归档目录判成无效 manifest，否则标题会一直停在占位名上。
+    (whisper / "whisper.log").write_text("ok\n追加于 manifest 之后\n", encoding="utf-8")
+    relay_db = tmp_path / "relay.sqlite3"
+    with sqlite3.connect(relay_db) as connection:
+        connection.execute(
+            "CREATE TABLE jobs(job_id TEXT PRIMARY KEY, status TEXT, current_attempt INTEGER, archive_dir TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES ('job-whisper-async', 'completed_unreviewed', 1, ?)",
+            (str(directory),),
+        )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "db.sqlite3",
+        relay_jobs_db=relay_db,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+
+    report = ArchiveImporter(db, settings).scan()
+
+    meeting = db.query_one(
+        "SELECT title, canonical_dir, source_priority FROM meetings WHERE id=?",
+        (meeting_id,),
+    )
+    assert report.errors == 0
+    assert meeting["canonical_dir"] == str(directory)
+    assert meeting["source_priority"] == 51
+    assert not ArchiveImporter.is_untitled(meeting["title"], meeting_id)
+
+
 def test_top_level_managed_directory_with_stale_relay_attempt_is_isolated(tmp_path):
     archive = tmp_path / "archive"
     directory = write_managed_unreviewed_bundle(
@@ -1111,8 +1180,116 @@ def test_top_level_managed_directory_with_stale_relay_attempt_is_isolated(tmp_pa
 
     report = ArchiveImporter(db, settings).scan()
 
-    assert report.errors == 1
+    # 隔离≠扫描出错：目录照样进不来，但不能把 errors 顶起来去阻断全库清理。
+    assert report.errors == 0
+    assert report.quarantined == 1
+    assert report.quarantine_details[0]["directory"] == str(directory)
     assert db.query_one("SELECT COUNT(*) AS count FROM meetings")["count"] == 0
+
+
+def _seed_top_level_managed_meeting(tmp_path, *, meeting_id, job_id):
+    archive = tmp_path / "archive"
+    directory = write_managed_unreviewed_bundle(archive / f"{job_id} 目录", meeting_id, job_id)
+    relay_db = tmp_path / "relay.sqlite3"
+    with sqlite3.connect(relay_db) as connection:
+        connection.execute(
+            "CREATE TABLE jobs(job_id TEXT PRIMARY KEY, status TEXT, current_attempt INTEGER, archive_dir TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES (?, 'completed_unreviewed', 1, ?)",
+            (job_id, str(directory)),
+        )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "db.sqlite3",
+        relay_jobs_db=relay_db,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    importer = ArchiveImporter(db, settings)
+    first = importer.scan()
+    assert first.quarantined == 0
+    assert db.query_one("SELECT COUNT(*) AS count FROM meetings")["count"] == 1
+    return db, importer, directory
+
+
+def test_already_imported_managed_directory_tolerates_extra_untracked_file(tmp_path):
+    meeting_id = "vm-20260904-090000-aa112233"
+    db, importer, directory = _seed_top_level_managed_meeting(
+        tmp_path, meeting_id=meeting_id, job_id="job-extra-file"
+    )
+
+    note = directory / "我的笔记.md"
+    note.write_text("旁置笔记", encoding="utf-8")
+    report = importer.scan()
+
+    assert report.quarantined == 0
+    assert db.query_one("SELECT COUNT(*) AS count FROM meetings")["count"] == 1
+    artifact = db.query_one(
+        "SELECT kind FROM artifacts WHERE meeting_id=? AND path=?",
+        (meeting_id, str(note)),
+    )
+    assert artifact == {"kind": "document_md"}
+
+
+def test_already_imported_managed_directory_rewritten_minutes_updates_without_quarantine(
+    tmp_path,
+):
+    # 这场会还没人复核过（current_minutes_version 是 'generated'，不是
+    # 'draft'），所以纠错改写走的是既有的「静默更新」分支，不开外部变更
+    # 冲突——一旦人工先接手编辑过，才会改走 `_capture_external_change`。
+    meeting_id = "vm-20260904-090100-aa112244"
+    db, importer, directory = _seed_top_level_managed_meeting(
+        tmp_path, meeting_id=meeting_id, job_id="job-rewrite-minutes"
+    )
+
+    (directory / "会议纪要.md").write_text("# 改写后的纪要内容", encoding="utf-8")
+    report = importer.scan()
+
+    assert report.quarantined == 0
+    meeting = db.query_one(
+        "SELECT title, conflict, current_minutes_version_id FROM meetings WHERE id=?",
+        (meeting_id,),
+    )
+    assert meeting["conflict"] == 0
+    minutes = db.query_one(
+        "SELECT markdown FROM minutes_versions WHERE id=?",
+        (meeting["current_minutes_version_id"],),
+    )
+    assert minutes["markdown"] == "# 改写后的纪要内容"
+
+
+def test_already_imported_managed_directory_audio_rewrite_is_quarantined(tmp_path):
+    meeting_id = "vm-20260904-090200-aa112255"
+    db, importer, directory = _seed_top_level_managed_meeting(
+        tmp_path, meeting_id=meeting_id, job_id="job-rewrite-audio"
+    )
+
+    (directory / f"{meeting_id}.m4a").write_bytes(b"tampered-audio-bytes")
+    report = importer.scan()
+
+    assert report.quarantined == 1
+    assert report.quarantine_details[0]["directory"] == str(directory)
+    assert "音频" in report.quarantine_details[0]["reason"]
+    # 隔离目录的既有记录原样保留，不会被 `_cleanup_stale_artifacts` 连坐清空。
+    assert db.query_one("SELECT COUNT(*) AS count FROM meetings")["count"] == 1
+
+
+def test_already_imported_managed_directory_missing_registered_file_is_quarantined(tmp_path):
+    meeting_id = "vm-20260904-090300-aa112266"
+    db, importer, directory = _seed_top_level_managed_meeting(
+        tmp_path, meeting_id=meeting_id, job_id="job-missing-html"
+    )
+
+    (directory / "会议纪要.html").unlink()
+    report = importer.scan()
+
+    assert report.quarantined == 1
+    assert report.quarantine_details[0]["directory"] == str(directory)
+    assert "缺失" in report.quarantine_details[0]["reason"]
+    assert db.query_one("SELECT COUNT(*) AS count FROM meetings")["count"] == 1
 
 
 @pytest.mark.parametrize("location", ["hidden", "pending", "flat"])
@@ -1878,10 +2055,82 @@ def test_rescan_keeps_a_manually_named_meeting(tmp_path):
     )
 
 
+def test_meetings_sharing_one_material_folder_keep_their_own_titles(tmp_path):
+    """一批原始录音被挪进同一个文件夹后，标题不能整批变成那个文件夹名。"""
+    archive = tmp_path / "archive"
+    first = "vm-20260712-181605-0b445e55"
+    second = "vm-20260712-215202-23ca270d"
+    for meeting_id, folder, heading in (
+        (first, "260712 数字营销平台规划沟通", "数字营销平台规划沟通"),
+        (second, "260712 MDT病例与医生注册优化", "MDT病例与医生注册优化"),
+    ):
+        meeting_dir = archive / folder
+        meeting_dir.mkdir(parents=True)
+        (meeting_dir / f"{meeting_id}.m4a").write_bytes(meeting_id.encode())
+        (meeting_dir / f"{meeting_id}.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:02,000\n开场白\n", encoding="utf-8"
+        )
+        (meeting_dir / f"{heading}.md").write_text(f"# {heading}\n\n- 决策", encoding="utf-8")
+        (meeting_dir / f"{heading}.html").write_text(f"<h1>{heading}</h1>", encoding="utf-8")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "db.sqlite3",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    importer = ArchiveImporter(db, settings)
+    importer.scan()
+
+    # 磁盘治理：原始录音被平铺进一个共用文件夹，各自的会议目录不复存在。
+    shared = archive / "relay原始录音-260809"
+    shared.mkdir()
+    for meeting_id, folder in (
+        (first, "260712 数字营销平台规划沟通"),
+        (second, "260712 MDT病例与医生注册优化"),
+    ):
+        (shared / f"{meeting_id}.m4a").write_bytes(meeting_id.encode())
+        shutil.rmtree(archive / folder)
+
+    importer.scan()
+
+    titles = {row["id"]: row["title"] for row in db.query_all("SELECT id, title FROM meetings", ())}
+    assert titles[first] == "数字营销平台规划沟通"
+    assert titles[second] == "MDT病例与医生注册优化"
+
+
+def test_shared_material_folder_without_minutes_falls_back_to_dated_titles(tmp_path):
+    archive = tmp_path / "archive"
+    shared = archive / "relay原始录音-260809"
+    shared.mkdir(parents=True)
+    first = "vm-20260705-194000-0e7baae8"
+    second = "vm-20260707-184448-e82656f1"
+    for meeting_id in (first, second):
+        (shared / f"{meeting_id}.m4a").write_bytes(meeting_id.encode())
+        (shared / f"{meeting_id}.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:02,000\n开场白\n", encoding="utf-8"
+        )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "db.sqlite3",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+
+    ArchiveImporter(db, settings).scan()
+
+    titles = {row["id"]: row["title"] for row in db.query_all("SELECT id, title FROM meetings", ())}
+    assert titles[first] == "260705 未命名录音"
+    assert titles[second] == "260707 未命名录音"
+
+
 def test_recording_timestamp_in_the_id_is_read_as_local_wall_clock(tmp_path):
     archive = tmp_path / "archive"
     meeting_id = "vm-20260729-020903-dc7adeb9"
-    meeting_dir = archive / "260729 季度产品评审"
+    meeting_dir = archive / "260729 ACME内容征集流程走查"
     meeting_dir.mkdir(parents=True)
     (meeting_dir / f"{meeting_id}.m4a").write_bytes(b"audio")
     (meeting_dir / f"{meeting_id}.srt").write_text(
@@ -1898,9 +2147,9 @@ def test_recording_timestamp_in_the_id_is_read_as_local_wall_clock(tmp_path):
     importer = ArchiveImporter(db, settings)
     importer.scan()
 
-    recorded_at = db.query_one("SELECT recording_date FROM meetings WHERE id=?", (meeting_id,))[
-        "recording_date"
-    ]
+    recorded_at = db.query_one(
+        "SELECT recording_date FROM meetings WHERE id=?", (meeting_id,)
+    )["recording_date"]
     parsed = datetime.fromisoformat(recorded_at)
     # 归档目录写的是 260729，界面上的日期必须是同一天。
     assert (parsed.year, parsed.month, parsed.day) == (2026, 7, 29)
@@ -1911,7 +2160,7 @@ def test_recording_timestamp_in_the_id_is_read_as_local_wall_clock(tmp_path):
 def test_rescan_repairs_a_recording_date_that_was_stored_as_utc(tmp_path):
     archive = tmp_path / "archive"
     meeting_id = "vm-20260729-020903-dc7adeb9"
-    meeting_dir = archive / "260729 季度产品评审"
+    meeting_dir = archive / "260729 ACME内容征集流程走查"
     meeting_dir.mkdir(parents=True)
     (meeting_dir / f"{meeting_id}.m4a").write_bytes(b"audio")
     (meeting_dir / f"{meeting_id}.srt").write_text(
@@ -1934,9 +2183,9 @@ def test_rescan_repairs_a_recording_date_that_was_stored_as_utc(tmp_path):
 
     importer.scan()
 
-    recorded_at = db.query_one("SELECT recording_date FROM meetings WHERE id=?", (meeting_id,))[
-        "recording_date"
-    ]
+    recorded_at = db.query_one(
+        "SELECT recording_date FROM meetings WHERE id=?", (meeting_id,)
+    )["recording_date"]
     assert datetime.fromisoformat(recorded_at).utcoffset() == (
         datetime.now().astimezone().utcoffset()
     )
@@ -2031,3 +2280,127 @@ def test_regenerated_minutes_adopt_the_new_archive_and_title(tmp_path):
         "SELECT 1 FROM events WHERE meeting_id=? AND event_type='stale_minutes_generation_ignored'",
         (meeting_id,),
     )
+
+
+def write_meeting_with_funasr_speakers(root, dirname, meeting_id, *, srt_text, funasr_sentences):
+    meeting_dir = root / dirname
+    meeting_dir.mkdir(parents=True)
+    (meeting_dir / f"{meeting_id}.m4a").write_bytes(b"fake-audio")
+    (meeting_dir / f"{meeting_id}.srt").write_text(srt_text, encoding="utf-8")
+    (meeting_dir / f"{meeting_id}.funasr.json").write_text(
+        json.dumps({"sentence_info": funasr_sentences}), encoding="utf-8"
+    )
+    return meeting_dir
+
+
+def test_new_meeting_import_backfills_speaker_labels_from_funasr_json(tmp_path):
+    archive = tmp_path / "archive"
+    meeting_id = "vm-20260101-120000"
+    write_meeting_with_funasr_speakers(
+        archive,
+        "多说话人会议",
+        meeting_id,
+        srt_text=(
+            "1\n00:00:01,000 --> 00:00:02,000\n第一句发言\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\n第二句发言\n"
+        ),
+        funasr_sentences=[
+            {"start": 1000, "end": 2000, "spk": 0, "text": "第一句发言"},
+            {"start": 3000, "end": 4000, "spk": 1, "text": "第二句发言"},
+        ],
+    )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+
+    report = ArchiveImporter(db, settings).scan()
+
+    assert report.errors == 0
+    assert report.speaker_backfill_applied == 1
+    segments = db.query_all(
+        """SELECT s.ordinal, s.speaker_label FROM segments s
+           JOIN meetings m ON m.current_transcript_version_id = s.version_id
+           WHERE m.id = ? ORDER BY s.ordinal""",
+        (meeting_id,),
+    )
+    assert [row["speaker_label"] for row in segments] == ["SPEAKER_00", "SPEAKER_01"]
+    speakers = {
+        row["label"] for row in db.query_all("SELECT label FROM speakers WHERE meeting_id=?", (meeting_id,))
+    }
+    assert speakers == {"SPEAKER_00", "SPEAKER_01"}
+
+
+def test_speaker_backfill_skips_safely_when_funasr_json_text_mismatches_srt(tmp_path):
+    archive = tmp_path / "archive"
+    meeting_id = "vm-20260101-130000"
+    write_meeting_with_funasr_speakers(
+        archive,
+        "文本不一致会议",
+        meeting_id,
+        srt_text="1\n00:00:01,000 --> 00:00:02,000\n真实转写文本\n",
+        funasr_sentences=[{"start": 1000, "end": 2000, "spk": 0, "text": "另一份不同的文本"}],
+    )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+
+    report = ArchiveImporter(db, settings).scan()
+
+    assert report.errors == 0
+    assert report.speaker_backfill_applied == 0
+    assert report.speaker_backfill_skipped == 1
+    segments = db.query_all(
+        """SELECT s.speaker_label FROM segments s
+           JOIN meetings m ON m.current_transcript_version_id = s.version_id
+           WHERE m.id = ?""",
+        (meeting_id,),
+    )
+    assert segments and all(row["speaker_label"] is None for row in segments)
+    assert db.query_all("SELECT 1 FROM speakers WHERE meeting_id=?", (meeting_id,)) == []
+    # 逐字稿导入本身不受补标失败影响。
+    assert db.exact_search("真实转写文本")
+
+
+def test_cached_sha256_reuses_fingerprint_cache_row_without_rehashing(tmp_path, monkeypatch):
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    path = tmp_path / "audio.m4a"
+    path.write_bytes(b"cached-audio-bytes")
+    stat = path.stat()
+    cached_sha256 = "c" * 64
+    db.execute(
+        """INSERT INTO fingerprint_cache(path, size_bytes, mtime_ns, sha256, pcm_sha256, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (str(path), stat.st_size, stat.st_mtime_ns, cached_sha256, "p" * 64, "2026-09-05T00:00:00Z"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        "meeting_workbench.importer.sha256_file",
+        lambda candidate: calls.append(candidate) or "should-not-be-used",
+    )
+    importer = ArchiveImporter(db, settings)
+
+    assert importer._cached_sha256(path) == cached_sha256
+    assert calls == []
+
+    # 未命中缓存（不同路径，压根没记录）时照旧现算，不吞异常也不返回假值。
+    miss_path = tmp_path / "not-cached.m4a"
+    miss_path.write_bytes(b"never-hashed-before")
+    assert importer._cached_sha256(miss_path) == "should-not-be-used"
+    assert calls == [miss_path]

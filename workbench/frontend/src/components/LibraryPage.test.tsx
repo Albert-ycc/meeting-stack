@@ -50,7 +50,7 @@ describe("LibraryPage pagination", () => {
       title: "路径测试会议",
       status: "published",
       tags: [],
-      canonical_dir: "~/MeetingArchive/260713 路径测试会议",
+      canonical_dir: "/Volumes/资料盘/会议纪要与录音/260713 路径测试会议",
     };
 
     render(
@@ -91,7 +91,7 @@ describe("LibraryPage pagination", () => {
             title: "安静的路径操作",
             status: "published",
             tags: [],
-            canonical_dir: "~/MeetingArchive/安静的路径操作",
+            canonical_dir: "/Volumes/资料盘/会议纪要与录音/安静的路径操作",
           },
         ]}
         offset={0}
@@ -109,6 +109,39 @@ describe("LibraryPage pagination", () => {
     expect(screen.queryByText("文件夹")).not.toBeInTheDocument();
     expect(copyButton.textContent).toBe("");
     expect(copyButton.querySelector("svg")).toBeInTheDocument();
+  });
+
+  it("marks an AI-matched project chip with a title and an AI mark", () => {
+    render(
+      <LibraryPage
+        filters={{}}
+        limit={50}
+        meetings={[
+          {
+            id: "vm-ai-origin",
+            title: "自动归属会议",
+            status: "published",
+            tags: [],
+            project_id: "project-a",
+            project_name: "自动匹配项目",
+            project_color: "#f0783b",
+            project_origin: "ai",
+          },
+        ]}
+        offset={0}
+        onFilter={vi.fn()}
+        onOpen={vi.fn()}
+        onPageChange={vi.fn()}
+        projects={[]}
+        state="ready"
+        tags={[]}
+        total={1}
+      />,
+    );
+
+    const chip = screen.getByText("自动匹配项目").closest(".project-mark");
+    expect(chip).toHaveAttribute("title", "AI 自动归属");
+    expect(chip).toHaveTextContent("AI");
   });
 
   it("does not expose an empty participant filter without voice identification", () => {

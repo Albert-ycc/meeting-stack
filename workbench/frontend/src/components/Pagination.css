@@ -1,0 +1,38 @@
+/* 数字页码条：需求/会议子表、任务池共用 */
+
+/* 页码条本身不再自带外边距/居中——摆在「共 N 条」旁边的行由各调用方的 wrapper 控制左右位置 */
+.pagination-numbers {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.pagination-numbers button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.pagination-numbers button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.pagination-numbers button.is-active {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--signal);
+  border-color: var(--signal);
+}
+
+.pagination-numbers__ellipsis {
+  padding: 0 2px;
+  color: var(--ink-faint);
+  font-size: 12px;
+}

@@ -38,7 +38,9 @@ def align_transcript_segments(
             similarity = 0.0
         else:
             risks = []
-            if _tokens(_LATIN_TERM_RE, primary_text) != _tokens(_LATIN_TERM_RE, candidate_text):
+            if _tokens(_LATIN_TERM_RE, primary_text) != _tokens(
+                _LATIN_TERM_RE, candidate_text
+            ):
                 risks.append("latin_term")
             if _tokens(_NUMBER_RE, primary_text) != _tokens(_NUMBER_RE, candidate_text):
                 risks.append("number")

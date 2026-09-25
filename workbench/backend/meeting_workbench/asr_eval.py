@@ -86,7 +86,10 @@ def _has_repetition(hypothesis: str) -> bool:
         repeated_length = unit_length * REPETITION_MIN_CONSECUTIVE
         for start in range(len(hypothesis) - repeated_length + 1):
             unit = hypothesis[start : start + unit_length]
-            if hypothesis[start : start + repeated_length] == unit * REPETITION_MIN_CONSECUTIVE:
+            if (
+                hypothesis[start : start + repeated_length]
+                == unit * REPETITION_MIN_CONSECUTIVE
+            ):
                 return True
     return False
 
@@ -174,14 +177,19 @@ def _longest_non_overlapping_matches(
                 start += 1
                 continue
             end = start + length
-            chinese_number = any(character in _CHINESE_NUMERAL_CHARACTERS for character in value)
+            chinese_number = any(
+                character in _CHINESE_NUMERAL_CHARACTERS for character in value
+            )
             if require_numeric_boundaries and (
                 (
                     start > 0
                     and (
                         hypothesis[start - 1].isdigit()
                         or hypothesis[start - 1] in _NUMBER_SEMANTIC_CHARACTERS
-                        or (chinese_number and hypothesis[start - 1] in _CHINESE_NUMERAL_CHARACTERS)
+                        or (
+                            chinese_number
+                            and hypothesis[start - 1] in _CHINESE_NUMERAL_CHARACTERS
+                        )
                     )
                 )
                 or (
@@ -189,7 +197,10 @@ def _longest_non_overlapping_matches(
                     and (
                         hypothesis[end].isdigit()
                         or hypothesis[end] in _NUMBER_SEMANTIC_CHARACTERS
-                        or (chinese_number and hypothesis[end] in _CHINESE_NUMERAL_CHARACTERS)
+                        or (
+                            chinese_number
+                            and hypothesis[end] in _CHINESE_NUMERAL_CHARACTERS
+                        )
                     )
                 )
             ):
@@ -233,7 +244,9 @@ def _summarize_samples(details: list[dict[str, object]]) -> dict[str, int | floa
         "number_precision": (
             round(number_hits / number_predictions, 6) if number_predictions else None
         ),
-        "hallucination_samples": sum(bool(detail["hallucination"]) for detail in details),
+        "hallucination_samples": sum(
+            bool(detail["hallucination"]) for detail in details
+        ),
         "repetition_samples": sum(bool(detail["repetition"]) for detail in details),
     }
 
@@ -245,9 +258,13 @@ def evaluate_asr(
     gold = _load_gold(Path(gold_path).expanduser())
     if not engines:
         raise AsrEvaluationError("至少提供一个 --engine NAME=DIR")
-    entity_vocabulary = {_normalize(str(value)) for sample in gold for value in sample["entities"]}
+    entity_vocabulary = {
+        _normalize(str(value)) for sample in gold for value in sample["entities"]
+    }
     number_vocabulary = {
-        _normalize_number(str(value)) for sample in gold for value in sample["numbers"]
+        _normalize_number(str(value))
+        for sample in gold
+        for value in sample["numbers"]
     }
     samples: list[dict[str, object]] = [
         {
@@ -313,7 +330,9 @@ def evaluate_asr(
 
         summary: dict[str, object] = _summarize_samples(engine_details)
         tag_metrics: dict[str, dict[str, int | float | None]] = {}
-        for tag in dict.fromkeys(str(tag) for sample in gold for tag in sample["tags"]):
+        for tag in dict.fromkeys(
+            str(tag) for sample in gold for tag in sample["tags"]
+        ):
             tagged_details = [
                 detail
                 for sample, detail in zip(gold, engine_details, strict=True)
@@ -388,7 +407,9 @@ def run_qwen_shadow(
         check=False,
     )
     if result.returncode != 0:
-        raise AsrEvaluationError("Qwen3-ASR 影子转写失败；请确认程序与模型已在本机离线缓存")
+        raise AsrEvaluationError(
+            "Qwen3-ASR 影子转写失败；请确认程序与模型已在本机离线缓存"
+        )
     transcript = output / f"{audio.stem}.txt"
     if transcript.is_symlink() or not transcript.is_file() or transcript.stat().st_size == 0:
         raise AsrEvaluationError("Qwen3-ASR 未生成预期的 TXT 影子稿")

@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { ApiError, type ApiClient, type ConflictResolutionAction } from "../api";
-import { formatDate, isDoneStatus, isUntitled, statusLabel, statusTone } from "../format";
+import { formatDate, isDoneStatus, isUntitled, statusLabel, statusTone, versionKindLabel } from "../format";
 import { parseHotwordsInput, validateHotwordsInput } from "../hotwords";
 import type {
   AsrGoldSample,
@@ -13,6 +13,7 @@ import type {
   MeetingDetail,
   MinutesEvidence,
   Project,
+  RequirementRef,
   Segment,
   Tag,
   TranscriptComparisonPayload,
@@ -20,6 +21,8 @@ import type {
 } from "../types";
 import { AudioPlayer, type AudioPlayerHandle } from "./AudioPlayer";
 import { CopyFolderPathButton } from "./CopyFolderPathButton";
+import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
+import { MeetingTasksPanel } from "./MeetingTasksPanel";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
 import { TranscriptPanel } from "./TranscriptPanel";
 
@@ -35,9 +38,12 @@ interface MeetingDetailPageProps {
   onReload: () => Promise<void>;
   projects: Project[];
   tags: Tag[];
+  canWriteTasks?: boolean;
+  onOpenTasks?: () => void;
+  onOpenRequirement?: (requirementId: string) => void;
 }
 
-type DetailTab = "transcript" | "minutes";
+type DetailTab = "transcript" | "minutes" | "tasks";
 
 interface QualitySnapshot {
   shadowRuns: AsrShadowRun[];
@@ -181,6 +187,9 @@ export function MeetingDetailPage({
   onReload,
   projects,
   tags,
+  canWriteTasks = false,
+  onOpenTasks,
+  onOpenRequirement,
 }: MeetingDetailPageProps) {
   const playerRef = useRef<AudioPlayerHandle>(null);
   const [currentMs, setCurrentMs] = useState(initialSeekMs);
@@ -195,6 +204,7 @@ export function MeetingDetailPage({
     isMobile ? "ready" : "loading",
   );
   const [goldDirty, setGoldDirty] = useState(false);
+  const [pendingTaskCount, setPendingTaskCount] = useState(0);
   const [shadowRuns, setShadowRuns] = useState<AsrShadowRun[]>(meeting.asr_shadow_runs ?? []);
   const [qualityVersions, setQualityVersions] = useState<TranscriptVersion[]>(meeting.transcript_versions);
   const [hotwordText, setHotwordText] = useState("");
@@ -209,12 +219,15 @@ export function MeetingDetailPage({
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [savingKind, setSavingKind] = useState<"transcript" | "minutes" | "classification" | null>(null);
+  const [saveConflict, setSaveConflict] = useState<"transcript" | "minutes" | null>(null);
   const [speakerLabel, setSpeakerLabel] = useState(meeting.speakers[0]?.label ?? "");
   const [speakerName, setSpeakerName] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState(meeting.project_id ?? "");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>(meeting.tags.map((tag) => tag.id));
   const [baselineProjectId, setBaselineProjectId] = useState(meeting.project_id ?? "");
   const [baselineTagIds, setBaselineTagIds] = useState<string[]>(meeting.tags.map((tag) => tag.id));
+  const [selectedRequirementRefs, setSelectedRequirementRefs] = useState<RequirementRef[]>(meeting.requirements ?? []);
+  const [baselineRequirementRefs, setBaselineRequirementRefs] = useState<RequirementRef[]>(meeting.requirements ?? []);
   const [transcriptVersion, setTranscriptVersion] = useState(meeting.current_transcript_version_id ?? "");
   const [minutesVersion, setMinutesVersion] = useState(meeting.current_minutes_version_id ?? "");
   const [transcriptBaseVersionId, setTranscriptBaseVersionId] = useState<string | null>(
@@ -266,8 +279,12 @@ export function MeetingDetailPage({
     [baselineSegments, segments],
   );
   const minutesDirty = minutes !== baselineMinutes;
+  const requirementsDirty =
+    selectedRequirementRefs.map((requirement) => requirement.id).sort().join(",") !==
+    baselineRequirementRefs.map((requirement) => requirement.id).sort().join(",");
   const classificationDirty =
     selectedProjectId !== baselineProjectId ||
+    requirementsDirty ||
     [...selectedTagIds].sort().join("\u0000") !==
       [...baselineTagIds].sort().join("\u0000");
   const hasUnsavedChanges = transcriptDirty || minutesDirty || classificationDirty || goldDirty;
@@ -316,9 +333,12 @@ export function MeetingDetailPage({
     setSelectedTagIds(meeting.tags.map((tag) => tag.id));
     setBaselineProjectId(meeting.project_id ?? "");
     setBaselineTagIds(meeting.tags.map((tag) => tag.id));
+    setSelectedRequirementRefs(meeting.requirements ?? []);
+    setBaselineRequirementRefs(meeting.requirements ?? []);
     revisions.current = { transcript: 0, minutes: 0, classification: 0 };
     setEditingTranscript(false);
     setEditingMinutes(false);
+    setSaveConflict(null);
   }, [currentMinutes?.markdown, isMobile, meeting]);
 
   useEffect(() => {
@@ -429,6 +449,19 @@ export function MeetingDetailPage({
     setQualityVersions(snapshot.transcriptVersions);
   }, []);
 
+  const loadPendingTaskCount = useCallback(async () => {
+    try {
+      const payload = await apiClient.tasks({ meeting_id: meeting.id, status: "pending_confirm", limit: 1 });
+      setPendingTaskCount(payload.total);
+    } catch {
+      setPendingTaskCount(0);
+    }
+  }, [apiClient, meeting.id]);
+
+  useEffect(() => {
+    void loadPendingTaskCount();
+  }, [loadPendingTaskCount]);
+
   useEffect(() => {
     void loadGoldSamples();
     return () => {
@@ -505,12 +538,12 @@ export function MeetingDetailPage({
 
   const audio = meeting.artifacts.find((artifact) => artifact.kind === "audio");
   const mediaUrl = audio ? `/api/media/${audio.id}` : null;
-  const run = async (action: () => Promise<unknown>, success: string) => {
+  const run = async <T,>(action: () => Promise<T>, success: string | ((result: T) => string)) => {
     setBusy(true);
     setNotice("");
     try {
-      await action();
-      setNotice(success);
+      const result = await action();
+      setNotice(typeof success === "function" ? success(result) : success);
       await onReload();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "操作失败");
@@ -564,63 +597,110 @@ export function MeetingDetailPage({
     revisions.current.classification += 1;
     setSelectedTagIds(next);
   };
-  const saveTranscript = async () => {
+  const changeRequirements = (next: RequirementRef[]) => {
+    revisions.current.classification += 1;
+    setSelectedRequirementRefs(next);
+  };
+  const commitTranscript = async (baseVersionId: string | null) => {
     const snapshot = segments.map((segment) => ({ ...segment }));
     const requestRevision = revisions.current.transcript;
+    const result = await apiClient.saveTranscript(meeting.id, snapshot, baseVersionId);
+    setTranscriptBaseVersionId(result.version_id);
+    setBaselineSegments(snapshot);
+    setSaveConflict(null);
+    if (revisions.current.transcript !== requestRevision) {
+      setNotice("请求中的逐字稿已保存；请求发出后的本地修改仍保留，请再次保存");
+      return;
+    }
+    setNotice("逐字稿已保存在工作台，尚未写回文件夹");
+    await onReload();
+  };
+  const saveTranscriptWith = async (baseVersionId: string | null) => {
     setBusy(true);
     setSavingKind("transcript");
     setNotice("");
     try {
-      const result = await apiClient.saveTranscript(
-        meeting.id,
-        snapshot,
-        transcriptBaseVersionId,
-      );
-      setTranscriptBaseVersionId(result.version_id);
-      setBaselineSegments(snapshot);
-      if (revisions.current.transcript !== requestRevision) {
-        setNotice("请求中的逐字稿已保存；请求发出后的本地修改仍保留，请再次保存");
-        return;
-      }
-      setNotice("逐字稿已保存在工作台，尚未写回文件夹");
-      await onReload();
+      await commitTranscript(baseVersionId);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      if (error instanceof ApiError && error.status === 409) {
+        setSaveConflict("transcript");
+        setNotice(error.message);
+      } else {
+        setSaveConflict(null);
+        setNotice(error instanceof Error ? error.message : "操作失败");
+      }
     } finally {
       setSavingKind(null);
       setBusy(false);
     }
   };
-  const saveMinutes = async () => {
+  const saveTranscript = () => saveTranscriptWith(transcriptBaseVersionId);
+  const overwriteTranscript = async () => {
+    try {
+      const fresh = await apiClient.meeting(meeting.id);
+      await saveTranscriptWith(fresh.current_transcript_version_id ?? null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "操作失败");
+    }
+  };
+  const commitMinutes = async (baseVersionId: string | null) => {
     const snapshot = minutes;
     const requestRevision = revisions.current.minutes;
+    const result = await apiClient.saveMinutes(meeting.id, snapshot, baseVersionId);
+    setMinutesBaseVersionId(result.version_id);
+    setBaselineMinutes(snapshot);
+    setSaveConflict(null);
+    if (revisions.current.minutes !== requestRevision) {
+      setNotice("请求中的纪要已保存；请求发出后的本地修改仍保留，请再次保存");
+      return;
+    }
+    setNotice("纪要草稿已保存");
+    await onReload();
+  };
+  const saveMinutesWith = async (baseVersionId: string | null) => {
     setBusy(true);
     setSavingKind("minutes");
     setNotice("");
     try {
-      const result = await apiClient.saveMinutes(
-        meeting.id,
-        snapshot,
-        minutesBaseVersionId,
-      );
-      setMinutesBaseVersionId(result.version_id);
-      setBaselineMinutes(snapshot);
-      if (revisions.current.minutes !== requestRevision) {
-        setNotice("请求中的纪要已保存；请求发出后的本地修改仍保留，请再次保存");
-        return;
+      await commitMinutes(baseVersionId);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setSaveConflict("minutes");
+        setNotice(error.message);
+      } else {
+        setSaveConflict(null);
+        setNotice(error instanceof Error ? error.message : "操作失败");
       }
-      setNotice("纪要草稿已保存");
+    } finally {
+      setSavingKind(null);
+      setBusy(false);
+    }
+  };
+  const saveMinutes = () => saveMinutesWith(minutesBaseVersionId);
+  const overwriteMinutes = async () => {
+    try {
+      const fresh = await apiClient.meeting(meeting.id);
+      await saveMinutesWith(fresh.current_minutes_version_id ?? null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "操作失败");
+    }
+  };
+  const discardSaveConflict = async () => {
+    setBusy(true);
+    setNotice("");
+    setSaveConflict(null);
+    try {
       await onReload();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "操作失败");
     } finally {
-      setSavingKind(null);
       setBusy(false);
     }
   };
   const saveClassification = async () => {
     const snapshotProjectId = selectedProjectId;
     const snapshotTagIds = [...selectedTagIds];
+    const snapshotRequirementRefs = [...selectedRequirementRefs];
     const requestRevision = revisions.current.classification;
     setBusy(true);
     setSavingKind("classification");
@@ -629,9 +709,11 @@ export function MeetingDetailPage({
       await apiClient.updateMeeting(meeting.id, {
         project_id: snapshotProjectId,
         tag_ids: snapshotTagIds,
+        requirement_ids: snapshotRequirementRefs.map((requirement) => requirement.id),
       });
       setBaselineProjectId(snapshotProjectId);
       setBaselineTagIds(snapshotTagIds);
+      setBaselineRequirementRefs(snapshotRequirementRefs);
       let refreshWarning = "";
       try {
         await onClassificationSaved?.();
@@ -724,7 +806,7 @@ export function MeetingDetailPage({
             </h1>
             <div className="detail-meta">
               <span>{formatDate(meeting.recording_date)}</span>
-              {meeting.project_name && <span className="project-mark"><i style={{ background: meeting.project_color || "#65736f" }} />{meeting.project_name}</span>}
+              {meeting.project_name && <span className="project-mark"><i style={{ background: meeting.project_color || "#767676" }} />{meeting.project_name}</span>}
               {meeting.tags.map((tag) => <em key={tag.id}>{tag.name}</em>)}
             </div>
           </div>
@@ -803,9 +885,43 @@ export function MeetingDetailPage({
 
       {notice && <div className="action-banner" role="status">{notice}</div>}
 
+      {saveConflict && (
+        <section className="conflict-panel" role="alert">
+          <div className="conflict-panel__copy">
+            <span className="state-mark">!</span>
+            <div>
+              <h2>{saveConflict === "transcript" ? "逐字稿有更新版本" : "纪要有更新版本"}</h2>
+              <p>保存时发现工作台上已有更新版本，你的修改还留在本地，没有丢失。旧版本仍在版本历史里，可以回滚。</p>
+            </div>
+          </div>
+          {!isMobile && (
+            <div className="conflict-panel__actions desktop-only">
+              <button
+                disabled={busy}
+                onClick={() => void (saveConflict === "transcript" ? overwriteTranscript() : overwriteMinutes())}
+                type="button"
+              >
+                以我的内容覆盖最新版本
+              </button>
+              <button
+                className="danger-button"
+                disabled={busy}
+                onClick={() => void discardSaveConflict()}
+                type="button"
+              >
+                丢弃我的修改并加载最新
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
       <div className="detail-tabs" role="tablist">
         <button aria-selected={tab === "transcript"} disabled={isSaving || goldDirty} onClick={() => setTab("transcript")} role="tab" type="button">逐字稿 <span>{segments.length}</span></button>
         <button aria-selected={tab === "minutes"} disabled={isSaving || goldDirty} onClick={() => setTab("minutes")} role="tab" type="button">会议纪要 <span>{meeting.minutes_versions.length}</span></button>
+        {onOpenTasks && (
+          <button aria-selected={tab === "tasks"} disabled={isSaving || goldDirty} onClick={() => setTab("tasks")} role="tab" type="button">本场任务{pendingTaskCount > 0 && <span>{pendingTaskCount}</span>}</button>
+        )}
       </div>
 
       {tab === "transcript" ? (
@@ -915,12 +1031,29 @@ export function MeetingDetailPage({
                 <span className="eyebrow">CLASSIFICATION</span>
                 <h2>归档归属</h2>
                 <label>
-                  <span>主项目</span>
+                  <span>
+                    主项目{" "}
+                    {meeting.project_origin === "ai" && meeting.project_id && (
+                      <em className="project-card__badge project-card__badge--new">AI 归属</em>
+                    )}
+                  </span>
                   <select aria-label="主项目" disabled={isSaving} onChange={(event) => changeProject(event.target.value)} value={selectedProjectId}>
                     <option value="">未归项目</option>
                     {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
                   </select>
                 </label>
+                {meeting.project_origin === "ai" && meeting.project_id && (
+                  <p className="muted">由会议纪要自动匹配；保存一次后不再自动改动</p>
+                )}
+                <MeetingRequirementPicker
+                  apiClient={apiClient}
+                  disabled={isSaving || !selectedProjectId}
+                  onChange={changeRequirements}
+                  onOpenRequirement={onOpenRequirement}
+                  projectId={selectedProjectId}
+                  projects={projects}
+                  selected={selectedRequirementRefs}
+                />
                 <fieldset className="tag-checklist" disabled={isSaving}>
                   <legend>标签</legend>
                   {tags.length === 0 ? <span className="muted">暂无标签，请先在项目页创建。</span> : tags.map((tag) => (
@@ -948,6 +1081,7 @@ export function MeetingDetailPage({
                   <span className="eyebrow">SPEAKER TURNS</span>
                   <h2>标记说话人姓名</h2>
                   <p className="speaker-scope-note">这里只标记同一场录音内的说话人，不会跨会议识别具体身份。</p>
+                  <p className="speaker-scope-note">切块转写的会议里，带「片段N」前缀的说话人跨片段可能是同一人，也可能不是；改名只对当前标签下的段落生效。</p>
                   <select disabled={isSaving} onChange={(event) => setSpeakerLabel(event.target.value)} value={speakerLabel}>
                     <option value="">选择说话人</option>
                     {meeting.speakers.map((speaker) => <option key={speaker.id} value={speaker.label}>{speaker.display_name || speaker.label}</option>)}
@@ -955,7 +1089,12 @@ export function MeetingDetailPage({
                   <input disabled={isSaving} onChange={(event) => setSpeakerName(event.target.value)} placeholder="新的显示名称" value={speakerName} />
                   <button
                     disabled={!speakerLabel || !speakerName.trim() || destructiveBlocked}
-                    onClick={() => void run(() => apiClient.renameSpeaker(meeting.id, speakerLabel, speakerName.trim()), "说话人已批量更新")}
+                    onClick={() =>
+                      void run(
+                        () => apiClient.renameSpeaker(meeting.id, speakerLabel, speakerName.trim()),
+                        ({ updated }) => (updated > 0 ? `已更新 ${updated} 段说话人标注` : "没有匹配的段落，未做任何更新"),
+                      )
+                    }
                     type="button"
                   >
                     应用到全部段落
@@ -967,7 +1106,7 @@ export function MeetingDetailPage({
                 <h2>逐字稿版本</h2>
                 <select disabled={isSaving} onChange={(event) => setTranscriptVersion(event.target.value)} value={transcriptVersion}>
                   {meeting.transcript_versions.map((version) => (
-                    <option key={version.id} value={version.id}>v{version.version_no} · {version.kind}{version.published ? " · 已写回" : ""}</option>
+                    <option key={version.id} value={version.id}>v{version.version_no} · {versionKindLabel(version.kind)}{version.published ? " · 已写回" : ""}</option>
                   ))}
                 </select>
                 <button
@@ -981,7 +1120,7 @@ export function MeetingDetailPage({
             </aside>
           )}
         </div>
-      ) : (
+      ) : tab === "minutes" ? (
         <div className="minutes-workspace">
           <article className="minutes-document">
             <div className="document-head">
@@ -1012,16 +1151,38 @@ export function MeetingDetailPage({
               <h2>编辑与写回</h2>
               <p>在这里改的内容先存在工作台里。写回之后，会议文件夹里的纪要和逐字稿才会同步更新，原音频永不改写。</p>
               {editingMinutes && <button disabled={busy || !minutesDirty} onClick={() => void saveMinutes()} type="button">保存纪要草稿</button>}
-              <button disabled={destructiveBlocked} onClick={() => void run(() => apiClient.regenerateMinutes(meeting.id), "纪要重生成任务已排队") } type="button">重新生成纪要</button>
+              <div className="regen-group">
+                <button disabled={destructiveBlocked} onClick={() => void run(() => apiClient.regenerateMinutes(meeting.id), "纪要重生成任务已排队") } type="button">重新生成纪要</button>
+                <button
+                  className="regen-claude"
+                  disabled={destructiveBlocked}
+                  onClick={() => void run(() => apiClient.regenerateMinutes(meeting.id, "claude"), "已排队用 Claude 重写纪要")}
+                  title="改用 Claude 重跑一版纪要，完成后覆盖当前纪要（旧版本仍可回滚）"
+                  type="button"
+                >用 Claude 重写</button>
+              </div>
+              <p className="regen-hint">纪要默认由 DeepSeek 生成。写得不到位时用 Claude 重写一版，完成后覆盖当前纪要，旧版本仍留在下面的历史里可回滚。</p>
               <select disabled={isSaving} onChange={(event) => setMinutesVersion(event.target.value)} value={minutesVersion}>
                 <option value="">选择历史版本</option>
-                {meeting.minutes_versions.map((version) => <option key={version.id} value={version.id}>v{version.version_no} · {version.kind}{version.published ? " · 已写回" : ""}</option>)}
+                {meeting.minutes_versions.map((version) => <option key={version.id} value={version.id}>v{version.version_no} · {versionKindLabel(version.kind)}{version.published ? " · 已写回" : ""}</option>)}
               </select>
               <button disabled={!minutesVersion || minutesVersion === meeting.current_minutes_version_id || destructiveBlocked} onClick={() => void run(() => apiClient.rollbackMinutes(meeting.id, minutesVersion), "已回滚纪要工作版本")} type="button">回滚纪要版本</button>
               <div className="publish-rule" />
               <button className="publish-button" disabled={destructiveBlocked} onClick={() => void run(() => apiClient.publish(meeting.id), "已写回会议文件夹")} type="button">写回会议文件夹</button>
             </aside>
           )}
+        </div>
+      ) : (
+        <div className="tasks-workspace">
+          <MeetingTasksPanel
+            apiClient={apiClient}
+            canWrite={canWriteTasks}
+            meetingId={meeting.id}
+            meetingTitle={isUntitled(meeting.title, meeting.id) ? meeting.id : meeting.title}
+            onChanged={loadPendingTaskCount}
+            onOpenTasks={onOpenTasks!}
+            projects={projects}
+          />
         </div>
       )}
     </section>
