@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ApiClient } from "../api";
 import { formatDurationText, formatMonthDayClock } from "../format";
 import type { MeetingSummary, RequirementDetail } from "../types";
+import { useBackdropDismiss, useDialogFocus } from "./useDialog";
 import "./LinkMeetingsModal.css";
 
 interface LinkMeetingsModalProps {
@@ -24,11 +25,14 @@ export function LinkMeetingsModal({
   onCancel,
   onSaved,
 }: LinkMeetingsModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef);
   const [meetings, setMeetings] = useState<MeetingSummary[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set(selectedIds));
   const [saving, setSaving] = useState(false);
+  const backdrop = useBackdropDismiss(onCancel, saving);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -48,7 +52,7 @@ export function LinkMeetingsModal({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !saving) onCancel();
+      if (event.key === "Escape" && !event.isComposing && !saving) onCancel();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -81,12 +85,13 @@ export function LinkMeetingsModal({
   };
 
   return (
-    <div className="link-meetings-modal__overlay" onClick={() => { if (!saving) onCancel(); }}>
+    <div className="link-meetings-modal__overlay" {...backdrop}>
       <div
         aria-label="关联会议"
         aria-modal="true"
         className="link-meetings-modal__card"
         onClick={(event) => event.stopPropagation()}
+        ref={dialogRef}
         role="dialog"
       >
         <header className="link-meetings-modal__head">

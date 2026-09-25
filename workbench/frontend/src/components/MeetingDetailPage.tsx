@@ -20,6 +20,7 @@ import type {
   TranscriptVersion,
 } from "../types";
 import { AudioPlayer, type AudioPlayerHandle } from "./AudioPlayer";
+import { useConfirm, type ConfirmOptions } from "./ConfirmDialog";
 import { CopyFolderPathButton } from "./CopyFolderPathButton";
 import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
 import { MeetingTasksPanel } from "./MeetingTasksPanel";
@@ -31,6 +32,10 @@ interface MeetingDetailPageProps {
   initialSeekMs: number;
   isMobile: boolean;
   meeting: MeetingDetail;
+  /** 本场任务确认/驳回之后通知外层，刷新侧栏「任务池」的待确认角标。 */
+  onTasksChanged?: () => void;
+  /** 「← 返回」按钮上显示的去处，默认录音档案。 */
+  backLabel?: string;
   onBack: () => void;
   onClassificationSaved?: () => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
@@ -180,6 +185,8 @@ export function MeetingDetailPage({
   initialSeekMs,
   isMobile,
   meeting,
+  backLabel = "录音档案",
+  onTasksChanged,
   onBack,
   onClassificationSaved,
   onDirtyChange,
@@ -218,6 +225,7 @@ export function MeetingDetailPage({
   const [baselineSegments, setBaselineSegments] = useState<Segment[]>(meeting.segments);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
   const [savingKind, setSavingKind] = useState<"transcript" | "minutes" | "classification" | null>(null);
   const [saveConflict, setSaveConflict] = useState<"transcript" | "minutes" | null>(null);
   const [speakerLabel, setSpeakerLabel] = useState(meeting.speakers[0]?.label ?? "");
@@ -685,6 +693,9 @@ export function MeetingDetailPage({
       setNotice(error instanceof Error ? error.message : "操作失败");
     }
   };
+  const confirmThen = async (options: ConfirmOptions, action: () => Promise<unknown>) => {
+    if (await confirm(options)) await action();
+  };
   const discardSaveConflict = async () => {
     setBusy(true);
     setNotice("");
@@ -795,8 +806,9 @@ export function MeetingDetailPage({
 
   return (
     <section className={`detail-page ${isMobile ? "detail-page--mobile" : ""}`}>
+      {confirmDialog}
       <header className="detail-header">
-        <button className="back-button" disabled={isSaving} onClick={leaveDetail} type="button">← 返回资料库</button>
+        <button className="back-button" disabled={isSaving} onClick={leaveDetail} type="button">← 返回{backLabel}</button>
         <div className="detail-title-row">
           <div>
             <span className="archive-code">{meeting.id}</span>
@@ -863,7 +875,15 @@ export function MeetingDetailPage({
                 <button
                   className="danger-button"
                   disabled={destructiveBlocked}
-                  onClick={() => void resolveConflict(conflict, "discard_draft")}
+                  onClick={() => void confirmThen(
+                    {
+                      title: "丢弃草稿？",
+                      message: "工作台里这场会未写回的草稿会被丢弃，改用外部文件里的版本。丢弃后无法恢复。",
+                      confirmLabel: "丢弃草稿",
+                      tone: "danger",
+                    },
+                    () => resolveConflict(conflict, "discard_draft"),
+                  )}
                   type="button"
                 >
                   丢弃草稿
@@ -906,7 +926,15 @@ export function MeetingDetailPage({
               <button
                 className="danger-button"
                 disabled={busy}
-                onClick={() => void discardSaveConflict()}
+                onClick={() => void confirmThen(
+                  {
+                    title: "丢弃我的修改？",
+                    message: "你在这个页面上还没保存的修改会被丢掉，页面载入别处保存的最新版本。丢弃后无法恢复。",
+                    confirmLabel: "丢弃并加载最新",
+                    tone: "danger",
+                  },
+                  discardSaveConflict,
+                )}
                 type="button"
               >
                 丢弃我的修改并加载最新
@@ -1168,7 +1196,14 @@ export function MeetingDetailPage({
               </select>
               <button disabled={!minutesVersion || minutesVersion === meeting.current_minutes_version_id || destructiveBlocked} onClick={() => void run(() => apiClient.rollbackMinutes(meeting.id, minutesVersion), "已回滚纪要工作版本")} type="button">回滚纪要版本</button>
               <div className="publish-rule" />
-              <button className="publish-button" disabled={destructiveBlocked} onClick={() => void run(() => apiClient.publish(meeting.id), "已写回会议文件夹")} type="button">写回会议文件夹</button>
+              <button className="publish-button" disabled={destructiveBlocked} onClick={() => void confirmThen(
+                {
+                  title: "写回会议文件夹？",
+                  message: "用工作台里的当前版本更新归档目录里的逐字稿和纪要文件，原音频不动。",
+                  confirmLabel: "写回",
+                },
+                () => run(() => apiClient.publish(meeting.id), "已写回会议文件夹"),
+              )} type="button">写回会议文件夹</button>
             </aside>
           )}
         </div>
@@ -1179,7 +1214,10 @@ export function MeetingDetailPage({
             canWrite={canWriteTasks}
             meetingId={meeting.id}
             meetingTitle={isUntitled(meeting.title, meeting.id) ? meeting.id : meeting.title}
-            onChanged={loadPendingTaskCount}
+            onChanged={() => {
+              void loadPendingTaskCount();
+              onTasksChanged?.();
+            }}
             onOpenTasks={onOpenTasks!}
             projects={projects}
           />

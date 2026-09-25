@@ -26,6 +26,8 @@ interface OverviewPageProps {
   onOpenMeeting?: (meetingId: string) => void;
   apiClient: ApiClient;
   onOpenTasks: () => void;
+  /** 确认待办之后通知外层刷新侧栏「任务池」角标。 */
+  onTasksChanged?: () => void;
 }
 
 const ATTENTION_KIND_TEXT: Record<string, string> = {
@@ -99,6 +101,7 @@ export function OverviewPage({
   onOpenMeeting,
   apiClient,
   onOpenTasks,
+  onTasksChanged,
 }: OverviewPageProps) {
   const activeJobs = jobs.filter(
     (job) =>
@@ -245,6 +248,7 @@ export function OverviewPage({
     try {
       await apiClient.confirmTask(task.id, {});
       await loadTodos();
+      onTasksChanged?.();
       setNotice("任务已确认");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "确认失败，请稍后重试");

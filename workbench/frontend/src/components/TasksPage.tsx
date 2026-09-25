@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { AsyncState } from "./AsyncState";
 import { Pagination } from "./Pagination";
@@ -102,6 +103,21 @@ export function TasksPage({
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [menuTaskId, setMenuTaskId] = useState<string | null>(null);
+  // 更多操作菜单的键盘操作：Esc 收起并把焦点还给「⋯」，上下键在菜单项间移动。
+  const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      const trigger = event.currentTarget.parentElement?.querySelector<HTMLElement>(".task-menu__trigger");
+      setMenuTaskId(null);
+      trigger?.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(index + step + items.length) % items.length]?.focus();
+    }
+  };
   const [drawerTaskId, setDrawerTaskId] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [creating, setCreating] = useState(false);
@@ -142,6 +158,11 @@ export function TasksPage({
         offset: page * PAGE_SIZE,
       });
       if (seq !== loadSeqRef.current) return;
+      // 当前页被操作空了（比如确认掉第 2 页最后一条），退到最后一个有内容的页，而不是停在空页上。
+      if (payload.items.length === 0 && page > 0 && payload.total > 0) {
+        setPage(Math.max(0, Math.ceil(payload.total / PAGE_SIZE) - 1));
+        return;
+      }
       setTasks(payload.items);
       setTotal(payload.total);
       setStatusCounts(payload.counts ?? {});
@@ -496,6 +517,13 @@ export function TasksPage({
               <div
                 className="task-menu__pop"
                 onClick={(event) => event.stopPropagation()}
+                onKeyDown={onMenuKeyDown}
+                ref={(element) => {
+                  // 菜单一打开焦点就落到第一项，键盘用户可以直接上下选。
+                  if (element && !element.contains(document.activeElement)) {
+                    element.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+                  }
+                }}
                 role="menu"
               >
                 {menu.map((action) => (

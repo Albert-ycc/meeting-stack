@@ -27,6 +27,8 @@ export async function uploadRecordingInChunks(
   apiClient: Pick<ApiClient, "startUpload" | "uploadChunk" | "completeUpload">,
   file: File,
   hotwords: string[] = [],
+  /** 每传完一块回调一次（已传字节, 总字节），界面用来显示进度。 */
+  onProgress?: (sentBytes: number, totalBytes: number) => void,
 ): Promise<UploadReceipt> {
   if (!ALLOWED_AUDIO_EXTENSION.test(file.name)) {
     throw new Error("仅支持 m4a、mp3、wav 录音");
@@ -49,6 +51,7 @@ export async function uploadRecordingInChunks(
     const end = Math.min(start + session.chunk_bytes, file.size);
     const contentBase64 = await blobToBase64(file.slice(start, end));
     await apiClient.uploadChunk(session.upload_id, index, contentBase64);
+    onProgress?.(end, file.size);
   }
 
   return apiClient.completeUpload(session.upload_id);

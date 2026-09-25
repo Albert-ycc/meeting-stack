@@ -105,17 +105,17 @@
 
 .meeting-tasks-panel__status--teal {
   color: var(--teal);
-  background: rgba(62, 207, 142, 0.12);
+  background: rgb(var(--ok-rgb) / 0.12);
 }
 
 .meeting-tasks-panel__status--neutral {
   color: var(--ink-soft);
-  background: rgba(255, 255, 255, 0.108);
+  background: rgb(var(--fg-rgb) / 0.108);
 }
 
 .meeting-tasks-panel__status--muted {
   color: var(--ink-faint);
-  background: rgba(255, 255, 255, 0.049);
+  background: rgb(var(--fg-rgb) / 0.049);
 }
 
 /* 已取消整行标灰 */

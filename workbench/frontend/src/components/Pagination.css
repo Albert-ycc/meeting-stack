@@ -9,8 +9,8 @@
 }
 
 .pagination-numbers button {
-  min-width: 28px;
-  height: 28px;
+  min-width: 32px;
+  height: 32px;
   padding: 0 6px;
   color: var(--ink-soft);
   font-size: 12px;

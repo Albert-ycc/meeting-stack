@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { readToken, sampleSmooth, threshold, type Rgb } from "./dither";
+import { useTheme } from "../../theme";
+import { mix, readToken, sampleSmooth, threshold, type Rgb } from "./dither";
 import "./dither.css";
 
 /** 面积图的绘图内边距，hover 反查数据点时要用同一套数值。 */
@@ -65,6 +66,7 @@ export function DitherArea({
 }: DitherAreaProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const theme = useTheme().resolved;
   const w = useWidth(hostRef);
   const [hover, setHover] = useState<AreaHover | null>(null);
 
@@ -110,8 +112,7 @@ export function DitherArea({
         const depth = (y - topY) / Math.max(1, height - padB - topY);
         const intensity = 0.16 + 0.84 * Math.pow(1 - depth, 1.5);
         if (intensity > threshold(x, y)) {
-          const lum = Math.round(200 + 50 * (1 - depth));
-          put(img.data, i, [lum, lum, lum], 255);
+          put(img.data, i, mix(faint, ink, 0.75 + 0.25 * (1 - depth)), 255);
         } else {
           put(img.data, i, ink, 0);
         }
@@ -120,7 +121,7 @@ export function DitherArea({
     ctx.putImageData(img, 0, 0);
 
     const grid = ticks ?? [0, Math.round(ceiling / 3), Math.round((ceiling / 3) * 2), Math.round(ceiling)];
-    ctx.strokeStyle = "rgba(255,255,255,.07)";
+    ctx.strokeStyle = `rgba(${ink.join(",")},.07)`;
     ctx.fillStyle = `rgb(${faint.join(",")})`;
     ctx.font = '10px "SFMono-Regular", monospace';
     ctx.lineWidth = 1;
@@ -136,7 +137,7 @@ export function DitherArea({
       const x = padL + (plotW * k) / Math.max(1, labels.length - 1);
       ctx.fillText(label, k === labels.length - 1 ? x - 26 : x, height - 6);
     });
-  }, [values, height, labels, ticks, w, geom]);
+  }, [values, height, labels, ticks, w, geom, theme]);
 
   const onMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -206,6 +207,7 @@ interface DitherDonutProps {
 /** 抖动甜甜圈：扇区靠网点密度区分，环内侧密外侧疏。 */
 export function DitherDonut({ segments, size = 176, centerValue, centerLabel }: DitherDonutProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const theme = useTheme().resolved;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -217,6 +219,8 @@ export function DitherDonut({ segments, size = 176, centerValue, centerLabel }: 
 
     const signal = readToken("--signal", [240, 120, 59]);
     const muted2 = readToken("--muted-2", [118, 118, 118]);
+    const ink = readToken("--ink", [237, 237, 237]);
+    const heading = readToken("--heading", [255, 255, 255]);
     const total = segments.reduce((s, x) => s + x.value, 0) || 1;
     const cx = size / 2;
     const cy = size / 2;
@@ -232,8 +236,7 @@ export function DitherDonut({ segments, size = 176, centerValue, centerLabel }: 
       if (s.tone === "signal") return { a0, a1: acc, color: signal, weight: 1 };
       ordIdx += 1;
       const step = ordinary > 1 ? ordIdx / (ordinary - 1) : 0;
-      const lum = Math.round(235 - 110 * step);
-      return { a0, a1: acc, color: [lum, lum, lum] as Rgb, weight: 0.95 - 0.5 * step };
+      return { a0, a1: acc, color: mix(muted2, ink, 1 - 0.8 * step), weight: 0.95 - 0.5 * step };
     });
 
     const img = ctx.createImageData(size, size);
@@ -260,7 +263,7 @@ export function DitherDonut({ segments, size = 176, centerValue, centerLabel }: 
 
     if (centerValue) {
       ctx.textAlign = "center";
-      ctx.fillStyle = "#ffffff";
+      ctx.fillStyle = `rgb(${heading.join(",")})`;
       ctx.font = '300 26px "Outfit", "PingFang SC", sans-serif';
       ctx.fillText(centerValue, cx, cy + 3);
     }
@@ -270,7 +273,7 @@ export function DitherDonut({ segments, size = 176, centerValue, centerLabel }: 
       ctx.font = '10px "SFMono-Regular", monospace';
       ctx.fillText(centerLabel, cx, cy + 19);
     }
-  }, [segments, size, centerValue, centerLabel]);
+  }, [segments, size, centerValue, centerLabel, theme]);
 
   return <canvas className="dither-canvas" ref={canvasRef} />;
 }
@@ -306,6 +309,7 @@ export function DitherCalendar({
 }: DitherCalendarProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const theme = useTheme().resolved;
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const W = cols * (cell + gap);
   const H = rows * (cell + gap);
@@ -319,6 +323,8 @@ export function DitherCalendar({
     canvas.height = H;
 
     const signal = readToken("--signal", [240, 120, 59]);
+    const ink = readToken("--ink", [237, 237, 237]);
+    const muted2 = readToken("--muted-2", [118, 118, 118]);
     const img = ctx.createImageData(W, H);
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
@@ -333,14 +339,13 @@ export function DitherCalendar({
         }
         const v = cells[c * rows + r]?.intensity ?? 0;
         if (v < 0.06) {
-          put(img.data, i, [255, 255, 255], 13);
+          put(img.data, i, ink, 13);
           continue;
         }
         if (0.12 + 0.88 * v > threshold(x, y)) {
           if (v > 0.82) put(img.data, i, signal, 255);
           else {
-            const lum = Math.round(118 + 128 * v);
-            put(img.data, i, [lum, lum, lum], 255);
+            put(img.data, i, mix(muted2, ink, v), 255);
           }
         } else {
           put(img.data, i, signal, 0);
@@ -348,7 +353,7 @@ export function DitherCalendar({
       }
     }
     ctx.putImageData(img, 0, 0);
-  }, [cells, cols, rows, cell, gap, W, H]);
+  }, [cells, cols, rows, cell, gap, W, H, theme]);
 
   const onMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const host = hostRef.current;

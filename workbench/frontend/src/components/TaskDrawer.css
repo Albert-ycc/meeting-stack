@@ -9,7 +9,7 @@
 .task-drawer__scrim {
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, 0.038);
+  background: rgb(var(--fg-rgb) / 0.038);
   backdrop-filter: blur(2px);
   animation: task-drawer-scrim-in 220ms ease-out;
 }
@@ -28,7 +28,7 @@
   flex-direction: column;
   background: var(--paper);
   border-left: 1px solid var(--line);
-  box-shadow: -22px 0 54px rgba(0, 0, 0, 0.55);
+  box-shadow: -22px 0 54px rgb(0 0 0 / calc(0.55 * var(--shadow-k)));
   animation: task-drawer-in 260ms ease-out;
 }
 
@@ -48,6 +48,8 @@
 }
 
 .task-drawer__close {
+  min-width: 32px;
+  min-height: 32px;
   padding: 4px 8px;
   color: var(--ink-faint);
   font-size: 17px;
@@ -60,7 +62,7 @@
 
 .task-drawer__close:hover {
   color: var(--signal-dark);
-  background: rgba(240, 120, 59, 0.1);
+  background: rgb(var(--signal-rgb) / 0.1);
 }
 
 .task-drawer__body {
@@ -430,7 +432,7 @@ button.task-drawer__requirement-link:hover {
 }
 
 .task-drawer__retry:hover {
-  background: rgba(240, 120, 59, 0.08);
+  background: rgb(var(--signal-rgb) / 0.08);
 }
 
 .task-drawer__foot {
@@ -507,7 +509,7 @@ button.task-drawer__requirement-link:hover {
   background: var(--signal-bg);
   border-left: 3px solid var(--signal);
   border-radius: 10px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 10px 26px rgb(0 0 0 / calc(0.55 * var(--shadow-k)));
   animation: task-drawer-notice-in 180ms ease-out;
 }
 

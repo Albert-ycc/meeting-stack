@@ -41,7 +41,7 @@
   color: var(--ink);
   font-weight: 600;
   background: var(--paper);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.48);
+  box-shadow: 0 2px 8px rgb(0 0 0 / calc(0.48 * var(--shadow-k)));
 }
 
 .glossary-tabs button[aria-selected="true"] span {
@@ -203,7 +203,7 @@
 
 .glossary-card:hover {
   border-color: var(--line-strong);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 10px 24px rgb(0 0 0 / calc(0.22 * var(--shadow-k)));
 }
 
 .glossary-card__head {
@@ -310,7 +310,7 @@
   color: var(--ink);
   font-weight: 600;
   background: var(--paper);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.48);
+  box-shadow: 0 2px 8px rgb(0 0 0 / calc(0.48 * var(--shadow-k)));
 }
 
 /* 建议列表 */
@@ -320,7 +320,7 @@
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 16px;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 14px 32px rgb(0 0 0 / calc(0.24 * var(--shadow-k)));
   overflow: hidden;
 }
 

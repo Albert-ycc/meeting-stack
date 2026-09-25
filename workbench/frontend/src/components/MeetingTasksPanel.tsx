@@ -84,27 +84,24 @@ export function MeetingTasksPanel({
     </div>
   );
 
-  const confirmOne = async (task: Task) => {
+  // 同一时间只处理一条，处理中这一组按钮禁用，连点不会发两次请求。
+  const [actingId, setActingId] = useState<string | null>(null);
+  const act = async (task: Task, action: () => Promise<unknown>, done: string, failed: string) => {
+    if (actingId) return;
+    setActingId(task.id);
     try {
-      await apiClient.confirmTask(task.id, {});
-      setNotice("任务已确认");
+      await action();
+      setNotice(done);
       await load();
       onChanged?.();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "确认失败");
+      setNotice(error instanceof Error ? error.message : failed);
+    } finally {
+      setActingId(null);
     }
   };
-
-  const rejectOne = async (task: Task) => {
-    try {
-      await apiClient.rejectTask(task.id);
-      setNotice("任务已驳回");
-      await load();
-      onChanged?.();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "驳回失败");
-    }
-  };
+  const confirmOne = (task: Task) => act(task, () => apiClient.confirmTask(task.id, {}), "任务已确认", "确认失败");
+  const rejectOne = (task: Task) => act(task, () => apiClient.rejectTask(task.id), "任务已驳回", "驳回失败");
 
   if (state === "loading") {
     return (
@@ -159,9 +156,11 @@ export function MeetingTasksPanel({
                 {renderCopy(task)}
                 {canWrite ? (
                   <span className="meeting-tasks-panel__actions">
-                    <button className="text-button text-button--accent" onClick={() => void confirmOne(task)} type="button">确认</button>
-                    <button className="text-button" onClick={() => setEditing(task)} type="button">修改</button>
-                    <button className="text-button text-button--muted" onClick={() => void rejectOne(task)} type="button">驳回</button>
+                    <button className="text-button text-button--accent" disabled={actingId !== null} onClick={() => void confirmOne(task)} type="button">
+                      {actingId === task.id ? "处理中…" : "确认"}
+                    </button>
+                    <button className="text-button" disabled={actingId !== null} onClick={() => setEditing(task)} type="button">修改</button>
+                    <button className="text-button text-button--muted" disabled={actingId !== null} onClick={() => void rejectOne(task)} type="button">驳回</button>
                   </span>
                 ) : null}
               </li>

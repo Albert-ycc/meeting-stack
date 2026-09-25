@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../api";
 import type { MaterialBrowsePayload } from "../types";
 import { FolderIcon } from "./FolderIcon";
+import { useDialogFocus } from "./useDialog";
 import "./MaterialRootPickerModal.css";
 
 export interface MaterialRootPickerModalProps {
@@ -32,6 +33,7 @@ export function MaterialRootPickerModal({
   const [state, setState] = useState<LoadState>("loading");
   const [selected, setSelected] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(cardRef);
 
   const load = async (path?: string) => {
     setState("loading");
@@ -55,7 +57,7 @@ export function MaterialRootPickerModal({
       if (cardRef.current && !cardRef.current.contains(event.target as Node)) onClose();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !event.isComposing) onClose();
     };
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);

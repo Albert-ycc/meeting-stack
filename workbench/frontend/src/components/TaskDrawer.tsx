@@ -8,6 +8,7 @@ import { DeliverableModal } from "./DeliverableModal";
 import { PriorityBadge } from "./RequirementBadges";
 import { isComposingKeydown } from "../keyboard";
 import "./TaskDrawer.css";
+import { useDialogFocus } from "./useDialog";
 
 interface TaskDrawerProps {
   apiClient: ApiClient;
@@ -42,6 +43,8 @@ export function TaskDrawer({
   onOpenMeeting,
   onOpenRequirement,
 }: TaskDrawerProps) {
+  const drawerRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(drawerRef);
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [state, setState] = useState<LoadState>("loading");
   const [notice, setNotice] = useState("");
@@ -65,18 +68,13 @@ export function TaskDrawer({
     void load();
   }, [load]);
 
-  // 关闭交互：点遮罩、按 Esc、锁定背景滚动
+  // 关闭交互：点遮罩、按 Esc。背景滚动锁定与焦点进出由 useDialogFocus 负责。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !deliverableOpen) onClose();
+      if (event.key === "Escape" && !event.isComposing && !deliverableOpen) onClose();
     };
     window.addEventListener("keydown", onKey);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = previousOverflow;
-    };
+    return () => window.removeEventListener("keydown", onKey);
   }, [onClose, deliverableOpen]);
 
   const act = async (run: () => Promise<TaskDetail>, doneMessage: string) => {
@@ -120,7 +118,7 @@ export function TaskDrawer({
   const assignedToAi = task?.assignee === "ai";
 
   return (
-    <div className="task-drawer" role="dialog" aria-modal="true" aria-label="任务详情">
+    <div className="task-drawer" role="dialog" aria-modal="true" aria-label="任务详情" ref={drawerRef}>
       <div className="task-drawer__scrim" onClick={onClose} aria-hidden="true" />
       <aside className="task-drawer__panel">
         <header className="task-drawer__head">

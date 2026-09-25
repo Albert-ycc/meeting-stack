@@ -38,6 +38,28 @@ meeting-stack 的三个组件之一，负责资料库、检索、播放与编辑
 **要换配色只改 `:root`**，不要在具体规则里写死颜色——之前 359 处硬编码色值让换主题要动
 八个文件，现在全部走 token。canvas 里的颜色（波形、抖动图表）也是运行时读 `:root` 拿的。
 
+**深色 / 浅色 / 跟随系统三选一**：顶栏右侧的三个图标切换，偏好只存在本机浏览器
+（`localStorage` 的 `meeting-workbench:theme`），默认跟随系统。深色是 `:root` 的默认值，
+浅色在 `:root[data-theme="light"]` 里覆盖同一批 token；`src/theme.ts` 解析偏好并写
+`<html data-theme>`，`public/theme-init.js` 在首帧前先写一次避免闪屏（服务端 CSP 是
+`script-src 'self'`，所以走外链脚本而不是内联）。组件里的半透明叠色写
+`rgb(var(--fg-rgb) / α)`、阴影写 `rgb(0 0 0 / calc(α * var(--shadow-k)))`，两套主题各自
+调深浅；canvas 组件把 `useTheme().resolved` 放进依赖，换主题时重绘。
+
+## 交互约定
+
+- 每个视图和打开的会议都有地址锚点（`#library`、`#tasks`、`#meetings/<id>` …），视图切换压入
+  浏览器历史：后退键回到上一个视图，打开的会议后退即关掉，刷新不丢位置。会议详情的「← 返回」
+  回到打开它之前的视图（检索结果也保留），不再一律回录音档案。
+- 保存、回滚、改说话人后会议详情静默刷新，不整页闪加载，标签页、滚动与播放进度都保留；
+  需求详情同理。
+- 弹窗共用 `components/useDialog.ts`：焦点进出与 Tab 循环、背景不滚动、Esc 关闭（输入法组合中
+  的 Esc 不算）。有输入内容的表单弹窗点背景不关；只做选择的弹窗点背景关，且只认按下和松开都在
+  背景上的点击。
+- 丢弃草稿、丢弃未保存修改、写回会议文件夹、删除术语、移除材料根目录这类操作统一走
+  `components/ConfirmDialog.tsx` 的二次确认；需要调接口的确认，失败原因写在确认框里。
+- 复制路径在 `http://<局域网 IP>` 这类非安全上下文里退回 `execCommand("copy")`（`src/clipboard.ts`）。
+
 字体是 `Outfit`（拉丁与数字）+ `PingFang SC`（中文）。Outfit 走自托管
 `frontend/public/fonts/outfit.woff2`（32KB 可变字体，覆盖 100~900 字重），**不要改成
 Google Fonts CDN**，否则断网时字体掉回系统默认。

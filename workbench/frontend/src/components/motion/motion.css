@@ -46,7 +46,7 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(460px circle at var(--mx) var(--my), rgba(240, 120, 59, 0.14), transparent 46%);
+  background: radial-gradient(460px circle at var(--mx) var(--my), rgb(var(--signal-rgb) / 0.14), transparent 46%);
   opacity: 0;
   transition: opacity 0.25s ease;
 }
