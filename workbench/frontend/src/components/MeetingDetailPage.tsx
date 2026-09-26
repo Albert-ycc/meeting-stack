@@ -8,8 +8,10 @@ import { parseHotwordsInput, validateHotwordsInput } from "../hotwords";
 import type {
   AsrGoldSample,
   AsrShadowRun,
+  AttributionState,
   LoadState,
   MeetingConflict,
+  MeetingAttribution,
   MeetingDetail,
   MinutesEvidence,
   Project,
@@ -19,6 +21,7 @@ import type {
   TranscriptComparisonPayload,
   TranscriptVersion,
 } from "../types";
+import { AttributionBar, type AttributionChange } from "./AttributionBar";
 import { AudioPlayer, type AudioPlayerHandle } from "./AudioPlayer";
 import { CopyFolderPathButton } from "./CopyFolderPathButton";
 import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
@@ -44,6 +47,34 @@ interface MeetingDetailPageProps {
 }
 
 type DetailTab = "transcript" | "minutes" | "tasks";
+
+// 检查器主项目下拉里的特殊取值：「不归项目」（没项目的会上显式标一下）和「交给 AI 判断」。
+const MARK_NO_PROJECT = "__none__";
+const RETURN_TO_AI = "__ai__";
+
+const EMPTY_PROJECT_LABELS: Partial<Record<AttributionState, string>> = {
+  ai_pending: "等 AI 判断",
+  none: "AI 没认出",
+  new_project: "AI 没认出",
+  needs_review: "等你选",
+  manual_none: "不归项目（你标的）",
+};
+
+interface LiveProject {
+  id: string | null;
+  name: string | null;
+  color: string | null;
+  origin: "manual" | "ai" | null;
+}
+
+function liveProjectOf(meeting: MeetingDetail): LiveProject {
+  return {
+    id: meeting.project_id ?? null,
+    name: meeting.project_name ?? null,
+    color: meeting.project_color ?? null,
+    origin: meeting.project_origin ?? null,
+  };
+}
 
 interface QualitySnapshot {
   shadowRuns: AsrShadowRun[];
@@ -217,6 +248,9 @@ export function MeetingDetailPage({
   const [segments, setSegments] = useState<Segment[]>(meeting.segments);
   const [baselineSegments, setBaselineSegments] = useState<Segment[]>(meeting.segments);
   const [notice, setNotice] = useState("");
+  const [undoUntil, setUndoUntil] = useState<string | null>(null);
+  const [attribution, setAttribution] = useState<MeetingAttribution | undefined>(meeting.attribution);
+  const [liveProject, setLiveProject] = useState<LiveProject>(() => liveProjectOf(meeting));
   const [busy, setBusy] = useState(false);
   const [savingKind, setSavingKind] = useState<"transcript" | "minutes" | "classification" | null>(null);
   const [saveConflict, setSaveConflict] = useState<"transcript" | "minutes" | null>(null);
@@ -332,6 +366,8 @@ export function MeetingDetailPage({
     setSelectedProjectId(meeting.project_id ?? "");
     setSelectedTagIds(meeting.tags.map((tag) => tag.id));
     setBaselineProjectId(meeting.project_id ?? "");
+    setAttribution(meeting.attribution);
+    setLiveProject(liveProjectOf(meeting));
     setBaselineTagIds(meeting.tags.map((tag) => tag.id));
     setSelectedRequirementRefs(meeting.requirements ?? []);
     setBaselineRequirementRefs(meeting.requirements ?? []);
@@ -708,7 +744,9 @@ export function MeetingDetailPage({
     // 只带和 baseline 相比改过的字段：只勾标签不能顺手把项目写一遍，
     // 否则后端会把「AI 还没判断」的会当成你手动选了「不归项目」。
     const changes: { project_id?: string; tag_ids?: string[]; requirement_ids?: string[] } = {};
-    if (snapshotProjectId !== baselineProjectId) changes.project_id = snapshotProjectId;
+    if (snapshotProjectId !== baselineProjectId) {
+      changes.project_id = snapshotProjectId === MARK_NO_PROJECT ? "" : snapshotProjectId;
+    }
     if ([...snapshotTagIds].sort().join("\u0000") !== [...baselineTagIds].sort().join("\u0000")) {
       changes.tag_ids = snapshotTagIds;
     }
@@ -747,6 +785,7 @@ export function MeetingDetailPage({
         return;
       }
       setNotice(`会议归档归属已保存${effectsNote}${refreshWarning}`);
+      setUndoUntil(effects?.undo_until ?? null);
       await onReload();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "操作失败");
@@ -815,6 +854,55 @@ export function MeetingDetailPage({
     return saved;
   };
 
+  // 归属条只 PATCH 项目，成功后就地同步检查器的项目下拉，不重载详情，
+  // 没保存的纪要和逐字稿都不受影响。
+  const applyAttributionChange = (change: AttributionChange) => {
+    setAttribution(change.attribution);
+    if (change.project) {
+      const next = change.project;
+      setLiveProject(next);
+      setSelectedProjectId(next.id ?? "");
+      setBaselineProjectId(next.id ?? "");
+    } else {
+      setLiveProject((current) => ({ ...current, origin: change.attribution.origin }));
+    }
+  };
+  const showAttributionNotice = (message: string, until?: string) => {
+    setNotice(message);
+    setUndoUntil(until ?? null);
+  };
+  const undoFromBanner = async () => {
+    setBusy(true);
+    try {
+      const detail = await apiClient.undoMeetingProject(meeting.id);
+      if (detail.attribution) {
+        applyAttributionChange({
+          attribution: detail.attribution,
+          project: {
+            id: detail.project_id ?? null,
+            name: detail.project_name ?? null,
+            color: detail.project_color ?? null,
+            origin: detail.project_origin ?? null,
+          },
+        });
+      }
+      showAttributionNotice("已撤销刚才的改动");
+      await onClassificationSaved?.();
+    } catch (error) {
+      showAttributionNotice(error instanceof Error ? error.message : "撤销失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const canUndo = undoUntil !== null && Date.now() < Date.parse(undoUntil);
+  const projectDirty = selectedProjectId !== baselineProjectId;
+  const effectiveProjectId =
+    selectedProjectId === MARK_NO_PROJECT || selectedProjectId === RETURN_TO_AI ? "" : selectedProjectId;
+  const attributionStateNow = attribution?.state;
+  const emptyProjectLabel = baselineProjectId
+    ? "不归项目"
+    : (attributionStateNow && EMPTY_PROJECT_LABELS[attributionStateNow]) ?? "未归项目";
+
   return (
     <section className={`detail-page ${isMobile ? "detail-page--mobile" : ""}`}>
       <header className="detail-header">
@@ -828,7 +916,7 @@ export function MeetingDetailPage({
             </h1>
             <div className="detail-meta">
               <span>{formatDate(meeting.recording_date)}</span>
-              {meeting.project_name && <span className="project-mark"><i style={{ background: meeting.project_color || "#767676" }} />{meeting.project_name}</span>}
+              {liveProject.name && <span className="project-mark"><i style={{ background: liveProject.color || "#767676" }} />{liveProject.name}</span>}
               {meeting.tags.map((tag) => <em key={tag.id}>{tag.name}</em>)}
             </div>
           </div>
@@ -843,9 +931,22 @@ export function MeetingDetailPage({
                 {statusLabel(statusTone(meeting.status))}
               </span>
             )}
-            {isMobile && <span className="read-only-chip">只读</span>}
+            {isMobile && <span className="read-only-chip">只读 · 可改项目</span>}
           </div>
         </div>
+        {attribution && (
+          <AttributionBar
+            apiClient={apiClient}
+            attribution={attribution}
+            lockedReason={projectDirty ? "右侧有未保存的归属修改" : undefined}
+            meetingId={meeting.id}
+            onChange={applyAttributionChange}
+            onNotice={showAttributionNotice}
+            onProjectsChanged={onClassificationSaved}
+            onSeek={(milliseconds) => playerRef.current?.seekTo(milliseconds)}
+            projects={projects}
+          />
+        )}
       </header>
 
       {openConflicts.map((conflict) => {
@@ -905,7 +1006,16 @@ export function MeetingDetailPage({
         ref={playerRef}
       />
 
-      {notice && <div className="action-banner" role="status">{notice}</div>}
+      {notice && (
+        <div className="action-banner" role="status">
+          {notice}
+          {canUndo && (
+            <button className="text-button action-banner__undo" disabled={busy} onClick={() => void undoFromBanner()} type="button">
+              撤销
+            </button>
+          )}
+        </div>
+      )}
 
       {saveConflict && (
         <section className="conflict-panel" role="alert">
@@ -1055,24 +1165,29 @@ export function MeetingDetailPage({
                 <label>
                   <span>
                     主项目{" "}
-                    {meeting.project_origin === "ai" && meeting.project_id && (
+                    {liveProject.origin === "ai" && liveProject.id && (
                       <em className="project-card__badge project-card__badge--new">AI 归属</em>
                     )}
                   </span>
                   <select aria-label="主项目" disabled={isSaving} onChange={(event) => changeProject(event.target.value)} value={selectedProjectId}>
-                    <option value="">未归项目</option>
+                    <option value="">{emptyProjectLabel}</option>
+                    {!baselineProjectId && attributionStateNow && attributionStateNow !== "manual_none" && (
+                      <option value={MARK_NO_PROJECT}>不归项目</option>
+                    )}
+                    {attributionStateNow === "manual_none" && <option value={RETURN_TO_AI}>交给 AI 判断</option>}
                     {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
                   </select>
                 </label>
-                {meeting.project_origin === "ai" && meeting.project_id && (
+                {liveProject.origin === "ai" && liveProject.id && (
                   <p className="muted">由会议纪要自动匹配；改选项目后以你选的为准</p>
                 )}
                 <MeetingRequirementPicker
                   apiClient={apiClient}
-                  disabled={isSaving || !selectedProjectId}
+                  disabled={isSaving}
                   onChange={changeRequirements}
                   onOpenRequirement={onOpenRequirement}
-                  projectId={selectedProjectId}
+                  onProjectPicked={changeProject}
+                  projectId={effectiveProjectId}
                   projects={projects}
                   selected={selectedRequirementRefs}
                 />

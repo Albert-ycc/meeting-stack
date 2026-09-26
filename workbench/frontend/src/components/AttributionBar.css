@@ -1,0 +1,121 @@
+/* 会议详情页标题下的归属条：自动 / 待你选 / 等待 / 像新项目 / 刚改过 */
+.attribution-bar {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  color: var(--ink-2);
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.attribution-bar--review,
+.attribution-bar--new {
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+}
+
+.attribution-bar--quiet,
+.attribution-bar--changed {
+  background: transparent;
+}
+
+.attribution-bar__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.attribution-bar__row .ghost-button {
+  padding: 4px 10px;
+}
+
+.attribution-bar__tag {
+  padding: 1px 7px;
+  color: var(--ok);
+  font-size: 11px;
+  background: var(--ok-bg);
+  border-radius: var(--r-pill);
+}
+
+.attribution-bar__why {
+  padding: 0;
+  color: var(--ink-2);
+  font: inherit;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.attribution-bar__pick {
+  max-width: 180px;
+  padding: 3px 6px;
+  color: var(--ink-2);
+  font: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.attribution-bar__detail ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attribution-bar__detail li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.attribution-bar__cue {
+  color: var(--ink);
+}
+
+.attribution-bar__where,
+.attribution-bar__reason,
+.attribution-bar__muted,
+.attribution-bar__lock {
+  color: var(--muted);
+}
+
+.attribution-bar__reason {
+  margin: 0;
+}
+
+.attribution-bar__anchor {
+  padding: 1px 6px;
+  color: var(--signal-dark);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--signal-bg);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.attribution-bar__question {
+  padding-top: 6px;
+  border-top: 1px dashed var(--warn-line);
+}
+
+.attribution-bar button:disabled,
+.attribution-bar select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.action-banner__undo {
+  margin-left: 10px;
+  color: var(--signal);
+  text-decoration: underline;
+}

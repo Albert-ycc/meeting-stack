@@ -443,3 +443,26 @@ def test_summary_counts_open_questions_new_names_and_corrections(tmp_path, monke
     assert sorted(summary["new_project_names"][0]["meeting_ids"]) == ["m-new-1", "m-new-2"]
     assert summary["auto_30d"] == 2
     assert summary["corrected_30d"] == 1
+
+
+def test_project_board_explains_how_the_project_is_recognized(tmp_path, monkeypatch):
+    client, settings, headers, db = _setup(tmp_path)
+    project_a = make_project(db, "云图AI", also=["云图"])
+    project_b = make_project(db, "数据中台")
+    make_term(db, project_a, "灰度方案")
+    make_term(db, project_a, "指标口径", is_cue=0)
+    seed_meeting(db, "m-1", "云图AI 周会")
+    seed_meeting(db, "m-2", "云图AI 评审")
+    llm_answers(monkeypatch, HIGH.format(name="云图AI"))
+    ProjectLinker(db, settings).link_pending()
+    client.patch("/api/meetings/m-2", json={"project_id": project_b}, headers=headers)
+
+    profile = client.get(f"/api/projects/{project_a}/board").json()["profile"]
+
+    assert profile == {
+        "also_names": [{"name": "云图", "source": "manual"}],
+        "folder_names": [],
+        "cue_terms": {"total": 2, "cue": 1},
+        "auto_30d": 2,
+        "corrected_30d": 1,
+    }

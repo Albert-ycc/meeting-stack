@@ -1,5 +1,8 @@
 import type {
   AttentionPayload,
+  AttributionSummary,
+  FolderMatchesPayload,
+  MeetingAttribution,
   BootstrapPayload,
   HealthPayload,
   Job,
@@ -80,11 +83,14 @@ function normalizeJob(job: RelayJobPayload): Job {
 
 export class ApiError extends Error {
   readonly status: number;
+  /** 原始响应体（例如 409 带回来的 suggestion） */
+  readonly data: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, data?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -154,7 +160,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
     : await response.text();
   if (!response.ok) {
     const detail = formatErrorDetail(data, response.status);
-    throw new ApiError(detail, response.status);
+    throw new ApiError(detail, response.status, data);
   }
   return data as T;
 }
@@ -242,11 +248,53 @@ export const api = {
       "POST",
       materialRoots ? { name, color, material_roots: materialRoots } : { name, color },
     ),
+  /** 新建项目的完整入口：近似重名时 409（ApiError.data.suggestion），force 仍然新建。 */
+  createProjectWith: (body: {
+    name: string;
+    color: string;
+    material_roots?: string[];
+    folder?: { mode: "mount" | "create"; path: string; name?: string };
+    meeting_ids?: string[];
+    force?: boolean;
+  }) => write<Project>("/api/projects", "POST", body),
+  deleteProject: (projectId: string) =>
+    write<{ ok: boolean; tasks_unassigned: number; terms_to_public: number }>(
+      `/api/projects/${encodeURIComponent(projectId)}`,
+      "DELETE",
+      {},
+    ),
+  mergeProject: (projectId: string, targetId: string) =>
+    write<Project>(
+      `/api/projects/${encodeURIComponent(projectId)}/merge-into/${encodeURIComponent(targetId)}`,
+      "POST",
+      {},
+    ),
+  folderMatches: (name?: string) =>
+    read<FolderMatchesPayload>(`/api/projects/folder-matches${queryString({ name })}`),
+  projectFolderSuggestions: (projectId: string) =>
+    read<FolderMatchesPayload>(
+      `/api/projects/${encodeURIComponent(projectId)}/folder-suggestions`,
+    ),
+  ignoreProjectName: (name: string) =>
+    write<{ name: string; meetings_updated: number }>("/api/project-names/ignore", "POST", { name }),
+  attributionSummary: () => read<AttributionSummary>("/api/attribution/summary"),
+  confirmMeetingProject: (meetingId: string) =>
+    write<MeetingAttribution>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/project/confirm`,
+      "POST",
+      {},
+    ),
+  undoMeetingProject: (meetingId: string) =>
+    write<Omit<MeetingDetail, "effects"> & { effects?: { tasks_restored: number } }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/project/undo`,
+      "POST",
+      {},
+    ),
   createTag: (name: string, color: string) =>
     write<Tag>("/api/tags", "POST", { name, color }),
   updateProject: (
     projectId: string,
-    data: { name?: string; color?: string; material_roots?: string[] },
+    data: { name?: string; color?: string; material_roots?: string[]; also_names?: string[] },
   ) =>
     write<Project>(`/api/projects/${encodeURIComponent(projectId)}`, "PATCH", data),
   projectBoard: (projectId: string) =>
@@ -512,6 +560,7 @@ export const api = {
       project_id?: string | null;
       category?: string;
       confirmed?: boolean;
+      is_cue?: boolean;
     },
   ) =>
     write<GlossaryTerm>(

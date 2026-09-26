@@ -84,6 +84,42 @@ export interface Project {
   requirement_counts?: RequirementCounts;
   /** 未完成任务＝待确认＋已确认＋进行中 */
   open_task_count?: number;
+  /** 项目的其他叫法；former 是改名前的名字，merged 是合并进来的项目名 */
+  also_names?: ProjectAlsoName[];
+  /** 只在 POST /api/projects 的响应里出现 */
+  meetings_assigned?: number;
+  needs_review_meeting_ids?: string[];
+  folder_pending?: { path: string; reason: string };
+}
+
+export interface ProjectAlsoName {
+  name: string;
+  source: "manual" | "former" | "merged";
+}
+
+/** 新建项目撞上近似重名时 409 带回来的已有项目 */
+export interface SimilarProjectSuggestion {
+  project_id: string;
+  name: string;
+  also_names: string[];
+  matched: string;
+  match: "same" | "similar";
+}
+
+export interface FolderMatch {
+  path: string;
+  name: string;
+  match: "exact" | "similar" | null;
+  modified_at: string;
+}
+
+export interface FolderMatchesPayload {
+  matches: FolderMatch[];
+  recent: FolderMatch[];
+  create_parent: string;
+  create_parent_state: MaterialRootState;
+  create_name: string;
+  create_replaced: string[];
 }
 
 export interface Tag {
@@ -178,6 +214,10 @@ export interface MeetingSummary {
   project_name?: string | null;
   project_color?: string | null;
   project_origin?: "manual" | "ai" | null;
+  /** 列表接口带：归属状态、待你选的候选（≤2）、像新项目时的名字 */
+  attribution_state?: AttributionState;
+  candidates?: AttributionCandidate[];
+  new_project_name?: string | null;
   audio_artifact_id?: number | null;
   segment_count?: number;
   conflict?: number;
@@ -186,16 +226,108 @@ export interface MeetingSummary {
   updated_at?: string;
 }
 
+export interface LeftTask {
+  id: string;
+  title: string;
+  requirement_id: string;
+  requirement_title: string;
+}
+
 /** PATCH 会议改了项目时返回：哪些任务跟着一起移了、哪些留在旧项目的需求上。 */
 export interface MeetingProjectEffects {
   tasks_moved: number;
-  tasks_left: { id: string; title: string; requirement_id: string; requirement_title: string }[];
+  tasks_left: LeftTask[];
   undo_until: string;
+  /** 从 AI 归属改走、证据里有项目词时：可以问「以后不再用这个词判断项目」 */
+  cue_hint?: AttributionCueHint;
+}
+
+/**
+ * 归属状态（前后端同一套规则）：manual 你选的；manual_none 你标了不归项目；
+ * needs_review 待你选；auto 自动归属；ai_pending 等 AI 判断；none 没认出；new_project 像新项目。
+ */
+export type AttributionState =
+  | "manual"
+  | "manual_none"
+  | "needs_review"
+  | "auto"
+  | "ai_pending"
+  | "none"
+  | "new_project";
+
+export interface AttributionCandidate {
+  project_id: string;
+  project_name: string;
+  project_color?: string;
+  count: number;
+  llm: boolean;
+  /** 会议现在就在这个项目里（复评时「原来的」那个） */
+  current: boolean;
+}
+
+export interface AttributionEvidence {
+  kind: "literal" | "llm";
+  project_id?: string | null;
+  project_name?: string | null;
+  cue?: string;
+  source?: "name" | "also" | "folder" | "term";
+  count?: number;
+  anchors_ms?: number[];
+  where?: { title: number; transcript: number; minutes: number };
+  term_id?: string;
+  confidence?: "high" | "low";
+  reason?: string;
+}
+
+export interface AttributionCueHint {
+  term_id: string;
+  term: string;
+  cue?: string;
+}
+
+export interface AttributionReassignedFrom {
+  project_id: string | null;
+  project_name: string | null;
+  origin_before: "manual" | "ai" | null;
+  at: string;
+  undo_until: string;
+  can_undo: boolean;
+  tasks_left: LeftTask[];
+  cue_hint: AttributionCueHint | null;
+}
+
+export interface MeetingAttribution {
+  state: AttributionState;
+  project_id: string | null;
+  origin: "manual" | "ai" | null;
+  method: string | null;
+  evidence: AttributionEvidence[];
+  candidates: AttributionCandidate[];
+  reason: string;
+  new_project_name: string | null;
+  reassigned_from: AttributionReassignedFrom | null;
+  ai_configured: boolean;
+}
+
+export interface AttributionSummary {
+  /** 最近 14 天等你选项目的会 */
+  needs_review_recent: number;
+  needs_review_total: number;
+  new_project_names: {
+    name: string;
+    norm_key: string;
+    meeting_count: number;
+    meeting_ids: string[];
+    last_at: string;
+  }[];
+  auto_30d: number;
+  corrected_30d: number;
 }
 
 export interface MeetingDetail extends MeetingSummary {
   /** 只在 PATCH 改了项目的响应里出现 */
   effects?: MeetingProjectEffects;
+  attribution?: MeetingAttribution;
   canonical_dir?: string | null;
   current_transcript_version_id?: string | null;
   current_minutes_version_id?: string | null;
@@ -310,7 +442,9 @@ export interface SearchItem {
 
 export interface MeetingFilters {
   q?: string;
+  /** "none" 只看没归项目的会 */
   project_id?: string;
+  attribution?: AttributionState;
   tag_id?: string;
   status?: string;
   date_from?: string;
@@ -496,10 +630,19 @@ export interface BoardGlossaryTerm {
   category: string;
 }
 
+export interface ProjectRecognitionProfile {
+  also_names: ProjectAlsoName[];
+  folder_names: string[];
+  cue_terms: { total: number; cue: number };
+  auto_30d: number;
+  corrected_30d: number;
+}
+
 export interface ProjectBoard extends Project {
   meetings: BoardMeeting[];
   glossary_count?: number;
   glossary_terms?: BoardGlossaryTerm[];
+  profile?: ProjectRecognitionProfile;
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +668,8 @@ export interface GlossaryTerm {
   project_id?: string | null;
   project_name?: string | null;
   project_color?: string | null;
+  /** 项目词是否参与认项目 */
+  is_cue?: boolean;
 }
 
 /** 词典筛选 chip：通用 → 项目 → 其他桶，只含有术语的分组，由后端定序。 */

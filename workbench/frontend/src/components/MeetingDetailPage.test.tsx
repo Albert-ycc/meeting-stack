@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError, type ApiClient } from "../api";
-import type { MeetingDetail, Segment } from "../types";
+import type { MeetingAttribution, MeetingDetail, Segment } from "../types";
 import { MeetingDetailPage } from "./MeetingDetailPage";
 
 const mainSegment: Segment = {
@@ -611,8 +611,14 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(updateMeeting).toHaveBeenCalledWith("vm-1", { tag_ids: ["tag-b"] });
   });
 
-  it("disables the requirement picker with a placeholder until a project is chosen", async () => {
-    const apiClient = { transcriptVersionSegments: vi.fn() } as unknown as ApiClient;
+  it("without a project the requirement picker searches across projects and adopts the requirement's project", async () => {
+    const requirements = vi.fn().mockResolvedValue({
+      items: [
+        { id: "req-1", title: "登录改版", priority: "P1", status: "active", project_id: "project-a" },
+      ],
+      total: 1,
+    });
+    const apiClient = { transcriptVersionSegments: vi.fn(), requirements } as unknown as ApiClient;
     render(
       <MeetingDetailPage
         apiClient={apiClient}
@@ -626,12 +632,13 @@ describe("MeetingDetailPage Whisper comparison", () => {
       />,
     );
 
-    expect(screen.getByText("先选择主项目")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "＋ 关联需求" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "＋ 关联需求" }));
+    expect(requirements).toHaveBeenCalledWith({ project_id: undefined, status: "active", limit: 200 });
+    expect(await screen.findByText("项目甲", { selector: "em" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("button", { name: "确定" }));
 
-    await userEvent.selectOptions(screen.getByLabelText("主项目"), "project-a");
-    expect(screen.queryByText("先选择主项目")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "＋ 关联需求" })).toBeInTheDocument();
+    expect(screen.getByLabelText("主项目")).toHaveValue("project-a");
   });
 
   it("links requirements through the picker and saves them together with the classification", async () => {
@@ -1296,3 +1303,142 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(regenerateMinutes).toHaveBeenLastCalledWith("vm-1", "claude");
   });
 });
+
+describe("MeetingDetailPage 归属条", () => {
+  const projects = [
+    { id: "project-a", name: "云图AI", color: "#376f68" },
+    { id: "project-b", name: "数据中台", color: "#f0783b" },
+  ];
+  const baseAttribution: Omit<MeetingAttribution, "state"> = {
+    project_id: null,
+    origin: null,
+    method: null,
+    evidence: [],
+    candidates: [],
+    reason: "",
+    new_project_name: null,
+    reassigned_from: null,
+    ai_configured: true,
+  };
+
+  it("待你选时点候选就地改归属，同步右侧下拉，不重载详情也不丢没保存的纪要", async () => {
+    const reviewing: MeetingDetail = {
+      ...meeting(false),
+      attribution: {
+        ...baseAttribution,
+        state: "needs_review",
+        candidates: [
+          { project_id: "project-a", project_name: "云图AI", count: 2, llm: true, current: false },
+          { project_id: "project-b", project_name: "数据中台", count: 1, llm: false, current: false },
+        ],
+      },
+    };
+    const updateMeeting = vi.fn().mockResolvedValue({
+      ...reviewing,
+      project_id: "project-b",
+      project_name: "数据中台",
+      project_color: "#f0783b",
+      project_origin: "manual",
+      effects: { tasks_moved: 2, tasks_left: [], undo_until: "2099-01-01T00:00:00Z" },
+      attribution: { ...baseAttribution, state: "manual", project_id: "project-b", origin: "manual" },
+    });
+    const undoMeetingProject = vi.fn().mockResolvedValue({
+      ...reviewing,
+      project_id: null,
+      project_name: null,
+    });
+    const onReload = vi.fn().mockResolvedValue(undefined);
+    render(
+      <MeetingDetailPage
+        apiClient={{ transcriptVersionSegments: vi.fn(), updateMeeting, undoMeetingProject } as unknown as ApiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={reviewing}
+        onBack={vi.fn()}
+        onReload={onReload}
+        projects={projects}
+        tags={[]}
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "等你选" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "数据中台" }));
+
+    expect(updateMeeting).toHaveBeenCalledWith("vm-1", { project_id: "project-b" });
+    expect(onReload).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("主项目")).toHaveValue("project-b");
+    expect(screen.queryByRole("button", { name: "保存归档归属" })).toBeDisabled();
+    expect(await screen.findByText(/已改到 数据中台：2 条任务一起移过去/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(undoMeetingProject).toHaveBeenCalledWith("vm-1");
+    expect(await screen.findByText("已撤销刚才的改动")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "数据中台" })).toBeInTheDocument();
+  });
+
+  it("右侧下拉改了项目还没保存时，归属条按钮置灰", async () => {
+    render(
+      <MeetingDetailPage
+        apiClient={{ transcriptVersionSegments: vi.fn() } as unknown as ApiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{ ...meeting(false), attribution: { ...baseAttribution, state: "ai_pending" } }}
+        onBack={vi.fn()}
+        onReload={vi.fn()}
+        projects={projects}
+        tags={[]}
+      />,
+    );
+
+    expect(screen.getByText("正在判断属于哪个项目（通常一分钟内）")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "等 AI 判断" })).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("主项目"), "project-a");
+
+    expect(screen.getByText("右侧有未保存的归属修改")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "选项目" })).toBeDisabled();
+  });
+
+  it("没项目的会可以显式标不归项目；标过的可以交给 AI", async () => {
+    const updateMeeting = vi.fn().mockResolvedValue(meeting(false));
+    const { unmount } = render(
+      <MeetingDetailPage
+        apiClient={{ transcriptVersionSegments: vi.fn(), updateMeeting } as unknown as ApiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{ ...meeting(false), attribution: { ...baseAttribution, state: "none" } }}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={projects}
+        tags={[]}
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "AI 没认出" })).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("主项目"), "不归项目");
+    await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
+    expect(updateMeeting).toHaveBeenCalledWith("vm-1", { project_id: "" });
+    unmount();
+
+    render(
+      <MeetingDetailPage
+        apiClient={{ transcriptVersionSegments: vi.fn(), updateMeeting } as unknown as ApiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{
+          ...meeting(false),
+          project_origin: "manual",
+          attribution: { ...baseAttribution, state: "manual_none", origin: "manual" },
+        }}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={projects}
+        tags={[]}
+      />,
+    );
+    expect(screen.getByRole("option", { name: "不归项目（你标的）" })).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("主项目"), "交给 AI 判断");
+    await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
+    expect(updateMeeting).toHaveBeenLastCalledWith("vm-1", { project_id: "__ai__" });
+  });
+});
+

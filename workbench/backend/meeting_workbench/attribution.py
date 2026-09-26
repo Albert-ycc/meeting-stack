@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from .project_linking import last_reassignment
+from .project_names import also_entries
 from .project_profile import norm_key
 from .tasks import UNDO_WINDOW_SECONDS
 
@@ -27,8 +29,10 @@ ATTRIBUTION_STATES = (
     "none",
     "new_project",
 )
-# 「待你选」只提醒最近这么多天的会，更早的留在资料库筛选里。
-RECENT_DAYS = 30
+# 工作台「N 场会等你选项目」只数最近这么多天的会，更早的留在资料库筛选里。
+REVIEW_RECENT_DAYS = 14
+# 自动归属、被改正的次数按这么多天统计。
+STATS_DAYS = 30
 
 # 每场会最新的一条归属批次（id 自增，越大越新）。查询里会议表的别名必须是 m。
 LATEST_LINK_JOIN = """LEFT JOIN project_links pl ON pl.id = (
@@ -229,9 +233,10 @@ def decorate_meeting_rows(connection: Any, rows: list[dict[str, Any]]) -> None:
 
 
 def attribution_summary(connection: Any) -> dict[str, Any]:
-    """工作台上「N 场会等你选项目」「像新项目」和近 30 天自动归属、被改正的次数。"""
-    since = (datetime.now(UTC) - timedelta(days=RECENT_DAYS)).isoformat()
-    since_date = since[:10]
+    """工作台上「N 场会等你选项目」（近 14 天）、「像新项目」和近 30 天自动归属、被改正的次数。"""
+    now = datetime.now(UTC)
+    since = (now - timedelta(days=STATS_DAYS)).isoformat()
+    since_date = (now - timedelta(days=REVIEW_RECENT_DAYS)).isoformat()[:10]
     states = connection.execute(
         f"""SELECT m.id, m.title, m.recording_date, m.created_at,
                    pl.new_project_name, {ATTRIBUTION_STATE_SQL} AS state
@@ -295,6 +300,53 @@ def attribution_summary(connection: Any) -> dict[str, Any]:
         "needs_review_recent": needs_review_recent,
         "needs_review_total": needs_review_total,
         "new_project_names": new_project_names,
+        "auto_30d": int(auto_30d),
+        "corrected_30d": int(corrected_30d),
+    }
+
+
+def recognition_profile(connection: Any, project_id: str) -> dict[str, Any]:
+    """项目详情「系统怎么认出这个项目」：叫法、文件夹名、项目词、近 30 天的归属情况。"""
+    project = connection.execute(
+        "SELECT also_names FROM projects WHERE id=?", (project_id,)
+    ).fetchone()
+    folder_names = list(
+        dict.fromkeys(
+            Path(row["path"]).name
+            for row in connection.execute(
+                "SELECT path FROM project_material_roots WHERE project_id=? ORDER BY created_at, id",
+                (project_id,),
+            ).fetchall()
+        )
+    )
+    terms = connection.execute(
+        """SELECT COUNT(*) AS total, COALESCE(SUM(is_cue), 0) AS cue
+             FROM glossary_terms WHERE project_id=?""",
+        (project_id,),
+    ).fetchone()
+    since = (datetime.now(UTC) - timedelta(days=STATS_DAYS)).isoformat()
+    auto_30d = connection.execute(
+        """SELECT COUNT(DISTINCT meeting_id) AS n FROM events
+            WHERE event_type='meeting_project_auto_assigned' AND created_at >= ?
+              AND json_extract(payload_json, '$.project_id') = ?""",
+        (since, project_id),
+    ).fetchone()["n"]
+    corrected_30d = connection.execute(
+        """SELECT COUNT(DISTINCT meeting_id) AS n FROM events
+            WHERE event_type='meeting_project_reassigned' AND created_at >= ?
+              AND json_extract(payload_json, '$.origin_before') = 'ai'
+              AND json_extract(payload_json, '$.from') = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM events u
+                   WHERE u.event_type='meeting_project_reassign_undone'
+                     AND u.meeting_id = events.meeting_id
+                     AND json_extract(u.payload_json, '$.event_id') = events.id)""",
+        (since, project_id),
+    ).fetchone()["n"]
+    return {
+        "also_names": also_entries(project["also_names"]) if project else [],
+        "folder_names": folder_names,
+        "cue_terms": {"total": int(terms["total"]), "cue": int(terms["cue"])},
         "auto_30d": int(auto_30d),
         "corrected_30d": int(corrected_30d),
     }

@@ -51,6 +51,7 @@ from .attribution import (
     attribution_summary,
     decorate_meeting_rows,
     meeting_attribution,
+    recognition_profile,
 )
 from . import materials, requirements
 from .project_names import (
@@ -2778,7 +2779,10 @@ def create_app(
 
     @app.get("/api/projects/{project_id}/board")
     def project_board(project_id: str):
-        return task_service.project_board(project_id)
+        board = task_service.project_board(project_id)
+        with db.autocommit() as connection:
+            board["profile"] = recognition_profile(connection, project_id)
+        return board
 
     @app.get("/api/projects/{project_id}/meetings")
     def project_meetings_endpoint(project_id: str):
