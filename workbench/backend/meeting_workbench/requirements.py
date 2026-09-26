@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from .db import Database, dedupe_preserve_order, escape_like_pattern, utc_now
-from .materials import assert_no_hidden_segment, folder_stat, list_folder_files
+from .materials import (
+    CARDS_DIR_NAME,
+    assert_no_hidden_segment,
+    folder_stat,
+    list_folder_files,
+)
 from .service import ConflictError, NotFoundError
 from .tasks import OPEN_TASK_STATUSES, TaskService, resolve_requirement_and_project
 
@@ -71,6 +76,8 @@ def _validate_folder_paths(connection: Any, project_id: str, folder_paths: list[
             raise ValueError(f"材料文件夹必须是绝对路径：{raw}")
         resolved = candidate.resolve(strict=False)
         assert_no_hidden_segment(resolved)
+        if resolved.name == CARDS_DIR_NAME:
+            raise ValueError("「声档会议记录」是声档写会议卡片的文件夹，不能当需求文件夹")
         if not resolved.is_dir():
             raise ValueError(f"材料文件夹不存在：{raw}")
         if resolved.parent not in root_paths:

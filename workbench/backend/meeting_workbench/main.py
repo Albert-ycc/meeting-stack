@@ -2648,9 +2648,14 @@ def create_app(
     @app.post("/api/projects/{project_id}/material-roots")
     def add_project_material_root(project_id: str, body: MaterialRootInput):
         try:
-            return materials.add_material_root(
-                db, settings.material_browse_root, project_id, body.path
-            )
+            return materials.add_material_root(db, settings, project_id, body.path)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/projects/{project_id}/material-roots/{root_id}/replace")
+    def replace_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+        try:
+            return materials.replace_material_root(db, settings, project_id, root_id, body.path)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
 

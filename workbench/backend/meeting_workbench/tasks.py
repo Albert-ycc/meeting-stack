@@ -12,7 +12,6 @@ import sqlite3
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any, Iterable
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
@@ -20,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from .config import Settings
 from .db import Database, escape_like_pattern, utc_now
 from .glossary import rewrite_snapshot
-from .materials import replace_material_roots
+from .materials import annotate_root, replace_material_roots
 from .notify import LarkNotifier
 from .semantic import SemanticIndex
 from .service import ConflictError, NotFoundError
@@ -994,10 +993,9 @@ class TaskService:
         open_task_counts = {row["project_id"]: row["n"] for row in open_task_rows}
         material_roots_by_project: dict[str, list[dict[str, Any]]] = {}
         for row in self.db.query_all(
-            "SELECT * FROM project_material_roots ORDER BY project_id, created_at"
+            "SELECT * FROM project_material_roots ORDER BY project_id, created_at, id"
         ):
-            row["exists"] = Path(row["path"]).is_dir()
-            material_roots_by_project.setdefault(row["project_id"], []).append(row)
+            material_roots_by_project.setdefault(row["project_id"], []).append(annotate_root(row))
         for project in projects:
             detail = latest.get(project["id"])
             project["recent_at"] = detail["created_at"] if detail else None
@@ -1041,9 +1039,7 @@ class TaskService:
             )
             reopen_unresolved_project_links(connection)
             if material_roots:
-                replace_material_roots(
-                    connection, self.settings.material_browse_root, project_id, material_roots
-                )
+                replace_material_roots(connection, self.settings, project_id, material_roots)
         return self._project_detail(project_id)
 
     def update_project(
@@ -1087,12 +1083,9 @@ class TaskService:
                         (renamed_to, utc_now(), project_id),
                     )
             if material_roots_given:
-                replace_material_roots(
-                    connection,
-                    self.settings.material_browse_root,
-                    project_id,
-                    material_roots or [],
-                )
+                # 按差异增删：列表没变时什么都不写，也不重新校验已挂的根目录（盘没插时
+                # 改项目名、颜色不该失败）。
+                replace_material_roots(connection, self.settings, project_id, material_roots or [])
         if renamed_to is not None:
             rewrite_snapshot(self.db, self.settings.data_dir / "glossary-snapshot.json")
         return self._project_detail(project_id)
@@ -1133,13 +1126,13 @@ class TaskService:
                  WHERE project_id=? AND status IN ({', '.join('?' for _ in OPEN_TASK_STATUSES)})""",
             (project_id, *OPEN_TASK_STATUSES),
         )["n"]
-        material_roots = self.db.query_all(
-            "SELECT * FROM project_material_roots WHERE project_id=? ORDER BY created_at",
-            (project_id,),
-        )
-        for row in material_roots:
-            row["exists"] = Path(row["path"]).is_dir()
-        project["material_roots"] = material_roots
+        project["material_roots"] = [
+            annotate_root(row)
+            for row in self.db.query_all(
+                "SELECT * FROM project_material_roots WHERE project_id=? ORDER BY created_at, id",
+                (project_id,),
+            )
+        ]
         return project
 
     def project_board(self, project_id: str) -> dict[str, Any]:
