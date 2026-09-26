@@ -35,6 +35,10 @@ interface RequirementDetailPageProps {
   onOpenProject: (projectId: string) => void;
   onProjectsChanged?: () => void | Promise<void>;
   reloadKey?: number;
+  /** 面包屑上的去处，默认需求池；从关系图进来时是「关系图」 */
+  backLabel?: string;
+  /** 「在关系图里看」：打开所属项目的关系图并选中这个需求；关系图只画进行中的需求 */
+  onOpenInGraph?: (projectId: string, requirementId: string) => void;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -118,6 +122,8 @@ export function RequirementDetailPage({
   onOpenProject,
   onProjectsChanged,
   reloadKey = 0,
+  backLabel = "需求池",
+  onOpenInGraph,
 }: RequirementDetailPageProps) {
   const { toastNode, showToast } = useToast();
   // 成功用轻提示一闪而过；失败用不会自己消失的红色提示条，原因看得清。
@@ -246,7 +252,7 @@ export function RequirementDetailPage({
             需求详情读取失败
             <div className="requirement-detail__state-actions">
               <button onClick={() => void load()} type="button">重试</button>
-              <button onClick={onBack} type="button">返回需求池</button>
+              <button onClick={onBack} type="button">返回{backLabel}</button>
             </div>
           </div>
         ) : (
@@ -264,7 +270,7 @@ export function RequirementDetailPage({
       <NoticeBanner notice={notice} onDismiss={dismissNotice} />
       <header className="requirement-detail__head">
         <nav aria-label="面包屑" className="requirement-detail__breadcrumb">
-          <button onClick={onBack} type="button">需求池</button>
+          <button onClick={onBack} type="button">{backLabel}</button>
           <span>/</span>
           <span>{detail.title}</span>
         </nav>
@@ -297,6 +303,15 @@ export function RequirementDetailPage({
           <PriorityBadge priority={detail.priority} />
           <RequirementStatusBadge status={detail.status} />
           <span className="requirement-detail__created">创建于 {formatMonthDay(detail.created_at)}</span>
+          {onOpenInGraph && detail.status === "active" && (
+            <button
+              className="text-button requirement-detail__graph"
+              onClick={() => onOpenInGraph(detail.project_id, detail.id)}
+              type="button"
+            >
+              在关系图里看
+            </button>
+          )}
         </div>
       </header>
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import type { ApiClient } from "../api";
 import { formatDurationText, formatMonthDay } from "../format";
@@ -49,6 +49,8 @@ interface ProjectDetailPageProps {
   onProjectsChanged?: () => void | Promise<void>;
   /** 合并后跳到目标项目 */
   onOpenProject?: (projectId: string) => void;
+  /** 标题行右侧的［关系图｜清单］（手机端没有关系图，不传） */
+  modeToggle?: ReactNode;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -94,6 +96,7 @@ export function ProjectDetailPage({
   canPickFolders,
   onProjectsChanged,
   onOpenProject,
+  modeToggle,
 }: ProjectDetailPageProps) {
   const [board, setBoard] = useState<ProjectBoard | null>(null);
   const [boardState, setBoardState] = useState<LoadState>("loading");
@@ -306,6 +309,7 @@ export function ProjectDetailPage({
               <h1>{board.name}</h1>
             </div>
           )}
+          {modeToggle}
           {canWrite && board && (
             <span className="detail-head__actions">
               <button className="detail-head__edit" onClick={() => setEditingProject("edit")} type="button">

@@ -62,6 +62,8 @@ interface MeetingDetailPageProps {
   onOpenProject?: (projectId: string) => void;
   /** 纠错词记入或撤销以后刷新侧栏词典的待确认角标 */
   onGlossaryChanged?: () => void;
+  /** 「在关系图里看」：打开所属项目的关系图并选中这场会；没归项目的会不显示 */
+  onOpenInGraph?: (projectId: string, meetingId: string) => void;
 }
 
 type DetailTab = "transcript" | "minutes" | "tasks";
@@ -245,6 +247,7 @@ export function MeetingDetailPage({
   onOpenTasks,
   onOpenRequirement,
   onOpenProject,
+  onOpenInGraph,
   onGlossaryChanged,
 }: MeetingDetailPageProps) {
   const playerRef = useRef<AudioPlayerHandle>(null);
@@ -967,6 +970,16 @@ export function MeetingDetailPage({
             <div className="detail-meta">
               <span>{formatDate(meeting.recording_date)}</span>
               {liveProject.name && <span className="project-mark"><i style={{ background: liveProject.color || "#767676" }} />{liveProject.name}</span>}
+              {liveProject.id && onOpenInGraph && !isMobile && (
+                <button
+                  className="text-button detail-meta__graph"
+                  disabled={isSaving}
+                  onClick={() => onOpenInGraph(liveProject.id!, meeting.id)}
+                  type="button"
+                >
+                  在关系图里看
+                </button>
+              )}
               {meeting.tags.map((tag) => <em key={tag.id}>{tag.name}</em>)}
             </div>
           </div>

@@ -55,6 +55,10 @@
   white-space: nowrap;
 }
 
+.detail-head__row .view-mode-toggle {
+  margin-left: auto;
+}
+
 .detail-head__actions {
   display: flex;
   flex: none;

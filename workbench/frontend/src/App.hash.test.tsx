@@ -1,8 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App, { MOBILE_READ_ONLY_QUERY } from "./App";
 import type { ApiClient } from "./api";
+import { forgetGraphCache } from "./components/graph/ProjectGraph";
+import { payload } from "./components/graph/testFixtures";
 
 function desktopMatchMedia() {
   return {
@@ -138,5 +141,33 @@ describe("地址栏锚点直达", () => {
 
     expect(await screen.findByRole("heading", { name: "需求" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#requirements");
+  });
+
+  it("冷加载带 #projects/<id>/graph?sel=m:<id> 打开关系图并选中那场会；换选中只改地址栏不压历史", async () => {
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#projects/p/graph?sel=m:a");
+    const graph = vi.fn().mockResolvedValue(payload());
+    const meetingBrief = vi.fn().mockRejectedValue(new Error("简报读不到"));
+    render(
+      <App
+        apiClient={client({
+          projects: vi.fn().mockResolvedValue([{ id: "p", name: "云图AI", color: "#2c8d83" }]),
+          graph,
+          graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
+          meetingBrief,
+        } as unknown as Partial<ApiClient>)}
+      />,
+    );
+
+    expect(await screen.findByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+    expect(graph).toHaveBeenCalledWith("p", undefined, "m:a");
+    expect(meetingBrief).toHaveBeenCalledWith("a");
+    expect(window.location.hash).toBe("#projects/p/graph?sel=m:a");
+    expect(screen.getByRole("button", { name: "关系图" })).toHaveAttribute("aria-pressed", "true");
+
+    const depth = window.history.length;
+    await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 b/ }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?sel=m:b"));
+    expect(window.history.length).toBe(depth);
   });
 });

@@ -1,0 +1,253 @@
+/* 项目关系图外层（ProjectGraph.tsx）：标题和状态句一行、画布、时间窗和周柱图一行，高度留给画布 */
+
+.project-graph.page-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: calc(100vh - 74px);
+  min-height: 520px;
+  padding: 16px 24px 14px;
+  box-sizing: border-box;
+}
+
+.project-graph__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  min-width: 0;
+}
+
+.project-graph__crumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-2);
+  font-size: 12px;
+}
+
+.project-graph__crumb button {
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.project-graph__crumb button:hover {
+  color: var(--heading);
+}
+
+.project-graph__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--heading);
+  font-size: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.project-graph__title i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.project-graph__status {
+  display: flex;
+  flex: 1 1 320px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 0;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+
+.project-graph__status-label {
+  margin-right: 2px;
+  padding: 1px 6px;
+  font-size: 11px;
+  border-radius: var(--r-pill);
+}
+
+.project-graph__status-group--ok .project-graph__status-label {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.project-graph__status-group--waiting .project-graph__status-label {
+  color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.project-graph__status-group--stopped .project-graph__status-label {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.project-graph__sep {
+  color: var(--faint);
+}
+
+.project-graph__phrase {
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  background: none;
+  border: 0;
+  border-bottom: 1px dotted var(--muted-2);
+  cursor: pointer;
+}
+
+.project-graph__phrase:hover:not(:disabled),
+.project-graph__phrase[aria-pressed="true"] {
+  color: var(--heading);
+  border-bottom: 1px solid var(--signal);
+}
+
+.project-graph__phrase:disabled {
+  border-bottom: 0;
+  cursor: default;
+}
+
+.project-graph__status-empty,
+.project-graph__status-note {
+  color: var(--muted);
+}
+
+.project-graph__status-note {
+  margin-left: 10px;
+}
+
+.project-graph__mode {
+  margin-left: auto;
+}
+
+.project-graph__moved {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+  list-style: none;
+}
+
+.project-graph__moved li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.project-graph__notice.action-banner {
+  margin: 0;
+}
+
+.project-graph__stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  gap: 10px;
+  min-height: 0;
+}
+
+.project-graph__stage > .graph-viewport {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-graph__panel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: flex;
+}
+
+.project-graph__empty {
+  display: grid;
+  flex: 1;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  color: var(--muted);
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: var(--r-stage);
+}
+
+.project-graph__empty p {
+  margin: 0;
+}
+
+.project-graph__bottom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-graph__windows {
+  display: inline-flex;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.project-graph__windows button {
+  padding: 4px 10px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.project-graph__windows button:hover {
+  color: var(--ink);
+}
+
+.project-graph__windows button[aria-pressed="true"] {
+  color: var(--heading);
+  background: var(--raised);
+  box-shadow: 0 0 0 1px var(--line-strong) inset;
+}
+
+.project-graph__widened {
+  color: var(--warn);
+}
+
+.project-graph__weekly rect {
+  fill: var(--muted-2);
+}
+
+.project-graph__weekly rect:last-child {
+  fill: var(--signal);
+}
+
+.project-graph__weekly rect.is-empty {
+  fill: var(--line-strong);
+}
+
+.project-graph__legend {
+  margin-left: auto;
+  color: var(--muted-2);
+}
+
+.project-graph__sync.is-error {
+  color: var(--danger);
+}

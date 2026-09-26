@@ -55,6 +55,15 @@ import type {
   MeetingCardEffect,
   ProjectCardsSummary,
 } from "./types";
+import type {
+  CollapsedPayload,
+  CueTermDetail,
+  GraphPayload,
+  GraphRootsPayload,
+  GraphWindow,
+  MeetingBrief,
+  QuotesPayload,
+} from "./components/graph/graphTypes";
 
 let csrfToken = "";
 
@@ -264,6 +273,30 @@ export const api = {
   /** projectId：不传搜全部；"none" 只搜没归项目的会 */
   search: (query: string, projectId?: string) =>
     read<SearchPayload>(`/api/search${queryString({ q: query, project_id: projectId })}`),
+  // ---------------------------------------------------------------- 关系图（1g）
+  /** window 不传：默认 28 天，会少时自动放宽；focus：深链目标，如 "m:<会议 id>" */
+  graph: (projectId: string, window?: GraphWindow, focus?: string) =>
+    read<GraphPayload>(
+      `/api/graph/projects/${encodeURIComponent(projectId)}${queryString({ window, focus })}`,
+    ),
+  graphRoots: (projectId: string) =>
+    read<GraphRootsPayload>(`/api/graph/projects/${encodeURIComponent(projectId)}/roots`),
+  graphCollapsed: (projectId: string, group: string, window?: GraphWindow) =>
+    read<CollapsedPayload>(
+      `/api/graph/projects/${encodeURIComponent(projectId)}/collapsed${queryString({ group, window })}`,
+    ),
+  meetingBrief: (meetingId: string) =>
+    read<MeetingBrief>(`/api/meetings/${encodeURIComponent(meetingId)}/brief`),
+  meetingQuotes: (meetingId: string, at: number[]) => {
+    const params = new URLSearchParams();
+    at.forEach((value) => params.append("at", String(Math.round(value))));
+    const encoded = params.toString();
+    return read<QuotesPayload>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/quotes${encoded ? `?${encoded}` : ""}`,
+    );
+  },
+  glossaryTermDetail: (termId: string) =>
+    read<CueTermDetail>(`/api/glossary/terms/${encodeURIComponent(termId)}`),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>
@@ -514,6 +547,12 @@ export const api = {
       `/api/requirements/${encodeURIComponent(requirementId)}/meetings`,
       "PUT",
       { meeting_ids: meetingIds },
+    ),
+  addRequirementMeeting: (requirementId: string, meetingId: string) =>
+    write<RequirementDetail>(
+      `/api/requirements/${encodeURIComponent(requirementId)}/meetings/${encodeURIComponent(meetingId)}`,
+      "POST",
+      {},
     ),
   removeRequirementMeeting: (requirementId: string, meetingId: string) =>
     write<RequirementDetail>(

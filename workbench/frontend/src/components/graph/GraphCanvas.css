@@ -1,0 +1,649 @@
+/* 关系图画布（GraphCanvas.tsx）。
+ * 坐标约定：布局给出的 (x, y) 是节点圆点的圆心。左侧节点的圆点在按钮最右端、右侧节点在最左端，
+ * 其余节点以 (x, y) 为中心。尺寸和 layout.ts 里的盒子一致，改一边要改另一边。 */
+
+.graph-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--r-stage);
+  background-color: var(--stage);
+  background-image: radial-gradient(rgb(var(--fg-rgb) / 0.06) 1px, transparent 1.2px);
+  background-size: 24px 24px;
+  border: 1px solid var(--line);
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.graph-viewport:active {
+  cursor: grabbing;
+}
+
+.graph-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.graph-rings,
+.graph-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+}
+
+.graph-rings {
+  pointer-events: none;
+}
+
+.graph-ring {
+  fill: none;
+  stroke: rgb(var(--fg-rgb) / 0.1);
+  stroke-width: 1.2;
+  stroke-dasharray: 3 6;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-ring__hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-ring__name {
+  fill: var(--muted-2);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-anchor: middle;
+}
+
+.graph-ring-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  color: var(--ink-2);
+  font-size: 12px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  pointer-events: none;
+}
+
+/* ── 连线 ───────────────────────────────── */
+
+.graph-edge {
+  transition: opacity 0.3s var(--exp);
+}
+
+.graph-edge__line {
+  fill: none;
+  stroke: rgb(var(--fg-rgb) / 0.2);
+  stroke-width: 1.3;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-edge__hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: pointer;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-edge--attribution .graph-edge__line {
+  stroke: color-mix(in srgb, var(--signal) 55%, transparent);
+  stroke-width: 1.5;
+}
+
+.graph-edge--review .graph-edge__line,
+.graph-edge--pending .graph-edge__line {
+  stroke: var(--warn);
+  stroke-dasharray: 6 5;
+  animation: graph-flow 1.6s linear infinite;
+}
+
+.graph-edge--discussion .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.18);
+}
+
+.graph-edge--folder .graph-edge__line {
+  stroke: var(--line-strong);
+  stroke-dasharray: 2 4;
+}
+
+.graph-edge--write .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.35);
+}
+
+.graph-edge--waiting .graph-edge__line {
+  stroke: var(--muted-2);
+  stroke-dasharray: 3 4;
+}
+
+.graph-edge--stopped .graph-edge__line {
+  stroke: var(--danger);
+  stroke-dasharray: 60 10 1000;
+}
+
+.graph-edge--cross .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.3);
+  stroke-dasharray: 5 5;
+}
+
+.graph-edge.is-dim {
+  opacity: 0.12;
+}
+
+.graph-edge.is-lit .graph-edge__line {
+  stroke-width: 2.2;
+}
+
+.graph-edge--discussion.is-lit .graph-edge__line,
+.graph-edge--cue.is-lit .graph-edge__line,
+.graph-edge--folder.is-lit .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.5);
+}
+
+.graph-edge__label {
+  position: absolute;
+  z-index: 2;
+  padding: 3px 7px;
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  box-shadow: 0 4px 12px rgb(0 0 0 / calc(0.18 * var(--shadow-k)));
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.graph-edge__label--review {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+
+@keyframes graph-flow {
+  to {
+    stroke-dashoffset: -22;
+  }
+}
+
+/* ── 节点 ───────────────────────────────── */
+
+.graph-group {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.graph-node {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  text-align: left;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.3s var(--exp);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.graph-node:focus-visible,
+.graph-doorstep__title:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+.graph-node.is-dim {
+  opacity: 0.2;
+}
+
+.graph-node--left {
+  flex-direction: row;
+  transform: translate(-100%, -50%);
+  height: 24px;
+}
+
+.graph-node--right {
+  flex-direction: row;
+  transform: translate(0, -50%);
+  height: 24px;
+}
+
+.graph-node--fade {
+  opacity: 0.75;
+}
+
+.graph-node__label {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 3px 4px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--stage) 82%, transparent);
+  border-radius: 6px;
+}
+
+.graph-node__label small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.graph-node--left .graph-node__label {
+  align-items: flex-end;
+}
+
+.graph-node:hover .graph-node__label {
+  color: var(--heading);
+}
+
+.graph-node.is-selected .graph-node__label {
+  color: var(--heading);
+  background: var(--signal-bg);
+  box-shadow: 0 0 0 1px var(--signal-line);
+}
+
+.graph-node.is-lit .graph-node__label {
+  box-shadow: 0 0 0 1px var(--warn-line);
+}
+
+.graph-node__dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--project-color, var(--muted));
+  box-shadow: 0 0 0 3px var(--stage);
+}
+
+.graph-node__dot--review {
+  background: var(--stage);
+  border: 2px dashed var(--warn);
+}
+
+.graph-node__dot--hollow {
+  background: var(--stage);
+  border: 1.5px solid var(--muted-2);
+}
+
+.graph-node.is-selected .graph-node__dot {
+  box-shadow: 0 0 0 3px var(--stage), 0 0 0 5px var(--signal);
+}
+
+.graph-node__badge {
+  flex: none;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+}
+
+.graph-node__badge--waiting {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+}
+
+.graph-node__mark {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.graph-node__mark--stopped {
+  color: var(--danger);
+}
+
+/* 中心的项目 */
+.graph-node--project {
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  width: 140px;
+  height: 88px;
+  text-align: center;
+  background: color-mix(in srgb, var(--project-color, var(--signal)) 16%, var(--surface));
+  border: 1.5px solid color-mix(in srgb, var(--project-color, var(--signal)) 60%, transparent);
+  border-radius: 50%;
+  box-shadow: var(--shadow);
+}
+
+.graph-node--project strong {
+  max-width: 120px;
+  overflow: hidden;
+  color: var(--heading);
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.graph-node--project span {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.graph-node--project.is-selected {
+  border-color: var(--signal);
+}
+
+/* 需求：上方的卡片 */
+.graph-node--requirement,
+.graph-node--requirement_more {
+  width: 170px;
+  height: 36px;
+  padding: 0 10px 0 0;
+  overflow: visible;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+}
+
+.graph-node--requirement .graph-node__label,
+.graph-node--requirement_more .graph-node__label {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  overflow: hidden;
+}
+
+.graph-node--requirement_more {
+  justify-content: center;
+  padding: 0;
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.graph-node--requirement.is-selected {
+  border-color: var(--signal);
+}
+
+.graph-node--requirement.is-selected .graph-node__label {
+  background: none;
+  box-shadow: none;
+}
+
+.graph-requirement__bar {
+  flex: none;
+  align-self: stretch;
+  width: 4px;
+  margin-right: 4px;
+  background: var(--muted-2);
+  border-radius: 10px 0 0 10px;
+}
+
+.graph-requirement__bar--P0 {
+  background: var(--danger);
+}
+
+.graph-requirement__bar--P1 {
+  background: var(--warn);
+}
+
+.graph-requirement__bar--P2 {
+  background: var(--ok);
+}
+
+/* 材料：右侧，文件夹图标在最左端 */
+.graph-folder__icon {
+  position: relative;
+  flex: none;
+  width: 12px;
+  height: 10px;
+  background: var(--muted);
+  border-radius: 1px 2px 2px 2px;
+}
+
+.graph-folder__icon::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -2px;
+  width: 5px;
+  height: 3px;
+  background: inherit;
+  border-radius: 1px 1px 0 0;
+}
+
+.graph-folder__icon--cards {
+  background: var(--signal);
+}
+
+.graph-folder__icon--requirement_folder {
+  background: var(--muted-2);
+}
+
+.graph-folder__icon--loose {
+  background: none;
+  border: 1.5px dashed var(--muted-2);
+}
+
+.graph-folder__icon--loose::before {
+  display: none;
+}
+
+.graph-node.is-offline .graph-folder__icon,
+.graph-node.is-missing .graph-folder__icon {
+  background: none;
+  border: 1.5px dashed var(--muted-2);
+}
+
+.graph-node.is-offline .graph-node__label,
+.graph-node.is-missing .graph-node__label {
+  color: var(--muted);
+}
+
+.graph-node.is-missing small {
+  color: var(--danger);
+}
+
+/* 门口：会议那一侧外面的琥珀色虚线胶囊，按钮直接挂在上面 */
+.graph-node--doorstep {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 6px;
+  width: 280px;
+  height: 60px;
+  padding: 6px 12px;
+  background: var(--warn-bg);
+  border: 1.5px dashed var(--warn-line);
+  border-radius: 16px;
+  cursor: default;
+}
+
+.graph-node--doorstep.is-selected {
+  border-color: var(--warn);
+  border-style: solid;
+}
+
+.graph-doorstep__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.graph-doorstep__q {
+  flex: none;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  color: #1b1b1b;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--warn);
+  border-radius: 50%;
+}
+
+.graph-doorstep__actions {
+  display: flex;
+  gap: 6px;
+  cursor: default;
+}
+
+.graph-doorstep__actions button {
+  padding: 3px 9px;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 11.5px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+
+.graph-doorstep__actions button:first-child {
+  color: var(--heading);
+  border-color: var(--warn-line);
+}
+
+.graph-doorstep__actions button:hover:not(:disabled) {
+  border-color: var(--warn);
+}
+
+.graph-doorstep__actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.graph-node--doorstep_more .graph-node__label,
+.graph-node--folder_more .graph-node__label,
+.graph-node--collapsed .graph-node__label {
+  color: var(--muted);
+}
+
+/* 线索词：下方一排，字号按次数分三档 */
+.graph-node--cue {
+  height: 22px;
+  padding: 0;
+}
+
+.graph-node--cue .graph-node__label {
+  padding: 3px 6px;
+  color: var(--ink-2);
+  font-size: inherit;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+}
+
+.graph-node--cue:hover .graph-node__label {
+  border-color: var(--line-strong);
+}
+
+/* 跨项目信标 */
+.graph-node--beacon {
+  width: 170px;
+  height: 28px;
+  justify-content: center;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--project-color, var(--muted)) 55%, transparent);
+  border-radius: var(--r-pill);
+}
+
+.graph-node--beacon .graph-node__label {
+  color: var(--ink-2);
+  background: none;
+}
+
+.graph-node--beacon.is-selected .graph-node__label {
+  box-shadow: none;
+}
+
+/* 缩得很小时每个方向收成一个汇总胶囊 */
+.graph-summary {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 5px 10px;
+  color: var(--ink-2);
+  font-size: 22px;
+  white-space: nowrap;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  pointer-events: none;
+}
+
+.graph-viewport--summary .graph-node--left .graph-node__label,
+.graph-viewport--summary .graph-node--right .graph-node__label,
+.graph-viewport--summary .graph-node--cue,
+.graph-viewport--summary .graph-edge__label {
+  display: none;
+}
+
+.graph-zoom {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.graph-zoom button {
+  width: 30px;
+  height: 30px;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 14px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.graph-zoom button:hover {
+  color: var(--heading);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-edge--review .graph-edge__line,
+  .graph-edge--pending .graph-edge__line {
+    animation: none;
+  }
+}
