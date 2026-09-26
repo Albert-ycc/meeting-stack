@@ -698,6 +698,36 @@ BEGIN
 END;
 """
 
+# 1g：关系图的持久版本号。这些表每次增删改都给 app_state 里的 graph_rev 加一，图接口拿它
+# 算 ETag。放在触发器里而不是进程内计数，重启进程、命令行工具写库都能算进去。
+GRAPH_REV_KEY = "graph_rev"
+GRAPH_REV_TABLES = (
+    "meetings",
+    "projects",
+    "tasks",
+    "requirements",
+    "requirement_meetings",
+    "requirement_folders",
+    "project_links",
+    "project_material_roots",
+    "meeting_cards",
+    "glossary_terms",
+)
+SCHEMA += "".join(
+    f"""
+CREATE TRIGGER IF NOT EXISTS graph_rev_{table}_{action.lower()}
+AFTER {action} ON {table}
+BEGIN
+    INSERT INTO app_state(key, value, updated_at)
+    VALUES ('{GRAPH_REV_KEY}', '1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(key) DO UPDATE
+        SET value = CAST(app_state.value AS INTEGER) + 1, updated_at = excluded.updated_at;
+END;
+"""
+    for table in GRAPH_REV_TABLES
+    for action in ("INSERT", "UPDATE", "DELETE")
+)
+
 
 class Database:
     def __init__(self, path: str | Path):

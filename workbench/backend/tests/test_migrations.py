@@ -484,13 +484,17 @@ def test_real_version_five_running_shadow_migrates_and_completes_idempotently(
 
 def _downgrade_to_v12(connection: sqlite3.Connection) -> None:
     """把刚建好的 v13 库退回 v12 的形状：去掉 v13 新增的表、虚表和触发器。"""
+    for (name,) in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'graph_rev_%'"
+    ).fetchall():
+        connection.execute(f"DROP TRIGGER {name}")
+    connection.execute("DROP TABLE IF EXISTS app_state")
     connection.executescript(
         """
         DROP TRIGGER IF EXISTS minutes_fts_after_meeting_insert;
         DROP TRIGGER IF EXISTS minutes_fts_after_minutes_pointer_update;
         DROP TRIGGER IF EXISTS minutes_fts_after_meeting_delete;
         DROP TABLE IF EXISTS minutes_fts;
-        DROP TABLE IF EXISTS app_state;
         DROP TABLE IF EXISTS name_decisions;
         ALTER TABLE projects DROP COLUMN also_names;
         ALTER TABLE project_links DROP COLUMN evidence_json;

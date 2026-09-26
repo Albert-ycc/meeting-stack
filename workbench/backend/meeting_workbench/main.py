@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -54,7 +54,7 @@ from .attribution import (
     meeting_attribution,
     recognition_profile,
 )
-from . import cold_start, glossary_checkup, materials, requirements
+from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
 from . import search as search_module
 from .cards import CardsError, CardWriter
 from .project_names import (
@@ -636,6 +636,7 @@ def create_app(
     )
     project_linker = ProjectLinker(db, settings)
     card_writer = CardWriter(db, settings)
+    roots_cache = graph_module.RootsCache(db)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
     csrf_token = secrets.token_urlsafe(32)
@@ -998,6 +999,17 @@ def create_app(
         finally:
             state["loop_alive"] = False
 
+    async def roots_loop() -> None:
+        """关系图的资料盘状态：每 30 秒在后台线程里刷新一次，图接口只读缓存。"""
+        while True:
+            try:
+                await asyncio.to_thread(roots_cache.refresh)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("刷新资料盘状态失败")
+            await asyncio.sleep(graph_module.ROOTS_REFRESH_SECONDS)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         application.state.lifespan_active = True
@@ -1057,12 +1069,16 @@ def create_app(
         qwen_worker = asyncio.create_task(
             qwen_shadow_loop(application), name="meeting-workbench-qwen-shadow"
         )
+        roots_worker = asyncio.create_task(roots_loop(), name="meeting-workbench-graph-roots")
         try:
             yield
         finally:
             scanner.cancel()
             relay_probe.cancel()
             qwen_worker.cancel()
+            roots_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await roots_worker
             with suppress(asyncio.CancelledError):
                 await scanner
             with suppress(asyncio.CancelledError):
@@ -1073,6 +1089,7 @@ def create_app(
 
     app = FastAPI(title="本地会议录音工作台", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
+    app.state.roots_cache = roots_cache
     app.state.db = db
     app.state.service = service
     app.state.importer = importer
@@ -2883,15 +2900,7 @@ def create_app(
                         "SELECT 1 FROM requirements WHERE id=?", (requirement_id,)
                     ).fetchone() is None:
                         raise NotFoundError(f"需求不存在：{requirement_id}")
-                connection.execute(
-                    "DELETE FROM requirement_meetings WHERE meeting_id=?", (meeting_id,)
-                )
-                for requirement_id in requirement_ids:
-                    connection.execute(
-                        """INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at)
-                           VALUES (?, ?, ?)""",
-                        (requirement_id, meeting_id, utc_now()),
-                    )
+                requirements.sync_meeting_requirements(connection, meeting_id, requirement_ids)
                 changed_fields.append("requirement_ids")
         event_payload["fields"] = changed_fields
         db.add_event(
@@ -3126,6 +3135,74 @@ def create_app(
             board["cards"] = card_writer.project_cards(connection, project_id)
         return board
 
+    # ------------------------------------------------------------ 关系图（1g）
+
+    @app.get("/api/graph/projects/{project_id}")
+    def project_graph_endpoint(
+        project_id: str,
+        request: Request,
+        window: Literal["7d", "28d", "90d", "all"] | None = None,
+        focus: str | None = Query(default=None, max_length=80),
+    ):
+        today = datetime.now().astimezone().date()
+        with db.autocommit() as connection:
+            etag = graph_module.graph_etag(connection, project_id, window, focus, today)
+            if request.headers.get("if-none-match") == etag:
+                return Response(status_code=304, headers={"ETag": etag})
+            try:
+                payload = graph_module.project_graph(
+                    connection, project_id, window=window, focus=focus, today=today
+                )
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+        return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
+    @app.get("/api/graph/projects/{project_id}/roots")
+    def project_graph_roots(project_id: str):
+        with db.autocommit() as connection:
+            try:
+                result = graph_module.project_roots(connection, roots_cache, project_id)
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+        if result["checking"]:
+            roots_cache.refresh_in_background()
+        return result
+
+    @app.get("/api/graph/projects/{project_id}/collapsed")
+    def project_graph_collapsed(
+        project_id: str,
+        group: str = Query(max_length=40),
+        window: Literal["7d", "28d", "90d", "all"] | None = None,
+    ):
+        with db.autocommit() as connection:
+            try:
+                return graph_module.collapsed_meetings(
+                    connection, project_id, group, window=window
+                )
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/meetings/{meeting_id}/brief")
+    def meeting_brief_endpoint(meeting_id: str):
+        with db.autocommit() as connection:
+            attribution = meeting_attribution(
+                connection, meeting_id, ai_configured=llm_ready(settings)
+            )
+            if attribution is None:
+                raise HTTPException(404, "会议不存在")
+            card = card_writer.meeting_card(connection, meeting_id)
+            return graph_module.meeting_brief(
+                connection, meeting_id, attribution=attribution, card=card
+            )
+
+    @app.get("/api/meetings/{meeting_id}/quotes")
+    def meeting_quotes_endpoint(meeting_id: str, at: list[int] = Query(default=[])):
+        with db.autocommit() as connection:
+            try:
+                return graph_module.meeting_quotes(connection, meeting_id, at)
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
     @app.get("/api/projects/{project_id}/meetings")
     def project_meetings_endpoint(project_id: str):
         return requirements.project_meetings(db, project_id)
@@ -3246,6 +3323,12 @@ def create_app(
     @app.put("/api/requirements/{requirement_id}/meetings")
     def set_requirement_meetings(requirement_id: str, body: RequirementMeetingsInput):
         return requirements.set_meetings(task_service, requirement_id, body.meeting_ids)
+
+    @app.post("/api/requirements/{requirement_id}/meetings/{meeting_id}")
+    def add_requirement_meeting(
+        requirement_id: str, meeting_id: str, _body: dict[str, Any] | None = None
+    ):
+        return requirements.add_meeting(task_service, requirement_id, meeting_id)
 
     @app.delete("/api/requirements/{requirement_id}/meetings/{meeting_id}")
     def remove_requirement_meeting(requirement_id: str, meeting_id: str):
@@ -3530,6 +3613,15 @@ def create_app(
     @app.get("/api/glossary/terms")
     def glossary_terms(scope: str | None = None, project_id: str | None = None):
         return list_terms(db, scope=scope, project_id=project_id)
+
+    @app.get("/api/glossary/terms/{term_id}")
+    def glossary_term_detail(term_id: str):
+        """线索词面板：词条本身，加上「这个词让哪几场会归到这里、各几次」。"""
+        with db.autocommit() as connection:
+            detail = graph_module.cue_term_detail(connection, term_id)
+        if detail is None:
+            raise HTTPException(404, "术语不存在")
+        return detail
 
     @app.get("/api/glossary/scopes")
     def glossary_scopes():
