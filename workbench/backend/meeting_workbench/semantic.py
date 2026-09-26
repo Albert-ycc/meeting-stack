@@ -163,12 +163,14 @@ class SemanticIndex:
         )[0]
         rows = self.db.query_all(
             """SELECT s.id AS segment_id, s.meeting_id, m.title, m.canonical_dir,
-                      m.recording_date,
+                      m.recording_date, m.project_id,
+                      p.name AS project_name, p.color AS project_color,
                       'segment' AS match_kind, s.start_ms, s.end_ms,
                       s.speaker_name, s.speaker_label, s.text, e.dimensions, e.vector
                  FROM embeddings e
                  JOIN segments s ON s.id = e.segment_id
                  JOIN meetings m ON m.current_transcript_version_id = s.version_id
+                 LEFT JOIN projects p ON p.id = m.project_id
                 WHERE e.model = ?""",
             (self.settings.semantic_model,),
         )

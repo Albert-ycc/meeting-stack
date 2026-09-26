@@ -55,6 +55,7 @@ from .attribution import (
     recognition_profile,
 )
 from . import cold_start, glossary_checkup, materials, requirements
+from . import search as search_module
 from .cards import CardsError, CardWriter
 from .project_names import (
     SimilarProjectError,
@@ -1932,21 +1933,74 @@ def create_app(
     @app.get("/api/search")
     def search(
         q: str,
-        mode: Literal["exact", "semantic"] = "exact",
+        mode: Literal["hybrid", "exact", "semantic"] = "hybrid",
         limit: int = Query(30, ge=1, le=100),
+        project_id: str | None = None,
     ):
         if _has_forbidden_control_character(q):
             raise HTTPException(422, "搜索词包含禁止控制字符")
-        if mode == "exact":
-            return {"mode": mode, "items": db.exact_search(q, limit=limit)}
+        if mode == "semantic":
+            try:
+                return {"mode": mode, "items": semantic.search(q, limit=limit)}
+            except SemanticBusy as error:
+                raise HTTPException(409, str(error)) from error
+            except SemanticPaused as error:
+                raise HTTPException(409, str(error)) from error
+            except SemanticUnavailable as error:
+                raise HTTPException(503, str(error)) from error
+
+        scope = project_id or None
+        if scope and scope != "none" and db.query_one(
+            "SELECT 1 FROM projects WHERE id=?", (scope,)
+        ) is None:
+            raise HTTPException(404, "项目不存在")
+        expansion = search_module.expand_query(db, q, project_id=scope)
+        needles = [q.strip(), *expansion["expanded"]]
+        items = search_module.literal_search(db, needles, scope=scope, limit=limit)
+        payload: dict[str, Any] = {
+            "mode": mode,
+            "items": items,
+            "expanded": expansion["expanded"],
+            "expand_hints": expansion["hints"],
+        }
+        if scope and scope != "none":
+            payload["unattributed_hits"] = len(
+                search_module.literal_search(db, needles, scope="none", limit=limit)
+            )
+        if mode == "hybrid":
+            similar, unavailable = similar_segments(q, items, scope=scope)
+            payload["similar"] = similar
+            if unavailable:
+                payload["semantic_unavailable"] = unavailable
+        return payload
+
+    def similar_segments(
+        query: str, literal: list[dict[str, Any]], *, scope: str | None
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """意思相近的段落：去掉已经按原词列出的，只留同一范围的。正在转写或模型不可用时不搜。"""
+        if not settings.semantic_enabled:
+            return [], None
+        if semantic.busy_check():
+            return [], "正在转写，意思相近的结果等转写完再搜"
         try:
-            return {"mode": mode, "items": semantic.search(q, limit=limit)}
-        except SemanticBusy as error:
-            raise HTTPException(409, str(error)) from error
-        except SemanticPaused as error:
-            raise HTTPException(409, str(error)) from error
-        except SemanticUnavailable as error:
-            raise HTTPException(503, str(error)) from error
+            rows = semantic.search(query, limit=search_module.SIMILAR_FETCH)
+        except (SemanticBusy, SemanticPaused, SemanticUnavailable) as error:
+            return [], str(error)
+        listed = {item["segment_id"] for item in literal if item.get("segment_id")}
+        similar: list[dict[str, Any]] = []
+        for row in rows:
+            if row["segment_id"] in listed:
+                continue
+            if row.get("score", 0) < search_module.SIMILAR_MIN_SCORE:
+                continue
+            if scope == "none" and row.get("project_id"):
+                continue
+            if scope and scope != "none" and row.get("project_id") != scope:
+                continue
+            similar.append(row)
+            if len(similar) >= search_module.SIMILAR_LIMIT:
+                break
+        return similar, None
 
     @app.get("/api/media/{artifact_id}")
     def media(artifact_id: int):
