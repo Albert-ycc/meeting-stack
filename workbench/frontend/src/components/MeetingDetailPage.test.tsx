@@ -557,6 +557,38 @@ describe("MeetingDetailPage Whisper comparison", () => {
     });
   });
 
+  it("tells how many tasks moved with the meeting", async () => {
+    const updateMeeting = vi.fn().mockResolvedValue({
+      ...meeting(false),
+      effects: {
+        tasks_moved: 3,
+        tasks_left: [{ id: "t9", title: "改登录", requirement_id: "r1", requirement_title: "登录改版" }],
+        undo_until: "2026-09-26T10:10:00Z",
+      },
+    });
+    render(
+      <MeetingDetailPage
+        apiClient={{ transcriptVersionSegments: vi.fn(), updateMeeting } as unknown as ApiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={meeting(false)}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[{ id: "project-a", name: "项目甲", color: "#376f68" }]}
+        tags={[]}
+      />,
+    );
+
+    await userEvent.selectOptions(screen.getByLabelText("主项目"), "project-a");
+    await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
+
+    expect(
+      await screen.findByText(
+        "会议归档归属已保存；3 条任务一起移过去；1 条任务挂在原项目的需求上，留在原处",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("saving only tags leaves the project out of the request", async () => {
     const updateMeeting = vi.fn().mockResolvedValue(meeting());
     const apiClient = { transcriptVersionSegments: vi.fn(), updateMeeting } as unknown as ApiClient;

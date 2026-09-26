@@ -186,7 +186,16 @@ export interface MeetingSummary {
   updated_at?: string;
 }
 
+/** PATCH 会议改了项目时返回：哪些任务跟着一起移了、哪些留在旧项目的需求上。 */
+export interface MeetingProjectEffects {
+  tasks_moved: number;
+  tasks_left: { id: string; title: string; requirement_id: string; requirement_title: string }[];
+  undo_until: string;
+}
+
 export interface MeetingDetail extends MeetingSummary {
+  /** 只在 PATCH 改了项目的响应里出现 */
+  effects?: MeetingProjectEffects;
   canonical_dir?: string | null;
   current_transcript_version_id?: string | null;
   current_minutes_version_id?: string | null;

@@ -38,8 +38,9 @@ MAX_LINK_ATTEMPTS = 3
 SYSTEM_PROMPT = "你是严谨的会议项目归属助手，只输出合规 JSON。"
 # 会议还没被人确认过的任务：跟着会议的项目走。已确认的任务可能是人工清空过项目，不动。
 DRAFT_TASK_STATUSES = ("pending_confirm", "expired")
-# 只有这两类纪要版本（新生成的纪要）会触发重判归属；手改错字、写回、冲突处理都不重问。
-RELINK_MINUTES_KINDS = ("generated", "stale_generated")
+# 只有新生成的纪要会触发重判归属；手改错字（draft）、写回（published_edit）、冲突处理
+# 都不重问。imported 也算：归档目录里 AI 重新生成的纪要经扫描导入时就是这个 kind。
+RELINK_MINUTES_KINDS = ("generated", "stale_generated", "imported")
 # PATCH /api/meetings 里 project_id 的特殊取值：交还 AI 重新判断。
 RETURN_TO_AI = "__ai__"
 
@@ -211,7 +212,7 @@ class ProjectLinker:
         """为「有纪要且还没归属」的会议建归类批次；唯一索引保证每份纪要只归一次。
 
         只在两种情况下建批次：这场会还没有任何归属批次；或者当前纪要是新生成的
-        （generated / stale_generated）。手改错字存的草稿、写回的 published_edit、
+        （RELINK_MINUTES_KINDS）。手改错字存的草稿、写回的 published_edit、
         冲突处理留下的版本都不会触发重问归属，免得每存一次纪要就多调一次 LLM。
 
         与 task_extractions 不同，这里不做「存量纪要跳过」的首跑豁免：本模块只写

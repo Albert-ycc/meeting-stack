@@ -720,7 +720,19 @@ export function MeetingDetailPage({
       changes.requirement_ids = snapshotRequirementIds;
     }
     try {
-      await apiClient.updateMeeting(meeting.id, changes);
+      const saved = await apiClient.updateMeeting(meeting.id, changes);
+      const effects = saved?.effects;
+      const effectsNote = effects
+        ? [
+            effects.tasks_moved > 0 ? `${effects.tasks_moved} 条任务一起移过去` : "",
+            effects.tasks_left.length > 0
+              ? `${effects.tasks_left.length} 条任务挂在原项目的需求上，留在原处`
+              : "",
+          ]
+            .filter(Boolean)
+            .map((part) => `；${part}`)
+            .join("")
+        : "";
       setBaselineProjectId(snapshotProjectId);
       setBaselineTagIds(snapshotTagIds);
       setBaselineRequirementRefs(snapshotRequirementRefs);
@@ -731,10 +743,10 @@ export function MeetingDetailPage({
         refreshWarning = "；项目统计暂未刷新，请稍后重新进入项目页查看";
       }
       if (revisions.current.classification !== requestRevision) {
-        setNotice(`请求中的归档归属已保存${refreshWarning}；后续本地修改仍保留，请再次保存`);
+        setNotice(`请求中的归档归属已保存${effectsNote}${refreshWarning}；后续本地修改仍保留，请再次保存`);
         return;
       }
-      setNotice(`会议归档归属已保存${refreshWarning}`);
+      setNotice(`会议归档归属已保存${effectsNote}${refreshWarning}`);
       await onReload();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "操作失败");
