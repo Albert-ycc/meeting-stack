@@ -1590,10 +1590,16 @@ class TaskService:
             )
         if created_tasks and self.notifier is not None:
             try:
+                project = self.db.query_one(
+                    """SELECT p.name FROM meetings m JOIN projects p ON p.id = m.project_id
+                        WHERE m.id=?""",
+                    (meeting_id,),
+                )
                 self.notifier.task_draft(
                     extraction["id"],
                     meeting_title=extraction.get("meeting_title") or "",
                     tasks=created_tasks,
+                    project_name=project["name"] if project else None,
                 )
             except Exception:
                 # 通知失败不影响抽取结果（任务已入库）；下轮按台账缺失自然补发。
@@ -1770,7 +1776,26 @@ class TaskService:
         pending_sources = sorted(
             {task["meeting_title"] for task in pending if task["meeting_title"]}
         )
+        # 归属一行：昨天（本地日）自动归属了几场，现在还有几场等你选项目。
+        local_now = datetime.now().astimezone()
+        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_start = today_start - timedelta(days=1)
+        auto_row = self.db.query_one(
+            """SELECT COUNT(DISTINCT meeting_id) AS count FROM events
+                WHERE event_type='meeting_project_auto_assigned'
+                  AND created_at >= ? AND created_at < ?""",
+            (
+                yesterday_start.astimezone(UTC).isoformat(),
+                today_start.astimezone(UTC).isoformat(),
+            ),
+        )
+        from .attribution import attribution_summary  # attribution 依赖本模块，只能就地导入
+
+        with self.db.autocommit() as connection:
+            needs_review = attribution_summary(connection)["needs_review_total"]
         return {
+            "auto_assigned_yesterday": int(auto_row["count"] if auto_row else 0),
+            "needs_review": needs_review,
             "total": len(pending) + len(in_progress) + len(done_today),
             "pending": len(pending),
             "pending_sources": pending_sources,

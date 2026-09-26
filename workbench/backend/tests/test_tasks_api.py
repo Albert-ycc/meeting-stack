@@ -458,6 +458,43 @@ def test_extract_pending_seeds_from_new_minutes(tmp_path, monkeypatch):
     assert "会议纪要" in extracted["prompt"]
 
 
+def test_draft_card_carries_the_meetings_project(tmp_path, monkeypatch):
+    """飞书草稿卡上的项目行取会议当前的项目。"""
+    client, settings = make_client(tmp_path)
+    db = Database(settings.database_path)
+    seed_editable_meeting(db, settings.archive_root)
+    seed_minutes(client, settings)
+    db.execute(
+        "INSERT INTO projects(id, name, color, origin, created_at) VALUES ('p-card', '云图科研用药', '#2c8d83', 'manual', ?)",
+        (utc_now(),),
+    )
+    db.execute("UPDATE meetings SET project_id='p-card', project_origin='manual' WHERE id='vm-20260102-101500'")
+    monkeypatch.setattr(
+        TaskService,
+        "_call_llm",
+        lambda self, prompt: '{"tasks":[{"title":"对齐接口","anchor_quote":"","assignee_suggestion":"ai"}]}',
+    )
+    db.execute(
+        """INSERT INTO task_extractions(meeting_id, minutes_version_id, supplement, created_at)
+           VALUES ('vm-20260102-101500', 'mv-1', '', ?)""",
+        (utc_now(),),
+    )
+
+    class FakeNotifier:
+        enabled = False  # 纪要通知不发，只看任务草稿卡
+
+        def __init__(self):
+            self.calls = []
+
+        def task_draft(self, extraction_id, **kwargs):
+            self.calls.append(kwargs)
+            return True
+
+    notifier = FakeNotifier()
+    TaskService(db, settings, notifier=notifier).extract_pending()
+    assert notifier.calls and notifier.calls[0]["project_name"] == "云图科研用药"
+
+
 def test_parse_llm_tasks_tolerates_fence(tmp_path):
     from meeting_workbench.tasks import TaskService
 

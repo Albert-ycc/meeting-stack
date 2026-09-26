@@ -652,10 +652,12 @@ class ProjectLinker:
         minutes_markdown: str,
         attempts: int = 0,
         cue_table: dict[str, Any] | None = None,
+        exclude_meeting_id: str | None = None,
     ) -> dict[str, Any]:
         """按字面线索 + LLM 判定，只判断不落库；返回 decision 与证据。
 
         link_pending 的写库路径与 backfill --dry-run / --evaluate 的只读路径共用这一份。
+        exclude_meeting_id：回测时把这场会从项目画像的「最近人工归入的会」里拿掉，别把答案递给模型。
         """
         if cue_table is None:
             cue_table = self.cue_table()
@@ -685,7 +687,9 @@ class ProjectLinker:
             try:
                 raw_response = call_llm(
                     self.settings,
-                    self._build_prompt(title=title, minutes=minutes_markdown),
+                    self._build_prompt(
+                        title=title, minutes=minutes_markdown, exclude_meeting_id=exclude_meeting_id
+                    ),
                     system=SYSTEM_PROMPT,
                 )
                 parsed = self._parse_response(raw_response)
@@ -727,6 +731,7 @@ class ProjectLinker:
             "candidates": [],
             "new_project_name": None,
             "llm_attempted": llm_state in ("ok", "failed"),
+            "literal": literal,
         }
 
         if llm_state == "ok" and confidence == "high" and llm_pick:
@@ -805,7 +810,7 @@ class ProjectLinker:
             return None
         return name[:40]
 
-    def _project_profiles(self) -> list[str]:
+    def _project_profiles(self, exclude_meeting_id: str | None = None) -> list[str]:
         """提示词里每个项目一行：名称（又称…；文件夹…；在做的需求…；最近人工归入的会…）。"""
         lines: list[str] = []
         projects = self.db.query_all("SELECT id, name, also_names FROM projects ORDER BY name")
@@ -837,9 +842,9 @@ class ProjectLinker:
                 row["title"]
                 for row in self.db.query_all(
                     """SELECT title FROM meetings
-                        WHERE project_id=? AND project_origin='manual'
+                        WHERE project_id=? AND project_origin='manual' AND id IS NOT ?
                         ORDER BY COALESCE(recording_date, created_at) DESC LIMIT 3""",
-                    (project["id"],),
+                    (project["id"], exclude_meeting_id),
                 )
             ]
             if recent:
@@ -847,9 +852,11 @@ class ProjectLinker:
             lines.append(f"- {project['name']}（{'；'.join(parts)}）" if parts else f"- {project['name']}")
         return lines
 
-    def _build_prompt(self, *, title: str, minutes: str) -> str:
+    def _build_prompt(
+        self, *, title: str, minutes: str, exclude_meeting_id: str | None = None
+    ) -> str:
         minutes_excerpt = minutes[:6000]
-        profiles = self._project_profiles()
+        profiles = self._project_profiles(exclude_meeting_id)
         project_block = "\n".join(profiles) if profiles else "（暂无项目）"
         return (
             "你是会议归属项目的判断器。给你一场会议的标题、纪要正文和已有项目的画像，"
@@ -973,3 +980,118 @@ class ProjectLinker:
                 }
             )
         return {"dry_run": True, "results": items}
+
+    # ------------------------------------------------------------------ 回测
+
+    def evaluate(self, *, limit: int | None = None, apply: bool = True) -> dict[str, Any]:
+        """回测新规则：拿人工归过项目的会当答案，藏起答案重判一遍，只读不改会议。
+
+        先被 AI 归进某个项目、后来人工「确认」成同一个项目的会不算答案（那只是没改，
+        不能说明 AI 对）。模型高置信却归错 2 场以上时，apply=True 会打开
+        link_require_literal：以后模型高置信也要这个项目自己在会上至少出现过一次线索。
+        """
+        sql = """SELECT m.id, m.title, m.project_id, m.current_minutes_version_id AS minutes_version_id,
+                        p.name AS project_name
+                   FROM meetings m
+                   JOIN projects p ON p.id = m.project_id
+                  WHERE m.project_origin='manual'
+                    AND m.current_minutes_version_id IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM project_links pl
+                         WHERE pl.meeting_id = m.id AND pl.project_id = m.project_id
+                           AND pl.status='done' AND COALESCE(pl.method, '') <> 'already_linked'
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM events e
+                         WHERE e.meeting_id = m.id
+                           AND e.event_type='meeting_project_auto_assigned'
+                           AND json_extract(e.payload_json, '$.project_id') = m.project_id
+                    )
+                  ORDER BY COALESCE(m.recording_date, m.created_at)"""
+        params: tuple[Any, ...] = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (limit,)
+        rows = self.db.query_all(sql, params)
+        excluded = self.db.query_one(
+            "SELECT COUNT(*) AS count FROM meetings WHERE project_origin='manual' AND project_id IS NOT NULL"
+        )
+        cue_table = self.cue_table()
+        names = {row["id"]: row["name"] for row in self.db.query_all("SELECT id, name FROM projects")}
+        items: list[dict[str, Any]] = []
+        counts = {
+            "auto_right": 0,
+            "auto_wrong": 0,
+            "review_hit": 0,
+            "review_miss": 0,
+            "unresolved": 0,
+            "llm_high_wrong": 0,
+        }
+        guard = {"wrong_blocked": 0, "right_demoted": 0}
+        for row in rows:
+            minutes = self.db.query_one(
+                "SELECT markdown FROM minutes_versions WHERE id=?", (row["minutes_version_id"],)
+            )
+            if minutes is None:
+                continue
+            result = self._classify(
+                meeting_id=row["id"],
+                title=row["title"] or "",
+                minutes_markdown=minutes["markdown"],
+                attempts=MAX_LINK_ATTEMPTS,
+                cue_table=cue_table,
+                exclude_meeting_id=row["id"],
+            )
+            answer = row["project_id"]
+            decision = result["decision"]
+            if decision == "auto":
+                verdict = "auto_right" if result["project_id"] == answer else "auto_wrong"
+                if result["method"] == "llm_high":
+                    blocked = result["literal"].get(result["project_id"], 0) < 1
+                    if verdict == "auto_wrong":
+                        counts["llm_high_wrong"] += 1
+                        guard["wrong_blocked"] += int(blocked)
+                    else:
+                        guard["right_demoted"] += int(blocked)
+            elif decision == "needs_review":
+                hit = any(candidate["project_id"] == answer for candidate in result["candidates"])
+                verdict = "review_hit" if hit else "review_miss"
+            else:
+                verdict = "unresolved"
+            counts[verdict] += 1
+            items.append(
+                {
+                    "meeting_id": row["id"],
+                    "meeting_title": row["title"],
+                    "answer_project_id": answer,
+                    "answer_project_name": row["project_name"],
+                    "verdict": verdict,
+                    "decision": decision,
+                    "project_id": result["project_id"],
+                    "project_name": names.get(result["project_id"]) if result["project_id"] else None,
+                    "method": result["method"],
+                    "reason": result["reason"],
+                    "candidates": result["candidates"],
+                }
+            )
+        require_literal_before = self._require_literal()
+        enabled = False
+        if apply and counts["llm_high_wrong"] >= 2 and not require_literal_before:
+            self.db.execute(
+                """INSERT INTO app_state(key, value, updated_at) VALUES ('link_require_literal', '1', ?)
+                   ON CONFLICT(key) DO UPDATE SET value='1', updated_at=excluded.updated_at""",
+                (utc_now(),),
+            )
+            enabled = True
+        return {
+            "evaluated": len(items),
+            "skipped_untrusted": int(excluded["count"] if excluded else 0) - len(rows)
+            if limit is None
+            else None,
+            "counts": counts,
+            "literal_guard": guard,
+            "require_literal_before": require_literal_before,
+            "require_literal_enabled": enabled,
+            "llm_ready": llm_ready(self.settings),
+            "results": items,
+        }

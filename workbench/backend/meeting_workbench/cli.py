@@ -51,13 +51,65 @@ def build_parser() -> argparse.ArgumentParser:
     qwen_shadow.add_argument("--model", choices=["0.6B"], default="0.6B")
     subcommands.add_parser("doctor", help="检查本机运行条件")
     backfill_projects = subcommands.add_parser(
-        "backfill-projects", help="为存量会议批量归类项目（LLM 精确名→语义兜底→任务多数）"
+        "backfill-projects", help="为存量会议批量归类项目（字面线索 + LLM）"
     )
     backfill_projects.add_argument(
         "--dry-run", action="store_true", help="只打印判定结果，不写库"
     )
+    backfill_projects.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="回测：拿人工归过项目的会当答案，藏起答案重判；模型高置信错 2 场以上时要求字面线索",
+    )
+    backfill_projects.add_argument(
+        "--no-apply", action="store_true", help="和 --evaluate 一起用：只报告，不改 link_require_literal"
+    )
     backfill_projects.add_argument("--limit", type=int, help="最多处理的会议数")
     return parser
+
+
+VERDICT_LABELS = {
+    "auto_right": "自动·对",
+    "auto_wrong": "自动·错",
+    "review_hit": "待你选·含答案",
+    "review_miss": "待你选·不含",
+    "unresolved": "没认出",
+}
+
+
+def _print_evaluation(result: dict) -> int:
+    if not result["llm_ready"]:
+        print("未配置 LLM API key：本次回测只按字面线索判断", file=sys.stderr)
+    print(f"{'会议标题':<30}{'答案':<16}{'判成':<16}{'结果':<14}原因")
+    for item in result["results"]:
+        guess = item["project_name"]
+        if not guess and item["candidates"]:
+            guess = " / ".join(str(candidate.get("project_name") or "") for candidate in item["candidates"])
+        print(
+            f"{(item['meeting_title'] or ''):<30}"
+            f"{(item['answer_project_name'] or ''):<16}"
+            f"{(guess or '—'):<16}"
+            f"{VERDICT_LABELS[item['verdict']]:<14}"
+            f"{item['reason']}"
+        )
+    counts = result["counts"]
+    print(
+        f"共 {result['evaluated']} 场：自动对 {counts['auto_right']}，自动错 {counts['auto_wrong']}"
+        f"（其中模型高置信错 {counts['llm_high_wrong']}），待你选含答案 {counts['review_hit']}，"
+        f"不含 {counts['review_miss']}，没认出 {counts['unresolved']}"
+    )
+    if result.get("skipped_untrusted"):
+        print(f"另有 {result['skipped_untrusted']} 场人工归属没算进来（先被 AI 归、后来只是确认，或没有纪要）")
+    guard = result["literal_guard"]
+    print(
+        f"要求字面线索后：能拦下 {guard['wrong_blocked']} 场模型归错的，"
+        f"也会让 {guard['right_demoted']} 场模型归对的改成待你选"
+    )
+    if result["require_literal_enabled"]:
+        print("模型高置信归错 2 场以上，已打开 link_require_literal")
+    elif result["require_literal_before"]:
+        print("link_require_literal 之前已经打开")
+    return 0
 
 
 def _database(settings: Settings) -> Database:
@@ -221,6 +273,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(checks, ensure_ascii=False))
         required = (checks["database"], checks["archive"], checks["staging"], checks["loopback"])
         return 0 if all(required) else 1
+    if args.command == "backfill-projects" and args.evaluate:
+        return _print_evaluation(
+            ProjectLinker(db, settings).evaluate(limit=args.limit, apply=not args.no_apply)
+        )
     if args.command == "backfill-projects":
         linker = ProjectLinker(db, settings)
         result = linker.backfill(dry_run=args.dry_run, limit=args.limit)
