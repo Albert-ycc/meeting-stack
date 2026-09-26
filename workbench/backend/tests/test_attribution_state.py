@@ -322,7 +322,9 @@ def test_picking_a_candidate_then_undoing_restores_the_question(tmp_path):
 
     assert response.status_code == 200, response.text
     undone = response.json()
-    assert undone["effects"] == {"tasks_restored": 1}
+    assert undone["effects"]["tasks_restored"] == 1
+    # 回到待你选，卡片跟着说在等什么
+    assert undone["effects"]["card"]["reason"] == "needs_review"
     assert undone["attribution"]["state"] == "needs_review"
     assert [c["project_id"] for c in undone["attribution"]["candidates"]] == [project_a, project_b]
     assert meeting_row(db, "m-1") == {"project_id": None, "project_origin": None}

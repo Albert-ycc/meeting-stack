@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 import hashlib
 import json
+import logging
 import secrets
 import threading
 import time
@@ -54,6 +55,7 @@ from .attribution import (
     recognition_profile,
 )
 from . import cold_start, materials, requirements
+from .cards import CardsError, CardWriter
 from .project_names import (
     SimilarProjectError,
     also_entries,
@@ -147,6 +149,8 @@ MINUTES_AUTO_RECOVERY_COOLDOWN_SECONDS = 20 * 60
 ATTENTION_REFRESH_SECONDS = 60.0
 # 归档接口遇到快照里没有的任务号时，这个间隔内不重复调 relayctl（防伪造任务号放大负载）。
 ACKNOWLEDGE_REFRESH_MIN_SECONDS = 10.0
+
+logger = logging.getLogger(__name__)
 
 
 class HotwordsModel(BaseModel):
@@ -274,6 +278,25 @@ class MaterialRootInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=4096)
+
+
+class CardActionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["rewrite", "regenerate"]
+
+
+class CardsBackfillInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: Literal["yes", "no", "later"]
+
+
+class CardsTargetInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str | None = Field(default=None, max_length=200)
+    meeting_id: str | None = Field(default=None, max_length=200)
 
 
 class RequirementCreateInput(BaseModel):
@@ -431,7 +454,11 @@ def _serialize_shadow_run(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _meeting_detail(
-    db: Database, meeting_id: str, *, ai_configured: bool = False
+    db: Database,
+    meeting_id: str,
+    *,
+    ai_configured: bool = False,
+    cards: CardWriter | None = None,
 ) -> dict[str, Any] | None:
     meeting = db.query_one(
         """SELECT m.*, p.name AS project_name, p.color AS project_color
@@ -518,6 +545,8 @@ def _meeting_detail(
         meeting["attribution"] = meeting_attribution(
             connection, meeting_id, ai_configured=ai_configured
         )
+        if cards is not None:
+            meeting["card"] = cards.meeting_card(connection, meeting_id)
     return meeting
 
 
@@ -565,6 +594,7 @@ def create_app(
         db, settings, semantic=semantic, notifier=notifier
     )
     project_linker = ProjectLinker(db, settings)
+    card_writer = CardWriter(db, settings)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
     csrf_token = secrets.token_urlsafe(32)
@@ -811,6 +841,13 @@ def create_app(
                     raise
                 except Exception as error:
                     # 任务抽取是旁路，失败只记账，不影响扫描与纪要主链。
+                    phase_errors.append(error)
+                try:
+                    await asyncio.to_thread(card_writer.reconcile)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 会议卡片是旁路，排在任务抽取之后（卡片里的行动项才是最新的），失败只记账。
                     phase_errors.append(error)
                 try:
                     await asyncio.to_thread(task_service.run_notifications)
@@ -1453,7 +1490,9 @@ def create_app(
 
     @app.get("/api/meetings/{meeting_id}")
     def get_meeting(meeting_id: str):
-        detail = _meeting_detail(db, meeting_id, ai_configured=llm_ready(settings))
+        detail = _meeting_detail(
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+        )
         if not detail:
             raise HTTPException(404, "会议不存在")
         return detail
@@ -2584,7 +2623,9 @@ def create_app(
             actor="user",
             payload={"action": action, "conflict_id": conflict_id},
         )
-        detail = _meeting_detail(db, meeting_id, ai_configured=llm_ready(settings))
+        detail = _meeting_detail(
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+        )
         assert detail is not None
         return detail
 
@@ -2680,7 +2721,10 @@ def create_app(
             actor="user",
             payload=event_payload,
         )
-        detail = _meeting_detail(db, meeting_id, ai_configured=llm_ready(settings))
+        card_effect = sync_card(meeting_id) if "project_id" in changed_fields else None
+        detail = _meeting_detail(
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+        )
         if effects is not None and detail is not None:
             detail["effects"] = {
                 "tasks_moved": effects["tasks_moved"],
@@ -2689,12 +2733,24 @@ def create_app(
             }
             if effects.get("cue_hint") and body.project_id != RETURN_TO_AI:
                 detail["effects"]["cue_hint"] = effects["cue_hint"]
+        if card_effect is not None and detail is not None:
+            detail.setdefault("effects", {})["card"] = card_effect
         return detail
+
+    def sync_card(meeting_id: str) -> dict[str, Any] | None:
+        """改归属、确认、撤销之后立刻同步卡片；卡片是旁路，写不了只记日志，不影响这次改动。"""
+        try:
+            result = card_writer.sync_meeting(meeting_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("会议卡片同步失败：%s", meeting_id)
+            return None
+        return {key: result.get(key) for key in ("action", "from", "to", "reason")}
 
     @app.post("/api/meetings/{meeting_id}/project/confirm")
     def confirm_meeting_project_endpoint(meeting_id: str, _body: dict[str, Any] | None = None):
         with db.transaction() as connection:
             confirm_meeting_project(connection, meeting_id)
+        sync_card(meeting_id)
         with db.autocommit() as connection:
             return meeting_attribution(
                 connection, meeting_id, ai_configured=llm_ready(settings)
@@ -2704,10 +2760,80 @@ def create_app(
     def undo_meeting_project(meeting_id: str, _body: dict[str, Any] | None = None):
         with db.transaction() as connection:
             result = undo_reassign(connection, meeting_id)
-        detail = _meeting_detail(db, meeting_id, ai_configured=llm_ready(settings))
+        card_effect = sync_card(meeting_id)
+        detail = _meeting_detail(
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+        )
         if detail is not None:
             detail["effects"] = {"tasks_restored": result["tasks_restored"]}
+            if card_effect is not None:
+                detail["effects"]["card"] = card_effect
         return detail
+
+    @app.post("/api/meetings/{meeting_id}/card")
+    def meeting_card_action(meeting_id: str, body: CardActionInput):
+        try:
+            return card_writer.rewrite(meeting_id, body.action)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except CardsError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/cards/banner")
+    def cards_banner():
+        """工作台用：历史会议补写横幅（没有就是 null）和「写入第一张卡片」提示。"""
+        with db.autocommit() as connection:
+            return {
+                "backfill": card_writer.backfill_banner(connection),
+                "notices": card_writer.notices(connection),
+            }
+
+    @app.get("/api/cards/backfill-preview")
+    def cards_backfill_preview():
+        with db.autocommit() as connection:
+            return card_writer.backfill_preview(connection)
+
+    @app.post("/api/cards/backfill")
+    def cards_backfill(body: CardsBackfillInput):
+        try:
+            return card_writer.answer_backfill(body.answer)
+        except CardsError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/cards/retire-all")
+    def cards_retire_all(_body: dict[str, Any] | None = None):
+        return card_writer.retire_all()
+
+    @app.post("/api/cards/enable")
+    def cards_enable(_body: dict[str, Any] | None = None):
+        return card_writer.enable()
+
+    @app.post("/api/cards/notices/dismiss")
+    def cards_dismiss_notice(body: CardsTargetInput):
+        card_writer.dismiss_notice(body.project_id or "")
+        return {"ok": True}
+
+    @app.post("/api/cards/reveal")
+    def cards_reveal(body: CardsTargetInput):
+        try:
+            return {"path": card_writer.reveal(project_id=body.project_id, meeting_id=body.meeting_id)}
+        except CardsError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.post("/api/projects/{project_id}/cards/pause")
+    def project_cards_pause(project_id: str, _body: dict[str, Any] | None = None):
+        if db.query_one("SELECT 1 FROM projects WHERE id=?", (project_id,)) is None:
+            raise HTTPException(404, "项目不存在")
+        return card_writer.pause_project(project_id)
+
+    @app.post("/api/projects/{project_id}/cards/resume")
+    def project_cards_resume(project_id: str, _body: dict[str, Any] | None = None):
+        if db.query_one("SELECT 1 FROM projects WHERE id=?", (project_id,)) is None:
+            raise HTTPException(404, "项目不存在")
+        card_writer.resume_project(project_id)
+        written = card_writer.reconcile_project(project_id)
+        with db.autocommit() as connection:
+            return {"cards": card_writer.project_cards(connection, project_id), "written": written}
 
     @app.get("/api/attribution/summary")
     def attribution_summary_endpoint():
@@ -2811,6 +2937,7 @@ def create_app(
         board = task_service.project_board(project_id)
         with db.autocommit() as connection:
             board["profile"] = recognition_profile(connection, project_id)
+            board["cards"] = card_writer.project_cards(connection, project_id)
         return board
 
     @app.get("/api/projects/{project_id}/meetings")
@@ -2820,16 +2947,26 @@ def create_app(
     @app.post("/api/projects/{project_id}/material-roots")
     def add_project_material_root(project_id: str, body: MaterialRootInput):
         try:
-            return materials.add_material_root(db, settings, project_id, body.path)
+            root = materials.add_material_root(db, settings, project_id, body.path)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+        return {**root, "cards_written": backfill_project_cards(project_id)}
+
+    def backfill_project_cards(project_id: str) -> int:
+        """挂上（或换了）文件夹后，把这个项目积压的卡片当场补写，提示「已补写 N 张会议卡片」。"""
+        try:
+            return card_writer.reconcile_project(project_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("补写会议卡片失败：%s", project_id)
+            return 0
 
     @app.post("/api/projects/{project_id}/material-roots/{root_id}/replace")
     def replace_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
         try:
-            return materials.replace_material_root(db, settings, project_id, root_id, body.path)
+            root = materials.replace_material_root(db, settings, project_id, root_id, body.path)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+        return {**root, "cards_written": backfill_project_cards(project_id)}
 
     @app.delete("/api/projects/{project_id}/material-roots/{root_id}")
     def remove_project_material_root(project_id: str, root_id: int):

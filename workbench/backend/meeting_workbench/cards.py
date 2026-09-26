@@ -574,6 +574,39 @@ class CardWriter:
             self._refresh_indexes(round_, every_project=True)
         return stats
 
+    def reconcile_project(
+        self, project_id: str, max_writes: int = 50, budget_s: float = 5.0
+    ) -> int:
+        """挂上或换了文件夹、恢复写入之后，当场把这个项目积压的卡片补写掉；返回写了几张。"""
+        started = time.monotonic()
+        round_ = _Round()
+        with self.db.autocommit() as connection:
+            if not cards_enabled(connection):
+                return 0
+            since = read_state(connection, SINCE_KEY) or ""
+            backfill_yes = read_state(connection, BACKFILL_KEY) == "yes"
+            queue = [
+                row["id"]
+                for row in connection.execute(
+                    """SELECT m.id FROM meetings m
+                         JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
+                         LEFT JOIN meeting_cards c ON c.meeting_id = m.id
+                        WHERE m.project_id=?
+                          AND (c.meeting_id IS NULL OR c.dirty > 0 OR c.state IN ('pending', 'blocked'))
+                          AND (? OR mv.created_at >= ? OR c.synced_at IS NOT NULL)
+                        ORDER BY COALESCE(m.recording_date, m.created_at), m.id""",
+                    (project_id, 1 if backfill_yes else 0, since),
+                ).fetchall()
+            ]
+        for meeting_id in queue:
+            if round_.writes >= max_writes or time.monotonic() - started > budget_s:
+                break
+            with _LOCK:
+                self._sync_locked(meeting_id, None, round_)
+        with _LOCK:
+            self._refresh_indexes(round_)
+        return round_.writes
+
     def sync_meeting(self, meeting_id: str, *, mode: str | None = None) -> dict[str, Any]:
         """改归属、确认、撤销之后立刻同步这一场会的卡片，返回给提示用的去向。"""
         round_ = _Round()
