@@ -13,6 +13,7 @@ import {
 import type { AttributionSummary, HealthPayload, Job, MeetingSummary, Task } from "../types";
 import { DitherArea, DitherCalendar, type CalendarCell } from "./charts/DitherChart";
 import { FolderSuggestionBanner } from "./FolderSuggestionBanner";
+import { MeetingCardsBanner } from "./MeetingCardsBanner";
 import { BlurText } from "./motion/BlurText";
 import { CountUp } from "./motion/CountUp";
 
@@ -112,6 +113,8 @@ export function OverviewPage({
   onProjectsChanged,
 }: OverviewPageProps) {
   const reviewCount = attributionSummary?.needs_review_recent ?? 0;
+  // 同名文件夹横幅读完之前是 null：先不出会议卡片横幅，免得两条一起闪出来
+  const [folderBannerActive, setFolderBannerActive] = useState<boolean | null>(null);
   const activeJobs = jobs.filter(
     (job) =>
       !["completed_unreviewed", "draft_modified", "published", "cancelled", "failed", "interrupted"].includes(
@@ -281,7 +284,15 @@ export function OverviewPage({
         </div>
       </header>
 
-      {canPickFolders && <FolderSuggestionBanner apiClient={apiClient} onProjectsChanged={onProjectsChanged} />}
+      {canPickFolders && (
+        <FolderSuggestionBanner
+          apiClient={apiClient}
+          onActiveChange={setFolderBannerActive}
+          onProjectsChanged={onProjectsChanged}
+        />
+      )}
+      {/* 一次性横幅同一时间只出一条：同名文件夹问完了，才轮到会议卡片 */}
+      {canPickFolders && folderBannerActive === false && <MeetingCardsBanner apiClient={apiClient} />}
 
       <div className={`metric-strip ${reviewCount > 0 ? "metric-strip--five" : ""}`}>
         {jobsInteractive ? (

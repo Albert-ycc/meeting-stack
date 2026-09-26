@@ -16,6 +16,7 @@ import type {
 import { AsyncState } from "./AsyncState";
 import { FolderIcon } from "./FolderIcon";
 import { MaterialRootPickerModal } from "./MaterialRootPickerModal";
+import { ProjectCardsRow } from "./ProjectCardsRow";
 import { Pagination } from "./Pagination";
 import { ProjectFormModal } from "./ProjectFormModal";
 import { ProjectRecognitionCard } from "./ProjectRecognitionCard";
@@ -194,15 +195,19 @@ export function ProjectDetailPage({
     setRequirementsPage(0);
   };
 
-  const copyPath = async (path: string) => {
+  const copyText = async (text: string, done: string) => {
     try {
       if (!navigator.clipboard) throw new Error("clipboard unavailable");
-      await navigator.clipboard.writeText(path);
-      showToast("已复制路径");
+      await navigator.clipboard.writeText(text);
+      showToast(done);
     } catch {
       setNotice("复制失败，请手动复制");
     }
   };
+  const copyPath = (path: string) => copyText(path, "已复制路径");
+  // 挂上文件夹时当场补写的会议卡片张数
+  const cardsWrittenNote = (root: MaterialRoot | undefined) =>
+    root?.cards_written ? `，已补写 ${root.cards_written} 张会议卡片` : "";
 
   const refreshAfterRootChange = async () => {
     await Promise.all([loadBoard(), loadSubfolders()]);
@@ -213,9 +218,9 @@ export function ProjectDetailPage({
     setRootBusy(true);
     setRootError("");
     try {
-      await apiClient.addProjectMaterialRoot(projectId, path);
+      const added = await apiClient.addProjectMaterialRoot(projectId, path);
       setAddingRoot(false);
-      setNotice("材料根目录已添加");
+      setNotice(`材料根目录已添加${cardsWrittenNote(added)}`);
       await refreshAfterRootChange();
     } catch (error) {
       // D27：取径器还开着，错误要就地显示在弹窗里，不能吞掉／丢到被弹窗盖住的页面级提示
@@ -231,9 +236,9 @@ export function ProjectDetailPage({
     setRootError("");
     try {
       // 原子替换：只改路径，根目录 id 不变；失败时旧根目录原样保留，不会「删了没加上」。
-      await apiClient.replaceProjectMaterialRoot(projectId, reselectingRoot.id, path);
+      const replaced = await apiClient.replaceProjectMaterialRoot(projectId, reselectingRoot.id, path);
       setReselectingRoot(null);
-      setNotice("材料根目录已更新");
+      setNotice(`材料根目录已更新${cardsWrittenNote(replaced)}`);
       await refreshAfterRootChange();
     } catch (error) {
       setRootError(error instanceof Error ? error.message : "更新失败，请稍后重试");
@@ -420,6 +425,17 @@ export function ProjectDetailPage({
                   );
                 })}
               </ul>
+            )}
+            {board.cards && (
+              <ProjectCardsRow
+                apiClient={apiClient}
+                canPickFolders={Boolean(canPickFolders)}
+                canWrite={canWrite}
+                cards={board.cards}
+                onChanged={loadBoard}
+                onCopy={copyText}
+                projectId={projectId}
+              />
             )}
           </section>
 

@@ -9,14 +9,17 @@ interface FolderSuggestionBannerProps {
   apiClient: ApiClient;
   /** 挂好文件夹后刷新项目列表 */
   onProjectsChanged?: () => void | Promise<void>;
+  /** 读完之后告诉工作台这条横幅在不在：一次性横幅同一时间只出一条，它排在最前 */
+  onActiveChange?: (active: boolean) => void;
 }
 
 /**
  * 工作台一次性横幅：还没挂文件夹的项目找到了同名文件夹，问一次要不要挂上。
  * 同名的默认勾选，名字相近的默认不勾；没勾的记为「不挂」，以后不再问；［稍后］几天内不再出现。
  */
-export function FolderSuggestionBanner({ apiClient, onProjectsChanged }: FolderSuggestionBannerProps) {
+export function FolderSuggestionBanner({ apiClient, onProjectsChanged, onActiveChange }: FolderSuggestionBannerProps) {
   const [items, setItems] = useState<ColdStartFolderItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -25,7 +28,10 @@ export function FolderSuggestionBanner({ apiClient, onProjectsChanged }: FolderS
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (typeof apiClient.coldStartFolders !== "function") return;
+    if (typeof apiClient.coldStartFolders !== "function") {
+      setLoaded(true);
+      return;
+    }
     let alive = true;
     apiClient
       .coldStartFolders()
@@ -36,11 +42,19 @@ export function FolderSuggestionBanner({ apiClient, onProjectsChanged }: FolderS
       })
       .catch(() => {
         // 只是个提醒，读不到就不出现
+      })
+      .finally(() => {
+        if (alive) setLoaded(true);
       });
     return () => {
       alive = false;
     };
   }, [apiClient]);
+
+  const active = items.length > 0;
+  useEffect(() => {
+    if (loaded) onActiveChange?.(active);
+  }, [active, loaded, onActiveChange]);
 
   useEffect(() => {
     if (!open) return;
