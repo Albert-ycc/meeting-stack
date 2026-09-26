@@ -102,7 +102,7 @@ export function ProjectDetailPage({
   const [requirementsPayload, setRequirementsPayload] = useState<RequirementsPayload | null>(null);
   const [requirementsState, setRequirementsState] = useState<LoadState>("loading");
 
-  const [editingProject, setEditingProject] = useState(false);
+  const [editingProject, setEditingProject] = useState<false | "edit" | "merge" | "delete">(false);
   const [creatingRequirement, setCreatingRequirement] = useState(false);
   const [addingRoot, setAddingRoot] = useState(false);
   const [reselectingRoot, setReselectingRoot] = useState<MaterialRoot | null>(null);
@@ -272,6 +272,7 @@ export function ProjectDetailPage({
   const requirementCounts = board?.requirement_counts;
   // 挂/移/重选根目录既要能写这个项目，也要在桌面端；复制路径不受限，谁都能读
   const canManageFolders = canWrite && canPickFolders;
+  const isEmptyProject = (board?.meeting_count ?? 0) === 0 && (requirementCounts?.all ?? 0) === 0;
 
   return (
     <section className="detail-page page-content">
@@ -293,7 +294,7 @@ export function ProjectDetailPage({
           )}
           {canWrite && board && (
             <span className="detail-head__actions">
-              <button className="detail-head__edit" onClick={() => setEditingProject(true)} type="button">
+              <button className="detail-head__edit" onClick={() => setEditingProject("edit")} type="button">
                 编辑项目
               </button>
               <button className="detail-head__create-requirement" onClick={() => setCreatingRequirement(true)} type="button">
@@ -324,6 +325,29 @@ export function ProjectDetailPage({
 
       {board && boardState === "ready" && (
         <>
+          {board.origin === "ai" && roots.length === 0 && (
+            <div className="detail-hint" role="note">
+              <span>这个项目是 AI 自动建的，还没挂文件夹。是重复的就合并到别的项目，用不上可以删掉。</span>
+              {canWrite && (
+                <span className="detail-hint__actions">
+                  {canManageFolders && (
+                    <button className="text-button" onClick={openAddRoot} type="button">
+                      挂上文件夹
+                    </button>
+                  )}
+                  <button className="text-button" onClick={() => setEditingProject("merge")} type="button">
+                    合并到…
+                  </button>
+                  {isEmptyProject && (
+                    <button className="text-button" onClick={() => setEditingProject("delete")} type="button">
+                      删除
+                    </button>
+                  )}
+                </span>
+              )}
+            </div>
+          )}
+
           <section className="detail-card">
             <header className="detail-card__head">
               <h2>材料根目录</h2>
@@ -358,6 +382,16 @@ export function ProjectDetailPage({
                         <span className="material-root-row__offline">资料盘未连接，插上后自动恢复</span>
                       ) : (
                         <span className="material-root-row__missing">找不到该目录</span>
+                      )}
+                      {(root.shared_with?.length ?? 0) > 0 && (
+                        <span className="material-root-row__shared" role="note">
+                          也挂在{root.shared_with!.map((entry) => `「${entry.project_name}」`).join("")}下，
+                          {root.cards_owner_id === projectId
+                            ? "会议卡片写在这个项目里"
+                            : `会议卡片只写给先挂上的「${
+                                root.shared_with!.find((entry) => entry.project_id === root.cards_owner_id)?.project_name ?? ""
+                              }」，不需要可以在这里移除`}
+                        </span>
                       )}
                       <span className="material-root-row__ops">
                         {state === "online" ? (
@@ -577,6 +611,7 @@ export function ProjectDetailPage({
             onProjectUpdated?.();
             void onProjectsChanged?.();
           }}
+          initialAction={editingProject === "edit" ? undefined : editingProject}
           onDeleted={() => {
             void onProjectsChanged?.();
             onBack();

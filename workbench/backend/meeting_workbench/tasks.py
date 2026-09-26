@@ -1214,6 +1214,18 @@ class TaskService:
                 (project_id,),
             )
         ]
+        # 同一个文件夹挂在几个项目下（老数据里可能有）：列出别的项目，会议卡片只写给最早挂上的那个。
+        for root in project["material_roots"]:
+            owners = self.db.query_all(
+                """SELECT r.project_id, p.name AS project_name
+                     FROM project_material_roots r JOIN projects p ON p.id = r.project_id
+                    WHERE r.path=? ORDER BY r.created_at, r.id""",
+                (root["path"],),
+            )
+            root["shared_with"] = [
+                dict(owner) for owner in owners if owner["project_id"] != project_id
+            ]
+            root["cards_owner_id"] = owners[0]["project_id"] if owners else project_id
         project["also_names"] = also_entries(project.get("also_names"))
         return project
 

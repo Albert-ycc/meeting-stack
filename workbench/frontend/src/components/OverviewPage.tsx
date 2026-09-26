@@ -12,6 +12,7 @@ import {
 } from "../format";
 import type { AttributionSummary, HealthPayload, Job, MeetingSummary, Task } from "../types";
 import { DitherArea, DitherCalendar, type CalendarCell } from "./charts/DitherChart";
+import { FolderSuggestionBanner } from "./FolderSuggestionBanner";
 import { BlurText } from "./motion/BlurText";
 import { CountUp } from "./motion/CountUp";
 
@@ -29,6 +30,9 @@ interface OverviewPageProps {
   /** 最近 14 天等你选项目的会；有才出计数卡 */
   attributionSummary?: AttributionSummary | null;
   onOpenAttributionReview?: () => void;
+  /** 挂文件夹只在桌面端：为 true 时才问「要不要挂上同名文件夹」 */
+  canPickFolders?: boolean;
+  onProjectsChanged?: () => void | Promise<void>;
 }
 
 const ATTENTION_KIND_TEXT: Record<string, string> = {
@@ -104,6 +108,8 @@ export function OverviewPage({
   onOpenTasks,
   attributionSummary,
   onOpenAttributionReview,
+  canPickFolders = false,
+  onProjectsChanged,
 }: OverviewPageProps) {
   const reviewCount = attributionSummary?.needs_review_recent ?? 0;
   const activeJobs = jobs.filter(
@@ -274,6 +280,8 @@ export function OverviewPage({
           </strong>
         </div>
       </header>
+
+      {canPickFolders && <FolderSuggestionBanner apiClient={apiClient} onProjectsChanged={onProjectsChanged} />}
 
       <div className={`metric-strip ${reviewCount > 0 ? "metric-strip--five" : ""}`}>
         {jobsInteractive ? (

@@ -1,0 +1,33 @@
+/* 词典页：自动整理旧分组的说明行 */
+
+.legacy-groups {
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  background: var(--paper);
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+.legacy-groups__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.legacy-groups__line > span {
+  margin-right: 4px;
+}
+
+.legacy-groups__list {
+  margin: 8px 0 2px;
+  padding-left: 18px;
+  line-height: 1.8;
+}
+
+.legacy-groups__error {
+  margin: 6px 0 0;
+  color: var(--danger);
+}

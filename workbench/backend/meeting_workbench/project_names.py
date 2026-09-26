@@ -630,6 +630,43 @@ def folder_matches(
     }
 
 
+def unmounted_project_folders(connection: Any, settings: Settings) -> list[dict[str, Any]]:
+    """冷启动：还没挂文件夹的项目，各自找同名（默认勾选）或相近（默认不勾）的文件夹。
+
+    目录只扫一遍；一个项目只给最像的那一个文件夹（同名优先，再按名字排序）。
+    """
+    projects = connection.execute(
+        """SELECT p.id, p.name, p.also_names FROM projects p
+            WHERE NOT EXISTS (SELECT 1 FROM project_material_roots r WHERE r.project_id = p.id)
+            ORDER BY p.name"""
+    ).fetchall()
+    if not projects:
+        return []
+    folders = _list_folders(connection, settings)
+    items: list[dict[str, Any]] = []
+    for project in projects:
+        names = [project["name"], *(entry["name"] for entry in also_entries(project["also_names"]))]
+        found = [
+            (kind, folder)
+            for folder in folders
+            if (kind := _match_kind(folder["name"], names)) is not None
+        ]
+        if not found:
+            continue
+        found.sort(key=lambda pair: (pair[0] != "exact", pair[1]["name"]))
+        kind, folder = found[0]
+        items.append(
+            {
+                "project_id": project["id"],
+                "project_name": project["name"],
+                "path": folder["path"],
+                "folder_name": folder["name"],
+                "match": kind,
+            }
+        )
+    return items
+
+
 def create_project_folder(
     settings: Settings, parent_raw: str, name: str
 ) -> tuple[str, str | None]:

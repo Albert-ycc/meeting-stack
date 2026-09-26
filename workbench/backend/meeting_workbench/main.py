@@ -53,7 +53,7 @@ from .attribution import (
     meeting_attribution,
     recognition_profile,
 )
-from . import materials, requirements
+from . import cold_start, materials, requirements
 from .project_names import (
     SimilarProjectError,
     also_entries,
@@ -256,6 +256,12 @@ class ProjectUpdateInput(BaseModel):
     color: str | None = None
     material_roots: list[str] | None = None
     also_names: list[str] | None = None
+
+
+class ProjectIdsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_ids: list[str] = Field(default_factory=list, max_length=200)
 
 
 class ProjectNameInput(BaseModel):
@@ -791,6 +797,13 @@ def create_app(
                 except Exception as error:
                     # 会议项目归属是旁路，失败只记账。排在任务抽取之前：抽出的任务直接
                     # 继承会议的项目，飞书草稿卡片发出时归属也已经有了。
+                    phase_errors.append(error)
+                try:
+                    await asyncio.to_thread(cold_start.run, db, settings, project_linker)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 冷启动整理是一次性的旁路，失败只记账，下一轮接着做。
                     phase_errors.append(error)
                 try:
                     await asyncio.to_thread(task_service.extract_pending)
@@ -2701,6 +2714,22 @@ def create_app(
         with db.autocommit() as connection:
             return attribution_summary(connection)
 
+    @app.get("/api/cold-start/folders")
+    def cold_start_folders():
+        with db.autocommit() as connection:
+            return cold_start.folder_suggestions(connection, settings)
+
+    @app.post("/api/cold-start/folders/decline")
+    def cold_start_folders_decline(body: ProjectIdsInput):
+        with db.transaction() as connection:
+            cold_start.decline_folder_suggestions(connection, body.project_ids)
+        return {"ok": True}
+
+    @app.post("/api/cold-start/folders/snooze")
+    def cold_start_folders_snooze():
+        with db.transaction() as connection:
+            return {"snoozed_until": cold_start.snooze_folder_suggestions(connection)}
+
     @app.get("/api/projects")
     def projects():
         return task_service.list_projects()
@@ -3182,6 +3211,27 @@ def create_app(
     @app.get("/api/glossary/scopes")
     def glossary_scopes():
         return list_scopes(db)
+
+    @app.get("/api/glossary/legacy-groups")
+    def glossary_legacy_groups():
+        with db.autocommit() as connection:
+            return {"summary": cold_start.legacy_groups_summary(connection)}
+
+    @app.post("/api/glossary/legacy-groups/undo")
+    def glossary_legacy_groups_undo():
+        try:
+            with db.transaction() as connection:
+                result = cold_start.undo_legacy_groups(db, connection)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        rewrite_snapshot(db, snapshot_path)
+        return result
+
+    @app.post("/api/glossary/legacy-groups/dismiss")
+    def glossary_legacy_groups_dismiss():
+        with db.transaction() as connection:
+            cold_start.dismiss_legacy_groups(connection)
+        return {"ok": True}
 
     @app.post("/api/glossary/terms")
     def glossary_create_term(body: GlossaryTermInput):

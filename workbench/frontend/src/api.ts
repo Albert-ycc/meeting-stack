@@ -44,6 +44,8 @@ import type {
   MinutesEvidence,
   TranscriptVersion,
   SimilarProjectSuggestion,
+  ColdStartFoldersPayload,
+  LegacyGroupsSummary,
 } from "./types";
 
 let csrfToken = "";
@@ -286,6 +288,14 @@ export const api = {
   ignoreProjectName: (name: string) =>
     write<{ name: string; meetings_updated: number }>("/api/project-names/ignore", "POST", { name }),
   attributionSummary: () => read<AttributionSummary>("/api/attribution/summary"),
+  coldStartFolders: () => read<ColdStartFoldersPayload>("/api/cold-start/folders"),
+  declineFolderSuggestions: (projectIds: string[]) =>
+    write<{ ok: boolean }>("/api/cold-start/folders/decline", "POST", { project_ids: projectIds }),
+  snoozeFolderSuggestions: () =>
+    write<{ snoozed_until: string }>("/api/cold-start/folders/snooze", "POST", {}),
+  legacyGroups: () => read<{ summary: LegacyGroupsSummary | null }>("/api/glossary/legacy-groups"),
+  undoLegacyGroups: () => write<{ restored: number }>("/api/glossary/legacy-groups/undo", "POST", {}),
+  dismissLegacyGroups: () => write<{ ok: boolean }>("/api/glossary/legacy-groups/dismiss", "POST", {}),
   confirmMeetingProject: (meetingId: string) =>
     write<MeetingAttribution>(
       `/api/meetings/${encodeURIComponent(meetingId)}/project/confirm`,

@@ -582,6 +582,8 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenMeeting={openMeeting}
         onOpenTasks={() => navigate("tasks")}
         attributionSummary={attributionSummary}
+        canPickFolders={!isMobile}
+        onProjectsChanged={refreshProjects}
         onOpenAttributionReview={() => {
           applyFilters({ attribution: "needs_review" });
           navigate("library");

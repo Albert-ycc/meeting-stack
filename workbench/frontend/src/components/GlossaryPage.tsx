@@ -13,6 +13,7 @@ import type {
   Project,
 } from "../types";
 
+import { LegacyGroupsNote } from "./LegacyGroupsNote";
 import "./GlossaryPage.css";
 
 type SuggestionStatus = "pending" | "confirmed" | "rejected";
@@ -462,6 +463,13 @@ export function GlossaryPage({
 
       {activeTab === "terms" && (
         <>
+          <LegacyGroupsNote
+            apiClient={apiClient}
+            canWrite={canWrite}
+            onChanged={async () => {
+              await Promise.all([loadTerms(), loadScopes()]);
+            }}
+          />
           <div className="glossary-toolbar">
             <div aria-label="按归属筛选" className="glossary-chipbar" role="tablist">
               <button

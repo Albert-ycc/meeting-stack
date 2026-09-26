@@ -569,3 +569,41 @@
     overflow-x: auto;
   }
 }
+
+/* 冷启动提示：AI 建的空项目、同一文件夹挂在几个项目下 */
+
+.detail-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.6;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 12px;
+}
+
+.detail-hint > span:first-child {
+  flex: 1;
+  min-width: 220px;
+}
+
+.detail-hint__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.material-root-row__shared {
+  flex-basis: 100%;
+  order: 10;
+  padding: 6px 10px;
+  color: var(--warn);
+  font-size: 12px;
+  background: var(--warn-bg);
+  border-radius: 8px;
+}

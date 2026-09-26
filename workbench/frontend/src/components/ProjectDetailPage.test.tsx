@@ -438,3 +438,44 @@ describe("ProjectDetailPage 系统怎么认出这个项目", () => {
     expect(onOpenProject).toHaveBeenCalledWith("project-2");
   });
 });
+
+describe("ProjectDetailPage 冷启动提示", () => {
+  it("AI 建的、没挂文件夹的空项目给出挂文件夹、合并、删除", async () => {
+    const orphan = {
+      ...baseBoard,
+      origin: "ai" as const,
+      material_roots: [],
+      meeting_count: 0,
+      requirement_counts: { active: 0, done: 0, shelved: 0, all: 0 },
+    };
+    renderPage({
+      apiClient: client({ projectBoard: vi.fn().mockResolvedValue(orphan) }),
+      projects: [orphan, { id: "project-2", name: "数据中台", color: "#3f51b5" }],
+    });
+
+    const hint = await screen.findByRole("note");
+    expect(hint).toHaveTextContent("这个项目是 AI 自动建的，还没挂文件夹");
+    expect(within(hint).getByRole("button", { name: "挂上文件夹" })).toBeInTheDocument();
+    expect(within(hint).getByRole("button", { name: "删除" })).toBeInTheDocument();
+    await userEvent.click(within(hint).getByRole("button", { name: "合并到…" }));
+    expect(screen.getByRole("combobox", { name: "合并到哪个项目" })).toBeInTheDocument();
+  });
+
+  it("同一个文件夹还挂在别的项目下时说清卡片写给谁", async () => {
+    const shared = {
+      ...baseBoard,
+      material_roots: [
+        {
+          ...baseBoard.material_roots![0],
+          shared_with: [{ project_id: "project-0", project_name: "云图老项目" }],
+          cards_owner_id: "project-0",
+        },
+      ],
+    };
+    renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(shared) }) });
+
+    expect(await screen.findByText(/也挂在「云图老项目」下/)).toHaveTextContent(
+      "会议卡片只写给先挂上的「云图老项目」，不需要可以在这里移除",
+    );
+  });
+});

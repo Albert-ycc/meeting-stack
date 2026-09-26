@@ -714,6 +714,32 @@ export interface MaterialRoot {
   created_at: string;
   /** 挂载或替换时返回：和别的项目根目录互相嵌套的情况 */
   nested?: { path: string; project_id: string; project_name: string }[];
+  /** 老数据里同一个文件夹还挂在别的项目下 */
+  shared_with?: { project_id: string; project_name: string }[];
+  /** 会议卡片写给谁：同一文件夹挂在几个项目下时，只写给最早挂上的那个 */
+  cards_owner_id?: string;
+}
+
+/** 冷启动：还没挂文件夹的项目找到的同名（默认勾选）或相近（默认不勾）文件夹 */
+export interface ColdStartFolderItem {
+  project_id: string;
+  project_name: string;
+  path: string;
+  folder_name: string;
+  match: "exact" | "similar";
+}
+
+export interface ColdStartFoldersPayload {
+  items: ColdStartFolderItem[];
+  snoozed_until: string | null;
+}
+
+/** 词典里自动整理过的旧分组；project_id 为空表示归到了公共 */
+export interface LegacyGroupsSummary {
+  event_id: number;
+  at: string;
+  undone: boolean;
+  groups: { scope: string; count: number; project_id: string | null; project_name: string | null }[];
 }
 
 export interface MaterialDirEntry {

@@ -25,6 +25,8 @@ export interface ProjectFormModalProps {
   onMerged?: (target: Project) => void;
   /** 编辑模式：传了且项目下没有会议和需求时才出现「删除项目」 */
   onDeleted?: () => void;
+  /** 从项目页提示条点进来时，直接展开「合并到…」或「删除项目」 */
+  initialAction?: "merge" | "delete";
 }
 
 /** 项目颜色的 8 个可选色块，和样板数据里实际用到的项目色对齐。 */
@@ -58,6 +60,7 @@ export function ProjectFormModal({
   projects,
   onMerged,
   onDeleted,
+  initialAction,
 }: ProjectFormModalProps) {
   const isEdit = mode === "edit" && project !== null;
   const [name, setName] = useState(project?.name ?? "");
@@ -84,7 +87,7 @@ export function ProjectFormModal({
   const [created, setCreated] = useState<Project | null>(null);
 
   // —— 编辑：合并、删除 ——
-  const [danger, setDanger] = useState<"merge" | "delete" | null>(null);
+  const [danger, setDanger] = useState<"merge" | "delete" | null>(initialAction ?? null);
   const [mergeTarget, setMergeTarget] = useState("");
 
   const cardRef = useRef<HTMLDivElement>(null);
