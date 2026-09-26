@@ -77,6 +77,7 @@ from .attention import (
 
 from .gold_schema import GoldSchemaError, validate_gold_sample
 from .glossary import (
+    DuplicateTermError,
     GlossaryError,
     confirm_suggestion,
     create_term,
@@ -86,6 +87,7 @@ from .glossary import (
     list_scopes,
     list_suggestions,
     list_terms,
+    merge_into_term,
     read_snapshot,
     reject_suggestion,
     restore_suggestion,
@@ -218,6 +220,8 @@ class GlossaryTermInput(BaseModel):
     project_id: str | None = None
     # 项目词是否参与认项目（线索表）；只对挂了项目的词条有意义。
     is_cue: bool = True
+    # 也叫：不改写，只用于识别项目和搜索
+    also: list[str] = Field(default_factory=list)
 
 
 class GlossaryTermUpdate(BaseModel):
@@ -231,6 +235,17 @@ class GlossaryTermUpdate(BaseModel):
     # None 是合法目标值（解绑），必须靠 model_fields_set 区分「没传」与「传了 null」
     project_id: str | None = None
     is_cue: bool | None = None
+    also: list[str] | None = None
+
+
+class GlossaryMergeInput(BaseModel):
+    """重名时把新写的错写、叫法并进已有词条；make_public 时顺手改成公共词。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    aliases: list[str] = Field(default_factory=list)
+    also: list[str] = Field(default_factory=list)
+    make_public: bool = False
 
 
 class SuggestionConfirmInput(BaseModel):
@@ -3413,8 +3428,11 @@ def create_app(
                 confirmed=body.confirmed,
                 project_id=body.project_id or None,
                 is_cue=body.is_cue,
+                also=body.also,
                 snapshot_path=snapshot_path,
             )
+        except DuplicateTermError as error:
+            return JSONResponse({"detail": str(error), "conflict": error.conflict}, status_code=409)
         except GlossaryError as error:
             raise HTTPException(400, str(error)) from error
 
@@ -3449,14 +3467,34 @@ def create_app(
                 category=body.category,
                 confirmed=body.confirmed,
                 is_cue=body.is_cue,
+                also=body.also,
                 snapshot_path=snapshot_path,
                 **update_kwargs,
             )
+        except DuplicateTermError as error:
+            return JSONResponse({"detail": str(error), "conflict": error.conflict}, status_code=409)
         except GlossaryError as error:
             raise HTTPException(400, str(error)) from error
         if updated is None:
             raise HTTPException(404, "术语不存在")
         return updated
+
+    @app.post("/api/glossary/terms/{term_id}/merge")
+    def glossary_merge_term(term_id: str, body: GlossaryMergeInput):
+        try:
+            merged = merge_into_term(
+                db,
+                term_id,
+                aliases=body.aliases,
+                also=body.also,
+                make_public=body.make_public,
+                snapshot_path=snapshot_path,
+            )
+        except GlossaryError as error:
+            raise HTTPException(400, str(error)) from error
+        if merged is None:
+            raise HTTPException(404, "术语不存在")
+        return merged
 
     @app.delete("/api/glossary/terms/{term_id}")
     def glossary_delete_term(term_id: str):

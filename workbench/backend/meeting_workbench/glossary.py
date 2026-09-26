@@ -43,8 +43,22 @@ TARGET_AUTO = "auto"
 TARGET_PUBLIC = "public"
 
 
+# 「也叫」：不改写，只用于识别项目和搜索；规则与项目的叫法一致
+ALSO_MIN_LEN = 2
+ALSO_MAX_LEN = 20
+PUBLIC_SCOPE = "通用"
+
+
 class GlossaryError(ValueError):
     pass
+
+
+class DuplicateTermError(GlossaryError):
+    """正确写法已是另一条词条：带上那条词条在哪、有哪些错写，前端就地给「加到那条」。"""
+
+    def __init__(self, message: str, conflict: dict[str, Any]):
+        super().__init__(message)
+        self.conflict = conflict
 
 
 def validate_term_text(
@@ -77,6 +91,82 @@ def normalize_aliases(aliases: list[str]) -> list[str]:
             seen.add(alias)
             normalized.append(alias)
     return normalized
+
+
+def normalize_also(values: list[str], *, term: str | None = None) -> list[str]:
+    """「也叫」：2–20 字，不能纯数字，必须含中文或字母，不能是太常见的词。"""
+    from .project_profile import GENERIC_FOLDER_NAMES
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            raise GlossaryError("叫法必须是字符串")
+        text = unicodedata.normalize("NFKC", value).strip()
+        if (
+            not ALSO_MIN_LEN <= len(text) <= ALSO_MAX_LEN
+            or text.isdigit()
+            or not re.search(r"[A-Za-z一-鿿]", text)
+        ):
+            raise GlossaryError("叫法要 2–20 个字，不能是纯数字")
+        if text in GENERIC_FOLDER_NAMES:
+            raise GlossaryError(f"「{text}」太常见，不能当叫法")
+        if text == term or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _term_conflict(db: Database, term_row: dict[str, Any]) -> dict[str, Any]:
+    project = (
+        db.query_one("SELECT name FROM projects WHERE id=?", (term_row["project_id"],))
+        if term_row.get("project_id")
+        else None
+    )
+    return {
+        "term_id": term_row["id"],
+        "term": term_row["term"],
+        "project_id": term_row.get("project_id"),
+        "project_name": project["name"] if project else None,
+        "aliases": json.loads(term_row.get("aliases") or "[]"),
+        "also": json.loads(term_row.get("also") or "[]"),
+    }
+
+
+def _raise_duplicate(db: Database, term: str) -> None:
+    row = db.query_one("SELECT * FROM glossary_terms WHERE term=?", (term,))
+    if row is None:
+        return
+    conflict = _term_conflict(db, row)
+    where = f"{conflict['project_name']} 项目" if conflict["project_name"] else "公共 词典"
+    raise DuplicateTermError(f"「{term}」已在 {where}", conflict)
+
+
+def _check_names(
+    db: Database,
+    *,
+    term: str,
+    aliases: list[str],
+    also: list[str],
+    exclude_term_id: str | None,
+    check_others: bool = True,
+) -> None:
+    """错写和叫法不能打架：同一个词不能既要改掉又不改；也不能是别的词条的写法、错写或叫法。"""
+    both = set(aliases) & set(also)
+    if both:
+        raise GlossaryError(f"「{sorted(both)[0]}」不能既是错写又是叫法")
+    if term in aliases:
+        raise GlossaryError("错写不能和正确写法相同")
+    if not also or not check_others:
+        return
+    for row in db.query_all("SELECT id, term, aliases, also FROM glossary_terms"):
+        if row["id"] == exclude_term_id:
+            continue
+        taken = {row["term"], *json.loads(row["aliases"] or "[]"), *json.loads(row["also"] or "[]")}
+        for name in also:
+            if name in taken:
+                raise GlossaryError(f"「{name}」已经用在词条「{row['term']}」上了")
 
 
 # —— diff 反写：疑似错字更正提取 ——
@@ -708,44 +798,54 @@ def list_terms(
 
 
 def list_scopes(db: Database) -> list[dict[str, Any]]:
-    """筛选器分组：通用 → 项目（按名）→ 其他桶（按名），只列有术语的分组。"""
-    rows = db.query_all(
-        """SELECT g.scope, g.project_id, p.name AS project_name, p.color AS project_color,
-                  COUNT(*) AS count
-             FROM glossary_terms g
-             LEFT JOIN projects p ON p.id = g.project_id
-            GROUP BY g.scope, g.project_id"""
-    )
-    general: list[dict[str, Any]] = []
-    projects: list[dict[str, Any]] = []
-    buckets: list[dict[str, Any]] = []
-    for row in rows:
-        if row["project_id"]:
-            projects.append(
-                {
-                    "kind": "project",
-                    "key": row["project_id"],
-                    "label": row["project_name"],
-                    "color": row["project_color"],
-                    "count": row["count"],
-                }
-            )
-        elif row["scope"] == "通用":
-            general.append(
-                {"kind": "general", "key": "通用", "label": "通用", "color": None, "count": row["count"]}
-            )
-        else:
-            buckets.append(
-                {
-                    "kind": "bucket",
-                    "key": row["scope"],
-                    "label": row["scope"],
-                    "color": None,
-                    "count": row["count"],
-                }
-            )
+    """筛选器分组：公共 → 全部项目（含 0 个词的，按最近一场会的录音日期排）→ 旧分组桶。
+
+    旧分组桶只在库里还有没挂项目、也不是公共的词条时出现（整理旧分组被撤销的情况）。
+    """
+    counts = {
+        (row["project_id"], row["scope"]): row["count"]
+        for row in db.query_all(
+            """SELECT project_id, CASE WHEN project_id IS NULL THEN scope END AS scope,
+                      COUNT(*) AS count
+                 FROM glossary_terms GROUP BY 1, 2"""
+        )
+    }
+    general = [
+        {
+            "kind": "general",
+            "key": PUBLIC_SCOPE,
+            "label": "公共",
+            "color": None,
+            "count": counts.get((None, PUBLIC_SCOPE), 0),
+        }
+    ]
+    projects = [
+        {
+            "kind": "project",
+            "key": row["id"],
+            "label": row["name"],
+            "color": row["color"],
+            "count": counts.get((row["id"], None), 0),
+            "last_meeting_at": row["last_meeting_at"],
+        }
+        for row in db.query_all(
+            """SELECT p.id, p.name, p.color,
+                      MAX(COALESCE(m.recording_date, m.created_at)) AS last_meeting_at
+                 FROM projects p LEFT JOIN meetings m ON m.project_id = p.id
+                GROUP BY p.id"""
+        )
+    ]
+    # 最近开过会的在前；没开过会的按名字排在最后
     projects.sort(key=lambda item: item["label"])
-    buckets.sort(key=lambda item: item["label"])
+    projects.sort(key=lambda item: item["last_meeting_at"] or "", reverse=True)
+    buckets = sorted(
+        (
+            {"kind": "bucket", "key": scope, "label": scope, "color": None, "count": count}
+            for (project_id, scope), count in counts.items()
+            if project_id is None and scope != PUBLIC_SCOPE
+        ),
+        key=lambda item: item["label"],
+    )
     return general + projects + buckets
 
 
@@ -765,22 +865,26 @@ def create_term(
     confirmed: bool = True,
     project_id: str | None = None,
     is_cue: bool = True,
+    also: list[str] | None = None,
     snapshot_path: Path | str | None = None,
 ) -> dict[str, Any]:
     term = validate_term_text(term, what="术语")
     normalized_aliases = normalize_aliases(aliases or [])
+    normalized_also = normalize_also(also or [], term=term)
     if category not in CATEGORIES:
         raise GlossaryError(f"分类必须是 {CATEGORIES}")
     scope = str(scope or "").strip() or "通用"
-    if db.query_one("SELECT 1 AS present FROM glossary_terms WHERE term=?", (term,)):
-        raise GlossaryError("术语已存在")
+    _raise_duplicate(db, term)
+    _check_names(
+        db, term=term, aliases=normalized_aliases, also=normalized_also, exclude_term_id=None
+    )
     now = utc_now()
     term_id = f"gt-{uuid.uuid4().hex}"
     db.execute(
         """INSERT INTO glossary_terms
            (id, term, aliases, scope, category, source, confirmed, hit_count,
-            project_id, is_cue, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
+            project_id, is_cue, also, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)""",
         (
             term_id,
             term,
@@ -791,6 +895,7 @@ def create_term(
             int(bool(confirmed)),
             project_id,
             int(bool(is_cue)),
+            json.dumps(normalized_also, ensure_ascii=False),
             now,
             now,
         ),
@@ -816,6 +921,7 @@ def update_term(
     confirmed: bool | None = None,
     project_id: str | None = _UNSET,
     is_cue: bool | None = None,
+    also: list[str] | None = None,
     snapshot_path: Path | str | None = None,
 ) -> dict[str, Any] | None:
     existing = db.query_one("SELECT * FROM glossary_terms WHERE id=?", (term_id,))
@@ -824,17 +930,33 @@ def update_term(
     now = utc_now()
     fields = ["updated_at=?"]
     params: list[Any] = [now]
+    final_term = existing["term"]
     if term is not None:
         term = validate_term_text(term, what="术语")
-        if term != existing["term"] and db.query_one(
-            "SELECT 1 AS present FROM glossary_terms WHERE term=?", (term,)
-        ):
-            raise GlossaryError("术语已存在")
+        if term != existing["term"]:
+            _raise_duplicate(db, term)
         fields.append("term=?")
         params.append(term)
+        final_term = term
+    final_aliases = json.loads(existing["aliases"] or "[]")
     if aliases is not None:
+        final_aliases = normalize_aliases(aliases)
         fields.append("aliases=?")
-        params.append(json.dumps(normalize_aliases(aliases), ensure_ascii=False))
+        params.append(json.dumps(final_aliases, ensure_ascii=False))
+    final_also = json.loads(existing["also"] or "[]")
+    if also is not None:
+        final_also = normalize_also(also, term=final_term)
+        fields.append("also=?")
+        params.append(json.dumps(final_also, ensure_ascii=False))
+    if term is not None or aliases is not None or also is not None:
+        _check_names(
+            db,
+            term=final_term,
+            aliases=final_aliases,
+            also=final_also,
+            exclude_term_id=term_id,
+            check_others=also is not None,
+        )
     if scope is not None:
         scope = str(scope or "").strip() or "通用"
         fields.append("scope=?")
@@ -858,6 +980,40 @@ def update_term(
     if snapshot_path is not None:
         rewrite_snapshot(db, snapshot_path)
     return get_term(db, term_id)
+
+
+def merge_into_term(
+    db: Database,
+    term_id: str,
+    *,
+    aliases: list[str] | None = None,
+    also: list[str] | None = None,
+    make_public: bool = False,
+    snapshot_path: Path | str | None = None,
+) -> dict[str, Any] | None:
+    """重名时的合并：把新写的错写、叫法并进已有词条；make_public 时顺手改成公共词。"""
+    existing = db.query_one("SELECT * FROM glossary_terms WHERE id=?", (term_id,))
+    if not existing:
+        return None
+    merged_aliases = json.loads(existing["aliases"] or "[]")
+    for alias in normalize_aliases(aliases or []):
+        if alias != existing["term"] and alias not in merged_aliases:
+            merged_aliases.append(alias)
+    merged_also = json.loads(existing["also"] or "[]")
+    for name in normalize_also(also or [], term=existing["term"]):
+        if name not in merged_also and name not in merged_aliases:
+            merged_also.append(name)
+    kwargs: dict[str, Any] = {}
+    if make_public:
+        kwargs = {"project_id": None, "scope": PUBLIC_SCOPE}
+    return update_term(
+        db,
+        term_id,
+        aliases=merged_aliases,
+        also=merged_also,
+        snapshot_path=snapshot_path,
+        **kwargs,
+    )
 
 
 def delete_term(
@@ -887,21 +1043,29 @@ def _snapshot_sort_key(row: dict[str, Any]) -> tuple:
 def rewrite_snapshot(db: Database, snapshot_path: Path | str) -> None:
     """原子重写快照文件：临时文件 + os.replace，任何词典变更后调用。"""
     rows = db.query_all(
-        "SELECT term, aliases, scope, category FROM glossary_terms WHERE confirmed=1"
+        """SELECT term, aliases, scope, category, project_id, also
+             FROM glossary_terms WHERE confirmed=1"""
     )
     rows.sort(key=_snapshot_sort_key)
+    terms: list[dict[str, Any]] = []
+    for row in rows:
+        entry: dict[str, Any] = {
+            "term": row["term"],
+            "aliases": json.loads(row["aliases"] or "[]"),
+            "scope": row["scope"],
+            "category": row["category"],
+        }
+        # 可选字段，schema_version 保持 1：读取方遇到别的版本会整份当空（snapshot_export.py）
+        if row["project_id"]:
+            entry["project_id"] = row["project_id"]
+        also = json.loads(row["also"] or "[]")
+        if also:
+            entry["also"] = also
+        terms.append(entry)
     payload = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "updated_at": utc_now(),
-        "terms": [
-            {
-                "term": row["term"],
-                "aliases": json.loads(row["aliases"] or "[]"),
-                "scope": row["scope"],
-                "category": row["category"],
-            }
-            for row in rows
-        ],
+        "terms": terms,
     }
     path = Path(snapshot_path)
     path.parent.mkdir(parents=True, exist_ok=True)

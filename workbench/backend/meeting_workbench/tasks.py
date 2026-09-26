@@ -79,6 +79,8 @@ MAX_EXTRACTION_ATTEMPTS = 3
 MAX_TASKS_PER_EXTRACTION = 3
 # 确认/驳回后多久内允许撤销。
 UNDO_WINDOW_SECONDS = 600
+# 项目页直接列出的项目词上限，超过的只给总数
+BOARD_GLOSSARY_LIMIT = 50
 DIGEST_HOUR = 9
 DIGEST_MINUTE = 0
 
@@ -1231,17 +1233,28 @@ class TaskService:
 
     def project_board(self, project_id: str) -> dict[str, Any]:
         project = self._project_detail(project_id)
+        # 项目页直接列出项目词（新加的在前），超过 50 条只给前 50 条和总数
         glossary_rows = self.db.query_all(
-            """SELECT id, term, aliases, category FROM glossary_terms
-                WHERE project_id=? ORDER BY created_at LIMIT 8""",
+            f"""SELECT id, term, aliases, also, category, is_cue, source FROM glossary_terms
+                WHERE project_id=? ORDER BY created_at DESC, id DESC LIMIT {BOARD_GLOSSARY_LIMIT}""",
             (project_id,),
         )
         project["glossary_count"] = self.db.query_one(
             "SELECT COUNT(*) AS count FROM glossary_terms WHERE project_id=?", (project_id,)
         )["count"]
         project["glossary_terms"] = [
-            {**row, "aliases": json.loads(row["aliases"] or "[]")} for row in glossary_rows
+            {
+                **row,
+                "aliases": json.loads(row["aliases"] or "[]"),
+                "also": json.loads(row["also"] or "[]"),
+                "is_cue": bool(row["is_cue"]),
+            }
+            for row in glossary_rows
         ]
+        # 「另有 N 条公共词也会用于本项目」
+        project["public_glossary_count"] = self.db.query_one(
+            "SELECT COUNT(*) AS count FROM glossary_terms WHERE project_id IS NULL AND scope='通用'"
+        )["count"]
         meetings = self.db.query_all(
             """SELECT id, title, recording_date, duration_ms
                  FROM meetings

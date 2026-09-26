@@ -482,12 +482,18 @@ def test_glossary_scopes_api_groups_general_project_and_bucket(tmp_path):
 
     scopes = client.get("/api/glossary/scopes").json()
     assert scopes == [
-        {"kind": "general", "key": "通用", "label": "通用", "color": None, "count": 1},
-        {"kind": "project", "key": "proj-mdt", "label": "MDT", "color": "#2c8d83", "count": 1},
+        {"kind": "general", "key": "通用", "label": "公共", "color": None, "count": 1},
+        {
+            "kind": "project",
+            "key": "proj-mdt",
+            "label": "MDT",
+            "color": "#2c8d83",
+            "count": 1,
+            "last_meeting_at": None,
+        },
+        # 旧分组桶只在库里还有没挂项目、也不是公共的词条时出现
         {"kind": "bucket", "key": "启航", "label": "启航", "color": None, "count": 1},
     ]
-    # 没有术语的分组不出现（比如从没建过任何项目/桶的场景不会凭空多一行「通用」）
-    assert len(scopes) == 3
 
 
 def test_glossary_snapshot_api_empty_before_any_write(tmp_path):

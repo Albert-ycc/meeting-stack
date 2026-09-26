@@ -377,4 +377,7 @@ def test_record_returns_nothing_for_duplicates(tmp_path):
     first = record_corrections_from_diff(db, "成立树立协会。", "成立数理协会。", meeting_id=MEETING)
     assert len(first) == 1
     assert record_corrections_from_diff(db, "成立树立协会。", "成立数理协会。", meeting_id=MEETING) == []
-    assert list_scopes(db) == []
+    # 公共分组总在，哪怕一个词也没有
+    assert list_scopes(db) == [
+        {"kind": "general", "key": "通用", "label": "公共", "color": None, "count": 0}
+    ]
