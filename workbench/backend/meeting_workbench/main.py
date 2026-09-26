@@ -397,6 +397,12 @@ class TaskUpdateInput(BaseModel):
     assignee: str | None = None
 
 
+class RevealInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+
+
 class TaskStatusInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -3157,8 +3163,13 @@ def create_app(
                 raise HTTPException(404, str(error)) from error
         return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
+    def local_request(request: Request) -> bool:
+        return graph_module.is_local_request(
+            request.headers.get("host"), request.client.host if request.client else None
+        )
+
     @app.get("/api/graph/projects/{project_id}/roots")
-    def project_graph_roots(project_id: str):
+    def project_graph_roots(project_id: str, request: Request):
         with db.autocommit() as connection:
             try:
                 result = graph_module.project_roots(connection, roots_cache, project_id)
@@ -3166,7 +3177,68 @@ def create_app(
                 raise HTTPException(404, str(error)) from error
         if result["checking"]:
             roots_cache.refresh_in_background()
+        # 「在访达中显示」只在本机打开声档时出现
+        result["can_reveal"] = local_request(request)
         return result
+
+    @app.get("/api/graph/projects/{project_id}/fulltext")
+    def project_graph_fulltext(
+        project_id: str,
+        q: str | None = Query(default=None, min_length=1, max_length=40),
+        term: str | None = Query(default=None, max_length=64),
+    ):
+        with db.autocommit() as connection:
+            variants: list[str] = [q] if q else []
+            if term:
+                found = graph_module.term_variants(connection, term)
+                if found is None:
+                    raise HTTPException(404, "词条不存在")
+                variants.extend(found)
+            if not variants:
+                raise HTTPException(400, "要给查找的词")
+            try:
+                return graph_module.fulltext_counts(connection, project_id, variants)
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/graph/meetings/{meeting_id}")
+    def graph_meeting_focus(meeting_id: str):
+        with db.autocommit() as connection:
+            try:
+                return graph_module.meeting_focus(connection, meeting_id)
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/graph/expand")
+    def graph_expand(root: int, dir: str = Query(default="", max_length=1000)):
+        with db.autocommit() as connection:
+            try:
+                row = graph_module.material_root(connection, root)
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+        try:
+            return graph_module.expand_folder(row, dir)
+        except graph_module.GraphNotFound as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        except OSError as error:
+            raise HTTPException(503, "读不了这个文件夹，资料盘可能在休眠") from error
+
+    @app.post("/api/materials/reveal")
+    def reveal_material(body: RevealInput, request: Request):
+        if not local_request(request):
+            raise HTTPException(403, "只能在声档所在的这台电脑上打开访达")
+        with db.autocommit() as connection:
+            folders = graph_module.registered_folders(connection)
+        try:
+            target = graph_module.registered_target(folders, body.path)
+            graph_module.reveal(target)
+        except graph_module.GraphNotFound as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        return {"ok": True, "path": str(target)}
 
     @app.get("/api/graph/projects/{project_id}/collapsed")
     def project_graph_collapsed(
@@ -3196,10 +3268,14 @@ def create_app(
             )
 
     @app.get("/api/meetings/{meeting_id}/quotes")
-    def meeting_quotes_endpoint(meeting_id: str, at: list[int] = Query(default=[])):
+    def meeting_quotes_endpoint(
+        meeting_id: str,
+        at: list[int] = Query(default=[]),
+        span: Literal["short", "wide"] = "short",
+    ):
         with db.autocommit() as connection:
             try:
-                return graph_module.meeting_quotes(connection, meeting_id, at)
+                return graph_module.meeting_quotes(connection, meeting_id, at, wide=span == "wide")
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
 

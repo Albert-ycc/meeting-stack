@@ -14,17 +14,22 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import sys
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .attribution import ATTRIBUTION_STATE_SQL, LATEST_LINK_JOIN
 from .cards import BLOCKED, MISSING, STOP_REASONS, SYNCED, USER_EDITED
 from .db import GRAPH_REV_KEY
-from .materials import CARDS_DIR_NAME, ROOT_ONLINE, volume_state
+from .materials import CARDS_DIR_NAME, ROOT_ONLINE, assert_no_hidden_segment, volume_state
+from .project_linking import DRAFT_TASK_STATUSES
 from .notify import (
     _ANCHOR,
     _DECISION_SECTION,
@@ -70,6 +75,8 @@ VISIBLE_BUDGET = 40
 WEEKS = 12
 
 _OPEN = ", ".join(f"'{status}'" for status in OPEN_TASK_STATUSES)
+# 改归属时跟着会走的任务：没挂需求的，加上还没归项目的草稿（和 project_linking 的口径一致）
+_DRAFT = ", ".join(f"'{status}'" for status in DRAFT_TASK_STATUSES)
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 CUE_SOURCES = ("term", "folder")
 
@@ -371,6 +378,14 @@ def project_graph(
                          WHERE t.meeting_id = m.id AND t.status IN ({_OPEN})) AS open_tasks,
                        (SELECT COUNT(*) FROM tasks t
                          WHERE t.meeting_id = m.id AND t.status = 'pending_confirm') AS pending_tasks,
+                       (SELECT COUNT(*) FROM tasks t
+                         WHERE t.meeting_id = m.id AND t.requirement_id IS NULL
+                           AND (t.project_id = m.project_id
+                                OR (t.project_id IS NULL AND t.status IN ({_DRAFT}))))
+                           AS tasks_follow,
+                       (SELECT COUNT(*) FROM tasks t
+                         WHERE t.meeting_id = m.id AND t.requirement_id IS NOT NULL
+                           AND t.project_id = m.project_id) AS tasks_stay,
                        c.state AS card_state, c.reason AS card_reason, c.error AS card_error,
                        c.synced_at AS card_synced_at, c.project_id AS card_project_id,
                        (SELECT e.event_type FROM events e
@@ -467,9 +482,11 @@ def project_graph(
     cross_task_rows = [
         dict(row)
         for row in connection.execute(
-            f"""SELECT t.id, t.title, t.project_id, t.meeting_id,
+            f"""SELECT t.id, t.title, t.project_id, t.meeting_id, t.requirement_id,
+                       r.title AS requirement_title, r.project_id AS requirement_project_id,
                        m.project_id AS meeting_project_id, m.title AS meeting_title
                   FROM tasks t JOIN meetings m ON m.id = t.meeting_id
+                  LEFT JOIN requirements r ON r.id = t.requirement_id
                  WHERE t.status IN ({_OPEN}) AND t.project_id IS NOT NULL
                    AND m.project_id IS NOT NULL AND t.project_id != m.project_id
                    AND (t.project_id = ? OR m.project_id = ?)""",
@@ -483,7 +500,8 @@ def project_graph(
         dict(row)
         for row in connection.execute(
             """SELECT e.id, e.meeting_id, e.created_at, e.payload_json,
-                      m.title, m.project_id AS now_project_id
+                      m.title, m.project_id AS now_project_id,
+                      m.recording_date, m.created_at AS meeting_created_at
                  FROM events e JOIN meetings m ON m.id = e.meeting_id
                 WHERE e.event_type = 'meeting_project_reassigned' AND e.created_at >= ?
                   AND json_extract(e.payload_json, '$.from') = ?
@@ -779,6 +797,9 @@ def _assemble(
                 "attribution": {"label": label, "source": source},
                 "open_tasks": int(row["open_tasks"] or 0),
                 "pending_tasks": int(row["pending_tasks"] or 0),
+                # 拖到别的项目前的预览：几条任务跟着过去、几条挂在本项目需求上留下
+                "tasks_follow": int(row["tasks_follow"] or 0),
+                "tasks_stay": int(row["tasks_stay"] or 0),
                 "card": category,
                 "card_text": card_text,
                 "has_minutes": bool(row["has_minutes"]),
@@ -942,10 +963,14 @@ def _assemble(
         if any(item["meeting_id"] == row["meeting_id"] for item in moved_out):
             continue
         target = projects.get(payload.get("to") or "")
+        # 残影占着这场会原来的槽位，前端按日期算回去
+        moved_day = local_day(row["recording_date"], row["meeting_created_at"])
         moved_out.append(
             {
                 "meeting_id": row["meeting_id"],
                 "title": row["title"],
+                "date": moved_day.isoformat(),
+                "age_days": _age(moved_day, today),
                 "to_project_id": payload.get("to"),
                 "to_project_name": target["name"] if target else None,
                 "undo_until": (
@@ -1183,13 +1208,22 @@ def _beacons(
                 },
             )
     for task in cross_task_rows:
+        moves = {
+            "task_id": task["id"],
+            "meeting_id": task["meeting_id"],
+            "task_title": task["title"],
+            "task_project_id": task["project_id"],
+            "meeting_project_id": task["meeting_project_id"],
+            "requirement_id": task["requirement_id"],
+            "requirement_title": task["requirement_title"],
+            "requirement_project_id": task["requirement_project_id"],
+        }
         if task["meeting_project_id"] == project_id:
             add(
                 task["project_id"],
                 {
                     "kind": "task_elsewhere",
-                    "task_id": task["id"],
-                    "meeting_id": task["meeting_id"],
+                    **moves,
                     "text": (
                         f"会议「{task['meeting_title']}」的任务「{task['title']}」在"
                         f"{projects[task['project_id']]['name'] if task['project_id'] in projects else '别的项目'}"
@@ -1201,9 +1235,7 @@ def _beacons(
                 task["meeting_project_id"],
                 {
                     "kind": "task_from_elsewhere",
-                    "task_id": task["id"],
-                    "meeting_id": task["meeting_id"],
-                    "meeting_project_id": task["meeting_project_id"],
+                    **moves,
                     "text": (
                         f"任务「{task['title']}」来自"
                         f"{projects[task['meeting_project_id']]['name'] if task['meeting_project_id'] in projects else '别的项目'}"
@@ -1348,8 +1380,13 @@ def _anchor_ms(raw: str) -> int | None:
     return ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000
 
 
-def minutes_outline(markdown: str) -> dict[str, Any]:
-    """「一分钟摘要」和「定了什么」（带时间点）。老纪要没有决议段时明写，不说「没有决议」。"""
+def minutes_outline(
+    markdown: str, *, limit: int = _BRIEF_DECISIONS, chars: int = 90, detail: bool = False
+) -> dict[str, Any]:
+    """「一分钟摘要」和「定了什么」（带时间点）。老纪要没有决议段时明写，不说「没有决议」。
+
+    detail=True 时每条决议另带 detail：老六段式「### 决议 1 · …」下面的正文（展开一场会的面板用）。
+    """
     text = markdown or ""
     summary = ""
     body = _section_body(text, _SUMMARY_SECTION.search(text))
@@ -1377,17 +1414,25 @@ def minutes_outline(markdown: str) -> dict[str, Any]:
         else:
             raw_items = _LIST_ITEM.findall(decision_body)
     for raw in raw_items:
-        first_line = raw.strip().split("\n")[0]
-        item = _clean_item(first_line)
-        if not item or any(existing["text"] == item for existing in items):
+        lines = raw.strip().split("\n")
+        item = _clean_item(lines[0])
+        if not item or any(existing["text"] == _truncate(item, chars) for existing in items):
             continue
-        items.append({"text": _truncate(item, 90), "start_ms": _anchor_ms(raw)})
+        entry: dict[str, Any] = {"text": _truncate(item, chars), "start_ms": _anchor_ms(raw)}
+        if detail:
+            rest = " ".join(
+                cleaned
+                for cleaned in (_clean_item(line) for line in lines[1:])
+                if cleaned and not cleaned.startswith(("#", ">"))
+            )
+            entry["detail"] = _truncate(rest, 600)
+        items.append(entry)
     note = None
     if header is None:
         note = "这场纪要没有决议段"
     elif not items:
         note = "决议段是空的"
-    return {"summary": summary, "decisions": items[:_BRIEF_DECISIONS], "decisions_note": note}
+    return {"summary": summary, "decisions": items[:limit], "decisions_note": note}
 
 
 def meeting_brief(
@@ -1497,6 +1542,141 @@ def meeting_brief(
     }
 
 
+# ---------------------------------------------------------------------- 展开一场会（1h）
+
+
+FOCUS_TASK_STATUSES = ("pending_confirm", "confirmed", "in_progress", "done")
+_FOCUS_DECISIONS = 40
+_FOCUS_TASKS = 60
+
+
+def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
+    """展开一场会：录音长度、全部决议和任务（带时间点和全文）、关联的需求、同项目的前后场。
+
+    决议和任务按时间点对齐到录音条上，画几个由前端定（决议 4 个、任务 6 个，其余「+N」）；
+    这里给全量，面板里的「+N」直接列出来，不再请求。
+    """
+    meeting = connection.execute(
+        """SELECT m.id, m.title, m.recording_date, m.created_at, m.duration_ms, m.project_id,
+                  m.current_transcript_version_id AS transcript_version_id,
+                  p.name AS project_name, p.color AS project_color,
+                  mv.markdown AS minutes_markdown,
+                  (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
+                    ORDER BY CASE a.source_root
+                      WHEN 'archive' THEN 0 WHEN 'draft' THEN 1 WHEN 'staging' THEN 2 ELSE 3 END,
+                      a.role DESC, a.path LIMIT 1) AS audio_id
+             FROM meetings m
+             LEFT JOIN projects p ON p.id = m.project_id
+             LEFT JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
+            WHERE m.id = ?""",
+        (meeting_id,),
+    ).fetchone()
+    if meeting is None:
+        raise GraphNotFound("会议不存在")
+    meeting = dict(meeting)
+    day = local_day(meeting["recording_date"], meeting["created_at"])
+    outline = (
+        minutes_outline(
+            meeting["minutes_markdown"], limit=_FOCUS_DECISIONS, chars=400, detail=True
+        )
+        if meeting["minutes_markdown"]
+        else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"}
+    )
+
+    duration = meeting["duration_ms"]
+    if not duration and meeting["transcript_version_id"] is not None:
+        row = connection.execute(
+            "SELECT MAX(end_ms) AS end_ms FROM segments WHERE version_id = ?",
+            (meeting["transcript_version_id"],),
+        ).fetchone()
+        duration = row["end_ms"] if row and row["end_ms"] else None
+
+    placeholders = ", ".join("?" for _ in FOCUS_TASK_STATUSES)
+    tasks = [
+        dict(row)
+        for row in connection.execute(
+            f"""SELECT t.id, t.title, t.detail, t.status, t.anchor_ms, t.anchor_quote,
+                       t.project_id, t.requirement_id, r.title AS requirement_title
+                  FROM tasks t LEFT JOIN requirements r ON r.id = t.requirement_id
+                 WHERE t.meeting_id = ? AND t.status IN ({placeholders})
+                 ORDER BY t.anchor_ms IS NULL, t.anchor_ms, t.created_at, t.id""",
+            (meeting_id, *FOCUS_TASK_STATUSES),
+        ).fetchall()
+    ]
+    deliverables: dict[str, list[dict[str, Any]]] = {}
+    for row in connection.execute(
+        """SELECT d.task_id, d.kind, d.url, d.title FROM deliverables d
+             JOIN tasks t ON t.id = d.task_id
+            WHERE t.meeting_id = ? ORDER BY d.id""",
+        (meeting_id,),
+    ).fetchall():
+        deliverables.setdefault(row["task_id"], []).append(
+            {"kind": row["kind"], "url": row["url"], "title": row["title"]}
+        )
+    for task in tasks:
+        task["title"] = _truncate(task["title"] or "", 200)
+        task["detail"] = _truncate(task["detail"] or "", 600)
+        task["anchor_quote"] = _truncate(task["anchor_quote"] or "", 240)
+        task["deliverables"] = deliverables.get(task["id"], [])
+
+    requirements = [
+        dict(row)
+        for row in connection.execute(
+            """SELECT r.id, r.title, r.priority, r.status, r.project_id
+                 FROM requirement_meetings rm JOIN requirements r ON r.id = rm.requirement_id
+                WHERE rm.meeting_id = ? ORDER BY r.created_at""",
+            (meeting_id,),
+        ).fetchall()
+    ]
+
+    previous = following = None
+    if meeting["project_id"]:
+        siblings = sorted(
+            (
+                (
+                    local_day(row["recording_date"], row["created_at"]),
+                    row["created_at"] or "",
+                    row["id"],
+                    row["title"],
+                )
+                for row in connection.execute(
+                    """SELECT id, title, recording_date, created_at FROM meetings
+                        WHERE project_id = ?""",
+                    (meeting["project_id"],),
+                ).fetchall()
+            )
+        )
+        index = next(i for i, item in enumerate(siblings) if item[2] == meeting_id)
+
+        def brief_of(item: tuple[date, str, str, str]) -> dict[str, Any]:
+            return {"meeting_id": item[2], "title": item[3], "date": item[0].isoformat()}
+
+        previous = brief_of(siblings[index - 1]) if index > 0 else None
+        following = brief_of(siblings[index + 1]) if index + 1 < len(siblings) else None
+
+    return {
+        "meeting": {
+            "id": meeting["id"],
+            "title": meeting["title"],
+            "date": day.isoformat(),
+            "duration_ms": duration,
+            "project_id": meeting["project_id"],
+            "project_name": meeting["project_name"],
+            "project_color": meeting["project_color"],
+            "has_minutes": bool(meeting["minutes_markdown"]),
+            "audio_url": f"/api/media/{meeting['audio_id']}" if meeting["audio_id"] else None,
+        },
+        "summary": outline["summary"],
+        "decisions": outline["decisions"],
+        "decisions_note": outline["decisions_note"],
+        "tasks": tasks[:_FOCUS_TASKS],
+        "tasks_more": max(0, len(tasks) - _FOCUS_TASKS),
+        "requirements": requirements,
+        "previous": previous,
+        "next": following,
+    }
+
+
 def _segments_at(connection: Any, meeting_id: str, starts: list[int]) -> dict[int, str]:
     """锚点所在的那一段原话。锚点记的是命中段的开始时间。"""
     if not starts:
@@ -1517,8 +1697,18 @@ QUOTE_MAX_ANCHORS = 12
 QUOTE_MAX_SEGMENTS = 4
 
 
-def meeting_quotes(connection: Any, meeting_id: str, anchors: list[int]) -> dict[str, Any]:
-    """锚点前后的原话：每个锚点取和 [锚点 - 5 秒, 锚点 + 15 秒] 重叠的段，最多 4 段。"""
+QUOTE_WIDE_MS = 20_000
+QUOTE_WIDE_SEGMENTS = 10
+
+
+def meeting_quotes(
+    connection: Any, meeting_id: str, anchors: list[int], *, wide: bool = False
+) -> dict[str, Any]:
+    """锚点前后的原话：每个锚点取和 [锚点 - 5 秒, 锚点 + 15 秒] 重叠的段，最多 4 段。
+    wide=True（决议、任务面板）取前后各 20 秒，最多 10 段。"""
+    before = QUOTE_WIDE_MS if wide else QUOTE_BEFORE_MS
+    after = QUOTE_WIDE_MS if wide else QUOTE_AFTER_MS
+    max_segments = QUOTE_WIDE_SEGMENTS if wide else QUOTE_MAX_SEGMENTS
     meeting = connection.execute(
         "SELECT current_transcript_version_id AS version_id FROM meetings WHERE id = ?",
         (meeting_id,),
@@ -1529,8 +1719,8 @@ def meeting_quotes(connection: Any, meeting_id: str, anchors: list[int]) -> dict
     result: list[dict[str, Any]] = []
     if not anchors or meeting["version_id"] is None:
         return {"meeting_id": meeting_id, "quotes": [{"at": at, "segments": []} for at in anchors]}
-    low = anchors[0] - QUOTE_BEFORE_MS
-    high = anchors[-1] + QUOTE_AFTER_MS
+    low = anchors[0] - before
+    high = anchors[-1] + after
     rows = [
         dict(row)
         for row in connection.execute(
@@ -1554,8 +1744,8 @@ def meeting_quotes(connection: Any, meeting_id: str, anchors: list[int]) -> dict
                 "speaker": row["speaker_name"] or None,
             }
             for row in rows
-            if row["end_ms"] >= at - QUOTE_BEFORE_MS and row["start_ms"] <= at + QUOTE_AFTER_MS
-        ][:QUOTE_MAX_SEGMENTS]
+            if row["end_ms"] >= at - before and row["start_ms"] <= at + after
+        ][:max_segments]
         result.append({"at": at, "segments": segments})
     return {"meeting_id": meeting_id, "quotes": result}
 
@@ -1626,11 +1816,90 @@ def cue_term_detail(connection: Any, term_id: str) -> dict[str, Any] | None:
     }
 
 
+# ---------------------------------------------------------------------- 全文次数（1h）
+
+
+FULLTEXT_VARIANTS = 8
+FULLTEXT_MEETINGS = 60
+
+
+def term_variants(connection: Any, term_id: str) -> list[str] | None:
+    """词条的全部写法：正确写法、错写、也叫。词条不存在时返回 None。"""
+    row = connection.execute(
+        "SELECT term, aliases, also FROM glossary_terms WHERE id = ?", (term_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return [row["term"], *_json_list(row["aliases"]), *_json_list(row["also"])]
+
+
+def fulltext_counts(connection: Any, project_id: str, variants: list[str]) -> dict[str, Any]:
+    """一个词在这个项目所有会的逐字稿里出现几次、在哪几场（不受时间窗限制）。
+
+    线索词面板的「全文次数」和图上查找共用。几种写法一起数，长的先匹配，互相包含时不重复数
+    （「数据中台」里的「中台」不再算一次）；英文不分大小写。
+    """
+    if connection.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+        raise GraphNotFound("项目不存在")
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for value in variants:
+        text = str(value or "").strip()
+        if text and text.casefold() not in seen:
+            seen.add(text.casefold())
+            cleaned.append(text)
+    cleaned = sorted(cleaned, key=len, reverse=True)[:FULLTEXT_VARIANTS]
+    result: dict[str, Any] = {"variants": cleaned, "total": 0, "meeting_count": 0, "meetings": []}
+    if not cleaned:
+        return result
+    where = " OR ".join("instr(lower(s.text), ?) > 0" for _ in cleaned)
+    rows = connection.execute(
+        f"""SELECT m.id, m.title, m.recording_date, m.created_at, s.start_ms, s.text
+              FROM meetings m JOIN segments s ON s.version_id = m.current_transcript_version_id
+             WHERE m.project_id = ? AND ({where})
+             ORDER BY m.id, s.start_ms""",
+        (project_id, *(value.lower() for value in cleaned)),
+    ).fetchall()
+    pattern = re.compile("|".join(re.escape(value) for value in cleaned), re.IGNORECASE)
+    per_meeting: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        hits = len(pattern.findall(row["text"] or ""))
+        if not hits:
+            continue
+        bucket = per_meeting.get(row["id"])
+        if bucket is None:
+            day = local_day(row["recording_date"], row["created_at"])
+            bucket = per_meeting[row["id"]] = {
+                "meeting_id": row["id"],
+                "title": row["title"],
+                "date": day.isoformat(),
+                "count": 0,
+                "first_ms": int(row["start_ms"]),
+            }
+        bucket["count"] += hits
+    meetings = sorted(
+        per_meeting.values(), key=lambda item: (item["date"], item["meeting_id"]), reverse=True
+    )
+    result["total"] = sum(item["count"] for item in meetings)
+    result["meeting_count"] = len(meetings)
+    result["meetings"] = meetings[:FULLTEXT_MEETINGS]
+    return result
+
+
 # ---------------------------------------------------------------------- 资料盘缓存
 
 
 LOOSE_RECENT = 30
 ROOTS_REFRESH_SECONDS = 30.0
+
+
+RECENT_DIRS = 3
+_SHADOW_NAMES = ("Thumbs.db", "desktop.ini", "Icon\r")
+_SKIP_DIRS = ("node_modules", "__MACOSX")
+
+
+def _hidden(name: str) -> bool:
+    return name.startswith((".", "~$")) or name in _SHADOW_NAMES
 
 
 def _loose_files(path: Path) -> tuple[int, list[dict[str, Any]]]:
@@ -1640,7 +1909,7 @@ def _loose_files(path: Path) -> tuple[int, list[dict[str, Any]]]:
     with os.scandir(path) as iterator:
         for entry in iterator:
             name = entry.name
-            if name.startswith((".", "~$")) or name in ("Thumbs.db", "desktop.ini", "Icon\r"):
+            if _hidden(name):
                 continue
             try:
                 if not entry.is_file(follow_symlinks=False):
@@ -1661,16 +1930,46 @@ def _loose_files(path: Path) -> tuple[int, list[dict[str, Any]]]:
     return count, entries[:LOOSE_RECENT]
 
 
+def _recent_dirs(path: Path) -> list[dict[str, Any]]:
+    """根目录下一层里最近改过的几个子文件夹（按文件夹自己的修改时间，不往下数文件）。
+    声档会议记录/ 在图上另有节点，不算在内。"""
+    found: list[dict[str, Any]] = []
+    with os.scandir(path) as iterator:
+        for entry in iterator:
+            name = entry.name
+            if _hidden(name) or name in _SKIP_DIRS or name == CARDS_DIR_NAME:
+                continue
+            try:
+                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                    continue
+                stat = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            found.append(
+                {
+                    "name": name,
+                    "dir": name,
+                    "path": str(Path(entry.path)),
+                    "mtime": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+                }
+            )
+    found.sort(key=lambda item: (item["mtime"], item["name"]), reverse=True)
+    return found[:RECENT_DIRS]
+
+
 class RootsCache:
     """材料根目录和需求文件夹的在线状态、根目录散放文件。后台每 30 秒刷新一次；图接口只读。
 
     读盘可能卡住（外置盘休眠），所以刷新只在后台线程里跑，同一时间最多一个。
     """
 
-    def __init__(self, db: Any, *, state_of=volume_state, loose_of=_loose_files):
+    def __init__(
+        self, db: Any, *, state_of=volume_state, loose_of=_loose_files, dirs_of=_recent_dirs
+    ):
         self.db = db
         self._state_of = state_of
         self._loose_of = loose_of
+        self._dirs_of = dirs_of
         self._entries: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._running = threading.Lock()
@@ -1709,6 +2008,10 @@ class RootsCache:
                         entry["loose_count"], entry["loose_recent"] = self._loose_of(Path(path))
                     except OSError:
                         entry["loose_count"], entry["loose_recent"] = None, []
+                    try:
+                        entry["recent_dirs"] = self._dirs_of(Path(path))
+                    except OSError:
+                        entry["recent_dirs"] = []
                 fresh[path] = entry
             with self._lock:
                 self._entries = fresh
@@ -1761,6 +2064,7 @@ def project_roots(connection: Any, cache: RootsCache, project_id: str) -> dict[s
                 "state": entry["state"],
                 "loose_count": count,
                 "checked_at": entry.get("checked_at"),
+                "recent_dirs": entry.get("recent_dirs") or [],
             }
         )
     folder_items = []
@@ -1783,4 +2087,167 @@ def project_roots(connection: Any, cache: RootsCache, project_id: str) -> dict[s
         "folders": folder_items,
         "loose": {"count": loose_total, "recent": loose_recent[:LOOSE_RECENT]},
         "checking": checking,
+    }
+
+
+# ---------------------------------------------------------------------- 子文件夹和访达（1h）
+
+
+EXPAND_DIRS = 200
+EXPAND_FILES = 40
+
+
+def _inside(base: Path, relative: str) -> Path:
+    """把根目录下的相对路径解析成真实路径：不许绝对路径、..、隐藏目录和指向外面的符号链接。"""
+    relative = (relative or "").strip()
+    if relative.startswith(("/", "\\")) or Path(relative).is_absolute():
+        raise ValueError("路径超出材料文件夹")
+    parts = [part for part in relative.split("/") if part not in ("", ".")]
+    if any(part == ".." for part in parts):
+        raise ValueError("路径超出材料文件夹")
+    base_real = base.resolve()
+    target = (base_real / Path(*parts)).resolve() if parts else base_real
+    if target != base_real and not target.is_relative_to(base_real):
+        raise ValueError("路径超出材料文件夹")
+    assert_no_hidden_segment(target.relative_to(base_real))
+    return target
+
+
+def material_root(connection: Any, root_id: int) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT id, project_id, path FROM project_material_roots WHERE id = ?", (root_id,)
+    ).fetchone()
+    if row is None:
+        raise GraphNotFound("材料文件夹不存在")
+    return dict(row)
+
+
+def expand_folder(row: dict[str, Any], relative: str = "") -> dict[str, Any]:
+    """材料文件夹里的一层：子文件夹按修改时间排，文件取最近的 40 个。只读这一层，不递归。
+    读盘放在数据库连接之外（外置盘休眠时可能要等几秒）。"""
+    base = Path(row["path"])
+    state = volume_state(base)
+    head = {"root_id": row["id"], "project_id": row["project_id"], "root_path": row["path"]}
+    if state != ROOT_ONLINE:
+        return {
+            **head, "dir": "", "path": row["path"], "state": state, "crumbs": [],
+            "dirs": [], "dirs_total": 0, "files": [], "files_total": 0,
+        }
+    target = _inside(base, relative)
+    if not target.is_dir():
+        raise GraphNotFound("这个文件夹找不到了")
+    base_real = base.resolve()
+    at_root = target == base_real
+    dirs: list[dict[str, Any]] = []
+    files: list[dict[str, Any]] = []
+    with os.scandir(target) as iterator:
+        for entry in iterator:
+            name = entry.name
+            if _hidden(name) or name in _SKIP_DIRS or (at_root and name == CARDS_DIR_NAME):
+                continue
+            try:
+                if entry.is_symlink():
+                    continue
+                is_dir = entry.is_dir(follow_symlinks=False)
+                stat = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            item = {
+                "name": name,
+                "path": str(Path(entry.path)),
+                "mtime": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+            }
+            if is_dir:
+                item["dir"] = str(Path(entry.path).relative_to(base_real))
+                dirs.append(item)
+            elif entry.is_file(follow_symlinks=False):
+                item["size"] = stat.st_size
+                files.append(item)
+    dirs.sort(key=lambda item: (item["mtime"], item["name"]), reverse=True)
+    files.sort(key=lambda item: (item["mtime"], item["name"]), reverse=True)
+    relative_dir = "" if at_root else str(target.relative_to(base_real))
+    crumbs = []
+    if relative_dir:
+        parts = Path(relative_dir).parts
+        crumbs = [
+            {"name": part, "dir": str(Path(*parts[: index + 1]))}
+            for index, part in enumerate(parts)
+        ]
+    return {
+        **head,
+        "dir": relative_dir,
+        "path": str(target),
+        "state": state,
+        "crumbs": crumbs,
+        "dirs": dirs[:EXPAND_DIRS],
+        "dirs_total": len(dirs),
+        "files": files[:EXPAND_FILES],
+        "files_total": len(files),
+    }
+
+
+def registered_folders(connection: Any) -> list[str]:
+    return [
+        row["path"]
+        for row in connection.execute(
+            """SELECT path FROM project_material_roots
+               UNION SELECT path FROM requirement_folders"""
+        ).fetchall()
+    ]
+
+
+def registered_target(folders: list[str], raw: str) -> Path:
+    """「在访达中显示」只认已登记的材料文件夹（项目根目录、需求文件夹）里面的路径。"""
+    candidate = Path(raw or "")
+    if not candidate.is_absolute():
+        raise ValueError("路径必须是绝对路径")
+    try:
+        real = candidate.resolve(strict=False)
+    except OSError as error:
+        raise ValueError("路径无法解析") from error
+    for folder in folders:
+        try:
+            base = Path(folder).resolve()
+        except OSError:
+            continue
+        if real == base or real.is_relative_to(base):
+            assert_no_hidden_segment(real.relative_to(base))
+            if not real.exists():
+                raise GraphNotFound("这个文件或文件夹找不到了")
+            return real
+    raise ValueError("只能打开已挂到项目或需求上的材料文件夹里的东西")
+
+
+def reveal_command(path: Path) -> list[str] | None:
+    """在系统的文件管理器里选中这个路径。macOS 用 open -R；其他系统打开它所在的文件夹。"""
+    if sys.platform == "darwin":
+        return ["open", "-R", str(path)]
+    if sys.platform.startswith("win"):
+        return ["explorer", f"/select,{path}"]
+    opener = shutil.which("xdg-open")
+    if opener is None:
+        return None
+    return [opener, str(path if path.is_dir() else path.parent)]
+
+
+def reveal(path: Path, *, run: Any = None) -> None:
+    command = reveal_command(path)
+    if command is None:
+        raise ValueError("这台电脑上找不到能打开文件夹的程序")
+    try:
+        (run or subprocess.run)(command, check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("打开访达失败") from error
+
+
+def is_local_request(host_header: str | None, client_host: str | None) -> bool:
+    """本机打开声档：Host 是本机名、连接也来自本机。经 Tailscale 远程访问时 Host 是 *.ts.net，
+    这时「在访达中显示」会打开服务器那台机器的访达，所以不给。"""
+    if not host_header or not client_host:
+        return False
+    hostname = urlsplit(f"//{host_header}").hostname or ""
+    return hostname.lower() in {"127.0.0.1", "localhost", "::1"} and client_host in {
+        "127.0.0.1",
+        "::1",
+        "localhost",
     }
