@@ -35,7 +35,13 @@ from .uploads import UploadError, UploadManager
 from .waveform import WaveformError, WaveformPeaks
 from .quality import align_transcript_segments
 from .notify import LarkNotifier
-from .project_linking import ProjectLinker
+from .project_linking import (
+    RETURN_TO_AI,
+    ProjectLinker,
+    mark_meeting_unassigned,
+    reassign_meeting,
+    return_meeting_to_ai,
+)
 from . import materials, requirements
 from .tasks import TaskService
 from .hotwords import hotword_audit, normalize_hotwords
@@ -272,8 +278,9 @@ class TaskUpdateInput(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=200)
     detail: str | None = Field(default=None, max_length=8000)
+    # project_id / requirement_id 的 None 都是合法目标值（清空项目、移出需求），
+    # 必须靠 model_fields_set 区分「没传」与「传了 null」。
     project_id: str | None = Field(default=None, max_length=64)
-    # None 是合法目标值（移出需求），必须靠 model_fields_set 区分「没传」与「传了 null」。
     requirement_id: str | None = Field(default=None, max_length=64)
     assignee: str | None = None
 
@@ -729,18 +736,19 @@ def create_app(
                     # 草稿过期归档是旁路，失败只记账。
                     phase_errors.append(error)
                 try:
+                    await asyncio.to_thread(project_linker.link_pending)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 会议项目归属是旁路，失败只记账。排在任务抽取之前：抽出的任务直接
+                    # 继承会议的项目，飞书草稿卡片发出时归属也已经有了。
+                    phase_errors.append(error)
+                try:
                     await asyncio.to_thread(task_service.extract_pending)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
                     # 任务抽取是旁路，失败只记账，不影响扫描与纪要主链。
-                    phase_errors.append(error)
-                try:
-                    await asyncio.to_thread(project_linker.link_pending)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 会议项目归属是旁路，失败只记账，不影响扫描与任务抽取主链。
                     phase_errors.append(error)
                 try:
                     await asyncio.to_thread(task_service.run_notifications)
@@ -2522,6 +2530,7 @@ def create_app(
             raise HTTPException(404, "会议不存在")
         changed_fields = []
         event_payload: dict[str, Any] = {}
+        effects: dict[str, Any] | None = None
         with db.transaction() as connection:
             if body.title is not None:
                 normalized_title = body.title.strip()
@@ -2532,14 +2541,29 @@ def create_app(
                 changed_fields.append("title")
                 event_payload["title"] = normalized_title
             if body.project_id is not None:
-                if body.project_id:
-                    task_service._assert_project(connection, body.project_id)
-                # 人工改项目（含清空）一律标 manual，与自动归属（ai）互斥、永不覆盖。
-                connection.execute(
-                    "UPDATE meetings SET project_id=?, project_origin='manual', updated_at=? WHERE id=?",
-                    (body.project_id or None, utc_now(), meeting_id),
-                )
-                changed_fields.append("project_id")
+                # 只在归属真的变了时才写。"" = 不归项目（人工标的）；"__ai__" = 交还 AI 判断。
+                # 人工改项目一律标 manual，与自动归属（ai）互斥、永不覆盖。
+                current = connection.execute(
+                    "SELECT project_id, project_origin FROM meetings WHERE id=?", (meeting_id,)
+                ).fetchone()
+                target = None if body.project_id in ("", RETURN_TO_AI) else body.project_id
+                if target:
+                    task_service._assert_project(connection, target)
+                project_changed = target != current["project_id"]
+                if project_changed:
+                    effects = reassign_meeting(connection, meeting_id, target, actor="user")
+                if body.project_id == RETURN_TO_AI:
+                    if project_changed or current["project_origin"] is not None:
+                        return_meeting_to_ai(connection, meeting_id)
+                        project_changed = True
+                elif not target and not project_changed and current["project_origin"] != "manual":
+                    mark_meeting_unassigned(connection, meeting_id)
+                    project_changed = True
+                if project_changed:
+                    changed_fields.append("project_id")
+                    event_payload["project_from"] = current["project_id"]
+                    event_payload["project_to"] = target
+                    event_payload["origin_before"] = current["project_origin"]
             if body.tag_ids is not None:
                 for tag_id in body.tag_ids:
                     if connection.execute(
@@ -2579,7 +2603,14 @@ def create_app(
             actor="user",
             payload=event_payload,
         )
-        return _meeting_detail(db, meeting_id)
+        detail = _meeting_detail(db, meeting_id)
+        if effects is not None and detail is not None:
+            detail["effects"] = {
+                "tasks_moved": effects["tasks_moved"],
+                "tasks_left": effects["tasks_left"],
+                "undo_until": effects["undo_until"],
+            }
+        return detail
 
     @app.get("/api/projects")
     def projects():
@@ -2783,6 +2814,7 @@ def create_app(
                 title=body.title,
                 detail=body.detail,
                 project_id=body.project_id,
+                project_id_given="project_id" in body.model_fields_set,
                 assignee=body.assignee,
                 requirement_id=body.requirement_id,
                 requirement_id_given="requirement_id" in body.model_fields_set,
@@ -2810,6 +2842,7 @@ def create_app(
                 title=body.title,
                 detail=body.detail,
                 project_id=body.project_id,
+                project_id_given="project_id" in body.model_fields_set,
                 assignee=body.assignee,
                 requirement_id=body.requirement_id,
                 requirement_id_given="requirement_id" in body.model_fields_set,

@@ -24,12 +24,169 @@ from typing import Any
 from .config import Settings
 from .db import Database, utc_now
 from .semantic import SemanticIndex
-from .tasks import LLMUnavailable, call_llm, llm_ready, semantic_match_project
+from .tasks import (
+    UNDO_WINDOW_SECONDS,
+    LLMUnavailable,
+    call_llm,
+    llm_ready,
+    semantic_match_project,
+)
 
 logger = logging.getLogger("meeting_workbench.project_linking")
 
 MAX_LINK_ATTEMPTS = 3
 SYSTEM_PROMPT = "你是严谨的会议项目归属助手，只输出合规 JSON。"
+# 会议还没被人确认过的任务：跟着会议的项目走。已确认的任务可能是人工清空过项目，不动。
+DRAFT_TASK_STATUSES = ("pending_confirm", "expired")
+# 只有这两类纪要版本（新生成的纪要）会触发重判归属；手改错字、写回、冲突处理都不重问。
+RELINK_MINUTES_KINDS = ("generated", "stale_generated")
+# PATCH /api/meetings 里 project_id 的特殊取值：交还 AI 重新判断。
+RETURN_TO_AI = "__ai__"
+
+
+def _record_event(
+    connection: Any,
+    event_type: str,
+    *,
+    meeting_id: str,
+    actor: str,
+    payload: dict[str, Any],
+) -> str:
+    """与 Database.add_event 写法一致，但复用调用方事务；返回事件时间。"""
+    now = utc_now()
+    connection.execute(
+        """INSERT INTO events (meeting_id, job_id, event_type, actor, payload_json, created_at)
+           VALUES (?, NULL, ?, ?, ?, ?)""",
+        (meeting_id, event_type, actor, json.dumps(payload, ensure_ascii=False), now),
+    )
+    return now
+
+
+def adopt_draft_tasks(connection: Any, meeting_id: str, project_id: str) -> list[str]:
+    """会议刚有了项目：名下没挂项目也没挂需求的草稿/过期任务补上同一个项目。
+
+    自动归属和人工归属写入会议项目的同一事务里调用，保证任务与会议一起落地。
+    """
+    placeholders = ", ".join("?" for _ in DRAFT_TASK_STATUSES)
+    rows = connection.execute(
+        f"""SELECT id FROM tasks
+             WHERE meeting_id=? AND project_id IS NULL AND requirement_id IS NULL
+               AND status IN ({placeholders})
+             ORDER BY created_at, id""",
+        (meeting_id, *DRAFT_TASK_STATUSES),
+    ).fetchall()
+    task_ids = [row["id"] for row in rows]
+    if task_ids:
+        connection.execute(
+            f"""UPDATE tasks SET project_id=?, updated_at=?
+                 WHERE id IN ({', '.join('?' for _ in task_ids)})""",
+            (project_id, utc_now(), *task_ids),
+        )
+    return task_ids
+
+
+def reassign_meeting(
+    connection: Any, meeting_id: str, to_project_id: str | None, *, actor: str = "user"
+) -> dict[str, Any]:
+    """人工把会议改到另一个项目（to_project_id 为 None 表示「不归项目」）。
+
+    会议写 origin='manual'。一起移动的任务：没挂需求，且要么挂在旧项目上，要么是还没
+    项目的草稿/过期任务。挂在旧项目需求上的任务不动，作为 tasks_left 返回，由用户决定
+    要不要一起移。requirement_meetings 不自动解除。只写一条会议级事件
+    meeting_project_reassigned，不给每条任务写 task_events，否则刚确认的任务就撤销不了
+    （undo_review 要求确认事件是最后一条）。调用方负责开事务。
+    """
+    meeting = connection.execute(
+        "SELECT project_id, project_origin FROM meetings WHERE id=?", (meeting_id,)
+    ).fetchone()
+    if meeting is None:
+        raise RuntimeError("会议不存在")
+    from_project_id = meeting["project_id"]
+    origin_before = meeting["project_origin"]
+    now = utc_now()
+    connection.execute(
+        "UPDATE meetings SET project_id=?, project_origin='manual', updated_at=? WHERE id=?",
+        (to_project_id, now, meeting_id),
+    )
+    status_placeholders = ", ".join("?" for _ in DRAFT_TASK_STATUSES)
+    if from_project_id is None:
+        movable_sql = f"project_id IS NULL AND status IN ({status_placeholders})"
+        movable_params: tuple[Any, ...] = DRAFT_TASK_STATUSES
+    else:
+        movable_sql = (
+            f"(project_id=? OR (project_id IS NULL AND status IN ({status_placeholders})))"
+        )
+        movable_params = (from_project_id, *DRAFT_TASK_STATUSES)
+    moved = [
+        row["id"]
+        for row in connection.execute(
+            f"""SELECT id FROM tasks
+                 WHERE meeting_id=? AND requirement_id IS NULL AND {movable_sql}
+                 ORDER BY created_at, id""",
+            (meeting_id, *movable_params),
+        ).fetchall()
+    ]
+    if moved:
+        connection.execute(
+            f"""UPDATE tasks SET project_id=?, updated_at=?
+                 WHERE id IN ({', '.join('?' for _ in moved)})""",
+            (to_project_id, now, *moved),
+        )
+    left_rows = (
+        connection.execute(
+            """SELECT t.id, t.title, t.requirement_id, r.title AS requirement_title
+                 FROM tasks t JOIN requirements r ON r.id = t.requirement_id
+                WHERE t.meeting_id=? AND t.project_id=?
+                ORDER BY t.created_at, t.id""",
+            (meeting_id, from_project_id),
+        ).fetchall()
+        if from_project_id is not None
+        else []
+    )
+    tasks_left = [dict(row) for row in left_rows]
+    event_at = _record_event(
+        connection,
+        "meeting_project_reassigned",
+        meeting_id=meeting_id,
+        actor=actor,
+        payload={
+            "from": from_project_id,
+            "to": to_project_id,
+            "origin_before": origin_before,
+            "moved_task_ids": moved,
+            "left_task_ids": [row["id"] for row in tasks_left],
+        },
+    )
+    undo_until = datetime.fromisoformat(event_at) + timedelta(seconds=UNDO_WINDOW_SECONDS)
+    return {
+        "project_from": from_project_id,
+        "project_to": to_project_id,
+        "origin_before": origin_before,
+        "tasks_moved": len(moved),
+        "moved_task_ids": moved,
+        "tasks_left": tasks_left,
+        "undo_until": undo_until.isoformat(),
+    }
+
+
+def mark_meeting_unassigned(connection: Any, meeting_id: str, *, actor: str = "user") -> None:
+    """人工标「不归项目」，且会议当前本来就没有项目：只把来源写成 manual，不动任务。"""
+    connection.execute(
+        "UPDATE meetings SET project_origin='manual', updated_at=? WHERE id=?",
+        (utc_now(), meeting_id),
+    )
+
+
+def return_meeting_to_ai(connection: Any, meeting_id: str) -> None:
+    """交还 AI 判断：清空项目与来源，删掉这场会的归属批次，下一轮 seed 按当前纪要重判。
+
+    会议当前若还挂着项目，调用方应先走 reassign_meeting(..., None) 把任务一起移出。
+    """
+    connection.execute(
+        "UPDATE meetings SET project_id=NULL, project_origin=NULL, updated_at=? WHERE id=?",
+        (utc_now(), meeting_id),
+    )
+    connection.execute("DELETE FROM project_links WHERE meeting_id=?", (meeting_id,))
 
 
 class ProjectLinker:
@@ -51,21 +208,30 @@ class ProjectLinker:
         )
 
     def seed(self) -> int:
-        """为「有纪要且从未归属过」的会议建归类批次；唯一索引保证每份纪要只归一次。
+        """为「有纪要且还没归属」的会议建归类批次；唯一索引保证每份纪要只归一次。
+
+        只在两种情况下建批次：这场会还没有任何归属批次；或者当前纪要是新生成的
+        （generated / stale_generated）。手改错字存的草稿、写回的 published_edit、
+        冲突处理留下的版本都不会触发重问归属，免得每存一次纪要就多调一次 LLM。
 
         与 task_extractions 不同，这里不做「存量纪要跳过」的首跑豁免：本模块只写
         events 台账不发飞书通知，没有回填历史会议轰炸群消息的顾虑，直接照单全收。
         """
+        kind_placeholders = ", ".join("?" for _ in RELINK_MINUTES_KINDS)
         with self.db.transaction() as connection:
             cursor = connection.execute(
-                """INSERT OR IGNORE INTO project_links
+                f"""INSERT OR IGNORE INTO project_links
                        (meeting_id, minutes_version_id, created_at)
                    SELECT m.id, m.current_minutes_version_id, ?
                      FROM meetings m
-                    WHERE m.current_minutes_version_id IS NOT NULL
-                      AND m.project_id IS NULL
-                      AND m.project_origin IS NULL""",
-                (utc_now(),),
+                     JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
+                    WHERE m.project_id IS NULL
+                      AND m.project_origin IS NULL
+                      AND (
+                          NOT EXISTS (SELECT 1 FROM project_links pl WHERE pl.meeting_id = m.id)
+                          OR mv.kind IN ({kind_placeholders})
+                      )""",
+                (utc_now(), *RELINK_MINUTES_KINDS),
             )
             return max(0, cursor.rowcount)
 
@@ -189,6 +355,7 @@ class ProjectLinker:
                         WHERE id=?""",
                     (result["method"], result["project_id"], result["raw_response"], now, link["id"]),
                 )
+                adopted = adopt_draft_tasks(connection, meeting_id, result["project_id"])
                 project_row = connection.execute(
                     "SELECT name FROM projects WHERE id=?", (result["project_id"],)
                 ).fetchone()
@@ -202,6 +369,7 @@ class ProjectLinker:
                         "project_name": project_name,
                         "method": result["method"],
                         "reason": result["reason"],
+                        "adopted_task_ids": adopted,
                     },
                     connection=connection,
                 )
