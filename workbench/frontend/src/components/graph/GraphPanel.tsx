@@ -21,7 +21,7 @@ import { meetingDateLabel, type LaidNode, type StarLayout } from "./layout";
 import type { MiniPlayerHandle } from "./MiniPlayer";
 import "./GraphPanel.css";
 
-const TASK_STATUS: Record<string, string> = {
+export const TASK_STATUS: Record<string, string> = {
   pending_confirm: "待确认",
   confirmed: "已确认",
   in_progress: "进行中",
@@ -100,7 +100,9 @@ export type GraphNoticeUndo =
       kind: "task";
       taskId: string;
       title: string;
-      before: { project_id: string | null; requirement_id: string | null };
+      /** move：搬到别的项目或需求；edit：改了标题、说明。before 是改之前的原样 */
+      what: "move" | "edit";
+      before: { project_id?: string | null; requirement_id?: string | null; title?: string; detail?: string };
       until: string;
     };
 
@@ -130,13 +132,15 @@ export interface GraphPanelProps {
   onNotice: (message: string, undo?: GraphNoticeUndo, tone?: "success" | "warning" | "error") => void;
   onAnswerDoorstep: (meetingId: string, projectId: string | null) => void;
   onOpenMeeting: (meetingId: string) => void;
+  /** 会议面板底部的［展开这场会］ */
+  onExpandMeeting?: (meetingId: string) => void;
   onOpenRequirement: (requirementId: string) => void;
   onOpenGlossary: (projectId: string) => void;
   onOpenProject: (projectId: string) => void;
   onOpenAttributionReview?: () => void;
 }
 
-function PlayButton({
+export function PlayButton({
   audioUrl,
   atMs,
   label,
@@ -162,7 +166,7 @@ function PlayButton({
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+export function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="graph-panel__section">
       <h3>{title}</h3>
@@ -1093,6 +1097,16 @@ export function GraphPanel(props: GraphPanelProps) {
       <div className="graph-panel__body">{body}</div>
       {action && (
         <footer className="graph-panel__foot">
+          {node?.kind === "meeting" && props.onExpandMeeting && (
+            <button
+              className="ghost-button"
+              onClick={() => props.onExpandMeeting?.(node.data.meeting_id)}
+              title="在画布上展开：录音条、决议和任务按时间点对齐（也可以双击会议）"
+              type="button"
+            >
+              展开这场会
+            </button>
+          )}
           <button className="primary-button" onClick={action.run} type="button">
             {action.label}
           </button>

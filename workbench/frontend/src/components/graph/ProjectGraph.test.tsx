@@ -7,7 +7,7 @@ import type { ApiClient } from "../../api";
 import type { Project } from "../../types";
 import type { GraphPayload, GraphRootsPayload, MeetingBrief } from "./graphTypes";
 import { ProjectGraph, forgetGraphCache } from "./ProjectGraph";
-import { day, meeting, payload, requirement } from "./testFixtures";
+import { day, focusPayload, focusTask, meeting, payload, requirement } from "./testFixtures";
 
 const PROJECTS: Project[] = [
   { id: "p", name: "云图AI", color: "#2c8d83" },
@@ -383,5 +383,133 @@ describe("ProjectGraph 拖放、残影、⌘Z、N", () => {
     const center = await screen.findByRole("button", { name: "云图AI，3 场会" });
     fireEvent.keyDown(center, { key: "N" });
     expect(await screen.findByText("这张图上没有要你处理的了")).toBeInTheDocument();
+  });
+});
+
+function focusClient(overrides: Record<string, unknown> = {}) {
+  return makeClient(payload(), {
+    graphMeetingFocus: vi.fn(async (meetingId: string) =>
+      focusPayload({
+        meeting: { ...focusPayload().meeting, id: meetingId, title: `初审规则沟通 ${meetingId}` },
+        previous: meetingId === "a" ? { meeting_id: "b", title: "初审规则沟通 b", date: day(2) } : null,
+        next: meetingId === "b" ? { meeting_id: "a", title: "初审规则沟通 a", date: day(0) } : null,
+      }),
+    ),
+    meetingQuotes: vi.fn(async (meetingId: string, at: number[]) => ({
+      meeting_id: meetingId,
+      quotes: at.map((ms) => ({
+        at: ms,
+        segments: [
+          { segment_id: "s1", start_ms: ms - 15_000, end_ms: ms - 1_000, text: "先把旧口径停掉", speaker: null },
+          { segment_id: "s2", start_ms: ms - 1_000, end_ms: ms + 8_000, text: "初审规则就按新口径", speaker: "王工" },
+        ],
+      })),
+    })),
+    confirmTask: vi.fn(async () => ({})),
+    rejectTask: vi.fn(async () => ({})),
+    setTaskStatus: vi.fn(async () => ({})),
+    updateTask: vi.fn(async () => ({})),
+    ...overrides,
+  });
+}
+
+async function expandMeetingA(apiClient: ApiClient) {
+  render(<Harness apiClient={apiClient} />);
+  fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+  return screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+}
+
+describe("ProjectGraph 展开一场会", () => {
+  it("双击会议展开：决议在录音条上方、任务在下方，前后场贴边，Esc 回到关系图", async () => {
+    const apiClient = focusClient();
+    const view = await expandMeetingA(apiClient);
+    expect(apiClient.graphMeetingFocus).toHaveBeenCalledWith("a");
+    expect(await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" })).toBeInTheDocument();
+    expect(within(view).getByRole("button", { name: "任务（待确认）：任务 t1，05:00" })).toBeInTheDocument();
+    expect(within(view).getByRole("button", { name: "决议：没写时间的决议，没有时间点" })).toBeInTheDocument();
+    expect(within(view).getAllByText("没有时间点", { selector: ".meeting-focus__untimed" })).toHaveLength(2);
+    expect(within(view).getByRole("button", { name: "上一场：初审规则沟通 b" })).toBeInTheDocument();
+    expect(within(view).getByText("这是这个项目最近的会")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "初审规则沟通 a" })).toBeInTheDocument();
+
+    fireEvent.keyDown(view, { key: "ArrowLeft" });
+    expect(await screen.findByRole("application", { name: "展开的会：初审规则沟通 b" })).toBeInTheDocument();
+    expect(apiClient.graphMeetingFocus).toHaveBeenLastCalledWith("b");
+
+    fireEvent.keyDown(screen.getByRole("application", { name: "展开的会：初审规则沟通 b" }), { key: "Escape" });
+    expect(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ })).toBeInTheDocument();
+    expect(screen.queryByRole("application", { name: /^展开的会/ })).not.toBeInTheDocument();
+  });
+
+  it("会议面板里［展开这场会］也能展开；点决议看全文和前后 20 秒的原话", async () => {
+    const apiClient = focusClient();
+    render(<Harness apiClient={apiClient} initial="m:a" />);
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(within(panel).getByRole("button", { name: "展开这场会" }));
+    const view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+
+    await userEvent.click(await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" }));
+    const detail = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(detail).getByText("初审规则按新口径执行，旧口径下月停用")).toBeInTheDocument();
+    expect(within(detail).getByText("会上 01:00 说的")).toBeInTheDocument();
+    expect(apiClient.meetingQuotes).toHaveBeenCalledWith("a", [60_000], "wide");
+    const anchor = (await within(detail).findByText("初审规则就按新口径")).closest("li");
+    expect(anchor).toHaveClass("is-anchor");
+    expect(within(detail).getByText("王工：")).toBeInTheDocument();
+  });
+
+  it("任务：确认、编辑后 ⌘Z 改回原样、不要；「+N」列出全部", async () => {
+    const tasks = [
+      focusTask("t1", 300_000, { status: "pending_confirm" }),
+      ...Array.from({ length: 6 }, (_, index) =>
+        focusTask(`o${index}`, 10_000 * (index + 1), { status: index === 5 ? "done" : "confirmed" }),
+      ),
+    ];
+    const apiClient = focusClient({
+      graphMeetingFocus: vi.fn(async () => focusPayload({ tasks })),
+    });
+    const view = await expandMeetingA(apiClient);
+
+    await userEvent.click(await within(view).findByRole("button", { name: "任务（待确认）：任务 t1，05:00" }));
+    let detail = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(within(detail).getByRole("button", { name: "确认" }));
+    expect(apiClient.confirmTask).toHaveBeenCalledWith("t1");
+    expect(await screen.findByText("已确认「任务 t1」")).toBeInTheDocument();
+    await waitFor(() => expect(apiClient.graphMeetingFocus).toHaveBeenCalledTimes(2));
+
+    await userEvent.click(within(detail).getByRole("button", { name: "编辑…" }));
+    const input = within(detail).getByRole("textbox", { name: "任务标题" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "改过的标题");
+    await userEvent.click(within(detail).getByRole("button", { name: "保存" }));
+    expect(apiClient.updateTask).toHaveBeenCalledWith("t1", { title: "改过的标题", detail: "" });
+    expect(await screen.findByText("已改好「改过的标题」")).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.updateTask).toHaveBeenLastCalledWith("t1", { title: "任务 t1", detail: "" }));
+    expect(await screen.findByText("已撤销：任务改回「任务 t1」")).toBeInTheDocument();
+
+    detail = screen.getByRole("complementary", { name: "详情面板" });
+    await userEvent.click(within(detail).getByRole("button", { name: "不要" }));
+    expect(apiClient.rejectTask).toHaveBeenCalledWith("t1");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).not.toBeInTheDocument());
+
+    await userEvent.click(within(view).getByRole("button", { name: "+1 条任务" }));
+    detail = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(detail).getByRole("heading", { name: "全部任务（7 条）" })).toBeInTheDocument();
+    await userEvent.click(within(detail).getByRole("button", { name: "任务 o2" }));
+    expect(within(screen.getByRole("complementary", { name: "详情面板" })).getByRole("button", { name: "完成" })).toBeInTheDocument();
+  });
+
+  it("读不出来时说原因，可以重试或回去", async () => {
+    const graphMeetingFocus = vi.fn().mockRejectedValueOnce(new Error("会议不存在")).mockResolvedValue(focusPayload());
+    const apiClient = focusClient({ graphMeetingFocus });
+    render(<Harness apiClient={apiClient} />);
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("会议不存在");
+    expect(screen.getByRole("application", { name: "展开的会" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("button", { name: "决议：初审规则按新口径执行，01:00" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "← 回到关系图" }));
+    expect(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ })).toBeInTheDocument();
   });
 });

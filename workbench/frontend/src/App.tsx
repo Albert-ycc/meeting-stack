@@ -80,11 +80,22 @@ const VIEW_LABELS: Record<AppView, string> = {
   projectDetail: "项目详情",
 };
 
-/** 项目详情的地址：清单是 #projects/<id>，关系图是 #projects/<id>/graph，选中节点时带 ?sel=m:<id> */
-function projectGraphPath(projectId: string, graph: boolean, selection: string | null) {
+/**
+ * 项目详情的地址：清单是 #projects/<id>，关系图是 #projects/<id>/graph，选中节点时带 ?sel=m:<id>，
+ * 展开一场会时带 expand=<会议 id>
+ */
+function projectGraphPath(projectId: string, graph: boolean, selection: string | null, expanded: string | null = null) {
   if (!graph) return `#projects/${projectId}`;
-  if (!selection) return `#projects/${projectId}/graph`;
-  return `#projects/${projectId}/graph?sel=${selection.split(":").map(encodeURIComponent).join(":")}`;
+  const params = [
+    expanded ? `expand=${encodeURIComponent(expanded)}` : "",
+    selection ? `sel=${selection.split(":").map(encodeURIComponent).join(":")}` : "",
+  ].filter(Boolean);
+  return `#projects/${projectId}/graph${params.length ? `?${params.join("&")}` : ""}`;
+}
+
+function expandParam(hash: string) {
+  const query = hash.split("?")[1];
+  return query ? new URLSearchParams(query).get("expand") : null;
 }
 
 export default function App({ apiClient = api }: AppProps) {
@@ -110,6 +121,8 @@ export default function App({ apiClient = api }: AppProps) {
   const [projectMode, setProjectMode] = useState<ProjectViewMode>("list");
   const [graphSelection, setGraphSelection] = useState<string | null>(null);
   const [graphFocus, setGraphFocus] = useState<string | null>(null);
+  // 关系图里展开的那场会；展开压一条历史，后退键收起
+  const [graphExpanded, setGraphExpanded] = useState<string | null>(null);
   // 从关系图点进需求页时，面包屑写「关系图」，返回回到画布
   const [requirementFromGraph, setRequirementFromGraph] = useState<{ projectId: string; selection: string } | null>(null);
   const [openRequirementId, setOpenRequirementId] = useState<string | null>(null);
@@ -310,11 +323,13 @@ export default function App({ apiClient = api }: AppProps) {
       const projectId = decodeURIComponent(rawId ?? "");
       if (projectId) {
         const graphMode = sub === "graph";
-        const selection = graphMode ? new URLSearchParams(queryPart).get("sel") : null;
+        const params = new URLSearchParams(queryPart);
+        const selection = graphMode ? params.get("sel") : null;
         setOpenProjectId(projectId);
         setProjectMode(graphMode ? "graph" : "list");
         setGraphSelection(selection);
         setGraphFocus(selection);
+        setGraphExpanded(graphMode ? params.get("expand") : null);
         setView("projectDetail");
       }
     } else if (hash.startsWith("#requirements/")) {
@@ -561,6 +576,7 @@ export default function App({ apiClient = api }: AppProps) {
     setProjectMode(readProjectMode(projectId));
     setGraphSelection(null);
     setGraphFocus(null);
+    setGraphExpanded(null);
     performNavigate("projectDetail");
   };
 
@@ -570,7 +586,17 @@ export default function App({ apiClient = api }: AppProps) {
     setProjectMode("graph");
     setGraphSelection(selection);
     setGraphFocus(selection);
+    setGraphExpanded(null);
     performNavigate("projectDetail");
+  };
+
+  // 收起展开的会：展开是本应用压进来的那一条历史就后退，地址栏和视角一起回去
+  const changeGraphExpand = (meetingId: string | null) => {
+    if (meetingId === null && (window.history.state as { graphExpand?: boolean } | null)?.graphExpand) {
+      window.history.back();
+      return;
+    }
+    setGraphExpanded(meetingId);
   };
 
   const changeProjectMode = (mode: ProjectViewMode) => {
@@ -579,6 +605,7 @@ export default function App({ apiClient = api }: AppProps) {
     setProjectMode(mode);
     setGraphSelection(null);
     setGraphFocus(null);
+    setGraphExpanded(null);
   };
 
   const openRequirementDetail = (requirementId: string) => {
@@ -623,7 +650,7 @@ export default function App({ apiClient = api }: AppProps) {
           ? `#glossary/project/${glossaryProjectId}`
           : "#glossary"
         : view === "projectDetail" && openProjectId
-          ? projectGraphPath(openProjectId, !isMobile && projectMode === "graph", graphSelection)
+          ? projectGraphPath(openProjectId, !isMobile && projectMode === "graph", graphSelection, graphExpanded)
           : view === "requirementDetail" && openRequirementId
             ? `#requirements/${openRequirementId}`
             : view === "overview"
@@ -635,11 +662,26 @@ export default function App({ apiClient = api }: AppProps) {
     historySyncRef.current = false;
     if (window.location.hash === path) return;
     const url = window.location.pathname + window.location.search + path;
-    // 关系图里换选中只改地址栏的 ?sel=，不压历史，后退键直接回到上一个页面
+    // 关系图里换选中只改地址栏的 ?sel=，不压历史，后退键直接回到上一个页面；
+    // 展开一场会压一条（后退键收起），展开着换到前后场只替换
     const sameBase = window.location.hash.split("?")[0] === path.split("?")[0];
-    if (fromHistory || sameBase) history.replaceState(window.history.state, "", url);
+    const wasExpanded = expandParam(window.location.hash);
+    const nowExpanded = expandParam(path);
+    if (!fromHistory && sameBase && !wasExpanded && nowExpanded) {
+      history.pushState({ app: true, graphExpand: true }, "", url);
+    } else if (fromHistory || sameBase) history.replaceState(window.history.state, "", url);
     else history.pushState({ app: true }, "", url);
-  }, [glossaryProjectId, graphSelection, isMobile, openMeetingId, openProjectId, openRequirementId, projectMode, view]);
+  }, [
+    glossaryProjectId,
+    graphExpanded,
+    graphSelection,
+    isMobile,
+    openMeetingId,
+    openProjectId,
+    openRequirementId,
+    projectMode,
+    view,
+  ]);
 
   // 浏览器前进/后退或手动改地址栏 hash 时反向同步视图。
   useEffect(() => {
@@ -906,10 +948,12 @@ export default function App({ apiClient = api }: AppProps) {
       !isMobile && projectMode === "graph" ? (
         <ProjectGraph
           apiClient={apiClient}
+          expanded={graphExpanded}
           focus={graphFocus}
           key={openProjectId}
           modeToggle={<ViewModeToggle mode="graph" onChange={changeProjectMode} />}
           onBack={() => navigate("projects")}
+          onExpandChange={changeGraphExpand}
           onOpenAttributionReview={() => {
             applyFilters({ attribution: "needs_review" });
             navigate("library");

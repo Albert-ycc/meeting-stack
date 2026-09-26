@@ -1,11 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App, { MOBILE_READ_ONLY_QUERY } from "./App";
 import type { ApiClient } from "./api";
 import { forgetGraphCache } from "./components/graph/ProjectGraph";
-import { payload } from "./components/graph/testFixtures";
+import { focusPayload, payload } from "./components/graph/testFixtures";
 
 function desktopMatchMedia() {
   return {
@@ -169,5 +169,37 @@ describe("地址栏锚点直达", () => {
     await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 b/ }));
     await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?sel=m:b"));
     expect(window.history.length).toBe(depth);
+  });
+
+  it("展开一场会压一条历史、地址栏带 expand=；回到关系图就是后退，冷加载带 expand= 直接展开", async () => {
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#projects/p/graph?sel=m:a");
+    const graphMeetingFocus = vi.fn().mockResolvedValue(focusPayload());
+    const apiClient = client({
+      projects: vi.fn().mockResolvedValue([{ id: "p", name: "云图AI", color: "#2c8d83" }]),
+      graph: vi.fn().mockResolvedValue(payload()),
+      graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
+      meetingBrief: vi.fn().mockRejectedValue(new Error("简报读不到")),
+      graphMeetingFocus,
+    } as unknown as Partial<ApiClient>);
+    const { unmount } = render(<App apiClient={apiClient} />);
+
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    const depth = window.history.length;
+    await userEvent.click(within(panel).getByRole("button", { name: "展开这场会" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?expand=a&sel=m:a"));
+    expect(window.history.length).toBe(depth + 1);
+    expect(await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "← 回到关系图" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?sel=m:a"));
+    expect(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ })).toBeInTheDocument();
+    unmount();
+
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#projects/p/graph?expand=a");
+    render(<App apiClient={apiClient} />);
+    expect(await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" })).toBeInTheDocument();
+    expect(graphMeetingFocus).toHaveBeenLastCalledWith("a");
   });
 });

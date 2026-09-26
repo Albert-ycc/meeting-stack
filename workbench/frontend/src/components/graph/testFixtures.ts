@@ -1,5 +1,5 @@
 /* 关系图测试共用的夹具：一个小项目图，按需覆盖字段。只给测试用。 */
-import type { GraphMeeting, GraphPayload, GraphRequirement } from "./graphTypes";
+import type { FocusTask, GraphMeeting, GraphPayload, GraphRequirement, MeetingFocus } from "./graphTypes";
 
 export const TODAY = "2026-09-26";
 
@@ -70,6 +70,51 @@ export function payload(overrides: Partial<GraphPayload> = {}): GraphPayload {
     status: { ok: [], waiting: [], stopped: [], note: null },
     weekly: [],
     moved_out: [],
+    ...overrides,
+  };
+}
+
+/** 展开一场会（graphMeetingFocus）的夹具：10 分钟，一条有时间点的决议、一条没有；一条待确认任务、一条没时间点的 */
+export function focusTask(id: string, anchor: number | null, overrides: Partial<FocusTask> = {}): FocusTask {
+  return {
+    id,
+    title: `任务 ${id}`,
+    detail: "",
+    status: "confirmed",
+    anchor_ms: anchor,
+    anchor_quote: "",
+    project_id: "p",
+    requirement_id: null,
+    requirement_title: null,
+    deliverables: [],
+    ...overrides,
+  };
+}
+
+export function focusPayload(overrides: Partial<MeetingFocus> = {}): MeetingFocus {
+  return {
+    meeting: {
+      id: "a",
+      title: "初审规则沟通 a",
+      date: "2026-09-26",
+      duration_ms: 600_000,
+      project_id: "p",
+      project_name: "云图AI",
+      project_color: "#2c8d83",
+      has_minutes: true,
+      audio_url: "/api/media/1",
+    },
+    summary: "",
+    decisions: [
+      { text: "初审规则按新口径执行", start_ms: 60_000, detail: "初审规则按新口径执行，旧口径下月停用" },
+      { text: "没写时间的决议", start_ms: null },
+    ],
+    decisions_note: null,
+    tasks: [focusTask("t1", 300_000, { status: "pending_confirm" }), focusTask("t2", null)],
+    tasks_more: 0,
+    requirements: [],
+    previous: null,
+    next: null,
     ...overrides,
   };
 }

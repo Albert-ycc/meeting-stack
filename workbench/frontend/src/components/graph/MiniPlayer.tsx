@@ -98,5 +98,5 @@ export function useMiniPlayer() {
     </div>
   );
 
-  return { play, audioElement, node, clip, playing };
+  return { play, audioElement, node, clip, playing, positionMs };
 }

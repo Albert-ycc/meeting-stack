@@ -5,10 +5,12 @@ import { reassignNote } from "../../cardCopy";
 import type { Project } from "../../types";
 import { NoticeBanner, useNotice, type NoticeTone } from "../Notice";
 import { GraphCanvas, forgetGraphViews, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
+import { FocusPanel } from "./FocusPanel";
 import { GraphPanel, clearBriefCache, localUndoUntil, type GraphNoticeUndo } from "./GraphPanel";
-import type { GraphPayload, GraphRootsPayload, GraphWindow, StatusPhrase } from "./graphTypes";
+import type { GraphPayload, GraphRootsPayload, GraphWindow, MeetingFocus, StatusPhrase } from "./graphTypes";
 import { readGraphWindow, recordGraphOpen, writeGraphWindow } from "./graphPrefs";
 import { attentionOrder, layoutStarMap, type StarLayout } from "./layout";
+import { MeetingFocusView } from "./MeetingFocusView";
 import { useMiniPlayer } from "./MiniPlayer";
 import "./ProjectGraph.css";
 
@@ -162,6 +164,9 @@ export interface ProjectGraphProps {
   focus?: string | null;
   onSelectionChange: (id: string | null) => void;
   onBack: () => void;
+  /** 展开的那场会（地址栏 expand=<会议 id>）；不传 onExpandChange 时由画布自己记 */
+  expanded?: string | null;
+  onExpandChange?: (meetingId: string | null) => void;
   /** 标题行右侧的［关系图｜清单］ */
   modeToggle?: ReactNode;
   onOpenMeeting: (meetingId: string) => void;
@@ -180,6 +185,8 @@ export function ProjectGraph({
   focus: initialFocus = null,
   onSelectionChange,
   onBack,
+  expanded: expandedProp = null,
+  onExpandChange,
   modeToggle,
   onOpenMeeting,
   onOpenRequirement,
@@ -205,6 +212,13 @@ export function ProjectGraph({
   // 最近几步能撤销的操作，最新的在最后：提示条上的［撤销］和 ⌘Z 都撤最后一步
   const [undoStack, setUndoStack] = useState<GraphNoticeUndo[]>([]);
   const [clock, setClock] = useState(() => Date.now());
+  const [ownExpanded, setOwnExpanded] = useState<string | null>(null);
+  const expanded = onExpandChange ? expandedProp : ownExpanded;
+  // 展开时面板里选中的决议（dec:<下标>）、任务（task:<id>）或「+N」；不进地址栏
+  const [focusSel, setFocusSel] = useState<string | null>(null);
+  const [focusData, setFocusData] = useState<MeetingFocus | null>(null);
+  const [focusError, setFocusError] = useState("");
+  const [focusTick, setFocusTick] = useState(0);
   const { notice, setNotice, dismissNotice } = useNotice();
   const player = useMiniPlayer();
   const requestRef = useRef(0);
@@ -293,6 +307,37 @@ export function ProjectGraph({
     const timer = window.setTimeout(() => setClock(Date.now()), Math.min(wait, 2_147_000_000));
     return () => window.clearTimeout(timer);
   }, [liveGraph, undoStack]);
+
+  // 展开的会：换会、数据有变（version）、点重试时重读
+  useEffect(() => {
+    if (!expanded) {
+      setFocusData(null);
+      setFocusError("");
+      return;
+    }
+    let active = true;
+    setFocusError("");
+    apiClient
+      .graphMeetingFocus(expanded)
+      .then((payload) => active && setFocusData(payload))
+      .catch((reason: unknown) => active && setFocusError(errorText(reason, "这场会读取失败")));
+    return () => {
+      active = false;
+    };
+  }, [apiClient, expanded, focusTick, version]);
+
+  // 换了展开的会（包括浏览器前进、后退）时，上一场会里选中的决议、任务不再作数
+  useEffect(() => {
+    setFocusSel(null);
+  }, [expanded]);
+
+  const setExpanded = useCallback(
+    (meetingId: string | null) => {
+      if (onExpandChange) onExpandChange(meetingId);
+      else setOwnExpanded(meetingId);
+    },
+    [onExpandChange],
+  );
 
   const layout = useMemo(() => (liveGraph ? layoutStarMap(liveGraph) : null), [liveGraph]);
   const attention = useMemo(() => (layout ? attentionOrder(layout) : []), [layout]);
@@ -412,7 +457,11 @@ export function ProjectGraph({
       } else {
         await apiClient.updateTask(entry.taskId, entry.before);
         clearBriefCache();
-        showNotice(`已撤销：任务「${entry.title}」搬回去了`);
+        showNotice(
+          entry.what === "edit"
+            ? `已撤销：任务改回「${entry.before.title ?? entry.title}」`
+            : `已撤销：任务「${entry.title}」搬回去了`,
+        );
       }
       await changed();
     } catch (reason) {
@@ -529,8 +578,50 @@ export function ProjectGraph({
     [projectId, projects],
   );
 
+  const shownFocus = focusData && focusData.meeting.id === expanded ? focusData : null;
   let stage: ReactNode;
-  if (!graph || !layout) {
+  if (expanded) {
+    stage = (
+      <>
+        <MeetingFocusView
+          error={focusError}
+          focus={shownFocus}
+          meetingId={expanded}
+          onCollapse={() => setExpanded(null)}
+          onExpand={(meetingId) => setExpanded(meetingId)}
+          onOpenMeeting={onOpenMeeting}
+          onRetry={() => setFocusTick((tick) => tick + 1)}
+          onSelect={setFocusSel}
+          panelOpen={Boolean(focusSel && shownFocus)}
+          player={player}
+          selectedId={focusSel}
+          today={graph?.today ?? new Date().toISOString().slice(0, 10)}
+        />
+        {focusSel && shownFocus && (
+          <div
+            className="project-graph__panel"
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+              if ((event.target as HTMLElement).closest("select, input, textarea")) return;
+              setFocusSel(null);
+            }}
+          >
+            <FocusPanel
+              apiClient={apiClient}
+              focus={shownFocus}
+              onChanged={changed}
+              onClose={() => setFocusSel(null)}
+              onNotice={showNotice}
+              onOpenRequirement={onOpenRequirement}
+              onSelect={setFocusSel}
+              player={player}
+              selectedId={focusSel}
+            />
+          </div>
+        )}
+      </>
+    );
+  } else if (!graph || !layout) {
     stage = loadError ? (
       <div className="project-graph__empty" role="alert">
         <p>{loadError}</p>
@@ -555,6 +646,7 @@ export function ProjectGraph({
           layout={layout}
           onAnswerDoorstep={(answer) => void answerDoorstep(answer)}
           onDropMeeting={(meetingId, target) => void dropMeeting(meetingId, target)}
+          onExpandMeeting={setExpanded}
           onNothingToDo={() => showNotice("这张图上没有要你处理的了")}
           onOpenRequirement={onOpenRequirement}
           onSelect={select}
@@ -576,6 +668,7 @@ export function ProjectGraph({
               onBack={goBack}
               onChanged={changed}
               onClose={() => select(null)}
+              onExpandMeeting={setExpanded}
               onHighlight={(ids) => setHighlight(ids ? { key: "panel", ids: new Set(ids) } : null)}
               onNotice={showNotice}
               onOpenAttributionReview={onOpenAttributionReview}
@@ -639,26 +732,34 @@ export function ProjectGraph({
           </button>
         )}
       </NoticeBanner>
-      <div className={`project-graph__stage${resolved ? " has-panel" : ""}`}>{stage}</div>
-      <footer className="project-graph__bottom">
-        <div aria-label="时间窗" className="project-graph__windows" role="group">
-          {WINDOW_OPTIONS.map((option) => (
-            <button
-              aria-pressed={graph?.window.effective === option.key}
-              key={option.key}
-              onClick={() => chooseWindow(option.key)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        {graph?.window.widened_reason && <span className="project-graph__widened">{graph.window.widened_reason}</span>}
-        {graph && <WeeklyBars weekly={graph.weekly} />}
-        <span className="project-graph__legend">位置按类型和时间排：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新</span>
-        {loading && graph && !graphCache.has(key) && <span className="project-graph__sync">正在换时间窗…</span>}
-        {loadError && graph && <span className="project-graph__sync is-error">刷新失败：{loadError}</span>}
-      </footer>
+      <div className={`project-graph__stage${(expanded ? focusSel : resolved) ? " has-panel" : ""}`}>{stage}</div>
+      {expanded ? (
+        <footer className="project-graph__bottom">
+          <span className="project-graph__legend">
+            录音条上面是定了什么，下面是任务，按说到的时间对齐；点条上任意处从那里播，← → 换到上一场、下一场，Esc 回到关系图
+          </span>
+        </footer>
+      ) : (
+        <footer className="project-graph__bottom">
+          <div aria-label="时间窗" className="project-graph__windows" role="group">
+            {WINDOW_OPTIONS.map((option) => (
+              <button
+                aria-pressed={graph?.window.effective === option.key}
+                key={option.key}
+                onClick={() => chooseWindow(option.key)}
+                type="button"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {graph?.window.widened_reason && <span className="project-graph__widened">{graph.window.widened_reason}</span>}
+          {graph && <WeeklyBars weekly={graph.weekly} />}
+          <span className="project-graph__legend">位置按类型和时间排：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新</span>
+          {loading && graph && !graphCache.has(key) && <span className="project-graph__sync">正在换时间窗…</span>}
+          {loadError && graph && <span className="project-graph__sync is-error">刷新失败：{loadError}</span>}
+        </footer>
+      )}
     </section>
   );
 }
