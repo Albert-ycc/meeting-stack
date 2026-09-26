@@ -693,6 +693,7 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenRequirement={openRequirementDetail}
         onOpenTask={setTaskDrawerId}
         onProjectUpdated={refreshProjects}
+        onOpenProject={openProjectDetail}
         onProjectsChanged={refreshProjects}
         projectId={openProjectId}
         projects={projects}

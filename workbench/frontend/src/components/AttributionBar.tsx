@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { ApiError, type ApiClient } from "../api";
+import { similarProjectFrom, type ApiClient } from "../api";
 import type {
   AttributionEvidence,
   MeetingAttribution,
@@ -209,12 +209,9 @@ export function AttributionBar({
         onNotice(`已建成项目「${created.name}」，这场会归进去了`);
         await onProjectsChanged?.();
       } catch (error) {
-        const data = error instanceof ApiError ? (error.data as { suggestion?: SimilarProjectSuggestion }) : null;
-        if (error instanceof ApiError && error.status === 409 && data?.suggestion) {
-          setSuggestion(data.suggestion);
-          return;
-        }
-        throw error;
+        const similar = similarProjectFrom(error);
+        if (!similar) throw error;
+        setSuggestion(similar);
       }
     });
 

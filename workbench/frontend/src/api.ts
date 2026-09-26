@@ -43,6 +43,7 @@ import type {
   TranscriptComparisonPayload,
   MinutesEvidence,
   TranscriptVersion,
+  SimilarProjectSuggestion,
 } from "./types";
 
 let csrfToken = "";
@@ -92,6 +93,13 @@ export class ApiError extends Error {
     this.status = status;
     this.data = data;
   }
+}
+
+/** 新建项目撞上近似重名时，从 409 里取出已有的那个项目；别的错误返回 null。 */
+export function similarProjectFrom(error: unknown): SimilarProjectSuggestion | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const data = error.data as { suggestion?: SimilarProjectSuggestion } | null | undefined;
+  return data?.suggestion ?? null;
 }
 
 export type ConflictResolutionAction = "keep_draft" | "accept_external" | "discard_draft";

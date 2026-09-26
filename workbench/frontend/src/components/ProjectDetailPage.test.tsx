@@ -393,3 +393,48 @@ describe("ProjectDetailPage 编辑项目与新建需求", () => {
     expect(screen.queryByRole("button", { name: "＋ 添加目录" })).not.toBeInTheDocument();
   });
 });
+
+describe("ProjectDetailPage 系统怎么认出这个项目", () => {
+  const profile = {
+    also_names: [{ name: "云图", source: "manual" as const }],
+    folder_names: ["云图科研用药"],
+    cue_terms: { total: 4, cue: 2 },
+    auto_30d: 9,
+    corrected_30d: 1,
+  };
+
+  it("board 带 profile 时显示识别卡，加叫法后重读项目", async () => {
+    const projectBoard = vi.fn().mockResolvedValue({ ...baseBoard, profile });
+    const updateProject = vi.fn().mockResolvedValue(baseBoard);
+    const onProjectsChanged = vi.fn();
+    renderPage({ apiClient: client({ projectBoard, updateProject }), onProjectsChanged });
+
+    const card = await screen.findByRole("region", { name: "系统怎么认出这个项目" });
+    expect(card).toHaveTextContent("自动归入 9 场、你改走 1 场");
+    await userEvent.click(within(card).getByRole("button", { name: "＋ 添加叫法" }));
+    await userEvent.type(within(card).getByRole("textbox", { name: "新的叫法" }), "云图EDC{Enter}");
+
+    expect(updateProject).toHaveBeenCalledWith("project-1", { also_names: ["云图", "云图EDC"] });
+    await waitFor(() => expect(projectBoard).toHaveBeenCalledTimes(2));
+    expect(onProjectsChanged).toHaveBeenCalled();
+  });
+
+  it("编辑弹窗里合并到别的项目后跳到目标项目", async () => {
+    const target = { id: "project-2", name: "数据中台", color: "#3f51b5" };
+    const mergeProject = vi.fn().mockResolvedValue(target);
+    const onOpenProject = vi.fn();
+    renderPage({
+      apiClient: client({ mergeProject }),
+      onOpenProject,
+      projects: [{ ...baseBoard }, target],
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑项目" }));
+    await userEvent.click(screen.getByRole("button", { name: "合并到…" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "合并到哪个项目" }), "project-2");
+    await userEvent.click(screen.getByRole("button", { name: "确认合并" }));
+
+    expect(mergeProject).toHaveBeenCalledWith("project-1", "project-2");
+    expect(onOpenProject).toHaveBeenCalledWith("project-2");
+  });
+});

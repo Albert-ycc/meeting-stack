@@ -18,6 +18,7 @@ import { FolderIcon } from "./FolderIcon";
 import { MaterialRootPickerModal } from "./MaterialRootPickerModal";
 import { Pagination } from "./Pagination";
 import { ProjectFormModal } from "./ProjectFormModal";
+import { ProjectRecognitionCard } from "./ProjectRecognitionCard";
 import { PriorityBadge, RequirementStatusBadge } from "./RequirementBadges";
 // FE-1 负责的需求弹窗；写这个文件时它可能还不存在，tsc 报「模块不存在」属于预期（简报第 5 节已钉死 props）。
 import { RequirementModal } from "./RequirementModal";
@@ -40,6 +41,8 @@ interface ProjectDetailPageProps {
   /** 挂根目录 / 选材料文件夹只在桌面端出现 */
   canPickFolders: boolean;
   onProjectsChanged?: () => void | Promise<void>;
+  /** 合并后跳到目标项目 */
+  onOpenProject?: (projectId: string) => void;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -84,6 +87,7 @@ export function ProjectDetailPage({
   onOpenRequirement,
   canPickFolders,
   onProjectsChanged,
+  onOpenProject,
 }: ProjectDetailPageProps) {
   const [board, setBoard] = useState<ProjectBoard | null>(null);
   const [boardState, setBoardState] = useState<LoadState>("loading");
@@ -385,6 +389,20 @@ export function ProjectDetailPage({
             )}
           </section>
 
+          {board.profile && (
+            <ProjectRecognitionCard
+              apiClient={apiClient}
+              canWrite={canWrite}
+              onChanged={async () => {
+                await loadBoard();
+                await onProjectsChanged?.();
+              }}
+              profile={board.profile}
+              projectId={projectId}
+              projectName={board.name}
+            />
+          )}
+
           <section className="detail-card">
             <header className="detail-card__head">
               <h2>需求</h2>
@@ -559,7 +577,17 @@ export function ProjectDetailPage({
             onProjectUpdated?.();
             void onProjectsChanged?.();
           }}
+          onDeleted={() => {
+            void onProjectsChanged?.();
+            onBack();
+          }}
+          onMerged={(target) => {
+            void onProjectsChanged?.();
+            if (onOpenProject) onOpenProject(target.id);
+            else onBack();
+          }}
           project={board}
+          projects={projects}
         />
       )}
 

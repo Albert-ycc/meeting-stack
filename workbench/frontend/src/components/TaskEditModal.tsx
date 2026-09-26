@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
+import { similarProjectFrom } from "../api";
 import type { ApiClient } from "../api";
-import type { Project, RequirementSummary, Task, TaskAssignee } from "../types";
+import type { Project, RequirementSummary, SimilarProjectSuggestion, Task, TaskAssignee } from "../types";
 import { isComposingKeydown } from "../keyboard";
 import { PriorityBadge } from "./RequirementBadges";
+import { SimilarProjectQuestion } from "./SimilarProjectQuestion";
 import "./TaskEditModal.css";
 
 export interface TaskEditModalProps {
@@ -50,6 +52,8 @@ export function TaskEditModal({
   const [creatingProject, setCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [creatingProjectBusy, setCreatingProjectBusy] = useState(false);
+  /** 原地新建项目撞上近似重名时，问「已有『X』，用它？」 */
+  const [projectSuggestion, setProjectSuggestion] = useState<SimilarProjectSuggestion | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [error, setError] = useState("");
@@ -143,20 +147,29 @@ export function TaskEditModal({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  const createProject = async () => {
+  const takeProject = (id: string) => {
+    setProjectId(id);
+    setProjectTouched(true);
+    setRequirementId(null); // 换了项目，旧需求不再适用；新建的项目也还没有需求
+    setNewProjectName("");
+    setProjectSuggestion(null);
+    closeMenus();
+  };
+
+  const createProject = async (force = false) => {
     const name = newProjectName.trim();
     if (!name || creatingProjectBusy) return;
     setCreatingProjectBusy(true);
     setError("");
     try {
-      const created = await apiClient.createProject(name, DEFAULT_PROJECT_COLOR);
-      setProjectId(created.id);
-      setProjectTouched(true);
-      setRequirementId(null); // 新建的项目还没有需求
-      setNewProjectName("");
-      closeMenus();
+      const created = force
+        ? await apiClient.createProjectWith({ name, color: DEFAULT_PROJECT_COLOR, force: true })
+        : await apiClient.createProject(name, DEFAULT_PROJECT_COLOR);
+      takeProject(created.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "项目创建失败，请稍后重试");
+      const similar = similarProjectFrom(err);
+      if (similar) setProjectSuggestion(similar);
+      else setError(err instanceof Error ? err.message : "项目创建失败，请稍后重试");
     } finally {
       setCreatingProjectBusy(false);
     }
@@ -302,7 +315,10 @@ export function TaskEditModal({
                     <input
                       aria-label="新项目名称"
                       autoFocus
-                      onChange={(event) => setNewProjectName(event.target.value)}
+                      onChange={(event) => {
+                        setNewProjectName(event.target.value);
+                        setProjectSuggestion(null);
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" && !isComposingKeydown(event)) {
                           event.preventDefault();
@@ -325,12 +341,21 @@ export function TaskEditModal({
                       disabled={creatingProjectBusy}
                       onClick={() => {
                         setNewProjectName("");
+                        setProjectSuggestion(null);
                         setCreatingProject(false);
                       }}
                       type="button"
                     >
                       取消
                     </button>
+                    {projectSuggestion && (
+                      <SimilarProjectQuestion
+                        disabled={creatingProjectBusy}
+                        onForce={() => void createProject(true)}
+                        onUse={takeProject}
+                        suggestion={projectSuggestion}
+                      />
+                    )}
                   </div>
                 ) : (
                   <button
