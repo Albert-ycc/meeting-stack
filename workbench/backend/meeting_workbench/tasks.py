@@ -1096,6 +1096,8 @@ class TaskService:
                 with contextlib.suppress(OSError):
                     Path(created_folder).rmdir()
             raise
+        # 新项目的名字和文件夹要进快照，relay 才认得出它的会。
+        rewrite_snapshot(self.db, self.settings.data_dir / "glossary-snapshot.json")
         detail = self._project_detail(project_id)
         detail["meetings_assigned"] = assigned
         detail["needs_review_meeting_ids"] = flagged
@@ -1169,7 +1171,8 @@ class TaskService:
                 # 按差异增删：列表没变时什么都不写，也不重新校验已挂的根目录（盘没插时
                 # 改项目名、颜色不该失败）。
                 replace_material_roots(connection, self.settings, project_id, material_roots or [])
-        if renamed_to is not None:
+        if renamed_to is not None or also_names_given or material_roots_given:
+            # 名字、也叫、文件夹都是 relay 认项目的线索（快照 projects）。
             rewrite_snapshot(self.db, self.settings.data_dir / "glossary-snapshot.json")
         return self._project_detail(project_id)
 

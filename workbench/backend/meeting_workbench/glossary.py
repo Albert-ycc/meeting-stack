@@ -1078,8 +1078,32 @@ def _snapshot_sort_key(row: dict[str, Any]) -> tuple:
     return (0 if is_person else 1, 0 if has_cjk else 1, term)
 
 
+def _snapshot_projects(db: Database) -> list[dict[str, Any]]:
+    """各项目的名字、也叫和识别线索，relay 没有项目提示时靠它在逐字稿里认项目
+    （glossary/injection.py）。线索和工作台认项目用的是同一张表，两边判得一致。"""
+    from .project_profile import also_name_list, build_cue_table
+
+    with db.autocommit() as connection:
+        table = build_cue_table(connection)
+        rows = connection.execute(
+            "SELECT id, name, also_names FROM projects ORDER BY name, id"
+        ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "also": also_name_list(row["also_names"]),
+            "cues": [{"text": cue.text, "kind": cue.kind} for cue in table.get(row["id"], [])],
+        }
+        for row in rows
+    ]
+
+
 def rewrite_snapshot(db: Database, snapshot_path: Path | str) -> None:
-    """原子重写快照文件：临时文件 + os.replace，任何词典变更后调用。"""
+    """原子重写快照文件：临时文件 + os.replace，词典或项目（名字、也叫、文件夹）变更后调用。
+
+    每个词条的 project_id、also 和顶层 projects 都是可选字段，schema_version 保持 1。
+    """
     rows = db.query_all(
         """SELECT term, aliases, scope, category, project_id, also
              FROM glossary_terms WHERE confirmed=1"""
@@ -1104,6 +1128,7 @@ def rewrite_snapshot(db: Database, snapshot_path: Path | str) -> None:
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "updated_at": utc_now(),
         "terms": terms,
+        "projects": _snapshot_projects(db),
     }
     path = Path(snapshot_path)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -848,7 +848,11 @@ def create_app(
                     # 草稿过期归档是旁路，失败只记账。
                     phase_errors.append(error)
                 try:
-                    await asyncio.to_thread(project_linker.link_pending)
+                    link_stats = await asyncio.to_thread(project_linker.link_pending)
+                    if isinstance(link_stats, dict) and link_stats.get("linked"):
+                        # 文件夹名、项目词算不算线索要看它们在别的项目的会里出现过没有，
+                        # 归属变了就重写快照，relay 认项目跟着变。
+                        await asyncio.to_thread(rewrite_snapshot, db, snapshot_path)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -992,6 +996,11 @@ def create_app(
             record_scanner_phase_errors(startup_phase_errors, 0)
         else:
             record_scanner_phase_errors(startup_phase_errors, 0)
+        try:
+            # 升级后第一次启动也要把项目线索写进快照（旧快照只有词条）。
+            await asyncio.to_thread(rewrite_snapshot, db, snapshot_path)
+        except Exception:
+            logger.exception("启动时重写词典快照失败")
         if settings.semantic_enabled:
             try:
                 await asyncio.to_thread(semantic.warm)
@@ -2931,8 +2940,7 @@ def create_app(
     def delete_project(project_id: str):
         with db.transaction() as connection:
             result = delete_empty_project(connection, project_id)
-        if result["terms_to_public"]:
-            rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+        rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
         return {"ok": True, **result}
 
     @app.post("/api/projects/{project_id}/merge-into/{target_id}")
