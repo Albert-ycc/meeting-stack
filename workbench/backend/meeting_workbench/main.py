@@ -2770,6 +2770,14 @@ def create_app(
                 detail["effects"]["card"] = card_effect
         return detail
 
+    @app.get("/api/meetings/{meeting_id}/card")
+    def meeting_card(meeting_id: str):
+        """只读卡片状态：归属条上确认、开启写卡片之后刷新状态条，不用重读整场会。"""
+        with db.autocommit() as connection:
+            if connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
+                raise HTTPException(404, "会议不存在")
+            return card_writer.meeting_card(connection, meeting_id)
+
     @app.post("/api/meetings/{meeting_id}/card")
     def meeting_card_action(meeting_id: str, body: CardActionInput):
         try:

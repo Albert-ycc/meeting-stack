@@ -220,9 +220,26 @@ export default function App({ apiClient = api }: AppProps) {
     }
   }, [apiClient]);
 
+  // 会议卡片里的链接 #meetings/<id>@<秒>：打开这场会并从那一秒开始播放。openMeeting 依赖当前状态，走 ref 取最新的。
+  const openMeetingRef = useRef<(meetingId: string, seekMs?: number) => void>(() => undefined);
+
   const applyHash = useCallback(() => {
     const hash = window.location.hash;
-    if (hash.startsWith("#projects/")) {
+    if (hash.startsWith("#meetings/")) {
+      const target = decodeURIComponent(hash.slice("#meetings/".length));
+      const match = /^(.+?)(?:@(\d+(?:\.\d+)?))?$/.exec(target);
+      if (match) {
+        // 秒数用过就去掉，同一个时间点的链接再点一次还能触发 hashchange
+        if (match[2]) {
+          history.replaceState(
+            null,
+            "",
+            `${window.location.pathname}${window.location.search}#meetings/${encodeURIComponent(match[1])}`,
+          );
+        }
+        openMeetingRef.current(match[1], match[2] ? Math.round(Number(match[2]) * 1000) : 0);
+      }
+    } else if (hash.startsWith("#projects/")) {
       const projectId = decodeURIComponent(hash.slice("#projects/".length));
       if (projectId) {
         setOpenProjectId(projectId);
@@ -384,6 +401,7 @@ export default function App({ apiClient = api }: AppProps) {
     setDetailDirty(false);
     void loadDetail(meetingId);
   };
+  openMeetingRef.current = openMeeting;
 
   const performNavigate = (nextView: AppView) => {
     detailRequestSequence.current += 1;
@@ -427,11 +445,14 @@ export default function App({ apiClient = api }: AppProps) {
     setGlossaryProjectId(projectId);
   };
 
-  // 与 #tasks / #glossary(/project/<id>) / #projects/<id> / #requirements(/<id>) 锚点同步，供飞书卡片跳转直达对应视图。
+  // 与 #meetings/<id> / #tasks / #glossary(/project/<id>) / #projects/<id> / #requirements(/<id>) 锚点同步，
+  // 供飞书卡片、会议卡片跳转直达对应视图；关掉会议详情时 #meetings 锚点跟着清掉。
+  const detailId = detail?.id ?? null;
   useEffect(() => {
     if (!hashReadyRef.current) return;
-    const path =
-      view === "tasks"
+    const path = detailId
+      ? `#meetings/${encodeURIComponent(detailId)}`
+      : view === "tasks"
         ? "#tasks"
         : view === "glossary"
           ? glossaryProjectId
@@ -447,7 +468,7 @@ export default function App({ apiClient = api }: AppProps) {
     if (window.location.hash !== path) {
       history.replaceState(null, "", window.location.pathname + window.location.search + path);
     }
-  }, [glossaryProjectId, openProjectId, openRequirementId, view]);
+  }, [detailId, glossaryProjectId, openProjectId, openRequirementId, view]);
 
   // 浏览器前进/后退或手动改地址栏 hash 时反向同步视图。
   useEffect(() => {
@@ -544,6 +565,11 @@ export default function App({ apiClient = api }: AppProps) {
         onClassificationSaved={refreshProjects}
         onDirtyChange={setDetailDirty}
         onNavigationLockChange={setDetailNavigationLocked}
+        onOpenProject={(projectId) => {
+          if (detailNavigationLocked) return;
+          if (detailDirty && !window.confirm("当前会议仍有未保存修改。放弃这些修改并离开吗？")) return;
+          openProjectDetail(projectId);
+        }}
         onOpenRequirement={openRequirementDetail}
         onOpenTasks={() => navigate("tasks")}
         onReload={async () => {

@@ -97,6 +97,28 @@ describe("地址栏锚点直达", () => {
     expect(window.location.hash).toBe("#requirements/req-1");
   });
 
+  it("冷加载带 #meetings/<id>@<秒> 打开这场会，秒数用过就从地址栏去掉", async () => {
+    window.history.replaceState(null, "", "/#meetings/vm-1@754");
+    const meeting = vi.fn().mockResolvedValue({
+      id: "vm-1",
+      title: "初审规则沟通",
+      status: "completed_unreviewed",
+      tags: [],
+      artifacts: [],
+      segments: [],
+      speakers: [],
+      events: [],
+      transcript_versions: [],
+      minutes_versions: [],
+    });
+
+    render(<App apiClient={client({ meeting, transcriptVersionSegments: vi.fn() } as Partial<ApiClient>)} />);
+
+    expect(await screen.findByRole("heading", { name: "初审规则沟通" })).toBeInTheDocument();
+    expect(meeting).toHaveBeenCalledWith("vm-1");
+    expect(window.location.hash).toBe("#meetings/vm-1");
+  });
+
   it("冷加载带 #requirements 停在需求池页", async () => {
     window.history.replaceState(null, "", "/#requirements");
 

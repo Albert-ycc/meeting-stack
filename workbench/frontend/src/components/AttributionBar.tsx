@@ -1,9 +1,11 @@
 import { useState } from "react";
 
 import { similarProjectFrom, type ApiClient } from "../api";
+import { reassignNote } from "../cardCopy";
 import type {
   AttributionEvidence,
   MeetingAttribution,
+  MeetingCard,
   MeetingDetail,
   Project,
   SimilarProjectSuggestion,
@@ -14,6 +16,8 @@ import "./AttributionBar.css";
 export interface AttributionChange {
   attribution: MeetingAttribution;
   project?: { id: string | null; name: string | null; color: string | null; origin: "manual" | "ai" | null };
+  /** 改归属、撤销之后卡片的新状态（接口带回时） */
+  card?: MeetingCard;
 }
 
 interface AttributionBarProps {
@@ -47,7 +51,9 @@ function formatMonthDay(iso: string) {
   return Number.isNaN(date.getTime()) ? "" : `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
-function changeFromDetail(detail: Pick<MeetingDetail, "project_id" | "project_name" | "project_color" | "project_origin" | "attribution">): AttributionChange | null {
+function changeFromDetail(
+  detail: Pick<MeetingDetail, "project_id" | "project_name" | "project_color" | "project_origin" | "attribution" | "card">,
+): AttributionChange | null {
   if (!detail.attribution) return null;
   return {
     attribution: detail.attribution,
@@ -57,16 +63,8 @@ function changeFromDetail(detail: Pick<MeetingDetail, "project_id" | "project_na
       color: detail.project_color ?? null,
       origin: detail.project_origin ?? null,
     },
+    card: detail.card,
   };
-}
-
-function movedNote(tasksMoved: number, tasksLeft: number) {
-  return [
-    tasksMoved > 0 ? `${tasksMoved} 条任务一起移过去` : "",
-    tasksLeft > 0 ? `${tasksLeft} 条任务挂在原项目的需求上，留在原处` : "",
-  ]
-    .filter(Boolean)
-    .join("；");
 }
 
 function PickProject({
@@ -170,7 +168,7 @@ export function AttributionBar({
       setSuggestion(null);
       const target = projectId && projectId !== "__ai__" ? projectName(projectId) || detail.project_name || "" : "";
       const effects = detail.effects;
-      const note = effects ? movedNote(effects.tasks_moved, effects.tasks_left.length) : "";
+      const note = effects ? reassignNote(effects.tasks_moved, effects.tasks_left.length, effects.card) : "";
       const head =
         projectId === "__ai__" ? "已交给 AI 重新判断" : target ? `已改到 ${target}` : "已标为不归项目";
       onNotice(note ? `${head}：${note}` : head, effects?.undo_until);
@@ -189,7 +187,7 @@ export function AttributionBar({
       const detail = await apiClient.undoMeetingProject(meetingId);
       const change = changeFromDetail(detail);
       if (change) onChange(change);
-      onNotice("已撤销刚才的改动");
+      onNotice(detail.effects?.card?.action === "moved" ? "已撤销刚才的改动，会议卡片也搬回去了" : "已撤销刚才的改动");
       await onProjectsChanged?.();
     });
 

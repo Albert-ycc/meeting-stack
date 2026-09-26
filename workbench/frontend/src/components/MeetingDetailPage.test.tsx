@@ -589,6 +589,41 @@ describe("MeetingDetailPage Whisper comparison", () => {
     ).toBeInTheDocument();
   });
 
+  it("tells that the meeting card moved too and shows the card status under the title", async () => {
+    const updateMeeting = vi.fn().mockResolvedValue({
+      ...meeting(false),
+      effects: {
+        tasks_moved: 2,
+        tasks_left: [],
+        card: { action: "moved", from: "云图AI/声档会议记录/a.md", to: "项目甲/声档会议记录/a.md", reason: null },
+        undo_until: "2026-09-26T10:10:00Z",
+      },
+    });
+    render(
+      <MeetingDetailPage
+        apiClient={{ transcriptVersionSegments: vi.fn(), updateMeeting } as unknown as ApiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{
+          ...meeting(false),
+          canonical_dir: "/archive/260926 对照测试会议",
+          card: { state: "blocked", reason: "no_root", category: "waiting", path: null, synced_at: null, error: null },
+        }}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[{ id: "project-a", name: "项目甲", color: "#376f68" }]}
+        tags={[]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "复制归档文件夹路径" })).toBeInTheDocument();
+    expect(screen.getByText("项目还没挂文件夹")).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("主项目"), "project-a");
+    await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
+
+    expect(await screen.findByText("会议归档归属已保存；2 条任务和会议卡片一起移过去")).toBeInTheDocument();
+  });
+
   it("saving only tags leaves the project out of the request", async () => {
     const updateMeeting = vi.fn().mockResolvedValue(meeting());
     const apiClient = { transcriptVersionSegments: vi.fn(), updateMeeting } as unknown as ApiClient;

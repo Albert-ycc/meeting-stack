@@ -5,6 +5,8 @@ type CopyStatus = "copied" | "failed" | null;
 interface CopyFolderPathButtonProps {
   className?: string;
   describedById?: string;
+  /** 按钮文字，默认「复制文件夹路径」；会议页改叫「复制归档文件夹路径」 */
+  label?: string;
   path?: string | null;
   withLabel?: boolean;
 }
@@ -32,6 +34,7 @@ function CopyPathIcon({ status }: { status: CopyStatus }) {
 export function CopyFolderPathButton({
   className = "",
   describedById,
+  label: idleLabel = "复制文件夹路径",
   path,
   withLabel = false,
 }: CopyFolderPathButtonProps) {
@@ -70,7 +73,7 @@ export function CopyFolderPathButton({
       ? "文件夹路径已复制"
       : status === "failed"
         ? "复制文件夹路径失败"
-        : "复制文件夹路径";
+        : idleLabel;
 
   return (
     <button
@@ -83,7 +86,7 @@ export function CopyFolderPathButton({
           ? "已复制"
           : status === "failed"
             ? "复制失败，点击重试"
-            : "复制文件夹路径"
+            : idleLabel
       }
       disabled={!path}
       onClick={() => void copy()}
@@ -92,7 +95,7 @@ export function CopyFolderPathButton({
       <CopyPathIcon status={status} />
       {withLabel && (
         <span>
-          {status === "copied" ? "已复制路径" : status === "failed" ? "复制失败" : "复制文件夹路径"}
+          {status === "copied" ? "已复制路径" : status === "failed" ? "复制失败" : idleLabel}
         </span>
       )}
     </button>

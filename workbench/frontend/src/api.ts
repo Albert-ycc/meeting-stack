@@ -46,6 +46,10 @@ import type {
   SimilarProjectSuggestion,
   ColdStartFoldersPayload,
   LegacyGroupsSummary,
+  CardsBanner,
+  MeetingCard,
+  MeetingCardEffect,
+  ProjectCardsSummary,
 } from "./types";
 
 let csrfToken = "";
@@ -296,6 +300,31 @@ export const api = {
   legacyGroups: () => read<{ summary: LegacyGroupsSummary | null }>("/api/glossary/legacy-groups"),
   undoLegacyGroups: () => write<{ restored: number }>("/api/glossary/legacy-groups/undo", "POST", {}),
   dismissLegacyGroups: () => write<{ ok: boolean }>("/api/glossary/legacy-groups/dismiss", "POST", {}),
+  meetingCard: (meetingId: string) => read<MeetingCard>(`/api/meetings/${encodeURIComponent(meetingId)}/card`),
+  meetingCardAction: (meetingId: string, action: "rewrite" | "regenerate") =>
+    write<MeetingCard>(`/api/meetings/${encodeURIComponent(meetingId)}/card`, "POST", { action }),
+  cardsBanner: () => read<CardsBanner>("/api/cards/banner"),
+  answerCardsBackfill: (answer: "yes" | "no" | "later") =>
+    write<{ answer: string }>("/api/cards/backfill", "POST", { answer }),
+  dismissCardsNotice: (projectId: string) =>
+    write<{ ok: boolean }>("/api/cards/notices/dismiss", "POST", { project_id: projectId }),
+  revealCards: (target: { project_id?: string; meeting_id?: string }) =>
+    write<{ path: string }>("/api/cards/reveal", "POST", target),
+  retireAllCards: () =>
+    write<{ retired: number; kept: { meeting_id: string; title: string | null; path: string }[] }>(
+      "/api/cards/retire-all",
+      "POST",
+      {},
+    ),
+  enableCards: () => write<{ ok: boolean }>("/api/cards/enable", "POST", {}),
+  pauseProjectCards: (projectId: string) =>
+    write<{ retired: number }>(`/api/projects/${encodeURIComponent(projectId)}/cards/pause`, "POST", {}),
+  resumeProjectCards: (projectId: string) =>
+    write<{ cards: ProjectCardsSummary; written: number }>(
+      `/api/projects/${encodeURIComponent(projectId)}/cards/resume`,
+      "POST",
+      {},
+    ),
   confirmMeetingProject: (meetingId: string) =>
     write<MeetingAttribution>(
       `/api/meetings/${encodeURIComponent(meetingId)}/project/confirm`,
@@ -303,7 +332,7 @@ export const api = {
       {},
     ),
   undoMeetingProject: (meetingId: string) =>
-    write<Omit<MeetingDetail, "effects"> & { effects?: { tasks_restored: number } }>(
+    write<Omit<MeetingDetail, "effects"> & { effects?: { tasks_restored: number; card?: MeetingCardEffect } }>(
       `/api/meetings/${encodeURIComponent(meetingId)}/project/undo`,
       "POST",
       {},

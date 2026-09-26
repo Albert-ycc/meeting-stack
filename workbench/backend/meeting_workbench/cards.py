@@ -302,7 +302,11 @@ def render_card(view: CardView) -> str:
                 TASK_STATUS_LABELS.get(task["status"], task["status"]),
             ]
             if task.get("anchor_ms") is not None:
-                parts.append(f"[{format_clock(task['anchor_ms'])}]")
+                # 时间点链回声档，点开从这一刻播放（#meetings/<id>@<秒>）
+                seconds = max(0, int(task["anchor_ms"])) // 1000
+                parts.append(
+                    f"[{format_clock(task['anchor_ms'])}]({view.workbench_url}@{seconds})"
+                )
             actions.append("- " + " · ".join(parts))
     if not actions:
         actions.append("这场会没有行动项。")
@@ -1475,6 +1479,16 @@ class CardWriter:
             (project_id, 1 if backfill_yes else 0, since),
         ).fetchone()["n"]
         written = counts.get(SYNCED, 0) + counts.get(USER_EDITED, 0)
+        # 上线前、还没补写的会（补写要你在横幅或项目页点一下）
+        history = 0
+        if not backfill_yes:
+            history = connection.execute(
+                """SELECT COUNT(*) AS n FROM meetings m
+                     JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
+                     LEFT JOIN meeting_cards c ON c.meeting_id = m.id
+                    WHERE m.project_id=? AND mv.created_at < ? AND c.synced_at IS NULL""",
+                (project_id, since),
+            ).fetchone()["n"]
         paused = project_id in paused_projects(connection)
         reason = None
         if not cards_enabled(connection):
@@ -1498,6 +1512,7 @@ class CardWriter:
             "waiting": max(0, eligible - written - counts.get(MISSING, 0)),
             "waiting_reason": reason,
             "paused": paused,
+            "history": history,
         }
 
     # ------------------------------------------------------------ 你的操作

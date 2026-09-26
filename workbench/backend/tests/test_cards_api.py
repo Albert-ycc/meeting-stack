@@ -179,3 +179,22 @@ def test_pause_resume_and_retire_all(tmp_path):
     client.post("/api/cards/enable", json={}, headers=headers)
     writer.reconcile()
     assert _card_files(root) == ["260926 初审规则沟通.md"]
+
+
+def test_card_status_alone_and_history_count_on_the_board(tmp_path):
+    client, _settings, headers, db, disk, writer = _setup(tmp_path)
+    project_id, _root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    _make_historical(db)
+    writer.reconcile()
+
+    card = client.get(f"/api/meetings/{MEETING}/card").json()
+    assert (card["reason"], card["category"]) == ("not_backfilled", "waiting")
+    assert client.get("/api/meetings/nope/card").status_code == 404
+    assert client.get(f"/api/projects/{project_id}/board").json()["cards"]["history"] == 1
+
+    client.post("/api/cards/backfill", json={"answer": "yes"}, headers=headers)
+    writer.reconcile()
+
+    assert client.get(f"/api/meetings/{MEETING}/card").json()["category"] == "ok"
+    assert client.get(f"/api/projects/{project_id}/board").json()["cards"]["history"] == 0

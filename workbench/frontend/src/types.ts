@@ -240,6 +240,82 @@ export interface MeetingProjectEffects {
   undo_until: string;
   /** 从 AI 归属改走、证据里有项目词时：可以问「以后不再用这个词判断项目」 */
   cue_hint?: AttributionCueHint;
+  /** 会议卡片跟着去了哪（改归属、撤销时） */
+  card?: MeetingCardEffect;
+}
+
+/** 卡片写不了、还没写的原因 */
+export type MeetingCardReason =
+  | "queued"
+  | "waiting_minutes"
+  | "waiting_project"
+  | "needs_review"
+  | "not_backfilled"
+  | "no_root"
+  | "root_offline"
+  | "root_missing"
+  | "root_in_archive"
+  | "root_shared"
+  | "paused"
+  | "disabled";
+
+/**
+ * 会议详情里的项目卡片状态。category 是界面的三类：ok 已写入；waiting 在等什么；
+ * stopped 为什么停了（你改过、被删了、暂停了……）。
+ */
+export interface MeetingCard {
+  state: "pending" | "synced" | "user_edited" | "missing" | "retired" | "blocked";
+  reason: MeetingCardReason | null;
+  category: "ok" | "waiting" | "stopped";
+  path: string | null;
+  synced_at: string | null;
+  error: string | null;
+}
+
+/** 改归属后卡片的去向；from / to 是「项目文件夹名/声档会议记录/文件名」 */
+export interface MeetingCardEffect {
+  action: "moved" | "written" | "retired" | "updated" | "waiting" | "none";
+  from: string | null;
+  to: string | null;
+  reason: MeetingCardReason | null;
+}
+
+/** 项目看板的卡片汇总 */
+export interface ProjectCardsSummary {
+  /** 卡片文件夹（项目最早挂上的根目录下的「声档会议记录」），没挂文件夹时为 null */
+  root: string | null;
+  index_path: string | null;
+  written: number;
+  edited: number;
+  missing: number;
+  waiting: number;
+  waiting_reason: MeetingCardReason | null;
+  paused: boolean;
+  /** 上线前、还没补写卡片的会（补写后为 0；旧后端没有） */
+  history?: number;
+}
+
+/** 上线前的历史会议能补写多少张卡片 */
+export interface CardsBackfillPreview {
+  meetings: number;
+  projects: number;
+  ai_attributed: number;
+  no_folder_projects: number;
+  no_folder_meetings: number;
+  top: { project_id: string; project_name: string; count: number; path: string | null; paused: boolean }[];
+}
+
+/** 某个项目第一次建出「声档会议记录/」时的一次性提示 */
+export interface CardsNotice {
+  project_id: string;
+  project_name: string;
+  path: string;
+  at: string;
+}
+
+export interface CardsBanner {
+  backfill: CardsBackfillPreview | null;
+  notices: CardsNotice[];
 }
 
 /**
@@ -328,6 +404,8 @@ export interface MeetingDetail extends MeetingSummary {
   /** 只在 PATCH 改了项目的响应里出现 */
   effects?: MeetingProjectEffects;
   attribution?: MeetingAttribution;
+  /** 项目文件夹里的会议卡片状态（旧后端没有） */
+  card?: MeetingCard;
   canonical_dir?: string | null;
   current_transcript_version_id?: string | null;
   current_minutes_version_id?: string | null;
@@ -643,6 +721,7 @@ export interface ProjectBoard extends Project {
   glossary_count?: number;
   glossary_terms?: BoardGlossaryTerm[];
   profile?: ProjectRecognitionProfile;
+  cards?: ProjectCardsSummary;
 }
 
 // ---------------------------------------------------------------------------
@@ -718,6 +797,8 @@ export interface MaterialRoot {
   shared_with?: { project_id: string; project_name: string }[];
   /** 会议卡片写给谁：同一文件夹挂在几个项目下时，只写给最早挂上的那个 */
   cards_owner_id?: string;
+  /** 挂载或替换后当场补写了几张会议卡片 */
+  cards_written?: number;
 }
 
 /** 冷启动：还没挂文件夹的项目找到的同名（默认勾选）或相近（默认不勾）文件夹 */

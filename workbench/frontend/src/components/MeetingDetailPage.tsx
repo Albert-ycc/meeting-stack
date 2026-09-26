@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { ApiError, type ApiClient, type ConflictResolutionAction } from "../api";
+import { reassignNote } from "../cardCopy";
 import { formatDate, isDoneStatus, isUntitled, statusLabel, statusTone, versionKindLabel } from "../format";
 import { parseHotwordsInput, validateHotwordsInput } from "../hotwords";
 import type {
@@ -12,6 +13,7 @@ import type {
   LoadState,
   MeetingConflict,
   MeetingAttribution,
+  MeetingCard,
   MeetingDetail,
   MinutesEvidence,
   Project,
@@ -24,6 +26,7 @@ import type {
 import { AttributionBar, type AttributionChange } from "./AttributionBar";
 import { AudioPlayer, type AudioPlayerHandle } from "./AudioPlayer";
 import { CopyFolderPathButton } from "./CopyFolderPathButton";
+import { MeetingCardStatus } from "./MeetingCardStatus";
 import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
 import { MeetingTasksPanel } from "./MeetingTasksPanel";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
@@ -44,6 +47,8 @@ interface MeetingDetailPageProps {
   canWriteTasks?: boolean;
   onOpenTasks?: () => void;
   onOpenRequirement?: (requirementId: string) => void;
+  /** 卡片状态条「去挂文件夹」「去项目页」 */
+  onOpenProject?: (projectId: string) => void;
 }
 
 type DetailTab = "transcript" | "minutes" | "tasks";
@@ -221,6 +226,7 @@ export function MeetingDetailPage({
   canWriteTasks = false,
   onOpenTasks,
   onOpenRequirement,
+  onOpenProject,
 }: MeetingDetailPageProps) {
   const playerRef = useRef<AudioPlayerHandle>(null);
   const [currentMs, setCurrentMs] = useState(initialSeekMs);
@@ -250,6 +256,7 @@ export function MeetingDetailPage({
   const [notice, setNotice] = useState("");
   const [undoUntil, setUndoUntil] = useState<string | null>(null);
   const [attribution, setAttribution] = useState<MeetingAttribution | undefined>(meeting.attribution);
+  const [card, setCard] = useState<MeetingCard | undefined>(meeting.card);
   const [liveProject, setLiveProject] = useState<LiveProject>(() => liveProjectOf(meeting));
   const [busy, setBusy] = useState(false);
   const [savingKind, setSavingKind] = useState<"transcript" | "minutes" | "classification" | null>(null);
@@ -367,6 +374,7 @@ export function MeetingDetailPage({
     setSelectedTagIds(meeting.tags.map((tag) => tag.id));
     setBaselineProjectId(meeting.project_id ?? "");
     setAttribution(meeting.attribution);
+    setCard(meeting.card);
     setLiveProject(liveProjectOf(meeting));
     setBaselineTagIds(meeting.tags.map((tag) => tag.id));
     setSelectedRequirementRefs(meeting.requirements ?? []);
@@ -760,17 +768,10 @@ export function MeetingDetailPage({
     try {
       const saved = await apiClient.updateMeeting(meeting.id, changes);
       const effects = saved?.effects;
-      const effectsNote = effects
-        ? [
-            effects.tasks_moved > 0 ? `${effects.tasks_moved} 条任务一起移过去` : "",
-            effects.tasks_left.length > 0
-              ? `${effects.tasks_left.length} 条任务挂在原项目的需求上，留在原处`
-              : "",
-          ]
-            .filter(Boolean)
-            .map((part) => `；${part}`)
-            .join("")
+      const movedNote = effects
+        ? reassignNote(effects.tasks_moved, effects.tasks_left.length, effects.card)
         : "";
+      const effectsNote = movedNote ? `；${movedNote}` : "";
       setBaselineProjectId(snapshotProjectId);
       setBaselineTagIds(snapshotTagIds);
       setBaselineRequirementRefs(snapshotRequirementRefs);
@@ -856,8 +857,19 @@ export function MeetingDetailPage({
 
   // 归属条只 PATCH 项目，成功后就地同步检查器的项目下拉，不重载详情，
   // 没保存的纪要和逐字稿都不受影响。
+  const refreshCard = async () => {
+    // 确认归属不带回卡片；旧后端没有这个接口时状态条保持原样
+    if (typeof apiClient.meetingCard !== "function") return;
+    try {
+      setCard(await apiClient.meetingCard(meeting.id));
+    } catch {
+      // 只是状态条，读不到下次进来再看
+    }
+  };
   const applyAttributionChange = (change: AttributionChange) => {
     setAttribution(change.attribution);
+    if (change.card) setCard(change.card);
+    else void refreshCard();
     if (change.project) {
       const next = change.project;
       setLiveProject(next);
@@ -884,9 +896,12 @@ export function MeetingDetailPage({
             color: detail.project_color ?? null,
             origin: detail.project_origin ?? null,
           },
+          card: detail.card,
         });
       }
-      showAttributionNotice("已撤销刚才的改动");
+      showAttributionNotice(
+        detail.effects?.card?.action === "moved" ? "已撤销刚才的改动，会议卡片也搬回去了" : "已撤销刚才的改动",
+      );
       await onClassificationSaved?.();
     } catch (error) {
       showAttributionNotice(error instanceof Error ? error.message : "撤销失败");
@@ -923,6 +938,7 @@ export function MeetingDetailPage({
           <div className="detail-state">
             <CopyFolderPathButton
               describedById={`detail-title-${meeting.id}`}
+              label="复制归档文件夹路径"
               path={meeting.canonical_dir}
               withLabel
             />
@@ -945,6 +961,17 @@ export function MeetingDetailPage({
             onProjectsChanged={onClassificationSaved}
             onSeek={(milliseconds) => playerRef.current?.seekTo(milliseconds)}
             projects={projects}
+          />
+        )}
+        {card && (
+          <MeetingCardStatus
+            apiClient={apiClient}
+            card={card}
+            meetingId={meeting.id}
+            onCardChange={setCard}
+            onOpenProject={onOpenProject}
+            projectId={liveProject.id}
+            projectName={liveProject.name}
           />
         )}
       </header>

@@ -84,6 +84,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // 打开会议详情会把地址栏同步成 #meetings/<id>，不清掉的话下一个用例冷加载会直接打开那场会
+  window.history.replaceState(null, "", "/");
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

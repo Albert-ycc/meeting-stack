@@ -1,6 +1,7 @@
 """会议卡片（第一期 1c）：卡片规范、指纹、安全写盘、跟着会议和你在 Finder 里的动作变。"""
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -151,9 +152,13 @@ def test_card_is_written_to_the_spec(tmp_path):
     assert "generated_by: shengdang" in text
     assert "> 项目归属：AI 自动判断（未人工确认）。" in text
     assert "\n# 初审规则沟通\n\n## 一分钟摘要\n\n阈值先按 0.8 执行 [00:12:34]。" in text
+    url = re.search(r"^workbench_url: \"?([^\"\n]+)\"?$", text, re.M).group(1)
+    assert url.endswith(f"/#meetings/{MEETING}")
+    # 行动项的时间点链回声档，从那一刻开始播放
     assert (
-        "## 行动项（声档实时状态）\n### 已确认 / 进行中\n- 整理初审阈值对照表 · 我 · 进行中 · [00:12:34]\n"
-        "### 待你确认（AI 提取）\n- 与李四确认 V2 上线时间 · 我 · 待确认 · [00:31:02]\n"
+        "## 行动项（声档实时状态）\n### 已确认 / 进行中\n"
+        f"- 整理初审阈值对照表 · 我 · 进行中 · [00:12:34]({url}@754)\n"
+        f"### 待你确认（AI 提取）\n- 与李四确认 V2 上线时间 · 我 · 待确认 · [00:31:02]({url}@1862)\n"
         "### 已完成\n- 发会议通知 · 我 · 已完成"
     ) in text
     assert "不做的事" not in text
