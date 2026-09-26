@@ -1,0 +1,129 @@
+/* 项目详情：系统怎么认出这个项目 */
+
+.recognition-card__list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0 18px 14px;
+}
+
+.recognition-card__row {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+
+.recognition-card__row dt {
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.recognition-card__row dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.recognition-card__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  color: var(--ink);
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.recognition-card__chip small {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+.recognition-card__chip--main {
+  font-weight: 600;
+}
+
+.recognition-card__chip--readonly {
+  color: var(--ink-soft);
+  border-style: dashed;
+}
+
+.recognition-card__chip-remove {
+  padding: 0 0 0 2px;
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+}
+
+.recognition-card__chip-remove:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+.recognition-card__muted {
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.recognition-card__add {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.recognition-card__add input {
+  width: 180px;
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.recognition-card__add-button {
+  padding: 0;
+  color: var(--signal-dark);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+}
+
+.recognition-card__add-button:hover {
+  color: var(--signal);
+}
+
+.recognition-card__error,
+.recognition-card__warn {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.recognition-card__error {
+  color: var(--danger);
+}
+
+.recognition-card__warn {
+  color: var(--warn);
+}
+
+@media (max-width: 767px) {
+  .recognition-card__row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}

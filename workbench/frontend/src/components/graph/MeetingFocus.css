@@ -1,0 +1,375 @@
+/* 展开一场会（MeetingFocusView.tsx）和决议、任务面板（FocusPanel.tsx） */
+
+.meeting-focus {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.meeting-focus__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 4px;
+}
+
+.meeting-focus__title {
+  flex: 1;
+  min-width: 0;
+}
+
+.meeting-focus__title h2 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--heading);
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-focus__title p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 播放器放在标题行里，不在面板里 */
+.meeting-focus__head .graph-player {
+  flex: 0 1 280px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.meeting-focus__viewport {
+  flex: 1;
+  min-height: 0;
+  outline: none;
+}
+
+.meeting-focus__bar {
+  fill: rgb(var(--fg-rgb) / 0.1);
+  stroke: var(--line-strong);
+}
+
+.meeting-focus__bar.is-playable {
+  cursor: pointer;
+}
+
+.meeting-focus__bar.is-playable:hover {
+  fill: rgb(var(--fg-rgb) / 0.16);
+}
+
+.meeting-focus__bar-layer .meeting-focus__mark {
+  pointer-events: none;
+}
+
+.meeting-focus__mark--decision {
+  fill: var(--signal);
+}
+
+.meeting-focus__mark--task {
+  fill: var(--ok);
+  stroke: var(--stage);
+  stroke-width: 1.5;
+}
+
+.meeting-focus__playhead {
+  stroke: var(--heading);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.meeting-focus__leader {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.meeting-focus__leader--decision {
+  stroke: var(--signal-line);
+}
+
+.meeting-focus__leader--task {
+  stroke: var(--ok-line);
+}
+
+.meeting-focus__leader.is-lit {
+  stroke-width: 2;
+}
+
+.meeting-focus__tick line {
+  stroke: var(--line-strong);
+}
+
+.meeting-focus__tick text {
+  fill: var(--muted-2);
+  font-size: 10px;
+  text-anchor: middle;
+}
+
+.meeting-focus__card,
+.meeting-focus__more {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.meeting-focus__card span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meeting-focus__card small {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.meeting-focus__card--decision {
+  border-left: 3px solid var(--signal);
+}
+
+.meeting-focus__card--task {
+  border-left: 3px solid var(--ok);
+}
+
+.meeting-focus__card--task.is-pending_confirm {
+  border-left-style: dashed;
+}
+
+.meeting-focus__card--task.is-pending_confirm small {
+  color: var(--warn);
+}
+
+.meeting-focus__card--task.is-done span {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: rgb(var(--fg-rgb) / 0.3);
+}
+
+.meeting-focus__card:hover,
+.meeting-focus__more:hover {
+  color: var(--heading);
+  border-color: rgb(var(--fg-rgb) / 0.3);
+}
+
+.meeting-focus__card.is-selected,
+.meeting-focus__more.is-selected {
+  color: var(--heading);
+  background: var(--signal-bg);
+  box-shadow: 0 0 0 1px var(--signal-line);
+}
+
+.meeting-focus__card:focus-visible,
+.meeting-focus__more:focus-visible,
+.meeting-focus__neighbour:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+.meeting-focus__more {
+  align-items: center;
+  color: var(--muted);
+  border-style: dashed;
+  border-radius: var(--r-pill);
+}
+
+.meeting-focus__untimed {
+  position: absolute;
+  color: var(--muted-2);
+  font-size: 11px;
+  white-space: nowrap;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.meeting-focus__status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  transform: translate(-50%, -50%);
+}
+
+.meeting-focus__status p {
+  margin: 0;
+}
+
+.meeting-focus__note {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  margin: 0;
+  color: var(--muted-2);
+  font-size: 11px;
+}
+
+/* 前一场、后一场贴在视口左右边缘，不随缩放变化 */
+.meeting-focus__neighbour {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 124px;
+  padding: 7px 9px;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.meeting-focus__neighbour span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meeting-focus__neighbour em {
+  display: -webkit-box;
+  overflow: hidden;
+  font-style: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.meeting-focus__neighbour small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.meeting-focus__neighbour b {
+  color: var(--muted);
+  font-size: 18px;
+  font-weight: 400;
+}
+
+.meeting-focus__neighbour:hover {
+  color: var(--heading);
+}
+
+.meeting-focus__neighbour--previous {
+  left: 12px;
+}
+
+.meeting-focus__neighbour--next {
+  right: 12px;
+  text-align: right;
+}
+
+.meeting-focus__neighbour--next span {
+  align-items: flex-end;
+}
+
+.meeting-focus__neighbour.is-empty {
+  color: var(--muted-2);
+  background: none;
+  border-style: dashed;
+  cursor: default;
+}
+
+/* ── 决议、任务面板 ─────────────────────── */
+
+.focus-panel__full {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.focus-panel__source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.focus-panel__quotes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.focus-panel__quotes li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--ink-2);
+}
+
+.focus-panel__quotes li.is-anchor {
+  color: var(--heading);
+}
+
+.focus-panel__quotes li.is-anchor .graph-play {
+  color: var(--signal);
+}
+
+.focus-panel__quotes small {
+  color: var(--muted);
+}
+
+.focus-panel__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.focus-panel__edit input,
+.focus-panel__edit textarea {
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--ink);
+  font: inherit;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.focus-panel__edit textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.focus-panel__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

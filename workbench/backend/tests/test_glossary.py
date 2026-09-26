@@ -230,20 +230,22 @@ def test_snapshot_rewrites_after_change(tmp_path):
 def test_suggestion_confirm_backfills_term(tmp_path):
     db = Database(tmp_path / "db.sqlite3")
     db.initialize()
-    assert add_suggestion(db, wrong="树立", correct="数理") is True
+    assert add_suggestion(db, wrong="树立", correct="数理")
     rows = list_suggestions(db, status="pending")
     assert len(rows) == 1
     suggestion_id = rows[0]["id"]
 
     snapshot = tmp_path / "glossary-snapshot.json"
-    assert confirm_suggestion(db, suggestion_id, snapshot_path=snapshot) is True
+    result = confirm_suggestion(db, suggestion_id, snapshot_path=snapshot)
+    assert result["created"] is True
+    assert (result["wrong"], result["correct"]) == ("树立", "数理")
     # 确认后反写进词典：term=数理, alias=树立
     terms = list_terms(db)
     assert [(t["term"], t["aliases"]) for t in terms] == [("数理", ["树立"])]
     assert list_suggestions(db, status="confirmed")[0]["id"] == suggestion_id
     assert [t["term"] for t in read_snapshot(snapshot)["terms"]] == ["数理"]
     # 已处理的不再重复确认
-    assert confirm_suggestion(db, suggestion_id) is False
+    assert confirm_suggestion(db, suggestion_id) is None
 
 
 def test_suggestion_reject_keeps_out_of_dictionary(tmp_path):
@@ -259,11 +261,18 @@ def test_suggestion_reject_keeps_out_of_dictionary(tmp_path):
 def test_add_suggestion_dedupes(tmp_path):
     db = Database(tmp_path / "db.sqlite3")
     db.initialize()
-    assert add_suggestion(db, wrong="树立", correct="数理") is True
-    assert add_suggestion(db, wrong="树立", correct="数理") is False
+    assert add_suggestion(db, wrong="树立", correct="数理")
+    assert add_suggestion(db, wrong="树立", correct="数理") is None
     # 映射已入词典（aliases 已含 wrong）则不再排队
     create_term(db, term="协会", aliases=["协力"])
-    assert add_suggestion(db, wrong="协力", correct="协会") is False
+    assert add_suggestion(db, wrong="协力", correct="协会") is None
+    # 扩词前的 2 字那对已在词典里，扩出来的整词也不再排队
+    assert (
+        add_suggestion(
+            db, wrong="协力小组", correct="协会小组", alt_wrong="协力", alt_correct="协会"
+        )
+        is None
+    )
 
 
 # —— API 层（CSRF + JSON 约定） ——
@@ -473,12 +482,18 @@ def test_glossary_scopes_api_groups_general_project_and_bucket(tmp_path):
 
     scopes = client.get("/api/glossary/scopes").json()
     assert scopes == [
-        {"kind": "general", "key": "通用", "label": "通用", "color": None, "count": 1},
-        {"kind": "project", "key": "proj-mdt", "label": "MDT", "color": "#2c8d83", "count": 1},
+        {"kind": "general", "key": "通用", "label": "公共", "color": None, "count": 1},
+        {
+            "kind": "project",
+            "key": "proj-mdt",
+            "label": "MDT",
+            "color": "#2c8d83",
+            "count": 1,
+            "last_meeting_at": None,
+        },
+        # 旧分组桶只在库里还有没挂项目、也不是公共的词条时出现
         {"kind": "bucket", "key": "启航", "label": "启航", "color": None, "count": 1},
     ]
-    # 没有术语的分组不出现（比如从没建过任何项目/桶的场景不会凭空多一行「通用」）
-    assert len(scopes) == 3
 
 
 def test_glossary_snapshot_api_empty_before_any_write(tmp_path):
@@ -506,9 +521,17 @@ def test_save_minutes_hooks_diff_into_suggestions(tmp_path):
     )
     assert saved.status_code == 200
 
+    # 2 字片段沿后文扩成整词，原来的 2 字那对留作「只记 2 字」
+    assert [
+        (row["wrong"], row["correct"], row["alt_wrong"], row["alt_correct"], row["auto_recorded"])
+        for row in saved.json()["corrections"]
+    ] == [("树立协会", "数理协会", "树立", "数理", False)]
     pending = client.get("/api/glossary/suggestions", params={"status": "pending"}).json()
-    assert [(row["wrong"], row["correct"]) for row in pending] == [("树立", "数理")]
+    assert [(row["wrong"], row["correct"]) for row in pending] == [("树立协会", "数理协会")]
     assert pending[0]["meeting_id"] == "vm-20260102-101500"
+    assert pending[0]["meeting_title"] == "需求复盘会"
+    # 会议没归项目：默认记到公共
+    assert pending[0]["target_project_id"] is None
     assert "数理协会" in pending[0]["context"]
 
 
@@ -536,8 +559,12 @@ def test_save_minutes_suggestion_scope_follows_project(tmp_path):
     assert saved.status_code == 200
 
     pending = client.get("/api/glossary/suggestions").json()
-    assert [(row["wrong"], row["correct"]) for row in pending] == [("树立", "数理")]
+    assert [(row["wrong"], row["correct"]) for row in pending] == [("树立协会", "数理协会")]
     assert pending[0]["scope"] == "云图"
+    assert (pending[0]["target_project_id"], pending[0]["target_project_name"]) == (
+        "proj-1",
+        "云图",
+    )
 
 
 def test_save_minutes_first_save_does_not_create_suggestions(tmp_path):

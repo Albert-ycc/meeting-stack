@@ -21,7 +21,7 @@ describe("SearchResults", () => {
             text: "把发布验收放到今天下午。",
           },
         ]}
-        mode="exact"
+        highlight
         onOpen={onOpen}
         query="发布"
       />,
@@ -54,7 +54,7 @@ describe("SearchResults", () => {
             match_kind: "segment",
           },
         ]}
-        mode="exact"
+        highlight
         onOpen={vi.fn()}
         query="发布"
       />,
@@ -87,7 +87,7 @@ describe("SearchResults", () => {
             match_kind: "segment",
           },
         ]}
-        mode="exact"
+        highlight
         onOpen={onOpen}
         query="材料"
       />,
@@ -116,13 +116,57 @@ describe("SearchResults", () => {
             match_kind: "segment",
           },
         ]}
-        mode="exact"
+        highlight
         onOpen={vi.fn()}
         query="录音"
       />,
     );
 
     expect(screen.getByRole("button", { name: "暂无文件夹路径" })).toBeDisabled();
+  });
+
+  it("labels minutes hits, highlights the spelling that matched and opens the minutes tab", async () => {
+    const onOpen = vi.fn();
+    render(
+      <SearchResults
+        highlight
+        items={[
+          {
+            segment_id: null,
+            meeting_id: "vm-minutes",
+            title: "初审规则沟通",
+            start_ms: 754_000,
+            end_ms: null,
+            text: "会上决定成立树立协会",
+            match_kind: "minutes",
+            matched: "树立协会",
+            project_name: "云图AI",
+          },
+          {
+            segment_id: null,
+            meeting_id: "vm-minutes",
+            title: "初审规则沟通",
+            start_ms: null,
+            end_ms: null,
+            text: "树立协会由岳总牵头",
+            match_kind: "minutes",
+            matched: "树立协会",
+          },
+        ]}
+        onOpen={onOpen}
+        query="数理协会"
+      />,
+    );
+
+    expect(screen.getAllByText("纪要命中")).toHaveLength(2);
+    expect(screen.getAllByText("树立协会", { selector: "mark" })).toHaveLength(2);
+    expect(screen.queryByText("未标记说话人")).toBeNull();
+    expect(screen.getByText("云图AI")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /12:34/ }));
+    expect(onOpen).toHaveBeenLastCalledWith("vm-minutes", 754_000, "minutes");
+    await userEvent.click(screen.getByRole("button", { name: "打开纪要" }));
+    expect(onOpen).toHaveBeenLastCalledWith("vm-minutes", 0, "minutes");
   });
 
   it("does not fabricate highlights for semantic results", () => {
@@ -139,7 +183,7 @@ describe("SearchResults", () => {
             match_kind: "segment",
           },
         ]}
-        mode="semantic"
+        highlight={false}
         onOpen={vi.fn()}
         query="发布"
       />,

@@ -1,0 +1,65 @@
+/* 会议纪要下方的「词典」小节 */
+.meeting-glossary {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.meeting-glossary p {
+  margin: 0;
+}
+
+.meeting-glossary__lead,
+.meeting-glossary__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.meeting-glossary__lead strong {
+  color: var(--ink);
+}
+
+.meeting-glossary__applied {
+  color: var(--ink);
+}
+
+.meeting-glossary__missed ul {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 0 0 0 2px;
+  list-style: none;
+}
+
+.meeting-glossary__missed li {
+  color: var(--ink);
+}
+
+.meeting-glossary__missed s {
+  color: var(--ink-soft);
+}
+
+.meeting-glossary__count {
+  margin-left: 8px;
+  color: var(--ink-faint);
+}
+
+.meeting-glossary__note {
+  color: var(--ink-faint);
+}
+
+.meeting-glossary__error {
+  color: var(--danger);
+}
+
+.meeting-glossary__missed .meeting-glossary__note {
+  margin-top: 4px;
+}

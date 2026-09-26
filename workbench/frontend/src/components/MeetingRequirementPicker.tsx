@@ -9,12 +9,14 @@ import "./MeetingRequirementPicker.css";
 interface MeetingRequirementPickerProps {
   apiClient: ApiClient;
   projects: Project[];
-  /** 当前选中的主项目（可能还没保存）；空字符串＝未选，控件整体置灰 */
+  /** 当前选中的主项目（可能还没保存）；空字符串＝未选，这时跨项目列出进行中的需求 */
   projectId: string;
   /** 已勾选的需求，可能跨项目、也可能不是进行中（保留下来是为了能在下拉里取消勾选） */
   selected: RequirementRef[];
   onChange: (next: RequirementRef[]) => void;
   onOpenRequirement?: (requirementId: string) => void;
+  /** 没选主项目时勾了需求：按需求所属项目归属（第一条新勾的需求的项目） */
+  onProjectPicked?: (projectId: string) => void;
   disabled?: boolean;
 }
 
@@ -28,6 +30,7 @@ export function MeetingRequirementPicker({
   selected,
   onChange,
   onOpenRequirement,
+  onProjectPicked,
   disabled = false,
 }: MeetingRequirementPickerProps) {
   const [open, setOpen] = useState(false);
@@ -45,7 +48,7 @@ export function MeetingRequirementPicker({
     let active = true;
     setLoading(true);
     void apiClient
-      .requirements({ project_id: projectId, status: "active", limit: 200 })
+      .requirements({ project_id: projectId || undefined, status: "active", limit: 200 })
       .then((payload) => {
         if (!active) return;
         setOptions(
@@ -101,7 +104,12 @@ export function MeetingRequirementPicker({
   const confirm = () => {
     onChange(draft);
     setOpen(false);
+    if (!projectId) {
+      const picked = draft.find((item) => !selected.some((existing) => existing.id === item.id));
+      if (picked?.project_id) onProjectPicked?.(picked.project_id);
+    }
   };
+  const projectName = (id?: string | null) => projects.find((project) => project.id === id)?.name;
 
   // 后端不校验会议主项目和需求所属项目是否一致（D9），挂了的需求不会因为
   // 主项目被清空就跟着消失——禁用态只是不让继续挑选/新增，已关联的胶囊要
@@ -171,6 +179,9 @@ export function MeetingRequirementPicker({
                     />
                     <PriorityBadge priority={item.priority} />
                     <span>{item.title}</span>
+                    {!projectId && projectName(item.project_id) && (
+                      <em className="requirement-picker__project">{projectName(item.project_id)}</em>
+                    )}
                   </label>
                 ))
               )}

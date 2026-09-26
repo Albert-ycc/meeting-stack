@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from .db import Database, dedupe_preserve_order, escape_like_pattern, utc_now
-from .materials import assert_no_hidden_segment, folder_stat, list_folder_files
+from .materials import (
+    CARDS_DIR_NAME,
+    assert_no_hidden_segment,
+    folder_stat,
+    list_folder_files,
+)
 from .service import ConflictError, NotFoundError
 from .tasks import OPEN_TASK_STATUSES, TaskService, resolve_requirement_and_project
 
@@ -71,6 +76,8 @@ def _validate_folder_paths(connection: Any, project_id: str, folder_paths: list[
             raise ValueError(f"材料文件夹必须是绝对路径：{raw}")
         resolved = candidate.resolve(strict=False)
         assert_no_hidden_segment(resolved)
+        if resolved.name == CARDS_DIR_NAME:
+            raise ValueError("「声档会议记录」是声档写会议卡片的文件夹，不能当需求文件夹")
         if not resolved.is_dir():
             raise ValueError(f"材料文件夹不存在：{raw}")
         if resolved.parent not in root_paths:
@@ -369,10 +376,54 @@ def folder_files(
 # ---------------------------------------------------------------- 会议关联
 
 
+def _link_diff(
+    connection: Any,
+    *,
+    existing: set[tuple[str, str]],
+    target: list[tuple[str, str]],
+) -> tuple[int, int]:
+    """会议和需求的关联按差异增删：没变的那条保留原来的关联时间，不整组删了重插。"""
+    wanted = set(target)
+    removed = existing - wanted
+    for requirement_id, meeting_id in removed:
+        connection.execute(
+            "DELETE FROM requirement_meetings WHERE requirement_id=? AND meeting_id=?",
+            (requirement_id, meeting_id),
+        )
+    now = utc_now()
+    added = 0
+    for requirement_id, meeting_id in target:
+        if (requirement_id, meeting_id) in existing:
+            continue
+        connection.execute(
+            """INSERT OR IGNORE INTO requirement_meetings(requirement_id, meeting_id, created_at)
+               VALUES (?, ?, ?)""",
+            (requirement_id, meeting_id, now),
+        )
+        added += 1
+    return added, len(removed)
+
+
+def sync_meeting_requirements(
+    connection: Any, meeting_id: str, requirement_ids: list[str]
+) -> tuple[int, int]:
+    """会议页改「关联的需求」：调用方已校验需求存在并开好事务。"""
+    existing = {
+        (row["requirement_id"], meeting_id)
+        for row in connection.execute(
+            "SELECT requirement_id FROM requirement_meetings WHERE meeting_id=?", (meeting_id,)
+        ).fetchall()
+    }
+    return _link_diff(
+        connection,
+        existing=existing,
+        target=[(requirement_id, meeting_id) for requirement_id in requirement_ids],
+    )
+
+
 def set_meetings(task_service: TaskService, requirement_id: str, meeting_ids: list[str]) -> dict[str, Any]:
     db = task_service.db
     meeting_ids = dedupe_preserve_order(meeting_ids)
-    now = utc_now()
     with db.transaction() as connection:
         _requirement_row(connection, requirement_id)
         for meeting_id in meeting_ids:
@@ -380,15 +431,33 @@ def set_meetings(task_service: TaskService, requirement_id: str, meeting_ids: li
                 "SELECT 1 FROM meetings WHERE id=?", (meeting_id,)
             ).fetchone() is None:
                 raise NotFoundError(f"会议不存在：{meeting_id}")
-        connection.execute(
-            "DELETE FROM requirement_meetings WHERE requirement_id=?", (requirement_id,)
+        existing = {
+            (requirement_id, row["meeting_id"])
+            for row in connection.execute(
+                "SELECT meeting_id FROM requirement_meetings WHERE requirement_id=?",
+                (requirement_id,),
+            ).fetchall()
+        }
+        _link_diff(
+            connection,
+            existing=existing,
+            target=[(requirement_id, meeting_id) for meeting_id in meeting_ids],
         )
-        for meeting_id in meeting_ids:
-            connection.execute(
-                """INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at)
-                   VALUES (?, ?, ?)""",
-                (requirement_id, meeting_id, now),
-            )
+    return get_requirement(task_service, requirement_id)
+
+
+def add_meeting(task_service: TaskService, requirement_id: str, meeting_id: str) -> dict[str, Any]:
+    """关系图面板里［＋ 关联一场会］/［＋ 关联需求］：只加这一条，已经关联过就什么都不做。"""
+    db = task_service.db
+    with db.transaction() as connection:
+        _requirement_row(connection, requirement_id)
+        if connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
+            raise NotFoundError(f"会议不存在：{meeting_id}")
+        connection.execute(
+            """INSERT OR IGNORE INTO requirement_meetings(requirement_id, meeting_id, created_at)
+               VALUES (?, ?, ?)""",
+            (requirement_id, meeting_id, utc_now()),
+        )
     return get_requirement(task_service, requirement_id)
 
 

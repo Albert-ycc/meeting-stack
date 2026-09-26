@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { TaskEditModal } from "./TaskEditModal";
+import { ApiError } from "../api";
 import type { ApiClient } from "../api";
 import type { Project, RequirementsPayload, Task } from "../types";
 
@@ -151,10 +152,29 @@ describe("TaskEditModal 修改：所属需求", () => {
     expect(screen.getByRole("button", { name: /北辰仓快递配送/ })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "保存并确认" }));
-    expect(confirmTask).toHaveBeenCalledWith(
-      "t1",
-      expect.objectContaining({ requirement_id: "req-a1", project_id: "proj-a" }),
+    expect(confirmTask).toHaveBeenCalledWith("t1", expect.objectContaining({ requirement_id: "req-a1" }));
+    // 没动过项目下拉就不带 project_id：显式 null 会被后端当成「清空项目」
+    expect(confirmTask.mock.calls[0][1]).not.toHaveProperty("project_id");
+  });
+
+  it("动过项目下拉才提交 project_id，选「未归项目」时显式传 null", async () => {
+    const updateTask = vi.fn().mockResolvedValue({});
+    render(
+      <TaskEditModal
+        apiClient={makeClient({ updateTask } as Partial<ApiClient>)}
+        canWrite
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        projects={PROJECTS}
+        task={makeTask({ status: "confirmed" })}
+      />,
     );
+
+    await userEvent.click(screen.getByRole("button", { name: /云图科研用药/ }));
+    await userEvent.click(screen.getByRole("option", { name: "未归项目" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(updateTask).toHaveBeenCalledWith("t1", expect.objectContaining({ project_id: null }));
   });
 
   it("改选未归需求后保存，requirement_id 传 null", async () => {
@@ -176,5 +196,59 @@ describe("TaskEditModal 修改：所属需求", () => {
     await userEvent.click(screen.getByRole("button", { name: "保存并确认" }));
 
     expect(confirmTask).toHaveBeenCalledWith("t1", expect.objectContaining({ requirement_id: null }));
+  });
+});
+
+describe("TaskEditModal 原地新建项目：近似重名", () => {
+  const suggestion = { project_id: "proj-a", name: "云图科研用药", also_names: ["云图"], matched: "云图科研用药", match: "similar" };
+
+  it("撞上近似重名时问「已有『X』，用它？」，点「用它」就选中已有项目", async () => {
+    const createProject = vi.fn().mockRejectedValue(new ApiError("已有相近的项目", 409, { suggestion }));
+    const createTask = vi.fn().mockResolvedValue({});
+    render(
+      <TaskEditModal
+        apiClient={makeClient({ createProject, createTask } as Partial<ApiClient>)}
+        canWrite
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        projects={PROJECTS}
+        task={null}
+      />,
+    );
+
+    await userEvent.type(screen.getByPlaceholderText("要完成的事，例如：整理本周产品周报"), "新任务");
+    await userEvent.click(screen.getByRole("button", { name: /未归项目/ }));
+    await userEvent.click(screen.getByRole("button", { name: "＋ 新建项目" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "新项目名称" }), "云图科研");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("已有「云图科研用药」（又称 云图），是不是它？");
+    await userEvent.click(screen.getByRole("button", { name: "用它" }));
+    await userEvent.click(screen.getByRole("button", { name: "创建任务" }));
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ project_id: "proj-a" }));
+  });
+
+  it("点「仍然新建」带 force 建新项目", async () => {
+    const createProject = vi.fn().mockRejectedValue(new ApiError("已有相近的项目", 409, { suggestion }));
+    const createProjectWith = vi.fn().mockResolvedValue({ id: "proj-new", name: "云图科研", color: "#667085" });
+    render(
+      <TaskEditModal
+        apiClient={makeClient({ createProject, createProjectWith } as Partial<ApiClient>)}
+        canWrite
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        projects={PROJECTS}
+        task={null}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /未归项目/ }));
+    await userEvent.click(screen.getByRole("button", { name: "＋ 新建项目" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "新项目名称" }), "云图科研");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+    await userEvent.click(await screen.findByRole("button", { name: "仍然新建" }));
+
+    expect(createProjectWith).toHaveBeenCalledWith({ name: "云图科研", color: expect.stringMatching(/^#/), force: true });
   });
 });

@@ -1,0 +1,21 @@
+/* 新建项目撞上近似重名时的追问 */
+
+.similar-project {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 10px;
+}
+
+.similar-project__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

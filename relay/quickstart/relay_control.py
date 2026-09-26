@@ -176,6 +176,30 @@ class PublishValidationError(RelayControlError):
     """发布回执没有通过文件归属或内容完整性校验。"""
 
 
+# 工作台用环境变量传项目提示：旧版 relayctl 不认识 --project-hint 会直接报错，
+# 不认识的环境变量则会被忽略，新旧两边随便先升级哪一边都不会让入队失败。
+PROJECT_HINT_ENV = "MEETING_RELAY_PROJECT_HINT"
+PROJECT_HINT_MAX_LEN = 200
+
+
+def _normalize_project_hint(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    if not text:
+        return None
+    if len(text) > PROJECT_HINT_MAX_LEN:
+        raise RelayControlError(f"项目提示不能超过 {PROJECT_HINT_MAX_LEN} 个字符")
+    return text
+
+
+def _cli_project_hint(args: argparse.Namespace) -> str | None:
+    value = getattr(args, "project_hint", None)
+    if value is None:
+        value = os.environ.get(PROJECT_HINT_ENV)
+    return value
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -2414,6 +2438,7 @@ class RelayControl:
                     published_at TEXT,
                     hotword_prompt_path TEXT,
                     hotword_prompt_sha256 TEXT,
+                    project_hint TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -2503,6 +2528,7 @@ class RelayControl:
                 "published_at",
                 "hotword_prompt_path",
                 "hotword_prompt_sha256",
+                "project_hint",
             }
             attempt_migration_columns = {
                 "input_transcript_path",
@@ -2611,6 +2637,9 @@ class RelayControl:
                 connection.execute("ALTER TABLE jobs ADD COLUMN hotword_prompt_path TEXT")
             if "hotword_prompt_sha256" not in job_columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN hotword_prompt_sha256 TEXT")
+            if "project_hint" not in job_columns:
+                # 工作台告诉 relay 这场会属于哪个项目（项目 id 或名字），出纪要挑词用。
+                connection.execute("ALTER TABLE jobs ADD COLUMN project_hint TEXT")
             if "input_transcript_path" not in attempt_columns:
                 connection.execute(
                     "ALTER TABLE attempts ADD COLUMN input_transcript_path TEXT"
@@ -3141,7 +3170,9 @@ class RelayControl:
         requested_stage: str | None = None,
         transcript_path: str | Path | None = None,
         hotword_prompt_path: str | Path | None = None,
+        project_hint: str | None = None,
     ) -> str:
+        project_hint = _normalize_project_hint(project_hint)
         minutes_only = requested_stage == "minutes_generating"
         if requested_stage not in {None, "minutes_generating"}:
             raise RelayControlError("enqueue --stage 仅支持 minutes_generating")
@@ -3204,6 +3235,12 @@ class RelayControl:
                         """,
                         (audio_sha256, audio_size, _now(), existing["job_id"]),
                     )
+                if project_hint:
+                    # 项目提示只影响下一次出纪要挑词，幂等入队时跟着工作台最新的归属走。
+                    connection.execute(
+                        "UPDATE jobs SET project_hint = ? WHERE job_id = ?",
+                        (project_hint, existing["job_id"]),
+                    )
                 return str(existing["job_id"])
 
             job_id = "job-" + uuid.uuid4().hex[:16]
@@ -3227,9 +3264,9 @@ class RelayControl:
                 INSERT INTO jobs (
                     job_id, source_key, audio_path, status, current_attempt,
                     retry_stage, audio_sha256, audio_size,
-                    hotword_prompt_path, hotword_prompt_sha256,
+                    hotword_prompt_path, hotword_prompt_sha256, project_hint,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, 'discovered', 1, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, 'discovered', 1, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -3240,6 +3277,7 @@ class RelayControl:
                     audio_size,
                     str(hotword_snapshot) if hotword_snapshot else None,
                     hotword_sha256,
+                    project_hint,
                     now,
                     now,
                 ),
@@ -4000,6 +4038,7 @@ class RelayControl:
                 "published_archive_dir": row["published_archive_dir"],
                 "hotword_prompt_path": row["hotword_prompt_path"],
                 "hotword_prompt_sha256": row["hotword_prompt_sha256"],
+                "project_hint": row["project_hint"],
                 "input_transcript_path": attempt_row["input_transcript_path"],
                 "input_transcript_sha256": attempt_row["input_transcript_sha256"],
                 "input_transcript_bytes": attempt_row["input_transcript_bytes"],
@@ -4290,7 +4329,9 @@ class RelayControl:
         stage: str,
         transcript_path: str | Path | None = None,
         hotword_prompt_path: str | Path | None = None,
+        project_hint: str | None = None,
     ) -> int:
+        project_hint = _normalize_project_hint(project_hint)
         if stage not in RETRYABLE_STAGES:
             raise RelayControlError(
                 f"不可重试的阶段: {stage}；允许值: {', '.join(sorted(RETRYABLE_STAGES))}"
@@ -4373,6 +4414,7 @@ class RelayControl:
                     worker_id = NULL, claimed_at = NULL, codex_dispatched_at = NULL,
                     hotword_prompt_path = COALESCE(?, hotword_prompt_path),
                     hotword_prompt_sha256 = COALESCE(?, hotword_prompt_sha256),
+                    project_hint = COALESCE(?, project_hint),
                     updated_at = ?
                 WHERE job_id = ?
                 """,
@@ -4381,6 +4423,7 @@ class RelayControl:
                     stage,
                     str(replacement_hotword_path) if replacement_hotword_path else None,
                     replacement_hotword_sha256,
+                    project_hint,
                     now,
                     job_id,
                 ),
@@ -6320,6 +6363,7 @@ class RelayControl:
             ),
             "hotwords_configured": bool(row["hotword_prompt_path"]),
             "hotword_prompt_sha256": row["hotword_prompt_sha256"],
+            "project_hint": row["project_hint"],
             "retry_stage": row["retry_stage"],
             "stop_after_stage": bool(row["stop_after_stage"]),
             "archive_dir": row["archive_dir"],
@@ -6436,6 +6480,7 @@ def enqueue(
     requested_stage: str | None = None,
     transcript_path: str | Path | None = None,
     hotword_prompt_path: str | Path | None = None,
+    project_hint: str | None = None,
 ) -> str:
     return _service(db_path).enqueue(
         audio,
@@ -6443,6 +6488,7 @@ def enqueue(
         requested_stage=requested_stage,
         transcript_path=transcript_path,
         hotword_prompt_path=hotword_prompt_path,
+        project_hint=project_hint,
     )
 
 
@@ -6452,8 +6498,11 @@ def retry(
     db_path: str | Path | None = None,
     *,
     transcript_path: str | Path | None = None,
+    project_hint: str | None = None,
 ) -> int:
-    return _service(db_path).retry(job_id, stage, transcript_path)
+    return _service(db_path).retry(
+        job_id, stage, transcript_path, project_hint=project_hint
+    )
 
 
 def claim_next(
@@ -6755,6 +6804,10 @@ def build_parser() -> argparse.ArgumentParser:
     enqueue_parser.add_argument(
         "--hotwords", help="本任务使用的 UTF-8 热词文件，最多 20 个词"
     )
+    enqueue_parser.add_argument(
+        "--project-hint",
+        help=f"这场会所属项目（id 或名字），出纪要时按它挑词；也可用环境变量 {PROJECT_HINT_ENV}",
+    )
     enqueue_parser.add_argument("--json", action="store_true", dest="as_json")
 
     retry_parser = subparsers.add_parser("retry", help="从失败阶段创建新 attempt")
@@ -6763,6 +6816,10 @@ def build_parser() -> argparse.ArgumentParser:
     retry_parser.add_argument("--transcript")
     retry_parser.add_argument(
         "--hotwords", help="可选替换任务热词快照；不传则沿用原任务热词"
+    )
+    retry_parser.add_argument(
+        "--project-hint",
+        help=f"可选更新这场会所属项目；不传则沿用原提示；也可用环境变量 {PROJECT_HINT_ENV}",
     )
 
     retry_substate_parser = subparsers.add_parser(
@@ -6865,6 +6922,7 @@ def main(argv: list[str] | None = None) -> int:
                 requested_stage=args.stage,
                 transcript_path=args.transcript,
                 hotword_prompt_path=args.hotwords,
+                project_hint=_cli_project_hint(args),
             )
             if args.as_json:
                 print(json.dumps(control.status(job_id), ensure_ascii=False))
@@ -6876,6 +6934,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.stage,
                 transcript_path=args.transcript,
                 hotword_prompt_path=args.hotwords,
+                project_hint=_cli_project_hint(args),
             )
             status_result = control.status(args.job_id)
             print(

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import type { ApiClient } from "../api";
 import { formatDurationText, formatMonthDay } from "../format";
@@ -16,8 +16,10 @@ import type {
 import { AsyncState } from "./AsyncState";
 import { FolderIcon } from "./FolderIcon";
 import { MaterialRootPickerModal } from "./MaterialRootPickerModal";
+import { ProjectCardsRow } from "./ProjectCardsRow";
 import { Pagination } from "./Pagination";
 import { ProjectFormModal } from "./ProjectFormModal";
+import { ProjectRecognitionCard } from "./ProjectRecognitionCard";
 import { PriorityBadge, RequirementStatusBadge } from "./RequirementBadges";
 // FE-1 负责的需求弹窗；写这个文件时它可能还不存在，tsc 报「模块不存在」属于预期（简报第 5 节已钉死 props）。
 import { RequirementModal } from "./RequirementModal";
@@ -26,6 +28,7 @@ import "./ProjectDetailPage.css";
 import { useConfirm } from "./ConfirmDialog";
 import { copyText } from "../clipboard";
 import { NoticeBanner, useNotice } from "./Notice";
+import { ProjectGlossary } from "./ProjectGlossary";
 import { usePersistentState } from "../viewState";
 
 interface ProjectDetailPageProps {
@@ -44,6 +47,10 @@ interface ProjectDetailPageProps {
   /** 挂根目录 / 选材料文件夹只在桌面端出现 */
   canPickFolders: boolean;
   onProjectsChanged?: () => void | Promise<void>;
+  /** 合并后跳到目标项目 */
+  onOpenProject?: (projectId: string) => void;
+  /** 标题行右侧的［关系图｜清单］（手机端没有关系图，不传） */
+  modeToggle?: ReactNode;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -88,6 +95,8 @@ export function ProjectDetailPage({
   onOpenRequirement,
   canPickFolders,
   onProjectsChanged,
+  onOpenProject,
+  modeToggle,
 }: ProjectDetailPageProps) {
   const [board, setBoard] = useState<ProjectBoard | null>(null);
   const [boardState, setBoardState] = useState<LoadState>("loading");
@@ -103,7 +112,7 @@ export function ProjectDetailPage({
   const [requirementsPayload, setRequirementsPayload] = useState<RequirementsPayload | null>(null);
   const [requirementsState, setRequirementsState] = useState<LoadState>("loading");
 
-  const [editingProject, setEditingProject] = useState(false);
+  const [editingProject, setEditingProject] = useState<false | "edit" | "merge" | "delete">(false);
   const [creatingRequirement, setCreatingRequirement] = useState(false);
   const [addingRoot, setAddingRoot] = useState(false);
   const [reselectingRoot, setReselectingRoot] = useState<MaterialRoot | null>(null);
@@ -195,14 +204,18 @@ export function ProjectDetailPage({
     setRequirementsPage(0);
   };
 
-  const copyPath = async (path: string) => {
+  const copyWithToast = async (text: string, done: string) => {
     try {
-      await copyText(path);
-      showToast("已复制路径");
+      await copyText(text);
+      showToast(done);
     } catch {
       setNotice("复制失败，请手动复制", "error");
     }
   };
+  const copyPath = (path: string) => copyWithToast(path, "已复制路径");
+  // 挂上文件夹时当场补写的会议卡片张数
+  const cardsWrittenNote = (root: MaterialRoot | undefined) =>
+    root?.cards_written ? `，已补写 ${root.cards_written} 张会议卡片` : "";
 
   const refreshAfterRootChange = async () => {
     await Promise.all([loadBoard(), loadSubfolders()]);
@@ -213,9 +226,9 @@ export function ProjectDetailPage({
     setRootBusy(true);
     setRootError("");
     try {
-      await apiClient.addProjectMaterialRoot(projectId, path);
+      const added = await apiClient.addProjectMaterialRoot(projectId, path);
       setAddingRoot(false);
-      setNotice("材料根目录已添加");
+      setNotice(`材料根目录已添加${cardsWrittenNote(added)}`);
       await refreshAfterRootChange();
     } catch (error) {
       // D27：取径器还开着，错误要就地显示在弹窗里，不能吞掉／丢到被弹窗盖住的页面级提示
@@ -230,10 +243,10 @@ export function ProjectDetailPage({
     setRootBusy(true);
     setRootError("");
     try {
-      await apiClient.removeProjectMaterialRoot(projectId, reselectingRoot.id);
-      await apiClient.addProjectMaterialRoot(projectId, path);
+      // 原子替换：只改路径，根目录 id 不变；失败时旧根目录原样保留，不会「删了没加上」。
+      const replaced = await apiClient.replaceProjectMaterialRoot(projectId, reselectingRoot.id, path);
       setReselectingRoot(null);
-      setNotice("材料根目录已更新");
+      setNotice(`材料根目录已更新${cardsWrittenNote(replaced)}`);
       await refreshAfterRootChange();
     } catch (error) {
       setRootError(error instanceof Error ? error.message : "更新失败，请稍后重试");
@@ -276,6 +289,7 @@ export function ProjectDetailPage({
   const requirementCounts = board?.requirement_counts;
   // 挂/移/重选根目录既要能写这个项目，也要在桌面端；复制路径不受限，谁都能读
   const canManageFolders = canWrite && canPickFolders;
+  const isEmptyProject = (board?.meeting_count ?? 0) === 0 && (requirementCounts?.all ?? 0) === 0;
 
   return (
     <section className="detail-page page-content">
@@ -295,9 +309,10 @@ export function ProjectDetailPage({
               <h1>{board.name}</h1>
             </div>
           )}
+          {modeToggle}
           {canWrite && board && (
             <span className="detail-head__actions">
-              <button className="detail-head__edit" onClick={() => setEditingProject(true)} type="button">
+              <button className="detail-head__edit" onClick={() => setEditingProject("edit")} type="button">
                 编辑项目
               </button>
               <button className="detail-head__create-requirement" onClick={() => setCreatingRequirement(true)} type="button">
@@ -328,6 +343,29 @@ export function ProjectDetailPage({
 
       {board && boardState === "ready" && (
         <>
+          {board.origin === "ai" && roots.length === 0 && (
+            <div className="detail-hint" role="note">
+              <span>这个项目是 AI 自动建的，还没挂文件夹。是重复的就合并到别的项目，用不上可以删掉。</span>
+              {canWrite && (
+                <span className="detail-hint__actions">
+                  {canManageFolders && (
+                    <button className="text-button" onClick={openAddRoot} type="button">
+                      挂上文件夹
+                    </button>
+                  )}
+                  <button className="text-button" onClick={() => setEditingProject("merge")} type="button">
+                    合并到…
+                  </button>
+                  {isEmptyProject && (
+                    <button className="text-button" onClick={() => setEditingProject("delete")} type="button">
+                      删除
+                    </button>
+                  )}
+                </span>
+              )}
+            </div>
+          )}
+
           <section className="detail-card">
             <header className="detail-card__head">
               <h2>材料根目录</h2>
@@ -348,44 +386,85 @@ export function ProjectDetailPage({
               </div>
             ) : (
               <ul className="material-root-list">
-                {roots.map((root) => (
-                  <li className="material-root-row" key={root.id}>
-                    <FolderIcon className="material-root-row__icon" />
-                    <span className="material-root-row__path">{root.path}</span>
-                    {root.exists ? (
-                      <span className="material-root-row__count">
-                        {subfolderCounts.get(root.id) ?? 0} 个子文件夹
-                      </span>
-                    ) : (
-                      <span className="material-root-row__missing">找不到该目录</span>
-                    )}
-                    <span className="material-root-row__ops">
-                      {root.exists ? (
-                        <button onClick={() => void copyPath(root.path)} type="button">
-                          复制路径
-                        </button>
+                {roots.map((root) => {
+                  const state = root.state ?? (root.exists ? "online" : "missing");
+                  return (
+                    <li className="material-root-row" key={root.id}>
+                      <FolderIcon className="material-root-row__icon" />
+                      <span className="material-root-row__path">{root.path}</span>
+                      {state === "online" ? (
+                        <span className="material-root-row__count">
+                          {subfolderCounts.get(root.id) ?? 0} 个子文件夹
+                        </span>
+                      ) : state === "volume_offline" ? (
+                        <span className="material-root-row__offline">资料盘未连接，插上后自动恢复</span>
                       ) : (
-                        canManageFolders && (
-                          <button onClick={() => openReselectRoot(root)} type="button">
-                            重新选择
+                        <span className="material-root-row__missing">找不到该目录</span>
+                      )}
+                      {(root.shared_with?.length ?? 0) > 0 && (
+                        <span className="material-root-row__shared" role="note">
+                          也挂在{root.shared_with!.map((entry) => `「${entry.project_name}」`).join("")}下，
+                          {root.cards_owner_id === projectId
+                            ? "会议卡片写在这个项目里"
+                            : `会议卡片只写给先挂上的「${
+                                root.shared_with!.find((entry) => entry.project_id === root.cards_owner_id)?.project_name ?? ""
+                              }」，不需要可以在这里移除`}
+                        </span>
+                      )}
+                      <span className="material-root-row__ops">
+                        {state === "online" ? (
+                          <button onClick={() => void copyPath(root.path)} type="button">
+                            复制路径
                           </button>
-                        )
-                      )}
-                      {canManageFolders && (
-                        <button
-                          className="material-root-row__remove"
-                          onClick={() => void removeRoot(root)}
-                          type="button"
-                        >
-                          移除
-                        </button>
-                      )}
-                    </span>
-                  </li>
-                ))}
+                        ) : (
+                          state === "missing" &&
+                          canManageFolders && (
+                            <button onClick={() => openReselectRoot(root)} type="button">
+                              重新选择
+                            </button>
+                          )
+                        )}
+                        {canManageFolders && (
+                          <button
+                            className="material-root-row__remove"
+                            onClick={() => void removeRoot(root)}
+                            type="button"
+                          >
+                            移除
+                          </button>
+                        )}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
+            {board.cards && (
+              <ProjectCardsRow
+                apiClient={apiClient}
+                canPickFolders={Boolean(canPickFolders)}
+                canWrite={canWrite}
+                cards={board.cards}
+                onChanged={loadBoard}
+                onCopy={copyWithToast}
+                projectId={projectId}
+              />
+            )}
           </section>
+
+          {board.profile && (
+            <ProjectRecognitionCard
+              apiClient={apiClient}
+              canWrite={canWrite}
+              onChanged={async () => {
+                await loadBoard();
+                await onProjectsChanged?.();
+              }}
+              profile={board.profile}
+              projectId={projectId}
+              projectName={board.name}
+            />
+          )}
 
           <section className="detail-card">
             <header className="detail-card__head">
@@ -521,30 +600,20 @@ export function ProjectDetailPage({
             )}
           </section>
 
-          <section className="project-glossary">
-            <header className="project-glossary__head">
-              <strong>词典</strong>
-              <span>{board.glossary_count ?? 0} 条术语</span>
-              <button
-                className="project-glossary__link"
-                onClick={() => onOpenGlossary(projectId)}
-                type="button"
-              >
-                在词典中查看 →
-              </button>
-            </header>
-            {board.glossary_terms && board.glossary_terms.length > 0 ? (
-              <div className="project-glossary__chips">
-                {board.glossary_terms.map((term) => (
-                  <span className="project-glossary__chip" key={term.id}>
-                    {term.term}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="project-glossary__empty">这个项目还没有挂靠的术语</p>
-            )}
-          </section>
+          <ProjectGlossary
+            apiClient={apiClient}
+            canWrite={canWrite}
+            onChanged={async (message) => {
+              setNotice(message);
+              await loadBoard();
+            }}
+            onOpenGlossary={onOpenGlossary}
+            projectId={projectId}
+            projectName={board.name}
+            publicCount={board.public_glossary_count ?? 0}
+            terms={board.glossary_terms ?? []}
+            total={board.glossary_count ?? 0}
+          />
         </>
       )}
 
@@ -561,7 +630,18 @@ export function ProjectDetailPage({
             onProjectUpdated?.();
             void onProjectsChanged?.();
           }}
+          initialAction={editingProject === "edit" ? undefined : editingProject}
+          onDeleted={() => {
+            void onProjectsChanged?.();
+            onBack();
+          }}
+          onMerged={(target) => {
+            void onProjectsChanged?.();
+            if (onOpenProject) onOpenProject(target.id);
+            else onBack();
+          }}
           project={board}
+          projects={projects}
         />
       )}
 

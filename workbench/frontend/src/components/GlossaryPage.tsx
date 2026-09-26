@@ -2,18 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AsyncState } from "./AsyncState";
 import { useConfirm } from "./ConfirmDialog";
+import { GlossaryTargetButton, targetName } from "./GlossaryTargetButton";
 import { GlossaryTermModal } from "./GlossaryTermModal";
+import { PUBLIC_GLOSSARY_KEY } from "./ProjectGlossary";
 import { formatDate } from "../format";
 import type { ApiClient } from "../api";
 import type {
   GlossaryScope,
   GlossarySuggestion,
+  GlossaryTarget,
   GlossaryTerm,
   LoadState,
   MeetingSummary,
   Project,
 } from "../types";
 
+import { LegacyGroupsNote } from "./LegacyGroupsNote";
 import "./GlossaryPage.css";
 import { NoticeBanner, useNotice } from "./Notice";
 import { usePersistentState } from "../viewState";
@@ -46,8 +50,10 @@ const SUGGESTION_STATUS_LABEL: Record<SuggestionStatus, string> = {
 const ALL_KEY = "all";
 
 /** 来源会议只显示标题；会议不在当前列表页时退成档案号前段，仍可辨识。 */
-function meetingLabel(meetingId: string | null, meetings: MeetingSummary[]): string {
+function meetingLabel(suggestion: GlossarySuggestion, meetings: MeetingSummary[]): string {
+  const meetingId = suggestion.meeting_id;
   if (!meetingId) return "编辑纪要时捕获";
+  if (suggestion.meeting_title) return suggestion.meeting_title;
   const meeting = meetings.find((item) => item.id === meetingId);
   return meeting?.title ?? `会议 ${meetingId.slice(0, 8)}…`;
 }
@@ -56,9 +62,9 @@ function chipKey(chip: Pick<GlossaryScope, "kind" | "key">): string {
   return `${chip.kind}:${chip.key}`;
 }
 
-/** 合并本地/远端 chip 列表时的去重身份：只有一个「通用」分组，
- * 后端 key 是「通用」这个 label 本身，本地兜底算的是常量 "general"，两边字面不相等，
- * 不按 kind 归一就会在「全部」视图里裂出两个通用分组、且各自算出一半计数。 */
+/** 合并本地/远端 chip 列表时的去重身份：只有一个「公共」分组。
+ * 公共分组的 key 在库里是 scope 值「通用」，按 kind 归一，免得哪边 key 写法不同时
+ * 在「全部」视图里裂出两个公共分组、且各自算出一半计数。 */
 function chipIdentity(chip: Pick<GlossaryScope, "kind" | "key">): string {
   return chip.kind === "general" ? "general" : chipKey(chip);
 }
@@ -92,7 +98,7 @@ function deriveLocalScopes(terms: GlossaryTerm[]): GlossaryScope[] {
     }
   });
   const chips: GlossaryScope[] = [
-    { kind: "general", key: "general", label: "通用", color: null, count: generalCount },
+    { kind: "general", key: "通用", label: "公共", color: null, count: generalCount },
   ];
   [...projectMap.entries()]
     .sort((left, right) => left[1].label.localeCompare(right[1].label, "zh-CN"))
@@ -105,11 +111,12 @@ function deriveLocalScopes(terms: GlossaryTerm[]): GlossaryScope[] {
   return chips;
 }
 
-/** 术语/别名子串匹配，不区分大小写；空搜索词永远命中。 */
+/** 术语/错写/也叫子串匹配，不区分大小写；空搜索词永远命中。 */
 function matchesSearch(term: GlossaryTerm, needle: string): boolean {
   if (!needle) return true;
   if (term.term.toLowerCase().includes(needle)) return true;
-  return term.aliases.some((alias) => alias.toLowerCase().includes(needle));
+  if (term.aliases.some((alias) => alias.toLowerCase().includes(needle))) return true;
+  return (term.also ?? []).some((name) => name.toLowerCase().includes(needle));
 }
 
 export function GlossaryPage({
@@ -144,6 +151,10 @@ export function GlossaryPage({
   const [suggestions, setSuggestions] = useState<GlossarySuggestion[]>([]);
   const [suggestionsState, setSuggestionsState] = useState<LoadState>("loading");
   const [pendingTotal, setPendingTotal] = useState(0);
+  // 「只记 2 字」勾选：按建议 id 记
+  const [shortPicks, setShortPicks] = useState<Record<string, boolean>>({});
+  // 刚确认的那条，提示条上给［撤销］
+  const [lastConfirmed, setLastConfirmed] = useState<GlossarySuggestion | null>(null);
 
   const loadTerms = useCallback(async () => {
     const seq = ++termsSeqRef.current;
@@ -194,9 +205,14 @@ export function GlossaryPage({
   useEffect(() => {
     void loadTerms();
     void loadScopes();
-    void loadSuggestions("pending");
     void refreshPendingTotal();
-  }, [loadScopes, loadSuggestions, loadTerms, refreshPendingTotal]);
+  }, [loadScopes, loadTerms, refreshPendingTotal]);
+
+  // 待确认 / 已确认 / 已驳回 切换时按状态重新拉
+  useEffect(() => {
+    setSuggestionsState("loading");
+    void loadSuggestions(suggestionStatus);
+  }, [loadSuggestions, suggestionStatus]);
 
   // 从项目详情页「在词典中查看」跳转过来：预选中该项目 chip，只在首次挂载时生效一次，
   // 之后用户自己切 chip 不应该被这个 prop 打断。
@@ -204,7 +220,11 @@ export function GlossaryPage({
     if (initialProjectId && !appliedInitialProjectRef.current) {
       appliedInitialProjectRef.current = true;
       setActiveTab("terms");
-      setActiveChipKey(chipKey({ kind: "project", key: initialProjectId }));
+      setActiveChipKey(
+        initialProjectId === PUBLIC_GLOSSARY_KEY
+          ? chipKey({ kind: "general", key: "通用" })
+          : chipKey({ kind: "project", key: initialProjectId }),
+      );
     }
   }, [initialProjectId]);
 
@@ -226,11 +246,6 @@ export function GlossaryPage({
 
   const activeChip = chips.find((chip) => chipKey(chip) === activeChipKey) ?? null;
   const needle = search.trim().toLowerCase();
-
-  const bucketSuggestions = useMemo(
-    () => chips.filter((chip) => chip.kind === "bucket").map((chip) => chip.label),
-    [chips],
-  );
 
   const run = async (action: () => Promise<void>) => {
     if (busyRef.current) return;
@@ -263,20 +278,49 @@ export function GlossaryPage({
     });
   };
 
-  const confirmSuggestion = (suggestion: GlossarySuggestion) =>
+  const afterSuggestionChange = async () => {
+    await Promise.all([loadSuggestions(suggestionStatus), refreshPendingTotal(), reloadAfterWrite()]);
+    onPendingChange?.();
+  };
+
+  const confirmSuggestion = (suggestion: GlossarySuggestion, target: GlossaryTarget) =>
     void run(async () => {
-      await apiClient.confirmGlossarySuggestion(suggestion.id);
-      setNotice(`已确认：「${suggestion.wrong}」→「${suggestion.correct}」写入词典`);
-      await Promise.all([loadSuggestions(suggestionStatus), refreshPendingTotal()]);
-      onPendingChange?.();
+      const result = await apiClient.confirmGlossarySuggestion(suggestion.id, {
+        target,
+        short: Boolean(shortPicks[suggestion.id]),
+      });
+      const where = targetName(result.term?.project_name);
+      setLastConfirmed(suggestion);
+      setNotice(
+        result.created
+          ? `已记入 ${where}：${result.wrong} → ${result.correct}`
+          : `已加到 ${where} 的『${result.correct}』：${result.wrong} → ${result.correct}`,
+        "success",
+        10_000,
+      );
+      await afterSuggestionChange();
+    });
+
+  const undoSuggestion = (suggestion: GlossarySuggestion) =>
+    void run(async () => {
+      await apiClient.undoGlossarySuggestion(suggestion.id);
+      setLastConfirmed(null);
+      setNotice(`已撤销，「${suggestion.wrong} → ${suggestion.correct}」回到待确认`);
+      await afterSuggestionChange();
     });
 
   const rejectSuggestion = (suggestion: GlossarySuggestion) =>
     void run(async () => {
       await apiClient.rejectGlossarySuggestion(suggestion.id);
-      setNotice(`已驳回「${suggestion.wrong} → ${suggestion.correct}」`);
-      await Promise.all([loadSuggestions(suggestionStatus), refreshPendingTotal()]);
-      onPendingChange?.();
+      setNotice(`已标成不是错字：「${suggestion.wrong} → ${suggestion.correct}」，在「已驳回」里可以恢复`);
+      await afterSuggestionChange();
+    });
+
+  const restoreSuggestion = (suggestion: GlossarySuggestion) =>
+    void run(async () => {
+      await apiClient.restoreGlossarySuggestion(suggestion.id);
+      setNotice(`已恢复，「${suggestion.wrong} → ${suggestion.correct}」回到待确认`);
+      await afterSuggestionChange();
     });
 
   const renderCard = (term: GlossaryTerm) => {
@@ -301,6 +345,9 @@ export function GlossaryPage({
             ))}
             {extra > 0 && <span className="glossary-card__alias-more">+{extra}</span>}
           </div>
+        )}
+        {(term.also ?? []).length > 0 && (
+          <p className="glossary-card__also">也叫 {(term.also ?? []).join("、")}</p>
         )}
         <div className="glossary-card__foot">
           {/* 命中数没有写入方（relay 只读快照，从不回写），接通之前不显示，免得每张卡都是 0 */}
@@ -329,47 +376,107 @@ export function GlossaryPage({
     );
   };
 
-  const renderSuggestionRow = (suggestion: GlossarySuggestion) => (
-    <div className="glossary-suggestion" key={suggestion.id}>
-      <div className="glossary-suggestion__body">
-        <p className="glossary-suggestion__pair">
-          <span className="glossary-suggestion__wrong">{suggestion.wrong}</span>
-          <span className="glossary-suggestion__arrow" aria-hidden="true">→</span>
-          <span className="glossary-suggestion__correct">{suggestion.correct}</span>
-        </p>
-        {suggestion.context && (
-          <p className="glossary-suggestion__context">「{suggestion.context}」</p>
-        )}
-        <div className="glossary-suggestion__meta">
-          <span>
-            来自 {meetingLabel(suggestion.meeting_id, meetings)} ·{" "}
-            {suggestion.scope || "通用"}
-          </span>
-          <span>{formatDate(suggestion.created_at)}</span>
-        </div>
-      </div>
-      {canWrite && suggestion.status === "pending" && (
+  const renderSuggestionActions = (suggestion: GlossarySuggestion) => {
+    if (!canWrite) return null;
+    if (suggestion.status === "confirmed") {
+      return (
         <span className="glossary-suggestion__ops">
+          <button className="text-button" disabled={busy} onClick={() => undoSuggestion(suggestion)} type="button">
+            撤销
+          </button>
+        </span>
+      );
+    }
+    if (suggestion.status === "rejected") {
+      return (
+        <span className="glossary-suggestion__ops">
+          <button className="text-button" disabled={busy} onClick={() => restoreSuggestion(suggestion)} type="button">
+            恢复
+          </button>
+        </span>
+      );
+    }
+    return (
+      <span className="glossary-suggestion__ops">
+        {suggestion.existing_term_id ? (
           <button
             className="text-button text-button--accent"
             disabled={busy}
-            onClick={() => confirmSuggestion(suggestion)}
+            onClick={() => confirmSuggestion(suggestion, "auto")}
             type="button"
           >
-            确认
+            加到那条
           </button>
-          <button
-            className="text-button text-button--muted"
+        ) : (
+          <GlossaryTargetButton
+            defaultProjectId={suggestion.target_project_id}
+            defaultProjectName={suggestion.target_project_name}
             disabled={busy}
-            onClick={() => rejectSuggestion(suggestion)}
-            type="button"
-          >
-            驳回
-          </button>
-        </span>
-      )}
-    </div>
-  );
+            onConfirm={(target) => confirmSuggestion(suggestion, target)}
+            projects={projects}
+          />
+        )}
+        <button
+          className="text-button text-button--muted"
+          disabled={busy}
+          onClick={() => rejectSuggestion(suggestion)}
+          type="button"
+        >
+          不是错字
+        </button>
+      </span>
+    );
+  };
+
+  const renderSuggestionRow = (suggestion: GlossarySuggestion) => {
+    const short = Boolean(shortPicks[suggestion.id]) && suggestion.status === "pending";
+    const hasAlt = Boolean(suggestion.alt_wrong && suggestion.alt_correct);
+    return (
+      <div className="glossary-suggestion" key={suggestion.id}>
+        <div className="glossary-suggestion__body">
+          <p className="glossary-suggestion__pair">
+            <span className="glossary-suggestion__wrong">
+              {short ? suggestion.alt_wrong : suggestion.confirmed_wrong || suggestion.wrong}
+            </span>
+            <span className="glossary-suggestion__arrow" aria-hidden="true">→</span>
+            <span className="glossary-suggestion__correct">{short ? suggestion.alt_correct : suggestion.correct}</span>
+            {canWrite && hasAlt && suggestion.status === "pending" && (
+              <label className="glossary-suggestion__short">
+                <input
+                  checked={short}
+                  onChange={(event) =>
+                    setShortPicks((current) => ({ ...current, [suggestion.id]: event.target.checked }))
+                  }
+                  type="checkbox"
+                />
+                只记 2 字
+              </label>
+            )}
+          </p>
+          {suggestion.context && (
+            <p className="glossary-suggestion__context">「{suggestion.context}」</p>
+          )}
+          {suggestion.status === "pending" && suggestion.existing_term_id && (
+            <p className="glossary-suggestion__note">
+              词典里已有『{suggestion.correct}』（{targetName(suggestion.existing_term_project_name)}），会加到那条
+            </p>
+          )}
+          <div className="glossary-suggestion__meta">
+            <span>
+              来自 {meetingLabel(suggestion, meetings)}
+              {suggestion.status === "pending" &&
+                ` · 会议现在在 ${targetName(suggestion.target_project_name)}`}
+              {suggestion.status === "confirmed" &&
+                suggestion.existing_term_id &&
+                ` · 记在 ${targetName(suggestion.existing_term_project_name)}`}
+            </span>
+            <span>{formatDate(suggestion.created_at)}</span>
+          </div>
+        </div>
+        {renderSuggestionActions(suggestion)}
+      </div>
+    );
+  };
 
   const termsBody = () => {
     if (termsState === "loading") return <AsyncState state="loading" />;
@@ -422,7 +529,9 @@ export function GlossaryPage({
           message={
             search.trim()
               ? `没有匹配「${search.trim()}」的术语`
-              : `「${activeChip?.label ?? "这个范围"}」还没有术语。`
+              : activeChip?.kind === "project"
+                ? `「${activeChip.label}」还没有项目词。项目词只在这个项目的会里用来纠错和识别项目。`
+                : `「${activeChip?.label ?? "这个范围"}」还没有术语。`
           }
           state="empty"
         />
@@ -438,7 +547,7 @@ export function GlossaryPage({
           <span className="eyebrow">GLOSSARY / 术语词典</span>
           <h1>词典</h1>
           <p>
-            纪要生成时会把权威写法注入给 AI，编辑纪要时的错字更正会进待确认队列，确认后反写回词典。
+            出纪要时，按这场会的内容挑出相关的词交给 AI 纠错；词典不改逐字稿，想让逐字稿更准，用热词重新转写。编辑纪要时改过的错字，确认后也会记进来。
           </p>
         </div>
       </header>
@@ -464,10 +573,28 @@ export function GlossaryPage({
         </button>
       </div>
 
-      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
+      <NoticeBanner notice={notice} onDismiss={dismissNotice}>
+        {lastConfirmed && notice?.tone === "success" && canWrite && (
+          <button
+            className="text-button action-banner__undo"
+            disabled={busy}
+            onClick={() => undoSuggestion(lastConfirmed)}
+            type="button"
+          >
+            撤销
+          </button>
+        )}
+      </NoticeBanner>
 
       {activeTab === "terms" && (
         <>
+          <LegacyGroupsNote
+            apiClient={apiClient}
+            canWrite={canWrite}
+            onChanged={async () => {
+              await Promise.all([loadTerms(), loadScopes()]);
+            }}
+          />
           <div className="glossary-toolbar">
             <div aria-label="按归属筛选" className="glossary-chipbar" role="tablist">
               <button
@@ -494,6 +621,18 @@ export function GlossaryPage({
                   {chip.label} <span>{chip.count}</span>
                 </button>
               ))}
+              {pendingTotal > 0 && (
+                <button
+                  className="glossary-chipbar__item glossary-chipbar__item--pending"
+                  onClick={() => {
+                    setActiveTab("suggestions");
+                    setSuggestionStatus("pending");
+                  }}
+                  type="button"
+                >
+                  待确认 <span>{pendingTotal}</span>
+                </button>
+              )}
             </div>
             <div className="glossary-toolbar__actions">
               <input
@@ -560,14 +699,15 @@ export function GlossaryPage({
       {(creating || editing) && (
         <GlossaryTermModal
           apiClient={apiClient}
-          bucketSuggestions={bucketSuggestions}
+          defaultProjectId={activeChip?.kind === "project" ? activeChip.key : null}
           onClose={() => {
             setCreating(false);
             setEditing(null);
           }}
-          onSaved={() => {
+          onSaved={(message) => {
             setCreating(false);
             setEditing(null);
+            if (message) setNotice(message);
             void reloadAfterWrite();
           }}
           projects={projects}

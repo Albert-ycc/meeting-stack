@@ -99,6 +99,25 @@ Google Fonts CDN**，否则断网时字体掉回系统默认。
 .venv/bin/meeting-workbench doctor
 ```
 
+### 材料盘点与图片文字识别试跑（给第三期摸底，只读）
+
+```bash
+# 走一遍所有项目挂的材料文件夹，按「文档正文 / 图片文字 / 音视频转写 / 只收文件名」分层统计，
+# 列出读不了的（要密码、文件损坏、格式不支持、处理超时、没有权限）；不写库、不写盘
+.venv/bin/meeting-workbench materials walk --dry-run --json ~/Desktop/材料盘点.json
+# 只看一个项目，或直接指定文件夹
+.venv/bin/meeting-workbench materials walk --dry-run --project 云图AI
+.venv/bin/meeting-workbench materials walk --dry-run --root /Volumes/资料盘/项目
+
+# 挑 20 张材料里的图，分别用 macOS 自带的 Vision 和 tesseract 识别，比较用时和效果；
+# 对照结果写到 ~/.meeting-workbench/ocr-trial/<时间>/结果.md
+.venv/bin/meeting-workbench materials ocr-trial
+```
+
+Vision 需要 Xcode 命令行工具（`xcode-select --install`）；tesseract 需要
+`brew install tesseract tesseract-lang`。哪个没装就只跑另一个。装了 ffprobe
+（`brew install ffmpeg`）时，盘点会顺带算出音视频总时长。
+
 ## 转写质量评测与影子模型
 
 ASR 主引擎切换前必须先用人工金标比较，不以公开榜单代替真实会议验收。金标使用 UTF-8
@@ -286,6 +305,10 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 ```bash
 ./scripts/stop-web.sh && ./scripts/start-via-ssh.sh
 ```
+
+`card_listener.py` 是单独的进程，确认/驳回后重建卡片用的是它启动时加载的 `notify.py`。
+改过任务卡片（例如这一版卡片上多了「项目：…」一行）后也要重启它，不然点完按钮刷新出来的
+还是旧样子的卡片。
 
 ## 项目 → 需求 → 任务三层（260915 新增）
 

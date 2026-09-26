@@ -87,11 +87,9 @@ def test_update_project_rename_to_duplicate_name_conflicts_409_not_500(tmp_path)
     assert any(p["id"] == project_b and p["name"] == "项目乙" for p in unchanged)
 
 
-def test_create_project_ai_origin_idempotent_merge_unchanged(tmp_path):
-    """D26 附带约束：TaskService 内部 AI 建项目（origin=ai）幂等合并语义不受影响——
-    撞名不报错、直接合并到既有项目并把 origin 升级为 ai；只有 HTTP 手动建项目
-    （origin=manual）路径改成报 409。合并升级本身落库生效（用后续 GET 核实），
-    这里不去动 create_project 既有实现，按团队交代原样保留。"""
+def test_create_project_ai_origin_returns_existing_without_downgrade(tmp_path):
+    """D26 附带约束：TaskService 内部 AI 建项目（origin=ai）撞名不报错、直接返回既有项目；
+    只有 HTTP 手动建项目（origin=manual）路径报 409。v13 起不再把人工建的项目改标成 ai。"""
     (client, settings), browse_root = make_material_client(tmp_path)
     headers = write_headers(client)
     manual_id = client.post(
@@ -106,7 +104,7 @@ def test_create_project_ai_origin_idempotent_merge_unchanged(tmp_path):
     assert merged["id"] == manual_id
 
     refetched = next(p for p in client.get("/api/projects").json() if p["id"] == manual_id)
-    assert refetched["origin"] == "ai"
+    assert refetched["origin"] == "manual"
 
 
 def test_browse_rejects_dotdot_traversal(tmp_path):

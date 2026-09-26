@@ -14,6 +14,10 @@ from .hotwords import normalize_hotwords
 
 logger = logging.getLogger("meeting_workbench.relay_client")
 
+# 项目提示走环境变量而不是 --project-hint：旧版 relayctl 不认识的参数会让入队直接失败，
+# 不认识的环境变量则会被忽略，工作台和 relay 谁先升级都不影响出纪要。
+PROJECT_HINT_ENV = "MEETING_RELAY_PROJECT_HINT"
+
 
 class RelayUnavailable(RuntimeError):
     pass
@@ -29,6 +33,7 @@ class RelayClient:
         *,
         timeout: float = 30,
         allowed_returncodes: frozenset[int] = frozenset({0}),
+        extra_env: dict[str, str] | None = None,
     ) -> str:
         executable = self.settings.relayctl_path
         if not executable.is_file():
@@ -39,6 +44,8 @@ class RelayClient:
         # The workbench always talks to the controlled worker contract.  Do not
         # inherit an absent/legacy flag from launchd, tmux, or an SSH bootstrap.
         environment["MEETING_RELAY_CONTROL_ENABLED"] = "1"
+        environment.pop(PROJECT_HINT_ENV, None)
+        environment.update(extra_env or {})
         try:
             result = subprocess.run(
                 [str(executable), *arguments],
@@ -73,6 +80,11 @@ class RelayClient:
         }:
             raise RelayUnavailable("relayctl health 返回格式错误")
         return payload
+
+    @staticmethod
+    def _hint_env(project_hint: str | None) -> dict[str, str]:
+        hint = " ".join((project_hint or "").split())[:200]
+        return {PROJECT_HINT_ENV: hint} if hint else {}
 
     @staticmethod
     def _json(value: str) -> Any:
@@ -112,6 +124,7 @@ class RelayClient:
         transcript_path: str | Path | None = None,
         hotwords: list[str] | None = None,
         backend: str | None = None,
+        project_hint: str | None = None,
     ) -> str:
         arguments = ["enqueue", str(Path(audio_path).expanduser())]
         if stage:
@@ -123,7 +136,7 @@ class RelayClient:
         with self._hotword_file(hotwords) as hotword_path:
             if hotword_path:
                 arguments.extend(["--hotwords", str(hotword_path)])
-            job_id = self._run(arguments).strip()
+            job_id = self._run(arguments, extra_env=self._hint_env(project_hint)).strip()
         if not job_id.startswith("job-"):
             raise RelayUnavailable("relayctl 未返回有效 job_id")
         return job_id
@@ -153,6 +166,7 @@ class RelayClient:
         transcript_path: str | Path | None = None,
         hotwords: list[str] | None = None,
         backend: str | None = None,
+        project_hint: str | None = None,
     ) -> dict[str, Any]:
         arguments = ["retry", job_id, "--stage", stage]
         if transcript_path:
@@ -162,7 +176,9 @@ class RelayClient:
         with self._hotword_file(hotwords) as hotword_path:
             if hotword_path:
                 arguments.extend(["--hotwords", str(hotword_path)])
-            payload = self._json(self._run(arguments))
+            payload = self._json(
+                self._run(arguments, extra_env=self._hint_env(project_hint))
+            )
         if not isinstance(payload, dict):
             raise RelayUnavailable("relayctl retry 返回格式错误")
         return payload

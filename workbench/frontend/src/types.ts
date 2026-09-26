@@ -84,6 +84,42 @@ export interface Project {
   requirement_counts?: RequirementCounts;
   /** 未完成任务＝待确认＋已确认＋进行中 */
   open_task_count?: number;
+  /** 项目的其他叫法；former 是改名前的名字，merged 是合并进来的项目名 */
+  also_names?: ProjectAlsoName[];
+  /** 只在 POST /api/projects 的响应里出现 */
+  meetings_assigned?: number;
+  needs_review_meeting_ids?: string[];
+  folder_pending?: { path: string; reason: string };
+}
+
+export interface ProjectAlsoName {
+  name: string;
+  source: "manual" | "former" | "merged";
+}
+
+/** 新建项目撞上近似重名时 409 带回来的已有项目 */
+export interface SimilarProjectSuggestion {
+  project_id: string;
+  name: string;
+  also_names: string[];
+  matched: string;
+  match: "same" | "similar";
+}
+
+export interface FolderMatch {
+  path: string;
+  name: string;
+  match: "exact" | "similar" | null;
+  modified_at: string;
+}
+
+export interface FolderMatchesPayload {
+  matches: FolderMatch[];
+  recent: FolderMatch[];
+  create_parent: string;
+  create_parent_state: MaterialRootState;
+  create_name: string;
+  create_replaced: string[];
 }
 
 export interface Tag {
@@ -178,6 +214,10 @@ export interface MeetingSummary {
   project_name?: string | null;
   project_color?: string | null;
   project_origin?: "manual" | "ai" | null;
+  /** 列表接口带：归属状态、待你选的候选（≤2）、像新项目时的名字 */
+  attribution_state?: AttributionState;
+  candidates?: AttributionCandidate[];
+  new_project_name?: string | null;
   audio_artifact_id?: number | null;
   segment_count?: number;
   conflict?: number;
@@ -186,7 +226,232 @@ export interface MeetingSummary {
   updated_at?: string;
 }
 
+export interface LeftTask {
+  id: string;
+  title: string;
+  requirement_id: string;
+  requirement_title: string;
+}
+
+/** PATCH 会议改了项目时返回：哪些任务跟着一起移了、哪些留在旧项目的需求上。 */
+export interface MeetingProjectEffects {
+  tasks_moved: number;
+  tasks_left: LeftTask[];
+  undo_until: string;
+  /** 从 AI 归属改走、证据里有项目词时：可以问「以后不再用这个词判断项目」 */
+  cue_hint?: AttributionCueHint;
+  /** 会议卡片跟着去了哪（改归属、撤销时） */
+  card?: MeetingCardEffect;
+}
+
+/** 卡片写不了、还没写的原因 */
+export type MeetingCardReason =
+  | "queued"
+  | "waiting_minutes"
+  | "waiting_project"
+  | "needs_review"
+  | "not_backfilled"
+  | "no_root"
+  | "root_offline"
+  | "root_missing"
+  | "root_in_archive"
+  | "root_shared"
+  | "paused"
+  | "disabled";
+
+/**
+ * 会议详情里的项目卡片状态。category 是界面的三类：ok 已写入；waiting 在等什么；
+ * stopped 为什么停了（你改过、被删了、暂停了……）。
+ */
+export interface MeetingCard {
+  state: "pending" | "synced" | "user_edited" | "missing" | "retired" | "blocked";
+  reason: MeetingCardReason | null;
+  category: "ok" | "waiting" | "stopped";
+  path: string | null;
+  synced_at: string | null;
+  error: string | null;
+}
+
+/** 改归属后卡片的去向；from / to 是「项目文件夹名/声档会议记录/文件名」 */
+export interface MeetingCardEffect {
+  action: "moved" | "written" | "retired" | "updated" | "waiting" | "none";
+  from: string | null;
+  to: string | null;
+  reason: MeetingCardReason | null;
+}
+
+/** 项目看板的卡片汇总 */
+export interface ProjectCardsSummary {
+  /** 卡片文件夹（项目最早挂上的根目录下的「声档会议记录」），没挂文件夹时为 null */
+  root: string | null;
+  index_path: string | null;
+  written: number;
+  edited: number;
+  missing: number;
+  waiting: number;
+  waiting_reason: MeetingCardReason | null;
+  paused: boolean;
+  /** 上线前、还没补写卡片的会（补写后为 0；旧后端没有） */
+  history?: number;
+}
+
+/** 上线前的历史会议能补写多少张卡片 */
+export interface CardsBackfillPreview {
+  meetings: number;
+  projects: number;
+  ai_attributed: number;
+  no_folder_projects: number;
+  no_folder_meetings: number;
+  top: { project_id: string; project_name: string; count: number; path: string | null; paused: boolean }[];
+}
+
+/** 某个项目第一次建出「声档会议记录/」时的一次性提示 */
+export interface CardsNotice {
+  project_id: string;
+  project_name: string;
+  path: string;
+  at: string;
+}
+
+export interface CardsBanner {
+  backfill: CardsBackfillPreview | null;
+  notices: CardsNotice[];
+}
+
+/**
+ * 归属状态（前后端同一套规则）：manual 你选的；manual_none 你标了不归项目；
+ * needs_review 待你选；auto 自动归属；ai_pending 等 AI 判断；none 没认出；new_project 像新项目。
+ */
+export type AttributionState =
+  | "manual"
+  | "manual_none"
+  | "needs_review"
+  | "auto"
+  | "ai_pending"
+  | "none"
+  | "new_project";
+
+export interface AttributionCandidate {
+  project_id: string;
+  project_name: string;
+  project_color?: string;
+  count: number;
+  llm: boolean;
+  /** 会议现在就在这个项目里（复评时「原来的」那个） */
+  current: boolean;
+}
+
+export interface AttributionEvidence {
+  kind: "literal" | "llm";
+  project_id?: string | null;
+  project_name?: string | null;
+  cue?: string;
+  /** injection：relay 出纪要前按逐字稿认出这个项目、用它的词典纠的错 */
+  source?: "name" | "also" | "folder" | "term" | "injection";
+  count?: number;
+  anchors_ms?: number[];
+  where?: { title: number; transcript: number; minutes: number };
+  term_id?: string;
+  confidence?: "high" | "low";
+  reason?: string;
+}
+
+export interface AttributionCueHint {
+  term_id: string;
+  term: string;
+  cue?: string;
+}
+
+export interface AttributionReassignedFrom {
+  project_id: string | null;
+  project_name: string | null;
+  origin_before: "manual" | "ai" | null;
+  at: string;
+  undo_until: string;
+  can_undo: boolean;
+  tasks_left: LeftTask[];
+  cue_hint: AttributionCueHint | null;
+}
+
+export interface MeetingAttribution {
+  state: AttributionState;
+  project_id: string | null;
+  origin: "manual" | "ai" | null;
+  method: string | null;
+  evidence: AttributionEvidence[];
+  candidates: AttributionCandidate[];
+  reason: string;
+  new_project_name: string | null;
+  reassigned_from: AttributionReassignedFrom | null;
+  ai_configured: boolean;
+}
+
+export interface AttributionSummary {
+  /** 最近 14 天等你选项目的会 */
+  needs_review_recent: number;
+  needs_review_total: number;
+  new_project_names: {
+    name: string;
+    norm_key: string;
+    meeting_count: number;
+    meeting_ids: string[];
+    last_at: string;
+  }[];
+  auto_30d: number;
+  corrected_30d: number;
+}
+
+/** relay 出纪要时这场用了哪些词（glossary-injection.json 回执的摘要） */
+export interface MeetingGlossaryReceipt {
+  id: number;
+  job_id: string | null;
+  attempt: number | null;
+  project_id: string | null;
+  project_name: string | null;
+  /** hint：工作台告诉 relay 的；transcript：relay 按逐字稿认出的 */
+  project_source: "hint" | "transcript" | null;
+  term_count: number;
+  project_terms: number;
+  public_terms: number;
+  snapshot_missing: boolean;
+  generated_at: string | null;
+}
+
+export interface MeetingGlossaryHit {
+  kind: "corrected" | "missed";
+  term: string;
+  wrong: string;
+  term_project_id: string | null;
+  transcript_count: number;
+  minutes_count: number;
+}
+
+/** 会议页「词典」小节 */
+export interface MeetingGlossary {
+  /** receipt 按回执的项目 / meeting 按会议当前项目 / chosen 你指定的 / public 只有公共词 */
+  basis: "receipt" | "meeting" | "chosen" | "public";
+  project: { id: string; name: string | null; color: string | null } | null;
+  meeting_project: { id: string; name: string | null; color: string | null } | null;
+  /** 会议归属的项目和查纪要用的项目不一样 */
+  mismatch: boolean;
+  receipt: MeetingGlossaryReceipt | null;
+  minutes_version_id: string | null;
+  /** 纪要在上次体检之后又改过 */
+  stale: boolean;
+  checked_at: string;
+  corrected: MeetingGlossaryHit[];
+  missed: MeetingGlossaryHit[];
+  applied: { by: "auto" | "user"; count: number; at: string; can_undo: boolean } | null;
+}
+
 export interface MeetingDetail extends MeetingSummary {
+  /** 只在 PATCH 改了项目的响应里出现 */
+  effects?: MeetingProjectEffects;
+  attribution?: MeetingAttribution;
+  /** 项目文件夹里的会议卡片状态（旧后端没有） */
+  card?: MeetingCard;
+  /** 按词典查纪要的结果（还没查过时是 null，旧后端没有） */
+  glossary?: MeetingGlossary | null;
   canonical_dir?: string | null;
   current_transcript_version_id?: string | null;
   current_minutes_version_id?: string | null;
@@ -285,23 +550,48 @@ export interface MinutesEvidence {
 }
 
 export interface SearchItem {
-  segment_id: string;
+  /** 纪要命中没有段落 id */
+  segment_id: string | null;
   meeting_id: string;
   title: string;
   canonical_dir?: string | null;
   recording_date?: string | null;
-  start_ms: number;
-  end_ms: number;
+  /** 纪要命中所在行没有时间点时为 null，点开直接看纪要 */
+  start_ms: number | null;
+  end_ms: number | null;
   speaker_name?: string | null;
   speaker_label?: string | null;
   text: string;
   score?: number;
-  match_kind?: "title" | "segment";
+  match_kind?: "title" | "segment" | "minutes";
+  /** 命中的是哪个写法（原词或词典展开出来的错写），用来高亮 */
+  matched?: string;
+  project_id?: string | null;
+  project_name?: string | null;
+  project_color?: string | null;
+}
+
+export interface SearchPayload {
+  mode: "hybrid" | "exact" | "semantic";
+  /** 包含原词（或词典里记的其他写法）的命中 */
+  items: SearchItem[];
+  /** 意思相近的段落，已去掉 items 里列过的 */
+  similar?: SearchItem[];
+  /** 自动一起搜了的其他写法 */
+  expanded?: string[];
+  /** 两个字的其他写法，只作为可点的提示 */
+  expand_hints?: string[];
+  /** 在项目里搜时，没归项目的会里还有几条命中 */
+  unattributed_hits?: number;
+  /** 意思相近的这次没搜成的原因（正在转写、模型不可用） */
+  semantic_unavailable?: string;
 }
 
 export interface MeetingFilters {
   q?: string;
+  /** "none" 只看没归项目的会 */
   project_id?: string;
+  attribution?: AttributionState;
   tag_id?: string;
   status?: string;
   date_from?: string;
@@ -479,18 +769,33 @@ export interface BoardMeeting {
   tasks: Task[];
 }
 
-/** 项目看板词典区的精简术语行；完整字段在词典页自己拉取。 */
+/** 项目看板词典区的术语行（最多 50 条，新加的在前）；完整字段在词典页自己拉取。 */
 export interface BoardGlossaryTerm {
   id: string;
   term: string;
   aliases: string[];
   category: string;
+  also?: string[];
+  is_cue?: boolean;
+  source?: string;
+}
+
+export interface ProjectRecognitionProfile {
+  also_names: ProjectAlsoName[];
+  folder_names: string[];
+  cue_terms: { total: number; cue: number };
+  auto_30d: number;
+  corrected_30d: number;
 }
 
 export interface ProjectBoard extends Project {
   meetings: BoardMeeting[];
   glossary_count?: number;
   glossary_terms?: BoardGlossaryTerm[];
+  /** 「另有 N 条公共词也会用于本项目」 */
+  public_glossary_count?: number;
+  profile?: ProjectRecognitionProfile;
+  cards?: ProjectCardsSummary;
 }
 
 // ---------------------------------------------------------------------------
@@ -516,15 +821,23 @@ export interface GlossaryTerm {
   project_id?: string | null;
   project_name?: string | null;
   project_color?: string | null;
+  /** 项目词是否参与认项目 */
+  is_cue?: boolean;
+  /** 也叫：不改写，只用于识别项目和搜索 */
+  also?: string[];
 }
 
-/** 词典筛选 chip：通用 → 项目 → 其他桶，只含有术语的分组，由后端定序。 */
+/**
+ * 词典筛选 chip：公共（总在）→ 全部项目（含 0 个词的，按最近开会排序）→ 旧分组桶
+ * （只在还有没整理的旧分组时出现），由后端定序。
+ */
 export interface GlossaryScope {
   kind: "general" | "project" | "bucket";
   key: string;
   label: string;
   color: string | null;
   count: number;
+  last_meeting_at?: string | null;
 }
 
 export interface GlossarySuggestion {
@@ -537,6 +850,44 @@ export interface GlossarySuggestion {
   status: "pending" | "confirmed" | "rejected";
   created_at: string;
   updated_at: string;
+  /** 2 字片段扩成整词前的那一对（「只记 2 字」） */
+  alt_wrong?: string | null;
+  alt_correct?: string | null;
+  confirmed_term_id?: string | null;
+  confirmed_wrong?: string | null;
+  meeting_title?: string | null;
+  /** 会议当前所属的项目：默认记到这里 */
+  target_project_id?: string | null;
+  target_project_name?: string | null;
+  target_project_color?: string | null;
+  /** 正确写法已是某条词条时，那条词条在哪 */
+  existing_term_id?: string | null;
+  existing_term_project_id?: string | null;
+  existing_term_project_name?: string | null;
+  /** 保存纪要时直接记入了（改成的写法已是词条、会议有项目），前端提示可撤销 */
+  auto_recorded?: boolean;
+}
+
+/** 确认一条建议记到哪：auto=会议当前的项目；public=公共；其余是 project_id */
+export type GlossaryTarget = "auto" | "public" | string;
+
+export interface GlossaryConfirmResult {
+  ok: boolean;
+  term: GlossaryTerm | null;
+  created: boolean;
+  wrong: string;
+  correct: string;
+  suggestion: GlossarySuggestion | null;
+}
+
+/** 词条重名 409 带回来的已有词条 */
+export interface GlossaryTermConflict {
+  term_id: string;
+  term: string;
+  project_id: string | null;
+  project_name: string | null;
+  aliases: string[];
+  also: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -546,13 +897,48 @@ export interface GlossarySuggestion {
 export type RequirementPriority = "P0" | "P1" | "P2" | "P3";
 export type RequirementStatus = "active" | "done" | "shelved";
 
+/** online：文件夹在；missing：盘在但文件夹没了；volume_offline：资料盘没插 */
+export type MaterialRootState = "online" | "missing" | "volume_offline";
+
 export interface MaterialRoot {
   id: number;
   project_id: string;
   path: string;
-  /** 盘上找不到该目录（外置盘没插、目录被移走）时为 false，记录保留 */
+  /** 等于 state === "online"；盘没插、目录被移走时为 false，记录保留 */
   exists: boolean;
+  /** 旧后端没有这个字段，按 exists 推断 */
+  state?: MaterialRootState;
   created_at: string;
+  /** 挂载或替换时返回：和别的项目根目录互相嵌套的情况 */
+  nested?: { path: string; project_id: string; project_name: string }[];
+  /** 老数据里同一个文件夹还挂在别的项目下 */
+  shared_with?: { project_id: string; project_name: string }[];
+  /** 会议卡片写给谁：同一文件夹挂在几个项目下时，只写给最早挂上的那个 */
+  cards_owner_id?: string;
+  /** 挂载或替换后当场补写了几张会议卡片 */
+  cards_written?: number;
+}
+
+/** 冷启动：还没挂文件夹的项目找到的同名（默认勾选）或相近（默认不勾）文件夹 */
+export interface ColdStartFolderItem {
+  project_id: string;
+  project_name: string;
+  path: string;
+  folder_name: string;
+  match: "exact" | "similar";
+}
+
+export interface ColdStartFoldersPayload {
+  items: ColdStartFolderItem[];
+  snoozed_until: string | null;
+}
+
+/** 词典里自动整理过的旧分组；project_id 为空表示归到了公共 */
+export interface LegacyGroupsSummary {
+  event_id: number;
+  at: string;
+  undone: boolean;
+  groups: { scope: string; count: number; project_id: string | null; project_name: string | null }[];
 }
 
 export interface MaterialDirEntry {

@@ -208,3 +208,152 @@
   background: var(--signal-dark);
   border-color: var(--signal-dark);
 }
+
+/* 新建：项目文件夹（挂现有 / 新建 / 先不挂） */
+
+.project-form-modal__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.project-form-modal__option.is-selected {
+  border-color: var(--signal);
+}
+
+.project-form-modal__option input {
+  flex: none;
+  width: auto;
+  min-height: 0;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--signal-dark);
+}
+
+.project-form-modal__option-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.project-form-modal__option-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.project-form-modal__option-hint {
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-form-modal__option-hint:empty {
+  display: none;
+}
+
+.project-form-modal__match {
+  padding: 0 6px;
+  color: var(--signal-dark);
+  font-size: 11px;
+  font-style: normal;
+  background: var(--paper-deep);
+  border-radius: 999px;
+}
+
+.project-form-modal__folder-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.project-form-modal__done {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.project-form-modal__done-path {
+  display: block;
+  color: var(--ink-faint);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* 编辑：合并到… / 删除项目 */
+
+.project-form-modal__danger-zone {
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+
+.project-form-modal__danger-links {
+  display: flex;
+  gap: 16px;
+}
+
+.project-form-modal__danger-links button,
+.project-form-modal__confirm-actions button {
+  padding: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+}
+
+.project-form-modal__danger-links button:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+.project-form-modal__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.project-form-modal__confirm select {
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.project-form-modal__confirm-text {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.project-form-modal__confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+.project-form-modal__confirm-actions .project-form-modal__danger {
+  padding: 6px 12px;
+  color: #fff;
+  background: var(--danger);
+  border-radius: 10px;
+}
+
+.project-form-modal__confirm-actions .project-form-modal__danger:disabled {
+  opacity: 0.5;
+}

@@ -1,0 +1,429 @@
+/* 关系图右侧 400px 非模态面板（GraphPanel.tsx）和迷你播放器（MiniPlayer.tsx） */
+
+.graph-panel {
+  display: flex;
+  flex-direction: column;
+  width: 400px;
+  max-width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.55;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-stage);
+  box-shadow: var(--shadow);
+}
+
+.graph-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.graph-panel__head h2 {
+  margin: 2px 0 0;
+  color: var(--heading);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.graph-panel__kind {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.graph-panel__nav {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.graph-panel__close {
+  width: 28px;
+  height: 28px;
+  color: var(--muted);
+  font: inherit;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.graph-panel__close:hover {
+  color: var(--heading);
+  background: var(--surface-2);
+}
+
+.graph-panel__body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 16px 16px;
+  overflow-y: auto;
+}
+
+.graph-panel__section {
+  margin-top: 14px;
+}
+
+.graph-panel__section:first-child {
+  margin-top: 0;
+}
+
+.graph-panel__section h3 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.graph-panel__section p {
+  margin: 0;
+}
+
+.graph-panel__list,
+.graph-panel__quotes,
+.graph-panel__files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.graph-panel__list li,
+.graph-panel__files li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.graph-panel__list li:last-child,
+.graph-panel__files li:last-child {
+  border-bottom: 0;
+}
+
+.graph-panel__list small,
+.graph-panel__files small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+ol.graph-panel__list {
+  counter-reset: decision;
+}
+
+ol.graph-panel__list li::before {
+  counter-increment: decision;
+  content: counter(decision) ".";
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.graph-panel__task > span:first-child {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.graph-panel__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.graph-panel__quotes li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0;
+}
+
+.graph-panel__quotes strong {
+  font-weight: 500;
+}
+
+.graph-panel__quote {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--ink-2);
+}
+
+.graph-panel__muted {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.graph-panel__error {
+  color: var(--danger);
+}
+
+.graph-panel__meta {
+  margin: 0 0 8px;
+  color: var(--ink-2);
+}
+
+.graph-panel__question {
+  margin: 0 0 10px;
+  color: var(--heading);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.graph-panel__candidates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.graph-panel__candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.graph-panel__candidate h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.graph-panel__candidate h3 i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.graph-panel__candidate ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  list-style: none;
+}
+
+.graph-panel__candidate .primary-button {
+  margin-top: auto;
+}
+
+.graph-panel__reason {
+  margin: 10px 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.graph-panel__list li.graph-panel__cue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+}
+
+.graph-panel__cue-row > button {
+  justify-self: start;
+  text-align: left;
+}
+
+.graph-panel__cue-row .graph-panel__quote {
+  grid-column: 1 / -1;
+}
+
+.graph-panel__folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.graph-panel__path {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.graph-panel__path-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.graph-panel__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.graph-panel select {
+  max-width: 100%;
+  padding: 5px 8px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}
+
+.graph-play {
+  flex: none;
+  padding: 1px 7px;
+  color: var(--signal);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  background: var(--signal-bg);
+  border: 0;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+
+.graph-play:disabled {
+  color: var(--muted-2);
+  background: var(--surface-2);
+  cursor: not-allowed;
+}
+
+/* 迷你播放器 */
+.graph-player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.graph-player__toggle {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  color: var(--heading);
+  font-size: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.graph-player__toggle:disabled {
+  color: var(--muted-2);
+  cursor: not-allowed;
+}
+
+.graph-player__label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-player__audio {
+  display: none;
+}
+
+/* ── 项目面板的四个数、文件夹面包屑、信标条目（1h） ─────────── */
+
+.graph-panel__counts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0;
+}
+
+.graph-panel__counts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.graph-panel__counts dt {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.graph-panel__counts dd {
+  margin: 0;
+  color: var(--heading);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.graph-panel__counts small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.graph-panel__warn {
+  color: var(--warn);
+}
+
+.graph-panel__crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  margin-bottom: 4px;
+  color: var(--muted-2);
+}
+
+.graph-panel__crumbs > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.graph-panel__crumbs button:disabled {
+  color: var(--heading);
+  cursor: default;
+}
+
+.graph-panel__beacon-text small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.graph-panel__file-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}

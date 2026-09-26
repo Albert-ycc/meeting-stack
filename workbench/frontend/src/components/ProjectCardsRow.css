@@ -1,0 +1,52 @@
+/* 项目页材料区：会议卡片汇总行和给 Claude Code 的一句话 */
+.project-cards {
+  display: grid;
+  gap: 6px;
+  margin: 0 18px 16px;
+  padding: 10px 12px;
+  color: var(--ink-2);
+  font-size: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+}
+
+.project-cards__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.project-cards__line > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-cards__hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: var(--ink-soft);
+}
+
+.project-cards__hint-label {
+  flex-basis: 100%;
+  font-size: 11px;
+}
+
+.project-cards__hint code {
+  min-width: 0;
+  padding: 4px 8px;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+
+.project-cards__message {
+  margin: 0;
+  color: var(--ink-soft);
+}

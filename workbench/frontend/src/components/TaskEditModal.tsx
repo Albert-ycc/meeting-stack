@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
+import { similarProjectFrom } from "../api";
 import type { ApiClient } from "../api";
-import type { Project, RequirementSummary, Task, TaskAssignee } from "../types";
+import type { Project, RequirementSummary, SimilarProjectSuggestion, Task, TaskAssignee } from "../types";
 import { isComposingKeydown } from "../keyboard";
 import { useDialogFocus } from "./useDialog";
 import { PriorityBadge } from "./RequirementBadges";
+import { SimilarProjectQuestion } from "./SimilarProjectQuestion";
 import "./TaskEditModal.css";
 
 export interface TaskEditModalProps {
@@ -38,6 +40,9 @@ export function TaskEditModal({
   const [projectId, setProjectId] = useState<string | null>(
     task ? task.project_id ?? null : defaultProjectId,
   );
+  // 编辑已有任务时，只有动过项目下拉才提交 project_id：后端把显式 null 当成「清空项目」，
+  // 没动过却带上 null 会把 AI 或会议给的项目冲掉。
+  const [projectTouched, setProjectTouched] = useState(false);
   const [requirementId, setRequirementId] = useState<string | null>(
     task ? task.requirement_id ?? null : defaultRequirementId,
   );
@@ -48,6 +53,8 @@ export function TaskEditModal({
   const [creatingProject, setCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [creatingProjectBusy, setCreatingProjectBusy] = useState(false);
+  /** 原地新建项目撞上近似重名时，问「已有『X』，用它？」 */
+  const [projectSuggestion, setProjectSuggestion] = useState<SimilarProjectSuggestion | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [error, setError] = useState("");
@@ -141,19 +148,29 @@ export function TaskEditModal({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  const createProject = async () => {
+  const takeProject = (id: string) => {
+    setProjectId(id);
+    setProjectTouched(true);
+    setRequirementId(null); // 换了项目，旧需求不再适用；新建的项目也还没有需求
+    setNewProjectName("");
+    setProjectSuggestion(null);
+    closeMenus();
+  };
+
+  const createProject = async (force = false) => {
     const name = newProjectName.trim();
     if (!name || creatingProjectBusy) return;
     setCreatingProjectBusy(true);
     setError("");
     try {
-      const created = await apiClient.createProject(name, DEFAULT_PROJECT_COLOR);
-      setProjectId(created.id);
-      setRequirementId(null); // 新建的项目还没有需求
-      setNewProjectName("");
-      closeMenus();
+      const created = force
+        ? await apiClient.createProjectWith({ name, color: DEFAULT_PROJECT_COLOR, force: true })
+        : await apiClient.createProject(name, DEFAULT_PROJECT_COLOR);
+      takeProject(created.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "项目创建失败，请稍后重试");
+      const similar = similarProjectFrom(err);
+      if (similar) setProjectSuggestion(similar);
+      else setError(err instanceof Error ? err.message : "项目创建失败，请稍后重试");
     } finally {
       setCreatingProjectBusy(false);
     }
@@ -164,7 +181,12 @@ export function TaskEditModal({
     savingRef.current = true;
     setSaving(true);
     setError("");
-    const payload = { title: trimmed, project_id: projectId, requirement_id: requirementId, assignee };
+    const payload = {
+      title: trimmed,
+      ...(!isEdit || projectTouched ? { project_id: projectId } : {}),
+      requirement_id: requirementId,
+      assignee,
+    };
     try {
       if (!isEdit) {
         await apiClient.createTask(payload);
@@ -249,6 +271,7 @@ export function TaskEditModal({
                   className={`task-edit-modal__option ${projectId === null ? "is-selected" : ""}`}
                   onClick={() => {
                     setProjectId(null);
+                    setProjectTouched(true);
                     setRequirementId(null); // 换掉/清空所属项目，之前挂的需求不属于新项目了
                     closeMenus();
                   }}
@@ -269,6 +292,7 @@ export function TaskEditModal({
                     key={project.id}
                     onClick={() => {
                       setProjectId(project.id);
+                      setProjectTouched(true);
                       setRequirementId(null); // 换了所属项目，之前挂的需求不属于新项目了
                       closeMenus();
                     }}
@@ -292,7 +316,10 @@ export function TaskEditModal({
                     <input
                       aria-label="新项目名称"
                       autoFocus
-                      onChange={(event) => setNewProjectName(event.target.value)}
+                      onChange={(event) => {
+                        setNewProjectName(event.target.value);
+                        setProjectSuggestion(null);
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" && !isComposingKeydown(event)) {
                           event.preventDefault();
@@ -315,12 +342,21 @@ export function TaskEditModal({
                       disabled={creatingProjectBusy}
                       onClick={() => {
                         setNewProjectName("");
+                        setProjectSuggestion(null);
                         setCreatingProject(false);
                       }}
                       type="button"
                     >
                       取消
                     </button>
+                    {projectSuggestion && (
+                      <SimilarProjectQuestion
+                        disabled={creatingProjectBusy}
+                        onForce={() => void createProject(true)}
+                        onUse={takeProject}
+                        suggestion={projectSuggestion}
+                      />
+                    )}
                   </div>
                 ) : (
                   <button

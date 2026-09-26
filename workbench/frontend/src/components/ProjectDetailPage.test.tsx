@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ProjectDetailPage } from "./ProjectDetailPage";
-import type { ApiClient } from "../api";
+import { ApiError, type ApiClient } from "../api";
 import type {
   ProjectBoard,
   ProjectMeetingRow,
@@ -83,14 +83,17 @@ function renderPage(overrides: Partial<Parameters<typeof ProjectDetailPage>[0]> 
 }
 
 describe("ProjectDetailPage 词典区", () => {
-  it("后端已带 glossary 字段：显示计数与前几条术语 chip", async () => {
+  it("列出项目词（错写、也叫）和总数，另有公共词一行", async () => {
+    const onOpenGlossary = vi.fn();
     renderPage({
+      onOpenGlossary,
       apiClient: client({
         projectBoard: vi.fn().mockResolvedValue({
           ...baseBoard,
-          glossary_count: 2,
+          glossary_count: 52,
+          public_glossary_count: 41,
           glossary_terms: [
-            { id: "term-1", term: "生长激素", aliases: [], category: "药品" },
+            { id: "term-1", term: "生长激素", aliases: [], category: "药品", also: ["GH"] },
             { id: "term-2", term: "骨龄", aliases: ["骨骼年龄"], category: "术语" },
           ],
         }),
@@ -98,15 +101,20 @@ describe("ProjectDetailPage 词典区", () => {
     });
 
     expect(await screen.findByText("生长激素")).toBeTruthy();
-    expect(screen.getByText("骨龄")).toBeTruthy();
-    expect(screen.getByText("2 条术语")).toBeTruthy();
+    expect(screen.getByText("也叫 GH")).toBeTruthy();
+    expect(screen.getByText("骨骼年龄")).toBeTruthy();
+    expect(screen.getByText("52 条项目词")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "还有 50 条，在词典中查看 →" }));
+    expect(onOpenGlossary).toHaveBeenCalledWith("project-1");
+    fireEvent.click(screen.getByRole("button", { name: "另有 41 条公共词也会用于本项目 →" }));
+    expect(onOpenGlossary).toHaveBeenCalledWith("public");
   });
 
   it("后端还没带 glossary 字段：不报错，渲染成空态", async () => {
     renderPage();
 
-    expect(await screen.findByText("这个项目还没有挂靠的术语")).toBeTruthy();
-    expect(screen.getByText("0 条术语")).toBeTruthy();
+    expect(await screen.findByText("项目词只在这个项目的会里用来纠错和识别项目")).toBeTruthy();
+    expect(screen.getByText("0 条项目词")).toBeTruthy();
   });
 
   it("点击「在词典中查看」调用 onOpenGlossary 并带上当前项目 id", async () => {
@@ -116,6 +124,44 @@ describe("ProjectDetailPage 词典区", () => {
     fireEvent.click(await screen.findByText("在词典中查看 →"));
 
     await waitFor(() => expect(onOpenGlossary).toHaveBeenCalledWith("project-1"));
+  });
+
+  it("输入正确写法回车，再接着输入错写，空着回车就加入", async () => {
+    const createGlossaryTerm = vi.fn().mockResolvedValue({});
+    const projectBoard = vi.fn().mockResolvedValue(baseBoard);
+    renderPage({ apiClient: client({ createGlossaryTerm, projectBoard } as Partial<ApiClient>) });
+
+    await userEvent.type(await screen.findByLabelText("项目词的正确写法"), "初审规则{Enter}");
+    await userEvent.type(screen.getByLabelText("错写"), "出审规则{Enter}");
+    expect(screen.getByText("出审规则")).toBeTruthy();
+    await userEvent.type(screen.getByLabelText("错写"), "{Enter}");
+
+    await waitFor(() =>
+      expect(createGlossaryTerm).toHaveBeenCalledWith({
+        term: "初审规则",
+        aliases: ["出审规则"],
+        project_id: "project-1",
+        source: "manual",
+        confirmed: true,
+      }),
+    );
+    expect(await screen.findByText("已加入项目词「初审规则」（错写：出审规则）")).toBeTruthy();
+    expect(projectBoard).toHaveBeenCalledTimes(2);
+  });
+
+  it("撞上公共词典里的同名词：就地把新错写加到那条", async () => {
+    const conflict = { term_id: "gt-1", term: "随访", project_id: null, project_name: null, aliases: ["随方"], also: [] };
+    const createGlossaryTerm = vi.fn().mockRejectedValue(new ApiError("「随访」已在 公共 词典", 409, { conflict }));
+    const mergeGlossaryTerm = vi.fn().mockResolvedValue({});
+    renderPage({ apiClient: client({ createGlossaryTerm, mergeGlossaryTerm } as Partial<ApiClient>) });
+
+    await userEvent.type(await screen.findByLabelText("项目词的正确写法"), "随访{Enter}");
+    await userEvent.type(screen.getByLabelText("错写"), "随仿{Enter}{Enter}");
+
+    expect(await screen.findByText("『随访』已在 公共 词典（错写：随方）")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "把新错写加到那条" }));
+    expect(mergeGlossaryTerm).toHaveBeenCalledWith("gt-1", { aliases: ["随仿"], make_public: false });
+    expect(await screen.findByText("已加到 公共 的『随访』")).toBeTruthy();
   });
 });
 
@@ -150,6 +196,63 @@ describe("ProjectDetailPage 材料根目录卡", () => {
     expect(await screen.findByText("找不到该目录")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重新选择" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "复制路径" })).not.toBeInTheDocument();
+  });
+
+  it("资料盘没插时只提示未连接，不让重新选择", async () => {
+    renderPage({
+      apiClient: client({
+        projectBoard: vi.fn().mockResolvedValue({
+          ...baseBoard,
+          material_roots: [{ ...baseBoard.material_roots![0], exists: false, state: "volume_offline" }],
+        }),
+      } as Partial<ApiClient>),
+    });
+
+    expect(await screen.findByText("资料盘未连接，插上后自动恢复")).toBeInTheDocument();
+    expect(screen.queryByText("找不到该目录")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重新选择" })).not.toBeInTheDocument();
+  });
+
+  it("重新选择走原子替换，不再先删后加", async () => {
+    const replaceProjectMaterialRoot = vi.fn().mockResolvedValue({
+      ...baseBoard.material_roots![0],
+      path: "/Volumes/资料盘/蓝鲸云",
+      exists: true,
+      state: "online",
+    });
+    const removeProjectMaterialRoot = vi.fn();
+    const addProjectMaterialRoot = vi.fn();
+    const browseMaterials = vi.fn().mockResolvedValue({
+      base: "/Volumes/资料盘",
+      path: "/Volumes/资料盘",
+      parent: null,
+      breadcrumbs: [{ name: "资料盘", path: "/Volumes/资料盘" }],
+      dirs: [{ name: "蓝鲸云", path: "/Volumes/资料盘/蓝鲸云" }],
+    });
+    renderPage({
+      apiClient: client({
+        projectBoard: vi.fn().mockResolvedValue({
+          ...baseBoard,
+          material_roots: [{ ...baseBoard.material_roots![0], exists: false, state: "missing" }],
+        }),
+        replaceProjectMaterialRoot,
+        removeProjectMaterialRoot,
+        addProjectMaterialRoot,
+        browseMaterials,
+      } as Partial<ApiClient>),
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "重新选择" }));
+    await userEvent.click(await screen.findByText("蓝鲸云"));
+    await userEvent.click(screen.getByRole("button", { name: "确定" }));
+
+    expect(replaceProjectMaterialRoot).toHaveBeenCalledWith(
+      "project-1",
+      baseBoard.material_roots![0].id,
+      "/Volumes/资料盘/蓝鲸云",
+    );
+    expect(removeProjectMaterialRoot).not.toHaveBeenCalled();
+    expect(addProjectMaterialRoot).not.toHaveBeenCalled();
   });
 
   it("没有根目录时显示空态", async () => {
@@ -348,5 +451,91 @@ describe("ProjectDetailPage 编辑项目与新建需求", () => {
     expect(screen.queryByRole("button", { name: "编辑项目" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "＋ 新建需求" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "＋ 添加目录" })).not.toBeInTheDocument();
+  });
+});
+
+describe("ProjectDetailPage 系统怎么认出这个项目", () => {
+  const profile = {
+    also_names: [{ name: "云图", source: "manual" as const }],
+    folder_names: ["云图科研用药"],
+    cue_terms: { total: 4, cue: 2 },
+    auto_30d: 9,
+    corrected_30d: 1,
+  };
+
+  it("board 带 profile 时显示识别卡，加叫法后重读项目", async () => {
+    const projectBoard = vi.fn().mockResolvedValue({ ...baseBoard, profile });
+    const updateProject = vi.fn().mockResolvedValue(baseBoard);
+    const onProjectsChanged = vi.fn();
+    renderPage({ apiClient: client({ projectBoard, updateProject }), onProjectsChanged });
+
+    const card = await screen.findByRole("region", { name: "系统怎么认出这个项目" });
+    expect(card).toHaveTextContent("自动归入 9 场、你改走 1 场");
+    await userEvent.click(within(card).getByRole("button", { name: "＋ 添加叫法" }));
+    await userEvent.type(within(card).getByRole("textbox", { name: "新的叫法" }), "云图EDC{Enter}");
+
+    expect(updateProject).toHaveBeenCalledWith("project-1", { also_names: ["云图", "云图EDC"] });
+    await waitFor(() => expect(projectBoard).toHaveBeenCalledTimes(2));
+    expect(onProjectsChanged).toHaveBeenCalled();
+  });
+
+  it("编辑弹窗里合并到别的项目后跳到目标项目", async () => {
+    const target = { id: "project-2", name: "数据中台", color: "#3f51b5" };
+    const mergeProject = vi.fn().mockResolvedValue(target);
+    const onOpenProject = vi.fn();
+    renderPage({
+      apiClient: client({ mergeProject }),
+      onOpenProject,
+      projects: [{ ...baseBoard }, target],
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "编辑项目" }));
+    await userEvent.click(screen.getByRole("button", { name: "合并到…" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "合并到哪个项目" }), "project-2");
+    await userEvent.click(screen.getByRole("button", { name: "确认合并" }));
+
+    expect(mergeProject).toHaveBeenCalledWith("project-1", "project-2");
+    expect(onOpenProject).toHaveBeenCalledWith("project-2");
+  });
+});
+
+describe("ProjectDetailPage 冷启动提示", () => {
+  it("AI 建的、没挂文件夹的空项目给出挂文件夹、合并、删除", async () => {
+    const orphan = {
+      ...baseBoard,
+      origin: "ai" as const,
+      material_roots: [],
+      meeting_count: 0,
+      requirement_counts: { active: 0, done: 0, shelved: 0, all: 0 },
+    };
+    renderPage({
+      apiClient: client({ projectBoard: vi.fn().mockResolvedValue(orphan) }),
+      projects: [orphan, { id: "project-2", name: "数据中台", color: "#3f51b5" }],
+    });
+
+    const hint = await screen.findByRole("note");
+    expect(hint).toHaveTextContent("这个项目是 AI 自动建的，还没挂文件夹");
+    expect(within(hint).getByRole("button", { name: "挂上文件夹" })).toBeInTheDocument();
+    expect(within(hint).getByRole("button", { name: "删除" })).toBeInTheDocument();
+    await userEvent.click(within(hint).getByRole("button", { name: "合并到…" }));
+    expect(screen.getByRole("combobox", { name: "合并到哪个项目" })).toBeInTheDocument();
+  });
+
+  it("同一个文件夹还挂在别的项目下时说清卡片写给谁", async () => {
+    const shared = {
+      ...baseBoard,
+      material_roots: [
+        {
+          ...baseBoard.material_roots![0],
+          shared_with: [{ project_id: "project-0", project_name: "云图老项目" }],
+          cards_owner_id: "project-0",
+        },
+      ],
+    };
+    renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(shared) }) });
+
+    expect(await screen.findByText(/也挂在「云图老项目」下/)).toHaveTextContent(
+      "会议卡片只写给先挂上的「云图老项目」，不需要可以在这里移除",
+    );
   });
 });

@@ -142,7 +142,7 @@ def test_confirm_with_edits(tmp_path):
     assert any(e["kind"] == "confirmed" for e in confirmed["events"])
 
 
-def test_confirm_materializes_suggested_project(tmp_path):
+def test_confirm_no_longer_creates_suggested_project(tmp_path):
     client, settings = make_client(tmp_path)
     headers = write_headers(client)
     db = Database(settings.database_path)
@@ -154,10 +154,57 @@ def test_confirm_materializes_suggested_project(tmp_path):
                    ?, ?, ?)""",
         (utc_now(), utc_now(), utc_now()),
     )
+    projects_before = client.get("/api/projects").json()
+
     confirmed = client.post("/api/tasks/t-1/confirm", json={}, headers=headers).json()
-    assert confirmed["project_id"] is not None
-    projects = client.get("/api/projects").json()
-    assert any(p["name"] == "新项目" and p["origin"] == "ai" for p in projects)
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["project_id"] is None
+    assert client.get("/api/projects").json() == projects_before
+    # 建议名保留，以后建出同名项目时还能挂过去
+    assert confirmed["suggested_project_name"] == "新项目"
+
+
+def test_confirm_with_explicit_null_project_clears_suggestion(tmp_path):
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    project = client.post("/api/projects", json={"name": "云图AI"}, headers=headers).json()
+    db = Database(settings.database_path)
+    db.execute(
+        """INSERT INTO tasks
+           (id, title, status, origin, assignee, project_id, suggested_project_name,
+            status_changed_at, created_at, updated_at)
+           VALUES ('t-1', '新事项', 'pending_confirm', 'ai', 'ai', ?, '新项目', ?, ?, ?)""",
+        (project["id"], utc_now(), utc_now(), utc_now()),
+    )
+
+    confirmed = client.post(
+        "/api/tasks/t-1/confirm", json={"project_id": None}, headers=headers
+    ).json()
+
+    assert confirmed["project_id"] is None
+    assert confirmed["suggested_project_name"] is None
+
+
+def test_update_with_explicit_null_project_clears_it(tmp_path):
+    client, _settings = make_client(tmp_path)
+    headers = write_headers(client)
+    project = client.post("/api/projects", json={"name": "云图AI"}, headers=headers).json()
+    task = client.post(
+        "/api/tasks", json={"title": "整理需求", "project_id": project["id"]}, headers=headers
+    ).json()
+    assert task["project_id"] == project["id"]
+
+    untouched = client.patch(
+        f"/api/tasks/{task['id']}", json={"title": "整理需求 v2"}, headers=headers
+    ).json()
+    assert untouched["project_id"] == project["id"]
+
+    cleared = client.patch(
+        f"/api/tasks/{task['id']}", json={"project_id": None}, headers=headers
+    ).json()
+    assert cleared["status"] == "confirmed"
+    assert cleared["project_id"] is None
 
 
 def test_batch_confirm_skips_non_pending(tmp_path):
@@ -322,7 +369,10 @@ def test_re_extract_creates_pending_tasks(tmp_path, monkeypatch):
     seed_editable_meeting(db, settings.archive_root)
     seed_minutes(client, settings)
 
+    prompts: list[str] = []
+
     def fake_llm(self, prompt):
+        prompts.append(prompt)
         return (
             '{"tasks":[{"title":"做看板","detail":"按口径表","anchor_quote":"第一段内容",'
             '"assignee_suggestion":"ai","project_match":null,"suggested_project_name":"云图看板"}]}'
@@ -335,6 +385,9 @@ def test_re_extract_creates_pending_tasks(tmp_path, monkeypatch):
         headers=headers,
     ).json()
     assert result["status"] == "done"
+    # 任务不再单独猜项目：提示词里没有项目判断，返回的建议名也不落库
+    assert "project_match" not in prompts[0]
+    assert "suggested_project_name" not in prompts[0]
 
     listing = client.get("/api/tasks").json()
     assert listing["total"] == 1
@@ -345,7 +398,8 @@ def test_re_extract_creates_pending_tasks(tmp_path, monkeypatch):
     # anchor 定位到「第一段内容」的 segment（start_ms=1000）
     assert task["anchor_ms"] == 1000
     assert task["anchor_quote"] == "第一段内容"
-    assert task["suggested_project_name"] == "云图看板"
+    assert task["project_id"] is None
+    assert task["suggested_project_name"] is None
 
     # 补充上下文重新生成会替换旧草稿
     result2 = client.post(
@@ -402,6 +456,43 @@ def test_extract_pending_seeds_from_new_minutes(tmp_path, monkeypatch):
     assert task["title"] == "自动抽取"
     assert task["anchor_ms"] == 3200  # 「第二段内容」segment 起始
     assert "会议纪要" in extracted["prompt"]
+
+
+def test_draft_card_carries_the_meetings_project(tmp_path, monkeypatch):
+    """飞书草稿卡上的项目行取会议当前的项目。"""
+    client, settings = make_client(tmp_path)
+    db = Database(settings.database_path)
+    seed_editable_meeting(db, settings.archive_root)
+    seed_minutes(client, settings)
+    db.execute(
+        "INSERT INTO projects(id, name, color, origin, created_at) VALUES ('p-card', '云图科研用药', '#2c8d83', 'manual', ?)",
+        (utc_now(),),
+    )
+    db.execute("UPDATE meetings SET project_id='p-card', project_origin='manual' WHERE id='vm-20260102-101500'")
+    monkeypatch.setattr(
+        TaskService,
+        "_call_llm",
+        lambda self, prompt: '{"tasks":[{"title":"对齐接口","anchor_quote":"","assignee_suggestion":"ai"}]}',
+    )
+    db.execute(
+        """INSERT INTO task_extractions(meeting_id, minutes_version_id, supplement, created_at)
+           VALUES ('vm-20260102-101500', 'mv-1', '', ?)""",
+        (utc_now(),),
+    )
+
+    class FakeNotifier:
+        enabled = False  # 纪要通知不发，只看任务草稿卡
+
+        def __init__(self):
+            self.calls = []
+
+        def task_draft(self, extraction_id, **kwargs):
+            self.calls.append(kwargs)
+            return True
+
+    notifier = FakeNotifier()
+    TaskService(db, settings, notifier=notifier).extract_pending()
+    assert notifier.calls and notifier.calls[0]["project_name"] == "云图科研用药"
 
 
 def test_parse_llm_tasks_tolerates_fence(tmp_path):

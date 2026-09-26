@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .config import Settings
 from .db import Database, utc_now
 from .service import ConflictError, NotFoundError
 
@@ -21,6 +22,15 @@ from .service import ConflictError, NotFoundError
 MAX_FOLDER_FILES = 2000
 # 递归统计时跳过的目录/文件名。
 _SKIP_NAMES = {"node_modules", "__MACOSX"}
+# 声档往项目文件夹里写会议卡片的子目录。它是声档自己的产出，不算项目材料：
+# 不进子文件夹统计、不能被选成需求文件夹。
+CARDS_DIR_NAME = "声档会议记录"
+
+# 材料根目录的三种状态。online：文件夹在；missing：盘在但文件夹没了（被改名或删掉）；
+# volume_offline：路径在 /Volumes/ 下而那块盘没有真实挂载（拔掉了），这时不能当成「没了」。
+ROOT_ONLINE = "online"
+ROOT_MISSING = "missing"
+ROOT_VOLUME_OFFLINE = "volume_offline"
 
 
 def _is_skipped(name: str) -> bool:
@@ -125,7 +135,7 @@ def _project_subfolder_stats(root_path: Path) -> dict[str, Any]:
     except OSError:
         return {"exists": False, "folders": []}
     for entry in entries:
-        if _is_skipped(entry.name):
+        if _is_skipped(entry.name) or entry.name == CARDS_DIR_NAME:
             continue
         try:
             if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
@@ -201,36 +211,153 @@ def browse_directory(base: Path, raw_path: str | None) -> dict[str, Any]:
 # ---------------------------------------------------------------- 项目材料根目录 CRUD
 
 
+def _volume_mount(path: Path) -> Path | None:
+    """/Volumes/<盘>/… 返回 /Volumes/<盘>；不在 /Volumes 下返回 None。"""
+    try:
+        relative = path.relative_to("/Volumes")
+    except ValueError:
+        return None
+    if not relative.parts:
+        return None
+    return Path("/Volumes") / relative.parts[0]
+
+
+def volume_state(path: str | Path) -> str:
+    """材料根目录的三态，判据照搬 relay_control.py 的外置卷检查（ismount + st_dev）：
+    /Volumes/<盘> 不是真实挂载点、或设备号和 /Volumes 本身相同（掉盘后留下的空目录），
+    都算盘没插，而不是文件夹没了。"""
+    candidate = Path(path)
+    mount = _volume_mount(candidate)
+    if mount is not None:
+        try:
+            if (
+                mount.is_symlink()
+                or not os.path.ismount(mount)
+                or mount.stat().st_dev == Path("/Volumes").stat().st_dev
+            ):
+                return ROOT_VOLUME_OFFLINE
+        except OSError:
+            return ROOT_VOLUME_OFFLINE
+    try:
+        return ROOT_ONLINE if candidate.is_dir() else ROOT_MISSING
+    except OSError:
+        return ROOT_MISSING
+
+
+def annotate_root(row: dict[str, Any]) -> dict[str, Any]:
+    """根目录行补上 state（三态）和兼容旧调用方的 exists（= online）。"""
+    state = volume_state(row["path"])
+    row["state"] = state
+    row["exists"] = state == ROOT_ONLINE
+    return row
+
+
+def _protected_roots(settings: Settings) -> list[tuple[Path, str]]:
+    return [
+        (settings.archive_root, "这是声档的会议归档目录，不能当项目文件夹"),
+        (settings.staging_root, "这是声档的转写暂存目录，不能当项目文件夹"),
+        (settings.data_dir, "这是声档的数据目录，不能当项目文件夹"),
+    ]
+
+
+def _within(path: Path, root: Path) -> bool:
+    try:
+        root_real = root.expanduser().resolve()
+    except OSError:
+        return False
+    return path == root_real or path.is_relative_to(root_real)
+
+
+def validate_new_root(
+    connection: Any, settings: Settings, project_id: str, raw_path: str
+) -> tuple[str, list[dict[str, Any]]]:
+    """挂一个新的材料根目录前的全部校验；返回 (真实路径, 嵌套提示)。
+
+    拒绝：浏览根之外 / 隐藏目录 / 不存在（盘没插时给专门的提示）/ 声档自己的归档、
+    暂存、数据目录之内 / 已挂在别的项目下（409，带对方项目名）。嵌套允许，只返回提示。
+    """
+    resolved = resolve_within(settings.material_browse_root, raw_path)
+    state = volume_state(resolved)
+    if state == ROOT_VOLUME_OFFLINE:
+        raise ValueError("资料盘未连接，插上后再选")
+    if state != ROOT_ONLINE:
+        raise ValueError("材料根目录不存在或不是文件夹")
+    for protected, message in _protected_roots(settings):
+        if _within(resolved, protected):
+            raise ValueError(message)
+    owner = connection.execute(
+        """SELECT p.name FROM project_material_roots r JOIN projects p ON p.id = r.project_id
+            WHERE r.path=? AND r.project_id != ?""",
+        (str(resolved), project_id),
+    ).fetchone()
+    if owner is not None:
+        raise ConflictError(f"这个文件夹已挂在「{owner['name']}」项目下")
+    nested: list[dict[str, Any]] = []
+    for row in connection.execute(
+        """SELECT r.path, r.project_id, p.name AS project_name
+             FROM project_material_roots r JOIN projects p ON p.id = r.project_id
+            WHERE r.project_id != ?""",
+        (project_id,),
+    ).fetchall():
+        other = Path(row["path"])
+        if other.is_relative_to(resolved) or resolved.is_relative_to(other):
+            nested.append(dict(row))
+    return str(resolved), nested
+
+
 def list_material_roots(db: Database, project_id: str) -> list[dict[str, Any]]:
     rows = db.query_all(
-        "SELECT * FROM project_material_roots WHERE project_id=? ORDER BY created_at",
+        "SELECT * FROM project_material_roots WHERE project_id=? ORDER BY created_at, id",
         (project_id,),
     )
-    for row in rows:
-        row["exists"] = Path(row["path"]).is_dir()
-    return rows
+    return [annotate_root(row) for row in rows]
 
 
 def add_material_root(
-    db: Database, browse_root: Path, project_id: str, raw_path: str
+    db: Database, settings: Settings, project_id: str, raw_path: str
 ) -> dict[str, Any]:
-    resolved = resolve_within(browse_root, raw_path)
-    if not resolved.is_dir():
-        raise ValueError("材料根目录不存在或不是文件夹")
     now = utc_now()
     with db.transaction() as connection:
         if connection.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone() is None:
             raise NotFoundError(f"项目不存在：{project_id}")
+        path, nested = validate_new_root(connection, settings, project_id, raw_path)
         try:
             cursor = connection.execute(
                 "INSERT INTO project_material_roots(project_id, path, created_at) VALUES (?, ?, ?)",
-                (project_id, str(resolved), now),
+                (project_id, path, now),
             )
         except sqlite3.IntegrityError as error:
             raise ConflictError("该材料根目录已经挂在这个项目下") from error
         root_id = cursor.lastrowid
-    row = db.query_one("SELECT * FROM project_material_roots WHERE id=?", (root_id,))
-    row["exists"] = True
+    row = annotate_root(db.query_one("SELECT * FROM project_material_roots WHERE id=?", (root_id,)))
+    row["nested"] = nested
+    return row
+
+
+def replace_material_root(
+    db: Database, settings: Settings, project_id: str, root_id: int, raw_path: str
+) -> dict[str, Any]:
+    """原子替换一个根目录的路径：只改 path，保留 id 和 created_at。
+
+    取代前端「先删后加」：第二步失败时不会把根目录弄丢，以后卡片按根目录 id 认领也不断。
+    """
+    with db.transaction() as connection:
+        current = connection.execute(
+            "SELECT * FROM project_material_roots WHERE id=? AND project_id=?",
+            (root_id, project_id),
+        ).fetchone()
+        if current is None:
+            raise NotFoundError("材料根目录不存在")
+        path, nested = validate_new_root(connection, settings, project_id, raw_path)
+        if path != current["path"]:
+            try:
+                connection.execute(
+                    "UPDATE project_material_roots SET path=? WHERE id=?", (path, root_id)
+                )
+            except sqlite3.IntegrityError as error:
+                raise ConflictError("该材料根目录已经挂在这个项目下") from error
+    row = annotate_root(db.query_one("SELECT * FROM project_material_roots WHERE id=?", (root_id,)))
+    row["nested"] = nested
     return row
 
 
@@ -244,19 +371,35 @@ def remove_material_root(db: Database, project_id: str, root_id: int) -> None:
 
 
 def replace_material_roots(
-    connection: Any, browse_root: Path, project_id: str, raw_paths: list[str]
-) -> None:
-    """整体替换某项目的材料根目录列表；调用方负责开事务（供项目创建/更新复用）。"""
-    resolved_paths: list[str] = []
+    connection: Any, settings: Settings, project_id: str, raw_paths: list[str]
+) -> bool:
+    """把某项目的材料根目录列表改成 raw_paths；调用方负责开事务（供项目创建/更新复用）。
+
+    按差异增删：原样保留的行不动（id、created_at 不变，也不重新校验——盘没插时改项目名
+    不该因为根目录暂时看不到而失败），只删掉去掉的、只校验并插入新加的。返回是否有变化。
+    """
+    existing = {
+        row["path"]: row["id"]
+        for row in connection.execute(
+            "SELECT id, path FROM project_material_roots WHERE project_id=?", (project_id,)
+        ).fetchall()
+    }
+    wanted: list[str] = []
     for raw_path in raw_paths:
-        resolved = resolve_within(browse_root, raw_path)
-        if not resolved.is_dir():
-            raise ValueError(f"材料根目录不存在或不是文件夹：{raw_path}")
-        resolved_paths.append(str(resolved))
-    connection.execute("DELETE FROM project_material_roots WHERE project_id=?", (project_id,))
+        if raw_path in existing:
+            path = raw_path
+        else:
+            path, _nested = validate_new_root(connection, settings, project_id, raw_path)
+        if path not in wanted:
+            wanted.append(path)
+    removed = [root_id for path, root_id in existing.items() if path not in wanted]
+    added = [path for path in wanted if path not in existing]
+    for root_id in removed:
+        connection.execute("DELETE FROM project_material_roots WHERE id=?", (root_id,))
     now = utc_now()
-    for path in resolved_paths:
+    for path in added:
         connection.execute(
             "INSERT INTO project_material_roots(project_id, path, created_at) VALUES (?, ?, ?)",
             (project_id, path, now),
         )
+    return bool(removed or added)
