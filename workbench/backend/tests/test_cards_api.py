@@ -198,3 +198,37 @@ def test_card_status_alone_and_history_count_on_the_board(tmp_path):
 
     assert client.get(f"/api/meetings/{MEETING}/card").json()["category"] == "ok"
     assert client.get(f"/api/projects/{project_id}/board").json()["cards"]["history"] == 0
+
+
+def test_reassigning_while_the_scanner_reconciles_leaves_one_card(tmp_path):
+    import threading
+
+    client, _settings, headers, db, disk, writer = _setup(tmp_path)
+    project_a, root_a = _project(db, disk, "云图AI")
+    project_b, root_b = _project(db, disk, "数据中台")
+    _meeting(db, project_a)
+    writer.reconcile()
+    stop = threading.Event()
+    errors = []
+
+    def scanner():
+        while not stop.is_set():
+            try:
+                writer.reconcile()
+            except Exception as error:  # noqa: BLE001 - 带回主线程断言
+                errors.append(error)
+
+    thread = threading.Thread(target=scanner)
+    thread.start()
+    try:
+        for target in (project_b, project_a, project_b):
+            response = client.patch(f"/api/meetings/{MEETING}", json={"project_id": target}, headers=headers)
+            assert response.status_code == 200, response.text
+    finally:
+        stop.set()
+        thread.join()
+
+    assert errors == []
+    assert _card_files(root_a) == []
+    assert _card_files(root_b) == ["260926 初审规则沟通.md"]
+    assert client.get(f"/api/meetings/{MEETING}/card").json()["category"] == "ok"

@@ -530,30 +530,39 @@ def test_concurrent_reassign_and_reconcile_leave_one_card(tmp_path):
     project_b, root_b = _project(db, disk, "数据中台")
     _meeting(db, project_a)
     writer.reconcile()
+    # 扫描线程和改归属所在的线程池各用各的 CardWriter，只共用进程内那把锁
     other = CardWriter(db, settings)
-    db.execute("UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?", (project_b, MEETING))
-
     errors = []
 
-    def run(action):
+    def run(barrier, action):
         try:
+            barrier.wait()
             action()
         except Exception as error:  # noqa: BLE001 - 线程里的异常要带回主线程断言
             errors.append(error)
 
-    threads = [
-        threading.Thread(target=run, args=(lambda: writer.sync_meeting(MEETING),)),
-        threading.Thread(target=run, args=(other.reconcile,)),
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    # 来回改几次归属，每次都让两边同时起跑
+    for moves, (target, root_new, root_old) in enumerate(
+        [(project_b, root_b, root_a), (project_a, root_a, root_b)] * 3, start=1
+    ):
+        db.execute("UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?", (target, MEETING))
+        barrier = threading.Barrier(2)
+        threads = [
+            threading.Thread(target=run, args=(barrier, lambda: writer.sync_meeting(MEETING))),
+            threading.Thread(target=run, args=(barrier, other.reconcile)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
 
-    assert errors == []
-    assert _card_files(root_a) == []
-    assert _card_files(root_b) == ["260926 初审规则沟通.md"]
-    assert _retired(settings).count("260926 初审规则沟通.md") <= 1
+        assert errors == []
+        assert _card_files(root_old) == []
+        assert _card_files(root_new) == ["260926 初审规则沟通.md"]
+        # 每搬一次，旧卡片进回收区最多一份
+        assert _retired(settings).count("260926 初审规则沟通.md") <= moves
+        assert (root_new / CARDS / "逐字稿" / "260926 初审规则沟通.txt").is_file()
+        assert not (root_old / CARDS / "逐字稿" / "260926 初审规则沟通.txt").exists()
 
 
 def test_deleted_meeting_card_goes_to_the_recycle_area(tmp_path):
