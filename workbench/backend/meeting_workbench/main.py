@@ -53,6 +53,14 @@ from .attribution import (
     meeting_attribution,
 )
 from . import materials, requirements
+from .project_names import (
+    SimilarProjectError,
+    also_entries,
+    delete_empty_project,
+    folder_matches,
+    ignore_project_name,
+    merge_project,
+)
 from .tasks import TaskService, llm_ready
 from .hotwords import hotword_audit, normalize_hotwords
 from .attention import (
@@ -76,6 +84,7 @@ from .glossary import (
     list_terms,
     read_snapshot,
     reject_suggestion,
+    rewrite_snapshot,
     update_term,
 )
 from .minutes_evidence import (
@@ -220,10 +229,23 @@ class RollbackInput(BaseModel):
     version_id: str
 
 
+class ProjectFolderInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["mount", "create"]
+    # mount：要挂的文件夹；create：放新文件夹的位置（新文件夹名默认用项目名）。
+    path: str
+    name: str | None = None
+
+
 class ProjectInput(BaseModel):
     name: str
     color: str = "#667085"
     material_roots: list[str] | None = None
+    # 第一期 1b-2：挂现有文件夹或新建一个；顺手把几场会归进来；近似重名时仍然新建。
+    folder: ProjectFolderInput | None = None
+    meeting_ids: list[str] | None = None
+    force: bool = False
 
 
 class ProjectUpdateInput(BaseModel):
@@ -232,6 +254,13 @@ class ProjectUpdateInput(BaseModel):
     name: str | None = None
     color: str | None = None
     material_roots: list[str] | None = None
+    also_names: list[str] | None = None
+
+
+class ProjectNameInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
 
 
 class MaterialRootInput(BaseModel):
@@ -2681,6 +2710,13 @@ def create_app(
             return task_service.create_project(
                 name=body.name, color=body.color, origin="manual",
                 material_roots=body.material_roots,
+                folder=body.folder.model_dump() if body.folder else None,
+                meeting_ids=body.meeting_ids,
+                force=body.force,
+            )
+        except SimilarProjectError as error:
+            return JSONResponse(
+                {"detail": str(error), "suggestion": error.suggestion}, status_code=409
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
@@ -2692,7 +2728,51 @@ def create_app(
                 project_id, name=body.name, color=body.color,
                 material_roots=body.material_roots,
                 material_roots_given="material_roots" in body.model_fields_set,
+                also_names=body.also_names,
+                also_names_given="also_names" in body.model_fields_set,
             )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.delete("/api/projects/{project_id}")
+    def delete_project(project_id: str):
+        with db.transaction() as connection:
+            result = delete_empty_project(connection, project_id)
+        if result["terms_to_public"]:
+            rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+        return {"ok": True, **result}
+
+    @app.post("/api/projects/{project_id}/merge-into/{target_id}")
+    def merge_project_into(project_id: str, target_id: str, _body: dict[str, Any] | None = None):
+        try:
+            with db.transaction() as connection:
+                result = merge_project(connection, project_id, target_id)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+        detail = task_service._project_detail(target_id)
+        detail["merge"] = result
+        return detail
+
+    @app.get("/api/projects/folder-matches")
+    def project_folder_matches(name: str | None = None):
+        with db.autocommit() as connection:
+            return folder_matches(connection, settings, names=[name] if name else [])
+
+    @app.get("/api/projects/{project_id}/folder-suggestions")
+    def project_folder_suggestions(project_id: str):
+        project = db.query_one("SELECT name, also_names FROM projects WHERE id=?", (project_id,))
+        if project is None:
+            raise HTTPException(404, "项目不存在")
+        names = [project["name"], *(entry["name"] for entry in also_entries(project["also_names"]))]
+        with db.autocommit() as connection:
+            return folder_matches(connection, settings, names=names)
+
+    @app.post("/api/project-names/ignore")
+    def ignore_project_name_endpoint(body: ProjectNameInput):
+        try:
+            with db.transaction() as connection:
+                return ignore_project_name(connection, body.name)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
 

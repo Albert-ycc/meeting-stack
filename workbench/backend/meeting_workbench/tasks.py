@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -12,6 +13,7 @@ import sqlite3
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Iterable
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
@@ -21,6 +23,20 @@ from .db import Database, escape_like_pattern, utc_now
 from .glossary import rewrite_snapshot
 from .materials import annotate_root, replace_material_roots
 from .notify import LarkNotifier
+from .project_names import (
+    SimilarProjectError,
+    _dump_also,
+    _name_owner,
+    add_former_name,
+    also_entries,
+    create_project_folder,
+    find_similar_project,
+    merge_also_names,
+    rescan_unresolved_for_project,
+    sanitize_folder_name,
+    similar_project_message,
+)
+from .project_profile import norm_key
 from .semantic import SemanticIndex
 from .service import ConflictError, NotFoundError
 
@@ -270,20 +286,6 @@ def resolve_requirement_and_project(
 
     resolved_project_id = project_id if project_id_given else current_project_id
     return current_requirement_id, resolved_project_id, None
-
-
-def reopen_unresolved_project_links(connection: Any) -> int:
-    """项目表多了新项目后，之前因「没有对应项目」而判定不归属的会议要再判一次。
-
-    只删仍未归属会议的 unresolved 行，下一轮 link_pending 的 seed 会按当前纪要版本重建。
-    """
-    return connection.execute(
-        """DELETE FROM project_links
-            WHERE status='unresolved'
-              AND meeting_id IN (
-                  SELECT id FROM meetings WHERE project_id IS NULL AND project_origin IS NULL
-              )"""
-    ).rowcount
 
 
 class TaskService:
@@ -1007,6 +1009,7 @@ class TaskService:
             project["requirement_counts"] = {**counts, "all": sum(counts.values())}
             project["open_task_count"] = open_task_counts.get(project["id"], 0)
             project["material_roots"] = material_roots_by_project.get(project["id"], [])
+            project["also_names"] = also_entries(project.get("also_names"))
         return projects
 
     def create_project(
@@ -1016,31 +1019,87 @@ class TaskService:
         color: str,
         origin: str = "manual",
         material_roots: list[str] | None = None,
+        folder: dict[str, str] | None = None,
+        meeting_ids: list[str] | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
+        """新建项目。人工新建时先查近似重名（带 force 仍然新建）；可以顺手挂上或新建
+        项目文件夹、把几场会归进来；建好后在「没认出」的会里按名字找，命中的变成待你选。
+        """
+        # 本模块被 project_linking 引用，这里按需导入避免循环。
+        from .project_linking import reassign_meeting
+
         name = name.strip()
         if not name:
             raise ValueError("项目名称不能为空")
         if origin not in PROJECT_ORIGINS:
             raise ValueError(f"项目来源必须是 {'/'.join(PROJECT_ORIGINS)}")
-        with self.db.transaction() as connection:
-            existing = connection.execute(
-                "SELECT id FROM projects WHERE name=?", (name,)
-            ).fetchone()
-            if existing:
-                # 人工建项目撞名要报错，不能悄悄把 material_roots 挂到别人项目上（D26）；
-                # AI 建项目（origin=ai）撞名时直接返回已有项目，不改写它的来源。
-                if origin == "manual":
-                    raise ConflictError("已有同名项目")
-                return self._project_detail(existing["id"])
-            project_id = f"project-{uuid.uuid4().hex[:16]}"
-            connection.execute(
-                "INSERT INTO projects(id, name, color, origin, created_at) VALUES (?, ?, ?, ?, ?)",
-                (project_id, name, color, origin, utc_now()),
-            )
-            reopen_unresolved_project_links(connection)
-            if material_roots:
-                replace_material_roots(connection, self.settings, project_id, material_roots)
-        return self._project_detail(project_id)
+        created_folder: str | None = None
+        folder_pending: dict[str, str] | None = None
+        try:
+            with self.db.transaction() as connection:
+                existing = connection.execute(
+                    "SELECT id FROM projects WHERE name=?", (name,)
+                ).fetchone()
+                if existing:
+                    # 人工建项目撞名要报错，不能悄悄把 material_roots 挂到别人项目上（D26）；
+                    # AI 建项目（origin=ai）撞名时直接返回已有项目，不改写它的来源。
+                    if origin == "manual":
+                        raise ConflictError("已有同名项目")
+                    return self._project_detail(existing["id"])
+                if origin == "manual" and not force:
+                    suggestion = find_similar_project(connection, name)
+                    if suggestion is not None:
+                        raise SimilarProjectError(similar_project_message(suggestion), suggestion)
+                project_id = f"project-{uuid.uuid4().hex[:16]}"
+                connection.execute(
+                    "INSERT INTO projects(id, name, color, origin, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (project_id, name, color, origin, utc_now()),
+                )
+                roots = list(material_roots or [])
+                if folder:
+                    mode = folder.get("mode")
+                    path = str(folder.get("path") or "")
+                    if mode == "mount":
+                        roots.append(path)
+                    elif mode == "create":
+                        # path 是放新文件夹的位置，文件夹名默认用项目名。
+                        folder_name = str(folder.get("name") or name)
+                        existed = (Path(path) / sanitize_folder_name(folder_name)[0]).is_dir()
+                        folder_path, pending_reason = create_project_folder(
+                            self.settings, path, folder_name
+                        )
+                        if pending_reason is not None:
+                            folder_pending = {"path": folder_path, "reason": pending_reason}
+                        else:
+                            if not existed:
+                                created_folder = folder_path
+                            roots.append(folder_path)
+                    else:
+                        raise ValueError("folder.mode 只能是 mount 或 create")
+                if roots:
+                    replace_material_roots(connection, self.settings, project_id, roots)
+                assigned = 0
+                for meeting_id in dict.fromkeys(meeting_ids or []):
+                    if connection.execute(
+                        "SELECT 1 FROM meetings WHERE id=?", (meeting_id,)
+                    ).fetchone() is None:
+                        raise NotFoundError(f"会议不存在：{meeting_id}")
+                    reassign_meeting(connection, meeting_id, project_id, actor="user")
+                    assigned += 1
+                flagged = rescan_unresolved_for_project(connection, project_id)
+        except Exception:
+            if created_folder is not None:
+                # 数据库没写成，刚建的空文件夹也收回，不留半截。
+                with contextlib.suppress(OSError):
+                    Path(created_folder).rmdir()
+            raise
+        detail = self._project_detail(project_id)
+        detail["meetings_assigned"] = assigned
+        detail["needs_review_meeting_ids"] = flagged
+        if folder_pending is not None:
+            detail["folder_pending"] = folder_pending
+        return detail
 
     def update_project(
         self,
@@ -1050,6 +1109,8 @@ class TaskService:
         color: str | None,
         material_roots: list[str] | None = None,
         material_roots_given: bool = False,
+        also_names: list[str] | None = None,
+        also_names_given: bool = False,
     ) -> dict[str, Any]:
         renamed_to: str | None = None
         with self.db.transaction() as connection:
@@ -1061,9 +1122,29 @@ class TaskService:
             changes: list[str] = []
             values: list[Any] = []
             if name is not None and name.strip() != row["name"]:
+                if not name.strip():
+                    raise ValueError("项目名称不能为空")
+                owner = _name_owner(
+                    connection, norm_key(name.strip()), exclude_project_id=project_id
+                )
+                if owner is not None:
+                    raise ConflictError(f"已有「{owner[0]['name']}」，名字或叫法和它重了")
                 changes.append("name=?")
                 values.append(name.strip())
                 renamed_to = name.strip()
+            current_also = also_entries(row["also_names"])
+            new_also = current_also
+            final_name = renamed_to or row["name"]
+            if also_names_given:
+                new_also = merge_also_names(
+                    connection, project_id, final_name, also_names or [], current_also
+                )
+            if renamed_to is not None:
+                # 改名后旧名自动进也叫，会上还按旧名叫也认得出来。
+                new_also = add_former_name(new_also, row["name"], renamed_to)
+            if new_also != current_also:
+                changes.append("also_names=?")
+                values.append(_dump_also(new_also))
             if color is not None and color != row["color"]:
                 changes.append("color=?")
                 values.append(color)
@@ -1133,6 +1214,7 @@ class TaskService:
                 (project_id,),
             )
         ]
+        project["also_names"] = also_entries(project.get("also_names"))
         return project
 
     def project_board(self, project_id: str) -> dict[str, Any]:
