@@ -439,20 +439,6 @@
   background: var(--signal-bg);
 }
 
-.project-glossary__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.project-glossary__chip {
-  padding: 3px 9px;
-  color: var(--ink-soft);
-  font-size: 11px;
-  background: var(--bg);
-  border-radius: 12px;
-}
-
 .project-glossary__empty {
   margin: 0;
   color: var(--ink-faint);

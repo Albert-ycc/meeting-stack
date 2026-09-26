@@ -28,6 +28,7 @@ import "./ProjectDetailPage.css";
 import { useConfirm } from "./ConfirmDialog";
 import { copyText } from "../clipboard";
 import { NoticeBanner, useNotice } from "./Notice";
+import { ProjectGlossary } from "./ProjectGlossary";
 import { usePersistentState } from "../viewState";
 
 interface ProjectDetailPageProps {
@@ -595,30 +596,20 @@ export function ProjectDetailPage({
             )}
           </section>
 
-          <section className="project-glossary">
-            <header className="project-glossary__head">
-              <strong>词典</strong>
-              <span>{board.glossary_count ?? 0} 条术语</span>
-              <button
-                className="project-glossary__link"
-                onClick={() => onOpenGlossary(projectId)}
-                type="button"
-              >
-                在词典中查看 →
-              </button>
-            </header>
-            {board.glossary_terms && board.glossary_terms.length > 0 ? (
-              <div className="project-glossary__chips">
-                {board.glossary_terms.map((term) => (
-                  <span className="project-glossary__chip" key={term.id}>
-                    {term.term}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="project-glossary__empty">这个项目还没有挂靠的术语</p>
-            )}
-          </section>
+          <ProjectGlossary
+            apiClient={apiClient}
+            canWrite={canWrite}
+            onChanged={async (message) => {
+              setNotice(message);
+              await loadBoard();
+            }}
+            onOpenGlossary={onOpenGlossary}
+            projectId={projectId}
+            projectName={board.name}
+            publicCount={board.public_glossary_count ?? 0}
+            terms={board.glossary_terms ?? []}
+            total={board.glossary_count ?? 0}
+          />
         </>
       )}
 

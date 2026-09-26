@@ -64,10 +64,29 @@ def test_expansion_stops_at_punctuation_particles_and_six_chars():
     ]
     # 遇到「的」停
     assert extract_correction_candidates("树立协会的事", "数理协会的事", set())[0]["wrong"] == "树立协会"
-    # 最长 6 字
+    # 没有重复可依时向右只扩到 4 字
     assert extract_correction_candidates("树立协会章程草案", "数理协会章程草案", set())[0][
         "wrong"
+    ] == "树立协会"
+    # 逐字稿里反复出现的长写法可以扩到 6 字，但不超过 6 字
+    corpus = "树立协会章程草案第一条，树立协会章程草案第二条"
+    assert extract_correction_candidates("树立协会章程草案", "数理协会章程草案", set(), corpus)[0][
+        "wrong"
     ] == "树立协会章程"
+
+
+def test_expansion_follows_what_repeats_in_the_transcript():
+    old, new = "数据终态下周上线。", "数据中台下周上线。"
+    # 没有重复可依：照规则向右
+    assert extract_correction_candidates(old, new, set())[0]["wrong"] == "终态下周"
+    # 逐字稿里「数据终态」出现了好几次：扩成它
+    corpus = "我们的数据终态要做好。数据终态的口径先对齐。"
+    assert extract_correction_candidates(old, new, set(), corpus)[0] == {
+        "wrong": "数据终态",
+        "correct": "数据中台",
+        "alt_wrong": "终态",
+        "alt_correct": "中台",
+    }
 
 
 def test_expansion_goes_left_when_right_side_is_punctuation():
@@ -369,6 +388,23 @@ def test_save_does_not_auto_record_without_project_or_when_wrong_is_a_known_name
         ("树立协会", False),
     ]
     assert get_term(db, list_terms(db, scope="通用")[0]["id"])["aliases"] == []
+
+
+def test_record_uses_meeting_transcript_to_pick_the_whole_word(tmp_path):
+    db = make_db(tmp_path)
+    add_meeting(db)
+    version = db.create_transcript_version(MEETING, "funasr", published=True)
+    db.replace_segments(
+        version,
+        MEETING,
+        [
+            {"id": "s1", "ordinal": 0, "start_ms": 0, "end_ms": 1000, "speaker_label": "A", "text": "数据终态这周要定"},
+            {"id": "s2", "ordinal": 1, "start_ms": 1000, "end_ms": 2000, "speaker_label": "A", "text": "数据终态的口径"},
+        ],
+    )
+    db.execute("UPDATE meetings SET current_transcript_version_id=? WHERE id=?", (version, MEETING))
+    rows = record_corrections_from_diff(db, "数据终态下周上线。", "数据中台下周上线。", meeting_id=MEETING)
+    assert [(row["wrong"], row["correct"]) for row in rows] == [("数据终态", "数据中台")]
 
 
 def test_record_returns_nothing_for_duplicates(tmp_path):

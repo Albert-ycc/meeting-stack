@@ -33,6 +33,8 @@ MAX_TERM_LEN = 40
 EXPAND_MAX_LEN = 6
 # 向左扩只补 2 个字（凑成最常见的 4 字词），左边没有词边界可依，扩多了容易带上前一个词
 EXPAND_LEFT_MAX = 2
+# 旧纪要和逐字稿里都没有重复可依时，向右只扩到 4 字
+EXPAND_DEFAULT_LEN = 4
 _EXPAND_STOP_CHARS = frozenset(
     "的地得了着过是在和与及或把被就也都还又吗呢吧啊"
     "说去来到给让对向从跟请我你他她它这那们个"
@@ -320,9 +322,14 @@ def _expand_to_known_term(
 
 
 def _expand_short_fragment(
-    old_text: str, new_text: str, span: tuple[int, int, int, int]
+    old_text: str, new_text: str, span: tuple[int, int, int, int], corpus: str = ""
 ) -> tuple[str, str] | None:
-    """2 字片段沿新旧文本共同的后文向右扩（遇标点、虚词停，整词最长 6 字）；右边扩不出再向左补 2 字。"""
+    """2 字片段扩成整词：沿新旧文本共同的前后文找候选（遇标点、虚词停，整词最长 6 字）。
+
+    没有词表可查词边界，就看旧纪要和逐字稿里哪个扩法重复出现得多（同一个错写，
+    转写里每提到一次就错一次）：取出现 2 次以上里最多、同样多取最长的。
+    没有重复可依时，向右扩到 4 字；右边扩不出再向左补 2 字。
+    """
     a_start, a_end, b_start, b_end = span
     wrong = old_text[a_start:a_end]
     correct = new_text[b_start:b_end]
@@ -339,9 +346,6 @@ def _expand_short_fragment(
         right.append(old_text[i])
         i += 1
         j += 1
-    if right:
-        tail = "".join(right)
-        return wrong + tail, correct + tail
     left: list[str] = []
     i, j = a_start - 1, b_start - 1
     while (
@@ -354,14 +358,25 @@ def _expand_short_fragment(
         left.append(old_text[i])
         i -= 1
         j -= 1
-    if left:
-        head = "".join(reversed(left))
-        return head + wrong, head + correct
-    return None
+    head = "".join(reversed(left))
+    tail = "".join(right)
+    options = [(wrong + tail[:n], correct + tail[:n]) for n in range(1, len(tail) + 1)]
+    options += [(head[-n:] + wrong, head[-n:] + correct) for n in range(1, len(head) + 1)]
+    if not options:
+        return None
+    haystack = f"{old_text}\n{corpus}"
+    counted = [(haystack.count(option[0]), len(option[0]), option) for option in options]
+    repeated = [item for item in counted if item[0] >= 2]
+    if repeated:
+        return max(repeated, key=lambda item: (item[0], item[1]))[2]
+    if tail:
+        keep = max(1, EXPAND_DEFAULT_LEN - len(wrong))
+        return wrong + tail[:keep], correct + tail[:keep]
+    return head + wrong, head + correct
 
 
 def extract_correction_candidates(
-    old_text: str, new_text: str, known_terms: set[str]
+    old_text: str, new_text: str, known_terms: set[str], corpus: str = ""
 ) -> list[dict[str, str | None]]:
     """带扩词的错字更正候选：[{wrong, correct, alt_wrong, alt_correct}, ...]。
 
@@ -378,7 +393,7 @@ def extract_correction_candidates(
             # 单字改动只在能扩成已知词时才算
             continue
         if expanded is None and len(raw[0]) == MIN_DIFF_LEN and len(raw[1]) == MIN_DIFF_LEN:
-            expanded = _expand_short_fragment(old_text, new_text, span)
+            expanded = _expand_short_fragment(old_text, new_text, span, corpus)
         if expanded is not None and (
             expanded == raw or not _is_candidate(expanded[0]) or not _is_candidate(expanded[1])
         ):
@@ -400,13 +415,24 @@ def extract_correction_candidates(
     return candidates
 
 
-def _context_snippet(text: str, needle: str, width: int = 20) -> str:
-    index = text.find(needle)
-    if index < 0:
-        return text[:width]
-    start = max(0, index - width)
-    end = min(len(text), index + len(needle) + width)
-    return text[start:end]
+def _context_snippet(text: str, needle: str, width: int = 30) -> str:
+    """改对的那句话：去掉 markdown 标记和时间戳，取包含它的那一句（太长就截两头）。"""
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"^\s*(#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s*)", "", line)
+        line = re.sub(r"\[\d{1,2}:\d{2}(?::\d{2})?\]", "", line).strip()
+        if line:
+            lines.append(line)
+    sentences = [part.strip() for part in re.split(r"[。！？；!?;\n]", "\n".join(lines)) if part.strip()]
+    for sentence in sentences:
+        index = sentence.find(needle)
+        if index < 0:
+            continue
+        if len(sentence) <= len(needle) + 2 * width:
+            return sentence
+        start = max(0, index - width)
+        return sentence[start : index + len(needle) + width]
+    return text[: 2 * width]
 
 
 def _wrong_is_known_name(db: Database, wrong: str) -> bool:
@@ -444,7 +470,19 @@ def record_corrections_from_diff(
     if not old_markdown or not new_markdown or old_markdown == new_markdown:
         return []
     known_terms = {row["term"] for row in db.query_all("SELECT term FROM glossary_terms")}
-    candidates = extract_correction_candidates(old_markdown, new_markdown, known_terms)
+    # 逐字稿里错写重复出现的次数，帮着判断 2 字片段该扩成哪个整词
+    transcript = "\n".join(
+        row["text"]
+        for row in db.query_all(
+            """SELECT s.text FROM segments s
+                 JOIN meetings m ON m.current_transcript_version_id = s.version_id
+                WHERE m.id=? ORDER BY s.ordinal""",
+            (meeting_id,),
+        )
+    )
+    candidates = extract_correction_candidates(
+        old_markdown, new_markdown, known_terms, corpus=transcript
+    )
     scope = str(scope or "").strip() or "通用"
     meeting = db.query_one("SELECT project_id FROM meetings WHERE id=?", (meeting_id,))
     has_project = bool(meeting and meeting["project_id"])

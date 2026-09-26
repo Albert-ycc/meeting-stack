@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ProjectDetailPage } from "./ProjectDetailPage";
-import type { ApiClient } from "../api";
+import { ApiError, type ApiClient } from "../api";
 import type {
   ProjectBoard,
   ProjectMeetingRow,
@@ -83,14 +83,17 @@ function renderPage(overrides: Partial<Parameters<typeof ProjectDetailPage>[0]> 
 }
 
 describe("ProjectDetailPage 词典区", () => {
-  it("后端已带 glossary 字段：显示计数与前几条术语 chip", async () => {
+  it("列出项目词（错写、也叫）和总数，另有公共词一行", async () => {
+    const onOpenGlossary = vi.fn();
     renderPage({
+      onOpenGlossary,
       apiClient: client({
         projectBoard: vi.fn().mockResolvedValue({
           ...baseBoard,
-          glossary_count: 2,
+          glossary_count: 52,
+          public_glossary_count: 41,
           glossary_terms: [
-            { id: "term-1", term: "生长激素", aliases: [], category: "药品" },
+            { id: "term-1", term: "生长激素", aliases: [], category: "药品", also: ["GH"] },
             { id: "term-2", term: "骨龄", aliases: ["骨骼年龄"], category: "术语" },
           ],
         }),
@@ -98,15 +101,20 @@ describe("ProjectDetailPage 词典区", () => {
     });
 
     expect(await screen.findByText("生长激素")).toBeTruthy();
-    expect(screen.getByText("骨龄")).toBeTruthy();
-    expect(screen.getByText("2 条术语")).toBeTruthy();
+    expect(screen.getByText("也叫 GH")).toBeTruthy();
+    expect(screen.getByText("骨骼年龄")).toBeTruthy();
+    expect(screen.getByText("52 条项目词")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "还有 50 条，在词典中查看 →" }));
+    expect(onOpenGlossary).toHaveBeenCalledWith("project-1");
+    fireEvent.click(screen.getByRole("button", { name: "另有 41 条公共词也会用于本项目 →" }));
+    expect(onOpenGlossary).toHaveBeenCalledWith("public");
   });
 
   it("后端还没带 glossary 字段：不报错，渲染成空态", async () => {
     renderPage();
 
-    expect(await screen.findByText("这个项目还没有挂靠的术语")).toBeTruthy();
-    expect(screen.getByText("0 条术语")).toBeTruthy();
+    expect(await screen.findByText("项目词只在这个项目的会里用来纠错和识别项目")).toBeTruthy();
+    expect(screen.getByText("0 条项目词")).toBeTruthy();
   });
 
   it("点击「在词典中查看」调用 onOpenGlossary 并带上当前项目 id", async () => {
@@ -116,6 +124,44 @@ describe("ProjectDetailPage 词典区", () => {
     fireEvent.click(await screen.findByText("在词典中查看 →"));
 
     await waitFor(() => expect(onOpenGlossary).toHaveBeenCalledWith("project-1"));
+  });
+
+  it("输入正确写法回车，再接着输入错写，空着回车就加入", async () => {
+    const createGlossaryTerm = vi.fn().mockResolvedValue({});
+    const projectBoard = vi.fn().mockResolvedValue(baseBoard);
+    renderPage({ apiClient: client({ createGlossaryTerm, projectBoard } as Partial<ApiClient>) });
+
+    await userEvent.type(await screen.findByLabelText("项目词的正确写法"), "初审规则{Enter}");
+    await userEvent.type(screen.getByLabelText("错写"), "出审规则{Enter}");
+    expect(screen.getByText("出审规则")).toBeTruthy();
+    await userEvent.type(screen.getByLabelText("错写"), "{Enter}");
+
+    await waitFor(() =>
+      expect(createGlossaryTerm).toHaveBeenCalledWith({
+        term: "初审规则",
+        aliases: ["出审规则"],
+        project_id: "project-1",
+        source: "manual",
+        confirmed: true,
+      }),
+    );
+    expect(await screen.findByText("已加入项目词「初审规则」（错写：出审规则）")).toBeTruthy();
+    expect(projectBoard).toHaveBeenCalledTimes(2);
+  });
+
+  it("撞上公共词典里的同名词：就地把新错写加到那条", async () => {
+    const conflict = { term_id: "gt-1", term: "随访", project_id: null, project_name: null, aliases: ["随方"], also: [] };
+    const createGlossaryTerm = vi.fn().mockRejectedValue(new ApiError("「随访」已在 公共 词典", 409, { conflict }));
+    const mergeGlossaryTerm = vi.fn().mockResolvedValue({});
+    renderPage({ apiClient: client({ createGlossaryTerm, mergeGlossaryTerm } as Partial<ApiClient>) });
+
+    await userEvent.type(await screen.findByLabelText("项目词的正确写法"), "随访{Enter}");
+    await userEvent.type(screen.getByLabelText("错写"), "随仿{Enter}{Enter}");
+
+    expect(await screen.findByText("『随访』已在 公共 词典（错写：随方）")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "把新错写加到那条" }));
+    expect(mergeGlossaryTerm).toHaveBeenCalledWith("gt-1", { aliases: ["随仿"], make_public: false });
+    expect(await screen.findByText("已加到 公共 的『随访』")).toBeTruthy();
   });
 });
 

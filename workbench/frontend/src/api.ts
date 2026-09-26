@@ -22,9 +22,12 @@ import type {
   RequirementsPayload,
   AsrGoldSample,
   AsrShadowRun,
+  GlossaryConfirmResult,
   GlossaryScope,
   GlossarySuggestion,
+  GlossaryTarget,
   GlossaryTerm,
+  GlossaryTermConflict,
   MeetingDetail,
   MeetingFilters,
   MinutesBackend,
@@ -99,6 +102,13 @@ export class ApiError extends Error {
     this.status = status;
     this.data = data;
   }
+}
+
+/** 新建、改词条撞上已有词条时，从 409 里取出那条词条；别的错误返回 null。 */
+export function termConflictFrom(error: unknown): GlossaryTermConflict | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const data = error.data as { conflict?: GlossaryTermConflict } | null | undefined;
+  return data?.conflict ?? null;
 }
 
 /** 新建项目撞上近似重名时，从 409 里取出已有的那个项目；别的错误返回 null。 */
@@ -533,7 +543,7 @@ export const api = {
       second_segment_id: secondSegmentId,
     }),
   saveMinutes: (meetingId: string, markdown: string, baseVersionId: string | null) =>
-    write<{ version_id: string }>(`/api/meetings/${meetingId}/minutes`, "PUT", {
+    write<{ version_id: string; corrections?: GlossarySuggestion[] }>(`/api/meetings/${meetingId}/minutes`, "PUT", {
       base_version_id: baseVersionId,
       markdown,
     }),
@@ -597,6 +607,8 @@ export const api = {
     category?: string;
     source?: string;
     confirmed?: boolean;
+    is_cue?: boolean;
+    also?: string[];
   }) => write<GlossaryTerm>("/api/glossary/terms", "POST", data),
   updateGlossaryTerm: (
     termId: string,
@@ -608,6 +620,7 @@ export const api = {
       category?: string;
       confirmed?: boolean;
       is_cue?: boolean;
+      also?: string[];
     },
   ) =>
     write<GlossaryTerm>(
@@ -615,6 +628,9 @@ export const api = {
       "PUT",
       data,
     ),
+  /** 重名时把新写的错写、叫法并进已有词条；makePublic 时顺手改成公共词 */
+  mergeGlossaryTerm: (termId: string, data: { aliases?: string[]; also?: string[]; make_public?: boolean }) =>
+    write<GlossaryTerm>(`/api/glossary/terms/${encodeURIComponent(termId)}/merge`, "POST", data),
   deleteGlossaryTerm: (termId: string) =>
     write<{ ok: boolean }>(
       `/api/glossary/terms/${encodeURIComponent(termId)}`,
@@ -625,15 +641,27 @@ export const api = {
     read<GlossarySuggestion[]>(
       `/api/glossary/suggestions${queryString({ status })}`,
     ),
-  confirmGlossarySuggestion: (suggestionId: string) =>
-    write<{ ok: boolean }>(
+  confirmGlossarySuggestion: (suggestionId: string, options: { target?: GlossaryTarget; short?: boolean } = {}) =>
+    write<GlossaryConfirmResult>(
       `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/confirm`,
+      "POST",
+      options,
+    ),
+  undoGlossarySuggestion: (suggestionId: string) =>
+    write<{ ok: boolean; suggestion: GlossarySuggestion | null }>(
+      `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/undo`,
       "POST",
       {},
     ),
   rejectGlossarySuggestion: (suggestionId: string) =>
     write<{ ok: boolean }>(
       `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/reject`,
+      "POST",
+      {},
+    ),
+  restoreGlossarySuggestion: (suggestionId: string) =>
+    write<{ ok: boolean; suggestion: GlossarySuggestion | null }>(
+      `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/restore`,
       "POST",
       {},
     ),

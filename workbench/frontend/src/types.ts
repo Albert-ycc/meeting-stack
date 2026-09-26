@@ -700,12 +700,15 @@ export interface BoardMeeting {
   tasks: Task[];
 }
 
-/** 项目看板词典区的精简术语行；完整字段在词典页自己拉取。 */
+/** 项目看板词典区的术语行（最多 50 条，新加的在前）；完整字段在词典页自己拉取。 */
 export interface BoardGlossaryTerm {
   id: string;
   term: string;
   aliases: string[];
   category: string;
+  also?: string[];
+  is_cue?: boolean;
+  source?: string;
 }
 
 export interface ProjectRecognitionProfile {
@@ -720,6 +723,8 @@ export interface ProjectBoard extends Project {
   meetings: BoardMeeting[];
   glossary_count?: number;
   glossary_terms?: BoardGlossaryTerm[];
+  /** 「另有 N 条公共词也会用于本项目」 */
+  public_glossary_count?: number;
   profile?: ProjectRecognitionProfile;
   cards?: ProjectCardsSummary;
 }
@@ -749,15 +754,21 @@ export interface GlossaryTerm {
   project_color?: string | null;
   /** 项目词是否参与认项目 */
   is_cue?: boolean;
+  /** 也叫：不改写，只用于识别项目和搜索 */
+  also?: string[];
 }
 
-/** 词典筛选 chip：通用 → 项目 → 其他桶，只含有术语的分组，由后端定序。 */
+/**
+ * 词典筛选 chip：公共（总在）→ 全部项目（含 0 个词的，按最近开会排序）→ 旧分组桶
+ * （只在还有没整理的旧分组时出现），由后端定序。
+ */
 export interface GlossaryScope {
   kind: "general" | "project" | "bucket";
   key: string;
   label: string;
   color: string | null;
   count: number;
+  last_meeting_at?: string | null;
 }
 
 export interface GlossarySuggestion {
@@ -770,6 +781,44 @@ export interface GlossarySuggestion {
   status: "pending" | "confirmed" | "rejected";
   created_at: string;
   updated_at: string;
+  /** 2 字片段扩成整词前的那一对（「只记 2 字」） */
+  alt_wrong?: string | null;
+  alt_correct?: string | null;
+  confirmed_term_id?: string | null;
+  confirmed_wrong?: string | null;
+  meeting_title?: string | null;
+  /** 会议当前所属的项目：默认记到这里 */
+  target_project_id?: string | null;
+  target_project_name?: string | null;
+  target_project_color?: string | null;
+  /** 正确写法已是某条词条时，那条词条在哪 */
+  existing_term_id?: string | null;
+  existing_term_project_id?: string | null;
+  existing_term_project_name?: string | null;
+  /** 保存纪要时直接记入了（改成的写法已是词条、会议有项目），前端提示可撤销 */
+  auto_recorded?: boolean;
+}
+
+/** 确认一条建议记到哪：auto=会议当前的项目；public=公共；其余是 project_id */
+export type GlossaryTarget = "auto" | "public" | string;
+
+export interface GlossaryConfirmResult {
+  ok: boolean;
+  term: GlossaryTerm | null;
+  created: boolean;
+  wrong: string;
+  correct: string;
+  suggestion: GlossarySuggestion | null;
+}
+
+/** 词条重名 409 带回来的已有词条 */
+export interface GlossaryTermConflict {
+  term_id: string;
+  term: string;
+  project_id: string | null;
+  project_name: string | null;
+  aliases: string[];
+  also: string[];
 }
 
 // ---------------------------------------------------------------------------

@@ -672,6 +672,7 @@ export default function App({ apiClient = api }: AppProps) {
         }}
         onOpenRequirement={openRequirementDetail}
         onOpenTasks={() => navigate("tasks")}
+        onGlossaryChanged={() => void loadGlossaryPending()}
         onTasksChanged={() => void loadPendingCount(true)}
         onReload={async () => {
           await Promise.all([

@@ -1088,6 +1088,81 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(saveMinutes).toHaveBeenCalledWith("vm-1", "# 第一版纪要", null);
   });
 
+  it("保存纪要后在编辑器下方就地确认错字更正，已自动记入的给撤销", async () => {
+    const saveMinutes = vi.fn().mockResolvedValue({
+      version_id: "mv-first",
+      corrections: [
+        {
+          id: "gs-1",
+          wrong: "树立协会",
+          correct: "数理协会",
+          scope: "通用",
+          meeting_id: "vm-1",
+          context: null,
+          status: "pending",
+          created_at: "",
+          updated_at: "",
+          target_project_id: null,
+          target_project_name: null,
+          auto_recorded: false,
+        },
+        {
+          id: "gs-2",
+          wrong: "随方",
+          correct: "随访",
+          scope: "通用",
+          meeting_id: "vm-1",
+          context: null,
+          status: "confirmed",
+          created_at: "",
+          updated_at: "",
+          existing_term_id: "gt-1",
+          existing_term_project_name: null,
+          auto_recorded: true,
+        },
+      ],
+    });
+    const onGlossaryChanged = vi.fn();
+    const confirmGlossarySuggestion = vi.fn().mockResolvedValue({
+      ok: true,
+      created: true,
+      wrong: "树立协会",
+      correct: "数理协会",
+      term: { project_name: null },
+      suggestion: null,
+    });
+    const apiClient = {
+      transcriptVersionSegments: vi.fn(),
+      saveMinutes,
+      confirmGlossarySuggestion,
+    } as unknown as ApiClient;
+    render(
+      <MeetingDetailPage
+        apiClient={apiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={meeting(false)}
+        onBack={vi.fn()}
+        onGlossaryChanged={onGlossaryChanged}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[]}
+        tags={[]}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: /会议纪要/ }));
+    await userEvent.click(screen.getByRole("button", { name: "编辑纪要" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "会议纪要编辑器" }), "成立数理协会");
+    await userEvent.click(screen.getByRole("button", { name: "保存纪要草稿" }));
+
+    expect(await screen.findByText(/1 处像是错字更正。这场会还没定项目/)).toBeInTheDocument();
+    expect(screen.getByText("已自动记入『随访』（公共）")).toBeInTheDocument();
+    expect(onGlossaryChanged).toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "记入 公共" }));
+    expect(confirmGlossarySuggestion).toHaveBeenCalledWith("gs-1", { target: "public", short: false });
+    expect(await screen.findByText("已记入 公共")).toBeInTheDocument();
+  });
+
   it("renders safe GFM markdown without enabling raw HTML or dangerous links", async () => {
     const unsafe = {
       ...meeting(false),

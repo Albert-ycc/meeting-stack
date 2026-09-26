@@ -10,6 +10,7 @@ import type {
   AsrGoldSample,
   AsrShadowRun,
   AttributionState,
+  GlossarySuggestion,
   LoadState,
   MeetingConflict,
   MeetingAttribution,
@@ -30,6 +31,7 @@ import { CopyFolderPathButton } from "./CopyFolderPathButton";
 import { MeetingCardStatus } from "./MeetingCardStatus";
 import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
 import { MeetingTasksPanel } from "./MeetingTasksPanel";
+import { MinutesCorrectionsBar } from "./MinutesCorrectionsBar";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { NoticeBanner, useNotice, type NoticeTone } from "./Notice";
@@ -55,6 +57,8 @@ interface MeetingDetailPageProps {
   onOpenRequirement?: (requirementId: string) => void;
   /** 卡片状态条「去挂文件夹」「去项目页」 */
   onOpenProject?: (projectId: string) => void;
+  /** 纠错词记入或撤销以后刷新侧栏词典的待确认角标 */
+  onGlossaryChanged?: () => void;
 }
 
 type DetailTab = "transcript" | "minutes" | "tasks";
@@ -237,6 +241,7 @@ export function MeetingDetailPage({
   onOpenTasks,
   onOpenRequirement,
   onOpenProject,
+  onGlossaryChanged,
 }: MeetingDetailPageProps) {
   const playerRef = useRef<AudioPlayerHandle>(null);
   const [currentMs, setCurrentMs] = useState(initialSeekMs);
@@ -272,6 +277,8 @@ export function MeetingDetailPage({
   const [confirm, confirmDialog] = useConfirm();
   const [savingKind, setSavingKind] = useState<"transcript" | "minutes" | "classification" | null>(null);
   const [saveConflict, setSaveConflict] = useState<"transcript" | "minutes" | null>(null);
+  // 最近一次保存纪要捕获到的错字更正，在编辑器下方就地确认
+  const [corrections, setCorrections] = useState<GlossarySuggestion[]>([]);
   const [speakerLabel, setSpeakerLabel] = useState(meeting.speakers[0]?.label ?? "");
   const [speakerName, setSpeakerName] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState(meeting.project_id ?? "");
@@ -705,6 +712,10 @@ export function MeetingDetailPage({
     setMinutesBaseVersionId(result.version_id);
     setBaselineMinutes(snapshot);
     setSaveConflict(null);
+    if (result.corrections?.length) {
+      setCorrections(result.corrections);
+      if (result.corrections.some((item) => item.auto_recorded)) onGlossaryChanged?.();
+    }
     if (revisions.current.minutes !== requestRevision) {
       setNotice("请求中的纪要已保存；请求发出后的本地修改仍保留，请再次保存", "warning");
       return;
@@ -1332,6 +1343,16 @@ export function MeetingDetailPage({
               <div className="comparison-empty"><span>∅</span><div><h2>尚无会议纪要</h2><p>桌面端可新建第一版纪要，或请求后台重新生成。</p></div></div>
             ) : (
               <div className="markdown-safe"><SafeMarkdown>{minutes}</SafeMarkdown></div>
+            )}
+            {corrections.length > 0 && (
+              <MinutesCorrectionsBar
+                apiClient={apiClient}
+                corrections={corrections}
+                key={corrections.map((item) => item.id).join(",")}
+                onChanged={onGlossaryChanged}
+                onClose={() => setCorrections([])}
+                projects={projects}
+              />
             )}
             <MinutesEvidencePanel
               evidence={evidenceVersionId === currentMinutesVersionId ? evidence : null}
