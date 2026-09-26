@@ -91,7 +91,7 @@ describe("JobsPage non-blocking substates", () => {
     const picker = screen.getByLabelText("选择录音文件");
     await userEvent.type(hotwords, "ACME，云图");
     await userEvent.upload(picker, new File(["first"], "first.m4a", { type: "audio/mp4" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("上传失败");
+    expect(await screen.findByRole("alert")).toHaveTextContent("上传失败");
     expect(hotwords).toHaveValue("ACME，云图");
     await userEvent.upload(picker, new File(["retry"], "retry.m4a", { type: "audio/mp4" }));
     expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), ["ACME", "云图"], expect.any(Function));

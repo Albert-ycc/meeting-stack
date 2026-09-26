@@ -762,6 +762,7 @@ export default function App({ apiClient = api }: AppProps) {
     content = (
       <ProjectDetailPage
         apiClient={apiClient}
+        key={openProjectId}
         canPickFolders={!isMobile}
         canWrite={!isMobile || mobileTaskWrite}
         onBack={() => navigate("projects")}

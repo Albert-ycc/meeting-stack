@@ -6,6 +6,7 @@ import { AsyncState } from "./AsyncState";
 import { TaskEditModal } from "./TaskEditModal";
 import { TaskReExtractModal } from "./TaskReExtractModal";
 import "./MeetingTasksPanel.css";
+import { NoticeBanner, useNotice } from "./Notice";
 
 interface MeetingTasksPanelProps {
   apiClient: ApiClient;
@@ -51,7 +52,7 @@ export function MeetingTasksPanel({
 }: MeetingTasksPanelProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [state, setState] = useState<LoadState>("loading");
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [reExtracting, setReExtracting] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
   const [reExtractOpen, setReExtractOpen] = useState(false);
@@ -95,7 +96,7 @@ export function MeetingTasksPanel({
       await load();
       onChanged?.();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : failed);
+      setNotice(error instanceof Error ? error.message : failed, "error");
     } finally {
       setActingId(null);
     }
@@ -205,9 +206,7 @@ export function MeetingTasksPanel({
           在任务页查看全部 →
         </button>
       )}
-      {notice && (
-        <div className="action-banner" role="status">{notice}</div>
-      )}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
       {editing && (
         <TaskEditModal
           apiClient={apiClient}

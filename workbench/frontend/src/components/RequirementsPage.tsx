@@ -8,6 +8,7 @@ import { PriorityBadge, REQUIREMENT_PRIORITIES, RequirementStatusBadge } from ".
 import { RequirementModal } from "./RequirementModal";
 import { useToast } from "./Toast";
 import "./RequirementsPage.css";
+import { usePersistentState } from "../viewState";
 
 interface RequirementsPageProps {
   apiClient: ApiClient;
@@ -49,10 +50,10 @@ export function RequirementsPage({
   onProjectsChanged,
 }: RequirementsPageProps) {
   const { toastNode, showToast } = useToast();
-  const [activeTab, setActiveTab] = useState<TabKey>("active");
-  const [draftFilters, setDraftFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [appliedFilters, setAppliedFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [offset, setOffset] = useState(0);
+  const [activeTab, setActiveTab] = usePersistentState<TabKey>("requirements.activeTab", "active");
+  const [draftFilters, setDraftFilters] = usePersistentState<Filters>("requirements.draftFilters", EMPTY_FILTERS);
+  const [appliedFilters, setAppliedFilters] = usePersistentState<Filters>("requirements.appliedFilters", EMPTY_FILTERS);
+  const [offset, setOffset] = usePersistentState("requirements.offset", 0);
   const [items, setItems] = useState<RequirementSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<RequirementCounts>({ active: 0, done: 0, shelved: 0, all: 0 });

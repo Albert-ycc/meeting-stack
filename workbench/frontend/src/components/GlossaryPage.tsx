@@ -15,6 +15,8 @@ import type {
 } from "../types";
 
 import "./GlossaryPage.css";
+import { NoticeBanner, useNotice } from "./Notice";
+import { usePersistentState } from "../viewState";
 
 type SuggestionStatus = "pending" | "confirmed" | "rejected";
 type TabKey = "terms" | "suggestions";
@@ -118,8 +120,8 @@ export function GlossaryPage({
   initialProjectId,
   onPendingChange,
 }: GlossaryPageProps) {
-  const [activeTab, setActiveTab] = useState<TabKey>("terms");
-  const [notice, setNotice] = useState("");
+  const [activeTab, setActiveTab] = usePersistentState<TabKey>("glossary.activeTab", "terms");
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [busy, setBusy] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
   const busyRef = useRef(false);
@@ -131,14 +133,14 @@ export function GlossaryPage({
   const [terms, setTerms] = useState<GlossaryTerm[]>([]);
   const [termsState, setTermsState] = useState<LoadState>("loading");
   const [remoteScopes, setRemoteScopes] = useState<GlossaryScope[] | null>(null);
-  const [activeChipKey, setActiveChipKey] = useState<string>(ALL_KEY);
-  const [search, setSearch] = useState("");
+  const [activeChipKey, setActiveChipKey] = usePersistentState<string>("glossary.activeChipKey", ALL_KEY);
+  const [search, setSearch] = usePersistentState("glossary.search", "");
   const [editing, setEditing] = useState<GlossaryTerm | null>(null);
   const [creating, setCreating] = useState(false);
   const appliedInitialProjectRef = useRef(false);
 
   // —— 待确认 ——
-  const [suggestionStatus, setSuggestionStatus] = useState<SuggestionStatus>("pending");
+  const [suggestionStatus, setSuggestionStatus] = usePersistentState<SuggestionStatus>("glossary.suggestionStatus", "pending");
   const [suggestions, setSuggestions] = useState<GlossarySuggestion[]>([]);
   const [suggestionsState, setSuggestionsState] = useState<LoadState>("loading");
   const [pendingTotal, setPendingTotal] = useState(0);
@@ -237,7 +239,7 @@ export function GlossaryPage({
     try {
       await action();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试");
+      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -462,11 +464,7 @@ export function GlossaryPage({
         </button>
       </div>
 
-      {notice && (
-        <div className="action-banner" role="status">
-          {notice}
-        </div>
-      )}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
       {activeTab === "terms" && (
         <>

@@ -9,6 +9,7 @@ import { PriorityBadge } from "./RequirementBadges";
 import { isComposingKeydown } from "../keyboard";
 import "./TaskDrawer.css";
 import { useDialogFocus } from "./useDialog";
+import { NoticeBanner, useNotice } from "./Notice";
 
 interface TaskDrawerProps {
   apiClient: ApiClient;
@@ -47,7 +48,7 @@ export function TaskDrawer({
   useDialogFocus(drawerRef);
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [state, setState] = useState<LoadState>("loading");
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [busy, setBusy] = useState(false);
   const [comment, setComment] = useState("");
   const [sending, setSending] = useState(false);
@@ -88,7 +89,7 @@ export function TaskDrawer({
       setNotice(doneMessage);
       onChanged();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -107,7 +108,7 @@ export function TaskDrawer({
       setNotice("备注已记下");
       onChanged();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "备注发送失败");
+      setNotice(error instanceof Error ? error.message : "备注发送失败", "error");
     } finally {
       setSending(false);
     }
@@ -346,11 +347,7 @@ export function TaskDrawer({
           </footer>
         )}
 
-        {notice && (
-          <div className="task-drawer__notice" role="status">
-            {notice}
-          </div>
-        )}
+        <NoticeBanner className="task-drawer__notice" notice={notice} onDismiss={dismissNotice} />
 
         {deliverableOpen && (
           <DeliverableModal

@@ -4,6 +4,7 @@ import type { Job, JobSubstateName, JobSubstateStatus, LoadState } from "../type
 import { formatDate, statusLabel, statusTone, failureStageLabel } from "../format";
 import { parseHotwordsInput, validateHotwordsInput } from "../hotwords";
 import { AsyncState } from "./AsyncState";
+import { NoticeBanner, useNotice } from "./Notice";
 
 interface JobsPageProps {
   available: boolean;
@@ -56,7 +57,7 @@ export function JobsPage({
   state,
 }: JobsPageProps) {
   const fileRef = useRef<HTMLInputElement>(null);
-  const [actionMessage, setActionMessage] = useState("");
+  const { notice: actionNotice, setNotice: setActionMessage, dismissNotice: dismissActionNotice } = useNotice();
   const [busy, setBusy] = useState(false);
   const [uploadHotwordText, setUploadHotwordText] = useState("");
   const [retryHotwordText, setRetryHotwordText] = useState<Record<string, string>>({});
@@ -83,7 +84,7 @@ export function JobsPage({
       await action();
       setActionMessage("操作已由后端确认");
     } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : "操作失败");
+      setActionMessage(error instanceof Error ? error.message : "操作失败", "error");
     } finally {
       setBusy(false);
     }
@@ -101,7 +102,7 @@ export function JobsPage({
       setUploadHotwordText((current) => current === requestHotwordText ? "" : current);
       setActionMessage(result);
     } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : "上传失败");
+      setActionMessage(error instanceof Error ? error.message : "上传失败", "error");
     } finally {
       setBusy(false);
       setUploadPercent(null);
@@ -151,7 +152,7 @@ export function JobsPage({
         </div>
       </header>
 
-      {actionMessage && <div className="action-banner" role="status">{actionMessage}</div>}
+      <NoticeBanner notice={actionNotice} onDismiss={dismissActionNotice} />
       {stale && jobs.length > 0 && (
         <div className="action-banner action-banner--warning" role="status">
           显示上次成功读取的任务，当前状态可能已过期。{message ? ` ${message}` : ""}

@@ -14,6 +14,7 @@ import type { HealthPayload, Job, MeetingSummary, Task } from "../types";
 import { DitherArea, DitherCalendar, type CalendarCell } from "./charts/DitherChart";
 import { BlurText } from "./motion/BlurText";
 import { CountUp } from "./motion/CountUp";
+import { NoticeBanner, useNotice } from "./Notice";
 
 interface OverviewPageProps {
   health: HealthPayload | null;
@@ -224,7 +225,7 @@ export function OverviewPage({
   const [pendingTotal, setPendingTotal] = useState(0);
   const [todoState, setTodoState] = useState<"loading" | "ready" | "error">("loading");
   const [confirmBusy, setConfirmBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
 
   const loadTodos = useCallback(async () => {
     try {
@@ -251,7 +252,7 @@ export function OverviewPage({
       onTasksChanged?.();
       setNotice("任务已确认");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "确认失败，请稍后重试");
+      setNotice(error instanceof Error ? error.message : "确认失败，请稍后重试", "error");
     } finally {
       setConfirmBusy(false);
     }
@@ -380,9 +381,7 @@ export function OverviewPage({
           </button>
         </div>
 
-        {notice && (
-          <div className="action-banner" role="status">{notice}</div>
-        )}
+        <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
         {todoState === "loading" ? (
           <div className="contract-empty">

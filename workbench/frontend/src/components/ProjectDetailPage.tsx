@@ -25,6 +25,8 @@ import { useToast } from "./Toast";
 import "./ProjectDetailPage.css";
 import { useConfirm } from "./ConfirmDialog";
 import { copyText } from "../clipboard";
+import { NoticeBanner, useNotice } from "./Notice";
+import { usePersistentState } from "../viewState";
 
 interface ProjectDetailPageProps {
   apiClient: ApiClient;
@@ -93,10 +95,11 @@ export function ProjectDetailPage({
 
   const [meetingRows, setMeetingRows] = useState<ProjectMeetingRow[] | null>(null);
   const [meetingsState, setMeetingsState] = useState<LoadState>("loading");
-  const [meetingsPage, setMeetingsPage] = useState(0);
+  // 项目详情里两张子表的页签与页码按项目分别记住，离开再回来还在原处。
+  const [meetingsPage, setMeetingsPage] = usePersistentState(`project.${projectId}.meetingsPage`, 0);
 
-  const [requirementsTab, setRequirementsTab] = useState<RequirementStatus | "all">("active");
-  const [requirementsPage, setRequirementsPage] = useState(0);
+  const [requirementsTab, setRequirementsTab] = usePersistentState<RequirementStatus | "all">(`project.${projectId}.requirementsTab`, "active");
+  const [requirementsPage, setRequirementsPage] = usePersistentState(`project.${projectId}.requirementsPage`, 0);
   const [requirementsPayload, setRequirementsPayload] = useState<RequirementsPayload | null>(null);
   const [requirementsState, setRequirementsState] = useState<LoadState>("loading");
 
@@ -108,7 +111,7 @@ export function ProjectDetailPage({
   const [rootBusy, setRootBusy] = useState(false);
   // 挂/重选根目录失败的原因：显示在还开着的取径器里（D27），不是页面级 notice
   const [rootError, setRootError] = useState("");
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
 
   const { toastNode, showToast } = useToast();
 
@@ -197,7 +200,7 @@ export function ProjectDetailPage({
       await copyText(path);
       showToast("已复制路径");
     } catch {
-      setNotice("复制失败，请手动复制");
+      setNotice("复制失败，请手动复制", "error");
     }
   };
 
@@ -311,7 +314,7 @@ export function ProjectDetailPage({
         )}
       </header>
 
-      {notice && <div className="action-banner" role="status">{notice}</div>}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
       {boardState === "loading" && <AsyncState state="loading" />}
       {boardState === "error" && (

@@ -26,6 +26,7 @@ import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
 import { MeetingTasksPanel } from "./MeetingTasksPanel";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
 import { TranscriptPanel } from "./TranscriptPanel";
+import { NoticeBanner, useNotice } from "./Notice";
 
 interface MeetingDetailPageProps {
   apiClient: ApiClient;
@@ -223,7 +224,7 @@ export function MeetingDetailPage({
   const [editingMinutes, setEditingMinutes] = useState(false);
   const [segments, setSegments] = useState<Segment[]>(meeting.segments);
   const [baselineSegments, setBaselineSegments] = useState<Segment[]>(meeting.segments);
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [busy, setBusy] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
   const [savingKind, setSavingKind] = useState<"transcript" | "minutes" | "classification" | null>(null);
@@ -554,7 +555,7 @@ export function MeetingDetailPage({
       setNotice(typeof success === "function" ? success(result) : success);
       await onReload();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     } finally {
       setBusy(false);
     }
@@ -574,7 +575,7 @@ export function MeetingDetailPage({
       if (result.id) {
         setShadowRuns((current) => [result, ...current.filter((runItem) => runItem.id !== result.id)]);
       }
-      setNotice(qwenNotice(result));
+      setNotice(qwenNotice(result), result.state === "failed" || result.state === "unavailable" ? "warning" : "success");
       if (result.state === "ready" && typeof apiClient.meeting === "function") {
         const sequence = ++qwenPollSequence.current;
         const snapshot = await apiClient.meeting(meeting.id);
@@ -583,7 +584,7 @@ export function MeetingDetailPage({
         }
       }
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Qwen 影子稿操作失败");
+      setNotice(error instanceof Error ? error.message : "Qwen 影子稿操作失败", "error");
     } finally {
       setBusy(false);
     }
@@ -617,7 +618,7 @@ export function MeetingDetailPage({
     setBaselineSegments(snapshot);
     setSaveConflict(null);
     if (revisions.current.transcript !== requestRevision) {
-      setNotice("请求中的逐字稿已保存；请求发出后的本地修改仍保留，请再次保存");
+      setNotice("请求中的逐字稿已保存；请求发出后的本地修改仍保留，请再次保存", "warning");
       return;
     }
     setNotice("逐字稿已保存在工作台，尚未写回文件夹");
@@ -632,10 +633,10 @@ export function MeetingDetailPage({
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         setSaveConflict("transcript");
-        setNotice(error.message);
+        setNotice(error.message, "error");
       } else {
         setSaveConflict(null);
-        setNotice(error instanceof Error ? error.message : "操作失败");
+        setNotice(error instanceof Error ? error.message : "操作失败", "error");
       }
     } finally {
       setSavingKind(null);
@@ -648,7 +649,7 @@ export function MeetingDetailPage({
       const fresh = await apiClient.meeting(meeting.id);
       await saveTranscriptWith(fresh.current_transcript_version_id ?? null);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     }
   };
   const commitMinutes = async (baseVersionId: string | null) => {
@@ -659,7 +660,7 @@ export function MeetingDetailPage({
     setBaselineMinutes(snapshot);
     setSaveConflict(null);
     if (revisions.current.minutes !== requestRevision) {
-      setNotice("请求中的纪要已保存；请求发出后的本地修改仍保留，请再次保存");
+      setNotice("请求中的纪要已保存；请求发出后的本地修改仍保留，请再次保存", "warning");
       return;
     }
     setNotice("纪要草稿已保存");
@@ -674,10 +675,10 @@ export function MeetingDetailPage({
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         setSaveConflict("minutes");
-        setNotice(error.message);
+        setNotice(error.message, "error");
       } else {
         setSaveConflict(null);
-        setNotice(error instanceof Error ? error.message : "操作失败");
+        setNotice(error instanceof Error ? error.message : "操作失败", "error");
       }
     } finally {
       setSavingKind(null);
@@ -690,7 +691,7 @@ export function MeetingDetailPage({
       const fresh = await apiClient.meeting(meeting.id);
       await saveMinutesWith(fresh.current_minutes_version_id ?? null);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     }
   };
   const confirmThen = async (options: ConfirmOptions, action: () => Promise<unknown>) => {
@@ -703,7 +704,7 @@ export function MeetingDetailPage({
     try {
       await onReload();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     } finally {
       setBusy(false);
     }
@@ -732,13 +733,13 @@ export function MeetingDetailPage({
         refreshWarning = "；项目统计暂未刷新，请稍后重新进入项目页查看";
       }
       if (revisions.current.classification !== requestRevision) {
-        setNotice(`请求中的归档归属已保存${refreshWarning}；后续本地修改仍保留，请再次保存`);
+        setNotice(`请求中的归档归属已保存${refreshWarning}；后续本地修改仍保留，请再次保存`, "warning");
         return;
       }
-      setNotice(`会议归档归属已保存${refreshWarning}`);
+      setNotice(`会议归档归属已保存${refreshWarning}`, refreshWarning ? "warning" : "success");
       await onReload();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     } finally {
       setSavingKind(null);
       setBusy(false);
@@ -750,7 +751,7 @@ export function MeetingDetailPage({
       if (next !== current) revisions.current.transcript += 1;
       return next;
     });
-    setNotice("已在本地拆分；保存草稿后才会写入资料库");
+    setNotice("已在本地拆分；保存草稿后才会写入资料库", "warning");
   };
   const merge = (firstId: string, secondId: string) => {
     setSegments((current) => {
@@ -758,7 +759,7 @@ export function MeetingDetailPage({
       if (next !== current) revisions.current.transcript += 1;
       return next;
     });
-    setNotice("已在本地合并；保存草稿后才会写入资料库");
+    setNotice("已在本地合并；保存草稿后才会写入资料库", "warning");
   };
   const leaveDetail = () => {
     if (isSaving) return;
@@ -903,7 +904,7 @@ export function MeetingDetailPage({
         ref={playerRef}
       />
 
-      {notice && <div className="action-banner" role="status">{notice}</div>}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
       {saveConflict && (
         <section className="conflict-panel" role="alert">

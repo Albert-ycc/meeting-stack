@@ -1441,16 +1441,75 @@ textarea {
   border-radius: 8px;
 }
 
+/* 操作结果提示条（components/Notice.tsx）：成功绿、提醒黄、失败红，一眼分得清。
+ * 成功的 5 秒后自动收起；提醒和失败留着，点 ✕ 收起。 */
 .action-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 0 0 18px;
-  padding: 11px 14px;
-  color: var(--signal);
-  font-size: 11px;
-  background: var(--signal-bg);
-  border-left: 3px solid var(--signal);
+  padding: 9px 8px 9px 12px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--muted-2);
+  border-radius: 10px;
+  animation: action-banner-in 220ms var(--exp);
 }
 
-.action-banner--warning { color: var(--signal); background: var(--signal-bg); border-left-color: var(--signal-line); }
+.action-banner__icon {
+  display: grid;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 50%;
+}
+
+.action-banner__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.action-banner__close {
+  display: grid;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+
+.action-banner__close:hover {
+  color: var(--ink);
+  background: rgb(var(--fg-rgb) / 0.06);
+}
+
+.action-banner--success { background: var(--ok-bg); border-color: var(--ok-line); border-left-color: var(--ok); }
+.action-banner--success .action-banner__icon { color: var(--bg); background: var(--ok); }
+.action-banner--warning { background: var(--warn-bg); border-color: var(--warn-line); border-left-color: var(--warn); }
+.action-banner--warning .action-banner__icon { color: var(--bg); background: var(--warn); }
+.action-banner--error { color: var(--ink); background: var(--danger-bg); border-color: var(--danger-line); border-left-color: var(--danger); }
+.action-banner--error .action-banner__icon { color: var(--bg); background: var(--danger); }
+
+@keyframes action-banner-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action-banner { animation: none; }
+}
 
 .conflict-panel {
   display: flex;
@@ -1686,7 +1745,7 @@ textarea {
 .comparison-panel__head > div { display: flex; flex-direction: column; gap: 3px; }
 .comparison-panel__head strong { font-family: var(--font-sans); font-weight: 600; letter-spacing: -0.019em; font-size: 17px; }
 .comparison-panel__head p { max-width: 410px; margin: 0; color: var(--ink-soft); font-size: 9px; line-height: 1.55; text-align: right; }
-.comparison-message { padding: 7px 15px; color: var(--ok); font-size: 9px; background: var(--ok-bg); border-bottom: 1px solid var(--ok-line); }
+.comparison-message { margin: 8px 12px; }
 .gold-ledger-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 15px; font-size: 9px; border-bottom: 1px solid var(--line); }
 .gold-ledger-state--error { color: var(--danger); background: var(--danger-bg); }
 .gold-ledger-state button { padding: 5px 8px; color: inherit; font-size: 8px; background: var(--surface-2); border: 1px solid currentColor; border-radius: 8px; }

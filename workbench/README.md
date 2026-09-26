@@ -59,6 +59,12 @@ meeting-stack 的三个组件之一，负责资料库、检索、播放与编辑
 - 丢弃草稿、丢弃未保存修改、写回会议文件夹、删除术语、移除材料根目录这类操作统一走
   `components/ConfirmDialog.tsx` 的二次确认；需要调接口的确认，失败原因写在确认框里。
 - 复制路径在 `http://<局域网 IP>` 这类非安全上下文里退回 `execCommand("copy")`（`src/clipboard.ts`）。
+- 任务池、需求池、项目管理、词典的页签、查询条件和页码，以及项目详情里两张子表的页签与页码，
+  离开页面再回来原样保留，刷新也不丢，关掉标签页才清空（`src/viewState.ts` 的 `usePersistentState`，
+  存在内存和 `sessionStorage`）。录音档案的筛选一直由 App 持有，本来就保留。
+- 操作结果提示统一用 `components/Notice.tsx`：成功（绿）5 秒后自动收起；提醒（黄，比如「请求发出后
+  的本地修改仍保留，请再次保存」）和失败（红，`role="alert"`）不自动收起，点 ✕ 或下一次操作才换掉。
+  复制成功这类一闪而过的确认仍用 `Toast`。
 
 字体是 `Outfit`（拉丁与数字）+ `PingFang SC`（中文）。Outfit 走自托管
 `frontend/public/fonts/outfit.woff2`（32KB 可变字体，覆盖 100~900 字重），**不要改成

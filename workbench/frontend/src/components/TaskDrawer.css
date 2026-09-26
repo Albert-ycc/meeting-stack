@@ -503,19 +503,8 @@ button.task-drawer__requirement-link:hover {
   bottom: 86px;
   left: 22px;
   z-index: 5;
-  padding: 10px 14px;
-  color: var(--signal);
-  font-size: 11px;
-  background: var(--signal-bg);
-  border-left: 3px solid var(--signal);
-  border-radius: 10px;
+  margin: 0;
   box-shadow: 0 10px 26px rgb(0 0 0 / calc(0.55 * var(--shadow-k)));
-  animation: task-drawer-notice-in 180ms ease-out;
-}
-
-@keyframes task-drawer-notice-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 @media (max-width: 560px) {

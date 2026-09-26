@@ -21,6 +21,7 @@ import { TaskEditModal } from "./TaskEditModal";
 import { useToast } from "./Toast";
 import "./RequirementDetailPage.css";
 import { copyText } from "../clipboard";
+import { NoticeBanner, useNotice } from "./Notice";
 
 interface RequirementDetailPageProps {
   apiClient: ApiClient;
@@ -119,6 +120,8 @@ export function RequirementDetailPage({
   reloadKey = 0,
 }: RequirementDetailPageProps) {
   const { toastNode, showToast } = useToast();
+  // 成功用轻提示一闪而过；失败用不会自己消失的红色提示条，原因看得清。
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [detail, setDetail] = useState<RequirementDetail | null>(null);
   const [state, setState] = useState<LoadState>("loading");
   const [editing, setEditing] = useState(false);
@@ -141,7 +144,7 @@ export function RequirementDetailPage({
       setDetail(payload);
       setState("ready");
     } catch (error) {
-      if (silent) showToast(error instanceof Error ? `刷新失败：${error.message}` : "刷新失败，请稍后重试");
+      if (silent) setNotice(error instanceof Error ? `刷新失败：${error.message}` : "刷新失败，请稍后重试", "error");
       else setState("error");
     }
     // showToast 每次渲染都是新函数，放进依赖会让 load 反复变化、页面循环刷新。
@@ -157,12 +160,13 @@ export function RequirementDetailPage({
   const mutate = async (action: () => Promise<unknown>, success?: string) => {
     if (mutating) return;
     setMutating(true);
+    setNotice("");
     try {
       await action();
       if (success) showToast(success);
       await load();
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "操作失败，请稍后重试");
+      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
     } finally {
       setMutating(false);
     }
@@ -173,7 +177,7 @@ export function RequirementDetailPage({
       await copyText(path);
       showToast(message);
     } catch {
-      showToast("复制失败，请稍后重试");
+      setNotice("复制失败，请手动复制路径", "error");
     }
   };
 
@@ -215,7 +219,7 @@ export function RequirementDetailPage({
         setExpandedIds((current) => new Set(current).add(folder.id));
       })
       .catch((error: unknown) => {
-        showToast(error instanceof Error ? `文件清单读取失败：${error.message}` : "文件清单读取失败");
+        setNotice(error instanceof Error ? `文件清单读取失败：${error.message}` : "文件清单读取失败", "error");
       })
       .finally(() => {
         setExpandLoading((current) => {
@@ -257,6 +261,7 @@ export function RequirementDetailPage({
   return (
     <section className="page-content requirement-detail">
       {toastNode}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
       <header className="requirement-detail__head">
         <nav aria-label="面包屑" className="requirement-detail__breadcrumb">
           <button onClick={onBack} type="button">需求池</button>

@@ -510,3 +510,22 @@ describe("浏览历史与返回", () => {
     expect(window.location.hash).toBe("");
   });
 });
+
+describe("列表页检索条件", () => {
+  it("任务池查过的条件，去别的页面再回来还在", async () => {
+    const tasks = vi.fn().mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
+    render(<App apiClient={client({ tasks } as Partial<ApiClient>)} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "任务池" }));
+    await userEvent.type(await screen.findByPlaceholderText("输入任务名称"), "周报");
+    await userEvent.click(screen.getByRole("button", { name: "查询" }));
+    await waitFor(() => expect(tasks).toHaveBeenLastCalledWith(expect.objectContaining({ q: "周报" })));
+
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
+    await screen.findByText("会议录音档案");
+    fireEvent.click(screen.getByRole("button", { name: "任务池" }));
+
+    expect(await screen.findByPlaceholderText("输入任务名称")).toHaveValue("周报");
+    await waitFor(() => expect(tasks).toHaveBeenLastCalledWith(expect.objectContaining({ q: "周报" })));
+  });
+});
