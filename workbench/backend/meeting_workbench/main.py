@@ -509,7 +509,7 @@ def create_app(
     task_service = TaskService(
         db, settings, semantic=semantic, notifier=notifier
     )
-    project_linker = ProjectLinker(db, settings, semantic=semantic)
+    project_linker = ProjectLinker(db, settings)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
     csrf_token = secrets.token_urlsafe(32)

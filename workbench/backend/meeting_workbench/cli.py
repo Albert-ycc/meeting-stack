@@ -222,26 +222,34 @@ def main(argv: list[str] | None = None) -> int:
         required = (checks["database"], checks["archive"], checks["staging"], checks["loopback"])
         return 0 if all(required) else 1
     if args.command == "backfill-projects":
-        semantic = SemanticIndex(db, settings) if settings.semantic_enabled else None
-        linker = ProjectLinker(db, settings, semantic=semantic)
+        linker = ProjectLinker(db, settings)
         result = linker.backfill(dry_run=args.dry_run, limit=args.limit)
-        if not result["dry_run"] and result.get("skipped_no_key"):
+        if not result["dry_run"] and not result.get("llm_ready"):
             print(
-                "未配置 LLM API key：语义/多数判据没结论的会议已放回待处理，"
-                "等 key 配好后重跑本命令会再给 LLM 一次机会（不会被抢先判 unresolved）",
+                "未配置 LLM API key：只按字面线索判断；没认出的会议记为「没认出」，"
+                "key 配好后下一轮扫描会让 LLM 再判一次",
                 file=sys.stderr,
             )
         print(f"{'会议标题':<30}{'项目':<20}{'方法':<14}原因")
         for item in result["results"]:
+            project = item["project_name"]
+            if not project and item.get("candidates"):
+                project = "待你选：" + " / ".join(
+                    str(candidate.get("project_name") or "") for candidate in item["candidates"]
+                )
+            if not project and item.get("new_project_name"):
+                project = f"像新项目：{item['new_project_name']}"
             print(
                 f"{(item['meeting_title'] or ''):<30}"
-                f"{(item['project_name'] or '（未归类）'):<20}"
+                f"{(project or '（未归类）'):<20}"
                 f"{(item['method'] or '-'):<14}"
                 f"{item['reason']}"
             )
         if not result["dry_run"]:
             summary = ", ".join(f"{k}:{v}" for k, v in result["method_counts"].items()) or "无"
-            print(f"汇总：{summary}；unresolved:{result['unresolved']}")
+            print(
+                f"汇总：{summary}；待你选:{result['needs_review']}；没认出:{result['unresolved']}"
+            )
         return 0
     return 2
 

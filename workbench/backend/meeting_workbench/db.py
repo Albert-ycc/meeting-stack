@@ -483,6 +483,16 @@ CREATE TABLE IF NOT EXISTS app_state (
     updated_at TEXT NOT NULL
 );
 
+-- v13：用户对「像新项目」名字的决定。norm_key 是归一化后的名字（见 project_profile.norm_key）；
+-- decision=ignored 表示「不是新项目」，以后同名不再提示；decision=project 表示已建成 target_id。
+CREATE TABLE IF NOT EXISTS name_decisions (
+    norm_key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('ignored', 'project')),
+    target_id TEXT,
+    decided_at TEXT NOT NULL
+);
+
 -- v13：当前纪要的全文索引，供检索与归属规则回溯。只索引每场会的当前纪要，
 -- 由 meetings 上的三个触发器维护；纪要正文入库后不会原地改写，所以不需要
 -- minutes_versions 上的触发器。
@@ -571,6 +581,18 @@ class Database:
                 connection.execute(
                     "ALTER TABLE projects ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'"
                 )
+            if "also_names" not in project_columns:
+                # 元素 {"name": "...", "source": "manual|former"}；former 是改名前的旧名。
+                connection.execute(
+                    "ALTER TABLE projects ADD COLUMN also_names TEXT NOT NULL DEFAULT '[]'"
+                )
+            link_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(project_links)").fetchall()
+            }
+            for name in ("evidence_json", "candidates_json", "new_project_name"):
+                if name not in link_columns:
+                    connection.execute(f"ALTER TABLE project_links ADD COLUMN {name} TEXT")
             glossary_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(glossary_terms)").fetchall()
@@ -579,6 +601,16 @@ class Database:
                 connection.execute(
                     "ALTER TABLE glossary_terms ADD COLUMN project_id "
                     "TEXT REFERENCES projects(id) ON DELETE SET NULL"
+                )
+            if "also" not in glossary_columns:
+                # 「也叫」：不改写，只用于识别项目和检索（2–20 字）。
+                connection.execute(
+                    "ALTER TABLE glossary_terms ADD COLUMN also TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "is_cue" not in glossary_columns:
+                # 项目词是否参与识别会议属于哪个项目。
+                connection.execute(
+                    "ALTER TABLE glossary_terms ADD COLUMN is_cue INTEGER NOT NULL DEFAULT 1"
                 )
             # 建索引放到列存在之后：executescript(SCHEMA) 早于这里执行，SCHEMA 里若
             # 直接带这条 CREATE INDEX，旧库补列之前就会报 "no such column"。

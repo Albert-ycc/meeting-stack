@@ -491,6 +491,13 @@ def _downgrade_to_v12(connection: sqlite3.Connection) -> None:
         DROP TRIGGER IF EXISTS minutes_fts_after_meeting_delete;
         DROP TABLE IF EXISTS minutes_fts;
         DROP TABLE IF EXISTS app_state;
+        DROP TABLE IF EXISTS name_decisions;
+        ALTER TABLE projects DROP COLUMN also_names;
+        ALTER TABLE project_links DROP COLUMN evidence_json;
+        ALTER TABLE project_links DROP COLUMN candidates_json;
+        ALTER TABLE project_links DROP COLUMN new_project_name;
+        ALTER TABLE glossary_terms DROP COLUMN also;
+        ALTER TABLE glossary_terms DROP COLUMN is_cue;
         PRAGMA user_version=12;
         """
     )
@@ -539,6 +546,19 @@ def test_version_thirteen_migration_backfills_tasks_glossary_and_minutes_index(t
 
     assert backups == [12]
     assert db.user_version() == SCHEMA_VERSION == 13
+    columns = {
+        table: {row["name"] for row in db.query_all(f"PRAGMA table_info({table})")}
+        for table in ("projects", "project_links", "glossary_terms")
+    }
+    assert "also_names" in columns["projects"]
+    assert {"evidence_json", "candidates_json", "new_project_name"} <= columns["project_links"]
+    assert {"also", "is_cue"} <= columns["glossary_terms"]
+    assert db.query_one(
+        "SELECT also_names FROM projects WHERE id='p-a'"
+    ) == {"also_names": "[]"}
+    assert db.query_one(
+        "SELECT also, is_cue FROM glossary_terms WHERE id='g-orphan'"
+    ) == {"also": "[]", "is_cue": 1}
     tasks = {
         row["id"]: row["project_id"]
         for row in db.query_all("SELECT id, project_id FROM tasks")
