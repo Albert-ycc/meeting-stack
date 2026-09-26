@@ -353,6 +353,25 @@ def test_undo_moves_tasks_back_to_where_each_one_was(tmp_path):
     assert response.json()["attribution"]["state"] == "auto"
 
 
+def test_a_task_confirmed_just_before_the_move_can_still_be_unconfirmed(tmp_path):
+    client, _settings, headers, db = _setup(tmp_path)
+    project_a = make_project(db, "云图AI")
+    project_b = make_project(db, "数据中台")
+    seed_meeting(db, "m-1", "周会", project_id=project_a, origin="ai")
+    task = _draft_task(db, "m-1", project_a)
+    assert client.post(f"/api/tasks/{task}/confirm", json={}, headers=headers).status_code == 200
+
+    client.patch("/api/meetings/m-1", json={"project_id": project_b}, headers=headers)
+    assert client.post("/api/meetings/m-1/project/undo", json={}, headers=headers).status_code == 200
+
+    # 改归属和撤销都只挪项目，不写任务事件，所以「撤销确认」仍然认这条任务
+    response = client.post("/api/tasks/undo-review", json={"task_ids": [task]}, headers=headers)
+
+    assert response.json() == {"reverted": [task], "failed": []}
+    row = db.query_one("SELECT status, project_id FROM tasks WHERE id=?", (task,))
+    assert (row["status"], row["project_id"]) == ("pending_confirm", project_a)
+
+
 def test_undo_after_ten_minutes_is_refused(tmp_path):
     client, _settings, headers, db = _setup(tmp_path)
     project_a = make_project(db, "云图AI")

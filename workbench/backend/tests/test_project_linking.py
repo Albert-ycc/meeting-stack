@@ -270,6 +270,21 @@ def test_llm_failure_retries_before_falling_back_to_literal(tmp_path, monkeypatc
     assert link_row(db, "vm-9")["method"] == "literal"
 
 
+def test_each_meeting_costs_one_llm_call_per_round(tmp_path, monkeypatch):
+    db, settings = make_db(tmp_path)
+    make_project(db, "云图AI")
+    make_project(db, "数据中台")
+    for index in range(3):
+        seed_meeting(db, f"vm-{index}", f"周会 {index}", "# 摘要\n聊了排期。")
+    prompts: list[str] = []
+    llm_answers(monkeypatch, LOW, prompts=prompts)
+
+    ProjectLinker(db, settings).link_pending()
+
+    assert len(prompts) == 3
+    assert sorted(link_row(db, f"vm-{index}")["status"] for index in range(3)) == ["unresolved"] * 3
+
+
 def test_require_literal_switch_holds_back_llm_only_answers(tmp_path, monkeypatch):
     db, settings = make_db(tmp_path)
     project_id = make_project(db, "云图AI")
