@@ -27,16 +27,28 @@ export function TranscriptPanel({
   const [term, setTerm] = useState("");
   const [cursorById, setCursorById] = useState<Record<string, number>>({});
   const activeRef = useRef<HTMLElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  // 用户自己滚动过之后暂停跟随几秒，免得播放推进时把视线从正在看的地方拽走。
+  const manualScrollAtRef = useRef(0);
   const activeId = useMemo(
     () => segments.find((segment) => currentTimeMs >= segment.start_ms && currentTimeMs < segment.end_ms)?.id,
     [currentTimeMs, segments],
   );
 
+  // 播放时跟随当前句。编辑模式、焦点在面板里（正在打字或检索）、或刚手动滚过时不跟，
+  // 否则一边听一边改字，页面会被拽到播放位置，光标所在的那句跑出视野。
   useEffect(() => {
+    if (editable) return;
+    if (panelRef.current?.contains(document.activeElement)) return;
+    if (Date.now() - manualScrollAtRef.current < 4000) return;
     if (typeof activeRef.current?.scrollIntoView === "function") {
       activeRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
-  }, [activeId]);
+  }, [activeId, editable]);
+
+  const noteManualScroll = () => {
+    manualScrollAtRef.current = Date.now();
+  };
 
   const visible = useMemo(() => {
     const normalized = term.trim().toLocaleLowerCase();
@@ -53,7 +65,7 @@ export function TranscriptPanel({
   };
 
   return (
-    <section className="transcript-panel">
+    <section className="transcript-panel" onTouchMove={noteManualScroll} onWheel={noteManualScroll} ref={panelRef}>
       <div className="transcript-tools">
         <label className="inline-search">
           <span aria-hidden="true">⌕</span>

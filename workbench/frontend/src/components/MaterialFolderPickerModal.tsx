@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ApiClient } from "../api";
 import { formatMonthDay } from "../format";
 import type { MaterialFolderStat, ProjectSubfoldersRoot } from "../types";
+import { useBackdropDismiss, useDialogFocus } from "./useDialog";
 import { FolderIcon } from "./FolderIcon";
 import "./MaterialFolderPickerModal.css";
 
@@ -32,6 +33,9 @@ export function MaterialFolderPickerModal({
   onConfirm,
   onOpenProject,
 }: MaterialFolderPickerModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef);
+  const backdrop = useBackdropDismiss(onCancel);
   const [roots, setRoots] = useState<ProjectSubfoldersRoot[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [activeRootId, setActiveRootId] = useState<number | null>(null);
@@ -59,7 +63,7 @@ export function MaterialFolderPickerModal({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCancel();
+      if (event.key === "Escape" && !event.isComposing) onCancel();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -103,12 +107,13 @@ export function MaterialFolderPickerModal({
   const noRoots = roots !== null && roots.length === 0;
 
   return (
-    <div className="folder-picker__overlay" onClick={onCancel}>
+    <div className="folder-picker__overlay" {...backdrop}>
       <div
         aria-label="选择材料文件夹"
         aria-modal="true"
         className="folder-picker__card"
         onClick={(event) => event.stopPropagation()}
+        ref={dialogRef}
         role="dialog"
       >
         <header className="folder-picker__head">

@@ -4,6 +4,7 @@ import { similarProjectFrom } from "../api";
 import type { ApiClient } from "../api";
 import type { Project, RequirementSummary, SimilarProjectSuggestion, Task, TaskAssignee } from "../types";
 import { isComposingKeydown } from "../keyboard";
+import { useDialogFocus } from "./useDialog";
 import { PriorityBadge } from "./RequirementBadges";
 import { SimilarProjectQuestion } from "./SimilarProjectQuestion";
 import "./TaskEditModal.css";
@@ -59,6 +60,7 @@ export function TaskEditModal({
   const [error, setError] = useState("");
 
   const cardRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(cardRef);
   const projectDropdownRef = useRef<HTMLDivElement>(null);
   const requirementDropdownRef = useRef<HTMLDivElement>(null);
   const openMenuRef = useRef(openMenu);
@@ -113,7 +115,7 @@ export function TaskEditModal({
     setCreatingProject(false);
   };
 
-  // 点卡片外：菜单开着先收菜单，否则关弹窗；点卡片内但点在开着的那个下拉外：收菜单。
+  // 点卡片外：菜单开着就收菜单（表单弹窗点背景不关，免得丢掉填了一半的内容）；点卡片内但点在开着的那个下拉外：收菜单。
   useEffect(() => {
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
@@ -131,7 +133,6 @@ export function TaskEditModal({
         return;
       }
       if (openMenuRef.current) closeMenus();
-      else if (!savingRef.current) onClose();
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
@@ -139,7 +140,7 @@ export function TaskEditModal({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.isComposing) return;
       if (openMenuRef.current) closeMenus();
       else if (!savingRef.current) onClose();
     };

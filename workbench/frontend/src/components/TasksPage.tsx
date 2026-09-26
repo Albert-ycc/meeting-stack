@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { AsyncState } from "./AsyncState";
 import { Pagination } from "./Pagination";
@@ -9,6 +10,8 @@ import type { ApiClient } from "../api";
 import type { Project, RequirementSummary, Task, TaskAssignee, TaskDetail, TaskStatus } from "../types";
 
 import "./TasksPage.css";
+import { NoticeBanner, useNotice } from "./Notice";
+import { usePersistentState } from "../viewState";
 
 interface TasksPageProps {
   apiClient: ApiClient;
@@ -95,13 +98,28 @@ export function TasksPage({
   const [statusCounts, setStatusCounts] = useState<Partial<Record<TaskStatus, number>>>({});
   const [projectCounts, setProjectCounts] = useState<Record<string, Partial<Record<TaskStatus, number>>> | null>(null);
   const [state, setState] = useState<LoadState>("loading");
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [undoIds, setUndoIds] = useState<string[]>([]);
-  const [activeTab, setActiveTab] = useState<TabKey>("all");
-  const [page, setPage] = useState(0);
+  const [activeTab, setActiveTab] = usePersistentState<TabKey>("tasks.activeTab", "all");
+  const [page, setPage] = usePersistentState("tasks.page", 0);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [menuTaskId, setMenuTaskId] = useState<string | null>(null);
+  // 更多操作菜单的键盘操作：Esc 收起并把焦点还给「⋯」，上下键在菜单项间移动。
+  const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      const trigger = event.currentTarget.parentElement?.querySelector<HTMLElement>(".task-menu__trigger");
+      setMenuTaskId(null);
+      trigger?.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(index + step + items.length) % items.length]?.focus();
+    }
+  };
   const [drawerTaskId, setDrawerTaskId] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [creating, setCreating] = useState(false);
@@ -109,19 +127,19 @@ export function TasksPage({
   const loadSeqRef = useRef(0);
 
   // 查询区：草稿态（输入中）与已应用态（点「查询」才生效）分开，和需求池同一套模式
-  const [projectDraft, setProjectDraft] = useState("");
-  const [requirementDraft, setRequirementDraft] = useState("");
-  const [assigneeDraft, setAssigneeDraft] = useState<"" | TaskAssignee>("");
-  const [dateFromDraft, setDateFromDraft] = useState("");
-  const [dateToDraft, setDateToDraft] = useState("");
-  const [nameDraft, setNameDraft] = useState("");
+  const [projectDraft, setProjectDraft] = usePersistentState("tasks.projectDraft", "");
+  const [requirementDraft, setRequirementDraft] = usePersistentState("tasks.requirementDraft", "");
+  const [assigneeDraft, setAssigneeDraft] = usePersistentState<"" | TaskAssignee>("tasks.assigneeDraft", "");
+  const [dateFromDraft, setDateFromDraft] = usePersistentState("tasks.dateFromDraft", "");
+  const [dateToDraft, setDateToDraft] = usePersistentState("tasks.dateToDraft", "");
+  const [nameDraft, setNameDraft] = usePersistentState("tasks.nameDraft", "");
 
-  const [appliedProjectId, setAppliedProjectId] = useState("");
-  const [appliedRequirementId, setAppliedRequirementId] = useState("");
-  const [appliedAssignee, setAppliedAssignee] = useState<"" | TaskAssignee>("");
-  const [appliedDateFrom, setAppliedDateFrom] = useState("");
-  const [appliedDateTo, setAppliedDateTo] = useState("");
-  const [appliedName, setAppliedName] = useState("");
+  const [appliedProjectId, setAppliedProjectId] = usePersistentState("tasks.appliedProjectId", "");
+  const [appliedRequirementId, setAppliedRequirementId] = usePersistentState("tasks.appliedRequirementId", "");
+  const [appliedAssignee, setAppliedAssignee] = usePersistentState<"" | TaskAssignee>("tasks.appliedAssignee", "");
+  const [appliedDateFrom, setAppliedDateFrom] = usePersistentState("tasks.appliedDateFrom", "");
+  const [appliedDateTo, setAppliedDateTo] = usePersistentState("tasks.appliedDateTo", "");
+  const [appliedName, setAppliedName] = usePersistentState("tasks.appliedName", "");
 
   const [requirementOptions, setRequirementOptions] = useState<RequirementSummary[]>([]);
 
@@ -142,6 +160,11 @@ export function TasksPage({
         offset: page * PAGE_SIZE,
       });
       if (seq !== loadSeqRef.current) return;
+      // 当前页被操作空了（比如确认掉第 2 页最后一条），退到最后一个有内容的页，而不是停在空页上。
+      if (payload.items.length === 0 && page > 0 && payload.total > 0) {
+        setPage(Math.max(0, Math.ceil(payload.total / PAGE_SIZE) - 1));
+        return;
+      }
       setTasks(payload.items);
       setTotal(payload.total);
       setStatusCounts(payload.counts ?? {});
@@ -254,7 +277,7 @@ export function TasksPage({
     try {
       await action();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试");
+      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -262,8 +285,9 @@ export function TasksPage({
   };
 
   // 确认/驳回之后给一个撤销入口：误点不再是一锤子买卖。
-  const offerUndo = (ids: string[], message: string) => {
-    setNotice(message);
+  const offerUndo = (ids: string[], message: string, partial = false) => {
+    // 带撤销的提示和撤销入口同时收起；批量里有失败的用提醒色，留到用户关掉。
+    setNotice(message, partial ? "warning" : "success", UNDO_VISIBLE_MS);
     setUndoIds(ids);
   };
 
@@ -332,12 +356,14 @@ export function TasksPage({
         offerUndo(
           result.confirmed,
           result.failed.length ? `已确认 ${result.confirmed.length} 项，${result.failed.length} 项失败` : `已确认 ${result.confirmed.length} 项`,
+          result.failed.length > 0,
         );
       } else {
         const result = await apiClient.batchRejectTasks(ids);
         offerUndo(
           result.rejected,
           result.failed.length ? `已驳回 ${result.rejected.length} 项，${result.failed.length} 项失败` : `已驳回 ${result.rejected.length} 项`,
+          result.failed.length > 0,
         );
       }
       setSelected(new Set());
@@ -354,6 +380,7 @@ export function TasksPage({
         result.failed.length
           ? `已撤销 ${result.reverted.length} 项，${result.failed.length} 项已无法撤销`
           : `已撤销 ${result.reverted.length} 项，恢复为待确认`,
+        result.failed.length ? "warning" : "success",
       );
       await load();
     });
@@ -496,6 +523,13 @@ export function TasksPage({
               <div
                 className="task-menu__pop"
                 onClick={(event) => event.stopPropagation()}
+                onKeyDown={onMenuKeyDown}
+                ref={(element) => {
+                  // 菜单一打开焦点就落到第一项，键盘用户可以直接上下选。
+                  if (element && !element.contains(document.activeElement)) {
+                    element.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+                  }
+                }}
                 role="menu"
               >
                 {menu.map((action) => (
@@ -701,21 +735,18 @@ export function TasksPage({
           ))}
         </div>
 
-        {notice && (
-          <div className="action-banner" role="status">
-            {notice}
-            {canWrite && undoIds.length > 0 && (
-              <button
-                className="text-button text-button--accent action-banner__undo"
-                disabled={busy}
-                onClick={undoReview}
-                type="button"
-              >
-                撤销
-              </button>
-            )}
-          </div>
-        )}
+        <NoticeBanner notice={notice} onDismiss={dismissNotice}>
+          {canWrite && undoIds.length > 0 && (
+            <button
+              className="text-button text-button--accent action-banner__undo"
+              disabled={busy}
+              onClick={undoReview}
+              type="button"
+            >
+              撤销
+            </button>
+          )}
+        </NoticeBanner>
 
         {activeTab === "pending" && canWrite && selected.size > 0 && (
           <div aria-label="批量操作" className="tasks-batchbar" role="toolbar">

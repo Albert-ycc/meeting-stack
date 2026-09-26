@@ -5,6 +5,8 @@ import type { MeetingSummary, Project, Tag } from "../types";
 import { BlurText } from "./motion/BlurText";
 import { ProjectFormModal } from "./ProjectFormModal";
 import "./ProjectsPage.css";
+import { NoticeBanner, useNotice } from "./Notice";
+import { usePersistentState } from "../viewState";
 
 interface ProjectsPageProps {
   apiClient: ApiClient;
@@ -41,15 +43,15 @@ export function ProjectsPage({
   projects,
   tags,
 }: ProjectsPageProps) {
-  const [nameDraft, setNameDraft] = useState("");
-  const [rootDraft, setRootDraft] = useState<RootFilter>("all");
-  const [appliedName, setAppliedName] = useState("");
-  const [appliedRoot, setAppliedRoot] = useState<RootFilter>("all");
+  const [nameDraft, setNameDraft] = usePersistentState("projects.nameDraft", "");
+  const [rootDraft, setRootDraft] = usePersistentState<RootFilter>("projects.rootDraft", "all");
+  const [appliedName, setAppliedName] = usePersistentState("projects.appliedName", "");
+  const [appliedRoot, setAppliedRoot] = usePersistentState<RootFilter>("projects.appliedRoot", "all");
 
   const [tagName, setTagName] = useState("");
   const [tagColor, setTagColor] = useState("#f0783b");
   const [tagBusy, setTagBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
 
   const [formModal, setFormModal] = useState<{ mode: "create" | "edit"; project: Project | null } | null>(null);
 
@@ -90,7 +92,7 @@ export function ProjectsPage({
       setTagName((current) => (current.trim() === requestName ? "" : current));
       setNotice("标签已创建");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "标签创建失败");
+      setNotice(error instanceof Error ? error.message : "标签创建失败", "error");
     } finally {
       setTagBusy(false);
     }
@@ -141,7 +143,7 @@ export function ProjectsPage({
         </span>
       </form>
 
-      {notice && <div className="action-banner" role="status">{notice}</div>}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
       <div className="projects-table-card">
         <table className="projects-table">

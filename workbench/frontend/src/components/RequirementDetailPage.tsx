@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../api";
 import { formatDurationText, formatMonthDay, formatMonthDayClock } from "../format";
@@ -20,6 +20,8 @@ import { LinkTasksModal } from "./LinkTasksModal";
 import { TaskEditModal } from "./TaskEditModal";
 import { useToast } from "./Toast";
 import "./RequirementDetailPage.css";
+import { copyText } from "../clipboard";
+import { NoticeBanner, useNotice } from "./Notice";
 
 interface RequirementDetailPageProps {
   apiClient: ApiClient;
@@ -118,6 +120,8 @@ export function RequirementDetailPage({
   reloadKey = 0,
 }: RequirementDetailPageProps) {
   const { toastNode, showToast } = useToast();
+  // 成功用轻提示一闪而过；失败用不会自己消失的红色提示条，原因看得清。
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [detail, setDetail] = useState<RequirementDetail | null>(null);
   const [state, setState] = useState<LoadState>("loading");
   const [editing, setEditing] = useState(false);
@@ -129,27 +133,51 @@ export function RequirementDetailPage({
   const [expandedFiles, setExpandedFiles] = useState<Map<number, { items: RequirementFile[]; capped: boolean }>>(new Map());
   const [expandLoading, setExpandLoading] = useState<Set<number>>(new Set());
 
+  // 已经有这条需求的数据时静默刷新：留着页面只换数据，不整页闪成「正在读取」。
+  const loadedIdRef = useRef<string | null>(null);
   const load = useCallback(async () => {
-    setState("loading");
+    const silent = loadedIdRef.current === requirementId;
+    if (!silent) setState("loading");
     try {
       const payload = await apiClient.requirement(requirementId);
+      loadedIdRef.current = requirementId;
       setDetail(payload);
       setState("ready");
-    } catch {
-      setState("error");
+    } catch (error) {
+      if (silent) setNotice(error instanceof Error ? `刷新失败：${error.message}` : "刷新失败，请稍后重试", "error");
+      else setState("error");
     }
+    // showToast 每次渲染都是新函数，放进依赖会让 load 反复变化、页面循环刷新。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiClient, requirementId]);
 
   useEffect(() => {
     void load();
   }, [load, reloadKey]);
 
+  // 页面上的写操作统一走这里：进行中禁用按钮防连点，失败给出原因，成功后静默刷新。
+  const [mutating, setMutating] = useState(false);
+  const mutate = async (action: () => Promise<unknown>, success?: string) => {
+    if (mutating) return;
+    setMutating(true);
+    setNotice("");
+    try {
+      await action();
+      if (success) showToast(success);
+      await load();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
+    } finally {
+      setMutating(false);
+    }
+  };
+
   const copyPath = async (path: string, message: string) => {
     try {
-      await navigator.clipboard.writeText(path);
+      await copyText(path);
       showToast(message);
     } catch {
-      showToast("复制失败，请稍后重试");
+      setNotice("复制失败，请手动复制路径", "error");
     }
   };
 
@@ -165,10 +193,10 @@ export function RequirementDetailPage({
   };
 
   const removeMeeting = (meetingId: string) =>
-    void apiClient.removeRequirementMeeting(requirementId, meetingId).then(() => load());
+    void mutate(() => apiClient.removeRequirementMeeting(requirementId, meetingId), "已移除关联会议");
 
   const removeFolder = (folderId: number) =>
-    void apiClient.removeRequirementFolder(requirementId, folderId).then(() => load());
+    void mutate(() => apiClient.removeRequirementFolder(requirementId, folderId), "已移除材料文件夹");
 
   const toggleExpandFolder = (folder: RequirementFolder) => {
     if (expandedIds.has(folder.id)) {
@@ -190,6 +218,9 @@ export function RequirementDetailPage({
         setExpandedFiles((current) => new Map(current).set(folder.id, { items: payload.items, capped: payload.capped }));
         setExpandedIds((current) => new Set(current).add(folder.id));
       })
+      .catch((error: unknown) => {
+        setNotice(error instanceof Error ? `文件清单读取失败：${error.message}` : "文件清单读取失败", "error");
+      })
       .finally(() => {
         setExpandLoading((current) => {
           const next = new Set(current);
@@ -201,15 +232,23 @@ export function RequirementDetailPage({
 
   const savePickedFolders = async (folders: MaterialFolderStat[]) => {
     setPickingFolders(false);
-    await apiClient.updateRequirement(requirementId, { folder_paths: folders.map((folder) => folder.path) });
-    await load();
+    await mutate(
+      () => apiClient.updateRequirement(requirementId, { folder_paths: folders.map((folder) => folder.path) }),
+      "材料文件夹已更新",
+    );
   };
 
   if (state === "loading" || !detail) {
     return (
       <section className="page-content requirement-detail">
         {state === "error" ? (
-          <div className="requirement-detail__state requirement-detail__state--error" role="alert">需求详情读取失败</div>
+          <div className="requirement-detail__state requirement-detail__state--error" role="alert">
+            需求详情读取失败
+            <div className="requirement-detail__state-actions">
+              <button onClick={() => void load()} type="button">重试</button>
+              <button onClick={onBack} type="button">返回需求池</button>
+            </div>
+          </div>
         ) : (
           <div className="requirement-detail__state">正在读取需求…</div>
         )}
@@ -222,6 +261,7 @@ export function RequirementDetailPage({
   return (
     <section className="page-content requirement-detail">
       {toastNode}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
       <header className="requirement-detail__head">
         <nav aria-label="面包屑" className="requirement-detail__breadcrumb">
           <button onClick={onBack} type="button">需求池</button>
@@ -292,7 +332,7 @@ export function RequirementDetailPage({
                     <button onClick={() => void copyPath(meeting.canonical_dir!, "已复制路径")} type="button">复制路径</button>
                   )}
                   {canWrite && (
-                    <button onClick={() => removeMeeting(meeting.id)} type="button">移除</button>
+                    <button disabled={mutating} onClick={() => removeMeeting(meeting.id)} type="button">移除</button>
                   )}
                 </span>
               </div>
@@ -342,7 +382,7 @@ export function RequirementDetailPage({
                     <span className="requirement-detail__row-actions">
                       <button onClick={() => void copyPath(folder.path, "已复制路径")} type="button">复制路径</button>
                       {canWrite && (
-                        <button onClick={() => removeFolder(folder.id)} type="button">移除</button>
+                        <button disabled={mutating} onClick={() => removeFolder(folder.id)} type="button">移除</button>
                       )}
                     </span>
                   </div>

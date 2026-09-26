@@ -25,6 +25,10 @@ import { PriorityBadge, RequirementStatusBadge } from "./RequirementBadges";
 import { RequirementModal } from "./RequirementModal";
 import { useToast } from "./Toast";
 import "./ProjectDetailPage.css";
+import { useConfirm } from "./ConfirmDialog";
+import { copyText } from "../clipboard";
+import { NoticeBanner, useNotice } from "./Notice";
+import { usePersistentState } from "../viewState";
 
 interface ProjectDetailPageProps {
   apiClient: ApiClient;
@@ -96,10 +100,11 @@ export function ProjectDetailPage({
 
   const [meetingRows, setMeetingRows] = useState<ProjectMeetingRow[] | null>(null);
   const [meetingsState, setMeetingsState] = useState<LoadState>("loading");
-  const [meetingsPage, setMeetingsPage] = useState(0);
+  // 项目详情里两张子表的页签与页码按项目分别记住，离开再回来还在原处。
+  const [meetingsPage, setMeetingsPage] = usePersistentState(`project.${projectId}.meetingsPage`, 0);
 
-  const [requirementsTab, setRequirementsTab] = useState<RequirementStatus | "all">("active");
-  const [requirementsPage, setRequirementsPage] = useState(0);
+  const [requirementsTab, setRequirementsTab] = usePersistentState<RequirementStatus | "all">(`project.${projectId}.requirementsTab`, "active");
+  const [requirementsPage, setRequirementsPage] = usePersistentState(`project.${projectId}.requirementsPage`, 0);
   const [requirementsPayload, setRequirementsPayload] = useState<RequirementsPayload | null>(null);
   const [requirementsState, setRequirementsState] = useState<LoadState>("loading");
 
@@ -107,11 +112,11 @@ export function ProjectDetailPage({
   const [creatingRequirement, setCreatingRequirement] = useState(false);
   const [addingRoot, setAddingRoot] = useState(false);
   const [reselectingRoot, setReselectingRoot] = useState<MaterialRoot | null>(null);
-  const [removingRoot, setRemovingRoot] = useState<MaterialRoot | null>(null);
+  const [confirm, confirmDialog] = useConfirm();
   const [rootBusy, setRootBusy] = useState(false);
   // 挂/重选根目录失败的原因：显示在还开着的取径器里（D27），不是页面级 notice
   const [rootError, setRootError] = useState("");
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
 
   const { toastNode, showToast } = useToast();
 
@@ -195,16 +200,15 @@ export function ProjectDetailPage({
     setRequirementsPage(0);
   };
 
-  const copyText = async (text: string, done: string) => {
+  const copyWithToast = async (text: string, done: string) => {
     try {
-      if (!navigator.clipboard) throw new Error("clipboard unavailable");
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       showToast(done);
     } catch {
-      setNotice("复制失败，请手动复制");
+      setNotice("复制失败，请手动复制", "error");
     }
   };
-  const copyPath = (path: string) => copyText(path, "已复制路径");
+  const copyPath = (path: string) => copyWithToast(path, "已复制路径");
   // 挂上文件夹时当场补写的会议卡片张数
   const cardsWrittenNote = (root: MaterialRoot | undefined) =>
     root?.cards_written ? `，已补写 ${root.cards_written} 张会议卡片` : "";
@@ -247,20 +251,24 @@ export function ProjectDetailPage({
     }
   };
 
-  const removeRoot = async () => {
-    if (!removingRoot) return;
-    setRootBusy(true);
+  // 确认弹窗里执行移除：失败原因留在弹窗里显示，不再写到被弹窗盖住的页面提示上。
+  const removeRoot = async (root: MaterialRoot) => {
     setNotice("");
-    try {
-      await apiClient.removeProjectMaterialRoot(projectId, removingRoot.id);
-      setRemovingRoot(null);
-      setNotice("材料根目录已移除");
-      await refreshAfterRootChange();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "移除失败，请稍后重试");
-    } finally {
-      setRootBusy(false);
-    }
+    const removed = await confirm({
+      title: "移除材料根目录",
+      message: (
+        <span className="confirm-modal__path">
+          <FolderIcon className="confirm-modal__path-icon" />
+          {root.path}
+        </span>
+      ),
+      confirmLabel: "移除",
+      tone: "danger",
+      action: () => apiClient.removeProjectMaterialRoot(projectId, root.id),
+    });
+    if (!removed) return;
+    setNotice("材料根目录已移除");
+    await refreshAfterRootChange();
   };
 
   const openAddRoot = () => {
@@ -316,7 +324,7 @@ export function ProjectDetailPage({
         )}
       </header>
 
-      {notice && <div className="action-banner" role="status">{notice}</div>}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
       {boardState === "loading" && <AsyncState state="loading" />}
       {boardState === "error" && (
@@ -414,7 +422,7 @@ export function ProjectDetailPage({
                         {canManageFolders && (
                           <button
                             className="material-root-row__remove"
-                            onClick={() => setRemovingRoot(root)}
+                            onClick={() => void removeRoot(root)}
                             type="button"
                           >
                             移除
@@ -433,7 +441,7 @@ export function ProjectDetailPage({
                 canWrite={canWrite}
                 cards={board.cards}
                 onChanged={loadBoard}
-                onCopy={copyText}
+                onCopy={copyWithToast}
                 projectId={projectId}
               />
             )}
@@ -679,32 +687,7 @@ export function ProjectDetailPage({
         />
       )}
 
-      {removingRoot && (
-        <div className="confirm-modal__overlay">
-          <div aria-label="移除材料根目录" aria-modal="true" className="confirm-modal__card" role="dialog">
-            <header className="confirm-modal__head">
-              <h2>移除材料根目录</h2>
-              <button aria-label="关闭" onClick={() => setRemovingRoot(null)} type="button">
-                ✕
-              </button>
-            </header>
-            <div className="confirm-modal__body">
-              <span className="confirm-modal__path">
-                <FolderIcon className="confirm-modal__path-icon" />
-                {removingRoot.path}
-              </span>
-            </div>
-            <footer className="confirm-modal__footer">
-              <button disabled={rootBusy} onClick={() => setRemovingRoot(null)} type="button">
-                取消
-              </button>
-              <button className="confirm-modal__danger" disabled={rootBusy} onClick={() => void removeRoot()} type="button">
-                移除
-              </button>
-            </footer>
-          </div>
-        </div>
-      )}
+      {confirmDialog}
     </section>
   );
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AsyncState } from "./AsyncState";
+import { useConfirm } from "./ConfirmDialog";
 import { GlossaryTermModal } from "./GlossaryTermModal";
 import { formatDate } from "../format";
 import type { ApiClient } from "../api";
@@ -15,6 +16,8 @@ import type {
 
 import { LegacyGroupsNote } from "./LegacyGroupsNote";
 import "./GlossaryPage.css";
+import { NoticeBanner, useNotice } from "./Notice";
+import { usePersistentState } from "../viewState";
 
 type SuggestionStatus = "pending" | "confirmed" | "rejected";
 type TabKey = "terms" | "suggestions";
@@ -118,9 +121,10 @@ export function GlossaryPage({
   initialProjectId,
   onPendingChange,
 }: GlossaryPageProps) {
-  const [activeTab, setActiveTab] = useState<TabKey>("terms");
-  const [notice, setNotice] = useState("");
+  const [activeTab, setActiveTab] = usePersistentState<TabKey>("glossary.activeTab", "terms");
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [busy, setBusy] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
   const busyRef = useRef(false);
   // 术语与建议各自独立计数：共用同一个 counter 会互相覆盖，先启动的请求被误判为过期丢弃。
   const termsSeqRef = useRef(0);
@@ -130,14 +134,14 @@ export function GlossaryPage({
   const [terms, setTerms] = useState<GlossaryTerm[]>([]);
   const [termsState, setTermsState] = useState<LoadState>("loading");
   const [remoteScopes, setRemoteScopes] = useState<GlossaryScope[] | null>(null);
-  const [activeChipKey, setActiveChipKey] = useState<string>(ALL_KEY);
-  const [search, setSearch] = useState("");
+  const [activeChipKey, setActiveChipKey] = usePersistentState<string>("glossary.activeChipKey", ALL_KEY);
+  const [search, setSearch] = usePersistentState("glossary.search", "");
   const [editing, setEditing] = useState<GlossaryTerm | null>(null);
   const [creating, setCreating] = useState(false);
   const appliedInitialProjectRef = useRef(false);
 
   // —— 待确认 ——
-  const [suggestionStatus, setSuggestionStatus] = useState<SuggestionStatus>("pending");
+  const [suggestionStatus, setSuggestionStatus] = usePersistentState<SuggestionStatus>("glossary.suggestionStatus", "pending");
   const [suggestions, setSuggestions] = useState<GlossarySuggestion[]>([]);
   const [suggestionsState, setSuggestionsState] = useState<LoadState>("loading");
   const [pendingTotal, setPendingTotal] = useState(0);
@@ -236,7 +240,7 @@ export function GlossaryPage({
     try {
       await action();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试");
+      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -245,8 +249,14 @@ export function GlossaryPage({
 
   const reloadAfterWrite = () => Promise.all([loadTerms(), loadScopes()]);
 
-  const removeTerm = (term: GlossaryTerm) => {
-    if (!window.confirm(`删除术语「${term.term}」？这个操作不会撤销。`)) return;
+  const removeTerm = async (term: GlossaryTerm) => {
+    const confirmed = await confirm({
+      title: `删除术语「${term.term}」？`,
+      message: "删除后无法撤销。",
+      confirmLabel: "删除",
+      tone: "danger",
+    });
+    if (!confirmed) return;
     void run(async () => {
       await apiClient.deleteGlossaryTerm(term.id);
       setNotice(`已删除「${term.term}」`);
@@ -308,7 +318,7 @@ export function GlossaryPage({
               <button
                 className="text-button text-button--muted"
                 disabled={busy}
-                onClick={() => removeTerm(term)}
+                onClick={() => void removeTerm(term)}
                 type="button"
               >
                 删除
@@ -455,11 +465,7 @@ export function GlossaryPage({
         </button>
       </div>
 
-      {notice && (
-        <div className="action-banner" role="status">
-          {notice}
-        </div>
-      )}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
       {activeTab === "terms" && (
         <>
@@ -556,6 +562,8 @@ export function GlossaryPage({
           )}
         </>
       )}
+
+      {confirmDialog}
 
       {(creating || editing) && (
         <GlossaryTermModal

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../api";
 import type { ColdStartFolderItem } from "../types";
 import { FolderIcon } from "./FolderIcon";
+import { NoticeBanner, useNotice } from "./Notice";
 import "./FolderSuggestionBanner.css";
 
 interface FolderSuggestionBannerProps {
@@ -24,7 +25,7 @@ export function FolderSuggestionBanner({ apiClient, onProjectsChanged, onActiveC
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -66,11 +67,7 @@ export function FolderSuggestionBanner({ apiClient, onProjectsChanged, onActiveC
   }, [open, busy]);
 
   if (items.length === 0) {
-    return notice ? (
-      <div className="action-banner" role="status">
-        {notice}
-      </div>
-    ) : null;
+    return <NoticeBanner notice={notice} onDismiss={dismissNotice} />;
   }
 
   const toggle = (projectId: string) =>

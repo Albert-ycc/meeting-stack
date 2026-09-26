@@ -11,6 +11,7 @@ import type {
   SimilarProjectSuggestion,
 } from "../types";
 import "./AttributionBar.css";
+import type { NoticeTone } from "./Notice";
 
 /** 归属条上的操作改动了会议的归属：带回新的归属对象，以及（能拿到时）会议的项目字段。 */
 export interface AttributionChange {
@@ -30,7 +31,7 @@ interface AttributionBarProps {
   onSeek?: (ms: number) => void;
   onChange: (change: AttributionChange) => void;
   /** 结果提示；undoUntil 有值时提示里带［撤销］ */
-  onNotice: (message: string, undoUntil?: string) => void;
+  onNotice: (message: string, undoUntil?: string, tone?: NoticeTone) => void;
   onProjectsChanged?: () => Promise<void> | void;
 }
 
@@ -153,7 +154,7 @@ export function AttributionBar({
     try {
       await action();
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : "操作失败");
+      onNotice(error instanceof Error ? error.message : "操作失败", undefined, "error");
     } finally {
       setBusy(false);
     }

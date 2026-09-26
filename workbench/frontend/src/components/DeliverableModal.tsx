@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { type ApiClient } from "../api";
 import type { DeliverableKind } from "../types";
 import "./DeliverableModal.css";
+import { useDialogFocus } from "./useDialog";
 
 interface DeliverableModalProps {
   apiClient: ApiClient;
@@ -47,6 +48,8 @@ export function DeliverableModal({
   onClose,
   onSaved,
 }: DeliverableModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef);
   const [kind, setKind] = useState<DeliverableKind | null>(null);
   const [url, setUrl] = useState("");
   const [note, setNote] = useState("");
@@ -64,7 +67,7 @@ export function DeliverableModal({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !savingRef.current) onClose();
+      if (event.key === "Escape" && !event.isComposing && !savingRef.current) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -101,6 +104,7 @@ export function DeliverableModal({
         aria-labelledby="deliverable-modal-title"
         aria-modal="true"
         className="deliverable-card"
+        ref={dialogRef}
         role="dialog"
       >
         <div className="deliverable-card__head">

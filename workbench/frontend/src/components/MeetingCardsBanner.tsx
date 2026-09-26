@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { ApiClient } from "../api";
 import type { CardsBanner } from "../types";
 import { FolderIcon } from "./FolderIcon";
+import { NoticeBanner, useNotice } from "./Notice";
 import "./FolderSuggestionBanner.css";
 import "./MeetingCardsBanner.css";
 
@@ -23,7 +24,7 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
   const [banner, setBanner] = useState<CardsBanner | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [retireOffer, setRetireOffer] = useState(false);
 
   useEffect(() => {
@@ -47,7 +48,7 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
     try {
       await work();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试");
+      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
     } finally {
       setBusy(false);
     }
@@ -69,7 +70,8 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
       setBanner((current) => (current ? { ...current, backfill: null } : current));
       setOpen(false);
       if (value === "yes") {
-        setNotice(`好的，接下来的扫描会把 ${backfill?.meetings ?? 0} 场会写成卡片`);
+        // 带［全部撤下］，多停一会儿
+        setNotice(`好的，接下来的扫描会把 ${backfill?.meetings ?? 0} 场会写成卡片`, "success", 15_000);
         setRetireOffer(true);
       } else if (value === "no") {
         setNotice("好的，先不补写；以后想补写，在项目页的材料区点一下就行");
@@ -132,7 +134,7 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
         <button className="text-button" disabled={busy} onClick={() => void dismissNotices()} type="button">
           知道了
         </button>
-        {notice && <p className="cards-banner__notice">{notice}</p>}
+        {notice && <p className="cards-banner__notice">{notice.message}</p>}
       </div>
     );
   }
@@ -174,20 +176,18 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
             {backfill.top.length > 5 && <li className="cards-banner__more">还有 {backfill.top.length - 5} 个项目</li>}
           </ul>
         )}
-        {notice && <p className="cards-banner__notice">{notice}</p>}
+        {notice && <p className="cards-banner__notice">{notice.message}</p>}
       </div>
     );
   }
 
-  if (!notice) return null;
   return (
-    <div className="action-banner" role="status">
-      {notice}
-      {retireOffer && (
+    <NoticeBanner notice={notice} onDismiss={dismissNotice}>
+      {retireOffer && notice?.tone === "success" && (
         <button className="text-button action-banner__undo" disabled={busy} onClick={() => void retireAll()} type="button">
           全部撤下
         </button>
       )}
-    </div>
+    </NoticeBanner>
   );
 }

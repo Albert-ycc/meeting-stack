@@ -5,6 +5,7 @@ import type { GlossaryCategory, GlossaryTerm, Project } from "../types";
 
 import { isComposingKeydown } from "../keyboard";
 import "./GlossaryTermModal.css";
+import { useDialogFocus } from "./useDialog";
 
 /** 中文输入法组合态下按 Enter 是在确认拼音候选字，不是要提交这一条别名；
  * 不做这层判断，会把还没敲完的候选词当成别名提前塞进去（复现见「新增术语」回归测试）。
@@ -48,6 +49,8 @@ export function GlossaryTermModal({
   onClose,
   onSaved,
 }: GlossaryTermModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef);
   const isEdit = term !== null;
   const [termText, setTermText] = useState(term?.term ?? "");
   const [aliases, setAliases] = useState<string[]>(term?.aliases ?? []);
@@ -71,7 +74,7 @@ export function GlossaryTermModal({
   // 保存进行中禁掉 Escape 关闭，避免误触丢数据（与任务弹窗同款约定）。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !savingRef.current) onClose();
+      if (event.key === "Escape" && !event.isComposing && !savingRef.current) onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -135,6 +138,7 @@ export function GlossaryTermModal({
         aria-label={isEdit ? "编辑术语" : "新增术语"}
         aria-modal="true"
         className="glossary-modal__card"
+        ref={dialogRef}
         role="dialog"
       >
         <header className="glossary-modal__head">
@@ -156,6 +160,13 @@ export function GlossaryTermModal({
             <input
               autoFocus
               onChange={(event) => setTermText(event.target.value)}
+              onKeyDown={(event) => {
+                // 名称框里回车直接提交；输入法选词的回车不算。
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  void handleSubmit();
+                }
+              }}
               placeholder="权威写法，例如：儿童生长发育"
               value={termText}
             />

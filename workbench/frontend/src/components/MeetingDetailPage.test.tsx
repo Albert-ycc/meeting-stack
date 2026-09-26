@@ -1024,7 +1024,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(screen.getByRole("button", { name: "重新生成纪要" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "写回会议文件夹" })).toBeDisabled();
 
-    await userEvent.click(screen.getByRole("button", { name: "← 返回资料库" }));
+    await userEvent.click(screen.getByRole("button", { name: "← 返回录音档案" }));
     expect(confirm).toHaveBeenCalled();
     expect(onBack).not.toHaveBeenCalled();
 
@@ -1054,7 +1054,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(screen.getByRole("button", { name: "保存归档归属" })).toBeEnabled();
     await userEvent.click(screen.getByRole("tab", { name: /会议纪要/ }));
     expect(screen.getByRole("button", { name: "写回会议文件夹" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "← 返回资料库" }));
+    await userEvent.click(screen.getByRole("button", { name: "← 返回录音档案" }));
     expect(confirm).toHaveBeenCalled();
     expect(onBack).not.toHaveBeenCalled();
     confirm.mockRestore();
@@ -1203,7 +1203,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(textarea).toBeDisabled();
     expect(screen.getByRole("button", { name: "从光标拆分" })).toBeDisabled();
     expect(screen.getByRole("tab", { name: /会议纪要/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "← 返回资料库" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "← 返回录音档案" })).toBeDisabled();
     expect(onNavigationLockChange).toHaveBeenLastCalledWith(true);
 
     textarea.removeAttribute("disabled");
@@ -1252,7 +1252,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
 
     expect(textarea).toBeDisabled();
     expect(screen.getByRole("tab", { name: /逐字稿/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "← 返回资料库" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "← 返回录音档案" })).toBeDisabled();
 
     textarea.removeAttribute("disabled");
     fireEvent.change(textarea, { target: { value: "请求后继续写纪要" } });

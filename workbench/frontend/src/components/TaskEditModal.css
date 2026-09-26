@@ -7,7 +7,7 @@
   display: flex;
   overflow-y: auto;
   padding: 24px;
-  background: rgba(255, 255, 255, 0.414);
+  background: rgb(var(--fg-rgb) / 0.414);
 }
 
 .task-edit-modal__card {
@@ -130,7 +130,7 @@
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: 12px;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 14px 32px rgb(0 0 0 / calc(0.55 * var(--shadow-k)));
 }
 
 .task-edit-modal__option,

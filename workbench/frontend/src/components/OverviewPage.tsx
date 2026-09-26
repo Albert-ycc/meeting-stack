@@ -16,6 +16,7 @@ import { FolderSuggestionBanner } from "./FolderSuggestionBanner";
 import { MeetingCardsBanner } from "./MeetingCardsBanner";
 import { BlurText } from "./motion/BlurText";
 import { CountUp } from "./motion/CountUp";
+import { NoticeBanner, useNotice } from "./Notice";
 
 interface OverviewPageProps {
   health: HealthPayload | null;
@@ -34,6 +35,8 @@ interface OverviewPageProps {
   /** 挂文件夹只在桌面端：为 true 时才问「要不要挂上同名文件夹」 */
   canPickFolders?: boolean;
   onProjectsChanged?: () => void | Promise<void>;
+  /** 确认待办之后通知外层刷新侧栏「任务池」角标。 */
+  onTasksChanged?: () => void;
 }
 
 const ATTENTION_KIND_TEXT: Record<string, string> = {
@@ -111,6 +114,7 @@ export function OverviewPage({
   onOpenAttributionReview,
   canPickFolders = false,
   onProjectsChanged,
+  onTasksChanged,
 }: OverviewPageProps) {
   const reviewCount = attributionSummary?.needs_review_recent ?? 0;
   // 同名文件夹横幅读完之前是 null：先不出会议卡片横幅，免得两条一起闪出来
@@ -236,7 +240,7 @@ export function OverviewPage({
   const [pendingTotal, setPendingTotal] = useState(0);
   const [todoState, setTodoState] = useState<"loading" | "ready" | "error">("loading");
   const [confirmBusy, setConfirmBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
 
   const loadTodos = useCallback(async () => {
     try {
@@ -260,9 +264,10 @@ export function OverviewPage({
     try {
       await apiClient.confirmTask(task.id, {});
       await loadTodos();
+      onTasksChanged?.();
       setNotice("任务已确认");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "确认失败，请稍后重试");
+      setNotice(error instanceof Error ? error.message : "确认失败，请稍后重试", "error");
     } finally {
       setConfirmBusy(false);
     }
@@ -408,9 +413,7 @@ export function OverviewPage({
           </button>
         </div>
 
-        {notice && (
-          <div className="action-banner" role="status">{notice}</div>
-        )}
+        <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
         {todoState === "loading" ? (
           <div className="contract-empty">

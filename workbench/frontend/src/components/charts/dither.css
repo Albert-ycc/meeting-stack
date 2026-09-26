@@ -22,7 +22,7 @@
 .dither-crosshair {
   position: absolute;
   width: 1px;
-  background: rgba(255, 255, 255, 0.22);
+  background: rgb(var(--fg-rgb) / 0.22);
   pointer-events: none;
 }
 
@@ -33,7 +33,7 @@
   margin: -3.5px 0 0 -3.5px;
   background: var(--signal);
   border-radius: 50%;
-  box-shadow: 0 0 0 3px rgba(240, 120, 59, 0.22);
+  box-shadow: 0 0 0 3px rgb(var(--signal-rgb) / 0.22);
   pointer-events: none;
 }
 
@@ -52,11 +52,11 @@
   gap: 2px;
   padding: 7px 11px;
   transform: translateX(-50%);
-  background: #242424;
+  background: var(--raised);
   border-radius: 10px;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 8px 22px rgba(0, 0, 0, 0.55);
+    inset 0 1px 0 rgb(var(--fg-rgb) / 0.06),
+    0 8px 22px rgb(0 0 0 / calc(0.55 * var(--shadow-k)));
   pointer-events: none;
   white-space: nowrap;
 }
@@ -67,7 +67,7 @@
 }
 
 .dither-tip strong {
-  color: #ffffff;
+  color: var(--heading);
   font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;

@@ -5,6 +5,7 @@ import { similarProjectFrom } from "../api";
 import type { ApiClient } from "../api";
 import type { FolderMatch, FolderMatchesPayload, Project, SimilarProjectSuggestion } from "../types";
 import { FolderIcon } from "./FolderIcon";
+import { useDialogFocus } from "./useDialog";
 import { MaterialRootPickerModal } from "./MaterialRootPickerModal";
 import { SimilarProjectQuestion } from "./SimilarProjectQuestion";
 import "./ProjectFormModal.css";
@@ -91,30 +92,21 @@ export function ProjectFormModal({
   const [mergeTarget, setMergeTarget] = useState("");
 
   const cardRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(cardRef);
   const pickerOpenRef = useRef(pickerOpen);
   useEffect(() => {
     pickerOpenRef.current = pickerOpen;
   }, [pickerOpen]);
   const savingRef = useRef(false);
 
-  // 点卡片外关闭；子级取径器开着时不关（那一层自己处理点外）
+  // Esc 关闭；子级取径器开着时不关（那一层自己处理）。表单弹窗点背景不关，免得丢掉填了一半的内容。
   useEffect(() => {
-    const onPointerDown = (event: MouseEvent) => {
-      if (pickerOpenRef.current) return;
-      if (cardRef.current && !cardRef.current.contains(event.target as Node) && !savingRef.current) {
-        onClose();
-      }
-    };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || pickerOpenRef.current) return;
+      if (event.key !== "Escape" || event.isComposing || pickerOpenRef.current) return;
       if (!savingRef.current) onClose();
     };
-    document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
   const trimmedName = name.trim();
@@ -370,6 +362,13 @@ export function ProjectFormModal({
                 onChange={(event) => {
                   setName(event.target.value);
                   setSuggestion(null);
+                }}
+                onKeyDown={(event) => {
+                  // 名称框里回车直接提交；输入法选词的回车不算。
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    void submit();
+                  }
                 }}
                 placeholder="例如：互联网医院"
                 value={name}

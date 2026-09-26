@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../api";
+import { useBackdropDismiss, useDialogFocus } from "./useDialog";
 import type { RequirementDetail, Task, TaskStatus } from "../types";
 import "./LinkTasksModal.css";
 
@@ -34,6 +35,8 @@ const DEFAULT_STATUSES: TaskStatus[] = ["pending_confirm", "confirmed", "in_prog
 
 /** 关联已有任务弹窗（A-04-3）：只列该项目下还没挂到任何需求上的任务。 */
 export function LinkTasksModal({ apiClient, requirementId, projectId, onCancel, onSaved }: LinkTasksModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef);
   const [search, setSearch] = useState("");
   const [statuses, setStatuses] = useState<Set<TaskStatus>>(new Set(DEFAULT_STATUSES));
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
@@ -41,6 +44,7 @@ export function LinkTasksModal({ apiClient, requirementId, projectId, onCancel, 
   const [loadError, setLoadError] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  const backdrop = useBackdropDismiss(onCancel, saving);
   const [error, setError] = useState("");
   const statusFieldRef = useRef<HTMLDivElement>(null);
 
@@ -79,7 +83,7 @@ export function LinkTasksModal({ apiClient, requirementId, projectId, onCancel, 
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !saving) onCancel();
+      if (event.key === "Escape" && !event.isComposing && !saving) onCancel();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -118,12 +122,13 @@ export function LinkTasksModal({ apiClient, requirementId, projectId, onCancel, 
     .join("、") || "全部状态";
 
   return (
-    <div className="link-tasks-modal__overlay" onClick={() => { if (!saving) onCancel(); }}>
+    <div className="link-tasks-modal__overlay" {...backdrop}>
       <div
         aria-label="关联已有任务"
         aria-modal="true"
         className="link-tasks-modal__card"
         onClick={(event) => event.stopPropagation()}
+        ref={dialogRef}
         role="dialog"
       >
         <header className="link-tasks-modal__head">

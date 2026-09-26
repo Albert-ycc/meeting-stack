@@ -11,6 +11,7 @@ import type {
 } from "../types";
 import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATUS_LABELS } from "./RequirementBadges";
 import { MaterialFolderPickerModal } from "./MaterialFolderPickerModal";
+import { useDialogFocus } from "./useDialog";
 import "./RequirementModal.css";
 
 export interface RequirementModalProps {
@@ -51,6 +52,8 @@ export function RequirementModal({
   onSaved,
   onOpenProject,
 }: RequirementModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef);
   const [title, setTitle] = useState(requirement?.title ?? "");
   const [projectId, setProjectId] = useState(
     requirement?.project_id ?? defaultProjectId ?? projects[0]?.id ?? "",
@@ -109,7 +112,7 @@ export function RequirementModal({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || pickerOpen || saving) return;
+      if (event.key !== "Escape" || event.isComposing || pickerOpen || saving) return;
       onClose();
     };
     document.addEventListener("keydown", onKeyDown);
@@ -156,17 +159,13 @@ export function RequirementModal({
   };
 
   return (
-    <div
-      className="requirement-modal__overlay"
-      onClick={() => {
-        if (!pickerOpen && !saving) onClose();
-      }}
-    >
+    <div className="requirement-modal__overlay">
       <div
         aria-label={mode === "create" ? "新建需求" : "编辑需求"}
         aria-modal="true"
         className="requirement-modal__card"
         onClick={(event) => event.stopPropagation()}
+        ref={dialogRef}
         role="dialog"
       >
         <header className="requirement-modal__head">
@@ -189,6 +188,13 @@ export function RequirementModal({
               autoFocus
               disabled={saving}
               onChange={(event) => setTitle(event.target.value)}
+              onKeyDown={(event) => {
+                // 名称框里回车直接提交；输入法选词的回车不算。
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  void handleSubmit();
+                }
+              }}
               placeholder="例如：北辰仓快递配送"
               value={title}
             />

@@ -25,18 +25,24 @@ import type {
 } from "../types";
 import { AttributionBar, type AttributionChange } from "./AttributionBar";
 import { AudioPlayer, type AudioPlayerHandle } from "./AudioPlayer";
+import { useConfirm, type ConfirmOptions } from "./ConfirmDialog";
 import { CopyFolderPathButton } from "./CopyFolderPathButton";
 import { MeetingCardStatus } from "./MeetingCardStatus";
 import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
 import { MeetingTasksPanel } from "./MeetingTasksPanel";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
 import { TranscriptPanel } from "./TranscriptPanel";
+import { NoticeBanner, useNotice, type NoticeTone } from "./Notice";
 
 interface MeetingDetailPageProps {
   apiClient: ApiClient;
   initialSeekMs: number;
   isMobile: boolean;
   meeting: MeetingDetail;
+  /** 本场任务确认/驳回之后通知外层，刷新侧栏「任务池」的待确认角标。 */
+  onTasksChanged?: () => void;
+  /** 「← 返回」按钮上显示的去处，默认录音档案。 */
+  backLabel?: string;
   onBack: () => void;
   onClassificationSaved?: () => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
@@ -55,6 +61,8 @@ type DetailTab = "transcript" | "minutes" | "tasks";
 
 // 检查器主项目下拉里的特殊取值：「不归项目」（没项目的会上显式标一下）和「交给 AI 判断」。
 const MARK_NO_PROJECT = "__none__";
+// 带［撤销］的操作提示停 10 秒，比普通成功提示长一些
+const UNDO_NOTICE_MS = 10_000;
 const RETURN_TO_AI = "__ai__";
 
 const EMPTY_PROJECT_LABELS: Partial<Record<AttributionState, string>> = {
@@ -216,6 +224,8 @@ export function MeetingDetailPage({
   initialSeekMs,
   isMobile,
   meeting,
+  backLabel = "录音档案",
+  onTasksChanged,
   onBack,
   onClassificationSaved,
   onDirtyChange,
@@ -253,12 +263,13 @@ export function MeetingDetailPage({
   const [editingMinutes, setEditingMinutes] = useState(false);
   const [segments, setSegments] = useState<Segment[]>(meeting.segments);
   const [baselineSegments, setBaselineSegments] = useState<Segment[]>(meeting.segments);
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, dismissNotice } = useNotice();
   const [undoUntil, setUndoUntil] = useState<string | null>(null);
   const [attribution, setAttribution] = useState<MeetingAttribution | undefined>(meeting.attribution);
   const [card, setCard] = useState<MeetingCard | undefined>(meeting.card);
   const [liveProject, setLiveProject] = useState<LiveProject>(() => liveProjectOf(meeting));
   const [busy, setBusy] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
   const [savingKind, setSavingKind] = useState<"transcript" | "minutes" | "classification" | null>(null);
   const [saveConflict, setSaveConflict] = useState<"transcript" | "minutes" | null>(null);
   const [speakerLabel, setSpeakerLabel] = useState(meeting.speakers[0]?.label ?? "");
@@ -590,7 +601,7 @@ export function MeetingDetailPage({
       setNotice(typeof success === "function" ? success(result) : success);
       await onReload();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     } finally {
       setBusy(false);
     }
@@ -610,7 +621,7 @@ export function MeetingDetailPage({
       if (result.id) {
         setShadowRuns((current) => [result, ...current.filter((runItem) => runItem.id !== result.id)]);
       }
-      setNotice(qwenNotice(result));
+      setNotice(qwenNotice(result), result.state === "failed" || result.state === "unavailable" ? "warning" : "success");
       if (result.state === "ready" && typeof apiClient.meeting === "function") {
         const sequence = ++qwenPollSequence.current;
         const snapshot = await apiClient.meeting(meeting.id);
@@ -619,7 +630,7 @@ export function MeetingDetailPage({
         }
       }
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Qwen 影子稿操作失败");
+      setNotice(error instanceof Error ? error.message : "Qwen 影子稿操作失败", "error");
     } finally {
       setBusy(false);
     }
@@ -653,7 +664,7 @@ export function MeetingDetailPage({
     setBaselineSegments(snapshot);
     setSaveConflict(null);
     if (revisions.current.transcript !== requestRevision) {
-      setNotice("请求中的逐字稿已保存；请求发出后的本地修改仍保留，请再次保存");
+      setNotice("请求中的逐字稿已保存；请求发出后的本地修改仍保留，请再次保存", "warning");
       return;
     }
     setNotice("逐字稿已保存在工作台，尚未写回文件夹");
@@ -668,10 +679,10 @@ export function MeetingDetailPage({
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         setSaveConflict("transcript");
-        setNotice(error.message);
+        setNotice(error.message, "error");
       } else {
         setSaveConflict(null);
-        setNotice(error instanceof Error ? error.message : "操作失败");
+        setNotice(error instanceof Error ? error.message : "操作失败", "error");
       }
     } finally {
       setSavingKind(null);
@@ -684,7 +695,7 @@ export function MeetingDetailPage({
       const fresh = await apiClient.meeting(meeting.id);
       await saveTranscriptWith(fresh.current_transcript_version_id ?? null);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     }
   };
   const commitMinutes = async (baseVersionId: string | null) => {
@@ -695,7 +706,7 @@ export function MeetingDetailPage({
     setBaselineMinutes(snapshot);
     setSaveConflict(null);
     if (revisions.current.minutes !== requestRevision) {
-      setNotice("请求中的纪要已保存；请求发出后的本地修改仍保留，请再次保存");
+      setNotice("请求中的纪要已保存；请求发出后的本地修改仍保留，请再次保存", "warning");
       return;
     }
     setNotice("纪要草稿已保存");
@@ -710,10 +721,10 @@ export function MeetingDetailPage({
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         setSaveConflict("minutes");
-        setNotice(error.message);
+        setNotice(error.message, "error");
       } else {
         setSaveConflict(null);
-        setNotice(error instanceof Error ? error.message : "操作失败");
+        setNotice(error instanceof Error ? error.message : "操作失败", "error");
       }
     } finally {
       setSavingKind(null);
@@ -726,8 +737,11 @@ export function MeetingDetailPage({
       const fresh = await apiClient.meeting(meeting.id);
       await saveMinutesWith(fresh.current_minutes_version_id ?? null);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     }
+  };
+  const confirmThen = async (options: ConfirmOptions, action: () => Promise<unknown>) => {
+    if (await confirm(options)) await action();
   };
   const discardSaveConflict = async () => {
     setBusy(true);
@@ -736,7 +750,7 @@ export function MeetingDetailPage({
     try {
       await onReload();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     } finally {
       setBusy(false);
     }
@@ -782,14 +796,19 @@ export function MeetingDetailPage({
         refreshWarning = "；项目统计暂未刷新，请稍后重新进入项目页查看";
       }
       if (revisions.current.classification !== requestRevision) {
-        setNotice(`请求中的归档归属已保存${effectsNote}${refreshWarning}；后续本地修改仍保留，请再次保存`);
+        setNotice(`请求中的归档归属已保存${effectsNote}${refreshWarning}；后续本地修改仍保留，请再次保存`, "warning");
         return;
       }
-      setNotice(`会议归档归属已保存${effectsNote}${refreshWarning}`);
+      // 带［撤销］的提示多停一会儿；过后在归属条的「刚改过」里还能改回
+      setNotice(
+        `会议归档归属已保存${effectsNote}${refreshWarning}`,
+        refreshWarning ? "warning" : "success",
+        effects?.undo_until ? UNDO_NOTICE_MS : undefined,
+      );
       setUndoUntil(effects?.undo_until ?? null);
       await onReload();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      setNotice(error instanceof Error ? error.message : "操作失败", "error");
     } finally {
       setSavingKind(null);
       setBusy(false);
@@ -801,7 +820,7 @@ export function MeetingDetailPage({
       if (next !== current) revisions.current.transcript += 1;
       return next;
     });
-    setNotice("已在本地拆分；保存草稿后才会写入资料库");
+    setNotice("已在本地拆分；保存草稿后才会写入资料库", "warning");
   };
   const merge = (firstId: string, secondId: string) => {
     setSegments((current) => {
@@ -809,7 +828,7 @@ export function MeetingDetailPage({
       if (next !== current) revisions.current.transcript += 1;
       return next;
     });
-    setNotice("已在本地合并；保存草稿后才会写入资料库");
+    setNotice("已在本地合并；保存草稿后才会写入资料库", "warning");
   };
   const leaveDetail = () => {
     if (isSaving) return;
@@ -879,8 +898,8 @@ export function MeetingDetailPage({
       setLiveProject((current) => ({ ...current, origin: change.attribution.origin }));
     }
   };
-  const showAttributionNotice = (message: string, until?: string) => {
-    setNotice(message);
+  const showAttributionNotice = (message: string, until?: string, tone: NoticeTone = "success") => {
+    setNotice(message, tone, until ? UNDO_NOTICE_MS : undefined);
     setUndoUntil(until ?? null);
   };
   const undoFromBanner = async () => {
@@ -904,7 +923,7 @@ export function MeetingDetailPage({
       );
       await onClassificationSaved?.();
     } catch (error) {
-      showAttributionNotice(error instanceof Error ? error.message : "撤销失败");
+      showAttributionNotice(error instanceof Error ? error.message : "撤销失败", undefined, "error");
     } finally {
       setBusy(false);
     }
@@ -920,8 +939,9 @@ export function MeetingDetailPage({
 
   return (
     <section className={`detail-page ${isMobile ? "detail-page--mobile" : ""}`}>
+      {confirmDialog}
       <header className="detail-header">
-        <button className="back-button" disabled={isSaving} onClick={leaveDetail} type="button">← 返回资料库</button>
+        <button className="back-button" disabled={isSaving} onClick={leaveDetail} type="button">← 返回{backLabel}</button>
         <div className="detail-title-row">
           <div>
             <span className="archive-code">{meeting.id}</span>
@@ -1013,7 +1033,15 @@ export function MeetingDetailPage({
                 <button
                   className="danger-button"
                   disabled={destructiveBlocked}
-                  onClick={() => void resolveConflict(conflict, "discard_draft")}
+                  onClick={() => void confirmThen(
+                    {
+                      title: "丢弃草稿？",
+                      message: "工作台里这场会未写回的草稿会被丢弃，改用外部文件里的版本。丢弃后无法恢复。",
+                      confirmLabel: "丢弃草稿",
+                      tone: "danger",
+                    },
+                    () => resolveConflict(conflict, "discard_draft"),
+                  )}
                   type="button"
                 >
                   丢弃草稿
@@ -1033,16 +1061,13 @@ export function MeetingDetailPage({
         ref={playerRef}
       />
 
-      {notice && (
-        <div className="action-banner" role="status">
-          {notice}
-          {canUndo && (
-            <button className="text-button action-banner__undo" disabled={busy} onClick={() => void undoFromBanner()} type="button">
-              撤销
-            </button>
-          )}
-        </div>
-      )}
+      <NoticeBanner notice={notice} onDismiss={dismissNotice}>
+        {canUndo && (
+          <button className="text-button action-banner__undo" disabled={busy} onClick={() => void undoFromBanner()} type="button">
+            撤销
+          </button>
+        )}
+      </NoticeBanner>
 
       {saveConflict && (
         <section className="conflict-panel" role="alert">
@@ -1065,7 +1090,15 @@ export function MeetingDetailPage({
               <button
                 className="danger-button"
                 disabled={busy}
-                onClick={() => void discardSaveConflict()}
+                onClick={() => void confirmThen(
+                  {
+                    title: "丢弃我的修改？",
+                    message: "你在这个页面上还没保存的修改会被丢掉，页面载入别处保存的最新版本。丢弃后无法恢复。",
+                    confirmLabel: "丢弃并加载最新",
+                    tone: "danger",
+                  },
+                  discardSaveConflict,
+                )}
                 type="button"
               >
                 丢弃我的修改并加载最新
@@ -1332,7 +1365,14 @@ export function MeetingDetailPage({
               </select>
               <button disabled={!minutesVersion || minutesVersion === meeting.current_minutes_version_id || destructiveBlocked} onClick={() => void run(() => apiClient.rollbackMinutes(meeting.id, minutesVersion), "已回滚纪要工作版本")} type="button">回滚纪要版本</button>
               <div className="publish-rule" />
-              <button className="publish-button" disabled={destructiveBlocked} onClick={() => void run(() => apiClient.publish(meeting.id), "已写回会议文件夹")} type="button">写回会议文件夹</button>
+              <button className="publish-button" disabled={destructiveBlocked} onClick={() => void confirmThen(
+                {
+                  title: "写回会议文件夹？",
+                  message: "用工作台里的当前版本更新归档目录里的逐字稿和纪要文件，原音频不动。",
+                  confirmLabel: "写回",
+                },
+                () => run(() => apiClient.publish(meeting.id), "已写回会议文件夹"),
+              )} type="button">写回会议文件夹</button>
             </aside>
           )}
         </div>
@@ -1343,7 +1383,10 @@ export function MeetingDetailPage({
             canWrite={canWriteTasks}
             meetingId={meeting.id}
             meetingTitle={isUntitled(meeting.title, meeting.id) ? meeting.id : meeting.title}
-            onChanged={loadPendingTaskCount}
+            onChanged={() => {
+              void loadPendingTaskCount();
+              onTasksChanged?.();
+            }}
             onOpenTasks={onOpenTasks!}
             projects={projects}
           />
