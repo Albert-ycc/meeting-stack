@@ -481,8 +481,15 @@ class MeetingService:
         expected_base_version_id: str | None | object = _BASE_VERSION_UNSET,
         *,
         glossary_snapshot_path: Path | str | None = None,
+        capture_corrections: bool = True,
+        actor: str = "user",
+        event_payload: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
-        """保存纪要草稿，同时返回这次编辑捕获到的错字更正建议（含直接记入的）。"""
+        """保存纪要草稿，同时返回这次编辑捕获到的错字更正建议（含直接记入的）。
+
+        纪要体检按词典替换错写时 capture_corrections=False：这些改动本来就来自词典，
+        不该再回头变成待确认的纠错建议。
+        """
         minutes_id = f"mv-{uuid.uuid4().hex}"
         rendered_html = render_safe_markdown(markdown)
         content_sha256 = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
@@ -547,8 +554,13 @@ class MeetingService:
                 (minutes_id, utc_now(), meeting_id),
             )
         self.db.add_event(
-            "minutes_saved", meeting_id=meeting_id, actor="user", payload={"version_id": minutes_id}
+            "minutes_saved",
+            meeting_id=meeting_id,
+            actor=actor,
+            payload={"version_id": minutes_id, **(event_payload or {})},
         )
+        if not capture_corrections:
+            return minutes_id, []
         # 编辑纪要时捕获疑似错字更正，写入待确认队列（不影响纪要保存本身）
         corrections = record_corrections_from_diff(
             self.db,

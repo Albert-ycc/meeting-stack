@@ -248,6 +248,18 @@ class GlossaryMergeInput(BaseModel):
     make_public: bool = False
 
 
+class GlossaryCheckInput(BaseModel):
+    """按哪个项目的词典查这场会的纪要；null 回到默认（回执 → 会议当前项目 → 公共）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    project_id: str | None = None
+
+
+class GlossaryApplyInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_version_id: str
+
+
 class SuggestionConfirmInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -574,6 +586,7 @@ def _meeting_detail(
         )
         if cards is not None:
             meeting["card"] = cards.meeting_card(connection, meeting_id)
+    meeting["glossary"] = glossary_checkup.meeting_glossary(db, meeting_id)
     return meeting
 
 
@@ -834,11 +847,16 @@ def create_app(
                     record_scanner_phase_errors(phase_errors, previous_failures)
                     continue
                 try:
-                    await asyncio.to_thread(glossary_checkup.ingest_receipts, db)
+                    await asyncio.to_thread(
+                        glossary_checkup.run_pending,
+                        db,
+                        service,
+                        on_minutes_changed=notify_relay_draft_modified,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    # 词典回执是旁路，失败只记账。
+                    # 词典回执和纪要体检是旁路，失败只记账。
                     phase_errors.append(error)
                 try:
                     await asyncio.to_thread(recover_stalled_minutes)
@@ -2110,6 +2128,35 @@ def create_app(
         notify_relay_draft_modified(meeting_id)
         # 这次编辑捕获到的错字更正，前端在编辑器下方就地确认；auto_recorded 的已直接记入
         return {"version_id": version_id, "corrections": corrections}
+
+    @app.get("/api/meetings/{meeting_id}/glossary")
+    def meeting_glossary(meeting_id: str):
+        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+
+    @app.post("/api/meetings/{meeting_id}/glossary/check")
+    def check_meeting_glossary(meeting_id: str, body: GlossaryCheckInput):
+        if db.query_one("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)) is None:
+            raise HTTPException(404, "会议不存在")
+        if body.project_id and db.query_one(
+            "SELECT 1 FROM projects WHERE id=?", (body.project_id,)
+        ) is None:
+            raise HTTPException(404, "项目不存在")
+        glossary_checkup.check_meeting(db, meeting_id, project_id=body.project_id)
+        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+
+    @app.post("/api/meetings/{meeting_id}/glossary/apply")
+    def apply_meeting_glossary(meeting_id: str, body: GlossaryApplyInput):
+        result = glossary_checkup.apply_missed(
+            db, service, meeting_id, expected_version_id=body.base_version_id
+        )
+        notify_relay_draft_modified(meeting_id)
+        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+
+    @app.post("/api/meetings/{meeting_id}/glossary/undo")
+    def undo_meeting_glossary(meeting_id: str, _body: dict[str, Any] | None = None):
+        result = glossary_checkup.undo_applied(db, service, meeting_id)
+        notify_relay_draft_modified(meeting_id)
+        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
 
     def preferred_audio_path(meeting_id: str) -> Path | None:
         artifact = db.query_one(

@@ -209,3 +209,275 @@ def test_receipts_are_ingested_once_and_matched_to_the_minutes_version(tmp_path)
     assert summary["project_name"] == "云图AI"
     assert summary["project_source"] == "transcript"
     assert (summary["term_count"], summary["project_terms"], summary["public_terms"]) == (2, 1, 1)
+
+
+# —— 纪要体检 ——
+
+
+def add_transcript(db, meeting_id, lines):
+    version_id = db.create_transcript_version(meeting_id, "funasr", published=True)
+    db.replace_segments(
+        version_id,
+        meeting_id,
+        [
+            {
+                "id": f"seg-{meeting_id}-{index}",
+                "ordinal": index,
+                "start_ms": index * 1000,
+                "end_ms": index * 1000 + 900,
+                "speaker_label": "SPEAKER_00",
+                "text": text,
+            }
+            for index, text in enumerate(lines)
+        ],
+    )
+
+
+def add_receipt(db, meeting_id, *, job_id, attempt, project_id, project_name, source="hint", cues=()):
+    import hashlib
+
+    payload = {
+        "schema_version": 1,
+        "project": {"id": project_id, "name": project_name, "source": source, "score": 3, "cues": list(cues)},
+        "counts": {"project": 1, "public": 1},
+        "terms": [{"term": "数理协会"}, {"term": "随访"}],
+        "job_id": job_id,
+        "attempt": attempt,
+    }
+    raw = json.dumps(payload, ensure_ascii=False)
+    db.execute(
+        """INSERT INTO meeting_glossary_receipts
+               (meeting_id, job_id, attempt, sha256, project_id, project_name, project_source,
+                term_count, payload, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 2, ?, ?)""",
+        (meeting_id, job_id, attempt, hashlib.sha256(raw.encode()).hexdigest(), project_id,
+         project_name, source, raw, utc_now()),
+    )
+
+
+def seed_glossary(db):
+    add_project(db, "p-yt", "云图AI")
+    add_project(db, "p-zt", "数据中台")
+    create_term(db, term="数理协会", aliases=["树立协会"], project_id="p-yt", scope="云图AI")
+    create_term(db, term="云图AI", aliases=["云图"], project_id="p-yt", scope="云图AI", is_cue=False)
+    create_term(db, term="主数据", aliases=["珠数据"], project_id="p-zt", scope="数据中台")
+    create_term(db, term="随访", aliases=["随方"])
+    create_term(db, term="儿保科", aliases=["儿宝科"], scope="儿科")
+
+
+def test_dictionary_terms_take_project_and_public_only(tmp_path):
+    from meeting_workbench import glossary_checkup
+
+    db = make_db(tmp_path)
+    seed_glossary(db)
+    create_term(db, term="数理", aliases=["树立"])
+    create_term(db, term="树立", project_id="p-yt", scope="云图AI")
+    with db.autocommit() as connection:
+        yt = glossary_checkup.dictionary_terms(connection, "p-yt")
+        public = glossary_checkup.dictionary_terms(connection, None)
+    assert [t["term"] for t in yt] == ["云图AI", "数理协会", "树立", "数理", "随访"]
+    assert next(t for t in yt if t["term"] == "数理")["aliases"] == []
+    assert [t["term"] for t in public] == ["数理", "随访"]
+    assert next(t for t in public if t["term"] == "数理")["aliases"] == ["树立"]
+
+
+def test_compute_hits_and_replacement_rules():
+    from meeting_workbench import glossary_checkup
+
+    terms = [
+        {"term": "云图AI", "aliases": ["云图"], "also": [], "project_id": "p-yt"},
+        {"term": "数理协会", "aliases": ["树立协会", "树立"], "also": [], "project_id": "p-yt"},
+        {"term": "随访", "aliases": ["随方"], "also": ["回访"], "project_id": None},
+    ]
+    transcript = "云图的树立协会下周随方"
+    minutes = "云图AI 项目：数理协会下周回复。云图 那边要树立协会的名单；随访照常。"
+    hits = glossary_checkup.compute_hits(terms, transcript, minutes)
+    assert [(h["wrong"], h["minutes_count"]) for h in hits["missed"]] == [("云图", 1), ("树立协会", 1)]
+    assert [(h["wrong"], h["transcript_count"]) for h in hits["corrected"]] == [("随方", 1)]
+
+    fixed, count = glossary_checkup.replace_missed(
+        minutes, terms, [("云图", "云图AI"), ("树立", "数理协会"), ("树立协会", "数理协会")]
+    )
+    assert count == 2
+    assert fixed == "云图AI 项目：数理协会下周回复。云图AI 那边要数理协会的名单；随访照常。"
+
+
+def test_check_basis_follows_receipt_then_meeting_project_then_public(tmp_path):
+    from meeting_workbench import glossary_checkup
+
+    db = make_db(tmp_path)
+    seed_glossary(db)
+    add_meeting(db, "vm-1", project_id="p-zt")
+    add_transcript(db, "vm-1", ["珠数据和树立协会"])
+    add_minutes(db, "vm-1", "mv-1", "珠数据；树立协会", job_id="job-1", attempt=1)
+
+    result = glossary_checkup.check_meeting(db, "vm-1")
+    assert (result["basis"], result["project_id"]) == ("meeting", "p-zt")
+    assert [h["wrong"] for h in result["missed"]] == ["珠数据"]
+
+    add_receipt(db, "vm-1", job_id="job-1", attempt=1, project_id="p-yt", project_name="云图AI")
+    stats = glossary_checkup.run_pending(db, object())
+    assert stats["checked"] == 1
+    view = glossary_checkup.meeting_glossary(db, "vm-1")
+    assert view["basis"] == "receipt"
+    assert view["project"]["name"] == "云图AI"
+    assert view["meeting_project"]["name"] == "数据中台"
+    assert view["mismatch"] is True
+    assert view["receipt"]["term_count"] == 2
+    assert [h["wrong"] for h in view["missed"]] == ["树立协会"]
+
+    glossary_checkup.check_meeting(db, "vm-1", project_id="p-zt")
+    add_minutes(db, "vm-1", "mv-2", "珠数据", kind="draft", job_id="job-1", attempt=1, version_no=2)
+    glossary_checkup.run_pending(db, object())
+    view = glossary_checkup.meeting_glossary(db, "vm-1")
+    assert (view["basis"], view["project"]["id"], view["mismatch"]) == ("chosen", "p-zt", False)
+    glossary_checkup.check_meeting(db, "vm-1", project_id=None)
+    assert glossary_checkup.meeting_glossary(db, "vm-1")["basis"] == "receipt"
+
+    db.execute("UPDATE meetings SET project_id=NULL WHERE id='vm-1'")
+    db.execute("DELETE FROM meeting_glossary_receipts")
+    glossary_checkup.check_meeting(db, "vm-1")
+    view = glossary_checkup.meeting_glossary(db, "vm-1")
+    assert (view["basis"], view["project"], view["mismatch"]) == ("public", None, False)
+
+
+def _auto_setup(tmp_path, *, status="completed_unreviewed", with_receipt=True):
+    from meeting_workbench.service import MeetingService
+
+    db = make_db(tmp_path)
+    seed_glossary(db)
+    add_meeting(db, "vm-1", project_id="p-yt", status=status)
+    add_transcript(db, "vm-1", ["树立协会下周随方"])
+    add_minutes(db, "vm-1", "mv-1", "# 纪要\n树立协会下周回复，随访照常。", job_id="job-1", attempt=1)
+    if with_receipt:
+        add_receipt(db, "vm-1", job_id="job-1", attempt=1, project_id="p-yt", project_name="云图AI")
+    return db, MeetingService(db)
+
+
+def test_unreviewed_minutes_from_the_new_relay_are_fixed_automatically_and_can_be_undone(tmp_path):
+    from meeting_workbench import glossary_checkup
+
+    db, service = _auto_setup(tmp_path)
+    changed = []
+    stats = glossary_checkup.run_pending(db, service, on_minutes_changed=changed.append)
+    assert (stats["checked"], stats["auto_applied"]) == (1, 1)
+    assert changed == ["vm-1"]
+    meeting = db.query_one("SELECT status, current_minutes_version_id FROM meetings WHERE id='vm-1'")
+    assert meeting["status"] == "draft_modified"
+    current = db.query_one("SELECT markdown, kind FROM minutes_versions WHERE id=?", (meeting["current_minutes_version_id"],))
+    assert current["markdown"] == "# 纪要\n数理协会下周回复，随访照常。"
+    assert current["kind"] == "draft"
+    assert db.query_one("SELECT COUNT(*) AS n FROM glossary_suggestions")["n"] == 0
+    view = glossary_checkup.meeting_glossary(db, "vm-1")
+    assert view["missed"] == []
+    assert [h["wrong"] for h in view["corrected"]] == ["树立协会", "随方"]
+    assert view["applied"] == {"by": "auto", "count": 1, "at": view["applied"]["at"], "can_undo": True}
+
+    assert glossary_checkup.run_pending(db, service)["auto_applied"] == 0
+
+    glossary_checkup.undo_applied(db, service, "vm-1")
+    meeting = db.query_one("SELECT current_minutes_version_id FROM meetings WHERE id='vm-1'")
+    restored = db.query_one("SELECT markdown FROM minutes_versions WHERE id=?", (meeting["current_minutes_version_id"],))
+    assert restored["markdown"] == "# 纪要\n树立协会下周回复，随访照常。"
+    view = glossary_checkup.meeting_glossary(db, "vm-1")
+    assert view["applied"] is None
+    assert [h["wrong"] for h in view["missed"]] == ["树立协会"]
+    assert glossary_checkup.run_pending(db, service)["auto_applied"] == 0
+
+
+def test_no_automatic_fix_without_receipt_or_once_reviewed(tmp_path):
+    from meeting_workbench import glossary_checkup
+
+    for index, (status, with_receipt) in enumerate(
+        [("completed_unreviewed", False), ("published", True), ("draft_modified", True)]
+    ):
+        db, service = _auto_setup(tmp_path / str(index), status=status, with_receipt=with_receipt)
+        stats = glossary_checkup.run_pending(db, service)
+        assert stats["auto_applied"] == 0, status
+        view = glossary_checkup.meeting_glossary(db, "vm-1")
+        assert [h["wrong"] for h in view["missed"]] == ["树立协会"]
+        assert view["applied"] is None
+
+
+def test_new_term_rechecks_but_never_auto_fixes_an_already_checked_version(tmp_path):
+    from meeting_workbench import glossary_checkup
+
+    db, service = _auto_setup(tmp_path)
+    db.execute("DELETE FROM glossary_terms WHERE term='数理协会'")
+    assert glossary_checkup.run_pending(db, service)["auto_applied"] == 0
+    create_term(db, term="数理协会", aliases=["树立协会"], project_id="p-yt", scope="云图AI")
+    stats = glossary_checkup.run_pending(db, service)
+    assert (stats["checked"], stats["auto_applied"]) == (1, 0)
+    assert [h["wrong"] for h in glossary_checkup.meeting_glossary(db, "vm-1")["missed"]] == ["树立协会"]
+
+
+def test_meeting_glossary_api_check_apply_and_undo(tmp_path):
+    client, settings = make_client(tmp_path)
+    headers = {**write_headers(client), "Content-Type": "application/json"}
+    db = Database(settings.database_path)
+    seed_glossary(db)
+    add_meeting(db, "vm-1", project_id="p-zt", status="draft_modified")
+    add_transcript(db, "vm-1", ["树立协会和珠数据"])
+    add_minutes(db, "vm-1", "mv-1", "树立协会和珠数据", kind="draft")
+
+    assert client.get("/api/meetings/vm-1/glossary").json() == {"glossary": None}
+    checked = client.post("/api/meetings/vm-1/glossary/check", json={}, headers=headers)
+    assert checked.status_code == 200, checked.text
+    assert [h["wrong"] for h in checked.json()["glossary"]["missed"]] == ["珠数据"]
+    other = client.post("/api/meetings/vm-1/glossary/check", json={"project_id": "p-yt"}, headers=headers)
+    glossary = other.json()["glossary"]
+    assert (glossary["basis"], glossary["project"]["name"], glossary["mismatch"]) == ("chosen", "云图AI", True)
+    assert [h["wrong"] for h in glossary["missed"]] == ["树立协会"]
+    assert client.post(
+        "/api/meetings/vm-1/glossary/check", json={"project_id": "p-gone"}, headers=headers
+    ).status_code == 404
+
+    stale = client.post("/api/meetings/vm-1/glossary/apply", json={"base_version_id": "mv-0"}, headers=headers)
+    assert stale.status_code == 409
+    applied = client.post("/api/meetings/vm-1/glossary/apply", json={"base_version_id": "mv-1"}, headers=headers)
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["replaced"] == 1
+    assert applied.json()["glossary"]["applied"]["by"] == "user"
+    detail = client.get("/api/meetings/vm-1").json()
+    assert detail["glossary"]["applied"]["can_undo"] is True
+    current = next(
+        v for v in detail["minutes_versions"] if v["id"] == detail["current_minutes_version_id"]
+    )
+    assert current["markdown"] == "数理协会和珠数据"
+
+    undone = client.post("/api/meetings/vm-1/glossary/undo", json={}, headers=headers)
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["glossary"]["applied"] is None
+    assert client.post("/api/meetings/vm-1/glossary/undo", json={}, headers=headers).status_code == 409
+
+
+def test_relay_selected_project_counts_as_literal_evidence(tmp_path):
+    from meeting_workbench.config import Settings
+    from meeting_workbench.project_linking import ProjectLinker
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "db.sqlite3",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        semantic_enabled=False,
+        llm_api_key_file=tmp_path / "missing-key",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    add_project(db, "p-yt", "云图智能")
+    add_meeting(db, "vm-1")
+    add_minutes(db, "vm-1", "mv-1", "# 纪要\n聊了进度。", job_id="job-1", attempt=1)
+    add_receipt(
+        db, "vm-1", job_id="job-1", attempt=1, project_id="p-yt", project_name="云图智能",
+        source="transcript", cues=["云图AI"],
+    )
+    result = ProjectLinker(db, settings)._classify(meeting_id="vm-1", title="周会", minutes_markdown="聊了进度。")
+    assert result["literal"] == {"p-yt": 1}
+    entry = next(e for e in result["evidence"] if e.get("source") == "injection")
+    assert (entry["cue"], entry["count"], entry["where"]["transcript"]) == ("云图AI", 3, 3)
+    assert result["decision"] == "needs_review"
+
+    db.execute("UPDATE meeting_glossary_receipts SET project_source='hint'")
+    hinted = ProjectLinker(db, settings)._classify(meeting_id="vm-1", title="周会", minutes_markdown="聊了进度。")
+    assert hinted["literal"] == {}

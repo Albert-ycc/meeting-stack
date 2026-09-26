@@ -676,6 +676,22 @@ class ProjectLinker:
         ]
         project_rows = self.db.query_all("SELECT id, name, also_names FROM projects ORDER BY name")
         names = {row["id"]: row["name"] for row in project_rows}
+        injected = self._injected_project(meeting_id)
+        if injected and injected["id"] in names and injected["id"] not in literal:
+            # relay 出纪要前按逐字稿认出了这个项目、用它的词典纠的错（1d-2）。和上面的字面线索
+            # 同一套规则，只是快照里的线索表可能比现在的旧；这里补一条，不和上面的重复计数。
+            literal[injected["id"]] = 1
+            evidence.append(
+                {
+                    "kind": "literal",
+                    "project_id": injected["id"],
+                    "cue": injected["cue"],
+                    "source": "injection",
+                    "count": injected["score"],
+                    "anchors_ms": [],
+                    "where": {"title": 0, "transcript": injected["score"], "minutes": 0},
+                }
+            )
 
         llm_state = "no_key"
         llm_pick: str | None = None
@@ -777,6 +793,31 @@ class ProjectLinker:
             "method": "no_llm" if llm_state == "no_key" else None,
             "new_project_name": new_project_name,
             "reason": reason or ("没有认出任何项目" if llm_state != "no_key" else "没配置 AI，也没有认出项目"),
+        }
+
+    def _injected_project(self, meeting_id: str) -> dict[str, Any] | None:
+        """当前纪要的词典回执里 relay 按逐字稿选中的项目（有项目提示的不算，那是工作台自己给的）。"""
+        row = self.db.query_one(
+            """SELECT r.project_id, r.payload FROM meeting_glossary_receipts r
+                 JOIN meetings m ON m.id = r.meeting_id
+                 JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
+                WHERE r.meeting_id = ? AND r.job_id = mv.source_job_id
+                  AND r.attempt IS mv.source_attempt AND r.project_source = 'transcript'
+                ORDER BY r.id DESC LIMIT 1""",
+            (meeting_id,),
+        )
+        if row is None or not row["project_id"]:
+            return None
+        try:
+            project = json.loads(row["payload"]).get("project") or {}
+        except (TypeError, ValueError, AttributeError):
+            return None
+        cues = [cue for cue in project.get("cues") or [] if isinstance(cue, str)]
+        score = project.get("score")
+        return {
+            "id": row["project_id"],
+            "cue": cues[0] if cues else (project.get("name") or ""),
+            "score": score if isinstance(score, int) and score > 0 else 1,
         }
 
     @staticmethod
