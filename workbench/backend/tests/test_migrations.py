@@ -480,3 +480,145 @@ def test_real_version_five_running_shadow_migrates_and_completes_idempotently(
             "SELECT id FROM transcript_versions WHERE kind='qwen_reference'"
         )["id"],
     }
+
+
+def _downgrade_to_v12(connection: sqlite3.Connection) -> None:
+    """把刚建好的 v13 库退回 v12 的形状：去掉 v13 新增的表、虚表和触发器。"""
+    connection.executescript(
+        """
+        DROP TRIGGER IF EXISTS minutes_fts_after_meeting_insert;
+        DROP TRIGGER IF EXISTS minutes_fts_after_minutes_pointer_update;
+        DROP TRIGGER IF EXISTS minutes_fts_after_meeting_delete;
+        DROP TABLE IF EXISTS minutes_fts;
+        DROP TABLE IF EXISTS app_state;
+        PRAGMA user_version=12;
+        """
+    )
+
+
+def _seed_v12_fixture(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        INSERT INTO projects(id, name, created_at) VALUES ('p-a', '云图AI', '2026-09-01');
+        INSERT INTO meetings(id, title, status, project_id, project_origin)
+        VALUES ('m-a', '云图周会', 'published', 'p-a', 'ai'),
+               ('m-none', '内部例会', 'published', NULL, NULL);
+        INSERT INTO minutes_versions(id, meeting_id, version_no, markdown, kind, created_at)
+        VALUES ('mv-a1', 'm-a', 1, '旧纪要：树立协会', 'generated', '2026-09-01'),
+               ('mv-a2', 'm-a', 2, '当前纪要：数理协会 初审规则', 'draft', '2026-09-02'),
+               ('mv-n1', 'm-none', 1, '例会纪要：排期', 'generated', '2026-09-01');
+        UPDATE meetings SET current_minutes_version_id='mv-a2' WHERE id='m-a';
+        UPDATE meetings SET current_minutes_version_id='mv-n1' WHERE id='m-none';
+        INSERT INTO requirements(id, project_id, title, priority, created_at, updated_at)
+        VALUES ('r-a', 'p-a', '初审规则', 'P0', '2026-09-01', '2026-09-01');
+        INSERT INTO tasks(id, title, status, meeting_id, project_id, requirement_id,
+                          status_changed_at, created_at, updated_at)
+        VALUES
+          ('t-draft', '草稿', 'pending_confirm', 'm-a', NULL, NULL, 'x', 'x', 'x'),
+          ('t-expired', '过期', 'expired', 'm-a', NULL, NULL, 'x', 'x', 'x'),
+          ('t-confirmed', '已确认且人工清空', 'confirmed', 'm-a', NULL, NULL, 'x', 'x', 'x'),
+          ('t-other', '别的项目', 'pending_confirm', 'm-a', NULL, 'r-a', 'x', 'x', 'x'),
+          ('t-none', '会没项目', 'pending_confirm', 'm-none', NULL, NULL, 'x', 'x', 'x');
+        INSERT INTO glossary_terms(id, term, scope, project_id, created_at, updated_at)
+        VALUES ('g-orphan', '初审规则', '云图AI', NULL, 'x', 'x'),
+               ('g-public', '数理协会', '通用', NULL, 'x', 'x');
+        """
+    )
+
+
+def test_version_thirteen_migration_backfills_tasks_glossary_and_minutes_index(tmp_path):
+    database_path = tmp_path / "workbench.sqlite3"
+    db = Database(database_path)
+    db.initialize()
+    with sqlite3.connect(database_path) as connection:
+        _downgrade_to_v12(connection)
+        _seed_v12_fixture(connection)
+    backups: list[int] = []
+
+    db.initialize(before_migrate=lambda: backups.append(db.user_version()))
+
+    assert backups == [12]
+    assert db.user_version() == SCHEMA_VERSION == 13
+    tasks = {
+        row["id"]: row["project_id"]
+        for row in db.query_all("SELECT id, project_id FROM tasks")
+    }
+    assert tasks == {
+        "t-draft": "p-a",
+        "t-expired": "p-a",
+        "t-confirmed": None,
+        "t-other": None,
+        "t-none": None,
+    }
+    glossary = {
+        row["id"]: row["project_id"]
+        for row in db.query_all("SELECT id, project_id FROM glossary_terms")
+    }
+    assert glossary == {"g-orphan": "p-a", "g-public": None}
+    indexed = db.query_all("SELECT meeting_id, text FROM minutes_fts ORDER BY meeting_id")
+    assert indexed == [
+        {"meeting_id": "m-a", "text": "当前纪要：数理协会 初审规则"},
+        {"meeting_id": "m-none", "text": "例会纪要：排期"},
+    ]
+    assert [
+        row["meeting_id"]
+        for row in db.query_all(
+            "SELECT meeting_id FROM minutes_fts WHERE minutes_fts MATCH ?", ('"数理协会"',)
+        )
+    ] == ["m-a"]
+
+
+def test_version_thirteen_migration_is_idempotent(tmp_path):
+    database_path = tmp_path / "workbench.sqlite3"
+    db = Database(database_path)
+    db.initialize()
+    with sqlite3.connect(database_path) as connection:
+        _downgrade_to_v12(connection)
+        _seed_v12_fixture(connection)
+
+    def snapshot() -> dict[str, list[dict]]:
+        return {
+            "tasks": db.query_all("SELECT id, project_id, status FROM tasks ORDER BY id"),
+            "glossary": db.query_all("SELECT id, project_id FROM glossary_terms ORDER BY id"),
+            "fts": db.query_all("SELECT meeting_id, text FROM minutes_fts ORDER BY meeting_id"),
+        }
+
+    db.initialize()
+    first = snapshot()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA user_version=12")
+    db.initialize()
+    db.initialize()
+
+    assert snapshot() == first
+    assert db.user_version() == SCHEMA_VERSION
+
+
+def test_minutes_index_follows_the_current_minutes_pointer(tmp_path):
+    db = Database(tmp_path / "workbench.sqlite3")
+    db.initialize()
+    db.execute("INSERT INTO meetings(id, title, status) VALUES ('m-1', '周会', 'published')")
+    db.execute(
+        """INSERT INTO minutes_versions(id, meeting_id, version_no, markdown, kind, created_at)
+           VALUES ('mv-1', 'm-1', 1, '第一版 灰度方案', 'generated', 'x'),
+                  ('mv-2', 'm-1', 2, '第二版 全量上线', 'draft', 'x')"""
+    )
+
+    def hits(term: str) -> list[str]:
+        return [
+            row["meeting_id"]
+            for row in db.query_all(
+                "SELECT meeting_id FROM minutes_fts WHERE minutes_fts MATCH ?", (f'"{term}"',)
+            )
+        ]
+
+    assert hits("灰度方案") == []
+    db.execute("UPDATE meetings SET current_minutes_version_id='mv-1' WHERE id='m-1'")
+    assert hits("灰度方案") == ["m-1"]
+    db.execute("UPDATE meetings SET current_minutes_version_id='mv-2' WHERE id='m-1'")
+    assert hits("灰度方案") == []
+    assert hits("全量上线") == ["m-1"]
+    db.execute("UPDATE meetings SET title='改名' WHERE id='m-1'")
+    assert db.query_one("SELECT COUNT(*) AS n FROM minutes_fts")["n"] == 1
+    db.execute("DELETE FROM meetings WHERE id='m-1'")
+    assert hits("全量上线") == []

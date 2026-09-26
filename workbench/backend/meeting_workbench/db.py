@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -475,6 +475,42 @@ CREATE TABLE IF NOT EXISTS requirement_meetings (
     created_at TEXT NOT NULL,
     PRIMARY KEY (requirement_id, meeting_id)
 );
+
+-- v13：智能关联第一期。app_state 放全局开关与一次性任务的进度（键见各模块）。
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- v13：当前纪要的全文索引，供检索与归属规则回溯。只索引每场会的当前纪要，
+-- 由 meetings 上的三个触发器维护；纪要正文入库后不会原地改写，所以不需要
+-- minutes_versions 上的触发器。
+CREATE VIRTUAL TABLE IF NOT EXISTS minutes_fts USING fts5(
+    meeting_id UNINDEXED,
+    text,
+    tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS minutes_fts_after_meeting_insert
+AFTER INSERT ON meetings
+WHEN NEW.current_minutes_version_id IS NOT NULL
+BEGIN
+    INSERT INTO minutes_fts(meeting_id, text)
+    SELECT NEW.id, markdown FROM minutes_versions WHERE id = NEW.current_minutes_version_id;
+END;
+CREATE TRIGGER IF NOT EXISTS minutes_fts_after_minutes_pointer_update
+AFTER UPDATE OF current_minutes_version_id ON meetings
+WHEN NEW.current_minutes_version_id IS NOT OLD.current_minutes_version_id
+BEGIN
+    DELETE FROM minutes_fts WHERE meeting_id = OLD.id;
+    INSERT INTO minutes_fts(meeting_id, text)
+    SELECT NEW.id, markdown FROM minutes_versions WHERE id = NEW.current_minutes_version_id;
+END;
+CREATE TRIGGER IF NOT EXISTS minutes_fts_after_meeting_delete
+AFTER DELETE ON meetings
+BEGIN
+    DELETE FROM minutes_fts WHERE meeting_id = OLD.id;
+END;
 """
 
 
@@ -683,11 +719,12 @@ class Database:
                     """UPDATE meetings SET project_origin='manual'
                         WHERE project_id IS NOT NULL AND project_origin IS NULL"""
                 )
-            if current_version < 10:
+            if current_version < 13:
                 # 词典范围与项目打通：scope 与某个项目名精确相等的术语补上 project_id，
                 # 之后 project_id 才是范围的唯一来源、scope 变成随项目改名同步的派生标签。
                 # 名字不一致的旧桶（如「云图」vs 项目名「云图科研用药」）不在此处处理，
-                # 交给一次性 SQL 按业务口径迁移。
+                # 交给一次性 SQL 按业务口径迁移。v10 首次执行；v13 再跑一遍，补上 v10 之后
+                # 确认纠错词时只写了 scope 的孤儿词。
                 connection.execute(
                     """UPDATE glossary_terms
                           SET project_id = (
@@ -697,6 +734,31 @@ class Database:
                           AND EXISTS (
                               SELECT 1 FROM projects WHERE projects.name = glossary_terms.scope
                           )"""
+                )
+            if current_version < 13:
+                # 任务跟会议走：已归项目的会议下，还没挂项目也没挂需求的草稿/过期任务补上
+                # 会议的项目。已确认的任务可能是人工清空过项目，不动。
+                connection.execute(
+                    """UPDATE tasks
+                          SET project_id = (
+                              SELECT project_id FROM meetings WHERE meetings.id = tasks.meeting_id
+                          ),
+                              updated_at = ?
+                        WHERE project_id IS NULL
+                          AND requirement_id IS NULL
+                          AND status IN ('pending_confirm', 'expired')
+                          AND meeting_id IN (
+                              SELECT id FROM meetings WHERE project_id IS NOT NULL
+                          )""",
+                    (utc_now(),),
+                )
+                # 纪要全文索引首次建立：先清空再按当前纪要全量回填，重复执行结果不变。
+                connection.execute("DELETE FROM minutes_fts")
+                connection.execute(
+                    """INSERT INTO minutes_fts(meeting_id, text)
+                       SELECT m.id, mv.markdown
+                         FROM meetings m
+                         JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id"""
                 )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
