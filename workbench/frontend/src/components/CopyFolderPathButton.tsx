@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { copyText } from "../clipboard";
 
 type CopyStatus = "copied" | "failed" | null;
 
@@ -56,8 +57,7 @@ export function CopyFolderPathButton({
   const copy = async () => {
     if (!path) return;
     try {
-      if (!navigator.clipboard) throw new Error("clipboard unavailable");
-      await navigator.clipboard.writeText(path);
+      await copyText(path);
       show("copied");
     } catch {
       show("failed");

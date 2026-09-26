@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { type ApiClient } from "../api";
 import "./TaskReExtractModal.css";
+import { useDialogFocus } from "./useDialog";
 
 interface TaskReExtractModalProps {
   apiClient: ApiClient;
@@ -20,6 +21,8 @@ export function TaskReExtractModal({
   onClose,
   onReExtracted,
 }: TaskReExtractModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef);
   const [supplement, setSupplement] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -27,7 +30,7 @@ export function TaskReExtractModal({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) onClose();
+      if (event.key === "Escape" && !event.isComposing && !submitting) onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -57,16 +60,12 @@ export function TaskReExtractModal({
   };
 
   return (
-    <div
-      className="re-extract-modal__overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !submitting) onClose();
-      }}
-    >
+    <div className="re-extract-modal__overlay">
       <div
         aria-labelledby="re-extract-modal-title"
         aria-modal="true"
         className="re-extract-modal"
+        ref={dialogRef}
         role="dialog"
       >
         <header className="re-extract-modal__head">

@@ -37,6 +37,16 @@ export function readToken(name: string, fallback: Rgb): Rgb {
   return fallback;
 }
 
+/** 两色线性混合，t=0 取 a、t=1 取 b。灰阶网点用它在 token 之间取色，浅色主题下自动变深。 */
+export function mix(a: Rgb, b: Rgb, t: number): Rgb {
+  const k = Math.max(0, Math.min(1, t));
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * k),
+    Math.round(a[1] + (b[1] - a[1]) * k),
+    Math.round(a[2] + (b[2] - a[2]) * k),
+  ];
+}
+
 /** 平滑插值取样，让稀疏数据点连成连续曲线。 */
 export function sampleSmooth(values: readonly number[], t: number): number {
   if (values.length === 0) return 0;

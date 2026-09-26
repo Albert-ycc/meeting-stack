@@ -8,6 +8,7 @@ import { PriorityBadge, REQUIREMENT_PRIORITIES, RequirementStatusBadge } from ".
 import { RequirementModal } from "./RequirementModal";
 import { useToast } from "./Toast";
 import "./RequirementsPage.css";
+import { usePersistentState } from "../viewState";
 
 interface RequirementsPageProps {
   apiClient: ApiClient;
@@ -49,10 +50,10 @@ export function RequirementsPage({
   onProjectsChanged,
 }: RequirementsPageProps) {
   const { toastNode, showToast } = useToast();
-  const [activeTab, setActiveTab] = useState<TabKey>("active");
-  const [draftFilters, setDraftFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [appliedFilters, setAppliedFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [offset, setOffset] = useState(0);
+  const [activeTab, setActiveTab] = usePersistentState<TabKey>("requirements.activeTab", "active");
+  const [draftFilters, setDraftFilters] = usePersistentState<Filters>("requirements.draftFilters", EMPTY_FILTERS);
+  const [appliedFilters, setAppliedFilters] = usePersistentState<Filters>("requirements.appliedFilters", EMPTY_FILTERS);
+  const [offset, setOffset] = usePersistentState("requirements.offset", 0);
   const [items, setItems] = useState<RequirementSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<RequirementCounts>({ active: 0, done: 0, shelved: 0, all: 0 });
@@ -71,6 +72,11 @@ export function RequirementsPage({
         limit: PAGE_SIZE,
         offset,
       });
+      // 当前页空了（本页最后一条改了状态被筛掉）就退到最后一个有内容的页。
+      if (payload.items.length === 0 && offset > 0 && payload.total > 0) {
+        setOffset(Math.max(0, Math.ceil(payload.total / PAGE_SIZE) - 1) * PAGE_SIZE);
+        return;
+      }
       setItems(payload.items);
       setTotal(payload.total);
       setCounts(payload.counts);
@@ -127,7 +133,13 @@ export function RequirementsPage({
         )}
       </header>
 
-      <div className="requirements-query">
+      <form
+        className="requirements-query"
+        onSubmit={(event) => {
+          event.preventDefault();
+          applyFilters();
+        }}
+      >
         <label>
           <span>所属项目</span>
           <select
@@ -161,10 +173,10 @@ export function RequirementsPage({
           />
         </label>
         <div className="requirements-query__actions">
-          <button className="requirements-query__submit" onClick={applyFilters} type="button">查询</button>
+          <button className="requirements-query__submit" type="submit">查询</button>
           <button className="requirements-query__reset" onClick={resetFilters} type="button">重置</button>
         </div>
-      </div>
+      </form>
 
       <div className="requirements-table">
         <div className="requirements-tabs-bar">

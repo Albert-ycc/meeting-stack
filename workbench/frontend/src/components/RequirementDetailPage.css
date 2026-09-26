@@ -366,3 +366,46 @@
 .requirement-detail__status-chip--progress { color: var(--ok); background: var(--ok-bg); }
 .requirement-detail__status-chip--done { color: var(--muted); background: var(--line); }
 .requirement-detail__status-chip--muted { color: var(--faint); background: var(--line); }
+
+.requirement-detail__state-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.requirement-detail__state-actions button {
+  min-height: 32px;
+  padding: 6px 14px;
+  color: var(--ink);
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+}
+
+/* 手机上三张表不再按列排：标题独占一行，其余字段在下面顺排，表头隐藏。 */
+@media (max-width: 767px) {
+  .requirement-detail__meeting-row--head,
+  .requirement-detail__folder-row--head,
+  .requirement-detail__task-row--head {
+    display: none;
+  }
+
+  .requirement-detail__meeting-row,
+  .requirement-detail__folder-row,
+  .requirement-detail__task-row {
+    grid-template-columns: repeat(4, auto);
+    justify-content: start;
+    row-gap: 6px;
+    column-gap: 12px;
+  }
+
+  .requirement-detail__meeting-title,
+  .requirement-detail__folder-name,
+  .requirement-detail__task-title {
+    grid-column: 1 / -1;
+    order: -1;
+    white-space: normal;
+  }
+}

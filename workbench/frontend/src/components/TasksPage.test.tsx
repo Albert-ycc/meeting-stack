@@ -508,3 +508,25 @@ describe("TasksPage 查询区", () => {
     );
   });
 });
+
+describe("TasksPage 离开再回来保留检索条件", () => {
+  it("卸载后重新挂载，页签、查询条件和已应用的筛选都还在", async () => {
+    const tasks = serverTasks(TASKS);
+    const first = renderPage(makeClient({ tasks } as Partial<ApiClient>));
+    await rowOf("确认样品发放口径");
+
+    await userEvent.click(screen.getByRole("tab", { name: /进行中/ }));
+    await userEvent.type(screen.getByPlaceholderText("输入任务名称"), "样品");
+    await userEvent.click(screen.getByRole("button", { name: "查询" }));
+    expect(tasks).toHaveBeenLastCalledWith(expect.objectContaining({ q: "样品", status: expect.any(String) }));
+    const lastFilters = tasks.mock.calls.at(-1)?.[0];
+
+    first.unmount();
+    tasks.mockClear();
+    renderPage(makeClient({ tasks } as Partial<ApiClient>));
+
+    expect(screen.getByPlaceholderText("输入任务名称")).toHaveValue("样品");
+    expect(screen.getByRole("tab", { name: /进行中/ })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(tasks).toHaveBeenCalledWith(lastFilters));
+  });
+});

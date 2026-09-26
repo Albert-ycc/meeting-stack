@@ -79,6 +79,8 @@ function client(overrides: Partial<ApiClient> = {}) {
 }
 
 beforeEach(() => {
+  // 视图切换会写地址栏锚点，每个用例从干净的地址冷启动。
+  window.history.replaceState(null, "", "/");
   vi.stubGlobal("matchMedia", vi.fn(() => desktopMatchMedia()));
   Object.defineProperty(document, "hidden", { configurable: true, value: false });
 });
@@ -463,5 +465,67 @@ describe("App refresh and navigation safety", () => {
     // 项目管理页 260915 起改成表格（D18），会议数是「会议」列里的数字，不再是「N 场会议」文案。
     const row = await screen.findByRole("row", { name: /项目甲/ });
     expect(within(row).getByText("2")).toBeInTheDocument();
+  });
+});
+
+describe("浏览历史与返回", () => {
+  it("打开会议写入 #meetings/<id>，返回按钮回到打开前的录音档案", async () => {
+    render(<App apiClient={client()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "录音档案" }));
+    await screen.findByText("会议录音档案");
+    await waitFor(() => expect(window.location.hash).toBe("#library"));
+
+    await userEvent.click(await screen.findByRole("button", { name: /第一页会议/ }));
+    await screen.findByRole("heading", { name: "可编辑会议" });
+    expect(window.location.hash).toBe("#meetings/vm-page-1");
+
+    await userEvent.click(screen.getByRole("button", { name: "← 返回录音档案" }));
+    await screen.findByText("会议录音档案");
+    expect(screen.queryByRole("heading", { name: "可编辑会议" })).not.toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#library"));
+  });
+
+  it("浏览器后退关掉会议详情，停在原来的视图", async () => {
+    render(<App apiClient={client()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "录音档案" }));
+    await userEvent.click(await screen.findByRole("button", { name: /第一页会议/ }));
+    await screen.findByRole("heading", { name: "可编辑会议" });
+
+    act(() => window.history.back());
+
+    await screen.findByText("会议录音档案");
+    expect(screen.queryByRole("heading", { name: "可编辑会议" })).not.toBeInTheDocument();
+  });
+
+  it("冷加载带 #meetings/<id> 直接打开那场会", async () => {
+    window.history.replaceState(null, "", "/#meetings/vm-page-1");
+    const meeting = vi.fn().mockResolvedValue(detail);
+    render(<App apiClient={client({ meeting } as Partial<ApiClient>)} />);
+
+    await screen.findByRole("heading", { name: "可编辑会议" });
+    expect(meeting).toHaveBeenCalledWith("vm-page-1");
+    // 冷加载直达没有上一条可退，返回按钮就地关掉详情，回到默认的工作台。
+    await userEvent.click(screen.getByRole("button", { name: "← 返回工作台" }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "可编辑会议" })).not.toBeInTheDocument());
+    expect(window.location.hash).toBe("");
+  });
+});
+
+describe("列表页检索条件", () => {
+  it("任务池查过的条件，去别的页面再回来还在", async () => {
+    const tasks = vi.fn().mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
+    render(<App apiClient={client({ tasks } as Partial<ApiClient>)} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "任务池" }));
+    await userEvent.type(await screen.findByPlaceholderText("输入任务名称"), "周报");
+    await userEvent.click(screen.getByRole("button", { name: "查询" }));
+    await waitFor(() => expect(tasks).toHaveBeenLastCalledWith(expect.objectContaining({ q: "周报" })));
+
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
+    await screen.findByText("会议录音档案");
+    fireEvent.click(screen.getByRole("button", { name: "任务池" }));
+
+    expect(await screen.findByPlaceholderText("输入任务名称")).toHaveValue("周报");
+    await waitFor(() => expect(tasks).toHaveBeenLastCalledWith(expect.objectContaining({ q: "周报" })));
   });
 });

@@ -7,6 +7,7 @@ import type {
   TranscriptComparisonItem,
   TranscriptRiskKind,
 } from "../types";
+import { NoticeBanner, useNotice } from "./Notice";
 
 const riskLabels: Record<TranscriptRiskKind, string> = {
   missing_candidate: "候选缺失",
@@ -44,7 +45,7 @@ export function TranscriptComparisonPanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [reference, setReference] = useState("");
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
+  const { notice: message, setNotice: setMessage, dismissNotice: dismissMessage } = useNotice();
   useEffect(() => setSamples(goldSamples), [goldSamples]);
   useEffect(() => {
     onGoldDirtyChange?.(editingId !== null);
@@ -62,7 +63,7 @@ export function TranscriptComparisonPanel({
       editingId !== item.primary_segment_id &&
       !window.confirm("当前金标尚未保存。放弃修改并编辑另一段吗？")
     ) {
-      setMessage("已保留当前未保存金标");
+      setMessage("已保留当前未保存金标", "warning");
       return;
     }
     setEditingId(item.primary_segment_id);
@@ -84,7 +85,7 @@ export function TranscriptComparisonPanel({
       setEditingId((current) => current === requestEditingId ? null : current);
       setMessage("金标已保存");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "金标保存失败");
+      setMessage(error instanceof Error ? error.message : "金标保存失败", "error");
     } finally {
       setSaving(false);
     }
@@ -103,7 +104,7 @@ export function TranscriptComparisonPanel({
           <button onClick={onRetryGold} type="button">重试读取金标</button>
         </div>
       )}
-      {message && <div className="comparison-message" role="status">{message}</div>}
+      <NoticeBanner className="comparison-message" notice={message} onDismiss={dismissMessage} />
       <div className="comparison-columns" aria-hidden="true">
         <span>时间 / 风险</span><span>FunASR 主稿</span><span>{candidateLabel}</span>
       </div>

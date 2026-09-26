@@ -28,7 +28,7 @@ export function Pagination({ page, pageCount, onChange }: PaginationProps) {
 
   return (
     <nav aria-label="分页" className="pagination-numbers">
-      <button disabled={page <= 0} onClick={() => onChange(page - 1)} type="button">
+      <button aria-label="上一页" disabled={page <= 0} onClick={() => onChange(page - 1)} type="button">
         ‹
       </button>
       {pages.map((entry, index) =>
@@ -48,7 +48,7 @@ export function Pagination({ page, pageCount, onChange }: PaginationProps) {
           </button>
         ),
       )}
-      <button disabled={page >= pageCount - 1} onClick={() => onChange(page + 1)} type="button">
+      <button aria-label="下一页" disabled={page >= pageCount - 1} onClick={() => onChange(page + 1)} type="button">
         ›
       </button>
     </nav>

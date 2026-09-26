@@ -63,6 +63,19 @@ export function useMobileBreakpoint() {
   return isMobile;
 }
 
+// 会议详情页「← 返回」按钮上显示的去处：打开会议前所在的视图。
+const VIEW_LABELS: Record<AppView, string> = {
+  overview: "工作台",
+  library: "录音档案",
+  requirements: "需求池",
+  requirementDetail: "需求详情",
+  tasks: "任务池",
+  glossary: "词典",
+  jobs: "转写录音",
+  projects: "项目管理",
+  projectDetail: "项目详情",
+};
+
 export default function App({ apiClient = api }: AppProps) {
   const isMobile = useMobileBreakpoint();
   // 落地页是工作台（最近的会、待确认任务、处理中的录音）；按日期回忆某场会走侧栏「录音档案」。
@@ -70,6 +83,9 @@ export default function App({ apiClient = api }: AppProps) {
   // 冷加载时地址栏里的 #tasks 等锚点要先被读进视图，之后才允许把视图反写回地址栏，
   // 否则首帧 view=overview 会先把 hash 清空，applyHash 再也读不到（冷加载 #tasks 被拉回工作台）。
   const hashReadyRef = useRef(false);
+  // 这一轮视图变化来自浏览器前进/后退（或冷加载），地址栏已经是对的，只能 replace 不能再 push，
+  // 否则每按一次后退都会多压一条历史，后退键永远退不出去。
+  const historySyncRef = useRef(false);
   const [health, setHealth] = useState<HealthPayload | null>(null);
   const [healthUnreachable, setHealthUnreachable] = useState(false);
   const healthFailureCount = useRef(0);
@@ -96,6 +112,15 @@ export default function App({ apiClient = api }: AppProps) {
   const [jobsMessage, setJobsMessage] = useState("");
   const [jobsStale, setJobsStale] = useState(false);
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
+  // 正在打开（或已打开）的会议。detail 要等接口回来才有，地址栏 #meetings/<id> 以它为准。
+  const [openMeetingId, setOpenMeetingId] = useState<string | null>(null);
+  // applyHash 挂在 popstate 上，只能经 ref 读到最新的会议状态和处理函数。
+  const openMeetingIdRef = useRef<string | null>(null);
+  const detailDirtyRef = useRef(false);
+  const historyHandlersRef = useRef<{ openMeeting: (meetingId: string) => void; leaveMeeting: () => boolean }>({
+    openMeeting: () => {},
+    leaveMeeting: () => true,
+  });
   const [detailState, setDetailState] = useState<LoadState>("idle");
   const [detailError, setDetailError] = useState("");
   const [initialSeekMs, setInitialSeekMs] = useState(0);
@@ -208,8 +233,30 @@ export default function App({ apiClient = api }: AppProps) {
     }
   }, [apiClient]);
 
+  // 地址栏 → 视图。冷加载、浏览器前进/后退、手动改 hash 都走这里；
+  // 会议详情与离开会议要用到后面才定义的函数和最新状态，经 ref 读取，避免闭包过期。
   const applyHash = useCallback(() => {
+    historySyncRef.current = true;
     const hash = window.location.hash;
+    if (hash.startsWith("#meetings/")) {
+      const meetingId = decodeURIComponent(hash.slice("#meetings/".length));
+      if (meetingId && meetingId !== openMeetingIdRef.current) {
+        historyHandlersRef.current.openMeeting(meetingId);
+      }
+      return;
+    }
+    if (openMeetingIdRef.current) {
+      // 从会议详情后退：留在原视图（检索结果也保留），只关掉详情。
+      if (!historyHandlersRef.current.leaveMeeting()) {
+        // 保存进行中或用户选择留下：把会议锚点放回地址栏。
+        history.pushState({ app: true }, "", `#meetings/${encodeURIComponent(openMeetingIdRef.current)}`);
+        historySyncRef.current = false;
+        return;
+      }
+    } else {
+      setSearchActive(false);
+    }
+    setTaskDrawerId(null);
     if (hash.startsWith("#projects/")) {
       const projectId = decodeURIComponent(hash.slice("#projects/".length));
       if (projectId) {
@@ -222,10 +269,6 @@ export default function App({ apiClient = api }: AppProps) {
         setOpenRequirementId(requirementId);
         setView("requirementDetail");
       }
-    } else if (hash === "#requirements") {
-      setView("requirements");
-    } else if (hash === "#tasks") {
-      setView("tasks");
     } else if (hash.startsWith("#glossary/project/")) {
       const projectId = decodeURIComponent(hash.slice("#glossary/project/".length));
       if (projectId) {
@@ -235,6 +278,18 @@ export default function App({ apiClient = api }: AppProps) {
     } else if (hash === "#glossary") {
       setGlossaryProjectId(null);
       setView("glossary");
+    } else {
+      const simpleViews: Record<string, AppView> = {
+        "": "overview",
+        "#overview": "overview",
+        "#library": "library",
+        "#requirements": "requirements",
+        "#tasks": "tasks",
+        "#projects": "projects",
+        "#jobs": "jobs",
+      };
+      const target = simpleViews[hash];
+      if (target) setView(target);
     }
   }, []);
 
@@ -254,7 +309,8 @@ export default function App({ apiClient = api }: AppProps) {
         setTags(tagPayload);
         setMobileTaskWrite(boot.mobile_task_write);
         setPendingCount(boot.pending_confirm_count);
-        applyHash();
+        // 空锚点就是默认的工作台；启动期间用户可能已经点了别的视图，不能再拉回来。
+        if (window.location.hash) applyHash();
         hashReadyRef.current = true;
       } catch (error) {
         hashReadyRef.current = true;
@@ -338,11 +394,15 @@ export default function App({ apiClient = api }: AppProps) {
     void loadMeetings(next, 0);
   };
 
-  const loadDetail = useCallback(async (meetingId: string) => {
+  // silent：保存、回滚、改说话人之后的刷新。保留当前页面只换数据，不闪加载态，
+  // 这样标签页、滚动位置、播放进度和「已保存」提示都还在。
+  const loadDetail = useCallback(async (meetingId: string, { silent = false } = {}) => {
     const requestSequence = ++detailRequestSequence.current;
-    setDetailNavigationLocked(false);
-    setDetailState("loading");
-    setDetailError("");
+    if (!silent) {
+      setDetailNavigationLocked(false);
+      setDetailState("loading");
+      setDetailError("");
+    }
     try {
       const payload = await apiClient.meeting(meetingId);
       if (requestSequence !== detailRequestSequence.current) return;
@@ -351,14 +411,17 @@ export default function App({ apiClient = api }: AppProps) {
       setDetailState("ready");
     } catch (error) {
       if (requestSequence !== detailRequestSequence.current) return;
+      // 静默刷新失败时留着手上的版本，页面上的操作提示已经说明了结果。
+      if (silent) return;
       setDetail(null);
       setDetailState("error");
       setDetailError(error instanceof Error ? error.message : "会议档案读取失败");
     }
   }, [apiClient]);
 
-  const openMeeting = (meetingId: string, seekMs = 0) => {
+  const openMeeting = (meetingId: string, seekMs = 0, fromHistory = false) => {
     if (detailNavigationLocked) return;
+    if (!fromHistory) historySyncRef.current = false;
     if (
       detail &&
       detailDirty &&
@@ -367,18 +430,51 @@ export default function App({ apiClient = api }: AppProps) {
       return;
     }
     setInitialSeekMs(seekMs);
-    setSearchActive(false);
+    // 检索结果不清：从会议返回时要回到刚才那页结果。
     setDetailDirty(false);
+    setTaskDrawerId(null);
+    setOpenMeetingId(meetingId);
     void loadDetail(meetingId);
   };
 
-  const performNavigate = (nextView: AppView) => {
+  const resetDetailState = () => {
     detailRequestSequence.current += 1;
-    setView(nextView);
     setDetail(null);
+    setOpenMeetingId(null);
     setDetailDirty(false);
     setDetailNavigationLocked(false);
     setDetailState("idle");
+  };
+
+  // 会议详情页的「← 返回」。是本应用压进来的历史就直接后退，浏览器后退键和这个按钮行为一致；
+  // 冷加载直达的会议没有上一条可退，就原地关掉详情。离开前的未保存确认由详情页自己做过了。
+  const closeMeeting = () => {
+    detailDirtyRef.current = false;
+    if ((window.history.state as { app?: boolean } | null)?.app) {
+      window.history.back();
+      return;
+    }
+    resetDetailState();
+  };
+
+  openMeetingIdRef.current = openMeetingId;
+  detailDirtyRef.current = detailDirty;
+  historyHandlersRef.current = {
+    openMeeting: (meetingId: string) => openMeeting(meetingId, 0, true),
+    leaveMeeting: () => {
+      if (detailNavigationLocked) return false;
+      if (detailDirtyRef.current && !window.confirm("当前会议仍有未保存修改。放弃这些修改并离开吗？")) {
+        return false;
+      }
+      resetDetailState();
+      return true;
+    },
+  };
+
+  const performNavigate = (nextView: AppView) => {
+    historySyncRef.current = false;
+    resetDetailState();
+    setView(nextView);
     setSearchActive(false);
     setTaskDrawerId(null);
     // 默认清空词典预筛；openGlossaryForProject 会在这之后同一批更新里重新设上。
@@ -414,32 +510,41 @@ export default function App({ apiClient = api }: AppProps) {
     setGlossaryProjectId(projectId);
   };
 
-  // 与 #tasks / #glossary(/project/<id>) / #projects/<id> / #requirements(/<id>) 锚点同步，供飞书卡片跳转直达对应视图。
+  // 视图 → 地址栏。每个视图和打开的会议都有自己的锚点，飞书卡片可以直达，刷新不丢位置；
+  // 用户操作产生的切换压入历史，浏览器后退键就能回到上一个视图或关掉会议。
   useEffect(() => {
     if (!hashReadyRef.current) return;
-    const path =
-      view === "tasks"
-        ? "#tasks"
-        : view === "glossary"
-          ? glossaryProjectId
-            ? `#glossary/project/${glossaryProjectId}`
-            : "#glossary"
-          : view === "projectDetail" && openProjectId
-            ? `#projects/${openProjectId}`
-            : view === "requirementDetail" && openRequirementId
-              ? `#requirements/${openRequirementId}`
-              : view === "requirements"
-                ? "#requirements"
-                : "";
-    if (window.location.hash !== path) {
-      history.replaceState(null, "", window.location.pathname + window.location.search + path);
-    }
-  }, [glossaryProjectId, openProjectId, openRequirementId, view]);
+    const path = openMeetingId
+      ? `#meetings/${encodeURIComponent(openMeetingId)}`
+      : view === "glossary"
+        ? glossaryProjectId
+          ? `#glossary/project/${glossaryProjectId}`
+          : "#glossary"
+        : view === "projectDetail" && openProjectId
+          ? `#projects/${openProjectId}`
+          : view === "requirementDetail" && openRequirementId
+            ? `#requirements/${openRequirementId}`
+            : view === "overview"
+              ? ""
+              : view === "projectDetail" || view === "requirementDetail"
+                ? ""
+                : `#${view}`;
+    const fromHistory = historySyncRef.current;
+    historySyncRef.current = false;
+    if (window.location.hash === path) return;
+    const url = window.location.pathname + window.location.search + path;
+    if (fromHistory) history.replaceState(window.history.state, "", url);
+    else history.pushState({ app: true }, "", url);
+  }, [glossaryProjectId, openMeetingId, openProjectId, openRequirementId, view]);
 
   // 浏览器前进/后退或手动改地址栏 hash 时反向同步视图。
   useEffect(() => {
+    window.addEventListener("popstate", applyHash);
     window.addEventListener("hashchange", applyHash);
-    return () => window.removeEventListener("hashchange", applyHash);
+    return () => {
+      window.removeEventListener("popstate", applyHash);
+      window.removeEventListener("hashchange", applyHash);
+    };
   }, [applyHash]);
 
   const submitSearch = async () => {
@@ -457,8 +562,8 @@ export default function App({ apiClient = api }: AppProps) {
       return;
     }
     const requestSequence = ++searchRequestSequence.current;
-    setDetail(null);
-    setDetailDirty(false);
+    historySyncRef.current = false;
+    resetDetailState();
     setSearchActive(true);
     setSearchState("loading");
     setSearchError("");
@@ -527,15 +632,17 @@ export default function App({ apiClient = api }: AppProps) {
         initialSeekMs={initialSeekMs}
         isMobile={isMobile}
         meeting={detail}
-        onBack={() => performNavigate("library")}
+        backLabel={searchActive ? "检索结果" : VIEW_LABELS[view]}
+        onBack={closeMeeting}
         onClassificationSaved={refreshProjects}
         onDirtyChange={setDetailDirty}
         onNavigationLockChange={setDetailNavigationLocked}
         onOpenRequirement={openRequirementDetail}
         onOpenTasks={() => navigate("tasks")}
+        onTasksChanged={() => void loadPendingCount(true)}
         onReload={async () => {
           await Promise.all([
-            loadDetail(detail.id),
+            loadDetail(detail.id, { silent: true }),
             loadMeetings(filters, meetingOffset, true),
             loadPendingCount(),
           ]);
@@ -568,6 +675,7 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenLibrary={() => navigate("library")}
         onOpenMeeting={openMeeting}
         onOpenTasks={() => navigate("tasks")}
+        onTasksChanged={() => void loadPendingCount(true)}
       />
     );
   } else if (view === "library") {
@@ -654,6 +762,7 @@ export default function App({ apiClient = api }: AppProps) {
     content = (
       <ProjectDetailPage
         apiClient={apiClient}
+        key={openProjectId}
         canPickFolders={!isMobile}
         canWrite={!isMobile || mobileTaskWrite}
         onBack={() => navigate("projects")}
@@ -678,8 +787,8 @@ export default function App({ apiClient = api }: AppProps) {
         onRetry={async (jobId, stage, hotwords) => { await apiClient.retryJob(jobId, stage, hotwords); await loadJobs(); }}
         onRetrySubstate={async (jobId, name) => { await apiClient.retryJobSubstate(jobId, name); await loadJobs(); }}
         onStopAfterStage={async (jobId) => { await apiClient.stopAfterStage(jobId); await loadJobs(); }}
-        onUpload={async (file, hotwords) => {
-          const receipt = await uploadRecordingInChunks(apiClient, file, hotwords);
+        onUpload={async (file, hotwords, onProgress) => {
+          const receipt = await uploadRecordingInChunks(apiClient, file, hotwords, onProgress);
           await loadJobs();
           return receipt.job_id
             ? `已保存并入队：${receipt.job_id}（${receipt.size_bytes.toLocaleString()} 字节）`

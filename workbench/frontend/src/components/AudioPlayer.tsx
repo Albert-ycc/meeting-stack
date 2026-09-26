@@ -9,6 +9,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import WaveSurfer from "wavesurfer.js";
 
 import { formatTime } from "../format";
+import { useTheme } from "../theme";
 
 export interface AudioPlayerHandle {
   seekTo: (milliseconds: number) => void;
@@ -29,6 +30,7 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(funct
   const audioRef = useRef<HTMLAudioElement>(null);
   const waveformRef = useRef<HTMLDivElement>(null);
   const waveSurferRef = useRef<WaveSurfer | null>(null);
+  const theme = useTheme().resolved;
   const draggingWaveformRef = useRef(false);
   const pendingSeekRef = useRef<number | null>(initialSeekMs > 0 ? initialSeekMs : null);
   const [currentMs, setCurrentMs] = useState(0);
@@ -143,6 +145,24 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(funct
     // The initial anchor is intentionally consumed when a new media source loads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaUrl, peaksUrl]);
+
+  // 换主题时只改波形颜色，不重建 wavesurfer（重建会丢播放进度与缩放）。
+  // 首次渲染的颜色由创建时读 token 决定，这里只处理之后的切换。
+  const paintedThemeRef = useRef(theme);
+  useEffect(() => {
+    if (paintedThemeRef.current === theme) return;
+    paintedThemeRef.current = theme;
+    const wavesurfer = waveSurferRef.current;
+    if (!wavesurfer) return;
+    const token = (name: string, fallback: string) =>
+      getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+    const signalColor = token("--signal", "#f0783b");
+    wavesurfer.setOptions({
+      cursorColor: signalColor,
+      progressColor: signalColor,
+      waveColor: token("--wave-idle", "#585858"),
+    });
+  }, [theme]);
 
   useEffect(() => {
     const audio = audioRef.current;

@@ -1,0 +1,119 @@
+/* 全站共用的确认弹窗：删除、丢弃、覆盖这类收不回来的操作先问一句。 */
+.confirm-modal__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  background: rgb(0 0 0 / calc(0.6 * var(--shadow-k)));
+}
+
+.confirm-modal__card {
+  width: min(440px, 100%);
+  margin: auto;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.confirm-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 0;
+}
+
+.confirm-modal__head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.confirm-modal__head button {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 6px 10px;
+  color: var(--ink-faint);
+  font-size: 14px;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+}
+
+.confirm-modal__body {
+  padding: 16px 20px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.confirm-modal__body p {
+  margin: 0;
+}
+
+.confirm-modal__error {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  color: var(--danger);
+  font-size: 12px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-line);
+  border-radius: 10px;
+}
+
+.confirm-modal__primary {
+  color: var(--bg);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+}
+
+.confirm-modal__path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.confirm-modal__path-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--ink-faint);
+}
+
+.confirm-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 20px 20px;
+}
+
+.confirm-modal__footer button {
+  padding: 9px 16px;
+  font-size: 13px;
+  border-radius: 12px;
+}
+
+.confirm-modal__footer button:first-child {
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+.confirm-modal__danger {
+  color: #fff;
+  background: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.confirm-modal__danger:hover:not(:disabled) {
+  background: var(--danger-strong, var(--danger));
+}

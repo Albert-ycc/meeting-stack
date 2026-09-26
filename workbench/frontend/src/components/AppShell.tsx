@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import { setThemePreference, useTheme, type ThemePreference } from "../theme";
+
 export type AppView =
   | "overview"
   | "library"
@@ -80,6 +82,60 @@ const icons: Record<AppView, ReactNode> = {
     </svg>
   ),
 };
+
+const themeOptions: Array<{ value: ThemePreference; label: string; icon: ReactNode }> = [
+  {
+    value: "dark",
+    label: "深色",
+    icon: (
+      <svg viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+        <path d="M12.6 9.3A5.6 5.6 0 0 1 5.7 2.4a5.6 5.6 0 1 0 6.9 6.9Z" />
+      </svg>
+    ),
+  },
+  {
+    value: "light",
+    label: "浅色",
+    icon: (
+      <svg viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+        <circle cx="7.5" cy="7.5" r="2.7" />
+        <path d="M7.5 1v1.4M7.5 12.6V14M1 7.5h1.4M12.6 7.5H14M2.9 2.9l1 1M11.1 11.1l1 1M2.9 12.1l1-1M11.1 3.9l1-1" />
+      </svg>
+    ),
+  },
+  {
+    value: "system",
+    label: "跟随系统",
+    icon: (
+      <svg viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+        <rect x="1.4" y="2.2" width="12.2" height="8.4" rx="1.4" />
+        <path d="M5.2 13.2h4.6M7.5 10.6v2.6" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+];
+
+/** 主题三选一：深色 / 浅色 / 跟随系统。偏好存在本机浏览器里，不进服务端。 */
+function ThemeSwitch() {
+  const { preference } = useTheme();
+  return (
+    <div className="theme-switch" role="radiogroup" aria-label="界面主题">
+      {themeOptions.map((option) => (
+        <button
+          aria-checked={preference === option.value}
+          aria-label={option.label}
+          key={option.value}
+          onClick={() => setThemePreference(option.value)}
+          role="radio"
+          title={option.label}
+          type="button"
+        >
+          {option.icon}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const navItems: Array<{ view: AppView; label: string; desktopOnly?: boolean }> = [
   { view: "overview", label: "工作台" },
@@ -168,6 +224,7 @@ export function AppShell({
       <div className="workspace">
         <header className="topbar">
           {searchSlot}
+          <ThemeSwitch />
           <div className={`health-pill health-pill--${health}`} aria-label={`服务状态：${health}`}>
             <span />
             {health === "healthy" ? "服务正常" : health === "degraded" ? "部分降级" : health === "failed" ? "服务异常" : "连接中"}

@@ -169,11 +169,25 @@ describe("ProjectDetailPage 材料根目录卡", () => {
     await screen.findByText("/Volumes/资料盘/蓝鲸云/云图科研用药");
     await userEvent.click(screen.getByRole("button", { name: "移除" }));
 
-    const dialog = screen.getByRole("dialog", { name: "移除材料根目录" });
+    const dialog = screen.getByRole("alertdialog", { name: "移除材料根目录" });
     expect(within(dialog).getByText("/Volumes/资料盘/蓝鲸云/云图科研用药")).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "移除" }));
 
     expect(removeProjectMaterialRoot).toHaveBeenCalledWith("project-1", 1);
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+  });
+
+  it("移除失败时原因写在确认弹窗里，弹窗不关", async () => {
+    const removeProjectMaterialRoot = vi.fn().mockRejectedValue(new Error("目录正被需求引用"));
+    renderPage({ apiClient: client({ removeProjectMaterialRoot } as Partial<ApiClient>) });
+
+    await screen.findByText("/Volumes/资料盘/蓝鲸云/云图科研用药");
+    await userEvent.click(screen.getByRole("button", { name: "移除" }));
+    const dialog = screen.getByRole("alertdialog", { name: "移除材料根目录" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "移除" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("目录正被需求引用");
+    expect(screen.getByRole("alertdialog", { name: "移除材料根目录" })).toBeInTheDocument();
   });
 
   it("复制路径成功后弹出轻提示", async () => {

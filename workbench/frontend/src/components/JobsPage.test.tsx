@@ -71,13 +71,13 @@ describe("JobsPage non-blocking substates", () => {
       screen.getByLabelText("选择录音文件"),
       new File(["audio"], "meeting.m4a", { type: "audio/mp4" }),
     );
-    expect(onUpload).toHaveBeenCalledWith(expect.any(File), ["ACME", "云图"]);
+    expect(onUpload).toHaveBeenCalledWith(expect.any(File), ["ACME", "云图"], expect.any(Function));
     expect(screen.getByLabelText("手工导入本场热词")).toHaveValue("");
     await userEvent.upload(
       screen.getByLabelText("选择录音文件"),
       new File(["second"], "second.m4a", { type: "audio/mp4" }),
     );
-    expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), []);
+    expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), [], expect.any(Function));
 
     await userEvent.type(screen.getByLabelText("job-1 重试热词"), "MDT，mdt\n术语");
     await userEvent.click(screen.getByRole("button", { name: "重新转写" }));
@@ -91,10 +91,10 @@ describe("JobsPage non-blocking substates", () => {
     const picker = screen.getByLabelText("选择录音文件");
     await userEvent.type(hotwords, "ACME，云图");
     await userEvent.upload(picker, new File(["first"], "first.m4a", { type: "audio/mp4" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("上传失败");
+    expect(await screen.findByRole("alert")).toHaveTextContent("上传失败");
     expect(hotwords).toHaveValue("ACME，云图");
     await userEvent.upload(picker, new File(["retry"], "retry.m4a", { type: "audio/mp4" }));
-    expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), ["ACME", "云图"]);
+    expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), ["ACME", "云图"], expect.any(Function));
     expect(hotwords).toHaveValue("");
   });
 

@@ -2,7 +2,13 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 
-afterEach(() => cleanup());
+import { clearPersistentViewState } from "./viewState";
+
+afterEach(() => {
+  cleanup();
+  // 列表页的检索条件跨挂载保留，用例之间要清掉，免得上一个用例的筛选带进下一个。
+  clearPersistentViewState();
+});
 
 Object.defineProperty(window, "ResizeObserver", {
   configurable: true,

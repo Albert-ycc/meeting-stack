@@ -120,7 +120,7 @@
   color: var(--ink);
   font-weight: 600;
   background: var(--surface);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.48);
+  box-shadow: 0 2px 8px rgb(0 0 0 / calc(0.48 * var(--shadow-k)));
 }
 
 .requirements-tabs button[aria-selected="true"] span {
