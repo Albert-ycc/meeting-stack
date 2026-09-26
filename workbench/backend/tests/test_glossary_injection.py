@@ -127,3 +127,85 @@ def test_project_changes_rewrite_the_snapshot(tmp_path):
     )
     assert deleted.status_code == 200, deleted.text
     assert read_snapshot(snapshot)["projects"] == []
+
+
+# —— relay 回执入库 ——
+
+
+def add_meeting(db, meeting_id, *, project_id=None, status="completed_unreviewed"):
+    db.execute(
+        """INSERT INTO meetings (id, title, recording_date, status, project_id, created_at, updated_at)
+           VALUES (?, '周会', '2026-09-26', ?, ?, ?, ?)""",
+        (meeting_id, status, project_id, utc_now(), utc_now()),
+    )
+
+
+def add_minutes(db, meeting_id, version_id, markdown, *, kind="generated", job_id=None, attempt=None, version_no=1):
+    db.execute(
+        """INSERT INTO minutes_versions
+               (id, meeting_id, version_no, markdown, html, kind, published,
+                source_job_id, source_attempt, created_at)
+           VALUES (?, ?, ?, ?, '', ?, 0, ?, ?, ?)""",
+        (version_id, meeting_id, version_no, markdown, kind, job_id, attempt, utc_now()),
+    )
+    db.execute("UPDATE meetings SET current_minutes_version_id=? WHERE id=?", (version_id, meeting_id))
+
+
+def add_artifact(db, meeting_id, path):
+    import hashlib
+
+    db.execute(
+        """INSERT INTO artifacts (meeting_id, kind, role, source_root, path, sha256, size_bytes, created_at)
+           VALUES (?, 'glossary_injection', 'source', 'archive', ?, ?, ?, ?)""",
+        (meeting_id, str(path), hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_size, utc_now()),
+    )
+
+
+def test_artifact_kind_recognises_the_receipt():
+    from meeting_workbench.importer import artifact_kind
+
+    assert artifact_kind(Path("/a/260926 周会/glossary-injection.json")) == "glossary_injection"
+    assert artifact_kind(Path("/a/260926 周会/minutes-plan.json")) == "minutes_plan"
+
+
+def test_receipts_are_ingested_once_and_matched_to_the_minutes_version(tmp_path):
+    from meeting_workbench import glossary_checkup
+
+    injection = load_injection()
+    db = make_db(tmp_path)
+    add_project(db, "p-yt", "云图AI")
+    add_meeting(db, "vm-1")
+    add_minutes(db, "vm-1", "mv-1", "# 纪要", job_id="job-1", attempt=2)
+    snapshot = {
+        "schema_version": 1,
+        "terms": [
+            {"term": "数理协会", "aliases": ["树立协会"], "scope": "云图AI", "category": "机构", "project_id": "p-yt"},
+            {"term": "随访", "aliases": ["随方"], "scope": "通用", "category": "术语"},
+        ],
+        "projects": [{"id": "p-yt", "name": "云图AI", "also": [], "cues": [{"text": "云图AI", "kind": "name"}]}],
+    }
+    receipt = injection.select_injection(snapshot, "云图AI 的树立协会，云图AI 随方", None)
+    receipt.update(job_id="job-1", attempt=2)
+    attempt_dir = tmp_path / "attempt-2"
+    attempt_dir.mkdir()
+    add_artifact(db, "vm-1", injection.write_receipt(receipt, attempt_dir))
+    broken = tmp_path / "broken" / "glossary-injection.json"
+    broken.parent.mkdir()
+    broken.write_text("{", encoding="utf-8")
+    add_artifact(db, "vm-1", broken)
+
+    assert glossary_checkup.ingest_receipts(db) == 1
+    assert glossary_checkup.ingest_receipts(db) == 0
+
+    with db.autocommit() as connection:
+        minutes = dict(connection.execute("SELECT * FROM minutes_versions WHERE id='mv-1'").fetchone())
+        found = glossary_checkup.receipt_for_minutes(connection, "vm-1", minutes)
+        other = glossary_checkup.receipt_for_minutes(
+            connection, "vm-1", {**minutes, "source_attempt": 1}
+        )
+    assert other is None
+    summary = glossary_checkup.summarize_receipt(found)
+    assert summary["project_id"] == "p-yt"
+    assert summary["project_name"] == "云图AI"
+    assert summary["project_source"] == "transcript"
+    assert (summary["term_count"], summary["project_terms"], summary["public_terms"]) == (2, 1, 1)

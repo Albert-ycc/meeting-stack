@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from meeting_workbench.config import Settings
-from meeting_workbench.db import Database
+from meeting_workbench.db import Database, utc_now
 from meeting_workbench.main import create_app
 from meeting_workbench.relay_client import RelayUnavailable
 
@@ -36,6 +36,7 @@ class FakeRelayClient:
         self.draft_modified_error = None
         self.hotword_calls = []
         self.backend_calls = []
+        self.project_hint_calls = []
 
     def list_jobs(self, *, status=None, limit=200):
         jobs = [
@@ -60,7 +61,14 @@ class FakeRelayClient:
         }
 
     def enqueue(
-        self, audio_path, *, stage=None, transcript_path=None, hotwords=None, backend=None
+        self,
+        audio_path,
+        *,
+        stage=None,
+        transcript_path=None,
+        hotwords=None,
+        backend=None,
+        project_hint=None,
     ):
         if self.enqueue_error:
             raise RelayUnavailable(self.enqueue_error)
@@ -71,14 +79,25 @@ class FakeRelayClient:
         )
         self.hotword_calls.append(("enqueue", list(hotwords or [])))
         self.backend_calls.append(("enqueue", backend))
+        self.project_hint_calls.append(("enqueue", project_hint))
         return "job-new"
 
-    def retry(self, job_id, stage, *, transcript_path=None, hotwords=None, backend=None):
+    def retry(
+        self,
+        job_id,
+        stage,
+        *,
+        transcript_path=None,
+        hotwords=None,
+        backend=None,
+        project_hint=None,
+    ):
         self.retried.append((job_id, stage))
         snapshot = Path(transcript_path).read_text(encoding="utf-8") if transcript_path else None
         self.retry_transcripts.append((str(transcript_path) if transcript_path else None, snapshot))
         self.hotword_calls.append(("retry", list(hotwords or [])))
         self.backend_calls.append(("retry", backend))
+        self.project_hint_calls.append(("retry", project_hint))
         return {"job_id": job_id, "attempt": 2}
 
     def mark_draft_modified(self, job_id):
@@ -501,6 +520,35 @@ def test_minutes_regeneration_pins_the_requested_backend(tmp_path):
     assert relay.backend_calls[-1] == ("retry", "claude")
 
 
+def test_minutes_regeneration_tells_relay_the_meeting_project(tmp_path):
+    """重新出纪要时把会议当前的项目交给 relay，按这个项目挑词；没归项目就不传。"""
+    client, relay = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(client.app.state.settings.database_path)
+    meeting_dir, _audio, _version = seed_editable_meeting(
+        db, client.app.state.settings.archive_root, meeting_id="vm-linked"
+    )
+    db.execute(
+        """UPDATE meetings SET source_job_id='job-linked', canonical_dir=?
+           WHERE id='vm-linked'""",
+        (str(meeting_dir),),
+    )
+    relay.statuses["job-linked"] = "completed_unreviewed"
+
+    assert client.post("/api/meetings/vm-linked/minutes/regenerate", json={}, headers=headers).status_code == 200
+    assert relay.project_hint_calls[-1] == ("retry", None)
+
+    db.execute(
+        "INSERT INTO projects(id, name, color, origin, created_at) VALUES ('p-yt', '云图AI', '#667085', 'manual', ?)",
+        (utc_now(),),
+    )
+    db.execute("UPDATE meetings SET project_id='p-yt' WHERE id='vm-linked'")
+    assert client.post("/api/meetings/vm-linked/minutes/regenerate", json={}, headers=headers).status_code == 200
+    assert relay.project_hint_calls[-1] == ("retry", "p-yt")
+    assert client.post("/api/jobs/job-linked/retry", json={"stage": "transcribing"}, headers=headers).status_code == 200
+    assert relay.project_hint_calls[-1] == ("retry", "p-yt")
+
+
 def test_minutes_regeneration_enqueues_historical_audio_at_minutes_stage(tmp_path):
     client, relay = make_client(tmp_path)
     headers = write_headers(client)
@@ -560,7 +608,7 @@ def test_minutes_snapshot_is_removed_when_relay_rejects_regeneration(tmp_path):
     db.execute("UPDATE meetings SET source_job_id='job-cleanup' WHERE id='vm-cleanup'")
     relay.statuses["job-cleanup"] = "published"
 
-    def fail_retry(job_id, stage, *, transcript_path=None, hotwords=None, backend=None):
+    def fail_retry(job_id, stage, *, transcript_path=None, hotwords=None, backend=None, project_hint=None):
         relay.retry_transcripts.append((str(transcript_path), Path(transcript_path).read_text()))
         raise RelayUnavailable("rejected")
 

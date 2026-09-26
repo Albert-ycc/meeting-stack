@@ -258,3 +258,40 @@ def test_relayctl_stderr_stays_in_server_log_not_in_client_facing_error(tmp_path
     assert "Traceback" not in str(excinfo.value)
     assert str(excinfo.value) == "relayctl 返回失败，详见服务日志"
     assert sensitive_stderr in caplog.text
+
+
+def test_project_hint_travels_as_environment_not_as_argument(tmp_path, monkeypatch):
+    """旧版 relayctl 不认识 --project-hint；走环境变量，旧版忽略即可，入队不会失败。"""
+    relay_repo = tmp_path / "meeting-relay"
+    executable = relay_repo / "quickstart" / "relayctl"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        relay_repo=relay_repo,
+        relay_jobs_db=tmp_path / "jobs.sqlite3",
+        semantic_enabled=False,
+    )
+    audio = tmp_path / "meeting.m4a"
+    audio.write_bytes(b"audio")
+    calls = []
+
+    def fake_run(arguments, **kwargs):
+        calls.append((arguments, kwargs["env"]))
+        stdout = "job-created\n" if arguments[1] == "enqueue" else json.dumps({"job_id": "job-created"})
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("meeting_workbench.relay_client.subprocess.run", fake_run)
+    monkeypatch.setenv("MEETING_RELAY_PROJECT_HINT", "别处遗留的值")
+    client = RelayClient(settings)
+
+    client.enqueue(audio, project_hint="project-46fd3e04e3db")
+    client.retry("job-created", "transcribing", project_hint=" p-yt ")
+    client.retry("job-created", "transcribing")
+
+    assert all("--project-hint" not in arguments for arguments, _env in calls)
+    assert calls[0][1]["MEETING_RELAY_PROJECT_HINT"] == "project-46fd3e04e3db"
+    assert calls[1][1]["MEETING_RELAY_PROJECT_HINT"] == "p-yt"
+    assert "MEETING_RELAY_PROJECT_HINT" not in calls[2][1]

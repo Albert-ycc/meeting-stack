@@ -54,7 +54,7 @@ from .attribution import (
     meeting_attribution,
     recognition_profile,
 )
-from . import cold_start, materials, requirements
+from . import cold_start, glossary_checkup, materials, requirements
 from .cards import CardsError, CardWriter
 from .project_names import (
     SimilarProjectError,
@@ -834,6 +834,13 @@ def create_app(
                     record_scanner_phase_errors(phase_errors, previous_failures)
                     continue
                 try:
+                    await asyncio.to_thread(glossary_checkup.ingest_receipts, db)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 词典回执是旁路，失败只记账。
+                    phase_errors.append(error)
+                try:
                     await asyncio.to_thread(recover_stalled_minutes)
                 except asyncio.CancelledError:
                     raise
@@ -1140,6 +1147,21 @@ def create_app(
                     "status": "draft_modified",
                 }
         return job
+
+    def meeting_project_hint(meeting_id: str | None) -> str | None:
+        """出纪要按哪个项目挑词：传项目 id（改名后 relay 照样认得）；没归项目就不传，
+        让 relay 按逐字稿自己认。"""
+        if not meeting_id:
+            return None
+        row = db.query_one("SELECT project_id FROM meetings WHERE id=?", (meeting_id,))
+        return row["project_id"] if row and row.get("project_id") else None
+
+    def job_project_hint(job_id: str) -> str | None:
+        row = db.query_one(
+            "SELECT project_id FROM meetings WHERE source_job_id=? AND project_id IS NOT NULL",
+            (job_id,),
+        )
+        return row["project_id"] if row else None
 
     def notify_relay_draft_modified(meeting_id: str) -> None:
         meeting = db.query_one("SELECT source_job_id FROM meetings WHERE id=?", (meeting_id,))
@@ -1965,7 +1987,12 @@ def create_app(
     @app.post("/api/jobs/{job_id}/retry")
     def retry_job(job_id: str, body: JobRetryInput):
         try:
-            result = relay.retry(job_id, body.stage, hotwords=body.hotwords)
+            result = relay.retry(
+                job_id,
+                body.stage,
+                hotwords=body.hotwords,
+                project_hint=job_project_hint(job_id),
+            )
             db.add_event(
                 "job_retry_requested",
                 job_id=job_id,
@@ -2125,7 +2152,9 @@ def create_app(
                 job_id, created = existing_job_id, False
             else:
                 try:
-                    job_id = relay.enqueue(audio, hotwords=hotwords)
+                    job_id = relay.enqueue(
+                        audio, hotwords=hotwords, project_hint=meeting_project_hint(meeting_id)
+                    )
                 except RelayUnavailable as error:
                     raise HTTPException(409, str(error)) from error
                 rowcount = db.execute(
@@ -2189,6 +2218,7 @@ def create_app(
                         "minutes_generating",
                         transcript_path=snapshot_path,
                         backend=backend,
+                        project_hint=meeting_project_hint(meeting_id),
                     )
                 except RelayUnavailable as error:
                     raise HTTPException(409, str(error)) from error
@@ -2200,6 +2230,7 @@ def create_app(
                         stage="minutes_generating",
                         transcript_path=snapshot_path,
                         backend=backend,
+                        project_hint=meeting_project_hint(meeting_id),
                     )
                 except RelayUnavailable as error:
                     raise HTTPException(409, str(error)) from error
@@ -2482,7 +2513,12 @@ def create_app(
             result = {"job_id": job_id, "status": current or "queued"}
         else:
             try:
-                result = relay.retry(job_id, "transcribing", hotwords=body.hotwords)
+                result = relay.retry(
+                    job_id,
+                    "transcribing",
+                    hotwords=body.hotwords,
+                    project_hint=meeting_project_hint(meeting_id),
+                )
             except RelayUnavailable as error:
                 raise HTTPException(409, str(error)) from error
         db.add_event(

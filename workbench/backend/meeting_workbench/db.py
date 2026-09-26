@@ -549,6 +549,57 @@ CREATE TABLE IF NOT EXISTS meeting_cards (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_cards_project ON meeting_cards(project_id);
+
+-- 1d-2：出纪要时这场会用了哪些词。relay 按这场会挑词后在草稿目录写 glossary-injection.json，
+-- 导入后原样存进 payload；job_id/attempt 用来对上是哪一版纪要用的。
+CREATE TABLE IF NOT EXISTS meeting_glossary_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    job_id TEXT,
+    attempt INTEGER,
+    sha256 TEXT NOT NULL,
+    project_id TEXT,
+    project_name TEXT,
+    project_source TEXT,
+    term_count INTEGER NOT NULL DEFAULT 0,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(meeting_id, sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_glossary_receipts_job
+    ON meeting_glossary_receipts(meeting_id, job_id, attempt);
+
+-- 1d-2：纪要体检。每场会一行状态：查的是哪一版纪要、按哪个项目的词典（basis：receipt 按回执的项目 /
+-- project 按会议当前项目或你点的项目 / public 只有公共词）；替换过的记下替换前的版本，撤销就回到那一版。
+CREATE TABLE IF NOT EXISTS meeting_glossary_checks (
+    meeting_id TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+    minutes_version_id TEXT,
+    project_id TEXT,
+    basis TEXT NOT NULL,
+    receipt_id INTEGER,
+    applied_version_id TEXT,
+    applied_from_version_id TEXT,
+    applied_by TEXT,
+    applied_count INTEGER NOT NULL DEFAULT 0,
+    applied_at TEXT,
+    checked_at TEXT NOT NULL
+);
+
+-- 体检明细：corrected 错写在逐字稿里、正确写法在纪要里、错写不在纪要里（AI 已经纠过来了）；
+-- missed 纪要里还留着错写（可能漏纠）。随纪要版本整批重算。
+CREATE TABLE IF NOT EXISTS meeting_glossary_hits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    minutes_version_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    term TEXT NOT NULL,
+    wrong TEXT NOT NULL,
+    term_project_id TEXT,
+    transcript_count INTEGER NOT NULL DEFAULT 0,
+    minutes_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_glossary_hits_meeting ON meeting_glossary_hits(meeting_id);
 CREATE INDEX IF NOT EXISTS idx_meeting_cards_dirty ON meeting_cards(dirty) WHERE dirty > 0;
 
 -- 卡片脏标记：只给已有卡片行的会加一，新会由 reconcile 自己找。拆段、合段走先删后插，
