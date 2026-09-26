@@ -81,13 +81,16 @@ from .glossary import (
     confirm_suggestion,
     create_term,
     delete_term,
+    get_suggestion,
     get_term,
     list_scopes,
     list_suggestions,
     list_terms,
     read_snapshot,
     reject_suggestion,
+    restore_suggestion,
     rewrite_snapshot,
+    undo_confirm_suggestion,
     update_term,
 )
 from .minutes_evidence import (
@@ -228,6 +231,15 @@ class GlossaryTermUpdate(BaseModel):
     # None 是合法目标值（解绑），必须靠 model_fields_set 区分「没传」与「传了 null」
     project_id: str | None = None
     is_cue: bool | None = None
+
+
+class SuggestionConfirmInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # auto=按确认那一刻会议所属的项目；public=公共；其余当 project_id
+    target: str = "auto"
+    # 记扩词前的 2 字那一对（「只记 2 字」）
+    short: bool = False
 
 
 class RollbackInput(BaseModel):
@@ -2038,13 +2050,15 @@ def create_app(
 
     @app.put("/api/meetings/{meeting_id}/minutes")
     def save_minutes(meeting_id: str, body: MinutesInput):
-        version_id = service.save_minutes(
+        version_id, corrections = service.save_minutes_detailed(
             meeting_id,
             body.markdown,
             expected_base_version_id=body.base_version_id,
+            glossary_snapshot_path=settings.data_dir / "glossary-snapshot.json",
         )
         notify_relay_draft_modified(meeting_id)
-        return {"version_id": version_id}
+        # 这次编辑捕获到的错字更正，前端在编辑器下方就地确认；auto_recorded 的已直接记入
+        return {"version_id": version_id, "corrections": corrections}
 
     def preferred_audio_path(meeting_id: str) -> Path | None:
         artifact = db.query_one(
@@ -3457,16 +3471,41 @@ def create_app(
         return list_suggestions(db, status=status)
 
     @app.post("/api/glossary/suggestions/{suggestion_id}/confirm")
-    def glossary_confirm_suggestion(suggestion_id: str):
-        if not confirm_suggestion(db, suggestion_id, snapshot_path=snapshot_path):
+    def glossary_confirm_suggestion(
+        suggestion_id: str, body: SuggestionConfirmInput | None = None
+    ):
+        body = body or SuggestionConfirmInput()
+        try:
+            result = confirm_suggestion(
+                db,
+                suggestion_id,
+                snapshot_path=snapshot_path,
+                target=body.target,
+                short=body.short,
+            )
+        except GlossaryError as error:
+            raise HTTPException(404, str(error)) from error
+        if result is None:
             raise HTTPException(404, "待确认建议不存在或已处理")
-        return {"ok": True}
+        return {"ok": True, **result, "suggestion": get_suggestion(db, suggestion_id)}
+
+    @app.post("/api/glossary/suggestions/{suggestion_id}/undo")
+    def glossary_undo_suggestion(suggestion_id: str):
+        if not undo_confirm_suggestion(db, suggestion_id, snapshot_path=snapshot_path):
+            raise HTTPException(404, "这条建议没有确认过，或已经撤销")
+        return {"ok": True, "suggestion": get_suggestion(db, suggestion_id)}
 
     @app.post("/api/glossary/suggestions/{suggestion_id}/reject")
     def glossary_reject_suggestion(suggestion_id: str):
         if not reject_suggestion(db, suggestion_id):
             raise HTTPException(404, "待确认建议不存在或已处理")
         return {"ok": True}
+
+    @app.post("/api/glossary/suggestions/{suggestion_id}/restore")
+    def glossary_restore_suggestion(suggestion_id: str):
+        if not restore_suggestion(db, suggestion_id):
+            raise HTTPException(404, "这条建议没有被驳回，或已经恢复")
+        return {"ok": True, "suggestion": get_suggestion(db, suggestion_id)}
 
     @app.get("/api/glossary/snapshot")
     def glossary_snapshot():

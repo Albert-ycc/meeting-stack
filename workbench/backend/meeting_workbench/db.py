@@ -742,6 +742,20 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_glossary_terms_project "
                 "ON glossary_terms(project_id)"
             )
+            suggestion_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(glossary_suggestions)").fetchall()
+            }
+            for name in (
+                # 2 字错字扩成整词后，原来的 2 字那一对（「只记 2 字」）
+                "alt_wrong",
+                "alt_correct",
+                # 确认时实际写进了哪条词条、记的是哪个错写（撤销确认用）
+                "confirmed_term_id",
+                "confirmed_wrong",
+            ):
+                if name not in suggestion_columns:
+                    connection.execute(f"ALTER TABLE glossary_suggestions ADD COLUMN {name} TEXT")
             task_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
             }
