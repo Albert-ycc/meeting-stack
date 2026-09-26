@@ -4,9 +4,12 @@ import argparse
 from dataclasses import asdict
 import json
 import os
+import shutil
 import sqlite3
 import sys
+import unicodedata
 from pathlib import Path
+from typing import Any
 
 from .asr_eval import AsrEvaluationError, evaluate_asr, parse_engine_specs, run_qwen_shadow
 from .backup import BackupManager
@@ -65,6 +68,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-apply", action="store_true", help="和 --evaluate 一起用：只报告，不改 link_require_literal"
     )
     backfill_projects.add_argument("--limit", type=int, help="最多处理的会议数")
+
+    materials_cmd = subcommands.add_parser("materials", help="项目材料：盘点、图片文字识别试跑（只读）")
+    materials_sub = materials_cmd.add_subparsers(dest="materials_command", required=True)
+    walk = materials_sub.add_parser(
+        "walk", help="走一遍项目材料文件夹，统计第三期要索引的量（只读，不改数据库）"
+    )
+    walk.add_argument("--dry-run", action="store_true", help="只盘点，不建索引（目前只支持这一种）")
+    walk.add_argument("--project", help="只看这个项目（项目 id 或名字）")
+    walk.add_argument(
+        "--root", action="append", type=Path, help="只看这个文件夹，可以给多次；给了就不读数据库里挂的"
+    )
+    walk.add_argument("--no-probe", action="store_true", help="不读音视频时长")
+    walk.add_argument("--json", type=Path, help="把完整结果另存成 JSON")
+    ocr = materials_sub.add_parser(
+        "ocr-trial", help="挑一些材料图片，分别用 Vision 和 tesseract 识别，比较用时和效果（在 Mac 上跑）"
+    )
+    ocr.add_argument("--project", help="只从这个项目的材料里挑（项目 id 或名字）")
+    ocr.add_argument("--root", action="append", type=Path, help="只从这个文件夹里挑，可以给多次")
+    ocr.add_argument("--limit", type=int, default=20, help="挑几张图，默认 20")
+    ocr.add_argument(
+        "--engine", action="append", choices=["vision", "tesseract"], help="只跑某一个，默认两个都跑"
+    )
+    ocr.add_argument("--out", type=Path, help="结果写到哪个文件夹，默认数据目录下的 ocr-trial/")
     return parser
 
 
@@ -112,6 +138,98 @@ def _print_evaluation(result: dict) -> int:
     return 0
 
 
+def _material_roots(
+    settings: Settings, project: str | None, roots: list[Path] | None
+) -> list[dict[str, Any]]:
+    """--root 给了就只用它；否则只读打开数据库，列出（某个项目或全部项目）挂的材料文件夹。"""
+    if roots:
+        return [{"path": str(root.expanduser())} for root in roots]
+    assert settings.database_path is not None
+    if not settings.database_path.exists():
+        raise SystemExit(f"找不到声档数据库：{settings.database_path}；可以用 --root 直接指定文件夹")
+    connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        projects = [dict(row) for row in connection.execute("SELECT id, name FROM projects ORDER BY name")]
+        chosen = None
+        if project:
+            wanted = unicodedata.normalize("NFKC", project).casefold().strip()
+            chosen = next(
+                (
+                    item for item in projects
+                    if item["id"] == project
+                    or unicodedata.normalize("NFKC", item["name"]).casefold().strip() == wanted
+                ),
+                None,
+            )
+            if chosen is None:
+                names = "、".join(item["name"] for item in projects) or "（还没有项目）"
+                raise SystemExit(f"没有叫「{project}」的项目。现有项目：{names}")
+        rows = connection.execute(
+            """SELECT r.path, r.project_id, p.name AS project_name
+                 FROM project_material_roots r JOIN projects p ON p.id = r.project_id
+                WHERE ? IS NULL OR r.project_id = ?
+                ORDER BY p.name, r.created_at, r.id""",
+            (chosen["id"] if chosen else None, chosen["id"] if chosen else None),
+        ).fetchall()
+    finally:
+        connection.close()
+    if not rows:
+        raise SystemExit("还没有挂材料文件夹；可以用 --root 直接指定文件夹")
+    return [dict(row) for row in rows]
+
+
+def _materials(args: argparse.Namespace, settings: Settings) -> int:
+    from . import material_walk, ocr_trial
+
+    roots = _material_roots(settings, args.project, args.root)
+    if args.materials_command == "walk":
+        if not args.dry_run:
+            print("现在只做盘点：请加 --dry-run。真正建材料索引是第三期的事。", file=sys.stderr)
+            return 2
+        report = material_walk.walk_materials(
+            roots, probe_media=not args.no_probe, progress=material_walk.stderr_progress
+        )
+        print(material_walk.render_report(report))
+        if args.json:
+            args.json.expanduser().write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            print(f"完整结果已存到 {args.json}")
+        return 0
+
+    from .materials import ROOT_ONLINE, volume_state
+
+    online = [Path(root["path"]) for root in roots if volume_state(root["path"]) == ROOT_ONLINE]
+    if not online:
+        print("挂的材料文件夹现在都不在（盘没插或文件夹没了）", file=sys.stderr)
+        return 1
+    images = ocr_trial.pick_images(ocr_trial.collect_images(online), online, args.limit)
+    if not images:
+        print("材料里没找到大于 20 KB 的图片", file=sys.stderr)
+        return 1
+    out_dir = (args.out.expanduser() if args.out else ocr_trial.default_out_dir(settings.data_dir))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    workdir = ocr_trial.scratch_dir()
+    try:
+        engines, notes = ocr_trial.prepare_engines(args.engine or ["vision", "tesseract"], workdir)
+        for note in notes:
+            print(note, file=sys.stderr)
+        if not engines:
+            return 1
+        report = ocr_trial.run_trial(
+            images,
+            engines,
+            progress=lambda done, total: print(f"已识别 {done}/{total} 张…", file=sys.stderr, flush=True),
+        )
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    (out_dir / "结果.md").write_text(ocr_trial.render_markdown(report, notes), encoding="utf-8")
+    (out_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(ocr_trial.render_summary(report, out_dir))
+    return 0
+
+
 def _database(settings: Settings) -> Database:
     assert settings.database_path is not None
     db = Database(settings.database_path)
@@ -135,6 +253,8 @@ def _raise_open_file_limit(target: int = 4096) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = Settings()
+    if args.command == "materials":
+        return _materials(args, settings)
     if args.command == "serve":
         _raise_open_file_limit()
         if settings.host not in {"127.0.0.1", "::1", "localhost"}:
