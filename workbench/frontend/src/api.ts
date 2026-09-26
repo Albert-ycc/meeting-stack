@@ -51,6 +51,7 @@ import type {
   LegacyGroupsSummary,
   CardsBanner,
   MeetingCard,
+  MeetingGlossary,
   MeetingCardEffect,
   ProjectCardsSummary,
 } from "./types";
@@ -310,6 +311,27 @@ export const api = {
   legacyGroups: () => read<{ summary: LegacyGroupsSummary | null }>("/api/glossary/legacy-groups"),
   undoLegacyGroups: () => write<{ restored: number }>("/api/glossary/legacy-groups/undo", "POST", {}),
   dismissLegacyGroups: () => write<{ ok: boolean }>("/api/glossary/legacy-groups/dismiss", "POST", {}),
+  meetingGlossary: (meetingId: string) =>
+    read<{ glossary: MeetingGlossary | null }>(`/api/meetings/${encodeURIComponent(meetingId)}/glossary`),
+  /** projectId 不传：沿用上次按哪个项目查；null：回到默认；项目 id：按这个项目查 */
+  checkMeetingGlossary: (meetingId: string, projectId?: string | null) =>
+    write<{ glossary: MeetingGlossary | null }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/glossary/check`,
+      "POST",
+      projectId === undefined ? {} : { project_id: projectId },
+    ),
+  applyMeetingGlossary: (meetingId: string, baseVersionId: string) =>
+    write<{ version_id: string; replaced: number; glossary: MeetingGlossary | null }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/glossary/apply`,
+      "POST",
+      { base_version_id: baseVersionId },
+    ),
+  undoMeetingGlossary: (meetingId: string) =>
+    write<{ version_id: string; glossary: MeetingGlossary | null }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/glossary/undo`,
+      "POST",
+      {},
+    ),
   meetingCard: (meetingId: string) => read<MeetingCard>(`/api/meetings/${encodeURIComponent(meetingId)}/card`),
   meetingCardAction: (meetingId: string, action: "rewrite" | "regenerate") =>
     write<MeetingCard>(`/api/meetings/${encodeURIComponent(meetingId)}/card`, "POST", { action }),

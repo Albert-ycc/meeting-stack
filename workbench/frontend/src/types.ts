@@ -346,7 +346,8 @@ export interface AttributionEvidence {
   project_id?: string | null;
   project_name?: string | null;
   cue?: string;
-  source?: "name" | "also" | "folder" | "term";
+  /** injection：relay 出纪要前按逐字稿认出这个项目、用它的词典纠的错 */
+  source?: "name" | "also" | "folder" | "term" | "injection";
   count?: number;
   anchors_ms?: number[];
   where?: { title: number; transcript: number; minutes: number };
@@ -400,12 +401,57 @@ export interface AttributionSummary {
   corrected_30d: number;
 }
 
+/** relay 出纪要时这场用了哪些词（glossary-injection.json 回执的摘要） */
+export interface MeetingGlossaryReceipt {
+  id: number;
+  job_id: string | null;
+  attempt: number | null;
+  project_id: string | null;
+  project_name: string | null;
+  /** hint：工作台告诉 relay 的；transcript：relay 按逐字稿认出的 */
+  project_source: "hint" | "transcript" | null;
+  term_count: number;
+  project_terms: number;
+  public_terms: number;
+  snapshot_missing: boolean;
+  generated_at: string | null;
+}
+
+export interface MeetingGlossaryHit {
+  kind: "corrected" | "missed";
+  term: string;
+  wrong: string;
+  term_project_id: string | null;
+  transcript_count: number;
+  minutes_count: number;
+}
+
+/** 会议页「词典」小节 */
+export interface MeetingGlossary {
+  /** receipt 按回执的项目 / meeting 按会议当前项目 / chosen 你指定的 / public 只有公共词 */
+  basis: "receipt" | "meeting" | "chosen" | "public";
+  project: { id: string; name: string | null; color: string | null } | null;
+  meeting_project: { id: string; name: string | null; color: string | null } | null;
+  /** 会议归属的项目和查纪要用的项目不一样 */
+  mismatch: boolean;
+  receipt: MeetingGlossaryReceipt | null;
+  minutes_version_id: string | null;
+  /** 纪要在上次体检之后又改过 */
+  stale: boolean;
+  checked_at: string;
+  corrected: MeetingGlossaryHit[];
+  missed: MeetingGlossaryHit[];
+  applied: { by: "auto" | "user"; count: number; at: string; can_undo: boolean } | null;
+}
+
 export interface MeetingDetail extends MeetingSummary {
   /** 只在 PATCH 改了项目的响应里出现 */
   effects?: MeetingProjectEffects;
   attribution?: MeetingAttribution;
   /** 项目文件夹里的会议卡片状态（旧后端没有） */
   card?: MeetingCard;
+  /** 按词典查纪要的结果（还没查过时是 null，旧后端没有） */
+  glossary?: MeetingGlossary | null;
   canonical_dir?: string | null;
   current_transcript_version_id?: string | null;
   current_minutes_version_id?: string | null;

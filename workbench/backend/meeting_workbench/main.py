@@ -249,7 +249,7 @@ class GlossaryMergeInput(BaseModel):
 
 
 class GlossaryCheckInput(BaseModel):
-    """按哪个项目的词典查这场会的纪要；null 回到默认（回执 → 会议当前项目 → 公共）。"""
+    """按哪个项目的词典查这场会的纪要；null 回到默认（回执 → 会议当前项目 → 公共），不带就沿用上次的。"""
 
     model_config = ConfigDict(extra="forbid")
     project_id: str | None = None
@@ -2141,7 +2141,11 @@ def create_app(
             "SELECT 1 FROM projects WHERE id=?", (body.project_id,)
         ) is None:
             raise HTTPException(404, "项目不存在")
-        glossary_checkup.check_meeting(db, meeting_id, project_id=body.project_id)
+        if "project_id" in body.model_fields_set:
+            glossary_checkup.check_meeting(db, meeting_id, project_id=body.project_id)
+        else:
+            # 不带 project_id：纪要改过以后重查一遍，沿用上次按哪个项目查的。
+            glossary_checkup.check_meeting(db, meeting_id)
         return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
 
     @app.post("/api/meetings/{meeting_id}/glossary/apply")

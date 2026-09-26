@@ -29,6 +29,7 @@ import { AudioPlayer, type AudioPlayerHandle } from "./AudioPlayer";
 import { useConfirm, type ConfirmOptions } from "./ConfirmDialog";
 import { CopyFolderPathButton } from "./CopyFolderPathButton";
 import { MeetingCardStatus } from "./MeetingCardStatus";
+import { MeetingGlossaryPanel } from "./MeetingGlossaryPanel";
 import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
 import { MeetingTasksPanel } from "./MeetingTasksPanel";
 import { MinutesCorrectionsBar } from "./MinutesCorrectionsBar";
@@ -1352,6 +1353,20 @@ export function MeetingDetailPage({
                 onChanged={onGlossaryChanged}
                 onClose={() => setCorrections([])}
                 projects={projects}
+              />
+            )}
+            {currentMinutes && meeting.glossary && (
+              <MeetingGlossaryPanel
+                apiClient={apiClient}
+                canEdit={!isMobile && !minutesDirty && !isSaving && !busy}
+                editBlockedReason={minutesDirty ? "先保存或放弃正在改的纪要" : undefined}
+                glossary={meeting.glossary}
+                isMobile={isMobile}
+                meetingId={meeting.id}
+                onMinutesChanged={async (message) => {
+                  setNotice(message);
+                  await onReload();
+                }}
               />
             )}
             <MinutesEvidencePanel

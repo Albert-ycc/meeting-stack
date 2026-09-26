@@ -431,6 +431,13 @@ def test_meeting_glossary_api_check_apply_and_undo(tmp_path):
     assert client.post(
         "/api/meetings/vm-1/glossary/check", json={"project_id": "p-gone"}, headers=headers
     ).status_code == 404
+    kept = client.post("/api/meetings/vm-1/glossary/check", json={}, headers=headers).json()["glossary"]
+    assert (kept["basis"], kept["project"]["id"]) == ("chosen", "p-yt")
+    reset = client.post(
+        "/api/meetings/vm-1/glossary/check", json={"project_id": None}, headers=headers
+    ).json()["glossary"]
+    assert (reset["basis"], reset["project"]["id"]) == ("meeting", "p-zt")
+    client.post("/api/meetings/vm-1/glossary/check", json={"project_id": "p-yt"}, headers=headers)
 
     stale = client.post("/api/meetings/vm-1/glossary/apply", json={"base_version_id": "mv-0"}, headers=headers)
     assert stale.status_code == 409

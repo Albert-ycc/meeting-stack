@@ -547,7 +547,7 @@ export function GlossaryPage({
           <span className="eyebrow">GLOSSARY / 术语词典</span>
           <h1>词典</h1>
           <p>
-            纪要生成时会把权威写法注入给 AI，编辑纪要时的错字更正会进待确认队列，确认后反写回词典。
+            出纪要时，按这场会的内容挑出相关的词交给 AI 纠错；词典不改逐字稿，想让逐字稿更准，用热词重新转写。编辑纪要时改过的错字，确认后也会记进来。
           </p>
         </div>
       </header>
