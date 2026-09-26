@@ -690,3 +690,21 @@ def test_no_root_waits_and_mounting_one_writes_the_backlog(tmp_path):
     assert _card_files(root) == ["260926 初审规则沟通.md"]
     assert json.loads(_card_row(db)["written_fps"])
     assert os.listdir(root / CARDS)
+
+
+def test_a_folder_shared_by_two_projects_only_gets_the_first_projects_cards(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    first, root = _project(db, disk, "云图AI")
+    second = make_project(db, "云图看板")
+    _mount(db, second, root)
+    _meeting(db, first)
+    _meeting(db, second, meeting_id="vm-20260927-090000", title="看板评审", when="2026-09-27T09:00:00")
+
+    writer.reconcile()
+
+    assert _card_files(root) == ["260926 初审规则沟通.md"]
+    row = _card_row(db, "vm-20260927-090000")
+    assert (row["state"], row["reason"]) == ("blocked", "root_shared")
+    with db.autocommit() as connection:
+        assert writer.project_cards(connection, second)["waiting_reason"] == "root_shared"
+        assert writer.meeting_card(connection, "vm-20260927-090000")["category"] == "stopped"

@@ -74,13 +74,15 @@ NO_ROOT = "no_root"
 ROOT_OFFLINE = "root_offline"
 ROOT_MISSING = "root_missing"
 ROOT_REFUSED = "root_in_archive"
+# 同一个文件夹挂在几个项目下（老数据）：卡片只写给最早挂上的那个项目
+ROOT_SHARED = "root_shared"
 PAUSED = "paused"
 DISABLED = "disabled"
 QUEUED = "queued"
 # 卡片行的 state：这些原因记成 blocked（根目录或开关的问题），其余记成 pending（在等纪要、项目）。
-BLOCKED_REASONS = {NO_ROOT, ROOT_OFFLINE, ROOT_MISSING, ROOT_REFUSED, PAUSED, DISABLED}
+BLOCKED_REASONS = {NO_ROOT, ROOT_OFFLINE, ROOT_MISSING, ROOT_REFUSED, ROOT_SHARED, PAUSED, DISABLED}
 # 界面分三类（好了 / 在等什么 / 为什么停了）：这些原因要你处理才会动，算「停了」，其余算「在等」。
-STOP_REASONS = {ROOT_MISSING, ROOT_REFUSED, PAUSED, DISABLED}
+STOP_REASONS = {ROOT_MISSING, ROOT_REFUSED, ROOT_SHARED, PAUSED, DISABLED}
 # 这些原因不靠库里的变化解除（插上盘、找回文件夹），行保持 dirty，每轮重试。
 _RETRY_REASONS = {ROOT_OFFLINE, ROOT_MISSING}
 
@@ -504,6 +506,7 @@ class _Snapshot:
     eligible: bool
     paused: set[str]
     root: str | None
+    root_owner: str | None
     link_status: str | None
     minutes: dict[str, Any] | None
 
@@ -630,6 +633,7 @@ class CardWriter:
         card = _Card.from_row(meeting_id, dict(row) if row else None)
         minutes = None
         root = None
+        root_owner = None
         link_status = None
         eligible = False
         if meeting:
@@ -646,6 +650,7 @@ class CardWriter:
                     (meeting["project_id"],),
                 ).fetchone()
                 root = found["path"] if found else None
+                root_owner = _root_owner(connection, root) if root else None
             found = connection.execute(
                 "SELECT status FROM project_links WHERE meeting_id=? ORDER BY id DESC LIMIT 1",
                 (meeting_id,),
@@ -664,6 +669,7 @@ class CardWriter:
             eligible=eligible,
             paused=paused_projects(connection),
             root=root,
+            root_owner=root_owner,
             link_status=link_status,
             minutes=minutes,
         )
@@ -785,6 +791,8 @@ class CardWriter:
             return None, PAUSED
         if not snapshot.root:
             return None, NO_ROOT
+        if snapshot.root_owner and snapshot.root_owner != meeting["project_id"]:
+            return None, ROOT_SHARED
         state = self._root_state(snapshot.root, round_)
         if state != ROOT_ONLINE:
             return None, state
@@ -1475,6 +1483,8 @@ class CardWriter:
             reason = PAUSED
         elif not root:
             reason = NO_ROOT
+        elif _root_owner(connection, root) not in (None, project_id):
+            reason = ROOT_SHARED
         else:
             state = self._root_state(root, _Round())
             reason = None if state == ROOT_ONLINE else state
@@ -1719,6 +1729,16 @@ class CardWriter:
 
 
 # ---------------------------------------------------------------------- 工具
+
+
+def _root_owner(connection: Any, root: str) -> str | None:
+    """同一个文件夹挂在几个项目下时，最早挂上的那个项目（卡片只写给它）。"""
+    row = connection.execute(
+        """SELECT project_id FROM project_material_roots WHERE path=?
+            ORDER BY created_at, id LIMIT 1""",
+        (root,),
+    ).fetchone()
+    return row["project_id"] if row else None
 
 
 def _safe_part(value: str) -> str:
