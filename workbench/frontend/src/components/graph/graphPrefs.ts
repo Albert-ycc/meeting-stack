@@ -68,3 +68,12 @@ export function recordGraphOpen(now = new Date()) {
   const kept = Object.keys(counts).sort().slice(-12);
   write("opens", JSON.stringify(Object.fromEntries(kept.map((key) => [key, counts[key]]))));
 }
+
+/** 一次性提示（比如「节点不能随意摆放」）看过没有 */
+export function readHintSeen(name: string): boolean {
+  return read(`hint.${name}`) === "1";
+}
+
+export function writeHintSeen(name: string) {
+  write(`hint.${name}`, "1");
+}

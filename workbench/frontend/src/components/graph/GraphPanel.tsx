@@ -52,6 +52,7 @@ const KIND_LABEL: Record<LaidNode["kind"], string> = {
   loose: "散放文件",
   cue: "线索词",
   beacon: "跨项目",
+  ghost: "刚改走的会",
 };
 
 // 同一场会的简报在面板之间复用；图数据一变就清掉。
@@ -88,9 +89,26 @@ function useBrief(apiClient: ApiClient, meetingId: string | null, version: numbe
   return { brief: brief && brief.meeting.id === meetingId ? brief : null, error, setBrief };
 }
 
-export interface GraphNoticeUndo {
-  meetingId: string;
-  until: string;
+/**
+ * 画布上能撤销的一步：带［撤销］的提示、⌘Z、残影都走这里。改归属的撤销期由服务器定（10 分钟）；
+ * 关联需求、搬任务由前端记下原样，同样只留 10 分钟。
+ */
+export type GraphNoticeUndo =
+  | { kind: "project"; meetingId: string; until: string }
+  | { kind: "link"; requirementId: string; meetingId: string; title: string; until: string }
+  | {
+      kind: "task";
+      taskId: string;
+      title: string;
+      before: { project_id: string | null; requirement_id: string | null };
+      until: string;
+    };
+
+/** 前端自己记的撤销（关联需求、搬任务）也只留 10 分钟 */
+export const LOCAL_UNDO_MS = 10 * 60_000;
+
+export function localUndoUntil(now = Date.now()) {
+  return new Date(now + LOCAL_UNDO_MS).toISOString();
 }
 
 export interface GraphPanelProps {
@@ -203,7 +221,7 @@ function MeetingPanelBody({
             void props.onChanged();
           }}
           onNotice={(message, undoUntil, tone) =>
-            props.onNotice(message, undoUntil ? { meetingId, until: undoUntil } : undefined, tone)
+            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone)
           }
           onProjectsChanged={props.onChanged}
           onSeek={(ms) => audio && player.play(audio, ms, title)}
@@ -740,7 +758,7 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
             void props.onChanged();
           }}
           onNotice={(message, undoUntil, tone) =>
-            props.onNotice(message, undoUntil ? { meetingId, until: undoUntil } : undefined, tone)
+            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone)
           }
           onProjectsChanged={props.onChanged}
           onSeek={(ms) => brief.meeting.audio_url && player.play(brief.meeting.audio_url, ms, brief.meeting.title)}

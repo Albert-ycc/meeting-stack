@@ -1,4 +1,4 @@
-// 关系图（1g）接口的数据形状，和后端 graph.py 一一对应。
+// 关系图（1g、1h）接口的数据形状，和后端 graph.py 一一对应。
 
 import type { MeetingAttribution, MeetingCard } from "../../types";
 
@@ -17,6 +17,9 @@ export interface GraphMeeting {
   attribution: { label: string; source: "review" | "confirmed" | "manual" | "ai" | "legacy" };
   open_tasks: number;
   pending_tasks: number;
+  /** 改到别的项目时跟着走的任务数、挂在本项目需求上留下的任务数（拖放前的预览用） */
+  tasks_follow: number;
+  tasks_stay: number;
   card: CardCategory | null;
   card_text: string | null;
   has_minutes: boolean;
@@ -92,9 +95,12 @@ export interface GraphBeaconItem {
   kind: "meeting_requirement" | "requirement_meeting" | "task_elsewhere" | "task_from_elsewhere";
   text: string;
   meeting_id?: string;
-  requirement_id?: string;
-  requirement_project_id?: string;
+  requirement_id?: string | null;
+  requirement_project_id?: string | null;
+  requirement_title?: string | null;
   task_id?: string;
+  task_title?: string;
+  task_project_id?: string;
   meeting_project_id?: string;
 }
 
@@ -147,22 +153,102 @@ export interface GraphPayload {
   edges: GraphEdge[];
   status: { ok: StatusPhrase[]; waiting: StatusPhrase[]; stopped: StatusPhrase[]; note: string | null };
   weekly: Array<{ from: string; to: string; count: number }>;
-  moved_out: Array<{
-    meeting_id: string;
-    title: string;
-    to_project_id: string | null;
-    to_project_name: string | null;
-    undo_until: string;
-  }>;
+  moved_out: GraphMovedOut[];
+}
+
+export interface GraphMovedOut {
+  meeting_id: string;
+  title: string;
+  date: string;
+  age_days: number;
+  to_project_id: string | null;
+  to_project_name: string | null;
+  undo_until: string;
 }
 
 export type DiskState = "online" | "missing" | "volume_offline" | "checking";
 
+export interface RecentDir {
+  name: string;
+  /** 相对根目录的路径，给 /api/graph/expand 用 */
+  dir: string;
+  path: string;
+  mtime: string;
+}
+
 export interface GraphRootsPayload {
-  roots: Array<{ id: string; root_id: number; path: string; state: DiskState; loose_count: number | null; checked_at: string | null }>;
+  roots: Array<{
+    id: string;
+    root_id: number;
+    path: string;
+    state: DiskState;
+    loose_count: number | null;
+    checked_at: string | null;
+    recent_dirs?: RecentDir[];
+  }>;
   folders: Array<{ id: string; folder_id: number; requirement_id: string; path: string; state: DiskState }>;
   loose: { count: number; recent: Array<{ name: string; path: string; size: number; mtime: string }> };
   checking: boolean;
+  /** 本机打开声档时才给「在访达中显示」 */
+  can_reveal?: boolean;
+}
+
+export interface ExpandPayload {
+  root_id: number;
+  project_id: string;
+  root_path: string;
+  dir: string;
+  path: string;
+  state: DiskState;
+  crumbs: Array<{ name: string; dir: string }>;
+  dirs: Array<{ name: string; dir: string; path: string; mtime: string }>;
+  dirs_total: number;
+  files: Array<{ name: string; path: string; size: number; mtime: string }>;
+  files_total: number;
+}
+
+export interface FulltextPayload {
+  variants: string[];
+  total: number;
+  meeting_count: number;
+  meetings: Array<{ meeting_id: string; title: string; date: string; count: number; first_ms: number }>;
+}
+
+export interface FocusDecision {
+  text: string;
+  start_ms: number | null;
+  detail?: string;
+}
+
+export interface FocusTask {
+  id: string;
+  title: string;
+  detail: string;
+  status: string;
+  anchor_ms: number | null;
+  anchor_quote: string;
+  project_id: string | null;
+  requirement_id: string | null;
+  requirement_title: string | null;
+  deliverables: Array<{ kind: string; url: string; title: string }>;
+}
+
+export interface FocusNeighbour {
+  meeting_id: string;
+  title: string;
+  date: string;
+}
+
+export interface MeetingFocus {
+  meeting: MeetingBrief["meeting"];
+  summary: string;
+  decisions: FocusDecision[];
+  decisions_note: string | null;
+  tasks: FocusTask[];
+  tasks_more: number;
+  requirements: Array<{ id: string; title: string; priority: string; status: string; project_id: string }>;
+  previous: FocusNeighbour | null;
+  next: FocusNeighbour | null;
 }
 
 export interface CollapsedPayload {

@@ -12,6 +12,7 @@ import type {
   GraphDoorstep,
   GraphFolder,
   GraphMeeting,
+  GraphMovedOut,
   GraphPayload,
   GraphRequirement,
   Ring,
@@ -29,7 +30,8 @@ export type NodeKind =
   | "folder_more"
   | "loose"
   | "cue"
-  | "beacon";
+  | "beacon"
+  | "ghost";
 
 export type Direction = "center" | "left" | "right" | "top" | "bottom";
 
@@ -65,7 +67,8 @@ export type LaidNode =
   | (BaseNode & { kind: "folder_more"; data: NonNullable<GraphPayload["folders_more"]> })
   | (BaseNode & { kind: "loose"; data: NonNullable<GraphPayload["loose"]> })
   | (BaseNode & { kind: "cue"; data: GraphCue; fontSize: number })
-  | (BaseNode & { kind: "beacon"; data: GraphBeacon });
+  | (BaseNode & { kind: "beacon"; data: GraphBeacon })
+  | (BaseNode & { kind: "ghost"; data: GraphMovedOut; text: string });
 
 export interface RingGuide {
   name: string;
@@ -179,11 +182,30 @@ function claim(taken: boolean[], ideal: number): number {
   return -1;
 }
 
-function idealMeetingSlot(meeting: GraphMeeting): number {
+function idealMeetingSlot(meeting: { ring: Ring; age_days: number }): number {
   if (meeting.ring === "inner") return Math.min(INNER_SLOTS - 1, meeting.age_days);
   if (meeting.age_days < 7) return 0;
   return Math.floor((Math.min(meeting.age_days, 27) - 7) / 2.1);
 }
+
+/** 残影的圈：和它还在时一样按天数算；时间窗外或更早的会本来就折叠了，不画残影。 */
+function ghostRing(item: GraphMovedOut, windowDays: number | null): "inner" | "middle" | null {
+  if (windowDays !== null && item.age_days >= windowDays) return null;
+  if (item.age_days < 7) return "inner";
+  if (item.age_days < 28) return "middle";
+  return null;
+}
+
+/** 残影两行：上面是原来的日期和标题（划掉），下面小字「已改到 数据中台 · 点一下撤销」 */
+export function ghostText(item: GraphMovedOut, today: string): string {
+  return fitText(`${meetingDateLabel(item.date, today)} ${item.title}`, MEETING_TITLE_MAX);
+}
+
+export function ghostNote(item: GraphMovedOut): string {
+  return fitText(`已改到 ${item.to_project_name ?? "不归项目"} · 点一下撤销`, MEETING_TITLE_MAX, 11);
+}
+
+const GHOST_H = 36;
 
 function unionBox(boxes: Box[]): Box {
   if (boxes.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
@@ -233,15 +255,53 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
     inner: Array(INNER_SLOTS).fill(false),
     middle: Array(MIDDLE_SLOTS).fill(false),
   };
-  const ordered = [...graph.meetings].sort(
-    (a, b) => a.age_days - b.age_days || graph.meetings.indexOf(a) - graph.meetings.indexOf(b),
+  // 改走的会留下的残影占着原来的槽位，直到撤销期过去：和会一起按天数落槽，别的会不挪
+  type Slotted = { kind: "meeting"; item: GraphMeeting; ring: "inner" | "middle"; order: number }
+    | { kind: "ghost"; item: GraphMovedOut; ring: "inner" | "middle"; order: number };
+  const slotted: Slotted[] = graph.meetings.map((item, order) => ({
+    kind: "meeting" as const,
+    item,
+    ring: item.ring === "inner" ? ("inner" as const) : ("middle" as const),
+    order,
+  }));
+  (graph.moved_out ?? []).forEach((item, index) => {
+    const ring = ghostRing(item, graph.window.days);
+    if (ring) slotted.push({ kind: "ghost", item, ring, order: graph.meetings.length + index });
+  });
+  // 同一天的按会议 id 倒排（id 里带录音时间，越晚越靠上）：残影不知道自己原来排第几，靠 id 找回同一个槽
+  slotted.sort(
+    (a, b) =>
+      a.item.age_days - b.item.age_days ||
+      (a.item.meeting_id < b.item.meeting_id ? 1 : a.item.meeting_id > b.item.meeting_id ? -1 : a.order - b.order),
   );
-  for (const meeting of ordered) {
-    const ring: "inner" | "middle" = meeting.ring === "inner" ? "inner" : "middle";
-    const slot = claim(taken[ring], idealMeetingSlot(meeting));
+  for (const entry of slotted) {
+    const ring = entry.ring;
+    const slot = claim(taken[ring], idealMeetingSlot({ ring, age_days: entry.item.age_days }));
     if (slot < 0) continue;
     const y = (ring === "inner" ? innerY : middleY)[slot];
     const x = arcX(ring, y, -1);
+    if (entry.kind === "ghost") {
+      const ghost = entry.item;
+      const text = ghostText(ghost, graph.today);
+      add({
+        id: `g:${ghost.meeting_id}`,
+        kind: "ghost",
+        direction: "left",
+        ring,
+        x,
+        y,
+        box: {
+          ...leftLabelBox(x, y, Math.max(textWidth(text), textWidth(ghostNote(ghost), 11))),
+          y: y - GHOST_H / 2,
+          h: GHOST_H,
+        },
+        label: `刚改到 ${ghost.to_project_name ?? "不归项目"} 的会：${ghost.title}，点一下撤销`,
+        data: ghost,
+        text,
+      });
+      continue;
+    }
+    const meeting = entry.item;
     const text = fitText(
       `${meetingDateLabel(meeting.date, graph.today)} ${meeting.title}`,
       MEETING_TITLE_MAX,
@@ -478,6 +538,26 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
     bounds: unionBox(nodes.map((node) => node.box)),
     focusBounds: unionBox(focus.map((node) => node.box)),
   };
+}
+
+/**
+ * N 键的顺序：当前画布里要你处理的节点，门口的会、待复核的会、有待确认任务的会、卡片停了的会、
+ * 有待确认任务的需求，各自从上往下（需求从左往右）。不跨项目，不排成队列，只是依次跳。
+ */
+export function attentionOrder(layout: StarLayout): string[] {
+  const byY = (a: LaidNode, b: LaidNode) => a.y - b.y || a.x - b.x;
+  const doorstep = layout.nodes.filter((node) => node.kind === "doorstep").sort(byY);
+  const meetings = layout.nodes
+    .filter(
+      (node): node is Extract<LaidNode, { kind: "meeting" }> =>
+        node.kind === "meeting" &&
+        (node.data.state === "needs_review" || node.data.pending_tasks > 0 || node.data.card === "stopped"),
+    )
+    .sort((a, b) => a.x - b.x || a.y - b.y);
+  const requirements = layout.nodes
+    .filter((node) => node.kind === "requirement" && node.data.pending_tasks > 0)
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  return [...doorstep, ...meetings, ...requirements].map((node) => node.id);
 }
 
 /** 两个框是否相交（贴边不算）。 */

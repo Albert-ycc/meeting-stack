@@ -10,15 +10,18 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 
-import type { DiskState, GraphEdge, GraphPayload, GraphRootsPayload } from "./graphTypes";
+import type { DiskState, GraphEdge, GraphMeeting, GraphPayload, GraphRootsPayload } from "./graphTypes";
+import { readHintSeen, writeHintSeen } from "./graphPrefs";
 import {
   DIRECTION_NAMES,
   DIRECTION_ORDER,
   NODE_H,
   fitText,
+  ghostNote,
   meetingDateLabel,
   nearestInDirection,
   overlaps,
@@ -59,6 +62,56 @@ export interface DoorstepAnswer {
   projectId: string | null;
 }
 
+/** 会议拖到哪儿：别的项目（信标，或拖动时底部出现的项目条）改归属；本项目的需求上关联 */
+export type DropTarget =
+  | { kind: "project"; projectId: string; name: string }
+  | { kind: "requirement"; requirementId: string; title: string };
+
+/** 按住移动超过这么多像素才算拖，免得点一下就变成拖 */
+export const DRAG_THRESHOLD = 6;
+const DRAG_HINT_MS = 6_000;
+
+interface DragState {
+  nodeId: string;
+  meetingId: string;
+  startX: number;
+  startY: number;
+  /** 按下时指针和圆点的距离（世界坐标），拖动时保持不变 */
+  offsetX: number;
+  offsetY: number;
+  x: number;
+  y: number;
+  clientX: number;
+  clientY: number;
+  active: boolean;
+  over: DropTarget | null;
+}
+
+function sameTarget(a: DropTarget | null, b: DropTarget | null) {
+  if (!a || !b) return a === b;
+  if (a.kind === "project" && b.kind === "project") return a.projectId === b.projectId;
+  if (a.kind === "requirement" && b.kind === "requirement") return a.requirementId === b.requirementId;
+  return false;
+}
+
+/** 放下前的那句预览，也是这次操作的确认 */
+export function dropPreview(graph: GraphPayload, meeting: GraphMeeting, target: DropTarget | null): string {
+  if (!target) return "拖到下面的项目上改归属，拖到需求上关联；在空白处松手会弹回原位";
+  if (target.kind === "requirement") {
+    const linked = graph.edges.some(
+      (edge) =>
+        edge.kind === "discussion" && edge.meeting_id === meeting.meeting_id && edge.requirement_id === target.requirementId,
+    );
+    return linked ? `已经关联过「${target.title}」了` : `放下：关联到需求「${target.title}」`;
+  }
+  const along = [
+    meeting.tasks_follow > 0 ? `${meeting.tasks_follow} 条任务` : "",
+    meeting.card ? "会议卡片" : "",
+  ].filter(Boolean);
+  const head = along.length ? `放下：改到 ${target.name}（${along.join("、")}一起过去）` : `放下：改到 ${target.name}`;
+  return meeting.tasks_stay > 0 ? `${head}；${meeting.tasks_stay} 条挂在本项目需求上的任务留下` : head;
+}
+
 interface GraphCanvasProps {
   viewKey: string;
   graph: GraphPayload;
@@ -72,6 +125,17 @@ interface GraphCanvasProps {
   onAnswerDoorstep: (answer: DoorstepAnswer) => void;
   /** 上一次画布上某个节点的位置（门口作答后节点从这里飞到新位置） */
   previousPositions?: Map<string, { x: number; y: number }>;
+  /** 拖动时底部列出的项目（不含本项目） */
+  dropProjects?: Array<{ id: string; name: string; color: string }>;
+  onDropMeeting?: (meetingId: string, target: DropTarget) => void;
+  /** 点残影：撤销那次改归属 */
+  onUndoGhost?: (meetingId: string) => void;
+  /** N 键依次跳的节点；没有时调 onNothingToDo */
+  attention?: string[];
+  onNothingToDo?: () => void;
+  /** 双击会议：展开这场会；双击需求：打开需求页 */
+  onExpandMeeting?: (meetingId: string) => void;
+  onOpenRequirement?: (requirementId: string) => void;
 }
 
 function neighbours(edges: GraphEdge[], id: string): Set<string> {
@@ -154,12 +218,27 @@ export function GraphCanvas({
   onSelect,
   onAnswerDoorstep,
   previousPositions,
+  dropProjects = [],
+  onDropMeeting,
+  onUndoGhost,
+  attention = [],
+  onNothingToDo,
+  onExpandMeeting,
+  onOpenRequirement,
 }: GraphCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef<ZoomBehavior<HTMLDivElement, unknown> | null>(null);
   const [transform, setTransform] = useState<{ x: number; y: number; k: number }>(
     () => savedViews.get(viewKey) ?? { x: 500, y: 320, k: 1 },
   );
+  const transformRef = useRef(transform);
+  transformRef.current = transform;
+  const dragRef = useRef<DragState | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const suppressClickRef = useRef(false);
+  const [dragHint, setDragHint] = useState("");
+  const dropRef = useRef(onDropMeeting);
+  dropRef.current = onDropMeeting;
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [ringHint, setRingHint] = useState<string | null>(null);
   const [active, setActive] = useState<Partial<Record<Direction, string>>>({});
@@ -213,6 +292,8 @@ export function GraphCanvas({
         if (!(event as UIEvent).view) return false;
         const target = event.target as HTMLElement | null;
         if (target?.closest?.(".graph-doorstep__actions")) return false;
+        // 会议节点按住是拖放，不是平移
+        if (onDropMeeting && target?.closest?.("[data-draggable]")) return false;
         return !(event as MouseEvent).button;
       })
       .on("zoom", (event: { transform: ZoomTransform }) => {
@@ -274,6 +355,117 @@ export function GraphCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNode?.id, panelOpen]);
 
+  useEffect(() => {
+    if (!dragHint) return;
+    const timer = window.setTimeout(() => setDragHint(""), DRAG_HINT_MS);
+    return () => window.clearTimeout(timer);
+  }, [dragHint]);
+
+  const toWorld = (clientX: number, clientY: number) => {
+    const rect = viewportRef.current?.getBoundingClientRect();
+    const t = transformRef.current;
+    return { x: (clientX - (rect?.left ?? 0) - t.x) / t.k, y: (clientY - (rect?.top ?? 0) - t.y) / t.k };
+  };
+
+  const endDrag = useCallback(
+    (drop: boolean) => {
+      const current = dragRef.current;
+      dragRef.current = null;
+      setDrag(null);
+      if (!current?.active) return;
+      // 松手后浏览器还会补一个 click，别让它变成选中或取消选中
+      suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+      if (drop && current.over) {
+        dropRef.current?.(current.meetingId, current.over);
+        return;
+      }
+      if (!readHintSeen("drag")) {
+        writeHintSeen("drag");
+        setDragHint("位置按类型和时间排，节点不能随意摆放；把会拖到下面的项目上改归属，拖到需求上关联");
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!drag) return;
+    const onMove = (event: MouseEvent) => {
+      const current = dragRef.current;
+      if (!current) return;
+      if (!current.active) {
+        if (Math.hypot(event.clientX - current.startX, event.clientY - current.startY) < DRAG_THRESHOLD) return;
+        current.active = true;
+        setHoverId(null);
+      }
+      const point = toWorld(event.clientX, event.clientY);
+      current.x = point.x + current.offsetX;
+      current.y = point.y + current.offsetY;
+      current.clientX = event.clientX;
+      current.clientY = event.clientY;
+      setDrag({ ...current });
+    };
+    const onUp = () => endDrag(true);
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") endDrag(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey);
+    };
+    // 只在开始、结束拖动时重挂
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag === null, endDrag]);
+
+  const startDrag = (node: LaidNode, event: ReactMouseEvent) => {
+    if (!onDropMeeting || busy || event.button !== 0 || node.kind !== "meeting") return;
+    const point = toWorld(event.clientX, event.clientY);
+    const state: DragState = {
+      nodeId: node.id,
+      meetingId: node.data.meeting_id,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: node.x - point.x,
+      offsetY: node.y - point.y,
+      x: node.x,
+      y: node.y,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      active: false,
+      over: null,
+    };
+    dragRef.current = state;
+    setDrag(state);
+  };
+
+  const dragging = drag?.active ? drag : null;
+
+  const enterDrop = (target: DropTarget) => {
+    const current = dragRef.current;
+    if (!current?.active || sameTarget(current.over, target)) return;
+    current.over = target;
+    setDrag({ ...current });
+  };
+
+  const leaveDrop = (target: DropTarget) => {
+    const current = dragRef.current;
+    if (!current?.active || !sameTarget(current.over, target)) return;
+    current.over = null;
+    setDrag({ ...current });
+  };
+
+  const dropTargetOf = (node: LaidNode): DropTarget | null => {
+    if (node.kind === "beacon") return { kind: "project", projectId: node.data.project_id, name: node.data.project_name };
+    if (node.kind === "requirement") return { kind: "requirement", requirementId: node.data.requirement_id, title: node.data.title };
+    return null;
+  };
+
   const detail = labelDetailFor(transform.k);
 
   const zoomBy = (factor: number) => {
@@ -295,6 +487,20 @@ export function GraphCanvas({
     if (target.closest("select, input, textarea")) return;
     if (event.key === "Escape") {
       onSelect(null);
+      return;
+    }
+    if ((event.key === "n" || event.key === "N") && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+      if (attention.length === 0) {
+        onNothingToDo?.();
+        return;
+      }
+      const at = selectedId ? attention.indexOf(selectedId) : -1;
+      const next = attention[(at + 1) % attention.length];
+      const node = layout.byId.get(next);
+      if (node) setActive((current) => ({ ...current, [node.direction]: next }));
+      onSelect(next);
+      window.requestAnimationFrame(() => focusNode(next));
       return;
     }
     if (event.key === "0") {
@@ -335,37 +541,62 @@ export function GraphCanvas({
     if (node.id === selectedId) classes.push("is-selected");
     if (dimSet && !dimSet.has(node.id)) classes.push("is-dim");
     if (highlight?.has(node.id)) classes.push("is-lit");
+    if (dragging) {
+      const target = dropTargetOf(node);
+      if (target) classes.push(sameTarget(dragging.over, target) ? "is-drop-over" : "is-drop-target");
+    }
     return classes.filter(Boolean).join(" ");
   };
 
-  const common = (node: LaidNode) => ({
-    "data-node-id": node.id,
-    "aria-label": node.label,
-    "aria-pressed": node.id === selectedId,
-    tabIndex: tabIndexFor(node),
-    onClick: () => onSelect(node.id === selectedId ? null : node.id),
-    onDoubleClick: () => {
-      if (node.kind === "project") fitView(layout.focusBounds, true);
-    },
-    onMouseEnter: () => setHoverId(node.id),
-    onMouseLeave: () => setHoverId((current) => (current === node.id ? null : current)),
-    onFocus: () => setActive((current) => ({ ...current, [node.direction]: node.id })),
-  });
+  const common = (node: LaidNode) => {
+    const target = dropTargetOf(node);
+    return {
+      "data-node-id": node.id,
+      "aria-label": node.label,
+      "aria-pressed": node.id === selectedId,
+      tabIndex: tabIndexFor(node),
+      onClick: () => {
+        if (suppressClickRef.current) return;
+        onSelect(node.id === selectedId ? null : node.id);
+      },
+      onDoubleClick: () => {
+        if (node.kind === "project") fitView(layout.focusBounds, true);
+        if (node.kind === "meeting") onExpandMeeting?.(node.data.meeting_id);
+        if (node.kind === "requirement") onOpenRequirement?.(node.data.requirement_id);
+      },
+      onMouseEnter: () => {
+        if (dragRef.current?.active) {
+          if (target) enterDrop(target);
+          return;
+        }
+        setHoverId(node.id);
+      },
+      onMouseLeave: () => {
+        if (target) leaveDrop(target);
+        setHoverId((current) => (current === node.id ? null : current));
+      },
+      onFocus: () => setActive((current) => ({ ...current, [node.direction]: node.id })),
+    };
+  };
 
   // dx：左侧节点的圆点在按钮最右端、右侧节点的圆点在最左端，让圆点圆心正好落在布局坐标上
   const positioned = (node: LaidNode, style: CSSProperties, children: ReactNode, extra = "", dx = 0) => {
     const from = previousPositions?.get(node.id);
-    const animate = { left: node.x + dx, top: node.y };
+    const moving = dragging?.nodeId === node.id ? dragging : null;
+    const animate = moving ? { left: moving.x + dx, top: moving.y } : { left: node.x + dx, top: node.y };
     const initial = from && !reduceMotion ? { left: from.x + dx, top: from.y } : false;
+    const draggable = node.kind === "meeting" && Boolean(onDropMeeting);
     return (
       <motion.button
         {...common(node)}
         animate={animate}
-        className={nodeClass(node, extra)}
+        className={nodeClass(node, `${extra}${moving ? " is-dragging" : ""}${draggable ? " is-draggable" : ""}`)}
+        data-draggable={draggable ? "" : undefined}
         initial={initial}
         key={node.id}
+        onMouseDown={draggable ? (event) => startDrag(node, event) : undefined}
         style={style}
-        transition={{ duration: reduceMotion ? 0 : 0.45, ease: [0.16, 1, 0.3, 1] }}
+        transition={{ duration: reduceMotion || moving ? 0 : 0.45, ease: [0.16, 1, 0.3, 1] }}
         type="button"
       >
         {children}
@@ -561,6 +792,32 @@ export function GraphCanvas({
           { ["--project-color" as string]: node.data.project_color },
           <span className="graph-node__label">{node.data.label}</span>,
         );
+      case "ghost":
+        return (
+          <motion.button
+            animate={{ left: node.x + 6, top: node.y, opacity: 1 }}
+            aria-label={node.label}
+            className={nodeClass(node, "graph-node--left")}
+            data-node-id={node.id}
+            disabled={busy}
+            initial={reduceMotion ? false : { left: node.x + 6, top: node.y, opacity: 0 }}
+            key={node.id}
+            onClick={() => onUndoGhost?.(node.data.meeting_id)}
+            onFocus={() => setActive((current) => ({ ...current, [node.direction]: node.id }))}
+            tabIndex={tabIndexFor(node)}
+            title="10 分钟内点一下撤销"
+            transition={{ duration: reduceMotion ? 0 : 0.3 }}
+            type="button"
+          >
+            {detail !== "summary" && (
+              <span className="graph-node__label">
+                <s>{detail === "full" ? node.text : node.text.slice(0, 8)}</s>
+                <small>{detail === "full" ? ghostNote(node.data) : "点一下撤销"}</small>
+              </span>
+            )}
+            <i aria-hidden="true" className="graph-node__dot graph-node__dot--ghost" />
+          </motion.button>
+        );
       default:
         return null;
     }
@@ -602,7 +859,7 @@ export function GraphCanvas({
   return (
     <div
       aria-label={`${graph.project.name} 关系图`}
-      className={`graph-viewport graph-viewport--${detail}`}
+      className={`graph-viewport graph-viewport--${detail}${dragging ? " is-dragging" : ""}`}
       onKeyDown={onKeyDown}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) setHoverId(null);
@@ -613,6 +870,7 @@ export function GraphCanvas({
       <div
         className="graph-world"
         onClick={(event) => {
+          if (suppressClickRef.current) return;
           if (event.target === event.currentTarget) onSelect(null);
         }}
         style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})` }}
@@ -641,6 +899,15 @@ export function GraphCanvas({
           </text>
         </svg>
         <svg className="graph-edges" height="1" width="1">
+          {dragging && layout.byId.get(dragging.nodeId) && (
+            <line
+              className="graph-drag-line"
+              x1={layout.byId.get(dragging.nodeId)!.x}
+              x2={dragging.x}
+              y1={layout.byId.get(dragging.nodeId)!.y}
+              y2={dragging.y}
+            />
+          )}
           {edges.map(({ edge, from, to }) => {
             const path = edgePath(from, to, edge.kind);
             const lit = edge.id === selectedEdge || focusId === edge.from || focusId === edge.to;
@@ -696,7 +963,50 @@ export function GraphCanvas({
             ) : null,
           )}
       </div>
-      {ringHint && <div className="graph-ring-hint" role="status">{ringHint}，远近表示新旧，不表示重要</div>}
+      {ringHint && !dragging && <div className="graph-ring-hint" role="status">{ringHint}，远近表示新旧，不表示重要</div>}
+      {dragHint && !dragging && (
+        <div className="graph-ring-hint graph-drag-hint" role="status">
+          {dragHint}
+        </div>
+      )}
+      {dragging && (() => {
+        const node = layout.byId.get(dragging.nodeId);
+        if (node?.kind !== "meeting") return null;
+        const rect = viewportRef.current?.getBoundingClientRect();
+        const px = dragging.clientX - (rect?.left ?? 0);
+        const py = dragging.clientY - (rect?.top ?? 0);
+        // 靠近底边（项目条在那儿）时放到指针上方，靠近右边时往左收
+        const below = !rect?.height || py + 90 < rect.height;
+        const style: CSSProperties = below ? { top: py + 18 } : { bottom: (rect?.height ?? 0) - py + 14 };
+        if (rect?.width && px + 380 > rect.width) style.right = Math.max(8, rect.width - px + 8);
+        else style.left = px + 16;
+        return (
+          <div className={`graph-drag-preview${dragging.over ? " is-over" : ""}`} role="status" style={style}>
+            {dropPreview(graph, node.data, dragging.over)}
+          </div>
+        );
+      })()}
+      {dragging && dropProjects.length > 0 && (
+        <div aria-label="拖到项目上改归属" className="graph-dock" role="group">
+          <span className="graph-dock__label">改到</span>
+          {dropProjects.map((project) => {
+            const target: DropTarget = { kind: "project", projectId: project.id, name: project.name };
+            return (
+              <span
+                className={`graph-dock__item${sameTarget(dragging.over, target) ? " is-over" : ""}`}
+                data-drop-project={project.id}
+                key={project.id}
+                onMouseEnter={() => enterDrop(target)}
+                onMouseLeave={() => leaveDrop(target)}
+                style={{ ["--project-color" as string]: project.color }}
+              >
+                <i aria-hidden="true" />
+                {project.name}
+              </span>
+            );
+          })}
+        </div>
+      )}
       <div className="graph-zoom" role="group" aria-label="缩放">
         <button aria-label="放大" onClick={() => zoomBy(1.25)} type="button">+</button>
         <button aria-label="缩小" onClick={() => zoomBy(0.8)} type="button">−</button>

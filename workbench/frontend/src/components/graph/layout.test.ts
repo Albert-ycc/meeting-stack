@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { GraphPayload } from "./graphTypes";
-import { RING_GUIDES, layoutStarMap, overlaps, textWidth, fitText, nearestInDirection } from "./layout";
+import { RING_GUIDES, attentionOrder, layoutStarMap, overlaps, textWidth, fitText, nearestInDirection } from "./layout";
 import { day, meeting, payload, requirement } from "./testFixtures";
 
 /** 「7 天内 6 个需求、10 场会」，外加门口、折叠、满额的文件夹和线索词、两个信标 */
@@ -155,5 +155,47 @@ describe("layoutStarMap", () => {
     const top = layout.byId.get("r:r1")!;
     expect(nearestInDirection(layout.nodes, top, "ArrowUp")).toBeNull();
     expect(nearestInDirection(layout.nodes, center, "ArrowDown")?.kind).toBe("cue");
+  });
+
+  it("改走的会留下的残影占着原来的槽位，别的会不挪；窗口外的不画", () => {
+    const before = layoutStarMap(pressure());
+    const graph = pressure();
+    const [moved, ...rest] = graph.meetings;
+    const after = layoutStarMap({
+      ...graph,
+      meetings: rest,
+      moved_out: [
+        { meeting_id: moved.meeting_id, title: moved.title, date: moved.date, age_days: moved.age_days, to_project_id: "q", to_project_name: "数据中台", undo_until: "2099-01-01T00:00:00Z" },
+        { meeting_id: "old", title: "很早的会", date: day(40), age_days: 40, to_project_id: "q", to_project_name: "数据中台", undo_until: "2099-01-01T00:00:00Z" },
+      ],
+    });
+    const ghost = after.byId.get(`g:${moved.meeting_id}`)!;
+    expect(ghost.kind).toBe("ghost");
+    expect([ghost.x, ghost.y]).toEqual([before.byId.get(moved.id)!.x, before.byId.get(moved.id)!.y]);
+    for (const other of rest) {
+      expect([after.byId.get(other.id)!.x, after.byId.get(other.id)!.y]).toEqual([before.byId.get(other.id)!.x, before.byId.get(other.id)!.y]);
+    }
+    expect(after.byId.has("g:old")).toBe(false);
+    // 残影连同「点一下撤销」也不压别的节点
+    for (const node of after.nodes) {
+      if (node.id !== ghost.id && node.direction === "left") expect(overlaps(node.box, ghost.box)).toBe(false);
+    }
+  });
+
+  it("N 的顺序：门口、待复核或待确认或卡片停了的会、有待确认任务的需求", () => {
+    const graph = payload({
+      meetings: [
+        meeting("a", 0),
+        meeting("b", 1, { pending_tasks: 2 }),
+        meeting("c", 3, { card: "stopped" }),
+        meeting("d", 9, { ring: "middle", state: "needs_review" }),
+      ],
+      doorstep: pressure().doorstep.slice(0, 1),
+      requirements: [requirement("r1", { pending_tasks: 1 }), requirement("r2")],
+    });
+    const order = attentionOrder(layoutStarMap(graph));
+    expect(order[0]).toBe("d:door0");
+    expect(order.slice(1, 4).sort()).toEqual(["m:b", "m:c", "m:d"]);
+    expect(order.slice(4)).toEqual(["r:r1"]);
   });
 });

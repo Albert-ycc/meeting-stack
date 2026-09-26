@@ -58,10 +58,13 @@ import type {
 import type {
   CollapsedPayload,
   CueTermDetail,
+  ExpandPayload,
+  FulltextPayload,
   GraphPayload,
   GraphRootsPayload,
   GraphWindow,
   MeetingBrief,
+  MeetingFocus,
   QuotesPayload,
 } from "./components/graph/graphTypes";
 
@@ -287,9 +290,11 @@ export const api = {
     ),
   meetingBrief: (meetingId: string) =>
     read<MeetingBrief>(`/api/meetings/${encodeURIComponent(meetingId)}/brief`),
-  meetingQuotes: (meetingId: string, at: number[]) => {
+  /** span=wide：决议、任务面板要前后各 20 秒 */
+  meetingQuotes: (meetingId: string, at: number[], span?: "wide") => {
     const params = new URLSearchParams();
     at.forEach((value) => params.append("at", String(Math.round(value))));
+    if (span) params.append("span", span);
     const encoded = params.toString();
     return read<QuotesPayload>(
       `/api/meetings/${encodeURIComponent(meetingId)}/quotes${encoded ? `?${encoded}` : ""}`,
@@ -297,6 +302,19 @@ export const api = {
   },
   glossaryTermDetail: (termId: string) =>
     read<CueTermDetail>(`/api/glossary/terms/${encodeURIComponent(termId)}`),
+  // ---------------------------------------------------------------- 关系图（1h）
+  graphMeetingFocus: (meetingId: string) =>
+    read<MeetingFocus>(`/api/graph/meetings/${encodeURIComponent(meetingId)}`),
+  /** 材料根目录里的一层；dir 是相对根目录的路径 */
+  graphExpand: (rootId: number, dir = "") =>
+    read<ExpandPayload>(`/api/graph/expand${queryString({ root: rootId, dir })}`),
+  /** 一个词在这个项目全部逐字稿里的次数；term 是词条 id，会连错写、也叫一起数 */
+  graphFulltext: (projectId: string, query: { q?: string; term?: string }) =>
+    read<FulltextPayload>(
+      `/api/graph/projects/${encodeURIComponent(projectId)}/fulltext${queryString(query)}`,
+    ),
+  revealMaterial: (path: string) =>
+    write<{ ok: boolean; path: string }>("/api/materials/reveal", "POST", { path }),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>

@@ -21,6 +21,8 @@ export function meeting(id: string, ago: number, overrides: Partial<GraphMeeting
     attribution: { label: "自动 · 提到『初审规则』3 次", source: "ai" },
     open_tasks: 0,
     pending_tasks: 0,
+    tasks_follow: 0,
+    tasks_stay: 0,
     card: null,
     card_text: null,
     has_minutes: true,

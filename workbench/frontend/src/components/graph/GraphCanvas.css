@@ -647,3 +647,147 @@
     animation: none;
   }
 }
+
+/* ── 拖放（1h） ─────────────────────────── */
+
+.graph-node.is-draggable {
+  cursor: grab;
+}
+
+.graph-viewport.is-dragging,
+.graph-viewport.is-dragging .graph-node {
+  cursor: grabbing;
+}
+
+/* 拖着的会跟着指针走；不挡住下面的落点，好让落点收到悬停 */
+.graph-node.is-dragging {
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0.92;
+}
+
+.graph-node.is-dragging .graph-node__label {
+  color: var(--heading);
+  background: var(--raised);
+  box-shadow: 0 6px 18px rgb(0 0 0 / calc(0.22 * var(--shadow-k)));
+}
+
+.graph-drag-line {
+  stroke: var(--signal);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+  opacity: 0.6;
+}
+
+.graph-node.is-drop-target .graph-node__label,
+.graph-node--requirement.is-drop-target,
+.graph-node--beacon.is-drop-target .graph-node__label {
+  box-shadow: 0 0 0 1px var(--signal-line);
+}
+
+.graph-node--requirement.is-drop-over,
+.graph-node--beacon.is-drop-over .graph-node__label {
+  background: var(--signal-bg);
+  box-shadow: 0 0 0 2px var(--signal);
+}
+
+.graph-drag-preview {
+  position: absolute;
+  z-index: 6;
+  max-width: 360px;
+  padding: 6px 10px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / calc(0.2 * var(--shadow-k)));
+  pointer-events: none;
+}
+
+.graph-drag-preview.is-over {
+  color: var(--heading);
+  border-color: var(--signal-line);
+}
+
+/* 拖动时贴在视口底边的项目条：拖到哪个项目上就改到哪个 */
+.graph-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 32px);
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--raised) 92%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow);
+  transform: translateX(-50%);
+}
+
+.graph-dock__label {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.graph-dock__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  color: var(--ink);
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-pill);
+}
+
+.graph-dock__item i {
+  width: 8px;
+  height: 8px;
+  background: var(--project-color, var(--muted));
+  border-radius: 50%;
+}
+
+.graph-dock__item.is-over {
+  color: var(--heading);
+  background: var(--signal-bg);
+  border: 1px solid var(--signal);
+}
+
+/* 残影：改走的会在原槽位留一个灰色的影子，10 分钟内点它就撤销 */
+.graph-node--ghost {
+  opacity: 0.7;
+}
+
+.graph-node--ghost .graph-node__label {
+  color: var(--muted);
+}
+
+.graph-node--ghost .graph-node__label s {
+  text-decoration-color: rgb(var(--fg-rgb) / 0.3);
+}
+
+.graph-node--ghost .graph-node__label small {
+  color: var(--signal);
+}
+
+.graph-node--ghost:hover {
+  opacity: 1;
+}
+
+.graph-node__dot--ghost {
+  background: var(--stage);
+  border: 1.5px dashed var(--muted-2);
+}
+
+.graph-drag-hint {
+  max-width: 520px;
+}

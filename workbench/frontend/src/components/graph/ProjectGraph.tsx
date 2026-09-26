@@ -4,11 +4,11 @@ import type { ApiClient } from "../../api";
 import { reassignNote } from "../../cardCopy";
 import type { Project } from "../../types";
 import { NoticeBanner, useNotice, type NoticeTone } from "../Notice";
-import { GraphCanvas, forgetGraphViews, type DoorstepAnswer } from "./GraphCanvas";
-import { GraphPanel, clearBriefCache, type GraphNoticeUndo } from "./GraphPanel";
+import { GraphCanvas, forgetGraphViews, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
+import { GraphPanel, clearBriefCache, localUndoUntil, type GraphNoticeUndo } from "./GraphPanel";
 import type { GraphPayload, GraphRootsPayload, GraphWindow, StatusPhrase } from "./graphTypes";
 import { readGraphWindow, recordGraphOpen, writeGraphWindow } from "./graphPrefs";
-import { layoutStarMap, type StarLayout } from "./layout";
+import { attentionOrder, layoutStarMap, type StarLayout } from "./layout";
 import { useMiniPlayer } from "./MiniPlayer";
 import "./ProjectGraph.css";
 
@@ -17,6 +17,8 @@ export const UNDO_NOTICE_MS = 10_000;
 /** 画布开着时每 30 秒对一次数据；没变化时服务器回 304，几乎不花钱 */
 const REFRESH_MS = 30_000;
 const TRAIL_MAX = 5;
+/** ⌘Z 最多往回退这么多步 */
+const UNDO_STACK_MAX = 10;
 
 const WINDOW_OPTIONS: Array<{ key: GraphWindow; label: string }> = [
   { key: "7d", label: "7 天" },
@@ -44,6 +46,13 @@ export function forgetGraphCache() {
   rootsCache.clear();
   forgetGraphViews();
   clearBriefCache();
+}
+
+function sameUndo(a: GraphNoticeUndo, b: GraphNoticeUndo) {
+  if (a.kind === "project" && b.kind === "project") return a.meetingId === b.meetingId;
+  if (a.kind === "link" && b.kind === "link") return a.meetingId === b.meetingId && a.requirementId === b.requirementId;
+  if (a.kind === "task" && b.kind === "task") return a.taskId === b.taskId;
+  return false;
 }
 
 function errorText(reason: unknown, fallback: string) {
@@ -193,7 +202,9 @@ export function ProjectGraph({
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState(0);
   const [previousPositions, setPreviousPositions] = useState<Map<string, { x: number; y: number }> | undefined>();
-  const [undo, setUndo] = useState<GraphNoticeUndo | null>(null);
+  // 最近几步能撤销的操作，最新的在最后：提示条上的［撤销］和 ⌘Z 都撤最后一步
+  const [undoStack, setUndoStack] = useState<GraphNoticeUndo[]>([]);
+  const [clock, setClock] = useState(() => Date.now());
   const { notice, setNotice, dismissNotice } = useNotice();
   const player = useMiniPlayer();
   const requestRef = useRef(0);
@@ -265,7 +276,26 @@ export function ProjectGraph({
     };
   }, [apiClient, projectId, rootsTick]);
 
-  const layout = useMemo(() => (graph ? layoutStarMap(graph) : null), [graph]);
+  // 残影只在撤销期内画；最早的一个到期时重画一次
+  const liveGraph = useMemo(() => {
+    if (!graph) return null;
+    const movedOut = graph.moved_out.filter((item) => Date.parse(item.undo_until) > clock);
+    return movedOut.length === graph.moved_out.length ? graph : { ...graph, moved_out: movedOut };
+  }, [clock, graph]);
+
+  useEffect(() => {
+    const deadlines = [
+      ...(liveGraph?.moved_out ?? []).map((item) => Date.parse(item.undo_until)),
+      ...undoStack.map((item) => Date.parse(item.until)),
+    ].filter((value) => value > Date.now());
+    if (deadlines.length === 0) return;
+    const wait = Math.min(...deadlines) - Date.now() + 50;
+    const timer = window.setTimeout(() => setClock(Date.now()), Math.min(wait, 2_147_000_000));
+    return () => window.clearTimeout(timer);
+  }, [liveGraph, undoStack]);
+
+  const layout = useMemo(() => (liveGraph ? layoutStarMap(liveGraph) : null), [liveGraph]);
+  const attention = useMemo(() => (layout ? attentionOrder(layout) : []), [layout]);
 
   const resolved = graph && layout && selection ? resolveSelection(graph, layout, selection) : null;
 
@@ -322,7 +352,7 @@ export function ProjectGraph({
   const showNotice = useCallback(
     (message: string, undoTarget?: GraphNoticeUndo, tone: NoticeTone = "success") => {
       setNotice(message, tone, undoTarget ? UNDO_NOTICE_MS : undefined);
-      setUndo(undoTarget ?? null);
+      if (undoTarget) setUndoStack((current) => [...current, undoTarget].slice(-UNDO_STACK_MAX));
     },
     [setNotice],
   );
@@ -349,7 +379,10 @@ export function ProjectGraph({
         target === graph.project.id ? graph.project.name : projects.find((project) => project.id === target)?.name ?? "";
       const head = target ? `已归到 ${name || "所选项目"}` : "已标为不归这些项目";
       const note = effects ? reassignNote(effects.tasks_moved, effects.tasks_left.length, effects.card) : "";
-      showNotice(note ? `${head}；${note}` : head, effects?.undo_until ? { meetingId, until: effects.undo_until } : undefined);
+      showNotice(
+        note ? `${head}；${note}` : head,
+        effects?.undo_until ? { kind: "project", meetingId, until: effects.undo_until } : undefined,
+      );
       if (selection === `d:${meetingId}`) {
         setTrail([]);
         onSelectionChange(target === graph.project.id ? `m:${meetingId}` : null);
@@ -362,16 +395,113 @@ export function ProjectGraph({
     }
   };
 
-  const undoChange = async (meetingId: string) => {
+  /** 撤销一步。改归属走服务器的撤销；关联需求就解除；搬任务就按原样搬回来（连需求一起） */
+  const runUndo = async (entry: GraphNoticeUndo) => {
     if (busy) return;
     setBusy(true);
     rememberPositions();
+    setUndoStack((current) => current.filter((item) => item !== entry && !sameUndo(item, entry)));
     try {
-      const detail = await apiClient.undoMeetingProject(meetingId);
-      showNotice(detail.effects?.card?.action === "moved" ? "已撤销刚才的改动，会议卡片也搬回去了" : "已撤销刚才的改动");
+      if (entry.kind === "project") {
+        const detail = await apiClient.undoMeetingProject(entry.meetingId);
+        showNotice(detail.effects?.card?.action === "moved" ? "已撤销刚才的改动，会议卡片也搬回去了" : "已撤销刚才的改动");
+      } else if (entry.kind === "link") {
+        await apiClient.removeRequirementMeeting(entry.requirementId, entry.meetingId);
+        clearBriefCache();
+        showNotice(`已撤销：这场会不再关联「${entry.title}」`);
+      } else {
+        await apiClient.updateTask(entry.taskId, entry.before);
+        clearBriefCache();
+        showNotice(`已撤销：任务「${entry.title}」搬回去了`);
+      }
       await changed();
     } catch (reason) {
       showNotice(errorText(reason, "撤销失败"), undefined, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const undoChange = (meetingId: string) =>
+    runUndo(
+      undoStack.find((item) => item.kind === "project" && item.meetingId === meetingId) ?? {
+        kind: "project",
+        meetingId,
+        until: new Date(Date.now() + 60_000).toISOString(),
+      },
+    );
+
+  const liveUndo = undoStack.filter((item) => Date.parse(item.until) > clock);
+  const lastUndo = liveUndo[liveUndo.length - 1] ?? null;
+  const undoRef = useRef<() => void>(() => undefined);
+  undoRef.current = () => {
+    const now = Date.now();
+    const entry = [...undoStack].reverse().find((item) => Date.parse(item.until) > now);
+    if (entry) void runUndo(entry);
+    else showNotice("没有能撤销的操作了（只保留 10 分钟内的）", undefined, "warning");
+  };
+
+  // ⌘Z / Ctrl+Z：撤销画布上最近一步；在输入框里时交给输入框自己
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "z" || event.shiftKey || !(event.metaKey || event.ctrlKey)) return;
+      if (event.isComposing) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.("input, textarea, select, [contenteditable='true']")) return;
+      event.preventDefault();
+      undoRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const dropMeeting = async (meetingId: string, target: DropTarget) => {
+    if (busy || !graph) return;
+    if (target.kind === "requirement") {
+      const linked = graph.edges.some(
+        (edge) => edge.kind === "discussion" && edge.meeting_id === meetingId && edge.requirement_id === target.requirementId,
+      );
+      if (linked) {
+        showNotice(`已经关联过「${target.title}」了`, undefined, "warning");
+        return;
+      }
+      setBusy(true);
+      try {
+        await apiClient.addRequirementMeeting(target.requirementId, meetingId);
+        clearBriefCache();
+        showNotice(`已关联到「${target.title}」`, {
+          kind: "link",
+          requirementId: target.requirementId,
+          meetingId,
+          title: target.title,
+          until: localUndoUntil(),
+        });
+        await changed();
+      } catch (reason) {
+        showNotice(errorText(reason, "关联失败"), undefined, "error");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    setBusy(true);
+    rememberPositions();
+    try {
+      const detail = await apiClient.updateMeeting(meetingId, { project_id: target.projectId });
+      const effects = detail.effects;
+      const note = effects ? reassignNote(effects.tasks_moved, effects.tasks_left.length, effects.card) : "";
+      const head = `已改到 ${target.name}`;
+      showNotice(
+        note ? `${head}；${note}` : head,
+        effects?.undo_until ? { kind: "project", meetingId, until: effects.undo_until } : undefined,
+      );
+      if (selection === `m:${meetingId}`) {
+        setTrail([]);
+        onSelectionChange(null);
+      }
+      await changed();
+    } catch (reason) {
+      showNotice(errorText(reason, "改归属失败"), undefined, "error");
     } finally {
       setBusy(false);
     }
@@ -389,9 +519,15 @@ export function ProjectGraph({
     select(null);
   };
 
-  const now = Date.now();
-  const movedOut = (graph?.moved_out ?? []).filter((item) => Date.parse(item.undo_until) > now);
-  const undoOpen = undo && Date.parse(undo.until) > now;
+  // 画得下的会在原槽位留残影；太旧、窗口外的放在顶上一行
+  const movedOut = (liveGraph?.moved_out ?? []).filter((item) => !layout?.byId.has(`g:${item.meeting_id}`));
+  const dropProjects = useMemo(
+    () =>
+      projects
+        .filter((project) => project.id !== projectId)
+        .map((project) => ({ id: project.id, name: project.name, color: project.color })),
+    [projectId, projects],
+  );
 
   let stage: ReactNode;
   if (!graph || !layout) {
@@ -411,12 +547,18 @@ export function ProjectGraph({
     stage = (
       <>
         <GraphCanvas
+          attention={attention}
           busy={busy}
+          dropProjects={dropProjects}
           graph={graph}
           highlight={highlight?.ids ?? null}
           layout={layout}
           onAnswerDoorstep={(answer) => void answerDoorstep(answer)}
+          onDropMeeting={(meetingId, target) => void dropMeeting(meetingId, target)}
+          onNothingToDo={() => showNotice("这张图上没有要你处理的了")}
+          onOpenRequirement={onOpenRequirement}
           onSelect={select}
+          onUndoGhost={(meetingId) => void undoChange(meetingId)}
           panelOpen={Boolean(resolved)}
           previousPositions={previousPositions}
           roots={roots}
@@ -491,8 +633,8 @@ export function ProjectGraph({
         </ul>
       )}
       <NoticeBanner className="project-graph__notice" notice={notice} onDismiss={dismissNotice}>
-        {undoOpen && notice?.tone === "success" && (
-          <button className="text-button action-banner__undo" disabled={busy} onClick={() => void undoChange(undo.meetingId)} type="button">
+        {lastUndo && notice?.tone === "success" && (
+          <button className="text-button action-banner__undo" disabled={busy} onClick={() => void runUndo(lastUndo)} type="button">
             撤销
           </button>
         )}
