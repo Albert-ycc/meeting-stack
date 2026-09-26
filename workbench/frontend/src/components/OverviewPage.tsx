@@ -10,7 +10,7 @@ import {
   statusTone,
   serviceStateLabel,
 } from "../format";
-import type { HealthPayload, Job, MeetingSummary, Task } from "../types";
+import type { AttributionSummary, HealthPayload, Job, MeetingSummary, Task } from "../types";
 import { DitherArea, DitherCalendar, type CalendarCell } from "./charts/DitherChart";
 import { BlurText } from "./motion/BlurText";
 import { CountUp } from "./motion/CountUp";
@@ -26,6 +26,9 @@ interface OverviewPageProps {
   onOpenMeeting?: (meetingId: string) => void;
   apiClient: ApiClient;
   onOpenTasks: () => void;
+  /** 最近 14 天等你选项目的会；有才出计数卡 */
+  attributionSummary?: AttributionSummary | null;
+  onOpenAttributionReview?: () => void;
 }
 
 const ATTENTION_KIND_TEXT: Record<string, string> = {
@@ -99,7 +102,10 @@ export function OverviewPage({
   onOpenMeeting,
   apiClient,
   onOpenTasks,
+  attributionSummary,
+  onOpenAttributionReview,
 }: OverviewPageProps) {
+  const reviewCount = attributionSummary?.needs_review_recent ?? 0;
   const activeJobs = jobs.filter(
     (job) =>
       !["completed_unreviewed", "draft_modified", "published", "cancelled", "failed", "interrupted"].includes(
@@ -269,7 +275,7 @@ export function OverviewPage({
         </div>
       </header>
 
-      <div className="metric-strip">
+      <div className={`metric-strip ${reviewCount > 0 ? "metric-strip--five" : ""}`}>
         {jobsInteractive ? (
           <button onClick={onOpenTasks} type="button">
             <span>待确认任务</span>
@@ -290,6 +296,13 @@ export function OverviewPage({
             <strong><CountUp value={todoState === "loading" ? "…" : pendingTotal} /></strong>
             <small>桌面端确认</small>
           </div>
+        )}
+        {reviewCount > 0 && (
+          <button onClick={onOpenAttributionReview ?? onOpenLibrary} type="button">
+            <span>等你选项目</span>
+            <strong><CountUp value={reviewCount} /></strong>
+            <small>{reviewCount} 场会等你选项目 →</small>
+          </button>
         )}
         {jobsInteractive ? (
           <button disabled={!jobsAvailable} onClick={onOpenJobs} type="button">

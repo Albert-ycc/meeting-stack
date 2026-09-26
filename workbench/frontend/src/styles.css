@@ -2272,3 +2272,55 @@ textarea {
   border-left: 1px solid var(--line);
   box-shadow: -24px 0 60px rgba(0, 0, 0, 0.5);
 }
+
+/* 第一期 1b：资料库归属筛选 chip、待你选的行、工作台第五张计数卡 */
+.filter-chip {
+  min-height: 36px;
+  padding: 7px 12px;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.filter-chip--on {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+}
+
+.archive-row__attention {
+  color: var(--warn);
+}
+
+.archive-row__review {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 62px 12px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.archive-row__review .ghost-button {
+  padding: 3px 10px;
+}
+
+.archive-row__review em {
+  color: var(--danger);
+  font-style: normal;
+}
+
+.metric-strip--five {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+@media (max-width: 767px) {
+  .metric-strip--five {
+    grid-template-columns: 1fr 1fr;
+  }
+}

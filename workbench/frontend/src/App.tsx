@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type ApiClient } from "./api";
 import type {
   AttentionPayload,
+  AttributionSummary,
   HealthPayload,
   Job,
   LoadState,
@@ -92,6 +93,7 @@ export default function App({ apiClient = api }: AppProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsAvailable, setJobsAvailable] = useState(false);
   const [attention, setAttention] = useState<AttentionPayload | null>(null);
+  const [attributionSummary, setAttributionSummary] = useState<AttributionSummary | null>(null);
   const [jobsState, setJobsState] = useState<LoadState>("loading");
   const [jobsMessage, setJobsMessage] = useState("");
   const [jobsStale, setJobsStale] = useState(false);
@@ -198,6 +200,16 @@ export default function App({ apiClient = api }: AppProps) {
     }
   }, [apiClient]);
 
+  // 归属汇总：工作台「N 场会等你选项目」、资料库「待归属 N」「像新项目 N」。拿不到就不显示。
+  const loadAttributionSummary = useCallback(async () => {
+    try {
+      const payload = await apiClient.attributionSummary?.();
+      if (payload) setAttributionSummary(payload);
+    } catch {
+      // 忽略：下一次刷新再取
+    }
+  }, [apiClient]);
+
   // 资料库「需要处理」：失败任务 + 隔离目录。拿不到时保留上一份，不影响资料库主体。
   const loadAttention = useCallback(async () => {
     try {
@@ -266,13 +278,14 @@ export default function App({ apiClient = api }: AppProps) {
         await Promise.all([loadMeetings({}, 0), loadJobs()]);
         void loadGlossaryPending();
         void loadAttention();
+        void loadAttributionSummary();
       }
     };
     void initialize();
     return () => {
       active = false;
     };
-  }, [apiClient, applyHash, loadAttention, loadGlossaryPending, loadJobs, loadMeetings]);
+  }, [apiClient, applyHash, loadAttention, loadAttributionSummary, loadGlossaryPending, loadJobs, loadMeetings]);
 
   const hasActiveJobs = useMemo(
     () => jobs.some((job) => !terminalJobStates.has(job.state)),
@@ -568,6 +581,11 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenLibrary={() => navigate("library")}
         onOpenMeeting={openMeeting}
         onOpenTasks={() => navigate("tasks")}
+        attributionSummary={attributionSummary}
+        onOpenAttributionReview={() => {
+          applyFilters({ attribution: "needs_review" });
+          navigate("library");
+        }}
       />
     );
   } else if (view === "library") {
@@ -588,6 +606,19 @@ export default function App({ apiClient = api }: AppProps) {
         tags={tags}
         total={meetingTotal}
         attention={attention}
+        attributionSummary={attributionSummary}
+        onAssignProject={
+          isMobile
+            ? undefined
+            : async (meetingId, projectId) => {
+                await apiClient.updateMeeting(meetingId, { project_id: projectId });
+                await Promise.all([
+                  loadMeetings(filters, meetingOffset, true),
+                  loadAttributionSummary(),
+                  refreshProjects(),
+                ]);
+              }
+        }
         onAcknowledgeJob={
           isMobile
             ? undefined
