@@ -705,12 +705,22 @@ export function MeetingDetailPage({
     setBusy(true);
     setSavingKind("classification");
     setNotice("");
+    // 只带和 baseline 相比改过的字段：只勾标签不能顺手把项目写一遍，
+    // 否则后端会把「AI 还没判断」的会当成你手动选了「不归项目」。
+    const changes: { project_id?: string; tag_ids?: string[]; requirement_ids?: string[] } = {};
+    if (snapshotProjectId !== baselineProjectId) changes.project_id = snapshotProjectId;
+    if ([...snapshotTagIds].sort().join("\u0000") !== [...baselineTagIds].sort().join("\u0000")) {
+      changes.tag_ids = snapshotTagIds;
+    }
+    const snapshotRequirementIds = snapshotRequirementRefs.map((requirement) => requirement.id);
+    if (
+      [...snapshotRequirementIds].sort().join(",") !==
+      baselineRequirementRefs.map((requirement) => requirement.id).sort().join(",")
+    ) {
+      changes.requirement_ids = snapshotRequirementIds;
+    }
     try {
-      await apiClient.updateMeeting(meeting.id, {
-        project_id: snapshotProjectId,
-        tag_ids: snapshotTagIds,
-        requirement_ids: snapshotRequirementRefs.map((requirement) => requirement.id),
-      });
+      await apiClient.updateMeeting(meeting.id, changes);
       setBaselineProjectId(snapshotProjectId);
       setBaselineTagIds(snapshotTagIds);
       setBaselineRequirementRefs(snapshotRequirementRefs);
@@ -1043,7 +1053,7 @@ export function MeetingDetailPage({
                   </select>
                 </label>
                 {meeting.project_origin === "ai" && meeting.project_id && (
-                  <p className="muted">由会议纪要自动匹配；保存一次后不再自动改动</p>
+                  <p className="muted">由会议纪要自动匹配；改选项目后以你选的为准</p>
                 )}
                 <MeetingRequirementPicker
                   apiClient={apiClient}

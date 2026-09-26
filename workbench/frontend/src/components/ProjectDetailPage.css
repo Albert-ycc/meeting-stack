@@ -232,6 +232,15 @@
   border-radius: 10px;
 }
 
+.material-root-row__offline {
+  flex: none;
+  padding: 2px 8px;
+  color: var(--warn);
+  font-size: 10px;
+  background: var(--warn-bg);
+  border-radius: 10px;
+}
+
 .material-root-row__ops {
   display: flex;
   flex: none;

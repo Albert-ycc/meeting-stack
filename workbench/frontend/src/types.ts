@@ -546,13 +546,20 @@ export interface GlossarySuggestion {
 export type RequirementPriority = "P0" | "P1" | "P2" | "P3";
 export type RequirementStatus = "active" | "done" | "shelved";
 
+/** online：文件夹在；missing：盘在但文件夹没了；volume_offline：资料盘没插 */
+export type MaterialRootState = "online" | "missing" | "volume_offline";
+
 export interface MaterialRoot {
   id: number;
   project_id: string;
   path: string;
-  /** 盘上找不到该目录（外置盘没插、目录被移走）时为 false，记录保留 */
+  /** 等于 state === "online"；盘没插、目录被移走时为 false，记录保留 */
   exists: boolean;
+  /** 旧后端没有这个字段，按 exists 推断 */
+  state?: MaterialRootState;
   created_at: string;
+  /** 挂载或替换时返回：和别的项目根目录互相嵌套的情况 */
+  nested?: { path: string; project_id: string; project_name: string }[];
 }
 
 export interface MaterialDirEntry {

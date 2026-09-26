@@ -40,7 +40,8 @@ export function ProjectFormModal({
   const isEdit = mode === "edit" && project !== null;
   const [name, setName] = useState(project?.name ?? "");
   const [color, setColor] = useState(project?.color ?? PROJECT_COLORS[2]);
-  const [roots, setRoots] = useState<string[]>((project?.material_roots ?? []).map((root) => root.path));
+  const initialRoots = (project?.material_roots ?? []).map((root) => root.path);
+  const [roots, setRoots] = useState<string[]>(initialRoots);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -90,7 +91,12 @@ export function ProjectFormModal({
       const saved =
         mode === "create"
           ? await apiClient.createProject(trimmedName, color, roots.length ? roots : undefined)
-          : await apiClient.updateProject(project!.id, { name: trimmedName, color, material_roots: roots });
+          : await apiClient.updateProject(project!.id, {
+              name: trimmedName,
+              color,
+              // 根目录只在真的增删过时才提交：没变时后端什么都不用动，盘没插也不影响改名
+              ...(roots.join("\u0000") !== initialRoots.join("\u0000") ? { material_roots: roots } : {}),
+            });
       onSaved(saved);
       onClose();
     } catch (err) {

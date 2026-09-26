@@ -554,8 +554,29 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(updateMeeting).toHaveBeenCalledWith("vm-1", {
       project_id: "project-b",
       tag_ids: ["tag-a", "tag-b"],
-      requirement_ids: [],
     });
+  });
+
+  it("saving only tags leaves the project out of the request", async () => {
+    const updateMeeting = vi.fn().mockResolvedValue(meeting());
+    const apiClient = { transcriptVersionSegments: vi.fn(), updateMeeting } as unknown as ApiClient;
+    render(
+      <MeetingDetailPage
+        apiClient={apiClient}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={meeting(false)}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[{ id: "project-a", name: "项目甲", color: "#376f68" }]}
+        tags={[{ id: "tag-b", name: "待跟进", color: "#f0783b" }]}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "待跟进" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
+
+    expect(updateMeeting).toHaveBeenCalledWith("vm-1", { tag_ids: ["tag-b"] });
   });
 
   it("disables the requirement picker with a placeholder until a project is chosen", async () => {
@@ -632,11 +653,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(screen.getByRole("button", { name: "保存归档归属" })).toBeEnabled();
     await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
 
-    expect(updateMeeting).toHaveBeenCalledWith("vm-1", {
-      project_id: "project-a",
-      tag_ids: [],
-      requirement_ids: ["req-1"],
-    });
+    expect(updateMeeting).toHaveBeenCalledWith("vm-1", { requirement_ids: ["req-1"] });
   });
 
   it("D24：保存归档归属时后端 404（关联的需求已不存在），就地显示原因、选择保留、按钮仍可再点", async () => {
@@ -725,7 +742,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
     );
 
     expect(screen.getByText("AI 归属")).toBeInTheDocument();
-    expect(screen.getByText("由会议纪要自动匹配；保存一次后不再自动改动")).toBeInTheDocument();
+    expect(screen.getByText("由会议纪要自动匹配；改选项目后以你选的为准")).toBeInTheDocument();
 
     rerender(
       <MeetingDetailPage
@@ -741,7 +758,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
     );
 
     expect(screen.queryByText("AI 归属")).not.toBeInTheDocument();
-    expect(screen.queryByText("由会议纪要自动匹配；保存一次后不再自动改动")).not.toBeInTheDocument();
+    expect(screen.queryByText("由会议纪要自动匹配；改选项目后以你选的为准")).not.toBeInTheDocument();
   });
 
   it("offers retranscription and all three explicit conflict resolutions on desktop", async () => {
@@ -1214,11 +1231,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
     expect(onReload).not.toHaveBeenCalled();
     expect(onClassificationSaved).toHaveBeenCalledTimes(1);
     await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
-    expect(updateMeeting).toHaveBeenLastCalledWith("vm-1", {
-      project_id: "project-b",
-      tag_ids: [],
-      requirement_ids: [],
-    });
+    expect(updateMeeting).toHaveBeenLastCalledWith("vm-1", { project_id: "project-b" });
   });
 
   it("regenerates minutes on the default backend, or pins Claude on demand", async () => {

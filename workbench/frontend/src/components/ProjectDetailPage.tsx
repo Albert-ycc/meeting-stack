@@ -226,8 +226,8 @@ export function ProjectDetailPage({
     setRootBusy(true);
     setRootError("");
     try {
-      await apiClient.removeProjectMaterialRoot(projectId, reselectingRoot.id);
-      await apiClient.addProjectMaterialRoot(projectId, path);
+      // 原子替换：只改路径，根目录 id 不变；失败时旧根目录原样保留，不会「删了没加上」。
+      await apiClient.replaceProjectMaterialRoot(projectId, reselectingRoot.id, path);
       setReselectingRoot(null);
       setNotice("材料根目录已更新");
       await refreshAfterRootChange();
@@ -340,41 +340,47 @@ export function ProjectDetailPage({
               </div>
             ) : (
               <ul className="material-root-list">
-                {roots.map((root) => (
-                  <li className="material-root-row" key={root.id}>
-                    <FolderIcon className="material-root-row__icon" />
-                    <span className="material-root-row__path">{root.path}</span>
-                    {root.exists ? (
-                      <span className="material-root-row__count">
-                        {subfolderCounts.get(root.id) ?? 0} 个子文件夹
-                      </span>
-                    ) : (
-                      <span className="material-root-row__missing">找不到该目录</span>
-                    )}
-                    <span className="material-root-row__ops">
-                      {root.exists ? (
-                        <button onClick={() => void copyPath(root.path)} type="button">
-                          复制路径
-                        </button>
+                {roots.map((root) => {
+                  const state = root.state ?? (root.exists ? "online" : "missing");
+                  return (
+                    <li className="material-root-row" key={root.id}>
+                      <FolderIcon className="material-root-row__icon" />
+                      <span className="material-root-row__path">{root.path}</span>
+                      {state === "online" ? (
+                        <span className="material-root-row__count">
+                          {subfolderCounts.get(root.id) ?? 0} 个子文件夹
+                        </span>
+                      ) : state === "volume_offline" ? (
+                        <span className="material-root-row__offline">资料盘未连接，插上后自动恢复</span>
                       ) : (
-                        canManageFolders && (
-                          <button onClick={() => openReselectRoot(root)} type="button">
-                            重新选择
+                        <span className="material-root-row__missing">找不到该目录</span>
+                      )}
+                      <span className="material-root-row__ops">
+                        {state === "online" ? (
+                          <button onClick={() => void copyPath(root.path)} type="button">
+                            复制路径
                           </button>
-                        )
-                      )}
-                      {canManageFolders && (
-                        <button
-                          className="material-root-row__remove"
-                          onClick={() => setRemovingRoot(root)}
-                          type="button"
-                        >
-                          移除
-                        </button>
-                      )}
-                    </span>
-                  </li>
-                ))}
+                        ) : (
+                          state === "missing" &&
+                          canManageFolders && (
+                            <button onClick={() => openReselectRoot(root)} type="button">
+                              重新选择
+                            </button>
+                          )
+                        )}
+                        {canManageFolders && (
+                          <button
+                            className="material-root-row__remove"
+                            onClick={() => setRemovingRoot(root)}
+                            type="button"
+                          >
+                            移除
+                          </button>
+                        )}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>

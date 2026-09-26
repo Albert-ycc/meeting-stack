@@ -151,10 +151,29 @@ describe("TaskEditModal 修改：所属需求", () => {
     expect(screen.getByRole("button", { name: /北辰仓快递配送/ })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "保存并确认" }));
-    expect(confirmTask).toHaveBeenCalledWith(
-      "t1",
-      expect.objectContaining({ requirement_id: "req-a1", project_id: "proj-a" }),
+    expect(confirmTask).toHaveBeenCalledWith("t1", expect.objectContaining({ requirement_id: "req-a1" }));
+    // 没动过项目下拉就不带 project_id：显式 null 会被后端当成「清空项目」
+    expect(confirmTask.mock.calls[0][1]).not.toHaveProperty("project_id");
+  });
+
+  it("动过项目下拉才提交 project_id，选「未归项目」时显式传 null", async () => {
+    const updateTask = vi.fn().mockResolvedValue({});
+    render(
+      <TaskEditModal
+        apiClient={makeClient({ updateTask } as Partial<ApiClient>)}
+        canWrite
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        projects={PROJECTS}
+        task={makeTask({ status: "confirmed" })}
+      />,
     );
+
+    await userEvent.click(screen.getByRole("button", { name: /云图科研用药/ }));
+    await userEvent.click(screen.getByRole("option", { name: "未归项目" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(updateTask).toHaveBeenCalledWith("t1", expect.objectContaining({ project_id: null }));
   });
 
   it("改选未归需求后保存，requirement_id 传 null", async () => {

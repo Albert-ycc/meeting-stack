@@ -312,6 +312,7 @@ export const api = {
       "POST",
       { supplement },
     ),
+  /** 只带改过的字段。project_id："" 表示不归项目，"__ai__" 表示交还 AI 判断。 */
   updateMeeting: (
     meetingId: string,
     metadata: { project_id?: string; tag_ids?: string[]; title?: string; requirement_ids?: string[] },
@@ -326,6 +327,12 @@ export const api = {
   addProjectMaterialRoot: (projectId: string, path: string) =>
     write<MaterialRoot>(
       `/api/projects/${encodeURIComponent(projectId)}/material-roots`,
+      "POST",
+      { path },
+    ),
+  replaceProjectMaterialRoot: (projectId: string, rootId: number, path: string) =>
+    write<MaterialRoot>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/replace`,
       "POST",
       { path },
     ),

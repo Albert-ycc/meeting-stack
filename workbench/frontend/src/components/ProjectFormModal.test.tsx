@@ -182,6 +182,27 @@ describe("ProjectFormModal 编辑", () => {
     expect(updateProject).toHaveBeenCalledWith("p1", { name: "云图科研用药", color: "#2c8d83", material_roots: [] });
   });
 
+  it("只改名称和颜色时不提交根目录", async () => {
+    const updateProject = vi.fn().mockResolvedValue({ ...EXISTING_PROJECT });
+    render(
+      <ProjectFormModal
+        apiClient={makeClient({ updateProject } as Partial<ApiClient>)}
+        canPickFolders
+        mode="edit"
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        project={EXISTING_PROJECT}
+      />,
+    );
+
+    const nameInput = screen.getByPlaceholderText("例如：互联网医院");
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, "云图科研用药二期");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(updateProject).toHaveBeenCalledWith("p1", { name: "云图科研用药二期", color: "#2c8d83" });
+  });
+
   it("canPickFolders 为 false 时材料根目录只读，隐藏添加/移除入口", () => {
     render(
       <ProjectFormModal

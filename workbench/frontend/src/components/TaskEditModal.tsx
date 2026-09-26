@@ -37,6 +37,9 @@ export function TaskEditModal({
   const [projectId, setProjectId] = useState<string | null>(
     task ? task.project_id ?? null : defaultProjectId,
   );
+  // 编辑已有任务时，只有动过项目下拉才提交 project_id：后端把显式 null 当成「清空项目」，
+  // 没动过却带上 null 会把 AI 或会议给的项目冲掉。
+  const [projectTouched, setProjectTouched] = useState(false);
   const [requirementId, setRequirementId] = useState<string | null>(
     task ? task.requirement_id ?? null : defaultRequirementId,
   );
@@ -148,6 +151,7 @@ export function TaskEditModal({
     try {
       const created = await apiClient.createProject(name, DEFAULT_PROJECT_COLOR);
       setProjectId(created.id);
+      setProjectTouched(true);
       setRequirementId(null); // 新建的项目还没有需求
       setNewProjectName("");
       closeMenus();
@@ -163,7 +167,12 @@ export function TaskEditModal({
     savingRef.current = true;
     setSaving(true);
     setError("");
-    const payload = { title: trimmed, project_id: projectId, requirement_id: requirementId, assignee };
+    const payload = {
+      title: trimmed,
+      ...(!isEdit || projectTouched ? { project_id: projectId } : {}),
+      requirement_id: requirementId,
+      assignee,
+    };
     try {
       if (!isEdit) {
         await apiClient.createTask(payload);
@@ -248,6 +257,7 @@ export function TaskEditModal({
                   className={`task-edit-modal__option ${projectId === null ? "is-selected" : ""}`}
                   onClick={() => {
                     setProjectId(null);
+                    setProjectTouched(true);
                     setRequirementId(null); // 换掉/清空所属项目，之前挂的需求不属于新项目了
                     closeMenus();
                   }}
@@ -268,6 +278,7 @@ export function TaskEditModal({
                     key={project.id}
                     onClick={() => {
                       setProjectId(project.id);
+                      setProjectTouched(true);
                       setRequirementId(null); // 换了所属项目，之前挂的需求不属于新项目了
                       closeMenus();
                     }}

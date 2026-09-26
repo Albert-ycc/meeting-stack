@@ -152,6 +152,63 @@ describe("ProjectDetailPage 材料根目录卡", () => {
     expect(screen.queryByRole("button", { name: "复制路径" })).not.toBeInTheDocument();
   });
 
+  it("资料盘没插时只提示未连接，不让重新选择", async () => {
+    renderPage({
+      apiClient: client({
+        projectBoard: vi.fn().mockResolvedValue({
+          ...baseBoard,
+          material_roots: [{ ...baseBoard.material_roots![0], exists: false, state: "volume_offline" }],
+        }),
+      } as Partial<ApiClient>),
+    });
+
+    expect(await screen.findByText("资料盘未连接，插上后自动恢复")).toBeInTheDocument();
+    expect(screen.queryByText("找不到该目录")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重新选择" })).not.toBeInTheDocument();
+  });
+
+  it("重新选择走原子替换，不再先删后加", async () => {
+    const replaceProjectMaterialRoot = vi.fn().mockResolvedValue({
+      ...baseBoard.material_roots![0],
+      path: "/Volumes/资料盘/蓝鲸云",
+      exists: true,
+      state: "online",
+    });
+    const removeProjectMaterialRoot = vi.fn();
+    const addProjectMaterialRoot = vi.fn();
+    const browseMaterials = vi.fn().mockResolvedValue({
+      base: "/Volumes/资料盘",
+      path: "/Volumes/资料盘",
+      parent: null,
+      breadcrumbs: [{ name: "资料盘", path: "/Volumes/资料盘" }],
+      dirs: [{ name: "蓝鲸云", path: "/Volumes/资料盘/蓝鲸云" }],
+    });
+    renderPage({
+      apiClient: client({
+        projectBoard: vi.fn().mockResolvedValue({
+          ...baseBoard,
+          material_roots: [{ ...baseBoard.material_roots![0], exists: false, state: "missing" }],
+        }),
+        replaceProjectMaterialRoot,
+        removeProjectMaterialRoot,
+        addProjectMaterialRoot,
+        browseMaterials,
+      } as Partial<ApiClient>),
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "重新选择" }));
+    await userEvent.click(await screen.findByText("蓝鲸云"));
+    await userEvent.click(screen.getByRole("button", { name: "确定" }));
+
+    expect(replaceProjectMaterialRoot).toHaveBeenCalledWith(
+      "project-1",
+      baseBoard.material_roots![0].id,
+      "/Volumes/资料盘/蓝鲸云",
+    );
+    expect(removeProjectMaterialRoot).not.toHaveBeenCalled();
+    expect(addProjectMaterialRoot).not.toHaveBeenCalled();
+  });
+
   it("没有根目录时显示空态", async () => {
     renderPage({
       apiClient: client({
