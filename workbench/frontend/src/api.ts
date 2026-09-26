@@ -35,7 +35,7 @@ import type {
   MeetingsPayload,
   Project,
   ProjectBoard,
-  SearchItem,
+  SearchPayload,
   Segment,
   Tag,
   Task,
@@ -261,10 +261,9 @@ export const api = {
     ),
   minutesEvidence: (meetingId: string) =>
     read<MinutesEvidence>(`/api/meetings/${meetingId}/minutes-evidence`),
-  search: (query: string, mode: "exact" | "semantic") =>
-    read<{ mode: "exact" | "semantic"; items: SearchItem[] }>(
-      `/api/search${queryString({ q: query, mode })}`,
-    ),
+  /** projectId：不传搜全部；"none" 只搜没归项目的会 */
+  search: (query: string, projectId?: string) =>
+    read<SearchPayload>(`/api/search${queryString({ q: query, project_id: projectId })}`),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>

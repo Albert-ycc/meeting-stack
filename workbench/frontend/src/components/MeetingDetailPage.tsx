@@ -40,6 +40,8 @@ import { NoticeBanner, useNotice, type NoticeTone } from "./Notice";
 interface MeetingDetailPageProps {
   apiClient: ApiClient;
   initialSeekMs: number;
+  /** 从检索的纪要命中点进来时直接打开纪要页签 */
+  initialTab?: "transcript" | "minutes";
   isMobile: boolean;
   meeting: MeetingDetail;
   /** 本场任务确认/驳回之后通知外层，刷新侧栏「任务池」的待确认角标。 */
@@ -227,6 +229,7 @@ function SafeMarkdown({ children }: { children: string }) {
 export function MeetingDetailPage({
   apiClient,
   initialSeekMs,
+  initialTab = "transcript",
   isMobile,
   meeting,
   backLabel = "录音档案",
@@ -246,7 +249,7 @@ export function MeetingDetailPage({
 }: MeetingDetailPageProps) {
   const playerRef = useRef<AudioPlayerHandle>(null);
   const [currentMs, setCurrentMs] = useState(initialSeekMs);
-  const [tab, setTab] = useState<DetailTab>("transcript");
+  const [tab, setTab] = useState<DetailTab>(initialTab);
   const [engine, setEngine] = useState<"funasr" | "whisper" | "qwen">("funasr");
   const [candidateSegments, setCandidateSegments] = useState<Segment[]>([]);
   const [comparison, setComparison] = useState<TranscriptComparisonPayload | null>(null);

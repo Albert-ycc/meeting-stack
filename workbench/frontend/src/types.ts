@@ -550,18 +550,41 @@ export interface MinutesEvidence {
 }
 
 export interface SearchItem {
-  segment_id: string;
+  /** 纪要命中没有段落 id */
+  segment_id: string | null;
   meeting_id: string;
   title: string;
   canonical_dir?: string | null;
   recording_date?: string | null;
-  start_ms: number;
-  end_ms: number;
+  /** 纪要命中所在行没有时间点时为 null，点开直接看纪要 */
+  start_ms: number | null;
+  end_ms: number | null;
   speaker_name?: string | null;
   speaker_label?: string | null;
   text: string;
   score?: number;
-  match_kind?: "title" | "segment";
+  match_kind?: "title" | "segment" | "minutes";
+  /** 命中的是哪个写法（原词或词典展开出来的错写），用来高亮 */
+  matched?: string;
+  project_id?: string | null;
+  project_name?: string | null;
+  project_color?: string | null;
+}
+
+export interface SearchPayload {
+  mode: "hybrid" | "exact" | "semantic";
+  /** 包含原词（或词典里记的其他写法）的命中 */
+  items: SearchItem[];
+  /** 意思相近的段落，已去掉 items 里列过的 */
+  similar?: SearchItem[];
+  /** 自动一起搜了的其他写法 */
+  expanded?: string[];
+  /** 两个字的其他写法，只作为可点的提示 */
+  expand_hints?: string[];
+  /** 在项目里搜时，没归项目的会里还有几条命中 */
+  unattributed_hits?: number;
+  /** 意思相近的这次没搜成的原因（正在转写、模型不可用） */
+  semantic_unavailable?: string;
 }
 
 export interface MeetingFilters {

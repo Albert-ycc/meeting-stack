@@ -11,7 +11,7 @@ import type {
   MeetingFilters,
   MeetingSummary,
   Project,
-  SearchItem,
+  SearchPayload,
   Tag,
 } from "./types";
 import { AppShell, type AppView } from "./components/AppShell";
@@ -129,9 +129,12 @@ export default function App({ apiClient = api }: AppProps) {
   const [detailState, setDetailState] = useState<LoadState>("idle");
   const [detailError, setDetailError] = useState("");
   const [initialSeekMs, setInitialSeekMs] = useState(0);
+  const [initialDetailTab, setInitialDetailTab] = useState<"transcript" | "minutes">("transcript");
   const [query, setQuery] = useState("");
-  const [searchMode, setSearchMode] = useState<"exact" | "semantic">("exact");
-  const [searchItems, setSearchItems] = useState<SearchItem[]>([]);
+  // 检索结果页：提交时的搜索词和范围（"" 全部；"none" 没归项目的会；其他是项目 id）
+  const [searchedQuery, setSearchedQuery] = useState("");
+  const [searchScope, setSearchScope] = useState("");
+  const [searchResult, setSearchResult] = useState<SearchPayload | null>(null);
   const [searchState, setSearchState] = useState<LoadState>("idle");
   const [searchError, setSearchError] = useState("");
   const [searchActive, setSearchActive] = useState(false);
@@ -447,7 +450,12 @@ export default function App({ apiClient = api }: AppProps) {
     }
   }, [apiClient]);
 
-  const openMeeting = (meetingId: string, seekMs = 0, fromHistory = false) => {
+  const openMeeting = (
+    meetingId: string,
+    seekMs = 0,
+    fromHistory = false,
+    tab: "transcript" | "minutes" = "transcript",
+  ) => {
     if (detailNavigationLocked) return;
     if (!fromHistory) historySyncRef.current = false;
     if (
@@ -458,6 +466,7 @@ export default function App({ apiClient = api }: AppProps) {
       return;
     }
     setInitialSeekMs(seekMs);
+    setInitialDetailTab(tab);
     // 检索结果不清：从会议返回时要回到刚才那页结果。
     setDetailDirty(false);
     setTaskDrawerId(null);
@@ -575,9 +584,12 @@ export default function App({ apiClient = api }: AppProps) {
     };
   }, [applyHash]);
 
-  const submitSearch = async () => {
+  // word：点「也可以搜」换一个词；scope：结果页换范围
+  const submitSearch = async (overrides: { word?: string; scope?: string } = {}) => {
     if (detailNavigationLocked) return;
-    const normalized = query.trim();
+    const normalized = (overrides.word ?? query).trim();
+    // 从别的页面重新搜时回到全部项目；在结果页里接着搜就沿用刚才选的范围
+    const scope = overrides.scope ?? (searchActive ? searchScope : "");
     if (!normalized) {
       setSearchActive(false);
       return;
@@ -592,17 +604,20 @@ export default function App({ apiClient = api }: AppProps) {
     const requestSequence = ++searchRequestSequence.current;
     historySyncRef.current = false;
     resetDetailState();
+    if (overrides.word !== undefined) setQuery(normalized);
+    setSearchScope(scope);
+    setSearchedQuery(normalized);
     setSearchActive(true);
     setSearchState("loading");
     setSearchError("");
     try {
-      const payload = await apiClient.search(normalized, searchMode);
+      const payload = await apiClient.search(normalized, scope || undefined);
       if (requestSequence !== searchRequestSequence.current) return;
-      setSearchItems(payload.items);
-      setSearchState(payload.items.length ? "ready" : "empty");
+      setSearchResult(payload);
+      setSearchState("ready");
     } catch (error) {
       if (requestSequence !== searchRequestSequence.current) return;
-      setSearchItems([]);
+      setSearchResult(null);
       setSearchState("error");
       setSearchError(error instanceof Error ? error.message : "检索失败");
     }
@@ -637,10 +652,6 @@ export default function App({ apiClient = api }: AppProps) {
         placeholder="搜索会议、原句或关键词"
         value={query}
       />
-      <div className="search-mode">
-        <button aria-pressed={searchMode === "exact"} disabled={detailNavigationLocked} onClick={() => setSearchMode("exact")} type="button">原句</button>
-        <button aria-pressed={searchMode === "semantic"} disabled={detailNavigationLocked} onClick={() => setSearchMode("semantic")} type="button">语义</button>
-      </div>
       <MagneticButton className="search-submit" disabled={detailNavigationLocked} type="submit">
         检索
       </MagneticButton>
@@ -658,6 +669,7 @@ export default function App({ apiClient = api }: AppProps) {
         apiClient={apiClient}
         canWriteTasks={!isMobile || mobileTaskWrite}
         initialSeekMs={initialSeekMs}
+        initialTab={initialDetailTab}
         isMobile={isMobile}
         meeting={detail}
         backLabel={searchActive ? "检索结果" : VIEW_LABELS[view]}
@@ -689,10 +701,13 @@ export default function App({ apiClient = api }: AppProps) {
     content = (
       <SearchPage
         error={searchError}
-        items={searchItems}
-        mode={searchMode}
-        onOpen={openMeeting}
-        query={query.trim()}
+        onOpen={(meetingId, startMs, tab) => openMeeting(meetingId, startMs, false, tab)}
+        onScopeChange={(scope) => void submitSearch({ word: searchedQuery, scope })}
+        onSearchWord={(word) => void submitSearch({ word })}
+        projects={projects}
+        query={searchedQuery}
+        result={searchResult}
+        scope={searchScope}
         state={searchState}
       />
     );

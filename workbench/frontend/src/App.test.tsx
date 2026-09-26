@@ -402,6 +402,48 @@ describe("App refresh and navigation safety", () => {
     expect(screen.queryByRole("heading", { name: "可编辑会议" })).not.toBeInTheDocument();
   });
 
+  it("searches all projects by default, narrows the scope on the results page and opens minutes hits on the minutes tab", async () => {
+    const search = vi.fn().mockResolvedValue({
+      mode: "hybrid",
+      items: [
+        {
+          segment_id: null,
+          meeting_id: "vm-page-1",
+          title: "第一页会议",
+          start_ms: null,
+          end_ms: null,
+          text: "决定成立数理协会",
+          match_kind: "minutes",
+          matched: "数理协会",
+        },
+      ],
+      similar: [],
+      expanded: [],
+      expand_hints: [],
+    });
+    const meeting = vi.fn().mockResolvedValue({
+      ...detail,
+      current_minutes_version_id: "mv-1",
+      minutes_versions: [
+        { id: "mv-1", meeting_id: "vm-page-1", version_no: 1, kind: "generated", published: 0, markdown: "决定成立数理协会", created_at: "2026-07-10T00:00:00Z" },
+      ],
+    });
+    render(<App apiClient={client({ search, meeting } as Partial<ApiClient>)} />);
+    await screen.findByText("服务正常");
+
+    await userEvent.type(screen.getByLabelText("全局检索"), "数理协会");
+    await userEvent.click(screen.getByRole("button", { name: "检索" }));
+    expect(search).toHaveBeenLastCalledWith("数理协会", undefined);
+    expect(screen.queryByRole("button", { name: "原句" })).toBeNull();
+
+    fireEvent.change(await screen.findByLabelText("搜索范围"), { target: { value: "project-b" } });
+    await waitFor(() => expect(search).toHaveBeenLastCalledWith("数理协会", "project-b"));
+
+    await userEvent.click(await screen.findByRole("button", { name: "打开纪要" }));
+    expect(await screen.findByRole("heading", { name: "可编辑会议" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /会议纪要/ })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("does not reopen search when its response arrives after navigation", async () => {
     let resolveSearch!: (value: { mode: "exact"; items: [] }) => void;
     const search = vi.fn(
