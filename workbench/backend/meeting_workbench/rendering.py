@@ -50,6 +50,31 @@ def render_transcript_txt(segments: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_clock(milliseconds: int) -> str:
+    """录音时间点 HH:MM:SS，和纪要里的 [00:12:34] 锚点同一写法。"""
+    hours, remainder = divmod(max(0, int(milliseconds)) // 1000, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def render_transcript_timestamped(
+    segments: list[dict[str, Any]], names: dict[str, str] | None = None
+) -> str:
+    """会议卡片旁的逐字稿副本：每行「[00:12:34] 张三：……」。
+
+    names 是说话人标签到你起的名字；没起名的说话人保留原标签。
+    """
+    names = names or {}
+    lines = []
+    for segment in segments:
+        label = segment.get("speaker_label")
+        speaker = names.get(label or "") or segment.get("speaker_name") or label
+        text = " ".join(str(segment["text"]).split())
+        prefix = f"[{format_clock(segment['start_ms'])}] "
+        lines.append(f"{prefix}{speaker}：{text}" if speaker else f"{prefix}{text}")
+    return "\n".join(lines) + "\n" if lines else ""
+
+
 def format_srt_time(milliseconds: int) -> str:
     milliseconds = max(0, milliseconds)
     hours, remainder = divmod(milliseconds, 3_600_000)

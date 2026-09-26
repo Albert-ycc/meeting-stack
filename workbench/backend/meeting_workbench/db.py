@@ -521,6 +521,130 @@ AFTER DELETE ON meetings
 BEGIN
     DELETE FROM minutes_fts WHERE meeting_id = OLD.id;
 END;
+
+-- v13 / 1c：会议卡片台账（见 cards.py）。一场会最多一张卡片，写在项目最早挂上的材料根目录
+-- 下的「声档会议记录/」。state：pending 等待写入 / synced 已写入 / user_edited 你改过纪要部分，
+-- 停止自动更新 / missing 卡片被移走或删了（只对当前项目有效）/ retired 已撤下进回收区 /
+-- blocked 写不了（原因见 reason）。written_fps 是最近 5 次写入的内容指纹，用来认出你改没改过。
+-- dirty 是计数：触发器只加一，写完只在计数没变时清零，写的过程中又变了就留到下一轮。
+-- 不设外键：会议删掉后由 reconcile 把卡片移进回收区再删行。
+CREATE TABLE IF NOT EXISTS meeting_cards (
+    meeting_id TEXT PRIMARY KEY,
+    project_id TEXT,
+    root_path TEXT,
+    rel_path TEXT,
+    transcript_rel_path TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    reason TEXT,
+    written_fps TEXT NOT NULL DEFAULT '[]',
+    transcript_fp TEXT,
+    retired_path TEXT,
+    retired_edited INTEGER NOT NULL DEFAULT 0,
+    carry_notes TEXT,
+    user_named INTEGER NOT NULL DEFAULT 0,
+    dirty INTEGER NOT NULL DEFAULT 1,
+    synced_at TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_cards_project ON meeting_cards(project_id);
+CREATE INDEX IF NOT EXISTS idx_meeting_cards_dirty ON meeting_cards(dirty) WHERE dirty > 0;
+
+-- 卡片脏标记：只给已有卡片行的会加一，新会由 reconcile 自己找。拆段、合段走先删后插，
+-- 行级触发器抓不到，所以逐字稿和说话人的改动靠 events 表里的编辑事件。
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_meeting
+AFTER UPDATE OF title, project_id, project_origin, current_minutes_version_id,
+    current_transcript_version_id, recording_date, duration_ms ON meetings
+WHEN NEW.title IS NOT OLD.title
+    OR NEW.project_id IS NOT OLD.project_id
+    OR NEW.project_origin IS NOT OLD.project_origin
+    OR NEW.current_minutes_version_id IS NOT OLD.current_minutes_version_id
+    OR NEW.current_transcript_version_id IS NOT OLD.current_transcript_version_id
+    OR NEW.recording_date IS NOT OLD.recording_date
+    OR NEW.duration_ms IS NOT OLD.duration_ms
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_task_insert
+AFTER INSERT ON tasks
+WHEN NEW.meeting_id IS NOT NULL
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = NEW.meeting_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_task_update
+AFTER UPDATE ON tasks
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1
+     WHERE meeting_id IN (NEW.meeting_id, OLD.meeting_id);
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_task_delete
+AFTER DELETE ON tasks
+WHEN OLD.meeting_id IS NOT NULL
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = OLD.meeting_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_project_name
+AFTER UPDATE OF name ON projects
+WHEN NEW.name IS NOT OLD.name
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE project_id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_title
+AFTER UPDATE OF title ON requirements
+WHEN NEW.title IS NOT OLD.title
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1
+     WHERE meeting_id IN (
+        SELECT meeting_id FROM requirement_meetings WHERE requirement_id = NEW.id);
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_link
+AFTER INSERT ON requirement_meetings
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = NEW.meeting_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_unlink
+AFTER DELETE ON requirement_meetings
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = OLD.meeting_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_folder_add
+AFTER INSERT ON requirement_folders
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1
+     WHERE meeting_id IN (
+        SELECT meeting_id FROM requirement_meetings WHERE requirement_id = NEW.requirement_id);
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_folder_remove
+AFTER DELETE ON requirement_folders
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1
+     WHERE meeting_id IN (
+        SELECT meeting_id FROM requirement_meetings WHERE requirement_id = OLD.requirement_id);
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_root_add
+AFTER INSERT ON project_material_roots
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE project_id = NEW.project_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_root_change
+AFTER UPDATE OF path ON project_material_roots
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE project_id = NEW.project_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_root_remove
+AFTER DELETE ON project_material_roots
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE project_id = OLD.project_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_transcript_edit
+AFTER INSERT ON events
+WHEN NEW.meeting_id IS NOT NULL AND NEW.event_type IN (
+    'speaker_renamed', 'segment_split', 'segments_merged',
+    'transcript_draft_saved', 'minutes_saved')
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = NEW.meeting_id;
+END;
 """
 
 
@@ -792,6 +916,19 @@ class Database:
                          FROM meetings m
                          JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id"""
                 )
+            # 会议卡片（1c）默认开启，但只对这之后新生成纪要的会自动写；上线前的历史会议
+            # 等工作台横幅问过再补写。两个键都只在第一次启动时写入，之后不再改。
+            now = utc_now()
+            connection.execute(
+                """INSERT OR IGNORE INTO app_state(key, value, updated_at)
+                   VALUES ('cards_enabled', '1', ?)""",
+                (now,),
+            )
+            connection.execute(
+                """INSERT OR IGNORE INTO app_state(key, value, updated_at)
+                   VALUES ('cards_since', ?, ?)""",
+                (now, now),
+            )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @contextmanager
