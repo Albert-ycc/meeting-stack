@@ -311,6 +311,10 @@ def reject_suggestion(db: Database, suggestion_id: str) -> bool:
 
 def _decode_aliases(row: dict[str, Any]) -> dict[str, Any]:
     row["aliases"] = json.loads(row["aliases"] or "[]")
+    if "also" in row:
+        row["also"] = json.loads(row["also"] or "[]")
+    if "is_cue" in row:
+        row["is_cue"] = bool(row["is_cue"])
     return row
 
 
@@ -396,6 +400,7 @@ def create_term(
     source: str = "manual",
     confirmed: bool = True,
     project_id: str | None = None,
+    is_cue: bool = True,
     snapshot_path: Path | str | None = None,
 ) -> dict[str, Any]:
     term = validate_term_text(term, what="术语")
@@ -410,8 +415,8 @@ def create_term(
     db.execute(
         """INSERT INTO glossary_terms
            (id, term, aliases, scope, category, source, confirmed, hit_count,
-            project_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+            project_id, is_cue, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
         (
             term_id,
             term,
@@ -421,6 +426,7 @@ def create_term(
             source,
             int(bool(confirmed)),
             project_id,
+            int(bool(is_cue)),
             now,
             now,
         ),
@@ -445,6 +451,7 @@ def update_term(
     category: str | None = None,
     confirmed: bool | None = None,
     project_id: str | None = _UNSET,
+    is_cue: bool | None = None,
     snapshot_path: Path | str | None = None,
 ) -> dict[str, Any] | None:
     existing = db.query_one("SELECT * FROM glossary_terms WHERE id=?", (term_id,))
@@ -479,6 +486,9 @@ def update_term(
     if project_id is not _UNSET:
         fields.append("project_id=?")
         params.append(project_id)
+    if is_cue is not None:
+        fields.append("is_cue=?")
+        params.append(int(bool(is_cue)))
     params.append(term_id)
     db.execute(f"UPDATE glossary_terms SET {', '.join(fields)} WHERE id=?", params)
     if snapshot_path is not None:

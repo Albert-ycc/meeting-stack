@@ -108,11 +108,13 @@ def test_first_assignment_brings_draft_tasks_along(tmp_path):
     assert detail["effects"]["undo_until"]
     [reassigned] = _events(db, "meeting_project_reassigned")
     assert sorted(reassigned.pop("moved_task_ids")) == sorted([draft, expired])
+    assert reassigned.pop("moved_from") == {draft: None, expired: None}
     assert reassigned == {
         "from": None,
         "to": project_a,
         "origin_before": None,
         "left_task_ids": [],
+        "closed_review_link_ids": [],
     }
 
 

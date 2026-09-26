@@ -590,7 +590,7 @@ class Database:
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(project_links)").fetchall()
             }
-            for name in ("evidence_json", "candidates_json", "new_project_name"):
+            for name in ("evidence_json", "candidates_json", "new_project_name", "reason"):
                 if name not in link_columns:
                     connection.execute(f"ALTER TABLE project_links ADD COLUMN {name} TEXT")
             glossary_columns = {

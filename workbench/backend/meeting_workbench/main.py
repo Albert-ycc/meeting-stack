@@ -38,12 +38,22 @@ from .notify import LarkNotifier
 from .project_linking import (
     RETURN_TO_AI,
     ProjectLinker,
+    confirm_meeting_project,
     mark_meeting_unassigned,
     reassign_meeting,
     return_meeting_to_ai,
+    undo_reassign,
+)
+from .attribution import (
+    ATTRIBUTION_STATE_SQL,
+    ATTRIBUTION_STATES,
+    LATEST_LINK_JOIN,
+    attribution_summary,
+    decorate_meeting_rows,
+    meeting_attribution,
 )
 from . import materials, requirements
-from .tasks import TaskService
+from .tasks import TaskService, llm_ready
 from .hotwords import hotword_audit, normalize_hotwords
 from .attention import (
     ATTENTION_KINDS,
@@ -189,6 +199,8 @@ class GlossaryTermInput(BaseModel):
     source: str = "manual"
     confirmed: bool = True
     project_id: str | None = None
+    # 项目词是否参与认项目（线索表）；只对挂了项目的词条有意义。
+    is_cue: bool = True
 
 
 class GlossaryTermUpdate(BaseModel):
@@ -201,6 +213,7 @@ class GlossaryTermUpdate(BaseModel):
     confirmed: bool | None = None
     # None 是合法目标值（解绑），必须靠 model_fields_set 区分「没传」与「传了 null」
     project_id: str | None = None
+    is_cue: bool | None = None
 
 
 class RollbackInput(BaseModel):
@@ -381,7 +394,9 @@ def _serialize_shadow_run(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _meeting_detail(db: Database, meeting_id: str) -> dict[str, Any] | None:
+def _meeting_detail(
+    db: Database, meeting_id: str, *, ai_configured: bool = False
+) -> dict[str, Any] | None:
     meeting = db.query_one(
         """SELECT m.*, p.name AS project_name, p.color AS project_color
              FROM meetings m LEFT JOIN projects p ON p.id = m.project_id WHERE m.id = ?""",
@@ -463,6 +478,10 @@ def _meeting_detail(db: Database, meeting_id: str) -> dict[str, Any] | None:
             ORDER BY r.created_at""",
         (meeting_id,),
     )
+    with db.autocommit() as connection:
+        meeting["attribution"] = meeting_attribution(
+            connection, meeting_id, ai_configured=ai_configured
+        )
     return meeting
 
 
@@ -1293,6 +1312,7 @@ def create_app(
         project_id: str | None = None,
         tag_id: str | None = None,
         status: str | None = None,
+        attribution: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         participant: str | None = None,
@@ -1301,9 +1321,18 @@ def create_app(
         limit: int = Query(100, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ):
-        joins = ["LEFT JOIN projects p ON p.id = m.project_id"]
+        joins = ["LEFT JOIN projects p ON p.id = m.project_id", LATEST_LINK_JOIN]
         clauses = ["1=1"]
         params: list[Any] = []
+        if attribution is not None:
+            if attribution not in ATTRIBUTION_STATES:
+                raise HTTPException(400, f"attribution 只能是 {', '.join(ATTRIBUTION_STATES)}")
+            clauses.append(f"({ATTRIBUTION_STATE_SQL}) = ?")
+            params.append(attribution)
+        if project_id == "none":
+            # 只看没归项目的会
+            clauses.append("m.project_id IS NULL")
+            project_id = None
         if tag_id:
             joins.append("JOIN meeting_tags mt_filter ON mt_filter.meeting_id = m.id")
             clauses.append("mt_filter.tag_id = ?")
@@ -1356,6 +1385,9 @@ def create_app(
         total = int(db.query_one(count_sql, params)["count"])
         sql = f"""
             SELECT m.*, p.name AS project_name, p.color AS project_color,
+                   {ATTRIBUTION_STATE_SQL} AS attribution_state,
+                   pl.candidates_json AS _candidates_json,
+                   pl.new_project_name AS _new_project_name,
                    (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
                     ORDER BY CASE a.source_root WHEN 'archive' THEN 0 ELSE 1 END LIMIT 1) AS audio_artifact_id,
                    (SELECT COUNT(*) FROM segments s WHERE s.version_id = m.current_transcript_version_id) AS segment_count
@@ -1366,6 +1398,8 @@ def create_app(
         """
         params.extend((limit, offset))
         rows = db.query_all(sql, params)
+        with db.autocommit() as connection:
+            decorate_meeting_rows(connection, rows)
         for row in rows:
             row["tags"] = db.query_all(
                 """SELECT t.* FROM tags t JOIN meeting_tags mt ON mt.tag_id=t.id
@@ -1376,7 +1410,7 @@ def create_app(
 
     @app.get("/api/meetings/{meeting_id}")
     def get_meeting(meeting_id: str):
-        detail = _meeting_detail(db, meeting_id)
+        detail = _meeting_detail(db, meeting_id, ai_configured=llm_ready(settings))
         if not detail:
             raise HTTPException(404, "会议不存在")
         return detail
@@ -2507,7 +2541,7 @@ def create_app(
             actor="user",
             payload={"action": action, "conflict_id": conflict_id},
         )
-        detail = _meeting_detail(db, meeting_id)
+        detail = _meeting_detail(db, meeting_id, ai_configured=llm_ready(settings))
         assert detail is not None
         return detail
 
@@ -2557,7 +2591,7 @@ def create_app(
                         return_meeting_to_ai(connection, meeting_id)
                         project_changed = True
                 elif not target and not project_changed and current["project_origin"] != "manual":
-                    mark_meeting_unassigned(connection, meeting_id)
+                    effects = mark_meeting_unassigned(connection, meeting_id)
                     project_changed = True
                 if project_changed:
                     changed_fields.append("project_id")
@@ -2603,14 +2637,39 @@ def create_app(
             actor="user",
             payload=event_payload,
         )
-        detail = _meeting_detail(db, meeting_id)
+        detail = _meeting_detail(db, meeting_id, ai_configured=llm_ready(settings))
         if effects is not None and detail is not None:
             detail["effects"] = {
                 "tasks_moved": effects["tasks_moved"],
                 "tasks_left": effects["tasks_left"],
                 "undo_until": effects["undo_until"],
             }
+            if effects.get("cue_hint") and body.project_id != RETURN_TO_AI:
+                detail["effects"]["cue_hint"] = effects["cue_hint"]
         return detail
+
+    @app.post("/api/meetings/{meeting_id}/project/confirm")
+    def confirm_meeting_project_endpoint(meeting_id: str, _body: dict[str, Any] | None = None):
+        with db.transaction() as connection:
+            confirm_meeting_project(connection, meeting_id)
+        with db.autocommit() as connection:
+            return meeting_attribution(
+                connection, meeting_id, ai_configured=llm_ready(settings)
+            )
+
+    @app.post("/api/meetings/{meeting_id}/project/undo")
+    def undo_meeting_project(meeting_id: str, _body: dict[str, Any] | None = None):
+        with db.transaction() as connection:
+            result = undo_reassign(connection, meeting_id)
+        detail = _meeting_detail(db, meeting_id, ai_configured=llm_ready(settings))
+        if detail is not None:
+            detail["effects"] = {"tasks_restored": result["tasks_restored"]}
+        return detail
+
+    @app.get("/api/attribution/summary")
+    def attribution_summary_endpoint():
+        with db.autocommit() as connection:
+            return attribution_summary(connection)
 
     @app.get("/api/projects")
     def projects():
@@ -3060,6 +3119,7 @@ def create_app(
                 source=body.source,
                 confirmed=body.confirmed,
                 project_id=body.project_id or None,
+                is_cue=body.is_cue,
                 snapshot_path=snapshot_path,
             )
         except GlossaryError as error:
@@ -3095,6 +3155,7 @@ def create_app(
                 aliases=body.aliases,
                 category=body.category,
                 confirmed=body.confirmed,
+                is_cue=body.is_cue,
                 snapshot_path=snapshot_path,
                 **update_kwargs,
             )

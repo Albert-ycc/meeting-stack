@@ -496,6 +496,7 @@ def _downgrade_to_v12(connection: sqlite3.Connection) -> None:
         ALTER TABLE project_links DROP COLUMN evidence_json;
         ALTER TABLE project_links DROP COLUMN candidates_json;
         ALTER TABLE project_links DROP COLUMN new_project_name;
+        ALTER TABLE project_links DROP COLUMN reason;
         ALTER TABLE glossary_terms DROP COLUMN also;
         ALTER TABLE glossary_terms DROP COLUMN is_cue;
         PRAGMA user_version=12;
@@ -551,7 +552,7 @@ def test_version_thirteen_migration_backfills_tasks_glossary_and_minutes_index(t
         for table in ("projects", "project_links", "glossary_terms")
     }
     assert "also_names" in columns["projects"]
-    assert {"evidence_json", "candidates_json", "new_project_name"} <= columns["project_links"]
+    assert {"evidence_json", "candidates_json", "new_project_name", "reason"} <= columns["project_links"]
     assert {"also", "is_cue"} <= columns["glossary_terms"]
     assert db.query_one(
         "SELECT also_names FROM projects WHERE id='p-a'"

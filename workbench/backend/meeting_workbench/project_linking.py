@@ -26,6 +26,7 @@ from typing import Any
 from .config import Settings
 from .db import Database, utc_now
 from .project_profile import also_name_list, build_cue_table, count_cues, norm_key
+from .service import ConflictError, NotFoundError
 from .tasks import UNDO_WINDOW_SECONDS, LLMUnavailable, call_llm, llm_ready
 
 logger = logging.getLogger("meeting_workbench.project_linking")
@@ -82,6 +83,68 @@ def adopt_draft_tasks(connection: Any, meeting_id: str, project_id: str) -> list
     return task_ids
 
 
+def _close_review_rows(connection: Any, meeting_id: str) -> list[int]:
+    """用户拍板了归属（选了项目、确认、标不归项目）：这场会还开着的「待你选」批次收尾。"""
+    ids = [
+        row["id"]
+        for row in connection.execute(
+            "SELECT id FROM project_links WHERE meeting_id=? AND status='needs_review' ORDER BY id",
+            (meeting_id,),
+        ).fetchall()
+    ]
+    if ids:
+        connection.execute(
+            f"""UPDATE project_links SET status='done', finished_at=?
+                 WHERE id IN ({', '.join('?' for _ in ids)})""",
+            (utc_now(), *ids),
+        )
+    return ids
+
+
+def _cue_hint(connection: Any, meeting_id: str, project_id: str) -> dict[str, Any] | None:
+    """AI 把会归到 project_id 时，证据里最强的一条项目词线索（还在参与识别的）。
+
+    用户把会改走时拿它问一句「以后不再用『X』判断项目」，免得同一个词反复带偏。
+    """
+    link = connection.execute(
+        """SELECT evidence_json FROM project_links
+            WHERE meeting_id=? AND project_id=? AND status='done' AND evidence_json IS NOT NULL
+            ORDER BY id DESC LIMIT 1""",
+        (meeting_id, project_id),
+    ).fetchone()
+    if link is None:
+        return None
+    try:
+        evidence = json.loads(link["evidence_json"])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    terms = sorted(
+        (
+            entry
+            for entry in evidence if isinstance(entry, dict)
+            and entry.get("kind") == "literal"
+            and entry.get("source") == "term"
+            and entry.get("project_id") == project_id
+            and entry.get("term_id")
+        ),
+        key=lambda entry: int(entry.get("count") or 0),
+        reverse=True,
+    )
+    for entry in terms:
+        row = connection.execute(
+            "SELECT id, term FROM glossary_terms WHERE id=? AND is_cue=1", (entry["term_id"],)
+        ).fetchone()
+        if row is not None:
+            return {"term_id": row["id"], "term": row["term"], "cue": entry.get("cue")}
+    return None
+
+
+def _undo_until(event_at: str) -> str:
+    return (
+        datetime.fromisoformat(event_at) + timedelta(seconds=UNDO_WINDOW_SECONDS)
+    ).isoformat()
+
+
 def reassign_meeting(
     connection: Any, meeting_id: str, to_project_id: str | None, *, actor: str = "user"
 ) -> dict[str, Any]:
@@ -91,7 +154,8 @@ def reassign_meeting(
     项目的草稿/过期任务。挂在旧项目需求上的任务不动，作为 tasks_left 返回，由用户决定
     要不要一起移。requirement_meetings 不自动解除。只写一条会议级事件
     meeting_project_reassigned，不给每条任务写 task_events，否则刚确认的任务就撤销不了
-    （undo_review 要求确认事件是最后一条）。调用方负责开事务。
+    （undo_review 要求确认事件是最后一条）。事件里记下每条任务原来的项目和收尾的
+    「待你选」批次，撤销时照原样还回去。调用方负责开事务。
     """
     meeting = connection.execute(
         "SELECT project_id, project_origin FROM meetings WHERE id=?", (meeting_id,)
@@ -114,15 +178,18 @@ def reassign_meeting(
             f"(project_id=? OR (project_id IS NULL AND status IN ({status_placeholders})))"
         )
         movable_params = (from_project_id, *DRAFT_TASK_STATUSES)
-    moved = [
-        row["id"]
-        for row in connection.execute(
-            f"""SELECT id FROM tasks
-                 WHERE meeting_id=? AND requirement_id IS NULL AND {movable_sql}
-                 ORDER BY created_at, id""",
-            (meeting_id, *movable_params),
-        ).fetchall()
-    ]
+    movable_rows = connection.execute(
+        f"""SELECT id, project_id FROM tasks
+             WHERE meeting_id=? AND requirement_id IS NULL AND {movable_sql}
+             ORDER BY created_at, id""",
+        (meeting_id, *movable_params),
+    ).fetchall()
+    moved_from = {
+        row["id"]: row["project_id"]
+        for row in movable_rows
+        if row["project_id"] != to_project_id
+    }
+    moved = list(moved_from)
     if moved:
         connection.execute(
             f"""UPDATE tasks SET project_id=?, updated_at=?
@@ -141,20 +208,30 @@ def reassign_meeting(
         else []
     )
     tasks_left = [dict(row) for row in left_rows]
+    closed = _close_review_rows(connection, meeting_id)
+    cue_hint = (
+        _cue_hint(connection, meeting_id, from_project_id)
+        if origin_before == "ai" and from_project_id is not None
+        else None
+    )
+    payload: dict[str, Any] = {
+        "from": from_project_id,
+        "to": to_project_id,
+        "origin_before": origin_before,
+        "moved_task_ids": moved,
+        "moved_from": moved_from,
+        "left_task_ids": [row["id"] for row in tasks_left],
+        "closed_review_link_ids": closed,
+    }
+    if cue_hint:
+        payload["cue_hint"] = cue_hint
     event_at = _record_event(
         connection,
         "meeting_project_reassigned",
         meeting_id=meeting_id,
         actor=actor,
-        payload={
-            "from": from_project_id,
-            "to": to_project_id,
-            "origin_before": origin_before,
-            "moved_task_ids": moved,
-            "left_task_ids": [row["id"] for row in tasks_left],
-        },
+        payload=payload,
     )
-    undo_until = datetime.fromisoformat(event_at) + timedelta(seconds=UNDO_WINDOW_SECONDS)
     return {
         "project_from": from_project_id,
         "project_to": to_project_id,
@@ -162,16 +239,134 @@ def reassign_meeting(
         "tasks_moved": len(moved),
         "moved_task_ids": moved,
         "tasks_left": tasks_left,
-        "undo_until": undo_until.isoformat(),
+        "cue_hint": cue_hint,
+        "undo_until": _undo_until(event_at),
     }
 
 
-def mark_meeting_unassigned(connection: Any, meeting_id: str, *, actor: str = "user") -> None:
-    """人工标「不归项目」，且会议当前本来就没有项目：只把来源写成 manual，不动任务。"""
+def mark_meeting_unassigned(
+    connection: Any, meeting_id: str, *, actor: str = "user"
+) -> dict[str, Any]:
+    """人工标「不归项目」，且会议当前本来就没有项目：只把来源写成 manual，不动任务。
+
+    同样记一条 meeting_project_reassigned（from、to 都是 null），10 分钟内能撤销。
+    """
+    return reassign_meeting(connection, meeting_id, None, actor=actor)
+
+
+def confirm_meeting_project(
+    connection: Any, meeting_id: str, *, actor: str = "user"
+) -> dict[str, Any]:
+    """确认 AI 的归属：写 origin='manual'，收掉「待你选」批次，不搬任务。"""
+    meeting = connection.execute(
+        "SELECT project_id, project_origin FROM meetings WHERE id=?", (meeting_id,)
+    ).fetchone()
+    if meeting is None:
+        raise NotFoundError("会议不存在")
+    if meeting["project_id"] is None:
+        raise ConflictError("这场会还没有项目，请先选一个")
     connection.execute(
         "UPDATE meetings SET project_origin='manual', updated_at=? WHERE id=?",
         (utc_now(), meeting_id),
     )
+    closed = _close_review_rows(connection, meeting_id)
+    _record_event(
+        connection,
+        "meeting_project_confirmed",
+        meeting_id=meeting_id,
+        actor=actor,
+        payload={
+            "project_id": meeting["project_id"],
+            "origin_before": meeting["project_origin"],
+            "closed_review_link_ids": closed,
+        },
+    )
+    return {"project_id": meeting["project_id"], "origin_before": meeting["project_origin"]}
+
+
+def last_reassignment(connection: Any, meeting_id: str) -> dict[str, Any] | None:
+    """最近一次改归属事件（撤销过的不算）；返回 {event_id, at, payload}。"""
+    row = connection.execute(
+        """SELECT id, payload_json, created_at FROM events
+            WHERE meeting_id=? AND event_type='meeting_project_reassigned'
+            ORDER BY id DESC LIMIT 1""",
+        (meeting_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    undone = connection.execute(
+        """SELECT 1 FROM events
+            WHERE meeting_id=? AND event_type='meeting_project_reassign_undone' AND id > ?
+              AND json_extract(payload_json, '$.event_id') = ?""",
+        (meeting_id, row["id"], row["id"]),
+    ).fetchone()
+    if undone is not None:
+        return None
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return {"event_id": row["id"], "at": row["created_at"], "payload": payload}
+
+
+def undo_reassign(connection: Any, meeting_id: str, *, actor: str = "user") -> dict[str, Any]:
+    """10 分钟内撤销最近一次改归属：会议、任务、收掉的「待你选」批次都照原样还回去。"""
+    meeting = connection.execute(
+        "SELECT project_id FROM meetings WHERE id=?", (meeting_id,)
+    ).fetchone()
+    if meeting is None:
+        raise NotFoundError("会议不存在")
+    last = last_reassignment(connection, meeting_id)
+    if last is None:
+        raise ConflictError("没有可以撤销的改动")
+    payload = last["payload"]
+    expires = datetime.fromisoformat(last["at"]) + timedelta(seconds=UNDO_WINDOW_SECONDS)
+    if datetime.now(UTC) > expires:
+        raise ConflictError("已超过撤销时间，请直接改回")
+    if meeting["project_id"] != payload.get("to"):
+        raise ConflictError("归属后来又变过，请直接改回")
+    from_project_id = payload.get("from")
+    if from_project_id is not None and connection.execute(
+        "SELECT 1 FROM projects WHERE id=?", (from_project_id,)
+    ).fetchone() is None:
+        raise ConflictError("原来的项目已经不在了，请直接改选")
+    now = utc_now()
+    connection.execute(
+        "UPDATE meetings SET project_id=?, project_origin=?, updated_at=? WHERE id=?",
+        (from_project_id, payload.get("origin_before"), now, meeting_id),
+    )
+    moved_from = payload.get("moved_from")
+    if not isinstance(moved_from, dict):
+        moved_from = {task_id: from_project_id for task_id in payload.get("moved_task_ids") or []}
+    restored: list[str] = []
+    for task_id, previous in moved_from.items():
+        # 只还原这期间没再被人动过项目的任务。
+        changed = connection.execute(
+            "UPDATE tasks SET project_id=?, updated_at=? WHERE id=? AND project_id IS ?",
+            (previous, now, task_id, payload.get("to")),
+        ).rowcount
+        if changed:
+            restored.append(task_id)
+    reopened = [int(link_id) for link_id in payload.get("closed_review_link_ids") or []]
+    if reopened:
+        connection.execute(
+            f"""UPDATE project_links SET status='needs_review', finished_at=?
+                 WHERE status='done' AND id IN ({', '.join('?' for _ in reopened)})""",
+            (now, *reopened),
+        )
+    _record_event(
+        connection,
+        "meeting_project_reassign_undone",
+        meeting_id=meeting_id,
+        actor=actor,
+        payload={
+            "event_id": last["event_id"],
+            "from": payload.get("to"),
+            "to": from_project_id,
+            "restored_task_ids": restored,
+        },
+    )
+    return {"project_id": from_project_id, "tasks_restored": len(restored)}
 
 
 def return_meeting_to_ai(connection: Any, meeting_id: str) -> None:
@@ -386,12 +581,12 @@ class ProjectLinker:
                     return self._report(meeting_id, title, "done", method="already_linked")
                 connection.execute(
                     """UPDATE project_links
-                          SET status='done', method=?, project_id=?, raw_response=?,
+                          SET status='done', method=?, project_id=?, raw_response=?, reason=?,
                               evidence_json=?, candidates_json=NULL, error=NULL, finished_at=?
                         WHERE id=?""",
                     (
                         result["method"], result["project_id"], result["raw_response"],
-                        evidence_json, now, link["id"],
+                        result["reason"], evidence_json, now, link["id"],
                     ),
                 )
                 adopted = adopt_draft_tasks(connection, meeting_id, result["project_id"])
@@ -422,11 +617,11 @@ class ProjectLinker:
         with self.db.transaction() as connection:
             connection.execute(
                 """UPDATE project_links
-                      SET status=?, method=?, raw_response=?, evidence_json=?, candidates_json=?,
-                          new_project_name=?, error=NULL, finished_at=?
+                      SET status=?, method=?, raw_response=?, reason=?, evidence_json=?,
+                          candidates_json=?, new_project_name=?, error=NULL, finished_at=?
                     WHERE id=?""",
                 (
-                    status, result["method"], result["raw_response"], evidence_json,
+                    status, result["method"], result["raw_response"], result["reason"], evidence_json,
                     candidates_json if status == "needs_review" else None,
                     result["new_project_name"], now, link["id"],
                 ),
