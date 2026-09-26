@@ -198,4 +198,23 @@ describe("layoutStarMap", () => {
     expect(order.slice(1, 4).sort()).toEqual(["m:b", "m:c", "m:d"]);
     expect(order.slice(4)).toEqual(["r:r1"]);
   });
+
+  it("最近改过的子文件夹排在外圈最后，资料盘状态晚到也不挤动别的材料", () => {
+    const base = payload({ loose: { id: "loose", kind: "loose", name: "散放文件", ring: "outer", count: 3 } });
+    const before = layoutStarMap(base);
+    const withSub = layoutStarMap({
+      ...base,
+      folders: [
+        ...base.folders,
+        { id: "sub:1:初审规则", kind: "subfolder", name: "初审规则", path: "/材料/云图AI/初审规则", ring: "outer", root_id: 1, dir: "初审规则" },
+      ],
+    });
+    const sub = withSub.byId.get("sub:1:初审规则")!;
+    expect(sub.direction).toBe("right");
+    expect(sub.ring).toBe("outer");
+    for (const node of before.nodes) {
+      expect([withSub.byId.get(node.id)!.x, withSub.byId.get(node.id)!.y]).toEqual([node.x, node.y]);
+    }
+  });
 });
+

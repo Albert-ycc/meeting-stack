@@ -189,7 +189,7 @@
 
 .project-graph__bottom {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px 14px;
   min-width: 0;
@@ -199,6 +199,7 @@
 
 .project-graph__windows {
   display: inline-flex;
+  flex: none;
   padding: 3px;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -231,6 +232,10 @@
   color: var(--warn);
 }
 
+.project-graph__weekly {
+  flex: none;
+}
+
 .project-graph__weekly rect {
   fill: var(--muted-2);
 }
@@ -244,8 +249,44 @@
 }
 
 .project-graph__legend {
+  flex: 0 1 auto;
+  min-width: 0;
   margin-left: auto;
+  overflow: hidden;
   color: var(--muted-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-graph__search {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-graph__search input {
+  width: 150px;
+  padding: 5px 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  transition: width 0.2s var(--exp);
+}
+
+.project-graph__search input:focus {
+  width: 200px;
+  border-color: var(--signal-line);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--signal-bg);
+}
+
+.project-graph__search-note {
+  color: var(--ink-2);
+  white-space: nowrap;
 }
 
 .project-graph__sync.is-error {

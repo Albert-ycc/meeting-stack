@@ -6,7 +6,9 @@ import type { Project } from "../../types";
 import { NoticeBanner, useNotice, type NoticeTone } from "../Notice";
 import { GraphCanvas, forgetGraphViews, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
 import { FocusPanel } from "./FocusPanel";
-import { GraphPanel, clearBriefCache, localUndoUntil, type GraphNoticeUndo } from "./GraphPanel";
+import { GraphPanel, clearBriefCache } from "./GraphPanel";
+import { GraphSearch } from "./GraphSearch";
+import { localUndoUntil, type GraphNoticeUndo } from "./panelParts";
 import type { GraphPayload, GraphRootsPayload, GraphWindow, MeetingFocus, StatusPhrase } from "./graphTypes";
 import { readGraphWindow, recordGraphOpen, writeGraphWindow } from "./graphPrefs";
 import { attentionOrder, layoutStarMap, type StarLayout } from "./layout";
@@ -28,6 +30,34 @@ const WINDOW_OPTIONS: Array<{ key: GraphWindow; label: string }> = [
   { key: "90d", label: "90 天" },
   { key: "all", label: "全部" },
 ];
+
+/** 根目录外侧挂最近改过的子文件夹（资料盘状态里带着，最多 3 个），细线连回根目录 */
+function withSubfolders(graph: GraphPayload, roots: GraphRootsPayload | null): GraphPayload {
+  if (!roots) return graph;
+  const folders: GraphPayload["folders"] = [];
+  const edges: GraphPayload["edges"] = [];
+  for (const folder of graph.folders) {
+    if (folder.kind !== "root" || folder.root_id === undefined) continue;
+    const root = roots.roots.find((item) => item.root_id === folder.root_id);
+    if (!root || root.state !== "online") continue;
+    for (const recent of (root.recent_dirs ?? []).slice(0, 3)) {
+      const id = `sub:${folder.root_id}:${recent.dir}`;
+      folders.push({
+        id,
+        kind: "subfolder",
+        name: recent.name,
+        path: recent.path,
+        ring: "outer",
+        root_id: folder.root_id,
+        dir: recent.dir,
+        mtime: recent.mtime,
+      });
+      edges.push({ id: `e:${id}`, kind: "folder", from: folder.id, to: id, label: "" });
+    }
+  }
+  if (!folders.length) return graph;
+  return { ...graph, folders: [...graph.folders, ...folders], edges: [...graph.edges, ...edges] };
+}
 
 // 按（项目，时间窗，深链目标）缓存一份：切回画布先画旧数据，再到后台对一次
 const graphCache = new Map<string, GraphPayload>();
@@ -52,7 +82,9 @@ export function forgetGraphCache() {
 
 function sameUndo(a: GraphNoticeUndo, b: GraphNoticeUndo) {
   if (a.kind === "project" && b.kind === "project") return a.meetingId === b.meetingId;
-  if (a.kind === "link" && b.kind === "link") return a.meetingId === b.meetingId && a.requirementId === b.requirementId;
+  if ((a.kind === "link" || a.kind === "unlink") && a.kind === b.kind) {
+    return a.meetingId === b.meetingId && a.requirementId === b.requirementId;
+  }
   if (a.kind === "task" && b.kind === "task") return a.taskId === b.taskId;
   return false;
 }
@@ -206,6 +238,8 @@ export function ProjectGraph({
   const [rootsTick, setRootsTick] = useState(0);
   const [trail, setTrail] = useState<string[]>([]);
   const [highlight, setHighlight] = useState<{ key: string; ids: Set<string> } | null>(null);
+  // 「在图上找」点亮的节点；状态句、面板里的点亮优先
+  const [searchIds, setSearchIds] = useState<Set<string> | null>(null);
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState(0);
   const [previousPositions, setPreviousPositions] = useState<Map<string, { x: number; y: number }> | undefined>();
@@ -294,8 +328,8 @@ export function ProjectGraph({
   const liveGraph = useMemo(() => {
     if (!graph) return null;
     const movedOut = graph.moved_out.filter((item) => Date.parse(item.undo_until) > clock);
-    return movedOut.length === graph.moved_out.length ? graph : { ...graph, moved_out: movedOut };
-  }, [clock, graph]);
+    return withSubfolders(movedOut.length === graph.moved_out.length ? graph : { ...graph, moved_out: movedOut }, roots);
+  }, [clock, graph, roots]);
 
   useEffect(() => {
     const deadlines = [
@@ -342,12 +376,14 @@ export function ProjectGraph({
   const layout = useMemo(() => (liveGraph ? layoutStarMap(liveGraph) : null), [liveGraph]);
   const attention = useMemo(() => (layout ? attentionOrder(layout) : []), [layout]);
 
-  const resolved = graph && layout && selection ? resolveSelection(graph, layout, selection) : null;
+  const resolved = liveGraph && layout && selection ? resolveSelection(liveGraph, layout, selection) : null;
 
   // 深链目标不在图上（需求已结束、会被折叠之外）：说一声，不留空面板
   useEffect(() => {
     if (!graph || !layout || !selection) return;
     if (resolved === selection) return;
+    // 子文件夹跟着资料盘状态一起到，先等一等
+    if (selection.startsWith("sub:") && !roots) return;
     if (resolved) {
       onSelectionChange(resolved);
       return;
@@ -361,7 +397,7 @@ export function ProjectGraph({
       "warning",
     );
     onSelectionChange(null);
-  }, [graph, layout, onSelectionChange, resolved, selection, setNotice]);
+  }, [graph, layout, onSelectionChange, resolved, roots, selection, setNotice]);
 
   const select = useCallback(
     (id: string | null) => {
@@ -454,6 +490,10 @@ export function ProjectGraph({
         await apiClient.removeRequirementMeeting(entry.requirementId, entry.meetingId);
         clearBriefCache();
         showNotice(`已撤销：这场会不再关联「${entry.title}」`);
+      } else if (entry.kind === "unlink") {
+        await apiClient.addRequirementMeeting(entry.requirementId, entry.meetingId);
+        clearBriefCache();
+        showNotice(`已撤销：重新关联了「${entry.title}」`);
       } else {
         await apiClient.updateTask(entry.taskId, entry.before);
         clearBriefCache();
@@ -641,8 +681,8 @@ export function ProjectGraph({
           attention={attention}
           busy={busy}
           dropProjects={dropProjects}
-          graph={graph}
-          highlight={highlight?.ids ?? null}
+          graph={liveGraph ?? graph}
+          highlight={highlight?.ids ?? searchIds}
           layout={layout}
           onAnswerDoorstep={(answer) => void answerDoorstep(answer)}
           onDropMeeting={(meetingId, target) => void dropMeeting(meetingId, target)}
@@ -662,7 +702,7 @@ export function ProjectGraph({
             <GraphPanel
               apiClient={apiClient}
               canGoBack={trail.length > 0}
-              graph={graph}
+              graph={liveGraph ?? graph}
               layout={layout}
               onAnswerDoorstep={(meetingId, target) => void answerDoorstep({ meetingId, projectId: target })}
               onBack={goBack}
@@ -755,7 +795,18 @@ export function ProjectGraph({
           </div>
           {graph?.window.widened_reason && <span className="project-graph__widened">{graph.window.widened_reason}</span>}
           {graph && <WeeklyBars weekly={graph.weekly} />}
-          <span className="project-graph__legend">位置按类型和时间排：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新</span>
+          {liveGraph && layout && (
+            <GraphSearch
+              apiClient={apiClient}
+              graph={liveGraph}
+              layout={layout}
+              onHighlight={(ids) => setSearchIds(ids ? new Set(ids) : null)}
+              onSelect={select}
+            />
+          )}
+          <span className="project-graph__legend" title="位置按类型和时间排：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新">
+            位置按类型和时间排：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新
+          </span>
           {loading && graph && !graphCache.has(key) && <span className="project-graph__sync">正在换时间窗…</span>}
           {loadError && graph && <span className="project-graph__sync is-error">刷新失败：{loadError}</span>}
         </footer>

@@ -445,6 +445,12 @@
   background: var(--muted-2);
 }
 
+.graph-folder__icon--subfolder {
+  width: 10px;
+  height: 8px;
+  background: var(--muted-2);
+}
+
 .graph-folder__icon--loose {
   background: none;
   border: 1.5px dashed var(--muted-2);

@@ -259,10 +259,21 @@ ol.graph-panel__list li::before {
 }
 
 .graph-panel__path {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 11px;
   word-break: break-all;
+}
+
+.graph-panel__path-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--font-sans);
+  font-size: 12px;
 }
 
 .graph-panel__foot {
@@ -341,4 +352,78 @@ ol.graph-panel__list li::before {
 
 .graph-player__audio {
   display: none;
+}
+
+/* ── 项目面板的四个数、文件夹面包屑、信标条目（1h） ─────────── */
+
+.graph-panel__counts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0;
+}
+
+.graph-panel__counts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.graph-panel__counts dt {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.graph-panel__counts dd {
+  margin: 0;
+  color: var(--heading);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.graph-panel__counts small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.graph-panel__warn {
+  color: var(--warn);
+}
+
+.graph-panel__crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  margin-bottom: 4px;
+  color: var(--muted-2);
+}
+
+.graph-panel__crumbs > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.graph-panel__crumbs button:disabled {
+  color: var(--heading);
+  cursor: default;
+}
+
+.graph-panel__beacon-text small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.graph-panel__file-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }

@@ -430,6 +430,7 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
     return null;
   };
   for (const folder of graph.folders) {
+    if (folder.kind === "subfolder") continue;
     const place = placeMaterial(folder.ring);
     if (place === null) continue;
     const text = fitText(folder.kind === "cards" ? folder.name : `${folder.name}/`, MEETING_TITLE_MAX);
@@ -479,6 +480,25 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
         box: rightLabelBox(place.x, place.y, textWidth(`其余 ${more.count} 个文件夹`)),
         label: `其余 ${more.count} 个文件夹`,
         data: more,
+      });
+    });
+  }
+  // 根目录里最近改过的子文件夹排在外圈最后：资料盘状态晚一步到，到了也不挤动别的节点
+  for (const folder of graph.folders.filter((item) => item.kind === "subfolder")) {
+    outerMaterials.push(() => {
+      const place = placeMaterial("outer");
+      if (place === null) return;
+      const text = fitText(`${folder.name}/`, MEETING_TITLE_MAX);
+      add({
+        id: folder.id,
+        kind: "folder",
+        direction: "right",
+        ring: place.ring,
+        x: place.x,
+        y: place.y,
+        box: rightLabelBox(place.x, place.y, textWidth(text)),
+        label: `最近改过的子文件夹：${folder.name}`,
+        data: folder,
       });
     });
   }

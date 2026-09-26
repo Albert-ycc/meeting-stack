@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { ApiClient } from "../../api";
 import { formatTime } from "../../format";
 import type { FocusDecision, FocusTask, MeetingFocus, QuotesPayload } from "./graphTypes";
-import { PlayButton, Section, TASK_STATUS, localUndoUntil, type GraphNoticeUndo } from "./GraphPanel";
+import { PlayButton, Section, TASK_STATUS, localUndoUntil, type GraphNoticeUndo, type NoticeFn } from "./panelParts";
 import type { MiniPlayerHandle } from "./MiniPlayer";
 import "./GraphPanel.css";
 import "./MeetingFocus.css";
@@ -18,7 +18,7 @@ export interface FocusPanelProps {
   onClose: () => void;
   onSelect: (id: string | null) => void;
   onChanged: () => void | Promise<void>;
-  onNotice: (message: string, undo?: GraphNoticeUndo, tone?: "success" | "warning" | "error") => void;
+  onNotice: NoticeFn;
   onOpenRequirement: (requirementId: string) => void;
 }
 

@@ -749,6 +749,9 @@ export function GraphCanvas({
                     {folder.stopped ? ` · 停 ${folder.stopped}` : ""}
                   </small>
                 )}
+                {folder.kind === "subfolder" && folder.mtime && (
+                  <small>{meetingDateLabel(folder.mtime.slice(0, 10), graph.today)} 改过</small>
+                )}
                 {offline && <small>资料盘未连接</small>}
                 {missing && <small>找不到了</small>}
               </span>

@@ -57,8 +57,9 @@ export interface GraphRequirement {
 }
 
 export interface GraphFolder {
-  id: string; // root:<id> / cards / rf:<id>
-  kind: "root" | "cards" | "requirement_folder";
+  id: string; // root:<id> / cards / rf:<id> / sub:<root id>:<相对路径>
+  /** subfolder 是前端按资料盘状态补上的：根目录里最近改过的子文件夹 */
+  kind: "root" | "cards" | "requirement_folder" | "subfolder";
   name: string;
   path: string;
   ring: Ring;
@@ -69,6 +70,9 @@ export interface GraphFolder {
   stopped?: number;
   waiting?: number;
   enabled?: boolean;
+  /** subfolder：相对根目录的路径和修改时间 */
+  dir?: string;
+  mtime?: string;
 }
 
 export interface GraphCue {

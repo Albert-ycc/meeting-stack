@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api";
 import type { Project } from "../../types";
-import type { GraphPayload, GraphRootsPayload, MeetingBrief } from "./graphTypes";
+import type { ExpandPayload, GraphPayload, GraphRootsPayload, MeetingBrief } from "./graphTypes";
 import { ProjectGraph, forgetGraphCache } from "./ProjectGraph";
 import { day, focusPayload, focusTask, meeting, payload, requirement } from "./testFixtures";
 
@@ -72,6 +72,24 @@ function withDoorstep(): GraphPayload {
   });
 }
 
+function expandPayload(rootId: number, dir: string): ExpandPayload {
+  const base = "/材料/云图AI";
+  const path = dir ? `${base}/${dir}` : base;
+  return {
+    root_id: rootId,
+    project_id: "p",
+    root_path: base,
+    dir,
+    path,
+    state: "online",
+    crumbs: dir ? dir.split("/").map((name, index, parts) => ({ name, dir: parts.slice(0, index + 1).join("/") })) : [],
+    dirs: dir ? [] : [{ name: "初审规则", dir: "初审规则", path: `${base}/初审规则`, mtime: "2026-09-25T10:00:00" }],
+    dirs_total: dir ? 0 : 1,
+    files: [{ name: dir ? "口径说明.docx" : "报价单.xlsx", path: `${path}/x`, size: 2048, mtime: "2026-09-24T09:00:00" }],
+    files_total: 1,
+  };
+}
+
 function makeClient(graph: GraphPayload = payload(), overrides: Record<string, unknown> = {}) {
   const undoUntil = new Date(Date.now() + 10 * 60_000).toISOString();
   return {
@@ -80,14 +98,28 @@ function makeClient(graph: GraphPayload = payload(), overrides: Record<string, u
     meetingBrief: vi.fn(async (meetingId: string) => brief(meetingId)),
     updateMeeting: vi.fn(async () => ({ effects: { tasks_moved: 1, tasks_left: [], undo_until: undoUntil } })),
     undoMeetingProject: vi.fn(async () => ({ effects: { tasks_restored: 1 } })),
-    projectMaterialSubfolders: vi.fn(async () => ({ roots: [] })),
+    graphExpand: vi.fn(async (rootId: number, dir = "") => expandPayload(rootId, dir)),
     addRequirementMeeting: vi.fn(async () => ({})),
     removeRequirementMeeting: vi.fn(async () => ({})),
     ...overrides,
   } as unknown as ApiClient & Record<string, ReturnType<typeof vi.fn>>;
 }
 
-function Harness({ apiClient, initial = null }: { apiClient: ApiClient; initial?: string | null }) {
+interface Handlers {
+  onOpenGlossary?: (projectId: string) => void;
+  onOpenMeeting?: (meetingId: string) => void;
+  onOpenRequirement?: (requirementId: string) => void;
+}
+
+function Harness({
+  apiClient,
+  initial = null,
+  handlers = {},
+}: {
+  apiClient: ApiClient;
+  initial?: string | null;
+  handlers?: Handlers;
+}) {
   const [selection, setSelection] = useState<string | null>(initial);
   return (
     <>
@@ -95,10 +127,10 @@ function Harness({ apiClient, initial = null }: { apiClient: ApiClient; initial?
         apiClient={apiClient}
         focus={initial}
         onBack={() => {}}
-        onOpenGlossary={() => {}}
-        onOpenMeeting={() => {}}
+        onOpenGlossary={handlers.onOpenGlossary ?? (() => {})}
+        onOpenMeeting={handlers.onOpenMeeting ?? (() => {})}
         onOpenProject={() => {}}
-        onOpenRequirement={() => {}}
+        onOpenRequirement={handlers.onOpenRequirement ?? (() => {})}
         onSelectionChange={setSelection}
         projectId="p"
         projects={PROJECTS}
@@ -511,5 +543,171 @@ describe("ProjectGraph 展开一场会", () => {
     expect(await screen.findByRole("button", { name: "决议：初审规则按新口径执行，01:00" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "← 回到关系图" }));
     expect(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ })).toBeInTheDocument();
+  });
+});
+
+const ONLINE_ROOTS: GraphRootsPayload = {
+  roots: [
+    {
+      id: "root:1",
+      root_id: 1,
+      path: "/材料/云图AI",
+      state: "online",
+      loose_count: 4,
+      checked_at: null,
+      recent_dirs: [{ name: "初审规则", dir: "初审规则", path: "/材料/云图AI/初审规则", mtime: "2026-09-25T10:00:00" }],
+    },
+  ],
+  folders: [],
+  loose: { count: 4, recent: [{ name: "报价单.xlsx", path: "/材料/云图AI/报价单.xlsx", size: 2048, mtime: "2026-09-24T09:00:00" }] },
+  checking: false,
+  can_reveal: true,
+};
+
+describe("ProjectGraph 完整面板和在图上找", () => {
+  it("项目面板：会、需求、任务、卡片的数，材料文件夹的盘状态，词典入口", async () => {
+    const onOpenGlossary = vi.fn();
+    const graph = payload({ meetings: [meeting("a", 0, { open_tasks: 3, pending_tasks: 1 }), meeting("b", 2, { open_tasks: 1 })] });
+    const apiClient = makeClient(graph, { graphRoots: vi.fn(async () => ({ ...ONLINE_ROOTS, roots: [{ ...ONLINE_ROOTS.roots[0], state: "volume_offline" }] })) });
+    render(<Harness apiClient={apiClient} handlers={{ onOpenGlossary }} initial="project" />);
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(panel).getByText("4 条")).toBeInTheDocument();
+    expect(within(panel).getByText("1 条待确认")).toBeInTheDocument();
+    expect(within(panel).getByText("已写 3 张")).toBeInTheDocument();
+    expect(await within(panel).findByText(/资料盘未连接/)).toBeInTheDocument();
+    await userEvent.click(within(panel).getByRole("button", { name: "看这个项目的词典 →" }));
+    expect(onOpenGlossary).toHaveBeenCalledWith("p");
+  });
+
+  it("文件夹面板逐层看，本机时能在访达中显示；根目录外侧挂最近改过的子文件夹", async () => {
+    const apiClient = makeClient(payload(), {
+      graphRoots: vi.fn(async () => ONLINE_ROOTS),
+      revealMaterial: vi.fn(async () => ({ ok: true, path: "" })),
+    });
+    render(<Harness apiClient={apiClient} />);
+    const sub = await screen.findByRole("button", { name: "最近改过的子文件夹：初审规则" });
+    await userEvent.click(screen.getByRole("button", { name: "文件夹：云图AI" }));
+    let panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(apiClient.graphExpand).toHaveBeenCalledWith(1, "");
+    expect(await within(panel).findByText("报价单.xlsx")).toBeInTheDocument();
+    await userEvent.click(within(panel).getByRole("button", { name: "初审规则/" }));
+    expect(await within(panel).findByText("口径说明.docx")).toBeInTheDocument();
+    expect(apiClient.graphExpand).toHaveBeenLastCalledWith(1, "初审规则");
+    await userEvent.click(within(panel).getByRole("button", { name: "在访达中显示" }));
+    expect(apiClient.revealMaterial).toHaveBeenCalledWith("/材料/云图AI/初审规则");
+    await userEvent.click(within(within(panel).getByRole("navigation", { name: "文件夹位置" })).getByRole("button", { name: "云图AI" }));
+    expect(await within(panel).findByText("报价单.xlsx")).toBeInTheDocument();
+
+    await userEvent.click(sub);
+    panel = screen.getByRole("complementary", { name: "详情面板" });
+    expect(await within(panel).findByText("口径说明.docx")).toBeInTheDocument();
+  });
+
+  it("信标面板：解除和也移过去都能 ⌘Z 撤销，任务连需求一起搬回来；去看跳到对应的页", async () => {
+    const onOpenRequirement = vi.fn();
+    const graph = payload({
+      beacons: [
+        {
+          id: "b:q",
+          project_id: "q",
+          project_name: "数据中台",
+          project_color: "#7a5af8",
+          count: 2,
+          label: "→ 数据中台 ×2",
+          items: [
+            {
+              kind: "meeting_requirement",
+              text: "会议「初审规则沟通 a」关联了数据中台的需求「指标口径」",
+              meeting_id: "a",
+              requirement_id: "rq",
+              requirement_project_id: "q",
+              requirement_title: "指标口径",
+            },
+            {
+              kind: "task_from_elsewhere",
+              text: "任务「导出报表」来自数据中台的会「周会」",
+              meeting_id: "qm",
+              task_id: "tq",
+              task_title: "导出报表",
+              task_project_id: "p",
+              meeting_project_id: "q",
+              requirement_id: "r1",
+              requirement_title: "需求 r1",
+              requirement_project_id: "p",
+            },
+          ],
+        },
+      ],
+    });
+    const apiClient = makeClient(graph, { updateTask: vi.fn(async () => ({})) });
+    render(<Harness apiClient={apiClient} handlers={{ onOpenRequirement }} />);
+    await userEvent.click(await screen.findByRole("button", { name: "→ 数据中台 ×2" }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(panel).getByText("移到 数据中台（会移出需求『需求 r1』）")).toBeInTheDocument();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "解除" }));
+    expect(apiClient.removeRequirementMeeting).toHaveBeenCalledWith("rq", "a");
+    expect(await screen.findByText("已解除这条跨项目的关联")).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.addRequirementMeeting).toHaveBeenCalledWith("rq", "a"));
+    expect(await screen.findByText("已撤销：重新关联了「指标口径」")).toBeInTheDocument();
+
+    await userEvent.click(within(screen.getByRole("complementary", { name: "详情面板" })).getByRole("button", { name: "也移过去" }));
+    expect(apiClient.updateTask).toHaveBeenCalledWith("tq", { project_id: "q", requirement_id: null });
+    expect(await screen.findByText("已把任务「导出报表」移到 数据中台")).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.updateTask).toHaveBeenLastCalledWith("tq", { project_id: "p", requirement_id: "r1" }));
+    expect(await screen.findByText("已撤销：任务「导出报表」搬回去了")).toBeInTheDocument();
+
+    await userEvent.click(within(screen.getByRole("complementary", { name: "详情面板" })).getAllByRole("button", { name: "去看" })[0]);
+    expect(onOpenRequirement).toHaveBeenCalledWith("rq");
+  });
+
+  it("线索词面板给出全部逐字稿里的次数", async () => {
+    const graphFulltext = vi.fn(async () => ({
+      variants: ["初审规则", "初审"],
+      total: 9,
+      meeting_count: 2,
+      meetings: [
+        { meeting_id: "a", title: "初审规则沟通 a", date: day(0), count: 6, first_ms: 61_000 },
+        { meeting_id: "old", title: "很早的会", date: day(80), count: 3, first_ms: 5_000 },
+      ],
+    }));
+    const apiClient = makeClient(payload(), { graphFulltext, glossaryTermDetail: vi.fn(async () => { throw new Error("x"); }) });
+    render(<Harness apiClient={apiClient} initial="cue:1" />);
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(await within(panel).findByText(/全部逐字稿里说了 9 次，在 2 场会上/)).toBeInTheDocument();
+    expect(within(panel).getByText("（连「初审」一起数）")).toBeInTheDocument();
+    expect(graphFulltext).toHaveBeenCalledWith("p", { term: "t1" });
+  });
+
+  it("在图上找：标题和逐字稿命中的会一起点亮，回车逐个跳，Esc 清掉", async () => {
+    const graphFulltext = vi.fn(async () => ({
+      variants: ["口径"],
+      total: 2,
+      meeting_count: 1,
+      meetings: [{ meeting_id: "c", title: "初审规则沟通 c", date: day(10), count: 2, first_ms: 1_000 }],
+    }));
+    const graph = payload({
+      meetings: [meeting("a", 0, { title: "口径对齐" }), meeting("b", 2), meeting("c", 10)],
+      requirements: [requirement("r1", { title: "口径统一" })],
+    });
+    render(<Harness apiClient={makeClient(graph, { graphFulltext })} />);
+    const input = await screen.findByRole("searchbox", { name: "在图上找" });
+    await userEvent.type(input, "口径");
+    await waitFor(() => expect(graphFulltext).toHaveBeenCalledWith("p", { q: "口径" }));
+    expect(await screen.findByText("3 个，回车逐个跳；逐字稿里 1 场会说到")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^会议：初审规则沟通 b/ })).toHaveClass("is-dim");
+    expect(screen.getByRole("button", { name: /^会议：初审规则沟通 c/ })).not.toHaveClass("is-dim");
+
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByTestId("selection")).toHaveTextContent("r:r1");
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByTestId("selection")).toHaveTextContent("m:a");
+    expect(screen.getByText("2/3 个，回车逐个跳；逐字稿里 1 场会说到")).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    expect(input).toHaveValue("");
+    expect(screen.getByRole("button", { name: /^会议：初审规则沟通 b/ })).not.toHaveClass("is-dim");
   });
 });

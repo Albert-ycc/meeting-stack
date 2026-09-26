@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import type { ApiClient } from "../../api";
-import { copyText } from "../../clipboard";
 import { formatTime } from "../../format";
-import type { MeetingCard, Project, RequirementFilesPayload, ProjectSubfoldersPayload } from "../../types";
+import type { MeetingCard, Project, RequirementFilesPayload } from "../../types";
 import { AttributionBar } from "../AttributionBar";
 import { MeetingCardStatus } from "../MeetingCardStatus";
 import type {
   CollapsedPayload,
   CueTermDetail,
+  FulltextPayload,
   GraphCue,
   GraphDoorstep,
   GraphEdge,
@@ -19,16 +19,9 @@ import type {
 } from "./graphTypes";
 import { meetingDateLabel, type LaidNode, type StarLayout } from "./layout";
 import type { MiniPlayerHandle } from "./MiniPlayer";
+import { BeaconPanelBody, FolderBrowser, LoosePanelBody, ProjectPanelBody, baseName } from "./MaterialPanels";
+import { CopyPath, PlayButton, Section, TASK_STATUS, localUndoUntil, type GraphNoticeUndo, type NoticeFn } from "./panelParts";
 import "./GraphPanel.css";
-
-export const TASK_STATUS: Record<string, string> = {
-  pending_confirm: "待确认",
-  confirmed: "已确认",
-  in_progress: "进行中",
-  done: "已完成",
-  cancelled: "已取消",
-  expired: "已过期",
-};
 
 const EDGE_KIND: Record<GraphEdge["kind"], string> = {
   attribution: "归属",
@@ -89,30 +82,6 @@ function useBrief(apiClient: ApiClient, meetingId: string | null, version: numbe
   return { brief: brief && brief.meeting.id === meetingId ? brief : null, error, setBrief };
 }
 
-/**
- * 画布上能撤销的一步：带［撤销］的提示、⌘Z、残影都走这里。改归属的撤销期由服务器定（10 分钟）；
- * 关联需求、搬任务由前端记下原样，同样只留 10 分钟。
- */
-export type GraphNoticeUndo =
-  | { kind: "project"; meetingId: string; until: string }
-  | { kind: "link"; requirementId: string; meetingId: string; title: string; until: string }
-  | {
-      kind: "task";
-      taskId: string;
-      title: string;
-      /** move：搬到别的项目或需求；edit：改了标题、说明。before 是改之前的原样 */
-      what: "move" | "edit";
-      before: { project_id?: string | null; requirement_id?: string | null; title?: string; detail?: string };
-      until: string;
-    };
-
-/** 前端自己记的撤销（关联需求、搬任务）也只留 10 分钟 */
-export const LOCAL_UNDO_MS = 10 * 60_000;
-
-export function localUndoUntil(now = Date.now()) {
-  return new Date(now + LOCAL_UNDO_MS).toISOString();
-}
-
 export interface GraphPanelProps {
   apiClient: ApiClient;
   graph: GraphPayload;
@@ -129,7 +98,7 @@ export interface GraphPanelProps {
   onSelect: (id: string) => void;
   onHighlight: (ids: string[] | null) => void;
   onChanged: () => void | Promise<void>;
-  onNotice: (message: string, undo?: GraphNoticeUndo, tone?: "success" | "warning" | "error") => void;
+  onNotice: NoticeFn;
   onAnswerDoorstep: (meetingId: string, projectId: string | null) => void;
   onOpenMeeting: (meetingId: string) => void;
   /** 会议面板底部的［展开这场会］ */
@@ -138,41 +107,6 @@ export interface GraphPanelProps {
   onOpenGlossary: (projectId: string) => void;
   onOpenProject: (projectId: string) => void;
   onOpenAttributionReview?: () => void;
-}
-
-export function PlayButton({
-  audioUrl,
-  atMs,
-  label,
-  player,
-}: {
-  audioUrl: string | null | undefined;
-  atMs: number | null | undefined;
-  label: string;
-  player: MiniPlayerHandle;
-}) {
-  if (atMs === null || atMs === undefined) return null;
-  return (
-    <button
-      aria-label={`从 ${formatTime(atMs)} 播放`}
-      className="graph-play"
-      disabled={!audioUrl}
-      onClick={() => audioUrl && player.play(audioUrl, atMs, label)}
-      title={audioUrl ? undefined : "这场会没有录音文件"}
-      type="button"
-    >
-      ▶ {formatTime(atMs)}
-    </button>
-  );
-}
-
-export function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="graph-panel__section">
-      <h3>{title}</h3>
-      {children}
-    </section>
-  );
 }
 
 // ------------------------------------------------------------------ 会议
@@ -189,12 +123,12 @@ function MeetingPanelBody({
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
 
-  const run = async (work: () => Promise<unknown>, message: string) => {
+  const run = async (work: () => Promise<unknown>, message: string, undo?: GraphNoticeUndo) => {
     setBusy(true);
     try {
       await work();
       briefCache.delete(meetingId);
-      props.onNotice(message);
+      props.onNotice(message, undo);
       await props.onChanged();
     } catch (reason) {
       props.onNotice(reason instanceof Error ? reason.message : "操作失败", undefined, "error");
@@ -316,7 +250,13 @@ function MeetingPanelBody({
                 className="text-button"
                 disabled={busy}
                 onClick={() =>
-                  void run(() => apiClient.removeRequirementMeeting(item.id, meetingId), `已解除和「${item.title}」的关联`)
+                  void run(() => apiClient.removeRequirementMeeting(item.id, meetingId), `已解除和「${item.title}」的关联`, {
+                    kind: "unlink",
+                    requirementId: item.id,
+                    meetingId,
+                    title: item.title,
+                    until: localUndoUntil(),
+                  })
                 }
                 type="button"
               >
@@ -340,6 +280,7 @@ function MeetingPanelBody({
                   void run(
                     () => apiClient.addRequirementMeeting(requirementId, meetingId),
                     `已关联到「${requirement.title}」`,
+                    { kind: "link", requirementId, meetingId, title: requirement.title, until: localUndoUntil() },
                   );
                 }
               }}
@@ -515,7 +456,13 @@ function RequirementPanelBody({ props, node }: { props: GraphPanelProps; node: E
               try {
                 await apiClient.addRequirementMeeting(requirement.requirement_id, meetingId);
                 clearBriefCache();
-                props.onNotice("已关联这场会");
+                props.onNotice("已关联这场会", {
+                  kind: "link",
+                  requirementId: requirement.requirement_id,
+                  meetingId,
+                  title: requirement.title,
+                  until: localUndoUntil(),
+                });
                 await props.onChanged();
               } catch (reason) {
                 props.onNotice(reason instanceof Error ? reason.message : "关联失败", undefined, "error");
@@ -626,6 +573,73 @@ function CueQuotes({
   );
 }
 
+/** 线索词在这个项目全部逐字稿里说了几次（不受时间窗限制，错写、也叫一起数） */
+function CueFulltext({ props, cue }: { props: GraphPanelProps; cue: GraphCue }) {
+  const [payload, setPayload] = useState<FulltextPayload | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    setPayload(null);
+    setError("");
+    props.apiClient
+      .graphFulltext(props.graph.project.id, cue.term_id ? { term: cue.term_id } : { q: cue.text })
+      .then((value) => active && setPayload(value))
+      .catch((reason: unknown) => active && setError(reason instanceof Error ? reason.message : "读取失败"));
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cue.id, cue.term_id, cue.text, props.version]);
+  const play = async (meetingId: string, ms: number, label: string) => {
+    try {
+      const brief = await loadBrief(props.apiClient, meetingId);
+      if (brief.meeting.audio_url) props.player.play(brief.meeting.audio_url, ms, label);
+      else props.onNotice("这场会没有录音文件", undefined, "warning");
+    } catch {
+      props.onNotice("读不到这场会的录音", undefined, "error");
+    }
+  };
+  if (error) return <p className="graph-panel__error">{error}</p>;
+  if (!payload) return <p className="graph-panel__muted">正在数逐字稿…</p>;
+  if (!payload.total) return <p className="graph-panel__muted">这个项目的逐字稿里还没人说过这个词</p>;
+  const others = payload.variants.filter((variant) => variant !== cue.text);
+  return (
+    <>
+      <p>
+        这个项目全部逐字稿里说了 {payload.total} 次，在 {payload.meeting_count} 场会上
+        {others.length > 0 && <small className="graph-panel__muted">（连「{others.join("」「")}」一起数）</small>}
+      </p>
+      <ul className="graph-panel__list">
+        {payload.meetings.slice(0, 6).map((item) => {
+          const label = `${meetingDateLabel(item.date, props.graph.today)} ${item.title}`;
+          const onGraph = props.layout.byId.has(`m:${item.meeting_id}`);
+          return (
+            <li className="graph-panel__cue-row" key={item.meeting_id}>
+              <button
+                className="text-button"
+                onClick={() => (onGraph ? props.onSelect(`m:${item.meeting_id}`) : props.onOpenMeeting(item.meeting_id))}
+                type="button"
+              >
+                {label}
+              </button>
+              <small>{item.count} 次</small>
+              <button
+                aria-label={`从 ${formatTime(item.first_ms)} 播放`}
+                className="graph-play"
+                onClick={() => void play(item.meeting_id, item.first_ms, label)}
+                type="button"
+              >
+                ▶ {formatTime(item.first_ms)}
+              </button>
+            </li>
+          );
+        })}
+        {payload.meeting_count > 6 && <li className="graph-panel__muted">还有 {payload.meeting_count - 6} 场</li>}
+      </ul>
+    </>
+  );
+}
+
 function CuePanelBody({ props, cue }: { props: GraphPanelProps; cue: GraphCue }) {
   const { apiClient, graph } = props;
   const [detail, setDetail] = useState<CueTermDetail | null>(null);
@@ -684,6 +698,9 @@ function CuePanelBody({ props, cue }: { props: GraphPanelProps; cue: GraphCue })
           </li>
         ))}
       </ul>
+      <Section title="逐字稿全文">
+        <CueFulltext cue={cue} props={props} />
+      </Section>
       {cue.source === "term" && cue.term_id ? (
         turnedOff ? (
           <Section title="只靠这个词归进来的会">
@@ -781,7 +798,13 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
             try {
               await apiClient.removeRequirementMeeting(edge.requirement_id!, edge.meeting_id!);
               clearBriefCache();
-              props.onNotice("已解除这条关联");
+              props.onNotice("已解除这条关联", {
+                kind: "unlink",
+                requirementId: edge.requirement_id!,
+                meetingId: edge.meeting_id!,
+                title: describe(props.layout, edge.to),
+                until: localUndoUntil(),
+              });
               props.onClose();
               await props.onChanged();
             } catch (reason) {
@@ -850,64 +873,6 @@ function CollapsedBody({ props, groupId }: { props: GraphPanelProps; groupId: st
   );
 }
 
-function RootFolderBody({ props, rootId, path }: { props: GraphPanelProps; rootId: number; path: string }) {
-  const [payload, setPayload] = useState<ProjectSubfoldersPayload | null>(null);
-  useEffect(() => {
-    let active = true;
-    props.apiClient
-      .projectMaterialSubfolders(props.graph.project.id)
-      .then((value) => active && setPayload(value))
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rootId]);
-  const root = payload?.roots.find((item) => item.root_id === rootId);
-  return (
-    <>
-      <CopyPath path={path} props={props} />
-      {root ? (
-        root.exists ? (
-          <ul className="graph-panel__files">
-            {root.folders.slice(0, 12).map((folder) => (
-              <li key={folder.path}>
-                {folder.name}/ <small>{folder.file_count} 个文件</small>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="graph-panel__muted">这个文件夹现在找不到（资料盘未连接或被移走了）</p>
-        )
-      ) : (
-        <p className="graph-panel__muted">正在读文件夹…</p>
-      )}
-    </>
-  );
-}
-
-function CopyPath({ props, path }: { props: GraphPanelProps; path: string }) {
-  return (
-    <p className="graph-panel__path">
-      <code>{path}</code>
-      <button
-        className="text-button"
-        onClick={async () => {
-          try {
-            await copyText(path);
-            props.onNotice("已复制路径");
-          } catch {
-            props.onNotice("复制失败，请手动选中路径", undefined, "error");
-          }
-        }}
-        type="button"
-      >
-        复制路径
-      </button>
-    </p>
-  );
-}
-
 // ------------------------------------------------------------------ 外壳
 
 function titleOf(node: LaidNode | undefined, edge: GraphEdge | undefined, props: GraphPanelProps): string {
@@ -973,86 +938,49 @@ export function GraphPanel(props: GraphPanelProps) {
         body = <CollapsedBody groupId={node.id} props={props} />;
         break;
       case "project":
-        body = (
-          <>
-            <p className="graph-panel__meta">
-              {graph.window.days ? `最近 ${graph.window.days} 天` : "全部"} {graph.project.meeting_count} 场会 · 进行中的需求{" "}
-              {graph.requirements.length + (graph.requirements_more?.count ?? 0)} 个
-            </p>
-            <p className="graph-panel__muted">位置按类型和时间排：左边是会议，右边是材料，上面是进行中的需求，下面是线索词；离中心越近越新。</p>
-          </>
-        );
+        body = <ProjectPanelBody props={props} />;
         break;
-      case "folder":
-        body =
-          node.data.kind === "root" && node.data.root_id !== undefined ? (
-            <RootFolderBody path={node.data.path} props={props} rootId={node.data.root_id} />
-          ) : node.data.kind === "cards" ? (
+      case "folder": {
+        const folder = node.data;
+        const canReveal = Boolean(props.roots?.can_reveal);
+        if ((folder.kind === "root" || folder.kind === "subfolder") && folder.root_id !== undefined) {
+          const root = graph.folders.find((item) => item.kind === "root" && item.root_id === folder.root_id);
+          body = (
+            <FolderBrowser
+              initialDir={folder.kind === "subfolder" ? folder.dir ?? "" : ""}
+              props={props}
+              rootId={folder.root_id}
+              rootName={root?.name ?? baseName(folder.path)}
+            />
+          );
+        } else if (folder.kind === "cards") {
+          body = (
             <>
               <p className="graph-panel__meta">
-                已写 {node.data.written ?? 0} 张 · 停了 {node.data.stopped ?? 0} 张 · 在等 {node.data.waiting ?? 0} 张
+                已写 {folder.written ?? 0} 张 · 停了 {folder.stopped ?? 0} 张 · 在等 {folder.waiting ?? 0} 张
               </p>
-              <CopyPath path={node.data.path} props={props} />
+              <CopyPath apiClient={props.apiClient} canReveal={canReveal} onNotice={props.onNotice} path={folder.path} />
             </>
-          ) : (
+          );
+        } else {
+          body = (
             <>
-              <CopyPath path={node.data.path} props={props} />
-              {node.data.requirement_id && (
-                <button className="text-button" onClick={() => props.onSelect(`r:${node.data.requirement_id}`)} type="button">
+              <CopyPath apiClient={props.apiClient} canReveal={canReveal} onNotice={props.onNotice} path={folder.path} />
+              {folder.requirement_id && (
+                <button className="text-button" onClick={() => props.onSelect(`r:${folder.requirement_id}`)} type="button">
                   看它所属的需求
                 </button>
               )}
             </>
           );
+        }
         break;
+      }
       case "loose":
-        body = props.roots ? (
-          <ul className="graph-panel__files">
-            {props.roots.loose.recent.map((file) => (
-              <li key={file.path}>
-                {file.name} <small>{file.mtime.slice(0, 10)}</small>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="graph-panel__muted">正在读资料盘…</p>
-        );
+        body = <LoosePanelBody props={props} />;
         break;
       case "beacon":
-        body = (
-          <ul className="graph-panel__list">
-            {node.data.items.map((item, index) => (
-              <li key={`${item.kind}-${index}`}>
-                <span>{item.text}</span>
-                <span className="graph-panel__actions">
-                  {(item.kind === "meeting_requirement" || item.kind === "requirement_meeting") && item.requirement_id && item.meeting_id && (
-                    <button
-                      className="text-button"
-                      onClick={async () => {
-                        try {
-                          await props.apiClient.removeRequirementMeeting(item.requirement_id!, item.meeting_id!);
-                          clearBriefCache();
-                          props.onNotice("已解除");
-                          await props.onChanged();
-                        } catch (reason) {
-                          props.onNotice(reason instanceof Error ? reason.message : "解除失败", undefined, "error");
-                        }
-                      }}
-                      type="button"
-                    >
-                      解除
-                    </button>
-                  )}
-                  {item.meeting_id && (
-                    <button className="text-button" onClick={() => props.onOpenMeeting(item.meeting_id!)} type="button">
-                      去看
-                    </button>
-                  )}
-                </span>
-              </li>
-            ))}
-          </ul>
-        );
+        body = <BeaconPanelBody beacon={node.data} props={props} />;
         break;
       case "requirement_more":
         body = <p className="graph-panel__muted">还有 {node.data.count} 个进行中的需求放不下，去项目的清单视图看。</p>;
