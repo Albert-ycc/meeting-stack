@@ -879,6 +879,14 @@ export default function App({ apiClient = api }: AppProps) {
                 ]);
               }
         }
+        onConfirmProject={
+          isMobile
+            ? undefined
+            : async (meetingId) => {
+                await apiClient.confirmMeetingProject(meetingId);
+                await Promise.all([loadMeetings(filters, meetingOffset, true), loadAttributionSummary()]);
+              }
+        }
         onAcknowledgeJob={
           isMobile
             ? undefined

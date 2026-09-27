@@ -16,6 +16,7 @@ import {
 } from "../format";
 import type {
   AttentionPayload,
+  AttributionCandidate,
   AttributionSummary,
   LoadState,
   MeetingFilters,
@@ -46,8 +47,10 @@ interface LibraryPageProps {
   onOpenJobs?: () => void;
   /** 归属汇总：筛选栏「待归属 N」「像新项目 N」 */
   attributionSummary?: AttributionSummary | null;
-  /** 桌面端才给：待你选的行直接点候选项目 */
+  /** 桌面端才给：待你选的行直接点候选项目；projectId 为 "" 表示不归项目 */
   onAssignProject?: (meetingId: string, projectId: string) => Promise<void>;
+  /** 桌面端才给：待你选的行点原来的项目，就是确认这个归属 */
+  onConfirmProject?: (meetingId: string) => Promise<void>;
 }
 
 /** 资料库项目列：没归项目的会按归属状态说清楚是在等 AI、没认出、像新项目还是你标的。 */
@@ -69,38 +72,55 @@ function unassignedLabel(meeting: MeetingSummary): string {
 function ReviewStrip({
   meeting,
   onAssignProject,
+  onConfirmProject,
 }: {
   meeting: MeetingSummary;
   onAssignProject: (meetingId: string, projectId: string) => Promise<void>;
+  onConfirmProject?: (meetingId: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const candidates = meeting.candidates ?? [];
-  if (candidates.length === 0) return null;
-  const pick = async (projectId: string) => {
+  const run = async (action: () => Promise<void>) => {
     setBusy(true);
     setError("");
     try {
-      await onAssignProject(meeting.id, projectId);
+      await action();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "改归属失败");
       setBusy(false);
     }
   };
+  // 原来的项目：改归属到同一个项目是空操作，要走「确认」才会变成你确认过的
+  const pick = (candidate: AttributionCandidate) =>
+    run(() =>
+      candidate.current && onConfirmProject
+        ? onConfirmProject(meeting.id)
+        : onAssignProject(meeting.id, candidate.project_id),
+    );
   return (
     <div aria-label={`${meeting.title} 选项目`} className="archive-row__review" role="group">
-      <span>归到</span>
+      {candidates.length > 0 && <span>归到</span>}
       {candidates.map((candidate) => (
         <button
           className="ghost-button"
           disabled={busy}
           key={candidate.project_id}
-          onClick={() => void pick(candidate.project_id)}
+          onClick={() => void pick(candidate)}
           type="button"
         >
           {candidate.project_name}
+          {candidate.current ? "（原来的）" : ""}
         </button>
       ))}
+      <button
+        className="ghost-button"
+        disabled={busy}
+        onClick={() => void run(() => onAssignProject(meeting.id, ""))}
+        type="button"
+      >
+        不归项目
+      </button>
       {error && <em role="alert">{error}</em>}
     </div>
   );
@@ -238,6 +258,7 @@ export function LibraryPage({
   onOpenJobs,
   attributionSummary,
   onAssignProject,
+  onConfirmProject,
 }: LibraryPageProps) {
   const groups = useMemo(() => groupByDay(meetings), [meetings]);
   const thisYear = new Date().getFullYear();
@@ -440,7 +461,11 @@ export function LibraryPage({
                           path={meeting.canonical_dir}
                         />
                         {onAssignProject && meeting.attribution_state === "needs_review" && (
-                          <ReviewStrip meeting={meeting} onAssignProject={onAssignProject} />
+                          <ReviewStrip
+                            meeting={meeting}
+                            onAssignProject={onAssignProject}
+                            onConfirmProject={onConfirmProject}
+                          />
                         )}
                       </div>
                     );

@@ -124,6 +124,37 @@ describe("LibraryPage 归属列", () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
+  it("点原来的项目是确认归属，不是再改一次", async () => {
+    const onAssignProject = vi.fn().mockResolvedValue(undefined);
+    const onConfirmProject = vi.fn().mockResolvedValue(undefined);
+    const meetings: MeetingSummary[] = [
+      {
+        ...MEETINGS[0],
+        candidates: [
+          { project_id: "p-a", project_name: "云图AI", count: 2, llm: true, current: true },
+          { project_id: "p-b", project_name: "数据中台", count: 1, llm: false, current: false },
+        ],
+      },
+    ];
+    renderLibrary({ meetings, onAssignProject, onConfirmProject });
+
+    const strip = screen.getByRole("group", { name: "评审会 选项目" });
+    await userEvent.click(within(strip).getByRole("button", { name: "云图AI（原来的）" }));
+
+    expect(onConfirmProject).toHaveBeenCalledWith("m-1");
+    expect(onAssignProject).not.toHaveBeenCalled();
+  });
+
+  it("待你选的行可以直接标不归项目", async () => {
+    const onAssignProject = vi.fn().mockResolvedValue(undefined);
+    renderLibrary({ onAssignProject, onConfirmProject: vi.fn() });
+
+    const strip = screen.getByRole("group", { name: "评审会 选项目" });
+    await userEvent.click(within(strip).getByRole("button", { name: "不归项目" }));
+
+    expect(onAssignProject).toHaveBeenCalledWith("m-1", "");
+  });
+
   it("没给 onAssignProject（手机）时不出候选按钮", () => {
     renderLibrary();
     expect(screen.queryByRole("group", { name: "评审会 选项目" })).not.toBeInTheDocument();
