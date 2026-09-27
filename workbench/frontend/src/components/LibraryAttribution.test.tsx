@@ -80,13 +80,22 @@ function renderLibrary(props: Partial<Parameters<typeof LibraryPage>[0]> = {}) {
 }
 
 describe("LibraryPage 归属列", () => {
-  it("没归项目的会按归属状态说清楚", () => {
-    renderLibrary();
+  it("没归项目的会统一成三种说法，另加像新项目、待你选", () => {
+    const unknown: MeetingSummary = {
+      id: "m-5",
+      title: "路演",
+      status: "published",
+      tags: [],
+      recording_date: "2026-09-25T06:00:00",
+      attribution_state: "none",
+    };
+    renderLibrary({ meetings: [...MEETINGS, unknown], total: MEETINGS.length + 1 });
 
-    expect(screen.getByText("待你选")).toBeInTheDocument();
     expect(screen.getByText("等 AI 判断")).toBeInTheDocument();
+    expect(screen.getByText("AI 没认出")).toBeInTheDocument();
+    expect(screen.getByText("不归项目（你标的）")).toBeInTheDocument();
+    expect(screen.getByText("待你选")).toBeInTheDocument();
     expect(screen.getByText("像新项目「智慧园区」")).toBeInTheDocument();
-    expect(screen.getByText("不归项目")).toBeInTheDocument();
   });
 
   it("筛选栏的「待归属」「像新项目」切换 attribution 筛选", async () => {

@@ -35,7 +35,7 @@ import { MeetingTasksPanel } from "./MeetingTasksPanel";
 import { MinutesCorrectionsBar } from "./MinutesCorrectionsBar";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
 import { TranscriptPanel } from "./TranscriptPanel";
-import { NoticeBanner, useNotice, type NoticeTone } from "./Notice";
+import { NoticeBanner, useNotice, type NoticeAction, type NoticeTone } from "./Notice";
 
 interface MeetingDetailPageProps {
   apiClient: ApiClient;
@@ -64,6 +64,8 @@ interface MeetingDetailPageProps {
   onGlossaryChanged?: () => void;
   /** 「在关系图里看」：打开所属项目的关系图并选中这场会；没归项目的会不显示 */
   onOpenInGraph?: (projectId: string, meetingId: string) => void;
+  /** 「像是新项目」提示里同名的另一场会的 ▶：打开那场会，从说到这个名字的地方开始 */
+  onOpenMeeting?: (meetingId: string, seekMs: number) => void;
 }
 
 type DetailTab = "transcript" | "minutes" | "tasks";
@@ -74,13 +76,23 @@ const MARK_NO_PROJECT = "__none__";
 const UNDO_NOTICE_MS = 10_000;
 const RETURN_TO_AI = "__ai__";
 
+// 没归项目的会在主项目下拉里怎么说：和资料库项目列同一套（等 AI 判断 / AI 没认出 / 不归项目（你标的），
+// 另外两种有待办：像新项目「X」、待你选）
 const EMPTY_PROJECT_LABELS: Partial<Record<AttributionState, string>> = {
   ai_pending: "等 AI 判断",
   none: "AI 没认出",
-  new_project: "AI 没认出",
-  needs_review: "等你选",
+  new_project: "像新项目",
+  needs_review: "待你选",
   manual_none: "不归项目（你标的）",
 };
+
+function emptyProjectLabelOf(attribution: MeetingAttribution | undefined): string {
+  if (!attribution) return "未归项目";
+  if (attribution.state === "new_project" && attribution.new_project_name) {
+    return `像新项目「${attribution.new_project_name}」`;
+  }
+  return EMPTY_PROJECT_LABELS[attribution.state] ?? "未归项目";
+}
 
 interface LiveProject {
   id: string | null;
@@ -249,6 +261,7 @@ export function MeetingDetailPage({
   onOpenProject,
   onOpenInGraph,
   onGlossaryChanged,
+  onOpenMeeting,
 }: MeetingDetailPageProps) {
   const playerRef = useRef<AudioPlayerHandle>(null);
   const [currentMs, setCurrentMs] = useState(initialSeekMs);
@@ -915,9 +928,23 @@ export function MeetingDetailPage({
     } else {
       setLiveProject((current) => ({ ...current, origin: change.attribution.origin }));
     }
+    if (change.requirements) {
+      // 读回的关联需求（建成需求后多一个）：没改过的直接换；右侧改了一半的保留，只把新关联的补进去
+      const next = change.requirements;
+      const before = new Set(baselineRequirementRefs.map((requirement) => requirement.id));
+      setBaselineRequirementRefs(next);
+      setSelectedRequirementRefs((current) => {
+        if (!requirementsDirty) return next;
+        const added = next.filter(
+          (requirement) => !before.has(requirement.id) && !current.some((item) => item.id === requirement.id),
+        );
+        return [...current, ...added];
+      });
+    }
   };
-  const showAttributionNotice = (message: string, until?: string, tone: NoticeTone = "success") => {
-    setNotice(message, tone, until ? UNDO_NOTICE_MS : undefined);
+  /** until：改归属的撤销时限（提示里带［撤销］）；actions：提示自带的按钮（建成需求的［打开需求］［撤销］等） */
+  const showAttributionNotice = (message: string, until?: string, tone: NoticeTone = "success", actions?: NoticeAction[]) => {
+    setNotice(message, tone, until || actions?.length ? UNDO_NOTICE_MS : undefined, actions);
     setUndoUntil(until ?? null);
   };
   const undoFromBanner = async () => {
@@ -951,9 +978,7 @@ export function MeetingDetailPage({
   const effectiveProjectId =
     selectedProjectId === MARK_NO_PROJECT || selectedProjectId === RETURN_TO_AI ? "" : selectedProjectId;
   const attributionStateNow = attribution?.state;
-  const emptyProjectLabel = baselineProjectId
-    ? "不归项目"
-    : (attributionStateNow && EMPTY_PROJECT_LABELS[attributionStateNow]) ?? "未归项目";
+  const emptyProjectLabel = baselineProjectId ? "不归项目" : emptyProjectLabelOf(attribution);
 
   return (
     <section className={`detail-page ${isMobile ? "detail-page--mobile" : ""}`}>
@@ -1002,10 +1027,13 @@ export function MeetingDetailPage({
           <AttributionBar
             apiClient={apiClient}
             attribution={attribution}
+            isMobile={isMobile}
             lockedReason={projectDirty ? "右侧有未保存的归属修改" : undefined}
             meetingId={meeting.id}
             onChange={applyAttributionChange}
             onNotice={showAttributionNotice}
+            onOpenRequirement={onOpenRequirement}
+            onPlayMeeting={onOpenMeeting}
             onProjectsChanged={onClassificationSaved}
             onSeek={(milliseconds) => playerRef.current?.seekTo(milliseconds)}
             projects={projects}

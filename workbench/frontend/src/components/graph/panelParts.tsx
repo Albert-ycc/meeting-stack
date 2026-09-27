@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import type { ApiClient } from "../../api";
 import { copyText } from "../../clipboard";
 import { formatTime } from "../../format";
+import type { NoticeAction } from "../Notice";
 import type { MiniPlayerHandle } from "./MiniPlayer";
 
 export const TASK_STATUS: Record<string, string> = {
@@ -41,7 +42,13 @@ export function localUndoUntil(now = Date.now()) {
   return new Date(now + LOCAL_UNDO_MS).toISOString();
 }
 
-export type NoticeFn = (message: string, undo?: GraphNoticeUndo, tone?: "success" | "warning" | "error") => void;
+/** actions：提示自带的按钮（「像是新项目 / 新需求」提示的［撤销］［打开需求］），不进 ⌘Z 的撤销栈 */
+export type NoticeFn = (
+  message: string,
+  undo?: GraphNoticeUndo,
+  tone?: "success" | "warning" | "error",
+  actions?: NoticeAction[],
+) => void;
 
 export function PlayButton({
   audioUrl,

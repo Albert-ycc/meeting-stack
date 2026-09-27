@@ -1,4 +1,4 @@
-/* 会议详情页标题下的归属条：自动 / 待你选 / 等待 / 像新项目 / 刚改过 */
+/* 会议详情页标题下的归属条：自动 / 待你选 / 等待 / 像新项目 / 刚改过；像新项目、新需求的提示见 NewNamePrompt.css */
 .attribution-bar {
   display: grid;
   gap: 6px;
@@ -103,7 +103,8 @@
   cursor: pointer;
 }
 
-.attribution-bar__question {
+.attribution-bar__question,
+.attribution-bar__also {
   padding-top: 6px;
   border-top: 1px dashed var(--warn-line);
 }

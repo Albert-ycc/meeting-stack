@@ -1,0 +1,228 @@
+/* 「像是新项目 / 新需求」提示（NewNamePrompt）：会议页归属条和关系图会议面板共用 */
+.name-prompt {
+  display: grid;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+/* 嵌在自动归属、刚改过、待你选的归属条里：自带一圈琥珀底，和上面那行分开 */
+.name-prompt--nested {
+  margin-top: 2px;
+  padding: 9px 10px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 10px;
+}
+
+.name-prompt__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.name-prompt__head strong {
+  color: var(--ink);
+}
+
+.name-prompt__others {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+.name-prompt__look,
+.name-prompt__link {
+  min-height: 0;
+  padding: 0 4px;
+  color: var(--signal-dark);
+  font-size: 12px;
+}
+
+.name-prompt__collapse {
+  min-height: 0;
+  margin-left: auto;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.name-prompt__meetings {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 6px 8px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.name-prompt__meetings li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.name-prompt__meeting-title {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.name-prompt__muted {
+  color: var(--muted);
+}
+
+.name-prompt__input {
+  width: 100%;
+  max-width: 360px;
+  padding: 6px 9px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.name-prompt__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.name-prompt__chip-wrap {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+}
+
+.name-prompt__chip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+}
+
+.name-prompt__chip.is-selected {
+  border-color: var(--signal);
+}
+
+.name-prompt__chip-fill {
+  padding: 3px 4px 3px 10px;
+  color: var(--ink);
+  font: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.name-prompt__chip-fill:last-child {
+  padding-right: 10px;
+}
+
+.name-prompt__chip-why {
+  color: var(--muted);
+}
+
+.name-prompt__play {
+  padding: 1px 8px 1px 4px;
+  color: var(--signal-dark);
+  font-size: 11px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.name-prompt__meetings .name-prompt__play {
+  padding: 1px 6px;
+  background: var(--signal-bg);
+  border-radius: 6px;
+}
+
+.name-prompt__actions {
+  display: grid;
+  gap: 8px;
+}
+
+.name-prompt__action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 10px;
+}
+
+.name-prompt__main {
+  flex: none;
+  padding: 5px 12px;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+/* 默认的那个主按钮是实心 */
+.name-prompt__main--solid {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--signal);
+  border-color: var(--signal);
+}
+
+.name-prompt__notes {
+  display: grid;
+  flex: 1 1 220px;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 5px;
+}
+
+.name-prompt__note {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.name-prompt__error {
+  color: var(--danger);
+}
+
+.name-prompt__pick {
+  max-width: 200px;
+  margin-top: -3px;
+  padding: 3px 6px;
+  color: var(--ink-2);
+  font: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.name-prompt__secondary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.name-prompt__readonly {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.name-prompt button:disabled,
+.name-prompt select:disabled,
+.name-prompt input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

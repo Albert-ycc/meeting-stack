@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 import type { ApiClient } from "../../api";
 import { reassignNote } from "../../cardCopy";
 import type { Project } from "../../types";
-import { NoticeBanner, useNotice, type NoticeTone } from "../Notice";
+import { NoticeBanner, useNotice, type NoticeAction, type NoticeTone } from "../Notice";
 import { GraphCanvas, forgetGraphViews, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
 import { FocusPanel } from "./FocusPanel";
 import { GraphPanel, clearBriefCache } from "./GraphPanel";
@@ -431,8 +431,8 @@ export function ProjectGraph({
   }, [onProjectsChanged, refresh]);
 
   const showNotice = useCallback(
-    (message: string, undoTarget?: GraphNoticeUndo, tone: NoticeTone = "success") => {
-      setNotice(message, tone, undoTarget ? UNDO_NOTICE_MS : undefined);
+    (message: string, undoTarget?: GraphNoticeUndo, tone: NoticeTone = "success", actions?: NoticeAction[]) => {
+      setNotice(message, tone, undoTarget || actions?.length ? UNDO_NOTICE_MS : undefined, actions);
       if (undoTarget) setUndoStack((current) => [...current, undoTarget].slice(-UNDO_STACK_MAX));
     },
     [setNotice],
@@ -766,7 +766,8 @@ export function ProjectGraph({
         </ul>
       )}
       <NoticeBanner className="project-graph__notice" notice={notice} onDismiss={dismissNotice}>
-        {lastUndo && notice?.tone === "success" && (
+        {/* 提示自带按钮（像是新项目 / 新需求的［撤销］）时，不再另给一个撤销最近一步的 */}
+        {lastUndo && notice?.tone === "success" && !notice.actions && (
           <button className="text-button action-banner__undo" disabled={busy} onClick={() => void runUndo(lastUndo)} type="button">
             撤销
           </button>

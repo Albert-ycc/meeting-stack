@@ -65,6 +65,17 @@ function loadBrief(apiClient: ApiClient, meetingId: string): Promise<MeetingBrie
   return pending;
 }
 
+/** 在迷你播放器里放另一场会（「像是新项目」提示里同名的会的 ▶） */
+async function playMeetingAt(props: GraphPanelProps, meetingId: string, ms: number) {
+  try {
+    const brief = await loadBrief(props.apiClient, meetingId);
+    if (brief.meeting.audio_url) props.player.play(brief.meeting.audio_url, ms, brief.meeting.title);
+    else props.onNotice("这场会没有录音文件", undefined, "warning");
+  } catch {
+    props.onNotice("读不到这场会的录音", undefined, "error");
+  }
+}
+
 function useBrief(apiClient: ApiClient, meetingId: string | null, version: number) {
   const [brief, setBrief] = useState<MeetingBrief | null>(null);
   const [error, setError] = useState("");
@@ -158,9 +169,11 @@ function MeetingPanelBody({
             setBrief({ ...brief, attribution: change.attribution, card: change.card ?? brief.card });
             void props.onChanged();
           }}
-          onNotice={(message, undoUntil, tone) =>
-            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone)
+          onNotice={(message, undoUntil, tone, actions) =>
+            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone, actions)
           }
+          onOpenRequirement={props.onOpenRequirement}
+          onPlayMeeting={(otherId, ms) => void playMeetingAt(props, otherId, ms)}
           onProjectsChanged={props.onChanged}
           onSeek={(ms) => audio && player.play(audio, ms, title)}
           projects={projects}
@@ -778,9 +791,11 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
             setBrief({ ...brief, attribution: change.attribution });
             void props.onChanged();
           }}
-          onNotice={(message, undoUntil, tone) =>
-            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone)
+          onNotice={(message, undoUntil, tone, actions) =>
+            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone, actions)
           }
+          onOpenRequirement={props.onOpenRequirement}
+          onPlayMeeting={(otherId, ms) => void playMeetingAt(props, otherId, ms)}
           onProjectsChanged={props.onChanged}
           onSeek={(ms) => brief.meeting.audio_url && player.play(brief.meeting.audio_url, ms, brief.meeting.title)}
           projects={props.projects}

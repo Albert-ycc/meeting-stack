@@ -425,4 +425,45 @@ describe("API write protection", () => {
     expect(calls[3][0]).toBe("/api/projects/project-1/material-roots/3/repoint");
     expect(calls[4]).toEqual(["/api/projects/project-1/pending-folder", expect.objectContaining({ method: "DELETE" })]);
   });
+
+  it("像是新项目 / 新需求（2b）：候选名、建成需求和撤销、不算新需求和撤销、撤销也叫都走对的路径", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("local-token");
+
+    await api.nameCandidates("vm 1");
+    await api.nameAsRequirement("vm-1", { title: "数据看板", folder_path: "/Volumes/资料盘/云图AI/数据看板" });
+    await api.undoNameAsRequirement("vm-1");
+    await api.ignoreProjectName("云图二期", { kind: "requirement", project_id: "project-1", meeting_id: "vm-1" });
+    await api.ignoreProjectName("内部分享");
+    await api.undoNameDecision(12);
+    await api.undoSpokenAlsoName("project-1", 34);
+    await api.createProjectWith({ name: "云图看板", color: "#3f51b5", source_name: "云图数据看板", meeting_ids: ["vm-1"] });
+
+    const calls = fetchMock.mock.calls as [string, RequestInit][];
+    expect(calls[0][0]).toBe("/api/meetings/vm%201/name-candidates");
+    expect(calls[0][1].method).toBeUndefined();
+    expect(calls[1]).toEqual([
+      "/api/meetings/vm-1/name-as-requirement",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ title: "数据看板", folder_path: "/Volumes/资料盘/云图AI/数据看板" }),
+        headers: expect.objectContaining({ "X-CSRF-Token": "local-token" }),
+      }),
+    ]);
+    expect(calls[2]).toEqual(["/api/meetings/vm-1/name-as-requirement/undo", expect.objectContaining({ method: "POST", body: "{}" })]);
+    expect(calls[3][1].body).toBe(
+      JSON.stringify({ name: "云图二期", kind: "requirement", project_id: "project-1", meeting_id: "vm-1" }),
+    );
+    expect(calls[4][1].body).toBe(JSON.stringify({ name: "内部分享" }));
+    expect(calls[5]).toEqual(["/api/name-decisions/undo", expect.objectContaining({ body: JSON.stringify({ event_id: 12 }) })]);
+    expect(calls[6]).toEqual([
+      "/api/projects/project-1/also-names/spoken/undo",
+      expect.objectContaining({ body: JSON.stringify({ event_id: 34 }) }),
+    ]);
+    expect(JSON.parse(String(calls[7][1].body))).toMatchObject({ source_name: "云图数据看板", meeting_ids: ["vm-1"] });
+  });
 });
+

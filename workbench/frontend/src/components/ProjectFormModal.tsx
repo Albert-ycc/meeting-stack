@@ -32,8 +32,8 @@ export interface ProjectFormModalProps {
   initialAction?: "merge" | "delete";
 }
 
-/** 项目颜色的 8 个可选色块，和样板数据里实际用到的项目色对齐。 */
-const PROJECT_COLORS = [
+/** 项目颜色的 8 个可选色块，和样板数据里实际用到的项目色对齐（「像是新项目」建项目时也照这个轮流取）。 */
+export const PROJECT_COLORS = [
   "#3ecf8e",
   "#2c8d83",
   "#3f51b5",

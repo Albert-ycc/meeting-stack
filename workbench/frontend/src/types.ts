@@ -90,6 +90,10 @@ export interface Project {
   meetings_assigned?: number;
   needs_review_meeting_ids?: string[];
   folder_pending?: { path: string; reason: string };
+  /** 从「像是新项目」建（带 source_name）时：会上说得最多的叫法记进了也叫，可以撤销 */
+  spoken_added?: SpokenAlsoAdded | null;
+  /** 从提示建时，归进来的会当场补写了几张卡片 */
+  cards_written?: number;
   /** 盘不在时先建了项目、插上后再补建的文件夹（旧后端没有） */
   pending_folder?: PendingProjectFolder | null;
 }
@@ -104,7 +108,16 @@ export interface PendingProjectFolder {
 
 export interface ProjectAlsoName {
   name: string;
-  source: "manual" | "former" | "merged";
+  /** spoken：从「像是新项目」建成时，会上说得最多的叫法自动记进来的 */
+  source: "manual" | "former" | "merged" | "spoken";
+}
+
+/** 建成项目时记进也叫的会上叫法；event_id 用来撤销 */
+export interface SpokenAlsoAdded {
+  name: string;
+  count: number;
+  event_id: number;
+  undo_until: string;
 }
 
 /** 新建项目撞上近似重名时 409 带回来的已有项目 */
@@ -350,6 +363,8 @@ export interface MeetingSummary {
   attribution_state?: AttributionState;
   candidates?: AttributionCandidate[];
   new_project_name?: string | null;
+  /** 「像是新项目 / 新需求」（2b，旧后端没有） */
+  name_hint?: NameHint | null;
   audio_artifact_id?: number | null;
   segment_count?: number;
   conflict?: number;
@@ -522,8 +537,93 @@ export interface MeetingAttribution {
   candidates: AttributionCandidate[];
   reason: string;
   new_project_name: string | null;
+  /** 「像是新项目 / 新需求」提示；会议页、简报、资料库各处同一套判断（2b，旧后端没有） */
+  name_hint?: NameHint | null;
   reassigned_from: AttributionReassignedFrom | null;
   ai_configured: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// 「像是新项目 / 新需求」提示（2b）
+// ---------------------------------------------------------------------------
+
+/**
+ * project：会还没归项目（像新项目，或待你选但 AI 没选项目、提了新项目名）；
+ * requirement：会已归项目（自动或你归的），AI 觉得主要在谈这个项目里一件还没有的事。
+ * spoken 是这个名字在纪要里的原样写法。
+ */
+export type NameHint =
+  | { kind: "project"; name: string; spoken: string[] }
+  | { kind: "requirement"; name: string; spoken: string[]; project_id: string; project_name: string };
+
+export interface NameCandidate {
+  name: string;
+  /** 磁盘上有这个文件夹：同名、还没挂的（需求提示时是项目根目录下同名的一级子文件夹） */
+  folder_path: string | null;
+  /** 会上说过几次；first_ms 和最多 5 个锚点可以播放 */
+  spoken: { count: number; first_ms: number; anchors_ms: number[] } | null;
+  /** AI 起的名字 */
+  ai: boolean;
+  /** 名字相近的文件夹：点它只填名字，要挂它得点「改成挂上这个文件夹」 */
+  similar_folder_path: string | null;
+}
+
+/** 默认那个名字的文件夹动作（名字改了以后前端自己算） */
+export type NameFolderAction =
+  | { mode: "mount"; path: string }
+  | { mode: "create"; parent: string; name: string; parent_state: FolderListingState | null; inferred: boolean }
+  | { mode: "none"; reason: string | null };
+
+/** GET /api/meetings/{id}/name-candidates：点开提示时取，只查库和文件夹缓存 */
+export interface NameCandidatesPayload {
+  /** null：什么都不显示 */
+  hint: NameHint | null;
+  /** 已按优先顺序排好，输入框预填第一个 */
+  candidates: NameCandidate[];
+  /** 同名的会，第一场就是这场；said_ms 是第一次说到这个名字的时间 */
+  meetings: { id: string; title: string; date: string; said_ms: number | null }[];
+  /** 实心的那个主按钮 */
+  default_action: "create_project" | "create_requirement" | null;
+  /** 需求提示：建在这个项目 */
+  project: { id: string; name: string } | null;
+  /** 项目提示时［建成需求］的项目下拉，已排好（AI 选的、线索命中的在前，suggested=true） */
+  requirement_projects: { id: string; name: string; color: string; suggested: boolean }[];
+  folder: NameFolderAction;
+  /** checking：缓存还没好，2 秒后再取，最多等 15 秒 */
+  folders_state: "ready" | "checking";
+  /** 新文件夹放哪；null：还没有可参照的项目文件夹，这次先不建 */
+  create_parent: string | null;
+  create_parent_source: "setting" | "suggested" | null;
+  create_parent_state: FolderListingState | null;
+}
+
+/** POST /api/meetings/{id}/name-as-requirement */
+export interface NameAsRequirementResult {
+  requirement_id: string;
+  requirement_title: string;
+  project_id: string;
+  project_name: string;
+  /** 这个项目里已有同名需求：没新建，只把会关联过去 */
+  existing: boolean;
+  priority: RequirementPriority;
+  meetings_linked: number;
+  meetings_assigned: number;
+  meeting_ids: string[];
+  folder_attached: string | null;
+  /** 需求文件夹没挂上的原因；需求照常建好 */
+  folder_error: string | null;
+  event_id: number;
+  undo_until: string;
+}
+
+/** 「不是新项目」「不算新需求」 */
+export interface NameDecisionResult {
+  name: string;
+  norm_key: string;
+  kind: "project" | "requirement";
+  meetings_updated: number;
+  event_id: number;
+  undo_until: string;
 }
 
 export interface AttributionSummary {

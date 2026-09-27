@@ -711,3 +711,73 @@ describe("ProjectGraph 完整面板和在图上找", () => {
     expect(screen.getByRole("button", { name: /^会议：初审规则沟通 b/ })).not.toHaveClass("is-dim");
   });
 });
+
+describe("ProjectGraph 会议面板里的「像是新需求」提示", () => {
+  it("和会议页同一个提示；建成需求后画布的提示条带［打开需求］［撤销］", async () => {
+    const hinted = (meetingId: string): MeetingBrief => {
+      const value = brief(meetingId);
+      return {
+        ...value,
+        attribution: {
+          ...value.attribution,
+          name_hint: { kind: "requirement", name: "数据看板", spoken: [], project_id: "p", project_name: "云图AI" },
+        },
+      };
+    };
+    const undoUntil = new Date(Date.now() + 10 * 60_000).toISOString();
+    const apiClient = makeClient(payload(), {
+      meetingBrief: vi.fn(async (meetingId: string) => hinted(meetingId)),
+      nameCandidates: vi.fn(async () => ({
+        hint: { kind: "requirement", name: "数据看板", spoken: [], project_id: "p", project_name: "云图AI" },
+        candidates: [{ name: "数据看板", folder_path: null, spoken: null, ai: true, similar_folder_path: null }],
+        meetings: [{ id: "a", title: "初审规则沟通 a", date: "2026-09-26", said_ms: null }],
+        default_action: "create_requirement",
+        project: { id: "p", name: "云图AI" },
+        requirement_projects: [],
+        folder: { mode: "none", reason: null },
+        folders_state: "ready",
+        create_parent: null,
+        create_parent_source: null,
+        create_parent_state: null,
+      })),
+      nameAsRequirement: vi.fn(async () => ({
+        requirement_id: "r-new",
+        requirement_title: "数据看板",
+        project_id: "p",
+        project_name: "云图AI",
+        existing: false,
+        priority: "P2",
+        meetings_linked: 1,
+        meetings_assigned: 0,
+        meeting_ids: ["a"],
+        folder_attached: null,
+        folder_error: null,
+        event_id: 9,
+        undo_until: undoUntil,
+      })),
+      meeting: vi.fn(async () => ({
+        id: "a",
+        project_id: "p",
+        project_name: "云图AI",
+        project_color: "#2c8d83",
+        project_origin: "ai",
+        attribution: { ...brief("a").attribution, name_hint: null },
+      })),
+    });
+    const onOpenRequirement = vi.fn();
+    render(<Harness apiClient={apiClient} handlers={{ onOpenRequirement }} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+
+    expect(await within(panel).findByText("像是『云图AI』里的一个新需求")).toBeInTheDocument();
+    expect(await within(panel).findByDisplayValue("数据看板")).toBeInTheDocument();
+    await userEvent.click(within(panel).getByRole("button", { name: "建成需求" }));
+
+    expect(apiClient.nameAsRequirement).toHaveBeenCalledWith("a", { title: "数据看板" });
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("已在『云图AI』建好需求『数据看板』（P2），1 场会已关联");
+    expect(within(notice).getAllByRole("button", { name: "撤销" })).toHaveLength(1);
+    await userEvent.click(within(notice).getByRole("button", { name: "打开需求" }));
+    expect(onOpenRequirement).toHaveBeenCalledWith("r-new");
+  });
+});

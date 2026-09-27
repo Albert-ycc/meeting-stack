@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -1471,7 +1471,7 @@ describe("MeetingDetailPage 归属条", () => {
       />,
     );
 
-    expect(screen.getByRole("option", { name: "等你选" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "待你选" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "数据中台" }));
 
     expect(updateMeeting).toHaveBeenCalledWith("vm-1", { project_id: "project-b" });
@@ -1484,6 +1484,82 @@ describe("MeetingDetailPage 归属条", () => {
     expect(undoMeetingProject).toHaveBeenCalledWith("vm-1");
     expect(await screen.findByText("已撤销刚才的改动")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "数据中台" })).toBeInTheDocument();
+  });
+
+  it("像新项目的会：下拉写像新项目「X」；建成需求后提示带［打开需求］［撤销］，右侧关联需求跟着更新", async () => {
+    const hint = { kind: "project" as const, name: "云图看板", spoken: [] };
+    const nameCandidates = vi.fn().mockResolvedValue({
+      hint,
+      candidates: [{ name: "云图看板", folder_path: null, spoken: null, ai: true, similar_folder_path: null }],
+      meetings: [{ id: "vm-1", title: "对照测试会议", date: "2026-07-10", said_ms: null }],
+      default_action: "create_project",
+      project: null,
+      requirement_projects: [{ id: "project-a", name: "云图AI", color: "#376f68", suggested: true }],
+      folder: { mode: "none", reason: "还没有可参照的项目文件夹，这次先不建文件夹" },
+      folders_state: "ready",
+      create_parent: null,
+      create_parent_source: null,
+      create_parent_state: null,
+    });
+    const nameAsRequirement = vi.fn().mockResolvedValue({
+      requirement_id: "req-9",
+      requirement_title: "云图看板",
+      project_id: "project-a",
+      project_name: "云图AI",
+      existing: false,
+      priority: "P2",
+      meetings_linked: 1,
+      meetings_assigned: 1,
+      meeting_ids: ["vm-1"],
+      folder_attached: null,
+      folder_error: null,
+      event_id: 3,
+      undo_until: "2099-01-01T00:00:00Z",
+    });
+    const reloaded = vi.fn().mockResolvedValue({
+      ...meeting(false),
+      project_id: "project-a",
+      project_name: "云图AI",
+      project_color: "#376f68",
+      project_origin: "manual",
+      attribution: { ...baseAttribution, state: "manual", project_id: "project-a", origin: "manual", name_hint: null },
+      requirements: [{ id: "req-9", title: "云图看板", priority: "P2", status: "active", project_id: "project-a" }],
+    });
+    const onOpenRequirement = vi.fn();
+    const { container } = render(
+      <MeetingDetailPage
+        apiClient={
+          { transcriptVersionSegments: vi.fn(), nameCandidates, nameAsRequirement, meeting: reloaded } as unknown as ApiClient
+        }
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{
+          ...meeting(false),
+          attribution: { ...baseAttribution, state: "new_project", new_project_name: "云图看板", name_hint: hint },
+        }}
+        onBack={vi.fn()}
+        onOpenRequirement={onOpenRequirement}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={projects}
+        tags={[]}
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "像新项目「云图看板」" })).toBeInTheDocument();
+    await screen.findByDisplayValue("云图看板");
+    await userEvent.click(screen.getByRole("button", { name: "建成需求" }));
+
+    expect(nameAsRequirement).toHaveBeenCalledWith("vm-1", { title: "云图看板", project_id: "project-a" });
+    const notice = (await screen.findByText("已在『云图AI』建好需求『云图看板』（P2），1 场会已关联")).closest(
+      ".action-banner",
+    ) as HTMLElement;
+    expect(within(notice).getAllByRole("button", { name: "撤销" })).toHaveLength(1);
+    expect(screen.getByLabelText("主项目")).toHaveValue("project-a");
+    expect(container.querySelector(".requirement-chip")).toHaveTextContent("云图看板");
+    expect(screen.getByRole("button", { name: "保存归档归属" })).toBeDisabled();
+
+    await userEvent.click(within(notice).getByRole("button", { name: "打开需求" }));
+    expect(onOpenRequirement).toHaveBeenCalledWith("req-9");
   });
 
   it("右侧下拉改了项目还没保存时，归属条按钮置灰", async () => {

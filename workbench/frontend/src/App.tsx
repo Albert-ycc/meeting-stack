@@ -796,6 +796,7 @@ export default function App({ apiClient = api }: AppProps) {
           if (detailDirty && !window.confirm("当前会议仍有未保存修改。放弃这些修改并离开吗？")) return;
           openProjectGraph(projectId, `m:${meetingId}`);
         }}
+        onOpenMeeting={(meetingId, seekMs) => openMeeting(meetingId, seekMs)}
         onOpenRequirement={openRequirementDetail}
         onOpenTasks={() => navigate("tasks")}
         onGlossaryChanged={() => void loadGlossaryPending()}

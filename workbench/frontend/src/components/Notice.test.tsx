@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -61,5 +61,29 @@ describe("操作提示条", () => {
     expect(screen.getByRole("status")).toHaveTextContent("已保存");
     act(() => vi.advanceTimersByTime(NOTICE_AUTO_HIDE_MS + 10));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("提示可以自带按钮；换下一条提示时按钮跟着换掉", async () => {
+    const undo = vi.fn();
+    function WithActions() {
+      const { notice, setNotice, dismissNotice } = useNotice();
+      return (
+        <div>
+          <button onClick={() => setNotice("已建好需求", "success", 10_000, [{ label: "撤销", onClick: undo }])} type="button">
+            建
+          </button>
+          <button onClick={() => setNotice("已保存")} type="button">存</button>
+          <NoticeBanner notice={notice} onDismiss={dismissNotice} />
+        </div>
+      );
+    }
+    render(<WithActions />);
+
+    await userEvent.click(screen.getByRole("button", { name: "建" }));
+    await userEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+    expect(undo).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(screen.getByRole("button", { name: "存" }));
+    expect(within(screen.getByRole("status")).queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
   });
 });
