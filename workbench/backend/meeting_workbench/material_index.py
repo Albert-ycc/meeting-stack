@@ -222,7 +222,7 @@ class MaterialIndexer:
         self._dirs = {
             row["dir_rel"]: row
             for row in self.db.query_all(
-                "SELECT dir_rel, mtime_ns, zone, child_count FROM material_dirs WHERE root_id = ?",
+                "SELECT dir_rel, mtime_ns, zone, child_count, symlinks FROM material_dirs WHERE root_id = ?",
                 (root_id,),
             )
         }
@@ -351,6 +351,7 @@ class MaterialIndexer:
         files: dict[str, dict[str, Any]] = {}
         subdirs: list[str] = []
         partial = False
+        symlinks = 0
         for entry in entries:
             name = entry.name
             self._entries += 1
@@ -359,6 +360,7 @@ class MaterialIndexer:
             rel = _join(dir_rel, name)
             try:
                 if entry.is_symlink():
+                    symlinks += 1  # 不跟进去，只记个数
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     if rel in self._skip:
@@ -382,11 +384,14 @@ class MaterialIndexer:
                 continue
             files[rel] = self._file_row(name, dir_rel, zone, child.st_size, child.st_mtime_ns, package=False)
         unchanged_listing = (
-            unchanged and known is not None and int(known["child_count"]) == len(entries)
+            unchanged
+            and known is not None
+            and int(known["child_count"]) == len(entries)
+            and int(known.get("symlinks") or 0) == symlinks
         )
         self._write_dir(
             root_id, dir_rel, None if partial else info.st_mtime_ns, zone, len(entries), files=files,
-            subdirs=subdirs, touch_dir=partial or not unchanged_listing, partial=partial,
+            subdirs=subdirs, touch_dir=partial or not unchanged_listing, partial=partial, symlinks=symlinks,
         )
         return subdirs
 
@@ -425,6 +430,7 @@ class MaterialIndexer:
         subdirs: list[str] | None,
         touch_dir: bool = True,
         partial: bool = False,
+        symlinks: int = 0,
     ) -> None:
         """partial：这次有条目没读出来。列出来的照常写，没列出来的行不标不见、子目录不删；
         mtime_ns 写成空（和新子目录的占位一样），下一轮一定重读。"""
@@ -503,15 +509,17 @@ class MaterialIndexer:
                 self._children[dir_rel] = current
             if touch_dir:
                 connection.execute(
-                    """INSERT INTO material_dirs(root_id, dir_rel, mtime_ns, listed_at, zone, child_count)
-                       VALUES (?, ?, ?, ?, ?, ?)
+                    """INSERT INTO material_dirs(root_id, dir_rel, mtime_ns, listed_at, zone, child_count, symlinks)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(root_id, dir_rel) DO UPDATE SET mtime_ns = excluded.mtime_ns,
                            listed_at = excluded.listed_at, zone = excluded.zone,
-                           child_count = excluded.child_count""",
-                    (root_id, dir_rel, mtime_ns, now, zone, child_count),
+                           child_count = excluded.child_count, symlinks = excluded.symlinks""",
+                    (root_id, dir_rel, mtime_ns, now, zone, child_count, symlinks),
                 )
             self._dirty_meetings(connection, root_id, dirty_files, new_stems)
-        self._dirs[dir_rel] = {"dir_rel": dir_rel, "mtime_ns": mtime_ns, "zone": zone, "child_count": child_count}
+        self._dirs[dir_rel] = {
+            "dir_rel": dir_rel, "mtime_ns": mtime_ns, "zone": zone, "child_count": child_count, "symlinks": symlinks,
+        }
 
     def _drop_subtree(self, connection: Any, root_id: int, dir_rel: str, now: str) -> list[int]:
         """父目录里不见了的子目录：整棵子树的文件写 gone_at，目录记录删掉。"""

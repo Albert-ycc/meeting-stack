@@ -65,7 +65,8 @@ from . import material_content as material_content_module
 from . import material_media as material_media_module
 from .material_media import MaterialMedia
 from .extract_worker import TextExtractor
-from .material_rules import LAYER_IMAGE, LAYER_PDF, LAYER_TEXT
+from .material_rules import IMAGE_EXTS, LAYER_IMAGE, LAYER_PDF, LAYER_TEXT, PDF_EXTS, PLAYABLE_TYPES
+from . import material_previews, material_status
 from .ocr_engines import ImageExtractor, OcrEngines, PdfExtractor
 from .busy import BusySignal
 from .material_helpers import StopFlag, cleanup_leftovers
@@ -1433,6 +1434,8 @@ def create_app(
                 "pending_confirm_count": task_service.list_tasks(
                     status="pending_confirm", limit=1
                 )["total"],
+                # 「在访达中显示」「打开文件夹」只在本机打开声档时出现（和关系图 roots 接口同一个算法）
+                "can_reveal": local_request(request),
             }
         )
         response.set_cookie(
@@ -1446,8 +1449,20 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    def material_paused() -> str | None:
+        """转写会议时材料循环先停（内容循环或录音循环任一在让路）。"""
+        if material_content.progress.get("paused") == "busy" or material_media.progress.get("paused") == "busy":
+            return "busy"
+        return None
+
     @app.get("/api/health")
     def health():
+        progress = material_content.progress
+        materials_progress = {
+            "pending": int(progress.get("pending") or 0),
+            "paused": material_paused() if progress.get("pending") else None,
+            "offline_pending": int(progress.get("offline_pending") or 0),
+        }
         database_ok = db.query_one("SELECT 1 AS ok") is not None
         archive_ok = settings.archive_root.is_dir() and not settings.archive_root.is_symlink()
         staging_ok = settings.staging_root.is_dir() and not settings.staging_root.is_symlink()
@@ -1640,6 +1655,8 @@ def create_app(
                 "queued_jobs": int(relay_counts.get("queued") or 0),
                 "scan_errors": scan_errors,
                 "quarantined_dirs": quarantined_count,
+                # 3e：材料还没读的活文件（来自材料循环内存里的计数，不进 services、不影响 status）
+                "material_pending": materials_progress["pending"],
             },
             "details": {
                 "process": process_details,
@@ -1673,6 +1690,7 @@ def create_app(
                     ),
                 },
                 "backup": backup_details,
+                "materials": materials_progress,
             },
         }
 
@@ -3577,6 +3595,84 @@ def create_app(
     def material_index_status(project_id: str | None = Query(default=None, max_length=200)):
         with db.autocommit() as connection:
             return {"roots": index_status(connection, project_id)}
+
+    @app.get("/api/materials/coverage")
+    def material_coverage(project_id: str | None = Query(default=None, max_length=200)):
+        with db.autocommit() as connection:
+            return {"roots": material_status.coverage(connection, project_id, engines=ocr, paused=material_paused())}
+
+    @app.get("/api/materials/unreadable")
+    def material_unreadable(
+        project_id: str = Query(max_length=200),
+        root_id: int | None = None,
+        reason: Literal["password", "corrupt", "unsupported", "timeout", "permission"] | None = None,
+        offset: int = Query(0, ge=0),
+    ):
+        with db.autocommit() as connection:
+            return material_status.unreadable_files(
+                connection, project_id, root_id=root_id, reason=reason, offset=offset
+            )
+
+    @app.get("/api/materials/files/{file_id}/preview")
+    def material_file_preview(file_id: int, request: Request, parts: Literal["preview"] | None = None):
+        with db.autocommit() as connection:
+            result = material_status.file_preview(
+                connection,
+                file_id,
+                engines=ocr,
+                paused=material_paused(),
+                quotes=lambda meeting_id, starts: graph_module._segments_at(connection, meeting_id, starts),
+                parts=parts,
+                can_reveal=local_request(request),
+            )
+        if result is None:
+            raise HTTPException(404, "文件不在索引里（可能已经挪走或删掉了）")
+        return result
+
+    def checked_material_file(file_id: int) -> dict[str, Any]:
+        """读盘的三个接口：按 file_id 找，realpath 必须还在根目录里；盘不在回 503。"""
+        with db.autocommit() as connection:
+            status, row = material_status.resolve_file(connection, file_id)
+        if status == "offline":
+            raise HTTPException(503, "资料盘未连接")
+        if status == "outside":
+            raise HTTPException(403, "这个文件指到了材料根目录外面")
+        if status != "ok":
+            raise HTTPException(404, "找不到这个文件了")
+        return row
+
+    def material_picture(file_id: int, kind: str) -> Response:
+        row = checked_material_file(file_id)
+        exts = IMAGE_EXTS if kind == "image" else PDF_EXTS
+        if row["ext"] not in exts:
+            raise HTTPException(415, "这种文件没有这种预览图")
+        key = row["content_key"] or f"file{row['id']}-{row['mtime_ns']}"
+        try:
+            target = material_previews.preview(
+                settings.data_dir, key, Path(row["real_path"]), kind=kind, build=ocr.build, sips=ocr.tools().sips
+            )
+        except material_previews.PreviewTimeout as error:
+            raise HTTPException(503, "预览图生成超时") from error
+        except material_previews.PreviewUnavailable as error:
+            raise HTTPException(503, "这台电脑上生成不了预览图") from error
+        return FileResponse(target, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+    @app.get("/api/materials/files/{file_id}/thumb")
+    def material_thumb(file_id: int):
+        return material_picture(file_id, "image")
+
+    @app.get("/api/materials/files/{file_id}/page1")
+    def material_page1(file_id: int):
+        return material_picture(file_id, "pdf")
+
+    @app.get("/api/materials/files/{file_id}/media")
+    def material_media_file(file_id: int):
+        row = checked_material_file(file_id)
+        media_type = PLAYABLE_TYPES.get(str(row["ext"]))
+        if media_type is None:
+            raise HTTPException(415, "这种格式浏览器放不了，在访达里打开")
+        path = Path(row["real_path"])
+        return FileResponse(path, filename=path.name, content_disposition_type="inline", media_type=media_type)
 
     @app.get("/api/meetings/{meeting_id}/quotes")
     def meeting_quotes_endpoint(

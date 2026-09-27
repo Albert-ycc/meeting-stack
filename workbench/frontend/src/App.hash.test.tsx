@@ -260,3 +260,150 @@ describe("全部项目概览的地址 #graph", () => {
     expect(apiClient.getGraphOverview).not.toHaveBeenCalled();
   });
 });
+
+describe("材料预览抽屉（3e）", () => {
+  it("项目页读不了的列表点［预览］打开根部的抽屉，本机打开有［在访达中显示］，关了回到项目页", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "/#projects/project-1");
+    const root = { id: 1, project_id: "project-1", path: "/Volumes/资料盘/云图", exists: true, created_at: "2026-09-01T00:00:00Z" };
+    const getMaterialPreview = vi.fn().mockResolvedValue({
+      file: {
+        id: 7,
+        name: "报价单.xlsx",
+        ext: "xlsx",
+        rel_path: "报价单.xlsx",
+        root_id: 1,
+        folder_path: "/Volumes/资料盘/云图",
+        path: "/Volumes/资料盘/云图/报价单.xlsx",
+        size: 100,
+        modified_at: null,
+        project_id: "project-1",
+        project_name: "云图",
+        root_online: true,
+        gone: false,
+      },
+      state: {
+        kind: "unreadable",
+        reason: "password",
+        note: null,
+        what: null,
+        paused: null,
+        meeting: null,
+        text: "读不了：要密码。文件名照样能搜到",
+      },
+      preview: {
+        kind: "none",
+        lines: [],
+        more: false,
+        rows: [],
+        sheet: null,
+        image_url: null,
+        page_url: null,
+        media_url: null,
+        playable: false,
+        duration_ms: null,
+        transcript: [],
+      },
+      mentions: [],
+      deliverables: [],
+    });
+    const apiClient = client({
+      bootstrap: vi.fn().mockResolvedValue({
+        csrf_token: "token",
+        mobile_read_only: true,
+        mobile_task_write: true,
+        semantic_enabled: true,
+        pending_confirm_count: 0,
+        can_reveal: true,
+      }),
+      projects: vi.fn().mockResolvedValue([{ id: "project-1", name: "云图", color: "#2c8d83" }]),
+      projectBoard: vi.fn().mockResolvedValue({
+        id: "project-1",
+        name: "云图",
+        color: "#2c8d83",
+        meeting_count: 0,
+        requirement_counts: { active: 0, done: 0, shelved: 0, all: 0 },
+        open_task_count: 0,
+        material_roots: [root],
+        meetings: [],
+      }),
+      projectMaterialSubfolders: vi.fn().mockResolvedValue({ roots: [] }),
+      projectMeetings: vi.fn().mockResolvedValue([]),
+      requirements: vi.fn().mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 10,
+        offset: 0,
+        counts: { active: 0, done: 0, shelved: 0, all: 0 },
+      }),
+      getMaterialIndexStatus: vi.fn().mockResolvedValue({
+        roots: [
+          {
+            root_id: 1,
+            project_id: "project-1",
+            path: root.path,
+            state: "done",
+            files: 3,
+            name_only_dirs: 0,
+            indexed_once: true,
+            last_full_at: null,
+            updated_at: null,
+            error: null,
+          },
+        ],
+      }),
+      getMaterialCoverage: vi.fn().mockResolvedValue({
+        roots: [
+          {
+            root_id: 1,
+            project_id: "project-1",
+            path: root.path,
+            state: "done",
+            online: true,
+            names: { files: 3, name_only_dirs: 0, symlinks: 0 },
+            content: {
+              total: 3,
+              done: 2,
+              pending: 0,
+              paused: null,
+              waiting: [],
+              unreadable: { password: 1, corrupt: 0, unsupported: 0, timeout: 0, permission: 0 },
+              notes: { small_image: 0, no_text: 0, no_speech: 0, truncated: 0, meeting_audio: 0 },
+              names_only: { cards: 0, other: 0 },
+            },
+          },
+        ],
+      }),
+      getMaterialUnreadable: vi.fn().mockResolvedValue({
+        items: [
+          {
+            file_id: 7,
+            name: "报价单.xlsx",
+            rel_path: "报价单.xlsx",
+            path: "/Volumes/资料盘/云图/报价单.xlsx",
+            root_id: 1,
+            reason: "password",
+            checked_at: null,
+          },
+        ],
+        total: 1,
+        next_offset: null,
+      }),
+      getMaterialPreview,
+    } as Partial<ApiClient>);
+
+    render(<App apiClient={apiClient} />);
+
+    await user.click(await screen.findByRole("button", { name: "看看" }));
+    await user.click(await screen.findByRole("button", { name: "预览" }));
+    const drawer = await screen.findByRole("dialog", { name: "材料预览" });
+    expect(await within(drawer).findByText("读不了：要密码。文件名照样能搜到")).toBeInTheDocument();
+    expect(getMaterialPreview).toHaveBeenCalledWith(7);
+    expect(within(drawer).getByRole("button", { name: "在访达中显示" })).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "在关系图里看" })).toBeInTheDocument();
+
+    await user.click(within(drawer).getByRole("button", { name: "关闭" }));
+    expect(screen.queryByRole("dialog", { name: "材料预览" })).toBeNull();
+    expect(screen.getByText("内容都读完了，读不了 1 个（要密码 1）")).toBeInTheDocument();
+  });
+});

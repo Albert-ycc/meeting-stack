@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../api";
 import type { Job, MeetingSummary, Task } from "../types";
-import { OverviewPage } from "./OverviewPage";
+import { OverviewPage, materialTagText } from "./OverviewPage";
 
 const pendingTask: Task = {
   id: "task-1",
@@ -134,5 +134,42 @@ describe("OverviewPage mobile safety", () => {
     expect(screen.getByText("本地服务全部正常")).toBeInTheDocument();
     expect(screen.getByText("协会MDT需求评审")).toBeInTheDocument();
     expect(screen.getAllByText("标题待生成").length).toBeGreaterThan(0);
+  });
+});
+
+describe("OverviewPage 材料小标签（3e）", () => {
+  const withMaterials = (pending: number, paused: "busy" | null, offlinePending: number) => ({
+    status: "ok" as const,
+    services: { database: "healthy", semantic: "paused" },
+    counts: { meetings: 0, unreviewed: 0, failed_jobs: 0, scan_errors: 0, material_pending: pending },
+    details: { materials: { pending, paused, offline_pending: offlinePending } },
+  });
+
+  it("三种说法：还剩多少、转写会议时先停、剩下的都在没插的盘上", () => {
+    expect(materialTagText(withMaterials(210, null, 0))).toBe("材料 还剩 210 个");
+    expect(materialTagText(withMaterials(1234, "busy", 0))).toBe("材料 还剩 1,234 个 · 转写会议时先停");
+    expect(materialTagText(withMaterials(210, null, 210))).toBe("材料 还剩 210 个 · 资料盘未连接");
+    expect(materialTagText(withMaterials(210, null, 12))).toBe("材料 还剩 210 个");
+  });
+
+  it("0 个、旧后端没有这个字段时不显示", () => {
+    expect(materialTagText(withMaterials(0, null, 0))).toBeNull();
+    expect(materialTagText(baseProps().health)).toBeNull();
+    expect(materialTagText(null)).toBeNull();
+  });
+
+  it("灰色小标签挂在本地服务那行下面，不能点；语义检索让路暂停仍写全部正常", async () => {
+    render(<OverviewPage {...baseProps({ health: withMaterials(210, "busy", 0) })} />);
+    await act(async () => {});
+    const tag = screen.getByText("材料 还剩 210 个 · 转写会议时先停");
+    expect(tag.tagName).toBe("P");
+    expect(tag.closest("button")).toBeNull();
+    expect(screen.getByText("本地服务全部正常")).toBeInTheDocument();
+  });
+
+  it("没有材料要读时没有这个标签", async () => {
+    render(<OverviewPage {...baseProps()} />);
+    await act(async () => {});
+    expect(document.querySelector(".material-tag")).toBeNull();
   });
 });

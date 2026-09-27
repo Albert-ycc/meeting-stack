@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     backfill_projects.add_argument("--limit", type=int, help="最多处理的会议数")
 
-    materials_cmd = subcommands.add_parser("materials", help="项目材料：盘点、图片文字识别试跑（只读）")
+    materials_cmd = subcommands.add_parser("materials", help="项目材料：盘点、读了多少、图片文字识别试跑和引擎")
     materials_sub = materials_cmd.add_subparsers(dest="materials_command", required=True)
     walk = materials_sub.add_parser(
         "walk", help="走一遍项目材料文件夹，统计第三期要索引的量（只读，不改数据库）"
@@ -92,6 +92,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--engine", action="append", choices=["vision", "tesseract"], help="只跑某一个，默认两个都跑"
     )
     ocr.add_argument("--out", type=Path, help="结果写到哪个文件夹，默认数据目录下的 ocr-trial/")
+    status = materials_sub.add_parser("status", help="看材料读了多少、还剩多少、哪些读不了（只读）")
+    status.add_argument("--project", help="只看这个项目（项目 id 或名字）")
+    status.add_argument("--json", action="store_true", help="输出 JSON")
     engine = materials_sub.add_parser(
         "ocr-engine", help="选图片和扫描页用哪套认字：auto（默认）、vision、tesseract、off；不用重启服务"
     )
@@ -160,21 +163,7 @@ def _material_roots(
     connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
-        projects = [dict(row) for row in connection.execute("SELECT id, name FROM projects ORDER BY name")]
-        chosen = None
-        if project:
-            wanted = unicodedata.normalize("NFKC", project).casefold().strip()
-            chosen = next(
-                (
-                    item for item in projects
-                    if item["id"] == project
-                    or unicodedata.normalize("NFKC", item["name"]).casefold().strip() == wanted
-                ),
-                None,
-            )
-            if chosen is None:
-                names = "、".join(item["name"] for item in projects) or "（还没有项目）"
-                raise SystemExit(f"没有叫「{project}」的项目。现有项目：{names}")
+        chosen = _find_project(connection, project)
         rows = connection.execute(
             """SELECT r.path, r.project_id, p.name AS project_name
                  FROM project_material_roots r JOIN projects p ON p.id = r.project_id
@@ -187,6 +176,60 @@ def _material_roots(
     if not rows:
         raise SystemExit("还没有挂材料文件夹；可以用 --root 直接指定文件夹")
     return [dict(row) for row in rows]
+
+
+def _find_project(connection: sqlite3.Connection, project: str | None) -> dict[str, Any] | None:
+    """--project 按 id 或名字（不分全半角、大小写）找项目；找不到就列出现有项目退出。"""
+    if not project:
+        return None
+    projects = [dict(row) for row in connection.execute("SELECT id, name FROM projects ORDER BY name")]
+    wanted = unicodedata.normalize("NFKC", project).casefold().strip()
+    chosen = next(
+        (
+            item for item in projects
+            if item["id"] == project or unicodedata.normalize("NFKC", item["name"]).casefold().strip() == wanted
+        ),
+        None,
+    )
+    if chosen is None:
+        names = "、".join(item["name"] for item in projects) or "（还没有项目）"
+        raise SystemExit(f"没有叫「{project}」的项目。现有项目：{names}")
+    return chosen
+
+
+class _ReadOnlyDb:
+    """只读连接包一层 query_one，给 OcrEngines 查认字引擎的设置用。"""
+
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def query_one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+        row = self.connection.execute(sql, params).fetchone()
+        return dict(row) if row is not None else None
+
+
+def _materials_status(args: argparse.Namespace, settings: Settings) -> int:
+    """materials status：直接查库（读不到服务内存，所以不写「转写会议时先停」）。"""
+    from .material_status import coverage, render_status
+    from .ocr_engines import OcrEngines
+
+    assert settings.database_path is not None
+    if not settings.database_path.exists():
+        raise SystemExit(f"找不到声档数据库：{settings.database_path}")
+    connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        chosen = _find_project(connection, args.project)
+        engines = OcrEngines(_ReadOnlyDb(connection), settings)  # type: ignore[arg-type]
+        roots = coverage(connection, chosen["id"] if chosen else None, engines=engines)
+        names = {row["id"]: row["name"] for row in connection.execute("SELECT id, name FROM projects")}
+    finally:
+        connection.close()
+    if args.json:
+        print(json.dumps({"roots": roots}, ensure_ascii=False, indent=2))
+    else:
+        print(render_status(roots, names))
+    return 0
 
 
 ENGINE_LABELS = {"vision": "Vision（macOS 自带）", "tesseract": "tesseract", "off": "不认字（只读 PDF 文字层）"}
@@ -220,6 +263,8 @@ def _materials(args: argparse.Namespace, settings: Settings) -> int:
 
     if args.materials_command == "ocr-engine":
         return _ocr_engine(args, settings)
+    if args.materials_command == "status":
+        return _materials_status(args, settings)
     roots = _material_roots(settings, args.project, args.root)
     if args.materials_command == "walk":
         if not args.dry_run:

@@ -33,6 +33,7 @@ import { RequirementDetailPage } from "./components/RequirementDetailPage";
 import { RequirementsPage } from "./components/RequirementsPage";
 import { SearchPage } from "./components/SearchPage";
 import { TaskDrawer } from "./components/TaskDrawer";
+import { MaterialPreviewDrawer } from "./components/MaterialPreview";
 import { TasksPage } from "./components/TasksPage";
 import { uploadRecordingInChunks } from "./upload";
 
@@ -141,6 +142,10 @@ export default function App({ apiClient = api }: AppProps) {
   // 从项目详情页跳进词典时预选中的项目 chip；普通侧栏导航进词典时为 null（不预筛）。
   const [glossaryProjectId, setGlossaryProjectId] = useState<string | null>(null);
   const [taskDrawerId, setTaskDrawerId] = useState<string | null>(null);
+  // 材料预览抽屉（3e）：和任务抽屉一样挂在根部，换视图时一起关
+  const [previewTarget, setPreviewTarget] = useState<{ fileId: number; startMs?: number } | null>(null);
+  // 在本机打开页面才有「在访达中显示」
+  const [canReveal, setCanReveal] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [glossaryPending, setGlossaryPending] = useState(0);
   const [mobileTaskWrite, setMobileTaskWrite] = useState(true);
@@ -328,6 +333,7 @@ export default function App({ apiClient = api }: AppProps) {
       setSearchActive(false);
     }
     setTaskDrawerId(null);
+    setPreviewTarget(null);
     if (hash === "#graph" || hash.startsWith("#graph?")) {
       // 全部项目概览，#graph?sel=p:<id> 选中一个岛；要在 #projects/ 之前认。手机上没有关系图，退回项目列表
       if (isMobileRef.current) {
@@ -397,6 +403,7 @@ export default function App({ apiClient = api }: AppProps) {
         setProjects(projectPayload);
         setTags(tagPayload);
         setMobileTaskWrite(boot.mobile_task_write);
+        setCanReveal(Boolean(boot.can_reveal));
         setPendingCount(boot.pending_confirm_count);
         // 空锚点就是默认的工作台；启动期间用户可能已经点了别的视图，不能再拉回来。
         if (window.location.hash) applyHash();
@@ -531,6 +538,7 @@ export default function App({ apiClient = api }: AppProps) {
     // 检索结果不清：从会议返回时要回到刚才那页结果。
     setDetailDirty(false);
     setTaskDrawerId(null);
+    setPreviewTarget(null);
     setOpenMeetingId(meetingId);
     void loadDetail(meetingId);
   };
@@ -577,6 +585,7 @@ export default function App({ apiClient = api }: AppProps) {
     if (nextView === "graph") setOverviewSelection(null);
     setSearchActive(false);
     setTaskDrawerId(null);
+    setPreviewTarget(null);
     // 默认清空词典预筛；openGlossaryForProject 会在这之后同一批更新里重新设上。
     setGlossaryProjectId(null);
   };
@@ -1026,6 +1035,7 @@ export default function App({ apiClient = api }: AppProps) {
           onOpenGlossary={openGlossaryForProject}
           onOpenMeeting={openMeeting}
           onOpenRequirement={openRequirementDetail}
+          onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
           onOpenTask={setTaskDrawerId}
           onProjectUpdated={refreshProjects}
           onOpenProject={openProjectDetail}
@@ -1117,6 +1127,29 @@ export default function App({ apiClient = api }: AppProps) {
           onOpenMeeting={openMeeting}
           onOpenRequirement={openRequirementDetail}
           taskId={taskDrawerId}
+        />
+      )}
+      {previewTarget && (
+        <MaterialPreviewDrawer
+          apiClient={apiClient}
+          canReveal={canReveal}
+          fileId={previewTarget.fileId}
+          isMobile={isMobile}
+          key={`${previewTarget.fileId}:${previewTarget.startMs ?? ""}`}
+          onClose={() => setPreviewTarget(null)}
+          onOpenInGraph={(projectId, fileId) => {
+            setPreviewTarget(null);
+            openProjectGraph(projectId, `file:${fileId}`);
+          }}
+          onOpenMeeting={(meetingId, seekMs) => {
+            setPreviewTarget(null);
+            openMeeting(meetingId, seekMs ?? 0);
+          }}
+          onOpenTask={(taskId) => {
+            setPreviewTarget(null);
+            setTaskDrawerId(taskId);
+          }}
+          startMs={previewTarget.startMs}
         />
       )}
     </AppShell>

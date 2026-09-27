@@ -776,6 +776,8 @@ CREATE TABLE IF NOT EXISTS material_dirs (
     listed_at TEXT NOT NULL,
     zone TEXT NOT NULL DEFAULT 'normal' CHECK (zone IN ('normal', 'name_only', 'cards')),
     child_count INTEGER NOT NULL DEFAULT 0,
+    -- v15 / 3e：这一层里没跟进去的符号链接个数（覆盖率里写「符号链接 N 个没跟进去」）
+    symlinks INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (root_id, dir_rel)
 );
 
@@ -1305,6 +1307,14 @@ class Database:
                     connection.execute(
                         f"ALTER TABLE material_files ADD COLUMN {name} {declaration}"
                     )
+            dir_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(material_dirs)").fetchall()
+            }
+            if "symlinks" not in dir_columns:
+                connection.execute(
+                    "ALTER TABLE material_dirs ADD COLUMN symlinks INTEGER NOT NULL DEFAULT 0"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_material_files_content "
                 "ON material_files(content_key)"

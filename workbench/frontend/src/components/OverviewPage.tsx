@@ -96,6 +96,19 @@ function serviceHealthy(name: string, status: string): boolean {
   return HEALTHY_SERVICE_STATES.has(status) || (name === "semantic" && status === "paused");
 }
 
+const MATERIAL_COUNT = new Intl.NumberFormat("en-US");
+
+/** 首页「正在处理」里本地服务那一行下面的灰色小标签（3e）；0 个或旧后端没有这个字段时不显示。 */
+export function materialTagText(health: HealthPayload | null | undefined): string | null {
+  const materials = health?.details?.materials;
+  const pending = health?.counts?.material_pending ?? materials?.pending;
+  if (!materials || typeof pending !== "number" || pending <= 0) return null;
+  const text = `材料 还剩 ${MATERIAL_COUNT.format(pending)} 个`;
+  if (materials.paused === "busy") return `${text} · 转写会议时先停`;
+  if (materials.offline_pending >= pending) return `${text} · 资料盘未连接`;
+  return text;
+}
+
 function startOfWeek(reference: Date): Date {
   const start = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate());
   const weekdayFromMonday = (start.getDay() + 6) % 7;
@@ -589,6 +602,7 @@ export function OverviewPage({
               </ul>
             )}
           </div>
+          {materialTagText(health) && <p className="material-tag">{materialTagText(health)}</p>}
         </section>
       </div>
     </section>

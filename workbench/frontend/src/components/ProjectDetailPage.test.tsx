@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { INDEX_POLL_MS, ProjectDetailPage } from "./ProjectDetailPage";
 import { ApiError, type ApiClient } from "../api";
 import type {
+  MaterialCoverageRoot,
   MaterialIndexRoot,
   ProjectBoard,
   ProjectMeetingRow,
@@ -794,5 +795,180 @@ describe("ProjectDetailPage 冷启动提示", () => {
     expect(await screen.findByText(/也挂在「云图老项目」下/)).toHaveTextContent(
       "会议卡片只写给先挂上的「云图老项目」，不需要可以在这里移除",
     );
+  });
+});
+
+describe("ProjectDetailPage 材料内容进度（3e）", () => {
+  const indexRoot = (overrides: Partial<MaterialIndexRoot> = {}): MaterialIndexRoot => ({
+    root_id: 1,
+    project_id: "project-1",
+    path: baseBoard.material_roots![0].path,
+    state: "done",
+    files: 1500,
+    name_only_dirs: 3,
+    indexed_once: true,
+    last_full_at: null,
+    updated_at: new Date().toISOString(),
+    error: null,
+    ...overrides,
+  });
+  const coverageRoot = (content: Partial<MaterialCoverageRoot["content"]> = {}, online = true): MaterialCoverageRoot => ({
+    root_id: 1,
+    project_id: "project-1",
+    path: baseBoard.material_roots![0].path,
+    state: "done",
+    online,
+    names: { files: 1500, name_only_dirs: 3, symlinks: 2 },
+    content: {
+      total: 1237,
+      done: 1020,
+      pending: 210,
+      paused: null,
+      waiting: [],
+      unreadable: { password: 2, corrupt: 3, unsupported: 2, timeout: 0, permission: 0 },
+      notes: { small_image: 0, no_text: 0, no_speech: 0, truncated: 0, meeting_audio: 0 },
+      names_only: { cards: 12, other: 30 },
+      ...content,
+    },
+  });
+
+  it("在读：已读多少、还剩多少，读不了分原因，只收文件名的写在括号里，「只记了个数」只写一次", async () => {
+    const getMaterialIndexStatus = vi.fn().mockResolvedValue({ roots: [indexRoot()] });
+    const getMaterialCoverage = vi.fn().mockResolvedValue({ roots: [coverageRoot()] });
+    renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage }) });
+
+    expect(
+      await screen.findByText(/正文、图片文字、录音已读 1,020 个，还剩 210 个，读不了 7 个（要密码 2、文件损坏 3、格式不支持 2）/),
+    ).toBeInTheDocument();
+    expect(getMaterialCoverage).toHaveBeenCalledWith("project-1");
+    expect(
+      screen.getByText(
+        "（声档会议记录 12 个、压缩包等 30 个只收文件名；node_modules、.git 等 3 个文件夹只记了个数；符号链接 2 个没跟进去）",
+      ),
+    ).toBeInTheDocument();
+    // 文件名那行不再带括号
+    expect(screen.getByText("已认得 1,500 个文件名 · 刚刚")).toBeInTheDocument();
+    expect(screen.getAllByText(/只记了个数/)).toHaveLength(1);
+  });
+
+  it("转写会议时先停；读完了写「内容都读完了」；识别程序没装单独一句", async () => {
+    const getMaterialIndexStatus = vi.fn().mockResolvedValue({ roots: [indexRoot()] });
+    const getMaterialCoverage = vi.fn().mockResolvedValue({ roots: [coverageRoot({ paused: "busy" })] });
+    const first = renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage }) });
+    expect(await screen.findByText(/还剩 210 个 · 转写会议时先停，转写完接着读/)).toBeInTheDocument();
+    first.unmount();
+
+    const hint = "要先装 ffmpeg 才能转写录音：在终端运行 brew install ffmpeg";
+    const done = vi.fn().mockResolvedValue({
+      roots: [
+        coverageRoot({
+          pending: 0,
+          unreadable: { password: 0, corrupt: 0, unsupported: 0, timeout: 0, permission: 0 },
+          names_only: { cards: 0, other: 0 },
+        }),
+      ],
+    });
+    const second = renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage: done }) });
+    expect(await screen.findByText("内容都读完了")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "看看" })).toBeNull();
+    second.unmount();
+
+    const waiting = vi.fn().mockResolvedValue({
+      roots: [coverageRoot({ pending: 0, waiting: [{ what: "ffmpeg", files: 4, hint }] })],
+    });
+    renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage: waiting }) });
+    expect(await screen.findByText(hint)).toBeInTheDocument();
+    expect(screen.getByText(/已读 1,020 个，还剩 4 个/)).toBeInTheDocument();
+  });
+
+  it("［看看］展开读不了的文件，每行［复制路径］［预览］，没列完时［再列 100 个］", async () => {
+    const user = userEvent.setup();
+    const item = (id: number) => ({
+      file_id: id,
+      name: `报价${id}.xlsx`,
+      rel_path: `报价/报价${id}.xlsx`,
+      path: `${baseBoard.material_roots![0].path}/报价/报价${id}.xlsx`,
+      root_id: 1,
+      reason: "password" as const,
+      checked_at: null,
+    });
+    const getMaterialUnreadable = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [item(1), item(2)], total: 3, next_offset: 2 })
+      .mockResolvedValueOnce({ items: [item(3)], total: 3, next_offset: null });
+    const onOpenPreview = vi.fn();
+    renderPage({
+      apiClient: client({
+        getMaterialIndexStatus: vi.fn().mockResolvedValue({ roots: [indexRoot()] }),
+        getMaterialCoverage: vi.fn().mockResolvedValue({ roots: [coverageRoot({ pending: 0 })] }),
+        getMaterialUnreadable,
+      }),
+      onOpenPreview,
+    });
+
+    await user.click(await screen.findByRole("button", { name: "看看" }));
+    expect(getMaterialUnreadable).toHaveBeenCalledWith("project-1", 1, 0);
+    expect(await screen.findByText("报价/报价1.xlsx")).toBeInTheDocument();
+    const row = screen.getByText("报价/报价2.xlsx").closest("li")!;
+    expect(within(row).getByText("要密码")).toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: "预览" }));
+    expect(onOpenPreview).toHaveBeenCalledWith(2);
+    expect(within(row).getByRole("button", { name: "复制路径" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "再列 100 个" }));
+    expect(getMaterialUnreadable).toHaveBeenLastCalledWith("project-1", 1, 2);
+    expect(await screen.findByText("报价/报价3.xlsx")).toBeInTheDocument();
+    expect(screen.getByText("报价/报价1.xlsx")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "再列 100 个" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "收起" }));
+    expect(screen.queryByText("报价/报价1.xlsx")).toBeNull();
+  });
+
+  it("文件名认完了但内容还在读时接着问，两样一起问；读完就停；盘不在的根目录不算", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const getMaterialIndexStatus = vi.fn().mockResolvedValue({ roots: [indexRoot()] });
+      const getMaterialCoverage = vi
+        .fn()
+        .mockResolvedValueOnce({ roots: [coverageRoot()] })
+        .mockResolvedValue({ roots: [coverageRoot({ pending: 0 })] });
+      const view = renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage }) });
+      expect(await screen.findByText(/还剩 210 个/)).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(INDEX_POLL_MS);
+      });
+      expect(getMaterialIndexStatus).toHaveBeenCalledTimes(2);
+      expect(getMaterialCoverage).toHaveBeenCalledTimes(2);
+      expect(await screen.findByText(/内容都读完了/)).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(INDEX_POLL_MS * 2);
+      });
+      expect(getMaterialCoverage).toHaveBeenCalledTimes(2);
+      view.unmount();
+
+      const offline = vi.fn().mockResolvedValue({ roots: [coverageRoot({}, false)] });
+      renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage: offline }) });
+      expect(await screen.findByText(/还剩 210 个/)).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(INDEX_POLL_MS * 2);
+      });
+      expect(offline).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coverage 出错时照旧写文件名那行（带「只记了个数」）", async () => {
+    renderPage({
+      apiClient: client({
+        getMaterialIndexStatus: vi.fn().mockResolvedValue({ roots: [indexRoot()] }),
+        getMaterialCoverage: vi.fn().mockRejectedValue(new Error("boom")),
+      }),
+    });
+    expect(
+      await screen.findByText("已认得 1,500 个文件名 · 刚刚（node_modules、.git 等 3 个文件夹只记了个数）"),
+    ).toBeInTheDocument();
+    expect(document.querySelector(".material-root-row__content")).toBeNull();
   });
 });

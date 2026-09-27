@@ -55,6 +55,77 @@ IWORK_EXTS = frozenset({"key", "pages", "numbers"})
 NAME_ONLY_EXTS = frozenset({"pyc", "class", "o", "so", "dll", "dylib", "whl", "env", "lock", "map"})
 
 CONTENT_EXTS = TEXT_LAYER_EXTS | PDF_EXTS | IMAGE_EXTS | MEDIA_EXTS
+# 预览按表格画（前 5 行）
+TABLE_EXTS = frozenset({"xlsx", "xlsm", "xltx", "xls", "xlt", "et", "csv", "tsv", "ods"})
+# 浏览器放得了的音视频：只有这些给播放地址，别的回 415，不转码
+PLAYABLE_TYPES = {
+    "mp3": "audio/mpeg",
+    "m4a": "audio/mp4",
+    "aac": "audio/aac",
+    "wav": "audio/wav",
+    "flac": "audio/flac",
+    "ogg": "audio/ogg",
+    "opus": "audio/ogg",
+    "mp4": "video/mp4",
+    "mov": "video/quicktime",
+    "m4v": "video/mp4",
+    "webm": "video/webm",
+}
+
+# —— 读不了的五种原因（1f 盘点、覆盖率、预览、搜索共用）——
+PASSWORD = "password"
+CORRUPT = "corrupt"
+UNSUPPORTED = "unsupported"
+TIMEOUT = "timeout"
+PERMISSION = "permission"
+REASON_LABELS = {
+    PASSWORD: "要密码",
+    CORRUPT: "文件损坏",
+    UNSUPPORTED: "格式不支持",
+    TIMEOUT: "处理超时",
+    PERMISSION: "没有权限",
+}
+
+# —— 文件状态的说法（第三期 3e）：预览抽屉、文件面板、搜索结果、项目页、关系图共用，每种一句话 ——
+STATE_TEXTS = {
+    "pending": "还没读到内容，读完后这里能预览",
+    "paused": "转写会议时先停，转写完接着读",
+    "offline": "资料盘未连接，先看上次读到的",
+    "retrying": "上次没读出来，过一会儿再试",
+    "names_only": "这种文件只收文件名",
+    "cards": "声档写的会议卡片，只收文件名",
+    "gone": "找不到这个文件了，可能已经删掉或挪走了",
+    "small_image": "图太小，没认字",
+    "no_text": "图里没认出字",
+    "no_speech": "没听到说话声",
+    "vision_failed": "认字程序没编译成功，在终端运行 meeting-workbench doctor 看原因",
+}
+# 识别程序没装：缺什么写什么，装好后自动接着读
+WAITING_TEXTS = {
+    "vision": "要先装 Xcode 命令行工具才能读 PDF、认图片里的字：在终端运行 xcode-select --install",
+    "tesseract": "要先装 tesseract 才能认图片里的字：在终端运行 brew install tesseract tesseract-lang",
+    "textutil": "这种老文档要用 Mac 自带的 textutil 读，在 Mac 上运行声档才能读",
+    "ffmpeg": "要先装 ffmpeg 才能转写录音：在终端运行 brew install ffmpeg",
+    "funasr": "没找到转写会议用的 FunASR，在终端运行 meeting-workbench doctor 看原因",
+}
+TRUNCATED_TEXTS = {
+    "text": "只收了前 20 万字",
+    "media": "只转了前 6 小时",
+}
+
+
+def unreadable_text(reason: str) -> str:
+    return f"读不了：{REASON_LABELS.get(reason, '原因不明')}。文件名照样能搜到"
+
+
+def truncated_text(layer: str | None, pages: int | None = None) -> str:
+    if layer == "pdf" and pages:
+        return f"只读了前 {pages} 页"
+    return TRUNCATED_TEXTS.get(layer or "", "只收了前面一部分")
+
+
+def meeting_audio_text(title: str | None) -> str:
+    return f"这是会议『{title or '未命名会议'}』的录音，内容看会议"
 
 
 def file_ext(name: str) -> str:

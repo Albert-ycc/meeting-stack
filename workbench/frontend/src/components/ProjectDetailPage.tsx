@@ -3,9 +3,12 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import type { ApiClient } from "../api";
 import { formatDurationText, formatMonthDay } from "../format";
 import type {
+  MaterialCoverage,
+  MaterialCoverageRoot,
   MaterialIndexRoot,
   MaterialIndexStatus,
   MaterialRoot,
+  MaterialUnreadableItem,
   MaterialRootRepoint,
   Project,
   ProjectBoard,
@@ -15,6 +18,7 @@ import type {
   RequirementStatus,
   RequirementSummary,
   RequirementsPayload,
+  UnreadableReason,
 } from "../types";
 import { AsyncState } from "./AsyncState";
 import { nestedHints } from "./ClaimFoldersDialog";
@@ -44,6 +48,8 @@ interface ProjectDetailPageProps {
   onOpenGlossary: (projectId: string) => void;
   onOpenMeeting: (meetingId: string) => void;
   onOpenTask: (taskId: string) => void;
+  /** 读不了的列表里点［预览］打开 App 根部的材料预览抽屉（3e） */
+  onOpenPreview?: (fileId: number) => void;
   reloadKey?: number;
   onProjectUpdated?: () => void;
   /** 新建需求弹窗要拿全量项目列表填「所属项目」下拉 */
@@ -62,7 +68,7 @@ type LoadState = "loading" | "ready" | "error";
 
 const REQUIREMENTS_PAGE_SIZE = 10;
 const MEETINGS_PAGE_SIZE = 8;
-/** 文件名还在认（pending / walking）时隔一会儿再问一次进度 */
+/** 文件名还在认（pending / walking）、内容还在读时隔一会儿再问一次进度 */
 export const INDEX_POLL_MS = 15_000;
 
 const COUNT_FORMAT = new Intl.NumberFormat("en-US");
@@ -78,12 +84,13 @@ function agoText(value: string | null, now: number): string {
   return hours < 24 ? `${hours} 小时前` : `${Math.floor(hours / 24)} 天前`;
 }
 
-/** 材料那一节每个根目录一行文件名索引的进度（2d） */
-export function indexStatusText(item: MaterialIndexRoot, now = Date.now()): string {
+/** 材料那一节每个根目录一行文件名索引的进度（2d）。有内容那一行时「只记了个数」挪到内容那行的括号里（withDirs=false） */
+export function indexStatusText(item: MaterialIndexRoot, now = Date.now(), withDirs = true): string {
   switch (item.state) {
     case "done": {
       const ago = agoText(item.updated_at, now);
-      const dirs = item.name_only_dirs ? `（node_modules、.git 等 ${item.name_only_dirs} 个文件夹只记了个数）` : "";
+      const dirs =
+        withDirs && item.name_only_dirs ? `（node_modules、.git 等 ${item.name_only_dirs} 个文件夹只记了个数）` : "";
       return `已认得 ${COUNT_FORMAT.format(item.files)} 个文件名${ago ? ` · ${ago}` : ""}${dirs}`;
     }
     case "offline":
@@ -95,6 +102,147 @@ export function indexStatusText(item: MaterialIndexRoot, now = Date.now()): stri
     default:
       return `正在认文件名，已认 ${COUNT_FORMAT.format(item.files)} 个`;
   }
+}
+
+const UNREADABLE_LABELS: Record<UnreadableReason, string> = {
+  password: "要密码",
+  corrupt: "文件损坏",
+  unsupported: "格式不支持",
+  timeout: "处理超时",
+  permission: "没有权限",
+};
+
+export interface CoverageText {
+  /** 「已读 N 个，还剩 M 个」或「内容都读完了」；没有能读内容的文件时为 null */
+  progress: string | null;
+  /** 「读不了 7 个（要密码 2、…）」，后面接［看看］ */
+  unreadable: string | null;
+  /** 识别程序没装时各一句，用后端状态表里那句 */
+  waiting: string[];
+  /** 「（声档会议记录 12 个…只收文件名；…只记了个数；符号链接 2 个没跟进去）」 */
+  names: string | null;
+}
+
+/** 材料根目录那一行下面的内容状态（3e），数字照第二期 1,234 的写法 */
+export function coverageText(root: MaterialCoverageRoot): CoverageText {
+  const { content, names } = root;
+  const waitingFiles = content.waiting.reduce((sum, item) => sum + item.files, 0);
+  const left = content.pending + waitingFiles;
+  let progress: string | null = null;
+  if (left > 0) {
+    progress = `正文、图片文字、录音已读 ${COUNT_FORMAT.format(content.done)} 个，还剩 ${COUNT_FORMAT.format(left)} 个`;
+    if (content.paused === "busy") progress += " · 转写会议时先停，转写完接着读";
+  } else if (content.total > 0) {
+    progress = "内容都读完了";
+  }
+  const reasons = (Object.keys(UNREADABLE_LABELS) as UnreadableReason[]).filter((key) => content.unreadable[key] > 0);
+  const unreadableTotal = reasons.reduce((sum, key) => sum + content.unreadable[key], 0);
+  const unreadable =
+    unreadableTotal > 0
+      ? `读不了 ${COUNT_FORMAT.format(unreadableTotal)} 个（${reasons
+          .map((key) => `${UNREADABLE_LABELS[key]} ${COUNT_FORMAT.format(content.unreadable[key])}`)
+          .join("、")}）`
+      : null;
+  const onlyNames: string[] = [];
+  if (content.names_only.cards > 0) onlyNames.push(`声档会议记录 ${COUNT_FORMAT.format(content.names_only.cards)} 个`);
+  if (content.names_only.other > 0) onlyNames.push(`压缩包等 ${COUNT_FORMAT.format(content.names_only.other)} 个`);
+  const parts: string[] = [];
+  if (onlyNames.length > 0) parts.push(`${onlyNames.join("、")}只收文件名`);
+  if (names.name_only_dirs > 0) {
+    parts.push(`node_modules、.git 等 ${COUNT_FORMAT.format(names.name_only_dirs)} 个文件夹只记了个数`);
+  }
+  if (names.symlinks > 0) parts.push(`符号链接 ${COUNT_FORMAT.format(names.symlinks)} 个没跟进去`);
+  return {
+    progress,
+    unreadable,
+    waiting: content.waiting.map((item) => item.hint),
+    names: parts.length > 0 ? `（${parts.join("；")}）` : null,
+  };
+}
+
+/** 还要不要接着问进度：有根目录在认文件名，或在线的根目录还有没读完的内容 */
+export function materialsStillMoving(index: MaterialIndexStatus | null, coverage: MaterialCoverage | null): boolean {
+  if (index?.roots.some((item) => item.state === "pending" || item.state === "walking")) return true;
+  return Boolean(coverage?.roots.some((item) => item.online && item.content.pending > 0));
+}
+
+/** ［看看］展开的读不了的文件，按根目录取，每次 100 个 */
+function UnreadableList({
+  apiClient,
+  projectId,
+  rootId,
+  onCopy,
+  onOpenPreview,
+}: {
+  apiClient: ApiClient;
+  projectId: string;
+  rootId: number;
+  onCopy: (path: string) => void;
+  onOpenPreview?: (fileId: number) => void;
+}) {
+  const [items, setItems] = useState<MaterialUnreadableItem[]>([]);
+  const [next, setNext] = useState<number | null>(null);
+  const [state, setState] = useState<LoadState>("loading");
+
+  const load = useCallback(
+    async (offset: number) => {
+      setState("loading");
+      try {
+        const page = await apiClient.getMaterialUnreadable(projectId, rootId, offset);
+        setItems((current) => (offset === 0 ? page.items : [...current, ...page.items]));
+        setNext(page.next_offset);
+        setState("ready");
+      } catch {
+        setState("error");
+      }
+    },
+    [apiClient, projectId, rootId],
+  );
+
+  useEffect(() => {
+    void load(0);
+  }, [load]);
+
+  return (
+    <div className="material-unreadable">
+      {items.length > 0 && (
+        <ul className="material-unreadable__list">
+          {items.map((item) => (
+            <li key={item.file_id}>
+              <span className="material-unreadable__name" title={item.path}>
+                {item.rel_path}
+              </span>
+              <span className="material-unreadable__reason">{UNREADABLE_LABELS[item.reason] ?? ""}</span>
+              <span className="material-root-row__ops">
+                <button onClick={() => onCopy(item.path)} type="button">
+                  复制路径
+                </button>
+                {onOpenPreview && (
+                  <button onClick={() => onOpenPreview(item.file_id)} type="button">
+                    预览
+                  </button>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {state === "loading" && <p className="material-unreadable__muted">正在列…</p>}
+      {state === "error" && (
+        <p className="material-unreadable__muted">
+          没列出来
+          <button className="material-unreadable__more" onClick={() => void load(items.length)} type="button">
+            再试一次
+          </button>
+        </p>
+      )}
+      {state === "ready" && next !== null && (
+        <button className="material-unreadable__more" onClick={() => void load(next)} type="button">
+          再列 100 个
+        </button>
+      )}
+    </div>
+  );
 }
 
 const REQUIREMENT_TABS: Array<{ key: RequirementStatus | "all"; label: string }> = [
@@ -128,6 +276,7 @@ export function ProjectDetailPage({
   onOpenGlossary,
   onOpenMeeting,
   onOpenTask: _onOpenTask,
+  onOpenPreview,
   reloadKey = 0,
   onProjectUpdated,
   projects,
@@ -141,6 +290,9 @@ export function ProjectDetailPage({
   const [boardState, setBoardState] = useState<LoadState>("loading");
   const [subfolders, setSubfolders] = useState<ProjectSubfoldersPayload | null>(null);
   const [indexStatus, setIndexStatus] = useState<MaterialIndexStatus | null>(null);
+  const [coverage, setCoverage] = useState<MaterialCoverage | null>(null);
+  // 哪些根目录的［看看］展开着
+  const [unreadableOpen, setUnreadableOpen] = useState<Set<number>>(() => new Set());
 
   const [meetingRows, setMeetingRows] = useState<ProjectMeetingRow[] | null>(null);
   const [meetingsState, setMeetingsState] = useState<LoadState>("loading");
@@ -225,7 +377,8 @@ export function ProjectDetailPage({
     void loadRequirements();
   }, [loadRequirements, reloadKey]);
 
-  // 文件名索引的进度：挂的根目录变了就重问；还在认时每 15 秒再问一次
+  // 文件名索引和内容的进度：挂的根目录变了就重问；同一个定时器每 15 秒两样一起问，
+  // 有根目录在认文件名、或在线根目录还有没读完的内容时继续，否则停
   const rootsKey = (board?.material_roots ?? []).map((root) => `${root.id}:${root.path}`).join("|");
   useEffect(() => {
     if (!rootsKey || typeof apiClient.getMaterialIndexStatus !== "function") return;
@@ -233,10 +386,17 @@ export function ProjectDetailPage({
     let timer = 0;
     const run = async () => {
       try {
-        const payload = await apiClient.getMaterialIndexStatus(projectId);
+        const [payload, contentPayload] = await Promise.all([
+          apiClient.getMaterialIndexStatus(projectId),
+          // 旧后端没有 coverage：只是少一行内容状态
+          typeof apiClient.getMaterialCoverage === "function"
+            ? apiClient.getMaterialCoverage(projectId).catch(() => null)
+            : Promise.resolve(null),
+        ]);
         if (!active) return;
         setIndexStatus(payload);
-        if (payload.roots.some((item) => item.state === "pending" || item.state === "walking")) {
+        setCoverage(contentPayload);
+        if (materialsStillMoving(payload, contentPayload)) {
           timer = window.setTimeout(() => void run(), INDEX_POLL_MS);
         }
       } catch {
@@ -526,6 +686,9 @@ export function ProjectDetailPage({
                 {roots.map((root) => {
                   const state = root.state ?? (root.exists ? "online" : "missing");
                   const index = indexStatus?.roots.find((item) => item.root_id === root.id);
+                  const covered = coverage?.roots.find((item) => item.root_id === root.id);
+                  const contentText = covered ? coverageText(covered) : null;
+                  const showUnreadable = unreadableOpen.has(root.id);
                   return (
                     <li className="material-root-row" key={root.id}>
                       <FolderIcon className="material-root-row__icon" />
@@ -553,9 +716,51 @@ export function ProjectDetailPage({
                             index.state === "error" || index.state === "missing" ? " is-stopped" : ""
                           }`}
                         >
-                          {indexStatusText(index)}
+                          {indexStatusText(index, Date.now(), !covered)}
                         </span>
                       )}
+                      {contentText &&
+                        (contentText.progress || contentText.unreadable || contentText.names || contentText.waiting.length > 0) && (
+                          <div className="material-root-row__content">
+                            {(contentText.progress || contentText.unreadable || contentText.names) && (
+                              <p>
+                                {[contentText.progress, contentText.unreadable].filter(Boolean).join("，")}
+                                {contentText.unreadable && (
+                                  <button
+                                    aria-expanded={showUnreadable}
+                                    className="material-root-row__look"
+                                    onClick={() =>
+                                      setUnreadableOpen((current) => {
+                                        const nextOpen = new Set(current);
+                                        if (nextOpen.has(root.id)) nextOpen.delete(root.id);
+                                        else nextOpen.add(root.id);
+                                        return nextOpen;
+                                      })
+                                    }
+                                    type="button"
+                                  >
+                                    {showUnreadable ? "收起" : "看看"}
+                                  </button>
+                                )}
+                                {contentText.names && <span className="material-root-row__names">{contentText.names}</span>}
+                              </p>
+                            )}
+                            {contentText.waiting.map((hint) => (
+                              <p className="material-root-row__waiting" key={hint}>
+                                {hint}
+                              </p>
+                            ))}
+                            {showUnreadable && (
+                              <UnreadableList
+                                apiClient={apiClient}
+                                onCopy={(path) => void copyPath(path)}
+                                onOpenPreview={onOpenPreview}
+                                projectId={projectId}
+                                rootId={root.id}
+                              />
+                            )}
+                          </div>
+                        )}
                       {(root.shared_with?.length ?? 0) > 0 && (
                         <span className="material-root-row__shared" role="note">
                           也挂在{root.shared_with!.map((entry) => `「${entry.project_name}」`).join("")}下，

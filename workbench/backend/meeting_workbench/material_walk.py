@@ -60,19 +60,13 @@ NAME_ONLY_DIRS = {
     CARDS_DIR_NAME,
 }
 
-# —— 读不了的五种原因 ——
-PASSWORD = "password"
-CORRUPT = "corrupt"
-UNSUPPORTED = "unsupported"
-TIMEOUT = "timeout"
-PERMISSION = "permission"
-REASON_LABELS = {
-    PASSWORD: "要密码",
-    CORRUPT: "文件损坏",
-    UNSUPPORTED: "格式不支持",
-    TIMEOUT: "处理超时",
-    PERMISSION: "没有权限",
-}
+# —— 读不了的五种原因（说法和第三期的状态表放在一处，material_rules）——
+PASSWORD = rules.PASSWORD
+CORRUPT = rules.CORRUPT
+UNSUPPORTED = rules.UNSUPPORTED
+TIMEOUT = rules.TIMEOUT
+PERMISSION = rules.PERMISSION
+REASON_LABELS = rules.REASON_LABELS
 
 PDF_WHOLE_LIMIT = 8 * 1024 * 1024
 PDF_HEAD = 2 * 1024 * 1024

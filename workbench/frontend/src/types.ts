@@ -6,6 +6,8 @@ export interface BootstrapPayload {
   mobile_task_write: boolean;
   semantic_enabled: boolean;
   pending_confirm_count: number;
+  /** 本机打开声档时才有［在访达中显示］［打开文件夹］（3e） */
+  can_reveal?: boolean;
 }
 
 export interface HealthPayload {
@@ -20,10 +22,13 @@ export interface HealthPayload {
     /** 还没被确认归档的失败/归档未完成任务数；relay 清单暂不可用时为 null */
     attention_jobs?: number | null;
     acknowledged_jobs?: number;
+    /** 材料还没读的活文件（3e）；旧后端没有 */
+    material_pending?: number;
   };
   details?: {
     attention?: { by_kind: Record<AttentionKind, number> | null; quarantined?: number };
     process?: { open_files: number | null; open_files_limit: number | null };
+    materials?: MaterialsProgress;
   };
   scanner?: Record<string, unknown>;
   semantic?: Record<string, unknown>;
@@ -1178,6 +1183,131 @@ export interface MaterialIndexRoot {
 
 export interface MaterialIndexStatus {
   roots: MaterialIndexRoot[];
+}
+
+/** 首页「材料 还剩 N 个」（3e）：来自材料循环内存里的计数 */
+export interface MaterialsProgress {
+  pending: number;
+  /** busy：转写会议时先停 */
+  paused: "busy" | null;
+  /** 还剩的里面在没插的盘上的 */
+  offline_pending: number;
+}
+
+export type UnreadableReason = "password" | "corrupt" | "unsupported" | "timeout" | "permission";
+export type MaterialNote = "small_image" | "no_text" | "no_speech" | "truncated" | "meeting_audio";
+
+/** 每个根目录读了多少、为什么停（3e），按文件数算 */
+export interface MaterialCoverageRoot {
+  root_id: number;
+  project_id: string;
+  path: string;
+  state: MaterialIndexRoot["state"];
+  online: boolean;
+  names: { files: number; name_only_dirs: number; symlinks: number };
+  content: {
+    total: number;
+    done: number;
+    pending: number;
+    paused: "busy" | null;
+    waiting: { what: string; files: number; hint: string }[];
+    unreadable: Record<UnreadableReason, number>;
+    notes: Record<MaterialNote, number>;
+    names_only: { cards: number; other: number };
+  };
+}
+
+export interface MaterialCoverage {
+  roots: MaterialCoverageRoot[];
+}
+
+export interface MaterialUnreadableItem {
+  file_id: number;
+  name: string;
+  rel_path: string;
+  path: string;
+  root_id: number;
+  reason: UnreadableReason;
+  checked_at: string | null;
+}
+
+export interface MaterialUnreadablePage {
+  items: MaterialUnreadableItem[];
+  total: number;
+  next_offset: number | null;
+}
+
+export type MaterialStateKind = "done" | "pending" | "waiting" | "unreadable" | "names_only" | "gone";
+
+/** 文件状态：text 是后端说法表里的那一句，前端只显示它 */
+export interface MaterialFileState {
+  kind: MaterialStateKind;
+  reason: UnreadableReason | null;
+  note: string | null;
+  what: string | null;
+  paused: "busy" | null;
+  meeting: { id: string; title: string } | null;
+  text: string;
+}
+
+export type MaterialPreviewKind = "text" | "table" | "image" | "pdf" | "media" | "none";
+
+export interface MaterialPreviewContent {
+  kind: MaterialPreviewKind;
+  lines: string[];
+  /** 超出显示的行数 */
+  more: boolean;
+  rows: string[][];
+  sheet: string | null;
+  image_url: string | null;
+  page_url: string | null;
+  media_url: string | null;
+  playable: boolean;
+  duration_ms: number | null;
+  transcript: { start_ms: number | null; end_ms: number | null; text: string }[];
+}
+
+export interface MaterialFileInfo {
+  id: number;
+  name: string;
+  ext: string;
+  rel_path: string;
+  root_id: number;
+  folder_path: string;
+  path: string;
+  size: number | null;
+  modified_at: string | null;
+  project_id: string;
+  project_name: string;
+  root_online: boolean;
+  gone: boolean;
+}
+
+export interface MaterialMention {
+  meeting_id: string;
+  title: string;
+  date: string;
+  count: number;
+  first_ms: number | null;
+  quote: string;
+  audio_url: string | null;
+}
+
+export interface MaterialDeliverable {
+  deliverable_id: number;
+  task_id: string;
+  title: string;
+  status: string;
+}
+
+/** 预览抽屉和关系图文件面板的数据；?parts=preview 时没有后三项 */
+export interface MaterialFilePreview {
+  file: MaterialFileInfo;
+  state: MaterialFileState;
+  preview: MaterialPreviewContent;
+  mentions?: MaterialMention[];
+  deliverables?: MaterialDeliverable[];
+  can_reveal?: boolean;
 }
 
 /** 冷启动：还没挂文件夹的项目找到的同名（默认勾选）或相近（默认不勾）文件夹 */

@@ -62,7 +62,10 @@ import type {
   NameAsRequirementResult,
   NameCandidatesPayload,
   NameDecisionResult,
+  MaterialCoverage,
+  MaterialFilePreview,
   MaterialIndexStatus,
+  MaterialUnreadablePage,
 } from "./types";
 import type {
   CollapsedPayload,
@@ -156,6 +159,11 @@ export interface UploadReceipt {
   size_bytes: number;
   status: string;
   job_id: string | null;
+}
+
+/** 材料原文件的播放地址：从搜索的 ▶ 进来时不等预览数据，由 file_id 直接拼出 */
+export function materialMediaUrl(fileId: number): string {
+  return `/api/materials/files/${fileId}/media`;
 }
 
 export function setCsrfToken(token: string) {
@@ -369,6 +377,17 @@ export const api = {
   /** 每个根目录的文件名索引进度 */
   getMaterialIndexStatus: (projectId: string) =>
     read<MaterialIndexStatus>(`/api/materials/index-status${queryString({ project_id: projectId })}`),
+  /** 每个根目录的内容读了多少、为什么停、读不了的分类数（3e） */
+  getMaterialCoverage: (projectId: string) =>
+    read<MaterialCoverage>(`/api/materials/coverage${queryString({ project_id: projectId })}`),
+  /** 读不了的文件，每页 100 个 */
+  getMaterialUnreadable: (projectId: string, rootId: number, offset = 0) =>
+    read<MaterialUnreadablePage>(
+      `/api/materials/unreadable${queryString({ project_id: projectId, root_id: rootId, offset })}`,
+    ),
+  /** 预览抽屉的数据；parts=preview 只要状态和预览（关系图文件面板用） */
+  getMaterialPreview: (fileId: number, parts?: "preview") =>
+    read<MaterialFilePreview>(`/api/materials/files/${fileId}/preview${parts ? `?parts=${parts}` : ""}`),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>

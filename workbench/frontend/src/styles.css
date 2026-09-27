@@ -1144,6 +1144,17 @@ textarea {
 
 .service-summary li { display: inline-flex; align-items: center; gap: 6px; }
 .service-summary li small { color: var(--ink-faint); font-size: 9px; }
+/* 首页「材料 还剩 N 个」：灰色小标签，不能点，不用红黄灯 */
+.material-tag {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 2px 9px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+}
 
 .filter-drawer {
   min-height: calc(100vh - 74px);

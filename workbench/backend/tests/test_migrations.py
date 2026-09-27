@@ -539,7 +539,8 @@ V15_FILE_COLUMNS = (
 
 
 def _downgrade_to_v14(connection: sqlite3.Connection) -> None:
-    """把刚建好的 v15 库退回 v14 的形状：先删新触发器，再删新表，再删两个新索引，最后删六个新列。"""
+    """把刚建好的 v15 库退回 v14 的形状：先删新触发器，再删新表，再删两个新索引，最后删新列
+    （material_files 上六个、material_dirs 上一个）。"""
     for trigger in V15_TRIGGERS:
         connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for table in V15_TABLES:
@@ -548,6 +549,7 @@ def _downgrade_to_v14(connection: sqlite3.Connection) -> None:
         connection.execute(f"DROP INDEX IF EXISTS {index}")
     for column in V15_FILE_COLUMNS:
         connection.execute(f"ALTER TABLE material_files DROP COLUMN {column}")
+    connection.execute("ALTER TABLE material_dirs DROP COLUMN symlinks")
     connection.execute("DELETE FROM app_state WHERE key='ocr_engine'")
     connection.execute("PRAGMA user_version=14")
 

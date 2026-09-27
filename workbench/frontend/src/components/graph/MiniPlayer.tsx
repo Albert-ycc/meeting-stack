@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { formatTime } from "../../format";
+import { claimSound } from "../soundFocus";
 
 /** 点 ▶ 从原话前 3 秒播到后 15 秒。 */
 export const PLAY_BEFORE_MS = 3_000;
 export const PLAY_AFTER_MS = 15_000;
 
+export interface PlayOptions {
+  /** 默认只放原话前 3 秒到后 15 秒；材料录音传 false，从那一刻一直放下去 */
+  clip?: boolean;
+}
+
 export interface MiniPlayerHandle {
-  play: (url: string, atMs: number, label: string) => void;
+  play: (url: string, atMs: number, label: string, options?: PlayOptions) => void;
 }
 
 interface Clip {
@@ -27,9 +33,10 @@ export function useMiniPlayer() {
   const [positionMs, setPositionMs] = useState(0);
   const stopAtRef = useRef(0);
 
-  const play = useCallback((url: string, atMs: number, label: string) => {
-    const start = Math.max(0, atMs - PLAY_BEFORE_MS);
-    stopAtRef.current = atMs + PLAY_AFTER_MS;
+  const play = useCallback((url: string, atMs: number, label: string, options?: PlayOptions) => {
+    const clipped = options?.clip !== false;
+    const start = clipped ? Math.max(0, atMs - PLAY_BEFORE_MS) : Math.max(0, atMs);
+    stopAtRef.current = clipped ? atMs + PLAY_AFTER_MS : Number.POSITIVE_INFINITY;
     setClip({ url, atMs, label });
     setPositionMs(start);
     const audio = audioRef.current;
@@ -55,7 +62,10 @@ export function useMiniPlayer() {
       setPositionMs(now);
       if (now >= stopAtRef.current) audio.pause();
     };
-    const onPlay = () => setPlaying(true);
+    const onPlay = () => {
+      claimSound(audio);
+      setPlaying(true);
+    };
     const onPause = () => setPlaying(false);
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("play", onPlay);
