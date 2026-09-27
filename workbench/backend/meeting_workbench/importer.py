@@ -173,6 +173,8 @@ def artifact_kind(path: Path) -> str:
         return "minutes_evidence"
     if name == "minutes-plan.json":
         return "minutes_plan"
+    if name == "glossary-injection.json":
+        return "glossary_injection"
     if name == "prompt.txt":
         return "prompt"
     if name == "spk.txt" or name.endswith(".spk.txt"):

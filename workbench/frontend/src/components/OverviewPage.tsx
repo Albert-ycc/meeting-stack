@@ -10,8 +10,10 @@ import {
   statusTone,
   serviceStateLabel,
 } from "../format";
-import type { HealthPayload, Job, MeetingSummary, Task } from "../types";
+import type { AttributionSummary, HealthPayload, Job, MeetingSummary, Task } from "../types";
 import { DitherArea, DitherCalendar, type CalendarCell } from "./charts/DitherChart";
+import { FolderSuggestionBanner } from "./FolderSuggestionBanner";
+import { MeetingCardsBanner } from "./MeetingCardsBanner";
 import { BlurText } from "./motion/BlurText";
 import { CountUp } from "./motion/CountUp";
 import { NoticeBanner, useNotice } from "./Notice";
@@ -27,6 +29,12 @@ interface OverviewPageProps {
   onOpenMeeting?: (meetingId: string) => void;
   apiClient: ApiClient;
   onOpenTasks: () => void;
+  /** 最近 14 天等你选项目的会；有才出计数卡 */
+  attributionSummary?: AttributionSummary | null;
+  onOpenAttributionReview?: () => void;
+  /** 挂文件夹只在桌面端：为 true 时才问「要不要挂上同名文件夹」 */
+  canPickFolders?: boolean;
+  onProjectsChanged?: () => void | Promise<void>;
   /** 确认待办之后通知外层刷新侧栏「任务池」角标。 */
   onTasksChanged?: () => void;
 }
@@ -102,8 +110,15 @@ export function OverviewPage({
   onOpenMeeting,
   apiClient,
   onOpenTasks,
+  attributionSummary,
+  onOpenAttributionReview,
+  canPickFolders = false,
+  onProjectsChanged,
   onTasksChanged,
 }: OverviewPageProps) {
+  const reviewCount = attributionSummary?.needs_review_recent ?? 0;
+  // 同名文件夹横幅读完之前是 null：先不出会议卡片横幅，免得两条一起闪出来
+  const [folderBannerActive, setFolderBannerActive] = useState<boolean | null>(null);
   const activeJobs = jobs.filter(
     (job) =>
       !["completed_unreviewed", "draft_modified", "published", "cancelled", "failed", "interrupted"].includes(
@@ -274,7 +289,17 @@ export function OverviewPage({
         </div>
       </header>
 
-      <div className="metric-strip">
+      {canPickFolders && (
+        <FolderSuggestionBanner
+          apiClient={apiClient}
+          onActiveChange={setFolderBannerActive}
+          onProjectsChanged={onProjectsChanged}
+        />
+      )}
+      {/* 一次性横幅同一时间只出一条：同名文件夹问完了，才轮到会议卡片 */}
+      {canPickFolders && folderBannerActive === false && <MeetingCardsBanner apiClient={apiClient} />}
+
+      <div className={`metric-strip ${reviewCount > 0 ? "metric-strip--five" : ""}`}>
         {jobsInteractive ? (
           <button onClick={onOpenTasks} type="button">
             <span>待确认任务</span>
@@ -295,6 +320,13 @@ export function OverviewPage({
             <strong><CountUp value={todoState === "loading" ? "…" : pendingTotal} /></strong>
             <small>桌面端确认</small>
           </div>
+        )}
+        {reviewCount > 0 && (
+          <button onClick={onOpenAttributionReview ?? onOpenLibrary} type="button">
+            <span>等你选项目</span>
+            <strong><CountUp value={reviewCount} /></strong>
+            <small>{reviewCount} 场会等你选项目 →</small>
+          </button>
         )}
         {jobsInteractive ? (
           <button disabled={!jobsAvailable} onClick={onOpenJobs} type="button">

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -475,7 +475,258 @@ CREATE TABLE IF NOT EXISTS requirement_meetings (
     created_at TEXT NOT NULL,
     PRIMARY KEY (requirement_id, meeting_id)
 );
+
+-- v13：智能关联第一期。app_state 放全局开关与一次性任务的进度（键见各模块）。
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- v13：用户对「像新项目」名字的决定。norm_key 是归一化后的名字（见 project_profile.norm_key）；
+-- decision=ignored 表示「不是新项目」，以后同名不再提示；decision=project 表示已建成 target_id。
+CREATE TABLE IF NOT EXISTS name_decisions (
+    norm_key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('ignored', 'project')),
+    target_id TEXT,
+    decided_at TEXT NOT NULL
+);
+
+-- v13：当前纪要的全文索引，供检索与归属规则回溯。只索引每场会的当前纪要，
+-- 由 meetings 上的三个触发器维护；纪要正文入库后不会原地改写，所以不需要
+-- minutes_versions 上的触发器。
+CREATE VIRTUAL TABLE IF NOT EXISTS minutes_fts USING fts5(
+    meeting_id UNINDEXED,
+    text,
+    tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS minutes_fts_after_meeting_insert
+AFTER INSERT ON meetings
+WHEN NEW.current_minutes_version_id IS NOT NULL
+BEGIN
+    INSERT INTO minutes_fts(meeting_id, text)
+    SELECT NEW.id, markdown FROM minutes_versions WHERE id = NEW.current_minutes_version_id;
+END;
+CREATE TRIGGER IF NOT EXISTS minutes_fts_after_minutes_pointer_update
+AFTER UPDATE OF current_minutes_version_id ON meetings
+WHEN NEW.current_minutes_version_id IS NOT OLD.current_minutes_version_id
+BEGIN
+    DELETE FROM minutes_fts WHERE meeting_id = OLD.id;
+    INSERT INTO minutes_fts(meeting_id, text)
+    SELECT NEW.id, markdown FROM minutes_versions WHERE id = NEW.current_minutes_version_id;
+END;
+CREATE TRIGGER IF NOT EXISTS minutes_fts_after_meeting_delete
+AFTER DELETE ON meetings
+BEGIN
+    DELETE FROM minutes_fts WHERE meeting_id = OLD.id;
+END;
+
+-- v13 / 1c：会议卡片台账（见 cards.py）。一场会最多一张卡片，写在项目最早挂上的材料根目录
+-- 下的「声档会议记录/」。state：pending 等待写入 / synced 已写入 / user_edited 你改过纪要部分，
+-- 停止自动更新 / missing 卡片被移走或删了（只对当前项目有效）/ retired 已撤下进回收区 /
+-- blocked 写不了（原因见 reason）。written_fps 是最近 5 次写入的内容指纹，用来认出你改没改过。
+-- dirty 是计数：触发器只加一，写完只在计数没变时清零，写的过程中又变了就留到下一轮。
+-- 不设外键：会议删掉后由 reconcile 把卡片移进回收区再删行。
+CREATE TABLE IF NOT EXISTS meeting_cards (
+    meeting_id TEXT PRIMARY KEY,
+    project_id TEXT,
+    root_path TEXT,
+    rel_path TEXT,
+    transcript_rel_path TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    reason TEXT,
+    written_fps TEXT NOT NULL DEFAULT '[]',
+    transcript_fp TEXT,
+    retired_path TEXT,
+    retired_edited INTEGER NOT NULL DEFAULT 0,
+    carry_notes TEXT,
+    user_named INTEGER NOT NULL DEFAULT 0,
+    dirty INTEGER NOT NULL DEFAULT 1,
+    synced_at TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_cards_project ON meeting_cards(project_id);
+
+-- 1d-2：出纪要时这场会用了哪些词。relay 按这场会挑词后在草稿目录写 glossary-injection.json，
+-- 导入后原样存进 payload；job_id/attempt 用来对上是哪一版纪要用的。
+CREATE TABLE IF NOT EXISTS meeting_glossary_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    job_id TEXT,
+    attempt INTEGER,
+    sha256 TEXT NOT NULL,
+    project_id TEXT,
+    project_name TEXT,
+    project_source TEXT,
+    term_count INTEGER NOT NULL DEFAULT 0,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(meeting_id, sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_glossary_receipts_job
+    ON meeting_glossary_receipts(meeting_id, job_id, attempt);
+
+-- 1d-2：纪要体检。每场会一行状态：查的是哪一版纪要、按哪个项目的词典（basis：receipt 按回执的项目 /
+-- project 按会议当前项目或你点的项目 / public 只有公共词）；替换过的记下替换前的版本，撤销就回到那一版。
+CREATE TABLE IF NOT EXISTS meeting_glossary_checks (
+    meeting_id TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+    minutes_version_id TEXT,
+    project_id TEXT,
+    basis TEXT NOT NULL,
+    receipt_id INTEGER,
+    applied_version_id TEXT,
+    applied_from_version_id TEXT,
+    applied_by TEXT,
+    applied_count INTEGER NOT NULL DEFAULT 0,
+    applied_at TEXT,
+    checked_at TEXT NOT NULL
+);
+
+-- 体检明细：corrected 错写在逐字稿里、正确写法在纪要里、错写不在纪要里（AI 已经纠过来了）；
+-- missed 纪要里还留着错写（可能漏纠）。随纪要版本整批重算。
+CREATE TABLE IF NOT EXISTS meeting_glossary_hits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    minutes_version_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    term TEXT NOT NULL,
+    wrong TEXT NOT NULL,
+    term_project_id TEXT,
+    transcript_count INTEGER NOT NULL DEFAULT 0,
+    minutes_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_glossary_hits_meeting ON meeting_glossary_hits(meeting_id);
+CREATE INDEX IF NOT EXISTS idx_meeting_cards_dirty ON meeting_cards(dirty) WHERE dirty > 0;
+
+-- 卡片脏标记：只给已有卡片行的会加一，新会由 reconcile 自己找。拆段、合段走先删后插，
+-- 行级触发器抓不到，所以逐字稿和说话人的改动靠 events 表里的编辑事件。
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_meeting
+AFTER UPDATE OF title, project_id, project_origin, current_minutes_version_id,
+    current_transcript_version_id, recording_date, duration_ms ON meetings
+WHEN NEW.title IS NOT OLD.title
+    OR NEW.project_id IS NOT OLD.project_id
+    OR NEW.project_origin IS NOT OLD.project_origin
+    OR NEW.current_minutes_version_id IS NOT OLD.current_minutes_version_id
+    OR NEW.current_transcript_version_id IS NOT OLD.current_transcript_version_id
+    OR NEW.recording_date IS NOT OLD.recording_date
+    OR NEW.duration_ms IS NOT OLD.duration_ms
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_task_insert
+AFTER INSERT ON tasks
+WHEN NEW.meeting_id IS NOT NULL
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = NEW.meeting_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_task_update
+AFTER UPDATE ON tasks
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1
+     WHERE meeting_id IN (NEW.meeting_id, OLD.meeting_id);
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_task_delete
+AFTER DELETE ON tasks
+WHEN OLD.meeting_id IS NOT NULL
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = OLD.meeting_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_project_name
+AFTER UPDATE OF name ON projects
+WHEN NEW.name IS NOT OLD.name
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE project_id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_title
+AFTER UPDATE OF title ON requirements
+WHEN NEW.title IS NOT OLD.title
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1
+     WHERE meeting_id IN (
+        SELECT meeting_id FROM requirement_meetings WHERE requirement_id = NEW.id);
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_link
+AFTER INSERT ON requirement_meetings
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = NEW.meeting_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_unlink
+AFTER DELETE ON requirement_meetings
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = OLD.meeting_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_folder_add
+AFTER INSERT ON requirement_folders
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1
+     WHERE meeting_id IN (
+        SELECT meeting_id FROM requirement_meetings WHERE requirement_id = NEW.requirement_id);
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_requirement_folder_remove
+AFTER DELETE ON requirement_folders
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1
+     WHERE meeting_id IN (
+        SELECT meeting_id FROM requirement_meetings WHERE requirement_id = OLD.requirement_id);
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_root_add
+AFTER INSERT ON project_material_roots
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE project_id = NEW.project_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_root_change
+AFTER UPDATE OF path ON project_material_roots
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE project_id = NEW.project_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_root_remove
+AFTER DELETE ON project_material_roots
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE project_id = OLD.project_id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_cards_dirty_transcript_edit
+AFTER INSERT ON events
+WHEN NEW.meeting_id IS NOT NULL AND NEW.event_type IN (
+    'speaker_renamed', 'segment_split', 'segments_merged',
+    'transcript_draft_saved', 'minutes_saved')
+BEGIN
+    UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = NEW.meeting_id;
+END;
 """
+
+# 1g：关系图的持久版本号。这些表每次增删改都给 app_state 里的 graph_rev 加一，图接口拿它
+# 算 ETag。放在触发器里而不是进程内计数，重启进程、命令行工具写库都能算进去。
+GRAPH_REV_KEY = "graph_rev"
+GRAPH_REV_TABLES = (
+    "meetings",
+    "projects",
+    "tasks",
+    "requirements",
+    "requirement_meetings",
+    "requirement_folders",
+    "project_links",
+    "project_material_roots",
+    "meeting_cards",
+    "glossary_terms",
+)
+SCHEMA += "".join(
+    f"""
+CREATE TRIGGER IF NOT EXISTS graph_rev_{table}_{action.lower()}
+AFTER {action} ON {table}
+BEGIN
+    INSERT INTO app_state(key, value, updated_at)
+    VALUES ('{GRAPH_REV_KEY}', '1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(key) DO UPDATE
+        SET value = CAST(app_state.value AS INTEGER) + 1, updated_at = excluded.updated_at;
+END;
+"""
+    for table in GRAPH_REV_TABLES
+    for action in ("INSERT", "UPDATE", "DELETE")
+)
 
 
 class Database:
@@ -535,6 +786,18 @@ class Database:
                 connection.execute(
                     "ALTER TABLE projects ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'"
                 )
+            if "also_names" not in project_columns:
+                # 元素 {"name": "...", "source": "manual|former"}；former 是改名前的旧名。
+                connection.execute(
+                    "ALTER TABLE projects ADD COLUMN also_names TEXT NOT NULL DEFAULT '[]'"
+                )
+            link_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(project_links)").fetchall()
+            }
+            for name in ("evidence_json", "candidates_json", "new_project_name", "reason"):
+                if name not in link_columns:
+                    connection.execute(f"ALTER TABLE project_links ADD COLUMN {name} TEXT")
             glossary_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(glossary_terms)").fetchall()
@@ -544,12 +807,36 @@ class Database:
                     "ALTER TABLE glossary_terms ADD COLUMN project_id "
                     "TEXT REFERENCES projects(id) ON DELETE SET NULL"
                 )
+            if "also" not in glossary_columns:
+                # 「也叫」：不改写，只用于识别项目和检索（2–20 字）。
+                connection.execute(
+                    "ALTER TABLE glossary_terms ADD COLUMN also TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "is_cue" not in glossary_columns:
+                # 项目词是否参与识别会议属于哪个项目。
+                connection.execute(
+                    "ALTER TABLE glossary_terms ADD COLUMN is_cue INTEGER NOT NULL DEFAULT 1"
+                )
             # 建索引放到列存在之后：executescript(SCHEMA) 早于这里执行，SCHEMA 里若
             # 直接带这条 CREATE INDEX，旧库补列之前就会报 "no such column"。
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_glossary_terms_project "
                 "ON glossary_terms(project_id)"
             )
+            suggestion_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(glossary_suggestions)").fetchall()
+            }
+            for name in (
+                # 2 字错字扩成整词后，原来的 2 字那一对（「只记 2 字」）
+                "alt_wrong",
+                "alt_correct",
+                # 确认时实际写进了哪条词条、记的是哪个错写（撤销确认用）
+                "confirmed_term_id",
+                "confirmed_wrong",
+            ):
+                if name not in suggestion_columns:
+                    connection.execute(f"ALTER TABLE glossary_suggestions ADD COLUMN {name} TEXT")
             task_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
             }
@@ -683,11 +970,12 @@ class Database:
                     """UPDATE meetings SET project_origin='manual'
                         WHERE project_id IS NOT NULL AND project_origin IS NULL"""
                 )
-            if current_version < 10:
+            if current_version < 13:
                 # 词典范围与项目打通：scope 与某个项目名精确相等的术语补上 project_id，
                 # 之后 project_id 才是范围的唯一来源、scope 变成随项目改名同步的派生标签。
                 # 名字不一致的旧桶（如「云图」vs 项目名「云图科研用药」）不在此处处理，
-                # 交给一次性 SQL 按业务口径迁移。
+                # 交给一次性 SQL 按业务口径迁移。v10 首次执行；v13 再跑一遍，补上 v10 之后
+                # 确认纠错词时只写了 scope 的孤儿词。
                 connection.execute(
                     """UPDATE glossary_terms
                           SET project_id = (
@@ -698,6 +986,44 @@ class Database:
                               SELECT 1 FROM projects WHERE projects.name = glossary_terms.scope
                           )"""
                 )
+            if current_version < 13:
+                # 任务跟会议走：已归项目的会议下，还没挂项目也没挂需求的草稿/过期任务补上
+                # 会议的项目。已确认的任务可能是人工清空过项目，不动。
+                connection.execute(
+                    """UPDATE tasks
+                          SET project_id = (
+                              SELECT project_id FROM meetings WHERE meetings.id = tasks.meeting_id
+                          ),
+                              updated_at = ?
+                        WHERE project_id IS NULL
+                          AND requirement_id IS NULL
+                          AND status IN ('pending_confirm', 'expired')
+                          AND meeting_id IN (
+                              SELECT id FROM meetings WHERE project_id IS NOT NULL
+                          )""",
+                    (utc_now(),),
+                )
+                # 纪要全文索引首次建立：先清空再按当前纪要全量回填，重复执行结果不变。
+                connection.execute("DELETE FROM minutes_fts")
+                connection.execute(
+                    """INSERT INTO minutes_fts(meeting_id, text)
+                       SELECT m.id, mv.markdown
+                         FROM meetings m
+                         JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id"""
+                )
+            # 会议卡片（1c）默认开启，但只对这之后新生成纪要的会自动写；上线前的历史会议
+            # 等工作台横幅问过再补写。两个键都只在第一次启动时写入，之后不再改。
+            now = utc_now()
+            connection.execute(
+                """INSERT OR IGNORE INTO app_state(key, value, updated_at)
+                   VALUES ('cards_enabled', '1', ?)""",
+                (now,),
+            )
+            connection.execute(
+                """INSERT OR IGNORE INTO app_state(key, value, updated_at)
+                   VALUES ('cards_since', ?, ?)""",
+                (now, now),
+            )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @contextmanager

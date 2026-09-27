@@ -250,6 +250,16 @@ export function ProjectsPage({
             // 新建成功直接进详情（A-01-8）；编辑留在列表原地刷新
             if (wasCreate) onOpenProject(saved.id);
           }}
+          onUseExisting={onOpenProject}
+          projects={projects}
+          onMerged={() => {
+            setFormModal(null);
+            void onProjectsChanged();
+          }}
+          onDeleted={() => {
+            setFormModal(null);
+            void onProjectsChanged();
+          }}
           project={formModal.project}
         />
       )}

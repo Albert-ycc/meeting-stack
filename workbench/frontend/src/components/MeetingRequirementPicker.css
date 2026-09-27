@@ -177,3 +177,11 @@
   border: 1px solid var(--signal);
   border-radius: 8px;
 }
+
+/* 没选主项目时跨项目列需求，每行标出所属项目 */
+.requirement-picker__project {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}

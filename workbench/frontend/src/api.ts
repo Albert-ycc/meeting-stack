@@ -1,5 +1,8 @@
 import type {
   AttentionPayload,
+  AttributionSummary,
+  FolderMatchesPayload,
+  MeetingAttribution,
   BootstrapPayload,
   HealthPayload,
   Job,
@@ -19,9 +22,12 @@ import type {
   RequirementsPayload,
   AsrGoldSample,
   AsrShadowRun,
+  GlossaryConfirmResult,
   GlossaryScope,
   GlossarySuggestion,
+  GlossaryTarget,
   GlossaryTerm,
+  GlossaryTermConflict,
   MeetingDetail,
   MeetingFilters,
   MinutesBackend,
@@ -29,7 +35,7 @@ import type {
   MeetingsPayload,
   Project,
   ProjectBoard,
-  SearchItem,
+  SearchPayload,
   Segment,
   Tag,
   Task,
@@ -40,7 +46,27 @@ import type {
   TranscriptComparisonPayload,
   MinutesEvidence,
   TranscriptVersion,
+  SimilarProjectSuggestion,
+  ColdStartFoldersPayload,
+  LegacyGroupsSummary,
+  CardsBanner,
+  MeetingCard,
+  MeetingGlossary,
+  MeetingCardEffect,
+  ProjectCardsSummary,
 } from "./types";
+import type {
+  CollapsedPayload,
+  CueTermDetail,
+  ExpandPayload,
+  FulltextPayload,
+  GraphPayload,
+  GraphRootsPayload,
+  GraphWindow,
+  MeetingBrief,
+  MeetingFocus,
+  QuotesPayload,
+} from "./components/graph/graphTypes";
 
 let csrfToken = "";
 
@@ -80,12 +106,29 @@ function normalizeJob(job: RelayJobPayload): Job {
 
 export class ApiError extends Error {
   readonly status: number;
+  /** 原始响应体（例如 409 带回来的 suggestion） */
+  readonly data: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, data?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.data = data;
   }
+}
+
+/** 新建、改词条撞上已有词条时，从 409 里取出那条词条；别的错误返回 null。 */
+export function termConflictFrom(error: unknown): GlossaryTermConflict | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const data = error.data as { conflict?: GlossaryTermConflict } | null | undefined;
+  return data?.conflict ?? null;
+}
+
+/** 新建项目撞上近似重名时，从 409 里取出已有的那个项目；别的错误返回 null。 */
+export function similarProjectFrom(error: unknown): SimilarProjectSuggestion | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const data = error.data as { suggestion?: SimilarProjectSuggestion } | null | undefined;
+  return data?.suggestion ?? null;
 }
 
 export type ConflictResolutionAction = "keep_draft" | "accept_external" | "discard_draft";
@@ -154,7 +197,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
     : await response.text();
   if (!response.ok) {
     const detail = formatErrorDetail(data, response.status);
-    throw new ApiError(detail, response.status);
+    throw new ApiError(detail, response.status, data);
   }
   return data as T;
 }
@@ -230,10 +273,48 @@ export const api = {
     ),
   minutesEvidence: (meetingId: string) =>
     read<MinutesEvidence>(`/api/meetings/${meetingId}/minutes-evidence`),
-  search: (query: string, mode: "exact" | "semantic") =>
-    read<{ mode: "exact" | "semantic"; items: SearchItem[] }>(
-      `/api/search${queryString({ q: query, mode })}`,
+  /** projectId：不传搜全部；"none" 只搜没归项目的会 */
+  search: (query: string, projectId?: string) =>
+    read<SearchPayload>(`/api/search${queryString({ q: query, project_id: projectId })}`),
+  // ---------------------------------------------------------------- 关系图（1g）
+  /** window 不传：默认 28 天，会少时自动放宽；focus：深链目标，如 "m:<会议 id>" */
+  graph: (projectId: string, window?: GraphWindow, focus?: string) =>
+    read<GraphPayload>(
+      `/api/graph/projects/${encodeURIComponent(projectId)}${queryString({ window, focus })}`,
     ),
+  graphRoots: (projectId: string) =>
+    read<GraphRootsPayload>(`/api/graph/projects/${encodeURIComponent(projectId)}/roots`),
+  graphCollapsed: (projectId: string, group: string, window?: GraphWindow) =>
+    read<CollapsedPayload>(
+      `/api/graph/projects/${encodeURIComponent(projectId)}/collapsed${queryString({ group, window })}`,
+    ),
+  meetingBrief: (meetingId: string) =>
+    read<MeetingBrief>(`/api/meetings/${encodeURIComponent(meetingId)}/brief`),
+  /** span=wide：决议、任务面板要前后各 20 秒 */
+  meetingQuotes: (meetingId: string, at: number[], span?: "wide") => {
+    const params = new URLSearchParams();
+    at.forEach((value) => params.append("at", String(Math.round(value))));
+    if (span) params.append("span", span);
+    const encoded = params.toString();
+    return read<QuotesPayload>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/quotes${encoded ? `?${encoded}` : ""}`,
+    );
+  },
+  glossaryTermDetail: (termId: string) =>
+    read<CueTermDetail>(`/api/glossary/terms/${encodeURIComponent(termId)}`),
+  // ---------------------------------------------------------------- 关系图（1h）
+  graphMeetingFocus: (meetingId: string) =>
+    read<MeetingFocus>(`/api/graph/meetings/${encodeURIComponent(meetingId)}`),
+  /** 材料根目录里的一层；dir 是相对根目录的路径 */
+  graphExpand: (rootId: number, dir = "") =>
+    read<ExpandPayload>(`/api/graph/expand${queryString({ root: rootId, dir })}`),
+  /** 一个词在这个项目全部逐字稿里的次数；term 是词条 id，会连错写、也叫一起数 */
+  graphFulltext: (projectId: string, query: { q?: string; term?: string }) =>
+    read<FulltextPayload>(
+      `/api/graph/projects/${encodeURIComponent(projectId)}/fulltext${queryString(query)}`,
+    ),
+  revealMaterial: (path: string) =>
+    write<{ ok: boolean; path: string }>("/api/materials/reveal", "POST", { path }),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>
@@ -242,11 +323,107 @@ export const api = {
       "POST",
       materialRoots ? { name, color, material_roots: materialRoots } : { name, color },
     ),
+  /** 新建项目的完整入口：近似重名时 409（ApiError.data.suggestion），force 仍然新建。 */
+  createProjectWith: (body: {
+    name: string;
+    color: string;
+    material_roots?: string[];
+    folder?: { mode: "mount" | "create"; path: string; name?: string };
+    meeting_ids?: string[];
+    force?: boolean;
+  }) => write<Project>("/api/projects", "POST", body),
+  deleteProject: (projectId: string) =>
+    write<{ ok: boolean; tasks_unassigned: number; terms_to_public: number }>(
+      `/api/projects/${encodeURIComponent(projectId)}`,
+      "DELETE",
+      {},
+    ),
+  mergeProject: (projectId: string, targetId: string) =>
+    write<Project>(
+      `/api/projects/${encodeURIComponent(projectId)}/merge-into/${encodeURIComponent(targetId)}`,
+      "POST",
+      {},
+    ),
+  folderMatches: (name?: string) =>
+    read<FolderMatchesPayload>(`/api/projects/folder-matches${queryString({ name })}`),
+  projectFolderSuggestions: (projectId: string) =>
+    read<FolderMatchesPayload>(
+      `/api/projects/${encodeURIComponent(projectId)}/folder-suggestions`,
+    ),
+  ignoreProjectName: (name: string) =>
+    write<{ name: string; meetings_updated: number }>("/api/project-names/ignore", "POST", { name }),
+  attributionSummary: () => read<AttributionSummary>("/api/attribution/summary"),
+  coldStartFolders: () => read<ColdStartFoldersPayload>("/api/cold-start/folders"),
+  declineFolderSuggestions: (projectIds: string[]) =>
+    write<{ ok: boolean }>("/api/cold-start/folders/decline", "POST", { project_ids: projectIds }),
+  snoozeFolderSuggestions: () =>
+    write<{ snoozed_until: string }>("/api/cold-start/folders/snooze", "POST", {}),
+  legacyGroups: () => read<{ summary: LegacyGroupsSummary | null }>("/api/glossary/legacy-groups"),
+  undoLegacyGroups: () => write<{ restored: number }>("/api/glossary/legacy-groups/undo", "POST", {}),
+  dismissLegacyGroups: () => write<{ ok: boolean }>("/api/glossary/legacy-groups/dismiss", "POST", {}),
+  meetingGlossary: (meetingId: string) =>
+    read<{ glossary: MeetingGlossary | null }>(`/api/meetings/${encodeURIComponent(meetingId)}/glossary`),
+  /** projectId 不传：沿用上次按哪个项目查；null：回到默认；项目 id：按这个项目查 */
+  checkMeetingGlossary: (meetingId: string, projectId?: string | null) =>
+    write<{ glossary: MeetingGlossary | null }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/glossary/check`,
+      "POST",
+      projectId === undefined ? {} : { project_id: projectId },
+    ),
+  applyMeetingGlossary: (meetingId: string, baseVersionId: string) =>
+    write<{ version_id: string; replaced: number; glossary: MeetingGlossary | null }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/glossary/apply`,
+      "POST",
+      { base_version_id: baseVersionId },
+    ),
+  undoMeetingGlossary: (meetingId: string) =>
+    write<{ version_id: string; glossary: MeetingGlossary | null }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/glossary/undo`,
+      "POST",
+      {},
+    ),
+  meetingCard: (meetingId: string) => read<MeetingCard>(`/api/meetings/${encodeURIComponent(meetingId)}/card`),
+  meetingCardAction: (meetingId: string, action: "rewrite" | "regenerate") =>
+    write<MeetingCard>(`/api/meetings/${encodeURIComponent(meetingId)}/card`, "POST", { action }),
+  cardsBanner: () => read<CardsBanner>("/api/cards/banner"),
+  answerCardsBackfill: (answer: "yes" | "no" | "later") =>
+    write<{ answer: string }>("/api/cards/backfill", "POST", { answer }),
+  dismissCardsNotice: (projectId: string) =>
+    write<{ ok: boolean }>("/api/cards/notices/dismiss", "POST", { project_id: projectId }),
+  revealCards: (target: { project_id?: string; meeting_id?: string }) =>
+    write<{ path: string }>("/api/cards/reveal", "POST", target),
+  retireAllCards: () =>
+    write<{ retired: number; kept: { meeting_id: string; title: string | null; path: string }[] }>(
+      "/api/cards/retire-all",
+      "POST",
+      {},
+    ),
+  enableCards: () => write<{ ok: boolean }>("/api/cards/enable", "POST", {}),
+  pauseProjectCards: (projectId: string) =>
+    write<{ retired: number }>(`/api/projects/${encodeURIComponent(projectId)}/cards/pause`, "POST", {}),
+  resumeProjectCards: (projectId: string) =>
+    write<{ cards: ProjectCardsSummary; written: number }>(
+      `/api/projects/${encodeURIComponent(projectId)}/cards/resume`,
+      "POST",
+      {},
+    ),
+  confirmMeetingProject: (meetingId: string) =>
+    write<MeetingAttribution>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/project/confirm`,
+      "POST",
+      {},
+    ),
+  undoMeetingProject: (meetingId: string) =>
+    write<Omit<MeetingDetail, "effects"> & { effects?: { tasks_restored: number; card?: MeetingCardEffect } }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/project/undo`,
+      "POST",
+      {},
+    ),
   createTag: (name: string, color: string) =>
     write<Tag>("/api/tags", "POST", { name, color }),
   updateProject: (
     projectId: string,
-    data: { name?: string; color?: string; material_roots?: string[] },
+    data: { name?: string; color?: string; material_roots?: string[]; also_names?: string[] },
   ) =>
     write<Project>(`/api/projects/${encodeURIComponent(projectId)}`, "PATCH", data),
   projectBoard: (projectId: string) =>
@@ -312,6 +489,7 @@ export const api = {
       "POST",
       { supplement },
     ),
+  /** 只带改过的字段。project_id："" 表示不归项目，"__ai__" 表示交还 AI 判断。 */
   updateMeeting: (
     meetingId: string,
     metadata: { project_id?: string; tag_ids?: string[]; title?: string; requirement_ids?: string[] },
@@ -326,6 +504,12 @@ export const api = {
   addProjectMaterialRoot: (projectId: string, path: string) =>
     write<MaterialRoot>(
       `/api/projects/${encodeURIComponent(projectId)}/material-roots`,
+      "POST",
+      { path },
+    ),
+  replaceProjectMaterialRoot: (projectId: string, rootId: number, path: string) =>
+    write<MaterialRoot>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/replace`,
       "POST",
       { path },
     ),
@@ -382,6 +566,12 @@ export const api = {
       "PUT",
       { meeting_ids: meetingIds },
     ),
+  addRequirementMeeting: (requirementId: string, meetingId: string) =>
+    write<RequirementDetail>(
+      `/api/requirements/${encodeURIComponent(requirementId)}/meetings/${encodeURIComponent(meetingId)}`,
+      "POST",
+      {},
+    ),
   removeRequirementMeeting: (requirementId: string, meetingId: string) =>
     write<RequirementDetail>(
       `/api/requirements/${encodeURIComponent(requirementId)}/meetings/${encodeURIComponent(meetingId)}`,
@@ -431,7 +621,7 @@ export const api = {
       second_segment_id: secondSegmentId,
     }),
   saveMinutes: (meetingId: string, markdown: string, baseVersionId: string | null) =>
-    write<{ version_id: string }>(`/api/meetings/${meetingId}/minutes`, "PUT", {
+    write<{ version_id: string; corrections?: GlossarySuggestion[] }>(`/api/meetings/${meetingId}/minutes`, "PUT", {
       base_version_id: baseVersionId,
       markdown,
     }),
@@ -495,6 +685,8 @@ export const api = {
     category?: string;
     source?: string;
     confirmed?: boolean;
+    is_cue?: boolean;
+    also?: string[];
   }) => write<GlossaryTerm>("/api/glossary/terms", "POST", data),
   updateGlossaryTerm: (
     termId: string,
@@ -505,6 +697,8 @@ export const api = {
       project_id?: string | null;
       category?: string;
       confirmed?: boolean;
+      is_cue?: boolean;
+      also?: string[];
     },
   ) =>
     write<GlossaryTerm>(
@@ -512,6 +706,9 @@ export const api = {
       "PUT",
       data,
     ),
+  /** 重名时把新写的错写、叫法并进已有词条；makePublic 时顺手改成公共词 */
+  mergeGlossaryTerm: (termId: string, data: { aliases?: string[]; also?: string[]; make_public?: boolean }) =>
+    write<GlossaryTerm>(`/api/glossary/terms/${encodeURIComponent(termId)}/merge`, "POST", data),
   deleteGlossaryTerm: (termId: string) =>
     write<{ ok: boolean }>(
       `/api/glossary/terms/${encodeURIComponent(termId)}`,
@@ -522,15 +719,27 @@ export const api = {
     read<GlossarySuggestion[]>(
       `/api/glossary/suggestions${queryString({ status })}`,
     ),
-  confirmGlossarySuggestion: (suggestionId: string) =>
-    write<{ ok: boolean }>(
+  confirmGlossarySuggestion: (suggestionId: string, options: { target?: GlossaryTarget; short?: boolean } = {}) =>
+    write<GlossaryConfirmResult>(
       `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/confirm`,
+      "POST",
+      options,
+    ),
+  undoGlossarySuggestion: (suggestionId: string) =>
+    write<{ ok: boolean; suggestion: GlossarySuggestion | null }>(
+      `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/undo`,
       "POST",
       {},
     ),
   rejectGlossarySuggestion: (suggestionId: string) =>
     write<{ ok: boolean }>(
       `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/reject`,
+      "POST",
+      {},
+    ),
+  restoreGlossarySuggestion: (suggestionId: string) =>
+    write<{ ok: boolean; suggestion: GlossarySuggestion | null }>(
+      `/api/glossary/suggestions/${encodeURIComponent(suggestionId)}/restore`,
       "POST",
       {},
     ),

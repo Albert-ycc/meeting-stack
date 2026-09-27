@@ -192,9 +192,14 @@
 
 .task-edit-modal__inline-create {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 2px;
+}
+
+.task-edit-modal__inline-create .similar-project {
+  flex-basis: 100%;
 }
 
 .task-edit-modal__inline-create input {

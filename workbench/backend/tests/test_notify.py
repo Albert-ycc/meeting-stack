@@ -556,7 +556,7 @@ def test_task_draft_card_escapes_markdown_link_syntax_in_title_and_quote():
         ],
         interactive=False,
     )
-    task_block = card["body"]["elements"][2]  # 0=导语 1=hr 2=任务信息块
+    task_block = card["body"]["elements"][3]  # 0=导语 1=项目 2=hr 3=任务信息块
     texts = [item["content"] for item in task_block["columns"][0]["elements"]]
     joined = "\n".join(texts)
     assert malicious_title not in joined
@@ -641,3 +641,73 @@ def test_minutes_notification_skips_backlog_and_non_generated(tmp_path, monkeypa
     service = TaskService(db, settings, notifier=notifier)
     assert service._notify_minutes_ready() == 1
     assert notified == ["mv-new"]
+
+
+def test_task_cards_show_read_only_project_line():
+    """任务卡和确认后重建的卡都有一行只读项目信息；没项目时说还没定。"""
+    from meeting_workbench.notify import build_task_draft_card, build_task_status_card
+
+    task = {"id": "task-1", "title": "对齐接口", "assignee": "ai", "anchor_ms": None, "extraction_id": 1}
+    draft = build_task_draft_card(meeting_title="需求会", tasks=[task], project_name="云图科研用药")
+    assert draft["body"]["elements"][1] == {"tag": "markdown", "content": "项目：云图科研用药"}
+    unknown = build_task_draft_card(meeting_title="需求会", tasks=[task])
+    assert unknown["body"]["elements"][1]["content"] == "项目：还没定，到声档里选"
+
+    # 重建卡从任务上取项目（任务跟着会议走）
+    rebuilt = build_task_status_card(
+        meeting_title="需求会",
+        tasks=[{**task, "status": "confirmed", "project_name": "数据中台"}],
+        all_done=True,
+    )
+    assert rebuilt["body"]["elements"][1]["content"] == "项目：数据中台"
+
+
+def test_daily_digest_has_attribution_line(tmp_path, monkeypatch):
+    """晨报加一行：昨天自动归属几场、几场等你选项目；没有任务时只要有归属信息也发。"""
+    db, _settings = make_db(tmp_path)
+    notifier = LarkNotifier(db, webhook_url="https://hook/", public_base_url="http://x")
+    sent = []
+    monkeypatch.setattr(notifier, "_send", lambda kind, ref, title, text, **kw: sent.append(text) or True)
+    stats = {
+        "total": 0, "pending": 0, "pending_sources": [], "in_progress": 0, "stalled": 0,
+        "stalled_titles": [], "stalled_days": [], "done_today": [],
+        "auto_assigned_yesterday": 5, "needs_review": 2,
+    }
+    assert notifier.daily_digest(stats)
+    assert sent[-1] == "· 昨天自动归属 5 场，2 场等你选项目。"
+    assert not notifier.daily_digest({**stats, "auto_assigned_yesterday": 0, "needs_review": 0})
+
+
+def test_digest_stats_count_yesterdays_auto_assignments(tmp_path):
+    """昨天（本地日）自动归属的会按会议去重计数；今天的不算；待你选按当前状态数。"""
+    from datetime import timedelta
+
+    from .test_project_linking import seed_meeting
+
+    db, settings = make_db(tmp_path)
+    local_now = datetime.now().astimezone()
+    today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday_noon = today_start - timedelta(hours=12)
+    for meeting_id in ("m1", "m2", "m3", "m4"):
+        seed_meeting(db, meeting_id, f"会 {meeting_id}")
+
+    def auto_event(meeting_id, when):
+        db.execute(
+            """INSERT INTO events(meeting_id, event_type, actor, payload_json, created_at)
+               VALUES (?, 'meeting_project_auto_assigned', 'system', '{}', ?)""",
+            (meeting_id, when.isoformat()),
+        )
+
+    auto_event("m1", yesterday_noon)
+    auto_event("m1", yesterday_noon + timedelta(minutes=5))  # 同一场会只算一次
+    auto_event("m2", yesterday_noon)
+    auto_event("m3", local_now)  # 今天的不算
+    db.execute(
+        """INSERT INTO project_links(meeting_id, minutes_version_id, status, candidates_json, created_at)
+           VALUES ('m4', 'mv-m4', 'needs_review', '[]', ?)""",
+        (utc_now(),),
+    )
+
+    stats = TaskService(db, settings)._digest_stats()
+    assert stats["auto_assigned_yesterday"] == 2
+    assert stats["needs_review"] == 1

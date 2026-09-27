@@ -1,0 +1,60 @@
+/* 会议页标题区的「项目卡片」状态条：好了 / 在等什么 / 为什么停了，最多一个按钮 */
+.card-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 8px 0 0;
+  padding: 7px 12px;
+  color: var(--ink-2);
+  font-size: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+}
+
+.card-status--stopped {
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+  border-style: solid;
+}
+
+.card-status__label {
+  color: var(--ink-soft);
+}
+
+.card-status__tone {
+  padding: 1px 7px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  background: var(--surface-2);
+  border-radius: var(--r-pill);
+}
+
+.card-status--ok .card-status__tone {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.card-status--stopped .card-status__tone {
+  color: var(--warn);
+  background: transparent;
+  border: 1px solid var(--warn-line);
+}
+
+.card-status__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.card-status .card-status__copy {
+  height: 26px;
+}
+
+.card-status__action {
+  font-size: 12px;
+}
+
+.card-status__error {
+  flex-basis: 100%;
+  color: var(--danger);
+}

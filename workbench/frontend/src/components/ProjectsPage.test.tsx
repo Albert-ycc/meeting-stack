@@ -8,7 +8,7 @@ import type { Project } from "../types";
 
 function makeClient(overrides: Partial<ApiClient> = {}) {
   return {
-    createProject: vi.fn().mockResolvedValue({ id: "new", name: "互联网医院", color: "#3f51b5" }),
+    createProjectWith: vi.fn().mockResolvedValue({ id: "new", name: "互联网医院", color: "#3f51b5" }),
     updateProject: vi.fn().mockResolvedValue({ id: "p1", name: "云图科研用药", color: "#2c8d83" }),
     browseMaterials: vi.fn().mockResolvedValue({
       base: "/Volumes/资料盘",
@@ -132,14 +132,14 @@ describe("ProjectsPage 新建 / 编辑项目", () => {
   it("新建项目成功后关闭弹窗、通知父级刷新，并直接进入新项目详情", async () => {
     const onProjectsChanged = vi.fn();
     const onOpenProject = vi.fn();
-    const createProject = vi.fn().mockResolvedValue({ id: "new", name: "互联网医院", color: "#3f51b5" });
-    renderPage({ apiClient: makeClient({ createProject } as Partial<ApiClient>), onOpenProject, onProjectsChanged });
+    const createProjectWith = vi.fn().mockResolvedValue({ id: "new", name: "互联网医院", color: "#3f51b5" });
+    renderPage({ apiClient: makeClient({ createProjectWith } as Partial<ApiClient>), onOpenProject, onProjectsChanged });
 
     await userEvent.click(screen.getByRole("button", { name: "＋ 新建项目" }));
     await userEvent.type(screen.getByPlaceholderText("例如：互联网医院"), "互联网医院");
     await userEvent.click(screen.getByRole("button", { name: "创建" }));
 
-    expect(createProject).toHaveBeenCalledWith("互联网医院", expect.stringMatching(/^#/), undefined);
+    expect(createProjectWith).toHaveBeenCalledWith({ name: "互联网医院", color: expect.stringMatching(/^#/) });
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "新建项目" })).not.toBeInTheDocument();
     });

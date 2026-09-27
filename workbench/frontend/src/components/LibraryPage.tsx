@@ -16,6 +16,7 @@ import {
 } from "../format";
 import type {
   AttentionPayload,
+  AttributionSummary,
   LoadState,
   MeetingFilters,
   MeetingSummary,
@@ -43,6 +44,66 @@ interface LibraryPageProps {
   onAcknowledgeJob?: (jobId: string) => Promise<void>;
   /** 桌面端才给：去「转写录音」页处理 */
   onOpenJobs?: () => void;
+  /** 归属汇总：筛选栏「待归属 N」「像新项目 N」 */
+  attributionSummary?: AttributionSummary | null;
+  /** 桌面端才给：待你选的行直接点候选项目 */
+  onAssignProject?: (meetingId: string, projectId: string) => Promise<void>;
+}
+
+/** 资料库项目列：没归项目的会按归属状态说清楚是在等 AI、没认出、像新项目还是你标的。 */
+function unassignedLabel(meeting: MeetingSummary): string {
+  switch (meeting.attribution_state) {
+    case "ai_pending":
+      return "等 AI 判断";
+    case "needs_review":
+      return "待你选";
+    case "new_project":
+      return meeting.new_project_name ? `像新项目「${meeting.new_project_name}」` : "像新项目";
+    case "manual_none":
+      return "不归项目";
+    default:
+      return "未归项目";
+  }
+}
+
+function ReviewStrip({
+  meeting,
+  onAssignProject,
+}: {
+  meeting: MeetingSummary;
+  onAssignProject: (meetingId: string, projectId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const candidates = meeting.candidates ?? [];
+  if (candidates.length === 0) return null;
+  const pick = async (projectId: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      await onAssignProject(meeting.id, projectId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "改归属失败");
+      setBusy(false);
+    }
+  };
+  return (
+    <div aria-label={`${meeting.title} 选项目`} className="archive-row__review" role="group">
+      <span>归到</span>
+      {candidates.map((candidate) => (
+        <button
+          className="ghost-button"
+          disabled={busy}
+          key={candidate.project_id}
+          onClick={() => void pick(candidate.project_id)}
+          type="button"
+        >
+          {candidate.project_name}
+        </button>
+      ))}
+      {error && <em role="alert">{error}</em>}
+    </div>
+  );
 }
 
 function AttentionSection({
@@ -175,11 +236,17 @@ export function LibraryPage({
   attention,
   onAcknowledgeJob,
   onOpenJobs,
+  attributionSummary,
+  onAssignProject,
 }: LibraryPageProps) {
   const groups = useMemo(() => groupByDay(meetings), [meetings]);
   const thisYear = new Date().getFullYear();
   const update = (key: keyof MeetingFilters, value: string | number | undefined) =>
     onFilter({ ...filters, [key]: value || undefined });
+  const newProjectCount = (attributionSummary?.new_project_names ?? []).reduce(
+    (sum, item) => sum + item.meeting_count,
+    0,
+  );
 
   return (
     <div className="page-grid library-page">
@@ -203,6 +270,7 @@ export function LibraryPage({
             value={filters.project_id ?? ""}
           >
             <option value="">全部项目</option>
+            <option value="none">未归项目</option>
             {projects.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.name}
@@ -232,6 +300,30 @@ export function LibraryPage({
               </option>
             ))}
           </select>
+          {attributionSummary && attributionSummary.needs_review_total > 0 && (
+            <button
+              aria-pressed={filters.attribution === "needs_review"}
+              className={`filter-chip ${filters.attribution === "needs_review" ? "filter-chip--on" : ""}`}
+              onClick={() =>
+                onFilter({ ...filters, attribution: filters.attribution === "needs_review" ? undefined : "needs_review" })
+              }
+              type="button"
+            >
+              待归属 {attributionSummary.needs_review_total}
+            </button>
+          )}
+          {newProjectCount > 0 && (
+            <button
+              aria-pressed={filters.attribution === "new_project"}
+              className={`filter-chip ${filters.attribution === "new_project" ? "filter-chip--on" : ""}`}
+              onClick={() =>
+                onFilter({ ...filters, attribution: filters.attribution === "new_project" ? undefined : "new_project" })
+              }
+              type="button"
+            >
+              像新项目 {newProjectCount}
+            </button>
+          )}
           {(Object.values(filters).some(Boolean)) && (
             <button className="text-button" onClick={() => onFilter({})} type="button">
               清除筛选
@@ -308,10 +400,22 @@ export function LibraryPage({
                               <span className="project-mark" title={meeting.project_origin === "ai" ? "AI 自动归属" : undefined}>
                                 <i style={{ background: meeting.project_color || "#767676" }} />
                                 {meeting.project_name}
-                                {meeting.project_origin === "ai" && <em className="untitled-chip">AI</em>}
+                                {meeting.attribution_state === "needs_review" ? (
+                                  <em className="untitled-chip">待你选</em>
+                                ) : (
+                                  meeting.project_origin === "ai" && <em className="untitled-chip">AI</em>
+                                )}
                               </span>
                             ) : (
-                              <span className="muted">未归项目</span>
+                              <span
+                                className={
+                                  meeting.attribution_state === "needs_review" || meeting.attribution_state === "new_project"
+                                    ? "archive-row__attention"
+                                    : "muted"
+                                }
+                              >
+                                {unassignedLabel(meeting)}
+                              </span>
                             )}
                             <span className="tag-line">
                               {meeting.tags.slice(0, 3).map((tag) => (
@@ -335,6 +439,9 @@ export function LibraryPage({
                           describedById={`meeting-title-${meeting.id}`}
                           path={meeting.canonical_dir}
                         />
+                        {onAssignProject && meeting.attribution_state === "needs_review" && (
+                          <ReviewStrip meeting={meeting} onAssignProject={onAssignProject} />
+                        )}
                       </div>
                     );
                   })}

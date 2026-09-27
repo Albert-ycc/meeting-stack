@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 import hashlib
 import json
+import logging
 import secrets
 import threading
 import time
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -35,9 +36,36 @@ from .uploads import UploadError, UploadManager
 from .waveform import WaveformError, WaveformPeaks
 from .quality import align_transcript_segments
 from .notify import LarkNotifier
-from .project_linking import ProjectLinker
-from . import materials, requirements
-from .tasks import TaskService
+from .project_linking import (
+    RETURN_TO_AI,
+    ProjectLinker,
+    confirm_meeting_project,
+    mark_meeting_unassigned,
+    reassign_meeting,
+    return_meeting_to_ai,
+    undo_reassign,
+)
+from .attribution import (
+    ATTRIBUTION_STATE_SQL,
+    ATTRIBUTION_STATES,
+    LATEST_LINK_JOIN,
+    attribution_summary,
+    decorate_meeting_rows,
+    meeting_attribution,
+    recognition_profile,
+)
+from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
+from . import search as search_module
+from .cards import CardsError, CardWriter
+from .project_names import (
+    SimilarProjectError,
+    also_entries,
+    delete_empty_project,
+    folder_matches,
+    ignore_project_name,
+    merge_project,
+)
+from .tasks import TaskService, llm_ready
 from .hotwords import hotword_audit, normalize_hotwords
 from .attention import (
     ATTENTION_KINDS,
@@ -50,16 +78,22 @@ from .attention import (
 
 from .gold_schema import GoldSchemaError, validate_gold_sample
 from .glossary import (
+    DuplicateTermError,
     GlossaryError,
     confirm_suggestion,
     create_term,
     delete_term,
+    get_suggestion,
     get_term,
     list_scopes,
     list_suggestions,
     list_terms,
+    merge_into_term,
     read_snapshot,
     reject_suggestion,
+    restore_suggestion,
+    rewrite_snapshot,
+    undo_confirm_suggestion,
     update_term,
 )
 from .minutes_evidence import (
@@ -122,6 +156,8 @@ ATTENTION_REFRESH_SECONDS = 60.0
 # 归档接口遇到快照里没有的任务号时，这个间隔内不重复调 relayctl（防伪造任务号放大负载）。
 ACKNOWLEDGE_REFRESH_MIN_SECONDS = 10.0
 
+logger = logging.getLogger(__name__)
+
 
 class HotwordsModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -183,6 +219,10 @@ class GlossaryTermInput(BaseModel):
     source: str = "manual"
     confirmed: bool = True
     project_id: str | None = None
+    # 项目词是否参与认项目（线索表）；只对挂了项目的词条有意义。
+    is_cue: bool = True
+    # 也叫：不改写，只用于识别项目和搜索
+    also: list[str] = Field(default_factory=list)
 
 
 class GlossaryTermUpdate(BaseModel):
@@ -195,16 +235,62 @@ class GlossaryTermUpdate(BaseModel):
     confirmed: bool | None = None
     # None 是合法目标值（解绑），必须靠 model_fields_set 区分「没传」与「传了 null」
     project_id: str | None = None
+    is_cue: bool | None = None
+    also: list[str] | None = None
+
+
+class GlossaryMergeInput(BaseModel):
+    """重名时把新写的错写、叫法并进已有词条；make_public 时顺手改成公共词。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    aliases: list[str] = Field(default_factory=list)
+    also: list[str] = Field(default_factory=list)
+    make_public: bool = False
+
+
+class GlossaryCheckInput(BaseModel):
+    """按哪个项目的词典查这场会的纪要；null 回到默认（回执 → 会议当前项目 → 公共），不带就沿用上次的。"""
+
+    model_config = ConfigDict(extra="forbid")
+    project_id: str | None = None
+
+
+class GlossaryApplyInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_version_id: str
+
+
+class SuggestionConfirmInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # auto=按确认那一刻会议所属的项目；public=公共；其余当 project_id
+    target: str = "auto"
+    # 记扩词前的 2 字那一对（「只记 2 字」）
+    short: bool = False
 
 
 class RollbackInput(BaseModel):
     version_id: str
 
 
+class ProjectFolderInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["mount", "create"]
+    # mount：要挂的文件夹；create：放新文件夹的位置（新文件夹名默认用项目名）。
+    path: str
+    name: str | None = None
+
+
 class ProjectInput(BaseModel):
     name: str
     color: str = "#667085"
     material_roots: list[str] | None = None
+    # 第一期 1b-2：挂现有文件夹或新建一个；顺手把几场会归进来；近似重名时仍然新建。
+    folder: ProjectFolderInput | None = None
+    meeting_ids: list[str] | None = None
+    force: bool = False
 
 
 class ProjectUpdateInput(BaseModel):
@@ -213,12 +299,44 @@ class ProjectUpdateInput(BaseModel):
     name: str | None = None
     color: str | None = None
     material_roots: list[str] | None = None
+    also_names: list[str] | None = None
+
+
+class ProjectIdsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+class ProjectNameInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
 
 
 class MaterialRootInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=4096)
+
+
+class CardActionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["rewrite", "regenerate"]
+
+
+class CardsBackfillInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: Literal["yes", "no", "later"]
+
+
+class CardsTargetInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str | None = Field(default=None, max_length=200)
+    meeting_id: str | None = Field(default=None, max_length=200)
 
 
 class RequirementCreateInput(BaseModel):
@@ -272,10 +390,17 @@ class TaskUpdateInput(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=200)
     detail: str | None = Field(default=None, max_length=8000)
+    # project_id / requirement_id 的 None 都是合法目标值（清空项目、移出需求），
+    # 必须靠 model_fields_set 区分「没传」与「传了 null」。
     project_id: str | None = Field(default=None, max_length=64)
-    # None 是合法目标值（移出需求），必须靠 model_fields_set 区分「没传」与「传了 null」。
     requirement_id: str | None = Field(default=None, max_length=64)
     assignee: str | None = None
+
+
+class RevealInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
 
 
 class TaskStatusInput(BaseModel):
@@ -374,7 +499,13 @@ def _serialize_shadow_run(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _meeting_detail(db: Database, meeting_id: str) -> dict[str, Any] | None:
+def _meeting_detail(
+    db: Database,
+    meeting_id: str,
+    *,
+    ai_configured: bool = False,
+    cards: CardWriter | None = None,
+) -> dict[str, Any] | None:
     meeting = db.query_one(
         """SELECT m.*, p.name AS project_name, p.color AS project_color
              FROM meetings m LEFT JOIN projects p ON p.id = m.project_id WHERE m.id = ?""",
@@ -456,6 +587,13 @@ def _meeting_detail(db: Database, meeting_id: str) -> dict[str, Any] | None:
             ORDER BY r.created_at""",
         (meeting_id,),
     )
+    with db.autocommit() as connection:
+        meeting["attribution"] = meeting_attribution(
+            connection, meeting_id, ai_configured=ai_configured
+        )
+        if cards is not None:
+            meeting["card"] = cards.meeting_card(connection, meeting_id)
+    meeting["glossary"] = glossary_checkup.meeting_glossary(db, meeting_id)
     return meeting
 
 
@@ -502,7 +640,9 @@ def create_app(
     task_service = TaskService(
         db, settings, semantic=semantic, notifier=notifier
     )
-    project_linker = ProjectLinker(db, settings, semantic=semantic)
+    project_linker = ProjectLinker(db, settings)
+    card_writer = CardWriter(db, settings)
+    roots_cache = graph_module.RootsCache(db)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
     csrf_token = secrets.token_urlsafe(32)
@@ -715,6 +855,18 @@ def create_app(
                     record_scanner_phase_errors(phase_errors, previous_failures)
                     continue
                 try:
+                    await asyncio.to_thread(
+                        glossary_checkup.run_pending,
+                        db,
+                        service,
+                        on_minutes_changed=notify_relay_draft_modified,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 词典回执和纪要体检是旁路，失败只记账。
+                    phase_errors.append(error)
+                try:
                     await asyncio.to_thread(recover_stalled_minutes)
                 except asyncio.CancelledError:
                     raise
@@ -729,6 +881,25 @@ def create_app(
                     # 草稿过期归档是旁路，失败只记账。
                     phase_errors.append(error)
                 try:
+                    link_stats = await asyncio.to_thread(project_linker.link_pending)
+                    if isinstance(link_stats, dict) and link_stats.get("linked"):
+                        # 文件夹名、项目词算不算线索要看它们在别的项目的会里出现过没有，
+                        # 归属变了就重写快照，relay 认项目跟着变。
+                        await asyncio.to_thread(rewrite_snapshot, db, snapshot_path)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 会议项目归属是旁路，失败只记账。排在任务抽取之前：抽出的任务直接
+                    # 继承会议的项目，飞书草稿卡片发出时归属也已经有了。
+                    phase_errors.append(error)
+                try:
+                    await asyncio.to_thread(cold_start.run, db, settings, project_linker)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 冷启动整理是一次性的旁路，失败只记账，下一轮接着做。
+                    phase_errors.append(error)
+                try:
                     await asyncio.to_thread(task_service.extract_pending)
                 except asyncio.CancelledError:
                     raise
@@ -736,11 +907,11 @@ def create_app(
                     # 任务抽取是旁路，失败只记账，不影响扫描与纪要主链。
                     phase_errors.append(error)
                 try:
-                    await asyncio.to_thread(project_linker.link_pending)
+                    await asyncio.to_thread(card_writer.reconcile)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    # 会议项目归属是旁路，失败只记账，不影响扫描与任务抽取主链。
+                    # 会议卡片是旁路，排在任务抽取之后（卡片里的行动项才是最新的），失败只记账。
                     phase_errors.append(error)
                 try:
                     await asyncio.to_thread(task_service.run_notifications)
@@ -834,6 +1005,17 @@ def create_app(
         finally:
             state["loop_alive"] = False
 
+    async def roots_loop() -> None:
+        """关系图的资料盘状态：每 30 秒在后台线程里刷新一次，图接口只读缓存。"""
+        while True:
+            try:
+                await asyncio.to_thread(roots_cache.refresh)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("刷新资料盘状态失败")
+            await asyncio.sleep(graph_module.ROOTS_REFRESH_SECONDS)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         application.state.lifespan_active = True
@@ -858,6 +1040,11 @@ def create_app(
             record_scanner_phase_errors(startup_phase_errors, 0)
         else:
             record_scanner_phase_errors(startup_phase_errors, 0)
+        try:
+            # 升级后第一次启动也要把项目线索写进快照（旧快照只有词条）。
+            await asyncio.to_thread(rewrite_snapshot, db, snapshot_path)
+        except Exception:
+            logger.exception("启动时重写词典快照失败")
         if settings.semantic_enabled:
             try:
                 await asyncio.to_thread(semantic.warm)
@@ -888,12 +1075,16 @@ def create_app(
         qwen_worker = asyncio.create_task(
             qwen_shadow_loop(application), name="meeting-workbench-qwen-shadow"
         )
+        roots_worker = asyncio.create_task(roots_loop(), name="meeting-workbench-graph-roots")
         try:
             yield
         finally:
             scanner.cancel()
             relay_probe.cancel()
             qwen_worker.cancel()
+            roots_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await roots_worker
             with suppress(asyncio.CancelledError):
                 await scanner
             with suppress(asyncio.CancelledError):
@@ -904,6 +1095,7 @@ def create_app(
 
     app = FastAPI(title="本地会议录音工作台", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
+    app.state.roots_cache = roots_cache
     app.state.db = db
     app.state.service = service
     app.state.importer = importer
@@ -997,6 +1189,21 @@ def create_app(
                     "status": "draft_modified",
                 }
         return job
+
+    def meeting_project_hint(meeting_id: str | None) -> str | None:
+        """出纪要按哪个项目挑词：传项目 id（改名后 relay 照样认得）；没归项目就不传，
+        让 relay 按逐字稿自己认。"""
+        if not meeting_id:
+            return None
+        row = db.query_one("SELECT project_id FROM meetings WHERE id=?", (meeting_id,))
+        return row["project_id"] if row and row.get("project_id") else None
+
+    def job_project_hint(job_id: str) -> str | None:
+        row = db.query_one(
+            "SELECT project_id FROM meetings WHERE source_job_id=? AND project_id IS NOT NULL",
+            (job_id,),
+        )
+        return row["project_id"] if row else None
 
     def notify_relay_draft_modified(meeting_id: str) -> None:
         meeting = db.query_one("SELECT source_job_id FROM meetings WHERE id=?", (meeting_id,))
@@ -1285,6 +1492,7 @@ def create_app(
         project_id: str | None = None,
         tag_id: str | None = None,
         status: str | None = None,
+        attribution: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         participant: str | None = None,
@@ -1293,9 +1501,18 @@ def create_app(
         limit: int = Query(100, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ):
-        joins = ["LEFT JOIN projects p ON p.id = m.project_id"]
+        joins = ["LEFT JOIN projects p ON p.id = m.project_id", LATEST_LINK_JOIN]
         clauses = ["1=1"]
         params: list[Any] = []
+        if attribution is not None:
+            if attribution not in ATTRIBUTION_STATES:
+                raise HTTPException(400, f"attribution 只能是 {', '.join(ATTRIBUTION_STATES)}")
+            clauses.append(f"({ATTRIBUTION_STATE_SQL}) = ?")
+            params.append(attribution)
+        if project_id == "none":
+            # 只看没归项目的会
+            clauses.append("m.project_id IS NULL")
+            project_id = None
         if tag_id:
             joins.append("JOIN meeting_tags mt_filter ON mt_filter.meeting_id = m.id")
             clauses.append("mt_filter.tag_id = ?")
@@ -1348,6 +1565,9 @@ def create_app(
         total = int(db.query_one(count_sql, params)["count"])
         sql = f"""
             SELECT m.*, p.name AS project_name, p.color AS project_color,
+                   {ATTRIBUTION_STATE_SQL} AS attribution_state,
+                   pl.candidates_json AS _candidates_json,
+                   pl.new_project_name AS _new_project_name,
                    (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
                     ORDER BY CASE a.source_root WHEN 'archive' THEN 0 ELSE 1 END LIMIT 1) AS audio_artifact_id,
                    (SELECT COUNT(*) FROM segments s WHERE s.version_id = m.current_transcript_version_id) AS segment_count
@@ -1358,6 +1578,8 @@ def create_app(
         """
         params.extend((limit, offset))
         rows = db.query_all(sql, params)
+        with db.autocommit() as connection:
+            decorate_meeting_rows(connection, rows)
         for row in rows:
             row["tags"] = db.query_all(
                 """SELECT t.* FROM tags t JOIN meeting_tags mt ON mt.tag_id=t.id
@@ -1368,7 +1590,9 @@ def create_app(
 
     @app.get("/api/meetings/{meeting_id}")
     def get_meeting(meeting_id: str):
-        detail = _meeting_detail(db, meeting_id)
+        detail = _meeting_detail(
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+        )
         if not detail:
             raise HTTPException(404, "会议不存在")
         return detail
@@ -1732,21 +1956,74 @@ def create_app(
     @app.get("/api/search")
     def search(
         q: str,
-        mode: Literal["exact", "semantic"] = "exact",
+        mode: Literal["hybrid", "exact", "semantic"] = "hybrid",
         limit: int = Query(30, ge=1, le=100),
+        project_id: str | None = None,
     ):
         if _has_forbidden_control_character(q):
             raise HTTPException(422, "搜索词包含禁止控制字符")
-        if mode == "exact":
-            return {"mode": mode, "items": db.exact_search(q, limit=limit)}
+        if mode == "semantic":
+            try:
+                return {"mode": mode, "items": semantic.search(q, limit=limit)}
+            except SemanticBusy as error:
+                raise HTTPException(409, str(error)) from error
+            except SemanticPaused as error:
+                raise HTTPException(409, str(error)) from error
+            except SemanticUnavailable as error:
+                raise HTTPException(503, str(error)) from error
+
+        scope = project_id or None
+        if scope and scope != "none" and db.query_one(
+            "SELECT 1 FROM projects WHERE id=?", (scope,)
+        ) is None:
+            raise HTTPException(404, "项目不存在")
+        expansion = search_module.expand_query(db, q, project_id=scope)
+        needles = [q.strip(), *expansion["expanded"]]
+        items = search_module.literal_search(db, needles, scope=scope, limit=limit)
+        payload: dict[str, Any] = {
+            "mode": mode,
+            "items": items,
+            "expanded": expansion["expanded"],
+            "expand_hints": expansion["hints"],
+        }
+        if scope and scope != "none":
+            payload["unattributed_hits"] = len(
+                search_module.literal_search(db, needles, scope="none", limit=limit)
+            )
+        if mode == "hybrid":
+            similar, unavailable = similar_segments(q, items, scope=scope)
+            payload["similar"] = similar
+            if unavailable:
+                payload["semantic_unavailable"] = unavailable
+        return payload
+
+    def similar_segments(
+        query: str, literal: list[dict[str, Any]], *, scope: str | None
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """意思相近的段落：去掉已经按原词列出的，只留同一范围的。正在转写或模型不可用时不搜。"""
+        if not settings.semantic_enabled:
+            return [], None
+        if semantic.busy_check():
+            return [], "正在转写，意思相近的结果等转写完再搜"
         try:
-            return {"mode": mode, "items": semantic.search(q, limit=limit)}
-        except SemanticBusy as error:
-            raise HTTPException(409, str(error)) from error
-        except SemanticPaused as error:
-            raise HTTPException(409, str(error)) from error
-        except SemanticUnavailable as error:
-            raise HTTPException(503, str(error)) from error
+            rows = semantic.search(query, limit=search_module.SIMILAR_FETCH)
+        except (SemanticBusy, SemanticPaused, SemanticUnavailable) as error:
+            return [], str(error)
+        listed = {item["segment_id"] for item in literal if item.get("segment_id")}
+        similar: list[dict[str, Any]] = []
+        for row in rows:
+            if row["segment_id"] in listed:
+                continue
+            if row.get("score", 0) < search_module.SIMILAR_MIN_SCORE:
+                continue
+            if scope == "none" and row.get("project_id"):
+                continue
+            if scope and scope != "none" and row.get("project_id") != scope:
+                continue
+            similar.append(row)
+            if len(similar) >= search_module.SIMILAR_LIMIT:
+                break
+        return similar, None
 
     @app.get("/api/media/{artifact_id}")
     def media(artifact_id: int):
@@ -1805,7 +2082,12 @@ def create_app(
     @app.post("/api/jobs/{job_id}/retry")
     def retry_job(job_id: str, body: JobRetryInput):
         try:
-            result = relay.retry(job_id, body.stage, hotwords=body.hotwords)
+            result = relay.retry(
+                job_id,
+                body.stage,
+                hotwords=body.hotwords,
+                project_hint=job_project_hint(job_id),
+            )
             db.add_event(
                 "job_retry_requested",
                 job_id=job_id,
@@ -1914,13 +2196,48 @@ def create_app(
 
     @app.put("/api/meetings/{meeting_id}/minutes")
     def save_minutes(meeting_id: str, body: MinutesInput):
-        version_id = service.save_minutes(
+        version_id, corrections = service.save_minutes_detailed(
             meeting_id,
             body.markdown,
             expected_base_version_id=body.base_version_id,
+            glossary_snapshot_path=settings.data_dir / "glossary-snapshot.json",
         )
         notify_relay_draft_modified(meeting_id)
-        return {"version_id": version_id}
+        # 这次编辑捕获到的错字更正，前端在编辑器下方就地确认；auto_recorded 的已直接记入
+        return {"version_id": version_id, "corrections": corrections}
+
+    @app.get("/api/meetings/{meeting_id}/glossary")
+    def meeting_glossary(meeting_id: str):
+        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+
+    @app.post("/api/meetings/{meeting_id}/glossary/check")
+    def check_meeting_glossary(meeting_id: str, body: GlossaryCheckInput):
+        if db.query_one("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)) is None:
+            raise HTTPException(404, "会议不存在")
+        if body.project_id and db.query_one(
+            "SELECT 1 FROM projects WHERE id=?", (body.project_id,)
+        ) is None:
+            raise HTTPException(404, "项目不存在")
+        if "project_id" in body.model_fields_set:
+            glossary_checkup.check_meeting(db, meeting_id, project_id=body.project_id)
+        else:
+            # 不带 project_id：纪要改过以后重查一遍，沿用上次按哪个项目查的。
+            glossary_checkup.check_meeting(db, meeting_id)
+        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+
+    @app.post("/api/meetings/{meeting_id}/glossary/apply")
+    def apply_meeting_glossary(meeting_id: str, body: GlossaryApplyInput):
+        result = glossary_checkup.apply_missed(
+            db, service, meeting_id, expected_version_id=body.base_version_id
+        )
+        notify_relay_draft_modified(meeting_id)
+        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+
+    @app.post("/api/meetings/{meeting_id}/glossary/undo")
+    def undo_meeting_glossary(meeting_id: str, _body: dict[str, Any] | None = None):
+        result = glossary_checkup.undo_applied(db, service, meeting_id)
+        notify_relay_draft_modified(meeting_id)
+        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
 
     def preferred_audio_path(meeting_id: str) -> Path | None:
         artifact = db.query_one(
@@ -1963,7 +2280,9 @@ def create_app(
                 job_id, created = existing_job_id, False
             else:
                 try:
-                    job_id = relay.enqueue(audio, hotwords=hotwords)
+                    job_id = relay.enqueue(
+                        audio, hotwords=hotwords, project_hint=meeting_project_hint(meeting_id)
+                    )
                 except RelayUnavailable as error:
                     raise HTTPException(409, str(error)) from error
                 rowcount = db.execute(
@@ -2027,6 +2346,7 @@ def create_app(
                         "minutes_generating",
                         transcript_path=snapshot_path,
                         backend=backend,
+                        project_hint=meeting_project_hint(meeting_id),
                     )
                 except RelayUnavailable as error:
                     raise HTTPException(409, str(error)) from error
@@ -2038,6 +2358,7 @@ def create_app(
                         stage="minutes_generating",
                         transcript_path=snapshot_path,
                         backend=backend,
+                        project_hint=meeting_project_hint(meeting_id),
                     )
                 except RelayUnavailable as error:
                     raise HTTPException(409, str(error)) from error
@@ -2320,7 +2641,12 @@ def create_app(
             result = {"job_id": job_id, "status": current or "queued"}
         else:
             try:
-                result = relay.retry(job_id, "transcribing", hotwords=body.hotwords)
+                result = relay.retry(
+                    job_id,
+                    "transcribing",
+                    hotwords=body.hotwords,
+                    project_hint=meeting_project_hint(meeting_id),
+                )
             except RelayUnavailable as error:
                 raise HTTPException(409, str(error)) from error
         db.add_event(
@@ -2499,7 +2825,9 @@ def create_app(
             actor="user",
             payload={"action": action, "conflict_id": conflict_id},
         )
-        detail = _meeting_detail(db, meeting_id)
+        detail = _meeting_detail(
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+        )
         assert detail is not None
         return detail
 
@@ -2522,6 +2850,7 @@ def create_app(
             raise HTTPException(404, "会议不存在")
         changed_fields = []
         event_payload: dict[str, Any] = {}
+        effects: dict[str, Any] | None = None
         with db.transaction() as connection:
             if body.title is not None:
                 normalized_title = body.title.strip()
@@ -2532,14 +2861,29 @@ def create_app(
                 changed_fields.append("title")
                 event_payload["title"] = normalized_title
             if body.project_id is not None:
-                if body.project_id:
-                    task_service._assert_project(connection, body.project_id)
-                # 人工改项目（含清空）一律标 manual，与自动归属（ai）互斥、永不覆盖。
-                connection.execute(
-                    "UPDATE meetings SET project_id=?, project_origin='manual', updated_at=? WHERE id=?",
-                    (body.project_id or None, utc_now(), meeting_id),
-                )
-                changed_fields.append("project_id")
+                # 只在归属真的变了时才写。"" = 不归项目（人工标的）；"__ai__" = 交还 AI 判断。
+                # 人工改项目一律标 manual，与自动归属（ai）互斥、永不覆盖。
+                current = connection.execute(
+                    "SELECT project_id, project_origin FROM meetings WHERE id=?", (meeting_id,)
+                ).fetchone()
+                target = None if body.project_id in ("", RETURN_TO_AI) else body.project_id
+                if target:
+                    task_service._assert_project(connection, target)
+                project_changed = target != current["project_id"]
+                if project_changed:
+                    effects = reassign_meeting(connection, meeting_id, target, actor="user")
+                if body.project_id == RETURN_TO_AI:
+                    if project_changed or current["project_origin"] is not None:
+                        return_meeting_to_ai(connection, meeting_id)
+                        project_changed = True
+                elif not target and not project_changed and current["project_origin"] != "manual":
+                    effects = mark_meeting_unassigned(connection, meeting_id)
+                    project_changed = True
+                if project_changed:
+                    changed_fields.append("project_id")
+                    event_payload["project_from"] = current["project_id"]
+                    event_payload["project_to"] = target
+                    event_payload["origin_before"] = current["project_origin"]
             if body.tag_ids is not None:
                 for tag_id in body.tag_ids:
                     if connection.execute(
@@ -2562,15 +2906,7 @@ def create_app(
                         "SELECT 1 FROM requirements WHERE id=?", (requirement_id,)
                     ).fetchone() is None:
                         raise NotFoundError(f"需求不存在：{requirement_id}")
-                connection.execute(
-                    "DELETE FROM requirement_meetings WHERE meeting_id=?", (meeting_id,)
-                )
-                for requirement_id in requirement_ids:
-                    connection.execute(
-                        """INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at)
-                           VALUES (?, ?, ?)""",
-                        (requirement_id, meeting_id, utc_now()),
-                    )
+                requirements.sync_meeting_requirements(connection, meeting_id, requirement_ids)
                 changed_fields.append("requirement_ids")
         event_payload["fields"] = changed_fields
         db.add_event(
@@ -2579,7 +2915,148 @@ def create_app(
             actor="user",
             payload=event_payload,
         )
-        return _meeting_detail(db, meeting_id)
+        card_effect = sync_card(meeting_id) if "project_id" in changed_fields else None
+        detail = _meeting_detail(
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+        )
+        if effects is not None and detail is not None:
+            detail["effects"] = {
+                "tasks_moved": effects["tasks_moved"],
+                "tasks_left": effects["tasks_left"],
+                "undo_until": effects["undo_until"],
+            }
+            if effects.get("cue_hint") and body.project_id != RETURN_TO_AI:
+                detail["effects"]["cue_hint"] = effects["cue_hint"]
+        if card_effect is not None and detail is not None:
+            detail.setdefault("effects", {})["card"] = card_effect
+        return detail
+
+    def sync_card(meeting_id: str) -> dict[str, Any] | None:
+        """改归属、确认、撤销之后立刻同步卡片；卡片是旁路，写不了只记日志，不影响这次改动。"""
+        try:
+            result = card_writer.sync_meeting(meeting_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("会议卡片同步失败：%s", meeting_id)
+            return None
+        return {key: result.get(key) for key in ("action", "from", "to", "reason")}
+
+    @app.post("/api/meetings/{meeting_id}/project/confirm")
+    def confirm_meeting_project_endpoint(meeting_id: str, _body: dict[str, Any] | None = None):
+        with db.transaction() as connection:
+            confirm_meeting_project(connection, meeting_id)
+        sync_card(meeting_id)
+        with db.autocommit() as connection:
+            return meeting_attribution(
+                connection, meeting_id, ai_configured=llm_ready(settings)
+            )
+
+    @app.post("/api/meetings/{meeting_id}/project/undo")
+    def undo_meeting_project(meeting_id: str, _body: dict[str, Any] | None = None):
+        with db.transaction() as connection:
+            result = undo_reassign(connection, meeting_id)
+        card_effect = sync_card(meeting_id)
+        detail = _meeting_detail(
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+        )
+        if detail is not None:
+            detail["effects"] = {"tasks_restored": result["tasks_restored"]}
+            if card_effect is not None:
+                detail["effects"]["card"] = card_effect
+        return detail
+
+    @app.get("/api/meetings/{meeting_id}/card")
+    def meeting_card(meeting_id: str):
+        """只读卡片状态：归属条上确认、开启写卡片之后刷新状态条，不用重读整场会。"""
+        with db.autocommit() as connection:
+            if connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
+                raise HTTPException(404, "会议不存在")
+            return card_writer.meeting_card(connection, meeting_id)
+
+    @app.post("/api/meetings/{meeting_id}/card")
+    def meeting_card_action(meeting_id: str, body: CardActionInput):
+        try:
+            return card_writer.rewrite(meeting_id, body.action)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except CardsError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/cards/banner")
+    def cards_banner():
+        """工作台用：历史会议补写横幅（没有就是 null）和「写入第一张卡片」提示。"""
+        with db.autocommit() as connection:
+            return {
+                "backfill": card_writer.backfill_banner(connection),
+                "notices": card_writer.notices(connection),
+            }
+
+    @app.get("/api/cards/backfill-preview")
+    def cards_backfill_preview():
+        with db.autocommit() as connection:
+            return card_writer.backfill_preview(connection)
+
+    @app.post("/api/cards/backfill")
+    def cards_backfill(body: CardsBackfillInput):
+        try:
+            return card_writer.answer_backfill(body.answer)
+        except CardsError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/cards/retire-all")
+    def cards_retire_all(_body: dict[str, Any] | None = None):
+        return card_writer.retire_all()
+
+    @app.post("/api/cards/enable")
+    def cards_enable(_body: dict[str, Any] | None = None):
+        return card_writer.enable()
+
+    @app.post("/api/cards/notices/dismiss")
+    def cards_dismiss_notice(body: CardsTargetInput):
+        card_writer.dismiss_notice(body.project_id or "")
+        return {"ok": True}
+
+    @app.post("/api/cards/reveal")
+    def cards_reveal(body: CardsTargetInput):
+        try:
+            return {"path": card_writer.reveal(project_id=body.project_id, meeting_id=body.meeting_id)}
+        except CardsError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.post("/api/projects/{project_id}/cards/pause")
+    def project_cards_pause(project_id: str, _body: dict[str, Any] | None = None):
+        if db.query_one("SELECT 1 FROM projects WHERE id=?", (project_id,)) is None:
+            raise HTTPException(404, "项目不存在")
+        return card_writer.pause_project(project_id)
+
+    @app.post("/api/projects/{project_id}/cards/resume")
+    def project_cards_resume(project_id: str, _body: dict[str, Any] | None = None):
+        if db.query_one("SELECT 1 FROM projects WHERE id=?", (project_id,)) is None:
+            raise HTTPException(404, "项目不存在")
+        card_writer.resume_project(project_id)
+        written = card_writer.reconcile_project(project_id)
+        with db.autocommit() as connection:
+            return {"cards": card_writer.project_cards(connection, project_id), "written": written}
+
+    @app.get("/api/attribution/summary")
+    def attribution_summary_endpoint():
+        with db.autocommit() as connection:
+            return attribution_summary(connection)
+
+    @app.get("/api/cold-start/folders")
+    def cold_start_folders():
+        with db.autocommit() as connection:
+            return cold_start.folder_suggestions(connection, settings)
+
+    @app.post("/api/cold-start/folders/decline")
+    def cold_start_folders_decline(body: ProjectIdsInput):
+        with db.transaction() as connection:
+            cold_start.decline_folder_suggestions(connection, body.project_ids)
+        return {"ok": True}
+
+    @app.post("/api/cold-start/folders/snooze")
+    def cold_start_folders_snooze():
+        with db.transaction() as connection:
+            return {"snoozed_until": cold_start.snooze_folder_suggestions(connection)}
 
     @app.get("/api/projects")
     def projects():
@@ -2591,6 +3068,13 @@ def create_app(
             return task_service.create_project(
                 name=body.name, color=body.color, origin="manual",
                 material_roots=body.material_roots,
+                folder=body.folder.model_dump() if body.folder else None,
+                meeting_ids=body.meeting_ids,
+                force=body.force,
+            )
+        except SimilarProjectError as error:
+            return JSONResponse(
+                {"detail": str(error), "suggestion": error.suggestion}, status_code=409
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
@@ -2602,13 +3086,198 @@ def create_app(
                 project_id, name=body.name, color=body.color,
                 material_roots=body.material_roots,
                 material_roots_given="material_roots" in body.model_fields_set,
+                also_names=body.also_names,
+                also_names_given="also_names" in body.model_fields_set,
             )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.delete("/api/projects/{project_id}")
+    def delete_project(project_id: str):
+        with db.transaction() as connection:
+            result = delete_empty_project(connection, project_id)
+        rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+        return {"ok": True, **result}
+
+    @app.post("/api/projects/{project_id}/merge-into/{target_id}")
+    def merge_project_into(project_id: str, target_id: str, _body: dict[str, Any] | None = None):
+        try:
+            with db.transaction() as connection:
+                result = merge_project(connection, project_id, target_id)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+        detail = task_service._project_detail(target_id)
+        detail["merge"] = result
+        return detail
+
+    @app.get("/api/projects/folder-matches")
+    def project_folder_matches(name: str | None = None):
+        with db.autocommit() as connection:
+            return folder_matches(connection, settings, names=[name] if name else [])
+
+    @app.get("/api/projects/{project_id}/folder-suggestions")
+    def project_folder_suggestions(project_id: str):
+        project = db.query_one("SELECT name, also_names FROM projects WHERE id=?", (project_id,))
+        if project is None:
+            raise HTTPException(404, "项目不存在")
+        names = [project["name"], *(entry["name"] for entry in also_entries(project["also_names"]))]
+        with db.autocommit() as connection:
+            return folder_matches(connection, settings, names=names)
+
+    @app.post("/api/project-names/ignore")
+    def ignore_project_name_endpoint(body: ProjectNameInput):
+        try:
+            with db.transaction() as connection:
+                return ignore_project_name(connection, body.name)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
 
     @app.get("/api/projects/{project_id}/board")
     def project_board(project_id: str):
-        return task_service.project_board(project_id)
+        board = task_service.project_board(project_id)
+        with db.autocommit() as connection:
+            board["profile"] = recognition_profile(connection, project_id)
+            board["cards"] = card_writer.project_cards(connection, project_id)
+        return board
+
+    # ------------------------------------------------------------ 关系图（1g）
+
+    @app.get("/api/graph/projects/{project_id}")
+    def project_graph_endpoint(
+        project_id: str,
+        request: Request,
+        window: Literal["7d", "28d", "90d", "all"] | None = None,
+        focus: str | None = Query(default=None, max_length=80),
+    ):
+        today = datetime.now().astimezone().date()
+        with db.autocommit() as connection:
+            etag = graph_module.graph_etag(connection, project_id, window, focus, today)
+            if request.headers.get("if-none-match") == etag:
+                return Response(status_code=304, headers={"ETag": etag})
+            try:
+                payload = graph_module.project_graph(
+                    connection, project_id, window=window, focus=focus, today=today
+                )
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+        return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
+    def local_request(request: Request) -> bool:
+        return graph_module.is_local_request(
+            request.headers.get("host"), request.client.host if request.client else None
+        )
+
+    @app.get("/api/graph/projects/{project_id}/roots")
+    def project_graph_roots(project_id: str, request: Request):
+        with db.autocommit() as connection:
+            try:
+                result = graph_module.project_roots(connection, roots_cache, project_id)
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+        if result["checking"]:
+            roots_cache.refresh_in_background()
+        # 「在访达中显示」只在本机打开声档时出现
+        result["can_reveal"] = local_request(request)
+        return result
+
+    @app.get("/api/graph/projects/{project_id}/fulltext")
+    def project_graph_fulltext(
+        project_id: str,
+        q: str | None = Query(default=None, min_length=1, max_length=40),
+        term: str | None = Query(default=None, max_length=64),
+    ):
+        with db.autocommit() as connection:
+            variants: list[str] = [q] if q else []
+            if term:
+                found = graph_module.term_variants(connection, term)
+                if found is None:
+                    raise HTTPException(404, "词条不存在")
+                variants.extend(found)
+            if not variants:
+                raise HTTPException(400, "要给查找的词")
+            try:
+                return graph_module.fulltext_counts(connection, project_id, variants)
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/graph/meetings/{meeting_id}")
+    def graph_meeting_focus(meeting_id: str):
+        with db.autocommit() as connection:
+            try:
+                return graph_module.meeting_focus(connection, meeting_id)
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/graph/expand")
+    def graph_expand(root: int, dir: str = Query(default="", max_length=1000)):
+        with db.autocommit() as connection:
+            try:
+                row = graph_module.material_root(connection, root)
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+        try:
+            return graph_module.expand_folder(row, dir)
+        except graph_module.GraphNotFound as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        except OSError as error:
+            raise HTTPException(503, "读不了这个文件夹，资料盘可能在休眠") from error
+
+    @app.post("/api/materials/reveal")
+    def reveal_material(body: RevealInput, request: Request):
+        if not local_request(request):
+            raise HTTPException(403, "只能在声档所在的这台电脑上打开访达")
+        with db.autocommit() as connection:
+            folders = graph_module.registered_folders(connection)
+        try:
+            target = graph_module.registered_target(folders, body.path)
+            graph_module.reveal(target)
+        except graph_module.GraphNotFound as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        return {"ok": True, "path": str(target)}
+
+    @app.get("/api/graph/projects/{project_id}/collapsed")
+    def project_graph_collapsed(
+        project_id: str,
+        group: str = Query(max_length=40),
+        window: Literal["7d", "28d", "90d", "all"] | None = None,
+    ):
+        with db.autocommit() as connection:
+            try:
+                return graph_module.collapsed_meetings(
+                    connection, project_id, group, window=window
+                )
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/meetings/{meeting_id}/brief")
+    def meeting_brief_endpoint(meeting_id: str):
+        with db.autocommit() as connection:
+            attribution = meeting_attribution(
+                connection, meeting_id, ai_configured=llm_ready(settings)
+            )
+            if attribution is None:
+                raise HTTPException(404, "会议不存在")
+            card = card_writer.meeting_card(connection, meeting_id)
+            return graph_module.meeting_brief(
+                connection, meeting_id, attribution=attribution, card=card
+            )
+
+    @app.get("/api/meetings/{meeting_id}/quotes")
+    def meeting_quotes_endpoint(
+        meeting_id: str,
+        at: list[int] = Query(default=[]),
+        span: Literal["short", "wide"] = "short",
+    ):
+        with db.autocommit() as connection:
+            try:
+                return graph_module.meeting_quotes(connection, meeting_id, at, wide=span == "wide")
+            except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
 
     @app.get("/api/projects/{project_id}/meetings")
     def project_meetings_endpoint(project_id: str):
@@ -2617,11 +3286,26 @@ def create_app(
     @app.post("/api/projects/{project_id}/material-roots")
     def add_project_material_root(project_id: str, body: MaterialRootInput):
         try:
-            return materials.add_material_root(
-                db, settings.material_browse_root, project_id, body.path
-            )
+            root = materials.add_material_root(db, settings, project_id, body.path)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+        return {**root, "cards_written": backfill_project_cards(project_id)}
+
+    def backfill_project_cards(project_id: str) -> int:
+        """挂上（或换了）文件夹后，把这个项目积压的卡片当场补写，提示「已补写 N 张会议卡片」。"""
+        try:
+            return card_writer.reconcile_project(project_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("补写会议卡片失败：%s", project_id)
+            return 0
+
+    @app.post("/api/projects/{project_id}/material-roots/{root_id}/replace")
+    def replace_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+        try:
+            root = materials.replace_material_root(db, settings, project_id, root_id, body.path)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        return {**root, "cards_written": backfill_project_cards(project_id)}
 
     @app.delete("/api/projects/{project_id}/material-roots/{root_id}")
     def remove_project_material_root(project_id: str, root_id: int):
@@ -2716,6 +3400,12 @@ def create_app(
     def set_requirement_meetings(requirement_id: str, body: RequirementMeetingsInput):
         return requirements.set_meetings(task_service, requirement_id, body.meeting_ids)
 
+    @app.post("/api/requirements/{requirement_id}/meetings/{meeting_id}")
+    def add_requirement_meeting(
+        requirement_id: str, meeting_id: str, _body: dict[str, Any] | None = None
+    ):
+        return requirements.add_meeting(task_service, requirement_id, meeting_id)
+
     @app.delete("/api/requirements/{requirement_id}/meetings/{meeting_id}")
     def remove_requirement_meeting(requirement_id: str, meeting_id: str):
         return requirements.remove_meeting(task_service, requirement_id, meeting_id)
@@ -2783,6 +3473,7 @@ def create_app(
                 title=body.title,
                 detail=body.detail,
                 project_id=body.project_id,
+                project_id_given="project_id" in body.model_fields_set,
                 assignee=body.assignee,
                 requirement_id=body.requirement_id,
                 requirement_id_given="requirement_id" in body.model_fields_set,
@@ -2810,6 +3501,7 @@ def create_app(
                 title=body.title,
                 detail=body.detail,
                 project_id=body.project_id,
+                project_id_given="project_id" in body.model_fields_set,
                 assignee=body.assignee,
                 requirement_id=body.requirement_id,
                 requirement_id_given="requirement_id" in body.model_fields_set,
@@ -2998,9 +3690,39 @@ def create_app(
     def glossary_terms(scope: str | None = None, project_id: str | None = None):
         return list_terms(db, scope=scope, project_id=project_id)
 
+    @app.get("/api/glossary/terms/{term_id}")
+    def glossary_term_detail(term_id: str):
+        """线索词面板：词条本身，加上「这个词让哪几场会归到这里、各几次」。"""
+        with db.autocommit() as connection:
+            detail = graph_module.cue_term_detail(connection, term_id)
+        if detail is None:
+            raise HTTPException(404, "术语不存在")
+        return detail
+
     @app.get("/api/glossary/scopes")
     def glossary_scopes():
         return list_scopes(db)
+
+    @app.get("/api/glossary/legacy-groups")
+    def glossary_legacy_groups():
+        with db.autocommit() as connection:
+            return {"summary": cold_start.legacy_groups_summary(connection)}
+
+    @app.post("/api/glossary/legacy-groups/undo")
+    def glossary_legacy_groups_undo():
+        try:
+            with db.transaction() as connection:
+                result = cold_start.undo_legacy_groups(db, connection)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        rewrite_snapshot(db, snapshot_path)
+        return result
+
+    @app.post("/api/glossary/legacy-groups/dismiss")
+    def glossary_legacy_groups_dismiss():
+        with db.transaction() as connection:
+            cold_start.dismiss_legacy_groups(connection)
+        return {"ok": True}
 
     @app.post("/api/glossary/terms")
     def glossary_create_term(body: GlossaryTermInput):
@@ -3022,8 +3744,12 @@ def create_app(
                 source=body.source,
                 confirmed=body.confirmed,
                 project_id=body.project_id or None,
+                is_cue=body.is_cue,
+                also=body.also,
                 snapshot_path=snapshot_path,
             )
+        except DuplicateTermError as error:
+            return JSONResponse({"detail": str(error), "conflict": error.conflict}, status_code=409)
         except GlossaryError as error:
             raise HTTPException(400, str(error)) from error
 
@@ -3057,14 +3783,35 @@ def create_app(
                 aliases=body.aliases,
                 category=body.category,
                 confirmed=body.confirmed,
+                is_cue=body.is_cue,
+                also=body.also,
                 snapshot_path=snapshot_path,
                 **update_kwargs,
             )
+        except DuplicateTermError as error:
+            return JSONResponse({"detail": str(error), "conflict": error.conflict}, status_code=409)
         except GlossaryError as error:
             raise HTTPException(400, str(error)) from error
         if updated is None:
             raise HTTPException(404, "术语不存在")
         return updated
+
+    @app.post("/api/glossary/terms/{term_id}/merge")
+    def glossary_merge_term(term_id: str, body: GlossaryMergeInput):
+        try:
+            merged = merge_into_term(
+                db,
+                term_id,
+                aliases=body.aliases,
+                also=body.also,
+                make_public=body.make_public,
+                snapshot_path=snapshot_path,
+            )
+        except GlossaryError as error:
+            raise HTTPException(400, str(error)) from error
+        if merged is None:
+            raise HTTPException(404, "术语不存在")
+        return merged
 
     @app.delete("/api/glossary/terms/{term_id}")
     def glossary_delete_term(term_id: str):
@@ -3079,16 +3826,41 @@ def create_app(
         return list_suggestions(db, status=status)
 
     @app.post("/api/glossary/suggestions/{suggestion_id}/confirm")
-    def glossary_confirm_suggestion(suggestion_id: str):
-        if not confirm_suggestion(db, suggestion_id, snapshot_path=snapshot_path):
+    def glossary_confirm_suggestion(
+        suggestion_id: str, body: SuggestionConfirmInput | None = None
+    ):
+        body = body or SuggestionConfirmInput()
+        try:
+            result = confirm_suggestion(
+                db,
+                suggestion_id,
+                snapshot_path=snapshot_path,
+                target=body.target,
+                short=body.short,
+            )
+        except GlossaryError as error:
+            raise HTTPException(404, str(error)) from error
+        if result is None:
             raise HTTPException(404, "待确认建议不存在或已处理")
-        return {"ok": True}
+        return {"ok": True, **result, "suggestion": get_suggestion(db, suggestion_id)}
+
+    @app.post("/api/glossary/suggestions/{suggestion_id}/undo")
+    def glossary_undo_suggestion(suggestion_id: str):
+        if not undo_confirm_suggestion(db, suggestion_id, snapshot_path=snapshot_path):
+            raise HTTPException(404, "这条建议没有确认过，或已经撤销")
+        return {"ok": True, "suggestion": get_suggestion(db, suggestion_id)}
 
     @app.post("/api/glossary/suggestions/{suggestion_id}/reject")
     def glossary_reject_suggestion(suggestion_id: str):
         if not reject_suggestion(db, suggestion_id):
             raise HTTPException(404, "待确认建议不存在或已处理")
         return {"ok": True}
+
+    @app.post("/api/glossary/suggestions/{suggestion_id}/restore")
+    def glossary_restore_suggestion(suggestion_id: str):
+        if not restore_suggestion(db, suggestion_id):
+            raise HTTPException(404, "这条建议没有被驳回，或已经恢复")
+        return {"ok": True, "suggestion": get_suggestion(db, suggestion_id)}
 
     @app.get("/api/glossary/snapshot")
     def glossary_snapshot():

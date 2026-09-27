@@ -11,7 +11,7 @@
 }
 
 .glossary-modal__card {
-  width: min(500px, 100%);
+  width: min(620px, 100%);
   margin: auto;
   background: var(--paper);
   border: 1px solid var(--line);
@@ -240,4 +240,55 @@
 .glossary-modal__submit:hover:not(:disabled) {
   background: var(--signal-dark);
   border-color: var(--signal-dark);
+}
+
+/* 错写 / 也叫 两栏；窄屏上下排 */
+.glossary-modal__columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 560px) {
+  .glossary-modal__columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.glossary-modal__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.glossary-modal__field .glossary-modal__check input {
+  width: auto;
+  min-height: 0;
+  margin: 3px 0 0;
+}
+
+/* 词条重名：就地给出「加到那条」 */
+.glossary-modal__conflict {
+  display: grid;
+  gap: 8px;
+  margin: 12px 20px 0;
+  padding: 10px 12px;
+  color: var(--ink);
+  font-size: 12px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 10px;
+}
+
+.glossary-modal__conflict p {
+  margin: 0;
+}
+
+.glossary-modal__conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }

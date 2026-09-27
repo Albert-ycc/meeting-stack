@@ -39,6 +39,7 @@ Voice Memos 桥接只是众多入口之一，任何来源的音频文件落进�
 | `MEETING_RELAY_CODEX_BIN` | 自动探测 | Codex 可执行文件路径 |
 | `MEETING_RELAY_WHISPER_BIN` | 自动探测 | whisper 可执行文件路径 |
 | `RELAY_LARK_USER_ID` | 空 | 飞书通知 open_id，留空则不通知 |
+| `MEETING_RELAY_GLOSSARY_SNAPSHOT` | `~/.meeting-workbench/glossary-snapshot.json` | 工作台写的词典快照，出纪要前按这场会挑词 |
 
 状态文件都在 `~/.meeting-relay/`：
 
@@ -59,6 +60,21 @@ quickstart/relayctl enqueue "/绝对路径/会议.m4a" \
 ```
 
 词表会去重后快照进任务，之后源文件再变不影响已入队的任务。
+
+## 本场词典
+
+出纪要前 relay 按这场会从词典快照里挑词（`../glossary/injection.py`），把「本场术语对照表」
+内联进 prompt，并在草稿目录写一份 `glossary-injection.json` 作为回执，Agent 必须把它列进
+manifest。工作台知道会议属于哪个项目时（重新生成纪要、重新转写）会带上项目提示：
+
+```bash
+MEETING_RELAY_PROJECT_HINT=<项目 id 或名字> quickstart/relayctl retry <job_id> --stage minutes_generating ...
+# 或者
+quickstart/relayctl retry <job_id> --stage minutes_generating --project-hint <项目 id 或名字> ...
+```
+
+没有项目提示时按快照里各项目的识别线索在逐字稿里计次，只取领先的一个；认不出就只用公共词。
+快照读不到或挑词出错时照常出纪要，只是不带对照表。
 
 ## 纪要内容协议 v3
 

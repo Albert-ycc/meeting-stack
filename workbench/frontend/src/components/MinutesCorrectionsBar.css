@@ -1,0 +1,60 @@
+/* 保存纪要后编辑器下方的错字更正提示条 */
+.minutes-corrections {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  color: var(--ink-2);
+  font-size: 12px;
+  background: var(--signal-bg);
+  border: 1px solid var(--signal-line);
+  border-radius: 10px;
+}
+
+.minutes-corrections__lead {
+  margin: 0;
+  color: var(--ink);
+}
+
+.minutes-corrections__list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.minutes-corrections__list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.minutes-corrections__pair s {
+  color: var(--ink-soft);
+}
+
+.minutes-corrections__short {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink-soft);
+}
+
+.minutes-corrections__note,
+.minutes-corrections__done {
+  color: var(--ink-soft);
+}
+
+.minutes-corrections__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.minutes-corrections__error {
+  margin: 0;
+  color: var(--danger);
+}

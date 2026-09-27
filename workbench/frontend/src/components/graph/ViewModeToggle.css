@@ -1,0 +1,30 @@
+/* 项目详情页标题行右侧的［关系图｜清单］，关系图和清单两种页面共用 */
+.view-mode-toggle {
+  display: inline-flex;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.view-mode-toggle button {
+  padding: 4px 12px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.view-mode-toggle button:hover {
+  color: var(--ink);
+}
+
+.view-mode-toggle button[aria-pressed="true"] {
+  color: var(--heading);
+  background: var(--raised);
+  box-shadow: 0 0 0 1px var(--line-strong) inset;
+}

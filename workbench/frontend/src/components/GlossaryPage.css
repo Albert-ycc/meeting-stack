@@ -383,6 +383,31 @@
   font-style: normal;
 }
 
+.glossary-suggestion__short {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.glossary-suggestion__note {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.glossary-card__also {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.glossary-chipbar__item--pending {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+
 .glossary-suggestion__meta {
   display: flex;
   flex-wrap: wrap;
@@ -439,13 +464,15 @@
     display: none;
   }
 
+  /* 手机上操作放到下面一行，别把错字那句话挤成一条窄列 */
   .glossary-suggestion {
+    flex-direction: column;
     gap: 10px;
     padding: 13px 12px;
   }
 
   .glossary-suggestion__ops {
     flex-wrap: wrap;
-    justify-content: flex-end;
+    justify-content: flex-start;
   }
 }

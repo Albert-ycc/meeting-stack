@@ -55,6 +55,10 @@
   white-space: nowrap;
 }
 
+.detail-head__row .view-mode-toggle {
+  margin-left: auto;
+}
+
 .detail-head__actions {
   display: flex;
   flex: none;
@@ -229,6 +233,15 @@
   color: var(--danger);
   font-size: 10px;
   background: var(--danger-bg);
+  border-radius: 10px;
+}
+
+.material-root-row__offline {
+  flex: none;
+  padding: 2px 8px;
+  color: var(--warn);
+  font-size: 10px;
+  background: var(--warn-bg);
   border-radius: 10px;
 }
 
@@ -430,20 +443,6 @@
   background: var(--signal-bg);
 }
 
-.project-glossary__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.project-glossary__chip {
-  padding: 3px 9px;
-  color: var(--ink-soft);
-  font-size: 11px;
-  background: var(--bg);
-  border-radius: 12px;
-}
-
 .project-glossary__empty {
   margin: 0;
   color: var(--ink-faint);
@@ -464,4 +463,42 @@
   .detail-card {
     overflow-x: auto;
   }
+}
+
+/* 冷启动提示：AI 建的空项目、同一文件夹挂在几个项目下 */
+
+.detail-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.6;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 12px;
+}
+
+.detail-hint > span:first-child {
+  flex: 1;
+  min-width: 220px;
+}
+
+.detail-hint__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.material-root-row__shared {
+  flex-basis: 100%;
+  order: 10;
+  padding: 6px 10px;
+  color: var(--warn);
+  font-size: 12px;
+  background: var(--warn-bg);
+  border-radius: 8px;
 }

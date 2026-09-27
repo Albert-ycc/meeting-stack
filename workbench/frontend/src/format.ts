@@ -220,3 +220,10 @@ export function isUntitled(title: string, meetingId: string): boolean {
   if (trimmed.toLowerCase() === meetingId.toLowerCase()) return true;
   return trimmed.endsWith("未命名录音");
 }
+
+/** 文件大小：B / KB / MB */
+export function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}

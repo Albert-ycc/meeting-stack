@@ -1,0 +1,70 @@
+/* 「［记入 云图AI ▾］」分体按钮 */
+.glossary-target {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.glossary-target > button {
+  padding: 4px 10px;
+  color: var(--ink);
+  font-size: 12px;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+}
+
+.glossary-target__main {
+  border-radius: var(--r-pill) 0 0 var(--r-pill);
+}
+
+.glossary-target__main:only-of-type {
+  border-radius: var(--r-pill);
+}
+
+.glossary-target__more {
+  margin-left: -1px;
+  padding: 4px 8px;
+  border-radius: 0 var(--r-pill) var(--r-pill) 0;
+}
+
+.glossary-target > button:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.glossary-target__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 24;
+}
+
+.glossary-target__pop {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  min-width: 140px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 5px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.glossary-target__pop button {
+  padding: 8px 10px;
+  color: var(--ink);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+}
+
+.glossary-target__pop button:hover,
+.glossary-target__pop button:focus-visible {
+  background: var(--surface);
+}

@@ -418,8 +418,19 @@ def _state_line(task: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
+def _project_line(project_name: str | None) -> str:
+    """任务卡上的只读项目行：任务跟着会议走，这里显示会议当前的项目。"""
+    if project_name:
+        return f"项目：{_escape_markdown(project_name)}"
+    return "项目：还没定，到声档里选"
+
+
 def build_task_draft_card(
-    *, meeting_title: str, tasks: list[dict[str, Any]], interactive: bool = True
+    *,
+    meeting_title: str,
+    tasks: list[dict[str, Any]],
+    interactive: bool = True,
+    project_name: str | None = None,
 ) -> dict[str, Any]:
     """会后任务确认卡（卡片 2.0）：逐条任务灰底信息块 + 确认/驳回 按钮，不带「全部确认」，
     不放任何外链（本地化部署，外网访问不到）。
@@ -442,6 +453,7 @@ def build_task_draft_card(
                 )
             ),
         },
+        {"tag": "markdown", "content": _project_line(project_name)},
         {"tag": "hr"},
     ]
     shown = 0
@@ -476,14 +488,20 @@ def build_task_status_card(
     meeting_title: str,
     tasks: list[dict[str, Any]],
     all_done: bool = False,
+    project_name: str | None = None,
 ) -> dict[str, Any]:
     """确认/驳回后的卡片重建：逐条保留 来源/建议/原话 全部细节（可追溯），
-    已确认的显示状态无按钮，待确认的保留按钮。不放外链。"""
+    已确认的显示状态无按钮，待确认的保留按钮。不放外链。
+
+    project_name 没传时从任务上取（任务跟着会议走，同一批任务的项目相同）。"""
     pending = sum(1 for task in tasks if task.get("status") == "pending_confirm")
     lead = f"来自「{meeting_title or '这场会'}」"
     lead += "，都处理完了。" if all_done else f"，还剩 {pending} 条等你拿主意。"
+    if project_name is None:
+        project_name = next((task["project_name"] for task in tasks if task.get("project_name")), None)
     elements: list[dict[str, Any]] = [
         {"tag": "markdown", "content": lead},
+        {"tag": "markdown", "content": _project_line(project_name)},
         {"tag": "hr"},
     ]
     for index, task in enumerate(tasks, 1):
@@ -797,6 +815,7 @@ class LarkNotifier:
         *,
         meeting_title: str,
         tasks: list[dict[str, Any]],
+        project_name: str | None = None,
     ) -> bool:
         """会后任务确认卡。优先 应用机器人身份发卡片2.0（带回调按钮，可在飞书直接
         确认）；未配 应用机器人群时退回 群 webhook 机器人 的简单通知。"""
@@ -804,6 +823,7 @@ class LarkNotifier:
             lines = [
                 f"从「{meeting_title or '这场会'}」里挑出 {len(tasks)} 件该跟进的事，"
                 "确认后我才开工。",
+                _project_line(project_name),
                 "",
             ]
             lines.extend(f"{i}. {t['title']}" for i, t in enumerate(tasks, 1))
@@ -816,7 +836,10 @@ class LarkNotifier:
                 button_url=f"{self.public_base_url}/#tasks",
             )
         card = build_task_draft_card(
-            meeting_title=meeting_title, tasks=tasks, interactive=not self.direct_app
+            meeting_title=meeting_title,
+            tasks=tasks,
+            interactive=not self.direct_app,
+            project_name=project_name,
         )
         return self._send_app_card(card, kind="draft", ref_key=str(extraction_id))
 
@@ -941,15 +964,23 @@ class LarkNotifier:
         )
 
     def daily_digest(self, stats: dict[str, Any]) -> bool:
-        if int(stats.get("total") or 0) == 0:
+        auto = int(stats.get("auto_assigned_yesterday") or 0)
+        review = int(stats.get("needs_review") or 0)
+        if int(stats.get("total") or 0) == 0 and not auto and not review:
             return False
-        parts = [f"· 待确认 {stats['pending']} 条" + (
-            f"，都来自「{stats['pending_sources'][0]}」" if stats["pending_sources"] else ""
-        ) + "，确认后 AI 才会开工。"]
+        parts: list[str] = []
+        if int(stats.get("total") or 0):
+            parts.append(f"· 待确认 {stats['pending']} 条" + (
+                f"，都来自「{stats['pending_sources'][0]}」" if stats["pending_sources"] else ""
+            ) + "，确认后 AI 才会开工。")
         if stats["stalled"]:
             parts.append(f"· 停滞点名：{stats['stalled_titles'][0]}（{stats['stalled_days'][0]} 天没动了）。")
         if stats["done_today"]:
             parts.append(f"· 今天完成 {len(stats['done_today'])} 条：{stats['done_today'][0]}。")
+        if auto or review:
+            line = f"· 昨天自动归属 {auto} 场" if auto else "· 昨天没有自动归属的会"
+            line += f"，{review} 场等你选项目。" if review else "。"
+            parts.append(line)
         text = "\n".join(parts)
         return self._send(
             "digest",

@@ -23,6 +23,7 @@ Relay watchdog：监听 ~/Downloads 新音频 → 转写 → 按时长分流派�
 """
 import json
 import hashlib
+import importlib.util
 import logging
 import os
 import shlex
@@ -73,6 +74,12 @@ TRANSCRIBE_SH          = _env_path(
 TRANSCRIBE_DUAL_SH     = _env_path(
     "MEETING_RELAY_TRANSCRIBE_DUAL_SH", REPO_ROOT / "transcribe" / "transcribe-dual.sh"
 )
+# 工作台写的词典快照；出纪要前按这场会从里面挑词（glossary/injection.py）。
+GLOSSARY_SNAPSHOT      = _env_path(
+    "MEETING_RELAY_GLOSSARY_SNAPSHOT",
+    Path.home() / ".meeting-workbench" / "glossary-snapshot.json",
+)
+GLOSSARY_INJECTION_PY  = REPO_ROOT / "glossary" / "injection.py"
 # 派单目标：Agent 跑在哪个 tmux socket 的哪个 session 里。
 TMUX_SOCKET            = _env_path("MEETING_RELAY_TMUX_SOCKET", Path.home() / ".tmux-socket" / "cc")
 TMUX_SESSION           = os.getenv("MEETING_RELAY_TMUX_SESSION", "agent")
@@ -672,6 +679,66 @@ def _main_transcript_bundle_errors(txt_path: str | Path) -> list[str]:
 
 # ── 派单 prompt ───────────────────────────────────────────────────────────────
 
+_glossary_injection = None
+
+
+def _glossary_injection_module():
+    """glossary/injection.py 只用标准库，放在仓库根目录，relay 和工作台共用同一份规则。"""
+    global _glossary_injection
+    if _glossary_injection is None:
+        spec = importlib.util.spec_from_file_location(
+            "meeting_glossary_injection", GLOSSARY_INJECTION_PY
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"找不到挑词模块：{GLOSSARY_INJECTION_PY}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _glossary_injection = module
+    return _glossary_injection
+
+
+def prepare_glossary_injection(
+    transcript_path: str | Path,
+    project_hint: str | None = None,
+    *,
+    receipt_dir: Path | None = None,
+    job_id: str | None = None,
+    attempt_no: int | None = None,
+) -> tuple[str, bool]:
+    """按这场会挑词，返回（拼进 prompt 的对照表，是否写了回执）。
+
+    有 receipt_dir 时把挑词结果写成 glossary-injection.json，随归档交回工作台，
+    作为这场会用了哪些词的回执。快照读不到、挑词出错都不挡出纪要，只是这场不带对照表。
+    """
+    try:
+        module = _glossary_injection_module()
+        try:
+            transcript = Path(transcript_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            transcript = ""
+        receipt = module.select_injection(
+            module.load_snapshot(GLOSSARY_SNAPSHOT), transcript, project_hint
+        )
+        if job_id:
+            receipt["job_id"] = job_id
+            receipt["attempt"] = attempt_no
+        written = False
+        if receipt_dir is not None:
+            module.write_receipt(receipt, receipt_dir)
+            written = True
+        project = receipt.get("project") or {}
+        log.info(
+            "本场词典：项目=%s（%s），%s 条",
+            project.get("name") or project.get("id") or "无",
+            project.get("source") or "-",
+            len(receipt.get("terms") or []),
+        )
+        return module.render_table(receipt), written
+    except Exception:
+        log.warning("本场词典挑词失败，照常出纪要（不带对照表）", exc_info=True)
+        return "", False
+
+
 def build_command_prompt(transcript: str) -> str:
     return (
         "# [Relay 短录音 · 即时指令]\n\n"
@@ -690,6 +757,8 @@ def build_meeting_prompt(
     requested_stage: str | None = None,
     input_transcript_sha256: str | None = None,
     minutes_protocol_version: int = CURRENT_MINUTES_PROTOCOL_VERSION,
+    glossary_table: str = "",
+    glossary_receipt: bool = False,
 ) -> str:
     duration_min = duration_sec / 60
     yymmdd = time.strftime("%y%m%d")
@@ -769,6 +838,11 @@ def build_meeting_prompt(
                 "工作台会严格校验 json/tsv/srt/txt/vtt/log 全部齐全\n"
             )
             manifest_mode_fields = ""
+        if glossary_receipt:
+            artifact_requirement += (
+                "- Relay 已在草稿目录写好本场词典回执 `glossary-injection.json`：只读，"
+                "不得修改或删除，必须列进 manifest 的 artifacts\n"
+            )
         relayctl = Path(__file__).with_name("relayctl").resolve()
         completion_section = (
             f"\n## 工作台任务回执（强制）\n\n"
@@ -808,6 +882,8 @@ def build_meeting_prompt(
             "Downloads 那份是冗余）\n"
         )
 
+    glossary_section = f"\n{glossary_table}" if glossary_table else ""
+
     return (
         f"# [Relay 长录音 · 会议纪要场景]\n\n"
         f"这段录音 **{duration_min:.1f} 分钟**，已经转写完成，请使用 "
@@ -839,6 +915,7 @@ def build_meeting_prompt(
         f"6. pandoc 转 HTML，纪要 md/html 都按会议主题命名（不要用「会议纪要」泛称）\n"
         f"7. 原始产物（转写/纪要）保留在原音频所在的产物目录（留作原始档案）\n"
         f"{merge_section}"
+        f"{glossary_section}"
         f"\n## 归档规范（固定，不要自由发挥）\n\n"
         f"归档目录：`{archive_location}`\n\n"
         f"- 日期一律 **6 位 `{yymmdd}`**（不要写成 20{yymmdd} 8 位，不要省成 4 位）\n"
@@ -1106,7 +1183,10 @@ def handle_audio(audio: Path):
 
     if duration >= LONG_AUDIO_THRESHOLD_SEC:
         products_subdir = PRODUCTS_DIR / audio.stem / audio.stem
-        prompt = build_meeting_prompt(products_subdir / audio.name, txt_path, duration)
+        glossary_table, _ = prepare_glossary_injection(txt_path)
+        prompt = build_meeting_prompt(
+            products_subdir / audio.name, txt_path, duration, glossary_table=glossary_table
+        )
         if not dispatch_to_cc1(prompt, kind="会议录音"):
             notify_relay_status("failed", duration_min)
             return False
@@ -1603,6 +1683,7 @@ def process_controlled_claim(claim: dict) -> bool:
             claim.get("minutes_protocol_version")
             or 2
         )
+        attempt_dir: Path | None = None
         if minutes_protocol_version >= 3:
             source_srt = Path(txt_path)
             if source_srt.suffix.lower() != ".srt":
@@ -1644,6 +1725,24 @@ def process_controlled_claim(claim: dict) -> bool:
                 notify_workbench_status(job_id, "failed", duration_min)
                 return False
 
+        if attempt_dir is None:
+            try:
+                attempt_dir = _control_prepare_attempt_dir(
+                    job_id,
+                    attempt_no=attempt_no,
+                    expected_worker=worker_id,
+                )
+            except Exception:
+                # 旧协议的草稿目录由 Agent 自己建；这里建不了只是不写回执。
+                log.warning("准备草稿目录失败，本场不写词典回执：%s", job_id, exc_info=True)
+        glossary_table, glossary_receipt = prepare_glossary_injection(
+            txt_path,
+            str(claim.get("project_hint") or "") or None,
+            receipt_dir=attempt_dir,
+            job_id=job_id,
+            attempt_no=attempt_no,
+        )
+
         if start_stage != "minutes_generating":
             _control_record_stage(
                 job_id,
@@ -1670,6 +1769,8 @@ def process_controlled_claim(claim: dict) -> bool:
                 else None
             ),
             minutes_protocol_version=minutes_protocol_version,
+            glossary_table=glossary_table,
+            glossary_receipt=glossary_receipt,
         )
         if not dispatch_to_cc1(prompt, kind="会议录音"):
             _control_fail(

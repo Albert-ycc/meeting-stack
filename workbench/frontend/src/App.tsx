@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type ApiClient } from "./api";
 import type {
   AttentionPayload,
+  AttributionSummary,
   HealthPayload,
   Job,
   LoadState,
@@ -10,7 +11,7 @@ import type {
   MeetingFilters,
   MeetingSummary,
   Project,
-  SearchItem,
+  SearchPayload,
   Tag,
 } from "./types";
 import { AppShell, type AppView } from "./components/AppShell";
@@ -23,6 +24,9 @@ import { LibraryPage } from "./components/LibraryPage";
 import { MeetingDetailPage } from "./components/MeetingDetailPage";
 import { OverviewPage } from "./components/OverviewPage";
 import { ProjectDetailPage } from "./components/ProjectDetailPage";
+import { ProjectGraph } from "./components/graph/ProjectGraph";
+import { ViewModeToggle } from "./components/graph/ViewModeToggle";
+import { readProjectMode, writeProjectMode, type ProjectViewMode } from "./components/graph/graphPrefs";
 import { ProjectsPage } from "./components/ProjectsPage";
 import { RequirementDetailPage } from "./components/RequirementDetailPage";
 import { RequirementsPage } from "./components/RequirementsPage";
@@ -76,6 +80,24 @@ const VIEW_LABELS: Record<AppView, string> = {
   projectDetail: "项目详情",
 };
 
+/**
+ * 项目详情的地址：清单是 #projects/<id>，关系图是 #projects/<id>/graph，选中节点时带 ?sel=m:<id>，
+ * 展开一场会时带 expand=<会议 id>
+ */
+function projectGraphPath(projectId: string, graph: boolean, selection: string | null, expanded: string | null = null) {
+  if (!graph) return `#projects/${projectId}`;
+  const params = [
+    expanded ? `expand=${encodeURIComponent(expanded)}` : "",
+    selection ? `sel=${selection.split(":").map(encodeURIComponent).join(":")}` : "",
+  ].filter(Boolean);
+  return `#projects/${projectId}/graph${params.length ? `?${params.join("&")}` : ""}`;
+}
+
+function expandParam(hash: string) {
+  const query = hash.split("?")[1];
+  return query ? new URLSearchParams(query).get("expand") : null;
+}
+
 export default function App({ apiClient = api }: AppProps) {
   const isMobile = useMobileBreakpoint();
   // 落地页是工作台（最近的会、待确认任务、处理中的录音）；按日期回忆某场会走侧栏「录音档案」。
@@ -95,6 +117,14 @@ export default function App({ apiClient = api }: AppProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [openProjectId, setOpenProjectId] = useState<string | null>(null);
+  // 项目详情看关系图还是清单；关系图里选中的节点（地址栏 ?sel=m:<id>）和深链目标
+  const [projectMode, setProjectMode] = useState<ProjectViewMode>("list");
+  const [graphSelection, setGraphSelection] = useState<string | null>(null);
+  const [graphFocus, setGraphFocus] = useState<string | null>(null);
+  // 关系图里展开的那场会；展开压一条历史，后退键收起
+  const [graphExpanded, setGraphExpanded] = useState<string | null>(null);
+  // 从关系图点进需求页时，面包屑写「关系图」，返回回到画布
+  const [requirementFromGraph, setRequirementFromGraph] = useState<{ projectId: string; selection: string } | null>(null);
   const [openRequirementId, setOpenRequirementId] = useState<string | null>(null);
   // 从项目详情页跳进词典时预选中的项目 chip；普通侧栏导航进词典时为 null（不预筛）。
   const [glossaryProjectId, setGlossaryProjectId] = useState<string | null>(null);
@@ -108,6 +138,7 @@ export default function App({ apiClient = api }: AppProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsAvailable, setJobsAvailable] = useState(false);
   const [attention, setAttention] = useState<AttentionPayload | null>(null);
+  const [attributionSummary, setAttributionSummary] = useState<AttributionSummary | null>(null);
   const [jobsState, setJobsState] = useState<LoadState>("loading");
   const [jobsMessage, setJobsMessage] = useState("");
   const [jobsStale, setJobsStale] = useState(false);
@@ -117,16 +148,22 @@ export default function App({ apiClient = api }: AppProps) {
   // applyHash 挂在 popstate 上，只能经 ref 读到最新的会议状态和处理函数。
   const openMeetingIdRef = useRef<string | null>(null);
   const detailDirtyRef = useRef(false);
-  const historyHandlersRef = useRef<{ openMeeting: (meetingId: string) => void; leaveMeeting: () => boolean }>({
+  const historyHandlersRef = useRef<{
+    openMeeting: (meetingId: string, seekMs?: number) => void;
+    leaveMeeting: () => boolean;
+  }>({
     openMeeting: () => {},
     leaveMeeting: () => true,
   });
   const [detailState, setDetailState] = useState<LoadState>("idle");
   const [detailError, setDetailError] = useState("");
   const [initialSeekMs, setInitialSeekMs] = useState(0);
+  const [initialDetailTab, setInitialDetailTab] = useState<"transcript" | "minutes">("transcript");
   const [query, setQuery] = useState("");
-  const [searchMode, setSearchMode] = useState<"exact" | "semantic">("exact");
-  const [searchItems, setSearchItems] = useState<SearchItem[]>([]);
+  // 检索结果页：提交时的搜索词和范围（"" 全部；"none" 没归项目的会；其他是项目 id）
+  const [searchedQuery, setSearchedQuery] = useState("");
+  const [searchScope, setSearchScope] = useState("");
+  const [searchResult, setSearchResult] = useState<SearchPayload | null>(null);
   const [searchState, setSearchState] = useState<LoadState>("idle");
   const [searchError, setSearchError] = useState("");
   const [searchActive, setSearchActive] = useState(false);
@@ -223,6 +260,16 @@ export default function App({ apiClient = api }: AppProps) {
     }
   }, [apiClient]);
 
+  // 归属汇总：工作台「N 场会等你选项目」、资料库「待归属 N」「像新项目 N」。拿不到就不显示。
+  const loadAttributionSummary = useCallback(async () => {
+    try {
+      const payload = await apiClient.attributionSummary?.();
+      if (payload) setAttributionSummary(payload);
+    } catch {
+      // 忽略：下一次刷新再取
+    }
+  }, [apiClient]);
+
   // 资料库「需要处理」：失败任务 + 隔离目录。拿不到时保留上一份，不影响资料库主体。
   const loadAttention = useCallback(async () => {
     try {
@@ -239,9 +286,21 @@ export default function App({ apiClient = api }: AppProps) {
     historySyncRef.current = true;
     const hash = window.location.hash;
     if (hash.startsWith("#meetings/")) {
-      const meetingId = decodeURIComponent(hash.slice("#meetings/".length));
-      if (meetingId && meetingId !== openMeetingIdRef.current) {
-        historyHandlersRef.current.openMeeting(meetingId);
+      const target = decodeURIComponent(hash.slice("#meetings/".length));
+      // 会议卡片里的时间点链接 #meetings/<id>@<秒>：打开这场会并从那一秒开始播放
+      const match = /^(.+?)(?:@(\d+(?:\.\d+)?))?$/.exec(target);
+      const meetingId = match?.[1] ?? "";
+      const seekMs = match?.[2] ? Math.round(Number(match[2]) * 1000) : 0;
+      if (match?.[2]) {
+        // 秒数用过就从地址栏去掉，同一个时间点的链接再点一次还能触发跳转
+        history.replaceState(
+          window.history.state,
+          "",
+          `${window.location.pathname}${window.location.search}#meetings/${encodeURIComponent(meetingId)}`,
+        );
+      }
+      if (meetingId && (meetingId !== openMeetingIdRef.current || seekMs)) {
+        historyHandlersRef.current.openMeeting(meetingId, seekMs);
       }
       return;
     }
@@ -258,9 +317,19 @@ export default function App({ apiClient = api }: AppProps) {
     }
     setTaskDrawerId(null);
     if (hash.startsWith("#projects/")) {
-      const projectId = decodeURIComponent(hash.slice("#projects/".length));
+      // #projects/<id> 是清单，#projects/<id>/graph?sel=m:<id> 是关系图并选中一个节点
+      const [pathPart, queryPart = ""] = hash.slice("#projects/".length).split("?");
+      const [rawId, sub] = pathPart.split("/");
+      const projectId = decodeURIComponent(rawId ?? "");
       if (projectId) {
+        const graphMode = sub === "graph";
+        const params = new URLSearchParams(queryPart);
+        const selection = graphMode ? params.get("sel") : null;
         setOpenProjectId(projectId);
+        setProjectMode(graphMode ? "graph" : "list");
+        setGraphSelection(selection);
+        setGraphFocus(selection);
+        setGraphExpanded(graphMode ? params.get("expand") : null);
         setView("projectDetail");
       }
     } else if (hash.startsWith("#requirements/")) {
@@ -322,13 +391,14 @@ export default function App({ apiClient = api }: AppProps) {
         await Promise.all([loadMeetings({}, 0), loadJobs()]);
         void loadGlossaryPending();
         void loadAttention();
+        void loadAttributionSummary();
       }
     };
     void initialize();
     return () => {
       active = false;
     };
-  }, [apiClient, applyHash, loadAttention, loadGlossaryPending, loadJobs, loadMeetings]);
+  }, [apiClient, applyHash, loadAttention, loadAttributionSummary, loadGlossaryPending, loadJobs, loadMeetings]);
 
   const hasActiveJobs = useMemo(
     () => jobs.some((job) => !terminalJobStates.has(job.state)),
@@ -419,7 +489,12 @@ export default function App({ apiClient = api }: AppProps) {
     }
   }, [apiClient]);
 
-  const openMeeting = (meetingId: string, seekMs = 0, fromHistory = false) => {
+  const openMeeting = (
+    meetingId: string,
+    seekMs = 0,
+    fromHistory = false,
+    tab: "transcript" | "minutes" = "transcript",
+  ) => {
     if (detailNavigationLocked) return;
     if (!fromHistory) historySyncRef.current = false;
     if (
@@ -430,6 +505,7 @@ export default function App({ apiClient = api }: AppProps) {
       return;
     }
     setInitialSeekMs(seekMs);
+    setInitialDetailTab(tab);
     // 检索结果不清：从会议返回时要回到刚才那页结果。
     setDetailDirty(false);
     setTaskDrawerId(null);
@@ -460,7 +536,7 @@ export default function App({ apiClient = api }: AppProps) {
   openMeetingIdRef.current = openMeetingId;
   detailDirtyRef.current = detailDirty;
   historyHandlersRef.current = {
-    openMeeting: (meetingId: string) => openMeeting(meetingId, 0, true),
+    openMeeting: (meetingId: string, seekMs = 0) => openMeeting(meetingId, seekMs, true),
     leaveMeeting: () => {
       if (detailNavigationLocked) return false;
       if (detailDirtyRef.current && !window.confirm("当前会议仍有未保存修改。放弃这些修改并离开吗？")) {
@@ -494,14 +570,67 @@ export default function App({ apiClient = api }: AppProps) {
     performNavigate(nextView);
   };
 
+  // 应用内打开项目：按这个项目上次选的视图（关系图或清单）；手机端只有清单
   const openProjectDetail = (projectId: string) => {
     setOpenProjectId(projectId);
+    setProjectMode(readProjectMode(projectId));
+    setGraphSelection(null);
+    setGraphFocus(null);
+    setGraphExpanded(null);
     performNavigate("projectDetail");
+  };
+
+  // 会议页、需求页的「在关系图里看」：打开项目的关系图并选中目标；目标在时间窗外时后端自动放宽
+  const openProjectGraph = (projectId: string, selection: string) => {
+    setOpenProjectId(projectId);
+    setProjectMode("graph");
+    setGraphSelection(selection);
+    setGraphFocus(selection);
+    setGraphExpanded(null);
+    performNavigate("projectDetail");
+  };
+
+  // 收起展开的会：展开是本应用压进来的那一条历史就后退，地址栏和视角一起回去
+  const changeGraphExpand = (meetingId: string | null) => {
+    if (meetingId === null && (window.history.state as { graphExpand?: boolean } | null)?.graphExpand) {
+      window.history.back();
+      return;
+    }
+    setGraphExpanded(meetingId);
+  };
+
+  const changeProjectMode = (mode: ProjectViewMode) => {
+    if (!openProjectId) return;
+    writeProjectMode(openProjectId, mode);
+    setProjectMode(mode);
+    setGraphSelection(null);
+    setGraphFocus(null);
+    setGraphExpanded(null);
   };
 
   const openRequirementDetail = (requirementId: string) => {
     setOpenRequirementId(requirementId);
+    setRequirementFromGraph(null);
     performNavigate("requirementDetail");
+  };
+
+  const openRequirementFromGraph = (requirementId: string) => {
+    if (!openProjectId) return;
+    setOpenRequirementId(requirementId);
+    performNavigate("requirementDetail");
+    setRequirementFromGraph({ projectId: openProjectId, selection: `r:${requirementId}` });
+  };
+
+  const leaveRequirement = () => {
+    const origin = requirementFromGraph;
+    setRequirementFromGraph(null);
+    if (!origin) {
+      navigate("requirements");
+      return;
+    }
+    // 是本应用压进来的历史就后退，地址栏里的 ?sel= 会把选中和视角一起带回来
+    if ((window.history.state as { app?: boolean } | null)?.app) window.history.back();
+    else openProjectGraph(origin.projectId, origin.selection);
   };
 
   // 项目详情页「在词典中查看 →」：跳去词典页并预选中这个项目的 chip。
@@ -521,7 +650,7 @@ export default function App({ apiClient = api }: AppProps) {
           ? `#glossary/project/${glossaryProjectId}`
           : "#glossary"
         : view === "projectDetail" && openProjectId
-          ? `#projects/${openProjectId}`
+          ? projectGraphPath(openProjectId, !isMobile && projectMode === "graph", graphSelection, graphExpanded)
           : view === "requirementDetail" && openRequirementId
             ? `#requirements/${openRequirementId}`
             : view === "overview"
@@ -533,9 +662,26 @@ export default function App({ apiClient = api }: AppProps) {
     historySyncRef.current = false;
     if (window.location.hash === path) return;
     const url = window.location.pathname + window.location.search + path;
-    if (fromHistory) history.replaceState(window.history.state, "", url);
+    // 关系图里换选中只改地址栏的 ?sel=，不压历史，后退键直接回到上一个页面；
+    // 展开一场会压一条（后退键收起），展开着换到前后场只替换
+    const sameBase = window.location.hash.split("?")[0] === path.split("?")[0];
+    const wasExpanded = expandParam(window.location.hash);
+    const nowExpanded = expandParam(path);
+    if (!fromHistory && sameBase && !wasExpanded && nowExpanded) {
+      history.pushState({ app: true, graphExpand: true }, "", url);
+    } else if (fromHistory || sameBase) history.replaceState(window.history.state, "", url);
     else history.pushState({ app: true }, "", url);
-  }, [glossaryProjectId, openMeetingId, openProjectId, openRequirementId, view]);
+  }, [
+    glossaryProjectId,
+    graphExpanded,
+    graphSelection,
+    isMobile,
+    openMeetingId,
+    openProjectId,
+    openRequirementId,
+    projectMode,
+    view,
+  ]);
 
   // 浏览器前进/后退或手动改地址栏 hash 时反向同步视图。
   useEffect(() => {
@@ -547,9 +693,12 @@ export default function App({ apiClient = api }: AppProps) {
     };
   }, [applyHash]);
 
-  const submitSearch = async () => {
+  // word：点「也可以搜」换一个词；scope：结果页换范围
+  const submitSearch = async (overrides: { word?: string; scope?: string } = {}) => {
     if (detailNavigationLocked) return;
-    const normalized = query.trim();
+    const normalized = (overrides.word ?? query).trim();
+    // 从别的页面重新搜时回到全部项目；在结果页里接着搜就沿用刚才选的范围
+    const scope = overrides.scope ?? (searchActive ? searchScope : "");
     if (!normalized) {
       setSearchActive(false);
       return;
@@ -564,17 +713,20 @@ export default function App({ apiClient = api }: AppProps) {
     const requestSequence = ++searchRequestSequence.current;
     historySyncRef.current = false;
     resetDetailState();
+    if (overrides.word !== undefined) setQuery(normalized);
+    setSearchScope(scope);
+    setSearchedQuery(normalized);
     setSearchActive(true);
     setSearchState("loading");
     setSearchError("");
     try {
-      const payload = await apiClient.search(normalized, searchMode);
+      const payload = await apiClient.search(normalized, scope || undefined);
       if (requestSequence !== searchRequestSequence.current) return;
-      setSearchItems(payload.items);
-      setSearchState(payload.items.length ? "ready" : "empty");
+      setSearchResult(payload);
+      setSearchState("ready");
     } catch (error) {
       if (requestSequence !== searchRequestSequence.current) return;
-      setSearchItems([]);
+      setSearchResult(null);
       setSearchState("error");
       setSearchError(error instanceof Error ? error.message : "检索失败");
     }
@@ -609,10 +761,6 @@ export default function App({ apiClient = api }: AppProps) {
         placeholder="搜索会议、原句或关键词"
         value={query}
       />
-      <div className="search-mode">
-        <button aria-pressed={searchMode === "exact"} disabled={detailNavigationLocked} onClick={() => setSearchMode("exact")} type="button">原句</button>
-        <button aria-pressed={searchMode === "semantic"} disabled={detailNavigationLocked} onClick={() => setSearchMode("semantic")} type="button">语义</button>
-      </div>
       <MagneticButton className="search-submit" disabled={detailNavigationLocked} type="submit">
         检索
       </MagneticButton>
@@ -630,6 +778,7 @@ export default function App({ apiClient = api }: AppProps) {
         apiClient={apiClient}
         canWriteTasks={!isMobile || mobileTaskWrite}
         initialSeekMs={initialSeekMs}
+        initialTab={initialDetailTab}
         isMobile={isMobile}
         meeting={detail}
         backLabel={searchActive ? "检索结果" : VIEW_LABELS[view]}
@@ -637,8 +786,19 @@ export default function App({ apiClient = api }: AppProps) {
         onClassificationSaved={refreshProjects}
         onDirtyChange={setDetailDirty}
         onNavigationLockChange={setDetailNavigationLocked}
+        onOpenProject={(projectId) => {
+          if (detailNavigationLocked) return;
+          if (detailDirty && !window.confirm("当前会议仍有未保存修改。放弃这些修改并离开吗？")) return;
+          openProjectDetail(projectId);
+        }}
+        onOpenInGraph={(projectId, meetingId) => {
+          if (detailNavigationLocked) return;
+          if (detailDirty && !window.confirm("当前会议仍有未保存修改。放弃这些修改并离开吗？")) return;
+          openProjectGraph(projectId, `m:${meetingId}`);
+        }}
         onOpenRequirement={openRequirementDetail}
         onOpenTasks={() => navigate("tasks")}
+        onGlossaryChanged={() => void loadGlossaryPending()}
         onTasksChanged={() => void loadPendingCount(true)}
         onReload={async () => {
           await Promise.all([
@@ -655,10 +815,13 @@ export default function App({ apiClient = api }: AppProps) {
     content = (
       <SearchPage
         error={searchError}
-        items={searchItems}
-        mode={searchMode}
-        onOpen={openMeeting}
-        query={query.trim()}
+        onOpen={(meetingId, startMs, tab) => openMeeting(meetingId, startMs, false, tab)}
+        onScopeChange={(scope) => void submitSearch({ word: searchedQuery, scope })}
+        onSearchWord={(word) => void submitSearch({ word })}
+        projects={projects}
+        query={searchedQuery}
+        result={searchResult}
+        scope={searchScope}
         state={searchState}
       />
     );
@@ -675,6 +838,13 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenLibrary={() => navigate("library")}
         onOpenMeeting={openMeeting}
         onOpenTasks={() => navigate("tasks")}
+        attributionSummary={attributionSummary}
+        canPickFolders={!isMobile}
+        onProjectsChanged={refreshProjects}
+        onOpenAttributionReview={() => {
+          applyFilters({ attribution: "needs_review" });
+          navigate("library");
+        }}
         onTasksChanged={() => void loadPendingCount(true)}
       />
     );
@@ -696,6 +866,19 @@ export default function App({ apiClient = api }: AppProps) {
         tags={tags}
         total={meetingTotal}
         attention={attention}
+        attributionSummary={attributionSummary}
+        onAssignProject={
+          isMobile
+            ? undefined
+            : async (meetingId, projectId) => {
+                await apiClient.updateMeeting(meetingId, { project_id: projectId });
+                await Promise.all([
+                  loadMeetings(filters, meetingOffset, true),
+                  loadAttributionSummary(),
+                  refreshProjects(),
+                ]);
+              }
+        }
         onAcknowledgeJob={
           isMobile
             ? undefined
@@ -726,7 +909,9 @@ export default function App({ apiClient = api }: AppProps) {
         apiClient={apiClient}
         canPickFolders={!isMobile}
         canWrite={!isMobile || mobileTaskWrite}
-        onBack={() => navigate("requirements")}
+        backLabel={requirementFromGraph ? "关系图" : undefined}
+        onBack={leaveRequirement}
+        onOpenInGraph={isMobile ? undefined : (projectId, requirementId) => openProjectGraph(projectId, `r:${requirementId}`)}
         onOpenMeeting={openMeeting}
         onOpenProject={openProjectDetail}
         onOpenTask={setTaskDrawerId}
@@ -759,24 +944,50 @@ export default function App({ apiClient = api }: AppProps) {
       />
     );
   } else if (view === "projectDetail" && openProjectId) {
-    content = (
-      <ProjectDetailPage
-        apiClient={apiClient}
-        key={openProjectId}
-        canPickFolders={!isMobile}
-        canWrite={!isMobile || mobileTaskWrite}
-        onBack={() => navigate("projects")}
-        onOpenGlossary={openGlossaryForProject}
-        onOpenMeeting={openMeeting}
-        onOpenRequirement={openRequirementDetail}
-        onOpenTask={setTaskDrawerId}
-        onProjectUpdated={refreshProjects}
-        onProjectsChanged={refreshProjects}
-        projectId={openProjectId}
-        projects={projects}
-        reloadKey={boardVersion}
-      />
-    );
+    content =
+      !isMobile && projectMode === "graph" ? (
+        <ProjectGraph
+          apiClient={apiClient}
+          expanded={graphExpanded}
+          focus={graphFocus}
+          key={openProjectId}
+          modeToggle={<ViewModeToggle mode="graph" onChange={changeProjectMode} />}
+          onBack={() => navigate("projects")}
+          onExpandChange={changeGraphExpand}
+          onOpenAttributionReview={() => {
+            applyFilters({ attribution: "needs_review" });
+            navigate("library");
+          }}
+          onOpenGlossary={openGlossaryForProject}
+          onOpenMeeting={openMeeting}
+          onOpenProject={openProjectDetail}
+          onOpenRequirement={openRequirementFromGraph}
+          onProjectsChanged={refreshProjects}
+          onSelectionChange={setGraphSelection}
+          projectId={openProjectId}
+          projects={projects}
+          selection={graphSelection}
+        />
+      ) : (
+        <ProjectDetailPage
+          apiClient={apiClient}
+          key={openProjectId}
+          modeToggle={isMobile ? undefined : <ViewModeToggle mode="list" onChange={changeProjectMode} />}
+          canPickFolders={!isMobile}
+          canWrite={!isMobile || mobileTaskWrite}
+          onBack={() => navigate("projects")}
+          onOpenGlossary={openGlossaryForProject}
+          onOpenMeeting={openMeeting}
+          onOpenRequirement={openRequirementDetail}
+          onOpenTask={setTaskDrawerId}
+          onProjectUpdated={refreshProjects}
+          onOpenProject={openProjectDetail}
+          onProjectsChanged={refreshProjects}
+          projectId={openProjectId}
+          projects={projects}
+          reloadKey={boardVersion}
+        />
+      );
   } else if (view === "jobs") {
     content = (
       <JobsPage
