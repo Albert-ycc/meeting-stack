@@ -3006,6 +3006,10 @@ def create_app(
     def cards_retire_all(_body: dict[str, Any] | None = None):
         return card_writer.retire_all()
 
+    @app.post("/api/cards/retire-backfilled")
+    def cards_retire_backfilled(_body: dict[str, Any] | None = None):
+        return card_writer.retire_backfilled()
+
     @app.post("/api/cards/enable")
     def cards_enable(_body: dict[str, Any] | None = None):
         return card_writer.enable()

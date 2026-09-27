@@ -115,6 +115,7 @@ def test_first_assignment_brings_draft_tasks_along(tmp_path):
         "origin_before": None,
         "left_task_ids": [],
         "closed_review_link_ids": [],
+        "card_synced_before": None,
     }
 
 

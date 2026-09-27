@@ -293,6 +293,8 @@ export interface ProjectCardsSummary {
   paused: boolean;
   /** 上线前、还没补写卡片的会（补写后为 0；旧后端没有） */
   history?: number;
+  /** 已写好、没改过的补写卡片（上线前的会）；旧后端没有 */
+  backfilled?: number;
 }
 
 /** 上线前的历史会议能补写多少张卡片 */

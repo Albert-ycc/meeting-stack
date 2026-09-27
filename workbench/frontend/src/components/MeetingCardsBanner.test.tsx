@@ -27,7 +27,7 @@ function client(banner: CardsBanner, overrides: Partial<ApiClient> = {}) {
   return {
     cardsBanner: vi.fn().mockResolvedValue(banner),
     answerCardsBackfill: vi.fn().mockResolvedValue({ answer: "yes" }),
-    retireAllCards: vi.fn().mockResolvedValue({ retired: 5, kept: [] }),
+    retireBackfilledCards: vi.fn().mockResolvedValue({ retired: 5, kept: [] }),
     dismissCardsNotice: vi.fn().mockResolvedValue({ ok: true }),
     pauseProjectCards: vi.fn().mockResolvedValue({ retired: 1 }),
     revealCards: vi.fn().mockResolvedValue({ path: "/x" }),
@@ -36,7 +36,7 @@ function client(banner: CardsBanner, overrides: Partial<ApiClient> = {}) {
 }
 
 describe("工作台会议卡片横幅", () => {
-  it("问要不要补写历史会议，写入后给［全部撤下］", async () => {
+  it("问要不要补写历史会议，写入后给［全部撤下］，只撤补写的", async () => {
     const apiClient = client(BACKFILL);
     render(<MeetingCardsBanner apiClient={apiClient} />);
 
@@ -52,8 +52,8 @@ describe("工作台会议卡片横幅", () => {
     expect(await screen.findByText(/接下来的扫描会把 186 场会写成卡片/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "全部撤下" }));
-    expect(apiClient.retireAllCards).toHaveBeenCalled();
-    expect(await screen.findByText("已撤下 5 张会议卡片，会议卡片已关闭")).toBeInTheDocument();
+    expect(apiClient.retireBackfilledCards).toHaveBeenCalled();
+    expect(await screen.findByText("已撤下所有项目补写的 5 张会议卡片；新会照常写卡片")).toBeInTheDocument();
   });
 
   it("［稍后］只收起横幅", async () => {
@@ -153,6 +153,37 @@ describe("项目页会议卡片汇总", () => {
     expect(screen.getByText("另有 7 场上线前的会没写卡片")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "补写历史卡片" }));
     expect(answerCardsBackfill).toHaveBeenCalledWith("yes");
+  });
+
+  it("补写完之后随时能撤下补写的卡片", async () => {
+    const retireBackfilledCards = vi.fn().mockResolvedValue({
+      retired: 180,
+      kept: [{ meeting_id: "m1", title: "周会", path: "/x/周会.md" }],
+      skipped: 5,
+    });
+    const onChanged = vi.fn();
+    render(
+      <ProjectCardsRow
+        apiClient={{ retireBackfilledCards } as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        cards={summary({ waiting_reason: null, waiting: 0, backfilled: 39 })}
+        onChanged={onChanged}
+        onCopy={vi.fn()}
+        projectId="p1"
+      />,
+    );
+
+    expect(screen.getByText("其中 39 张是给上线前的会补写的")).toBeInTheDocument();
+    // 撤的是所有项目的补写卡片，按钮上写明
+    await userEvent.click(screen.getByRole("button", { name: "撤下所有项目补写的卡片" }));
+    expect(retireBackfilledCards).toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        "已撤下所有项目补写的 180 张会议卡片，1 张你改过的留在原处，5 张所在的文件夹现在打不开（资料盘没连接或找不到），之后再点一次；新会照常写卡片",
+      ),
+    ).toBeInTheDocument();
+    expect(onChanged).toHaveBeenCalled();
   });
 
   it("不在 Mac 上打不开访达时退回复制文件夹路径", async () => {

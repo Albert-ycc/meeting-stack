@@ -14,6 +14,7 @@ from meeting_workbench.cards import (
 )
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database, utc_now
+from meeting_workbench.project_linking import confirm_meeting_project
 from meeting_workbench.service import MeetingService
 
 from .test_project_linking import make_project, seed_meeting
@@ -722,3 +723,284 @@ def test_a_folder_shared_by_two_projects_only_gets_the_first_projects_cards(tmp_
     with db.autocommit() as connection:
         assert writer.project_cards(connection, second)["waiting_reason"] == "root_shared"
         assert writer.meeting_card(connection, "vm-20260927-090000")["category"] == "stopped"
+
+
+# ---------------------------------------------------------------------- 待你选
+
+
+def _needs_review(db, meeting_id=MEETING):
+    """依据较弱的旧归属重新判断后拿不准：项目还挂着，批次记成待你选。"""
+    db.execute(
+        """INSERT INTO project_links(meeting_id, minutes_version_id, status, created_at)
+           VALUES (?, ?, 'needs_review', ?)""",
+        (meeting_id, f"mv-review-{meeting_id}", utc_now()),
+    )
+
+
+def test_a_meeting_waiting_for_your_pick_gets_no_card_until_confirmed(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    _needs_review(db)
+
+    writer.reconcile()
+
+    assert _card_files(root) == []
+    with db.autocommit() as connection:
+        card = writer.meeting_card(connection, MEETING)
+        assert (card["category"], card["reason"]) == ("waiting", "needs_review")
+        assert writer.project_cards(connection, project_id)["waiting"] == 0
+
+    with db.transaction() as connection:
+        confirm_meeting_project(connection, MEETING)
+    writer.sync_meeting(MEETING)
+
+    assert _card_files(root) == ["260926 初审规则沟通.md"]
+
+
+def test_a_written_card_stays_put_while_its_meeting_waits_for_your_pick(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    writer.reconcile()
+    card_path = root / CARDS / "260926 初审规则沟通.md"
+    before = card_path.read_text(encoding="utf-8")
+
+    _needs_review(db)
+    _touch(db)
+    writer.reconcile()
+
+    assert card_path.read_text(encoding="utf-8") == before
+    assert _card_row(db)["state"] == "synced"
+    with db.autocommit() as connection:
+        assert writer.project_cards(connection, project_id)["written"] == 1
+        assert writer.project_cards(connection, project_id)["waiting"] == 0
+
+    # 写过的卡片照常跟着项目的文件夹走：文件夹摘掉了，卡片也撤下，不留在没人管的地方
+    db.execute("DELETE FROM project_material_roots WHERE project_id=?", (project_id,))
+    writer.reconcile()
+    assert _card_files(root) == []
+    assert (_card_row(db)["state"], _card_row(db)["reason"]) == ("blocked", "no_root")
+
+
+def test_backfill_leaves_out_meetings_waiting_for_your_pick(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    _meeting(db, project_id, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00")
+    _needs_review(db, "vm-20260925-100000")
+    _make_historical(db)
+
+    with db.autocommit() as connection:
+        assert writer.backfill_banner(connection)["meetings"] == 1
+        assert writer.project_cards(connection, project_id)["history"] == 1
+    writer.answer_backfill("yes")
+    writer.reconcile()
+
+    assert _card_files(root) == ["260926 初审规则沟通.md"]
+
+
+# ---------------------------------------------------------------------- 逐字稿副本不覆盖
+
+
+def test_transcript_copy_never_overwrites_another_meetings_copy(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    writer.reconcile()
+    # 你在 Finder 里给卡片改了名，它的逐字稿副本还叫原来的名字
+    (root / CARDS / "260926 初审规则沟通.md").rename(root / CARDS / "初审-我的版本.md")
+    writer.reconcile()
+    first_tx = root / CARDS / "逐字稿" / "260926 初审规则沟通.txt"
+    before = first_tx.read_text(encoding="utf-8")
+
+    other = _meeting(db, project_id, meeting_id="vm-20260926-100000", when="2026-09-26T10:00:00")
+    db.execute("UPDATE segments SET text='另一场会的原话' WHERE version_id IN "
+               "(SELECT current_transcript_version_id FROM meetings WHERE id=?)", (other,))
+    writer.reconcile()
+
+    assert first_tx.read_text(encoding="utf-8") == before
+    row = _card_row(db, other)
+    assert row["rel_path"] == f"{CARDS}/260926 初审规则沟通 1000.md"
+    assert row["transcript_rel_path"] == f"{CARDS}/逐字稿/260926 初审规则沟通 1000.txt"
+    assert "另一场会的原话" in (root / row["transcript_rel_path"]).read_text(encoding="utf-8")
+
+
+def test_transcript_copy_never_overwrites_your_own_file(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    mine = root / CARDS / "逐字稿" / "260926 初审规则沟通.txt"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("我自己整理的逐字稿\n", encoding="utf-8")
+    _meeting(db, project_id)
+
+    writer.reconcile()
+
+    assert mine.read_text(encoding="utf-8") == "我自己整理的逐字稿\n"
+    assert _card_files(root) == ["260926 初审规则沟通 1430.md"]
+    assert _card_row(db)["transcript_rel_path"] == f"{CARDS}/逐字稿/260926 初审规则沟通 1430.txt"
+
+
+# ---------------------------------------------------------------------- 撤下补写的卡片
+
+
+def test_retiring_backfilled_cards_keeps_new_ones_and_can_be_redone(tmp_path):
+    db, settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00")
+    _meeting(db, project_id, meeting_id="vm-20260924-100000", title="旧评审", when="2026-09-24T10:00:00")
+    _make_historical(db)
+    _meeting(db, project_id)  # 上线后的新会
+    db.execute(
+        "UPDATE minutes_versions SET created_at='2999-02-01T00:00:00+00:00' WHERE id IN "
+        "(SELECT current_minutes_version_id FROM meetings WHERE id=?)",
+        (MEETING,),
+    )
+    writer.answer_backfill("yes")
+    writer.reconcile()
+    assert _card_files(root) == ["260924 旧评审.md", "260925 旧会.md", "260926 初审规则沟通.md"]
+    with db.autocommit() as connection:
+        assert writer.project_cards(connection, project_id)["backfilled"] == 2
+    edited = root / CARDS / "260924 旧评审.md"
+    edited.write_text(edited.read_text(encoding="utf-8").replace("讨论了", "我改了"), encoding="utf-8")
+
+    result = writer.retire_backfilled()
+
+    assert result["retired"] == 1
+    assert [item["path"] for item in result["kept"]] == [str(edited)]
+    assert _card_files(root) == ["260924 旧评审.md", "260926 初审规则沟通.md"]
+    writer.reconcile()
+    assert _card_files(root) == ["260924 旧评审.md", "260926 初审规则沟通.md"]
+    with db.autocommit() as connection:
+        summary = writer.project_cards(connection, project_id)
+        assert (summary["backfilled"], summary["history"]) == (0, 1)
+        assert writer.meeting_card(connection, "vm-20260925-100000")["reason"] == "not_backfilled"
+        assert writer.backfill_banner(connection) is None
+    # 新会照常写
+    _touch(db)
+    writer.reconcile()
+    assert "260926 初审规则沟通.md" in _card_files(root)
+
+    # 想要回来：再点一次［补写历史卡片］
+    writer.answer_backfill("yes")
+    writer.reconcile()
+    assert _card_files(root) == ["260924 旧评审.md", "260925 旧会.md", "260926 初审规则沟通.md"]
+
+
+def test_transcript_name_on_record_for_another_card_is_not_reused_even_if_the_file_is_gone(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    writer.reconcile()
+    # 你把卡片改了名，又删掉了它的逐字稿副本
+    (root / CARDS / "260926 初审规则沟通.md").rename(root / CARDS / "初审-我的版本.md")
+    (root / CARDS / "逐字稿" / "260926 初审规则沟通.txt").unlink()
+    writer.reconcile()
+
+    other = _meeting(db, project_id, meeting_id="vm-20260926-100000", when="2026-09-26T10:00:00")
+    writer.reconcile()
+
+    row = _card_row(db, other)
+    assert row["transcript_rel_path"] == f"{CARDS}/逐字稿/260926 初审规则沟通 1000.txt"
+    assert _card_row(db)["transcript_rel_path"] == f"{CARDS}/逐字稿/260926 初审规则沟通.txt"
+
+
+def test_deleting_a_card_recycles_its_transcript_copy_so_regenerating_keeps_the_name(tmp_path):
+    db, settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    writer.reconcile()
+    (root / CARDS / "260926 初审规则沟通.md").unlink()
+    _touch(db)
+    writer.reconcile()
+    assert _card_row(db)["state"] == "missing"
+    assert not (root / CARDS / "逐字稿" / "260926 初审规则沟通.txt").exists()
+    assert any(name.endswith(".txt") for name in _retired(settings))
+
+    MeetingService(db).rename_speaker(MEETING, "SPEAKER_00", "月总")
+    assert writer.rewrite(MEETING, "regenerate")["state"] == "synced"
+
+    assert _card_files(root) == ["260926 初审规则沟通.md"]
+    assert sorted(p.name for p in (root / CARDS / "逐字稿").iterdir()) == ["260926 初审规则沟通.txt"]
+    assert (root / CARDS / "逐字稿" / "260926 初审规则沟通.txt").read_text(encoding="utf-8").startswith(
+        "[00:00:00] 月总："
+    )
+
+
+def test_retiring_backfilled_cards_keeps_your_notes_for_later(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    _make_historical(db)
+    writer.answer_backfill("yes")
+    writer.reconcile()
+    card = root / CARDS / "260926 初审规则沟通.md"
+    card.write_text(card.read_text(encoding="utf-8") + "会后我补的一句\n", encoding="utf-8")
+
+    assert writer.retire_backfilled()["retired"] == 1
+    assert _card_files(root) == []
+    writer.answer_backfill("yes")
+    writer.reconcile()
+
+    assert card.read_text(encoding="utf-8").endswith("会后我补的一句\n")
+
+
+def test_retiring_backfilled_cards_also_forgets_cards_that_are_off_disk(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_a, root_a = _project(db, disk, "云图AI")
+    project_b, root_b = _project(db, disk, "数据中台")
+    _meeting(db, project_a)
+    _meeting(db, project_b, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00")
+    _make_historical(db)
+    writer.answer_backfill("yes")
+    writer.reconcile()
+    writer.pause_project(project_a)
+    assert _card_files(root_a) == []
+
+    assert writer.retire_backfilled()["retired"] == 1
+    writer.resume_project(project_a)
+    writer.reconcile_project(project_a)
+    writer.reconcile()
+
+    assert _card_files(root_a) == []
+    assert _card_files(root_b) == []
+
+
+def test_retiring_backfilled_cards_on_an_offline_disk_says_so(tmp_path, monkeypatch):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    _make_historical(db)
+    writer.answer_backfill("yes")
+    writer.reconcile()
+    monkeypatch.setattr(writer, "_root_state", lambda _root, _round: "root_offline")
+
+    result = writer.retire_backfilled()
+
+    assert (result["retired"], result["skipped"]) == (0, 1)
+    monkeypatch.undo()
+    # 连上之后再点一次就撤下了
+    assert writer.retire_backfilled()["retired"] == 1
+    assert _card_files(root) == []
+
+
+def test_retiring_backfilled_cards_leaves_your_parked_edited_card_to_come_back(tmp_path):
+    db, _settings, writer, disk = _env(tmp_path)
+    project_id, root = _project(db, disk, "云图AI")
+    _meeting(db, project_id)
+    _make_historical(db)
+    writer.answer_backfill("yes")
+    writer.reconcile()
+    card = root / CARDS / "260926 初审规则沟通.md"
+    card.write_text(card.read_text(encoding="utf-8").replace("讨论了", "我改了"), encoding="utf-8")
+    # 文件夹摘掉了：你改过的卡片先进回收区，能写时再搬回来
+    db.execute("DELETE FROM project_material_roots WHERE project_id=?", (project_id,))
+    writer.reconcile()
+    assert _card_row(db)["retired_edited"] == 1
+
+    writer.retire_backfilled()
+    _mount(db, project_id, root)
+    writer.reconcile()
+
+    assert _card_files(root) == ["260926 初审规则沟通.md"]
+    assert "我改了" in card.read_text(encoding="utf-8")
