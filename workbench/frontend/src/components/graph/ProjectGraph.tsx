@@ -4,7 +4,7 @@ import type { ApiClient } from "../../api";
 import { reassignNote } from "../../cardCopy";
 import type { Project } from "../../types";
 import { NoticeBanner, useNotice, type NoticeAction, type NoticeTone } from "../Notice";
-import { GraphCanvas, forgetGraphViews, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
+import { GraphCanvas, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
 import { FocusPanel } from "./FocusPanel";
 import { GraphPanel, clearBriefCache } from "./GraphPanel";
 import { GraphSearch } from "./GraphSearch";
@@ -23,6 +23,7 @@ import { readGraphWindow, recordGraphOpen, writeGraphWindow } from "./graphPrefs
 import { attentionOrder, layoutStarMap, mentionLabel, type StarLayout } from "./layout";
 import { MeetingFocusView } from "./MeetingFocusView";
 import { useMiniPlayer } from "./MiniPlayer";
+import { forgetViewportViews } from "./useGraphViewport";
 import "./ProjectGraph.css";
 
 /** 带［撤销］的提示多停一会儿，和会议页一致 */
@@ -167,7 +168,7 @@ function cachedGraph(projectId: string, window: GraphWindow | null, focus: strin
 export function forgetGraphCache() {
   graphCache.clear();
   rootsCache.clear();
-  forgetGraphViews();
+  forgetViewportViews();
   clearBriefCache();
 }
 

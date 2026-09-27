@@ -1,7 +1,4 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { select } from "d3-selection";
-import "d3-transition";
-import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from "d3-zoom";
 import {
   useCallback,
   useEffect,
@@ -33,17 +30,9 @@ import {
   type LaidNode,
   type StarLayout,
 } from "./layout";
+import { useGraphViewport } from "./useGraphViewport";
 import "./GraphCanvas.css";
 
-/** 画布上的视角按项目记住：进对象页再回来，选中和视角都还在。 */
-const savedViews = new Map<string, { x: number; y: number; k: number }>();
-
-export function forgetGraphViews() {
-  savedViews.clear();
-}
-
-const MIN_ZOOM = 0.3;
-const MAX_ZOOM = 2.5;
 const BASE_FONT = 13;
 const PANEL_W = 400;
 /** 超过这么多条讨论线就只在选中时画 */
@@ -257,13 +246,14 @@ export function GraphCanvas({
   onExpandMeeting,
   onOpenRequirement,
 }: GraphCanvasProps) {
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const zoomRef = useRef<ZoomBehavior<HTMLDivElement, unknown> | null>(null);
-  const [transform, setTransform] = useState<{ x: number; y: number; k: number }>(
-    () => savedViews.get(viewKey) ?? { x: 500, y: 320, k: 1 },
-  );
-  const transformRef = useRef(transform);
-  transformRef.current = transform;
+  // 平移缩放和全部项目概览共用一个 hook；视角按项目记住，进对象页再回来，选中和视角都还在
+  const { viewportRef, transform, fitView, zoomBy, reveal, toWorld } = useGraphViewport({
+    viewKey,
+    initialBounds: layout.focusBounds,
+    // 门口的按钮上按下不平移；会议节点按住是拖放，不是平移
+    ignorePointer: (target) =>
+      Boolean(target.closest?.(".graph-doorstep__actions") || (onDropMeeting && target.closest?.("[data-draggable]"))),
+  });
   const dragRef = useRef<DragState | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const suppressClickRef = useRef(false);
@@ -290,101 +280,10 @@ export function GraphCanvas({
     [graph.edges],
   );
 
-  const fitView = useCallback(
-    (box: Box, animate = false) => {
-      const viewport = viewportRef.current;
-      const behaviour = zoomRef.current;
-      if (!viewport || !behaviour) return;
-      const width = viewport.clientWidth || 1000;
-      const height = viewport.clientHeight || 600;
-      const pad = 32;
-      const k = Math.max(
-        MIN_ZOOM,
-        Math.min(1.25, (width - pad * 2) / Math.max(box.w, 1), (height - pad * 2) / Math.max(box.h, 1)),
-      );
-      const x = width / 2 - (box.x + box.w / 2) * k;
-      const y = height / 2 - (box.y + box.h / 2) * k;
-      const target = zoomIdentity.translate(x, y).scale(k);
-      const selection = select(viewport);
-      if (animate && !reduceMotion) selection.transition().duration(260).call(behaviour.transform, target);
-      else selection.call(behaviour.transform, target);
-    },
-    [reduceMotion],
-  );
-
-  // d3-zoom：拖空白处平移；触控板双指滑动（普通滚轮）平移，捏合或 Ctrl 滚动缩放
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    const behaviour = zoom<HTMLDivElement, unknown>()
-      .scaleExtent([MIN_ZOOM, MAX_ZOOM])
-      .clickDistance(6)
-      .filter((event: Event) => {
-        if (event.type === "wheel" || event.type === "dblclick") return false;
-        // 程序派发的鼠标事件没有 view，d3 拖拽要用它找 document
-        if (!(event as UIEvent).view) return false;
-        const target = event.target as HTMLElement | null;
-        if (target?.closest?.(".graph-doorstep__actions")) return false;
-        // 会议节点按住是拖放，不是平移
-        if (onDropMeeting && target?.closest?.("[data-draggable]")) return false;
-        return !(event as MouseEvent).button;
-      })
-      .on("zoom", (event: { transform: ZoomTransform }) => {
-        const next = { x: event.transform.x, y: event.transform.y, k: event.transform.k };
-        savedViews.set(viewKey, next);
-        setTransform(next);
-      });
-    zoomRef.current = behaviour;
-    const selection = select(viewport);
-    selection.call(behaviour);
-    const saved = savedViews.get(viewKey);
-    if (saved) selection.call(behaviour.transform, zoomIdentity.translate(saved.x, saved.y).scale(saved.k));
-    else fitView(layout.focusBounds);
-    const onWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      if (event.ctrlKey || event.metaKey) {
-        const factor = Math.pow(2, -event.deltaY * 0.01);
-        const rect = viewport.getBoundingClientRect();
-        behaviour.scaleBy(selection, factor, [event.clientX - rect.left, event.clientY - rect.top]);
-      } else {
-        const current = savedViews.get(viewKey) ?? { k: 1 };
-        behaviour.translateBy(selection, -event.deltaX / current.k, -event.deltaY / current.k);
-      }
-    };
-    viewport.addEventListener("wheel", onWheel, { passive: false });
-    return () => {
-      viewport.removeEventListener("wheel", onWheel);
-      selection.on(".zoom", null);
-    };
-    // 只在换项目时重新挂；布局变化不重置视角
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewKey]);
-
   // 选中的节点在屏幕外或被面板挡住时，平移到看得见的地方（深链进来、「← 上一个」、面板里点别的节点都会遇到）
   useEffect(() => {
-    const viewport = viewportRef.current;
-    const behaviour = zoomRef.current;
-    if (!viewport || !behaviour || !selectedNode) return;
-    const width = viewport.clientWidth;
-    const height = viewport.clientHeight;
-    if (!width || !height) return;
-    const margin = 24;
-    const right = width - (panelOpen ? PANEL_W + margin : 0) - margin;
-    const box = selectedNode.box;
-    const left = box.x * transform.k + transform.x;
-    const top = box.y * transform.k + transform.y;
-    const boxRight = left + box.w * transform.k;
-    const bottom = top + box.h * transform.k;
-    let dx = 0;
-    let dy = 0;
-    if (boxRight > right) dx = right - boxRight;
-    if (left + dx < margin) dx = margin - left;
-    if (bottom > height - margin) dy = height - margin - bottom;
-    if (top + dy < margin) dy = margin - top;
-    if (!dx && !dy) return;
-    const selection = select(viewport);
-    if (reduceMotion) behaviour.translateBy(selection, dx / transform.k, dy / transform.k);
-    else selection.transition().duration(220).call(behaviour.translateBy, dx / transform.k, dy / transform.k);
+    if (!selectedNode) return;
+    reveal(selectedNode.box, panelOpen ? PANEL_W + 24 : 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNode?.id, panelOpen]);
 
@@ -393,12 +292,6 @@ export function GraphCanvas({
     const timer = window.setTimeout(() => setDragHint(""), DRAG_HINT_MS);
     return () => window.clearTimeout(timer);
   }, [dragHint]);
-
-  const toWorld = (clientX: number, clientY: number) => {
-    const rect = viewportRef.current?.getBoundingClientRect();
-    const t = transformRef.current;
-    return { x: (clientX - (rect?.left ?? 0) - t.x) / t.k, y: (clientY - (rect?.top ?? 0) - t.y) / t.k };
-  };
 
   const endDrag = useCallback(
     (drop: boolean) => {
@@ -500,13 +393,6 @@ export function GraphCanvas({
   };
 
   const detail = labelDetailFor(transform.k);
-
-  const zoomBy = (factor: number) => {
-    const viewport = viewportRef.current;
-    const behaviour = zoomRef.current;
-    if (!viewport || !behaviour) return;
-    behaviour.scaleBy(select(viewport), factor);
-  };
 
   const focusNode = (id: string) => {
     const elements = viewportRef.current?.querySelectorAll<HTMLElement>("[data-node-id]") ?? [];
