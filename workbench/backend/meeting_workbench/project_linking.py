@@ -164,6 +164,9 @@ def reassign_meeting(
         raise RuntimeError("会议不存在")
     from_project_id = meeting["project_id"]
     origin_before = meeting["project_origin"]
+    card_before = connection.execute(
+        "SELECT synced_at FROM meeting_cards WHERE meeting_id=?", (meeting_id,)
+    ).fetchone()
     now = utc_now()
     connection.execute(
         "UPDATE meetings SET project_id=?, project_origin='manual', updated_at=? WHERE id=?",
@@ -222,6 +225,8 @@ def reassign_meeting(
         "moved_from": moved_from,
         "left_task_ids": [row["id"] for row in tasks_left],
         "closed_review_link_ids": closed,
+        # 改之前这场会写没写过卡片：撤销时还原，免得这次改归属才写出来的卡片跟着搬回去
+        "card_synced_before": card_before["synced_at"] if card_before else None,
     }
     if cue_hint:
         payload["cue_hint"] = cue_hint
@@ -347,6 +352,10 @@ def undo_reassign(connection: Any, meeting_id: str, *, actor: str = "user") -> d
         ).rowcount
         if changed:
             restored.append(task_id)
+    if "card_synced_before" in payload and payload["card_synced_before"] is None:
+        connection.execute(
+            "UPDATE meeting_cards SET synced_at=NULL WHERE meeting_id=?", (meeting_id,)
+        )
     reopened = [int(link_id) for link_id in payload.get("closed_review_link_ids") or []]
     if reopened:
         connection.execute(

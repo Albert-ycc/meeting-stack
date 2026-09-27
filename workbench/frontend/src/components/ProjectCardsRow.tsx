@@ -19,6 +19,16 @@ interface ProjectCardsRowProps {
 /** 给 Claude Code 的一句话：在项目文件夹里打开 Claude Code 时，先读这个 */
 export const CLAUDE_CODE_HINT = "会议记录在 ./声档会议记录/，先读 00 索引.md；原话在 逐字稿/ 里，时间戳是录音时间。";
 
+/** 撤下补写的卡片之后的提示（撤的是所有项目的补写卡片） */
+export function retiredBackfillMessage(result: { retired: number; kept: unknown[]; skipped?: number }) {
+  const skipped = result.skipped ?? 0;
+  if (!result.retired && !result.kept.length && !skipped) return "好的，不补写了；新会照常写卡片";
+  const parts = [`已撤下所有项目补写的 ${result.retired} 张会议卡片`];
+  if (result.kept.length) parts.push(`${result.kept.length} 张你改过的留在原处`);
+  if (skipped) parts.push(`${skipped} 张所在的文件夹现在打不开（资料盘没连接或找不到），之后再点一次`);
+  return `${parts.join("，")}；新会照常写卡片`;
+}
+
 const STOPPED_COPY: Partial<Record<NonNullable<ProjectCardsSummary["waiting_reason"]>, string>> = {
   root_missing: "找不到项目文件夹，会议卡片先存着",
   root_in_archive: "项目文件夹在归档目录里，声档不往那里写会议卡片",
@@ -39,6 +49,7 @@ export function ProjectCardsRow({
   const [message, setMessage] = useState("");
   const reason = cards.waiting_reason;
   const history = cards.history ?? 0;
+  const backfilled = cards.backfilled ?? 0;
 
   const run = async (work: () => Promise<string>) => {
     setBusy(true);
@@ -141,6 +152,24 @@ export function ProjectCardsRow({
               type="button"
             >
               补写历史卡片
+            </button>
+          )}
+        </div>
+      )}
+      {backfilled > 0 && reason !== "disabled" && (
+        <div className="project-cards__line">
+          <span>其中 {backfilled} 张是给上线前的会补写的</span>
+          {canWrite && (
+            <button
+              className="text-button"
+              disabled={busy}
+              onClick={() =>
+                void run(async () => retiredBackfillMessage(await apiClient.retireBackfilledCards()))
+              }
+              title="所有项目补写的卡片都移进回收区（你改过的留在原处，笔记会记下），以后不再补写；新会照常写卡片"
+              type="button"
+            >
+              撤下所有项目补写的卡片
             </button>
           )}
         </div>

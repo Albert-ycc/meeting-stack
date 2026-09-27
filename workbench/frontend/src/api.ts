@@ -398,6 +398,18 @@ export const api = {
       "POST",
       {},
     ),
+  /** 撤下补写的历史卡片：卡片照常开着，以后不再补写 */
+  retireBackfilledCards: () =>
+    write<{
+      retired: number;
+      kept: { meeting_id: string; title: string | null; path: string }[];
+      /** 在没连接的资料盘上、这次撤不了的 */
+      skipped?: number;
+    }>(
+      "/api/cards/retire-backfilled",
+      "POST",
+      {},
+    ),
   enableCards: () => write<{ ok: boolean }>("/api/cards/enable", "POST", {}),
   pauseProjectCards: (projectId: string) =>
     write<{ retired: number }>(`/api/projects/${encodeURIComponent(projectId)}/cards/pause`, "POST", {}),

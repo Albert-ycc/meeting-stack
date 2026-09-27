@@ -55,6 +55,48 @@ def test_reassigning_moves_the_card_and_undo_brings_it_back(tmp_path):
     assert _card_files(root_b) == []
 
 
+def test_undoing_a_pick_on_a_meeting_waiting_for_review_brings_its_card_back(tmp_path):
+    client, _settings, headers, db, disk, writer = _setup(tmp_path)
+    project_a, root_a = _project(db, disk, "云图AI")
+    project_b, root_b = _project(db, disk, "数据中台")
+    _meeting(db, project_a)
+    writer.reconcile()
+    db.execute(
+        """INSERT INTO project_links(meeting_id, minutes_version_id, status, created_at)
+           VALUES (?, 'mv-review', 'needs_review', ?)""",
+        (MEETING, utc_now()),
+    )
+
+    client.patch(f"/api/meetings/{MEETING}", json={"project_id": project_b}, headers=headers)
+    assert _card_files(root_b) == ["260926 初审规则沟通.md"]
+    client.post(f"/api/meetings/{MEETING}/project/undo", json={}, headers=headers)
+
+    assert _card_files(root_a) == ["260926 初审规则沟通.md"]
+    assert _card_files(root_b) == []
+
+
+def test_undoing_a_pick_does_not_leave_a_new_card_on_a_meeting_waiting_for_review(tmp_path):
+    client, _settings, headers, db, disk, writer = _setup(tmp_path)
+    project_a, root_a = _project(db, disk, "云图AI")
+    project_b, root_b = _project(db, disk, "数据中台")
+    _meeting(db, project_a)
+    db.execute(
+        """INSERT INTO project_links(meeting_id, minutes_version_id, status, created_at)
+           VALUES (?, 'mv-review', 'needs_review', ?)""",
+        (MEETING, utc_now()),
+    )
+    writer.reconcile()
+    assert _card_files(root_a) == []
+
+    client.patch(f"/api/meetings/{MEETING}", json={"project_id": project_b}, headers=headers)
+    assert _card_files(root_b) == ["260926 初审规则沟通.md"]
+    client.post(f"/api/meetings/{MEETING}/project/undo", json={}, headers=headers)
+
+    assert _card_files(root_a) == []
+    assert _card_files(root_b) == []
+    assert client.get(f"/api/meetings/{MEETING}/card").json()["reason"] == "needs_review"
+
+
 def test_unassigned_meeting_says_what_the_card_is_waiting_for(tmp_path):
     client, _settings, headers, db, disk, writer = _setup(tmp_path)
     project_id, root = _project(db, disk, "云图AI")
@@ -197,7 +239,15 @@ def test_card_status_alone_and_history_count_on_the_board(tmp_path):
     writer.reconcile()
 
     assert client.get(f"/api/meetings/{MEETING}/card").json()["category"] == "ok"
-    assert client.get(f"/api/projects/{project_id}/board").json()["cards"]["history"] == 0
+    board = client.get(f"/api/projects/{project_id}/board").json()["cards"]
+    assert (board["history"], board["backfilled"]) == (0, 1)
+
+    # 写完后随时能撤下补写的卡片：卡片照常开着，只是这些会回到「没补写」
+    retired = client.post("/api/cards/retire-backfilled", json={}, headers=headers).json()
+    assert (retired["retired"], retired["kept"]) == (1, [])
+    board = client.get(f"/api/projects/{project_id}/board").json()["cards"]
+    assert (board["history"], board["backfilled"], board["waiting_reason"]) == (1, 0, None)
+    assert client.get(f"/api/meetings/{MEETING}/card").json()["reason"] == "not_backfilled"
 
 
 def test_reassigning_while_the_scanner_reconciles_leaves_one_card(tmp_path):

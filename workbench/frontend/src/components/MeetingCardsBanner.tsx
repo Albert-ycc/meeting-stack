@@ -4,6 +4,7 @@ import type { ApiClient } from "../api";
 import type { CardsBanner } from "../types";
 import { FolderIcon } from "./FolderIcon";
 import { NoticeBanner, useNotice } from "./Notice";
+import { retiredBackfillMessage } from "./ProjectCardsRow";
 import "./FolderSuggestionBanner.css";
 import "./MeetingCardsBanner.css";
 
@@ -70,23 +71,24 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
       setBanner((current) => (current ? { ...current, backfill: null } : current));
       setOpen(false);
       if (value === "yes") {
-        // 带［全部撤下］，多停一会儿
-        setNotice(`好的，接下来的扫描会把 ${backfill?.meetings ?? 0} 场会写成卡片`, "success", 15_000);
+        // 带［全部撤下］，多停一会儿；写完之后在项目页的材料区也能撤下
+        setNotice(
+          `好的，接下来的扫描会把 ${backfill?.meetings ?? 0} 场会写成卡片；写完后想撤下，在项目页的材料区点一下就行`,
+          "success",
+          15_000,
+        );
         setRetireOffer(true);
       } else if (value === "no") {
         setNotice("好的，先不补写；以后想补写，在项目页的材料区点一下就行");
       }
     });
 
-  const retireAll = () =>
+  // 只撤补写的历史卡片，新会照常写（关掉整个会议卡片是另一回事）
+  const retireBackfilled = () =>
     run(async () => {
-      const result = await apiClient.retireAllCards();
+      const result = await apiClient.retireBackfilledCards();
       setRetireOffer(false);
-      setNotice(
-        result.kept.length
-          ? `已撤下 ${result.retired} 张会议卡片，${result.kept.length} 张你改过的留在原处；会议卡片已关闭`
-          : `已撤下 ${result.retired} 张会议卡片，会议卡片已关闭`,
-      );
+      setNotice(retiredBackfillMessage(result));
     });
 
   if (notices.length > 0) {
@@ -184,7 +186,7 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
   return (
     <NoticeBanner notice={notice} onDismiss={dismissNotice}>
       {retireOffer && notice?.tone === "success" && (
-        <button className="text-button action-banner__undo" disabled={busy} onClick={() => void retireAll()} type="button">
+        <button className="text-button action-banner__undo" disabled={busy} onClick={() => void retireBackfilled()} type="button">
           全部撤下
         </button>
       )}

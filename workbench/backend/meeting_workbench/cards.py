@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .attribution import ATTRIBUTION_STATE_SQL, LATEST_LINK_JOIN
 from .config import Settings
 from .db import Database, utc_now
 from .importer import ArchiveImporter
@@ -361,13 +362,6 @@ def stem_candidates(meeting: dict[str, Any]) -> list[str]:
     last = candidates[-1]
     candidates.extend(f"{last}-{index}" for index in range(2, 50))
     return candidates
-
-
-def _pick_stem(candidates: list[str], taken: set[str]) -> str:
-    for stem in candidates:
-        if f"{stem}.md".casefold() not in taken:
-            return stem
-    return candidates[-1]
 
 
 def _read_meeting_id(path: Path) -> str | None:
@@ -787,8 +781,16 @@ class CardWriter:
             return None, DISABLED
         if snapshot.minutes is None:
             return None, WAITING_MINUTES
+        if (
+            snapshot.link_status == "needs_review"
+            and meeting.get("project_origin") != "manual"
+            and (not meeting["project_id"] or snapshot.card.synced_at is None)
+        ):
+            # 待你选（包括依据较弱、重新判断后还挂着原项目的会）：你选定之前不写新卡片。
+            # 已经写过卡片的照常跟着会议走（原处更新、换项目时搬、撤销时搬回来）。
+            return None, NEEDS_REVIEW
         if not meeting["project_id"]:
-            return None, NEEDS_REVIEW if snapshot.link_status == "needs_review" else WAITING_PROJECT
+            return None, WAITING_PROJECT
         if not snapshot.eligible:
             return None, NOT_BACKFILLED
         if meeting["project_id"] in snapshot.paused:
@@ -920,7 +922,15 @@ class CardWriter:
         if not path.is_file():
             claimed = round_.index(cards_dir).get(card.meeting_id)
             if not claimed:
-                # 卡片被移走或删了：只对当前项目有效，不复活。
+                # 卡片被移走或删了：只对当前项目有效，不复活。它的逐字稿副本（内容没被动过的）
+                # 一起进回收区，免得以后重新生成时占着名字。
+                if card.transcript_rel_path and card.transcript_fp:
+                    tx = root / card.transcript_rel_path
+                    try:
+                        if tx.is_file() and _sha256(tx) == card.transcript_fp:
+                            self._retire_file(tx, card.meeting_id)
+                    except OSError as error:
+                        logger.warning("逐字稿副本移进回收区失败 %s：%s", card.meeting_id, error)
                 card.clear_location()
                 card.project_id = project_id
                 card.state = MISSING
@@ -933,17 +943,24 @@ class CardWriter:
         auto, notes = split_card(text)
         current_fp = content_fp(auto)
 
+        transcript = self._transcript_text(snapshot.meeting)
+        taken = round_.names(cards_dir) - {path.name.casefold()}
         if card.user_named:
             stem = path.stem
+            # 你改过名的卡片：逐字稿副本沿用原来的名字；还没有副本（或那个名字也记在别的卡片名下）
+            # 时照卡片名取，撞了别的会的就往后排
+            recorded = card.transcript_rel_path
+            if recorded and Path(recorded).name.casefold() not in self._transcripts_of_others(
+                card, card.root_path
+            ):
+                tx_stem = Path(recorded).stem
+            else:
+                tx_stem = self._free_stem(
+                    card, card.root_path, [stem, *stem_candidates(snapshot.meeting)], taken, transcript
+                )
         else:
-            taken = round_.names(cards_dir) - {path.name.casefold()}
-            stem = _pick_stem(stem_candidates(snapshot.meeting), taken)
-        tx_stem = (
-            Path(card.transcript_rel_path).stem
-            if card.user_named and card.transcript_rel_path
-            else stem
-        )
-        transcript = self._transcript_text(snapshot.meeting)
+            stem = self._free_stem(card, card.root_path, stem_candidates(snapshot.meeting), taken, transcript)
+            tx_stem = stem
         tx_rel = f"{TRANSCRIPTS_DIR_NAME}/{tx_stem}.txt" if transcript else None
         new_auto = render_card(self._view(snapshot, root, tx_rel))
         new_fp = content_fp(new_auto)
@@ -1064,15 +1081,18 @@ class CardWriter:
         transcript = self._transcript_text(snapshot.meeting)
         if moving is not None:
             # 你改过的卡片整份原样搬过来，名字不撞就沿用原来的。
+            candidates = stem_candidates(snapshot.meeting)
             name = moving.name if moving.name.casefold() not in taken else None
-            stem = Path(name).stem if name else _pick_stem(stem_candidates(snapshot.meeting), taken)
+            stem = Path(name).stem if name else self._free_stem(card, target, candidates, taken, "")
+            tx_stem = self._free_stem(card, target, [stem, *candidates], taken, transcript)
             name = f"{stem}.md"
             self._assert_card_dir(root, cards_dir)
             _move_file(moving, cards_dir / name)
             card.state = USER_EDITED
             card.user_named = 1
         else:
-            stem = _pick_stem(stem_candidates(snapshot.meeting), taken)
+            stem = self._free_stem(card, target, stem_candidates(snapshot.meeting), taken, transcript)
+            tx_stem = stem
             name = f"{stem}.md"
             tx_rel = f"{TRANSCRIPTS_DIR_NAME}/{stem}.txt" if transcript else None
             auto = render_card(self._view(snapshot, root, tx_rel))
@@ -1092,7 +1112,7 @@ class CardWriter:
         card.synced_at = utc_now()
         card.transcript_rel_path = None
         card.transcript_fp = None
-        self._sync_transcript(card, root, cards_dir, stem, transcript, round_)
+        self._sync_transcript(card, root, cards_dir, tx_stem, transcript, round_)
         round_.touched.add((project_id, target))
         label = self._label(target, card.rel_path)
         if action["action"] == "retired":
@@ -1117,6 +1137,12 @@ class CardWriter:
         if card.transcript_rel_path == rel and card.transcript_fp == fp:
             return
         tx_dir = cards_dir / TRANSCRIPTS_DIR_NAME
+        target = tx_dir / f"{stem}.txt"
+        own = (card.transcript_rel_path or "").casefold() == rel.casefold()
+        if not own and target.is_file() and _sha256(target) != fp:
+            # 同名的 .txt 不是这张卡的（别的会的逐字稿副本，或你放的文件）：不覆盖，这次不写副本
+            logger.warning("逐字稿副本「%s」已被别的文件占用，不覆盖", target)
+            return
         if not tx_dir.exists():
             self._assert_card_dir(root, cards_dir)
             tx_dir.mkdir(exist_ok=True)
@@ -1125,10 +1151,71 @@ class CardWriter:
         old = card.transcript_rel_path
         if old and old != rel:
             old_path = root / old
-            if old_path.is_file() and not _same_file(old_path, tx_dir / f"{stem}.txt"):
+            # 只删内容还是自己写的那份的旧副本；被改过、或已经被别的会占了的留着不动
+            if (
+                old_path.is_file()
+                and not _same_file(old_path, tx_dir / f"{stem}.txt")
+                and card.transcript_fp is not None
+                and _sha256(old_path) == card.transcript_fp
+            ):
                 old_path.unlink()
         card.transcript_rel_path = rel
         card.transcript_fp = fp
+
+    def _transcripts_of_others(self, card: _Card, root: str) -> set[str]:
+        """同一个根目录下，记在别的卡片名下的逐字稿副本（文件名，casefold）。"""
+        with self.db.autocommit() as connection:
+            return {
+                Path(row["transcript_rel_path"]).name.casefold()
+                for row in connection.execute(
+                    """SELECT transcript_rel_path FROM meeting_cards
+                        WHERE root_path=? AND meeting_id!=? AND transcript_rel_path IS NOT NULL""",
+                    (root, card.meeting_id),
+                ).fetchall()
+            }
+
+    def _free_stem(
+        self,
+        card: _Card,
+        root: str,
+        candidates: list[str],
+        taken: set[str],
+        transcript: str,
+    ) -> str:
+        """按顺序取第一个没被占用的名字：卡片 .md 不撞，逐字稿/ 里同名的 .txt 也得没被占。
+
+        记在别的卡片名下的副本（哪怕文件已经不在）一律算占用；磁盘上同名的 .txt 是这张卡
+        自己的副本、或内容和这次要写的一模一样（库恢复过）时不算占用。
+        """
+        txt: dict[str, Path] = {}
+        others: set[str] = set()
+        if transcript:
+            try:
+                txt = {
+                    entry.name.casefold(): Path(entry.path)
+                    for entry in os.scandir(Path(root) / CARDS_DIR_NAME / TRANSCRIPTS_DIR_NAME)
+                    if entry.name.casefold().endswith(".txt")
+                }
+            except OSError:
+                txt = {}
+            others = self._transcripts_of_others(card, root)
+        own = Path(card.transcript_rel_path).name.casefold() if card.transcript_rel_path else None
+        fp = hashlib.sha256(transcript.encode("utf-8")).hexdigest() if transcript else None
+        for stem in candidates:
+            if f"{stem}.md".casefold() in taken:
+                continue
+            key = f"{stem}.txt".casefold()
+            if key in others:
+                continue
+            existing = txt.get(key)
+            if existing is not None and key != own:
+                try:
+                    if _sha256(existing) != fp:
+                        continue
+                except OSError:
+                    continue
+            return stem
+        return candidates[-1]
 
     # ------------------------------------------------------------ 写库
 
@@ -1471,11 +1558,14 @@ class CardWriter:
         }
         since = read_state(connection, SINCE_KEY) or ""
         backfill_yes = read_state(connection, BACKFILL_KEY) == "yes"
+        # 待你选、还没写过卡片的会不算在等（选定之前不写）
         eligible = connection.execute(
-            """SELECT COUNT(*) AS n FROM meetings m
+            f"""SELECT COUNT(*) AS n FROM meetings m
                  JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
                  LEFT JOIN meeting_cards c ON c.meeting_id = m.id
-                WHERE m.project_id=? AND (? OR mv.created_at >= ? OR c.synced_at IS NOT NULL)""",
+                 {LATEST_LINK_JOIN}
+                WHERE m.project_id=? AND (? OR mv.created_at >= ? OR c.synced_at IS NOT NULL)
+                  AND (({ATTRIBUTION_STATE_SQL}) != 'needs_review' OR c.synced_at IS NOT NULL)""",
             (project_id, 1 if backfill_yes else 0, since),
         ).fetchone()["n"]
         written = counts.get(SYNCED, 0) + counts.get(USER_EDITED, 0)
@@ -1483,12 +1573,23 @@ class CardWriter:
         history = 0
         if not backfill_yes:
             history = connection.execute(
-                """SELECT COUNT(*) AS n FROM meetings m
+                f"""SELECT COUNT(*) AS n FROM meetings m
                      JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
                      LEFT JOIN meeting_cards c ON c.meeting_id = m.id
-                    WHERE m.project_id=? AND mv.created_at < ? AND c.synced_at IS NULL""",
+                     {LATEST_LINK_JOIN}
+                    WHERE m.project_id=? AND mv.created_at < ? AND c.synced_at IS NULL
+                      AND ({ATTRIBUTION_STATE_SQL}) != 'needs_review'""",
                 (project_id, since),
             ).fetchone()["n"]
+        # 已写好、没改过的补写卡片（上线前的会）：项目页给［撤下补写的卡片］
+        backfilled = connection.execute(
+            """SELECT COUNT(*) AS n FROM meeting_cards c
+                 JOIN meetings m ON m.id = c.meeting_id
+                 JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
+                WHERE c.project_id=? AND c.state='synced' AND c.root_path IS ?
+                  AND mv.created_at < ?""",
+            (project_id, root, since),
+        ).fetchone()["n"]
         paused = project_id in paused_projects(connection)
         reason = None
         if not cards_enabled(connection):
@@ -1513,6 +1614,7 @@ class CardWriter:
             "waiting_reason": reason,
             "paused": paused,
             "history": history,
+            "backfilled": backfilled,
         }
 
     # ------------------------------------------------------------ 你的操作
@@ -1574,6 +1676,30 @@ class CardWriter:
                 write_state(connection, ENABLED_KEY, "0")
         return self._retire_where("1=1", (), DISABLED)
 
+    def retire_backfilled(self) -> dict[str, Any]:
+        """［撤下补写的卡片］：补写的上线前的会，没改过的卡片移进回收区，改过的留在原处并列出来。
+
+        以后不再补写（等于回答「先不要」），新会照常写卡片；想要回来，再点一次［补写历史卡片］。
+        """
+        historical = """SELECT m2.id FROM meetings m2
+                    JOIN minutes_versions mv2 ON mv2.id = m2.current_minutes_version_id
+                   WHERE mv2.created_at < ?"""
+        with _LOCK:
+            with self.db.transaction() as connection:
+                write_state(connection, BACKFILL_KEY, "no")
+                since = read_state(connection, SINCE_KEY) or ""
+                # 眼下不在盘上的补写卡片（暂停、没挂文件夹、等插盘……）也忘掉「写过」，以后不再补回来
+                connection.execute(
+                    f"""UPDATE meeting_cards SET synced_at=NULL, dirty = dirty + 1, updated_at=?
+                         WHERE rel_path IS NULL AND state NOT IN ('user_edited', 'missing')
+                           AND retired_edited = 0
+                           AND synced_at IS NOT NULL AND meeting_id IN ({historical})""",
+                    (utc_now(), since),
+                )
+        return self._retire_where(
+            f"c.meeting_id IN ({historical})", (since,), NOT_BACKFILLED, forget_sync=True
+        )
+
     def enable(self) -> dict[str, Any]:
         with _LOCK:
             with self.db.transaction() as connection:
@@ -1581,8 +1707,16 @@ class CardWriter:
                 connection.execute("UPDATE meeting_cards SET dirty = dirty + 1")
         return {"ok": True}
 
-    def _retire_where(self, where: str, params: tuple[Any, ...], reason: str) -> dict[str, Any]:
+    def _retire_where(
+        self, where: str, params: tuple[Any, ...], reason: str, *, forget_sync: bool = False
+    ) -> dict[str, Any]:
+        """撤下符合条件的卡片。forget_sync：连「写过」也忘掉，这些会不再算作要写卡片的会。
+
+        没改过的移进回收区，「我的笔记」记下来，以后重写时带回去；改过的留在原处并列出来；
+        盘不在、文件夹找不到的这次撤不了，只计数（skipped）。
+        """
         retired = 0
+        skipped = 0
         kept: list[dict[str, Any]] = []
         round_ = _Round()
         with _LOCK:
@@ -1601,17 +1735,32 @@ class CardWriter:
                 card = _Card.from_row(row["meeting_id"], row)
                 path = card.path()
                 if path is None or self._root_state(card.root_path or "", round_) != ROOT_ONLINE:
+                    skipped += 1
                     continue
+                notes = None
                 try:
+                    if not path.is_file():
+                        # 你在 Finder 里改了名：按会议 id 认回来再撤
+                        cards_dir = Path(card.root_path or "") / CARDS_DIR_NAME
+                        claimed = round_.index(cards_dir).get(card.meeting_id) if cards_dir.is_dir() else None
+                        if claimed:
+                            path = cards_dir / claimed
                     if not path.is_file():
                         edited = False
                     else:
-                        auto, _notes = split_card(path.read_text(encoding="utf-8", errors="replace"))
+                        auto, notes = split_card(path.read_text(encoding="utf-8", errors="replace"))
                         edited = card.state == USER_EDITED or content_fp(auto) not in card.written_fps
                     if edited:
                         kept.append(
                             {"meeting_id": card.meeting_id, "title": row.get("title"), "path": str(path)}
                         )
+                        # 记下你改过：留在原处，也不再算作能撤下的卡片
+                        with self.db.transaction() as connection:
+                            connection.execute(
+                                """UPDATE meeting_cards SET state='user_edited', updated_at=?
+                                    WHERE meeting_id=? AND state='synced'""",
+                                (utc_now(), card.meeting_id),
+                            )
                         continue
                     if path.is_file():
                         self._retire_file(path, card.meeting_id)
@@ -1629,9 +1778,11 @@ class CardWriter:
                         """UPDATE meeting_cards
                               SET state='retired', reason=?, root_path=NULL, rel_path=NULL,
                                   transcript_rel_path=NULL, transcript_fp=NULL, user_named=0,
+                                  carry_notes=?,
+                                  synced_at=CASE WHEN ? THEN NULL ELSE synced_at END,
                                   updated_at=?
                             WHERE meeting_id=?""",
-                        (reason, utc_now(), card.meeting_id),
+                        (reason, notes or None, 1 if forget_sync else 0, utc_now(), card.meeting_id),
                     )
             for _project_id, root in round_.touched:
                 index = Path(root) / CARDS_DIR_NAME / INDEX_NAME
@@ -1643,15 +1794,16 @@ class CardWriter:
                     self._index_fps.pop(str(index), None)
             if reason != DISABLED:
                 self._refresh_indexes(round_)
-        return {"retired": retired, "kept": kept}
+        return {"retired": retired, "kept": kept, "skipped": skipped}
 
     # ------------------------------------------------------------ 历史补写
 
     def backfill_preview(self, connection: Any) -> dict[str, Any]:
         """上线前的历史会议能补写多少：{meetings, projects, ai_attributed, no_folder_projects, top[]}。"""
         since = read_state(connection, SINCE_KEY) or ""
+        # 待你选的会不补写：选定项目之后才写卡片
         rows = connection.execute(
-            """SELECT m.project_id, p.name AS project_name,
+            f"""SELECT m.project_id, p.name AS project_name,
                       COUNT(*) AS n, SUM(CASE WHEN m.project_origin='ai' THEN 1 ELSE 0 END) AS ai,
                       (SELECT r.path FROM project_material_roots r WHERE r.project_id = m.project_id
                         ORDER BY r.created_at, r.id LIMIT 1) AS root
@@ -1659,7 +1811,9 @@ class CardWriter:
                  JOIN projects p ON p.id = m.project_id
                  JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
                  LEFT JOIN meeting_cards c ON c.meeting_id = m.id
+                 {LATEST_LINK_JOIN}
                 WHERE mv.created_at < ? AND (c.meeting_id IS NULL OR c.synced_at IS NULL)
+                  AND ({ATTRIBUTION_STATE_SQL}) != 'needs_review'
                 GROUP BY m.project_id
                 ORDER BY n DESC, p.name""",
             (since,),
@@ -1704,6 +1858,11 @@ class CardWriter:
                 write_state(connection, BACKFILL_SNOOZE_KEY, until)
             elif answer in ("yes", "no"):
                 write_state(connection, BACKFILL_KEY, answer)
+                if answer == "yes":
+                    # 已经有记录、因为没补写而没写的（包括撤下过的补写卡片）：下一轮扫描照常补写
+                    connection.execute(
+                        "UPDATE meeting_cards SET dirty = dirty + 1 WHERE reason=?", (NOT_BACKFILLED,)
+                    )
             else:
                 raise CardsError("只能回答补写、不补写或稍后")
         return {"answer": answer}
