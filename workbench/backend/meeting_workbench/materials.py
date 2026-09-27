@@ -16,6 +16,7 @@ from typing import Any
 
 from .config import Settings
 from .db import Database, utc_now
+from .material_rules import hidden_in_browse
 from .service import ConflictError, NotFoundError
 
 # 单文件夹最多数到的文件数；超过即标 capped，界面显示「2000+」。
@@ -34,7 +35,7 @@ ROOT_VOLUME_OFFLINE = "volume_offline"
 
 
 def _is_skipped(name: str) -> bool:
-    return name.startswith(".") or name in _SKIP_NAMES
+    return hidden_in_browse(name) or name in _SKIP_NAMES
 
 
 def _iso_mtime(mtime: float | None) -> str | None:

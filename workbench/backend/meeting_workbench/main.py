@@ -16,7 +16,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import Settings
 from .backup import BackupManager
@@ -61,6 +61,17 @@ from . import name_actions, name_hints, project_folders
 from . import overview as overview_module
 from . import file_mentions
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
+from . import material_content as material_content_module
+from . import material_media as material_media_module
+from .material_media import MaterialMedia
+from .extract_worker import TextExtractor
+from .material_rules import IMAGE_EXTS, LAYER_IMAGE, LAYER_PDF, LAYER_TEXT, PDF_EXTS, PLAYABLE_TYPES
+from . import material_previews, material_status
+from . import material_fts, material_graph, material_search
+from . import material_vectors as material_vectors_module
+from .ocr_engines import ImageExtractor, OcrEngines, PdfExtractor
+from .busy import BusySignal
+from .material_helpers import StopFlag, cleanup_leftovers
 from .project_folders import folder_matches
 from .project_names import (
     SimilarProjectError,
@@ -479,13 +490,24 @@ class BatchConfirmInput(BaseModel):
 
 
 class DeliverableInput(BaseModel):
+    """url 和 file_id 二选一（3g：关系图文件面板按 file_id 标为交付物，kind、url 由服务端填）。"""
+
     model_config = ConfigDict(extra="forbid")
 
-    kind: str = Field(max_length=16)
-    url: str = Field(min_length=1, max_length=2000)
+    kind: str | None = Field(default=None, max_length=16)
+    url: str | None = Field(default=None, min_length=1, max_length=2000)
+    file_id: int | None = Field(default=None, ge=1)
     title: str = Field(default="", max_length=200)
     note: str = Field(default="", max_length=2000)
     mark_done: bool = False
+
+    @model_validator(mode="after")
+    def _one_target(self) -> "DeliverableInput":
+        if (self.url is None) == (self.file_id is None):
+            raise ValueError("url 和 file_id 要给且只给一个")
+        if self.url is not None and not self.kind:
+            raise ValueError("给 url 时要写交付物类型")
+        return self
 
 
 class ReExtractInput(BaseModel):
@@ -680,7 +702,9 @@ def create_app(
         source_signature_resolver=importer.signature_for_meeting_locked,
         relay_jobs_db=settings.relay_jobs_db,
     )
-    semantic = SemanticIndex(db, settings)
+    # 3a：统一的「会议在转写」信号。中转状态从 app.state.relay_health 取（每 5 秒刷新）。
+    busy = BusySignal(db, relay_state=lambda: getattr(app.state, "relay_health", None))
+    semantic = SemanticIndex(db, settings, busy_check=busy)
     waveforms = WaveformPeaks(settings)
     relay = relay_client or RelayClient(settings)
     notifier = LarkNotifier(
@@ -700,7 +724,28 @@ def create_app(
     project_linker = ProjectLinker(db, settings)
     card_writer = CardWriter(db, settings)
     roots_cache = graph_module.RootsCache(db, settings=settings)
-    material_indexer = MaterialIndexer(db, settings, busy_check=semantic.busy_check)
+    material_indexer = MaterialIndexer(db, settings, busy_check=busy)
+    material_stop = StopFlag()
+    ocr = OcrEngines(db, settings, stop=material_stop, busy_check=busy)
+    material_content = material_content_module.MaterialContent(
+        db,
+        settings,
+        busy_check=busy,
+        stop=material_stop,
+        extractors={
+            LAYER_TEXT: TextExtractor(settings.data_dir, stop=material_stop),
+            LAYER_PDF: PdfExtractor(ocr),
+            LAYER_IMAGE: ImageExtractor(ocr),
+        },
+        before_round=ocr.refresh,
+        fts_rebuilding=lambda: material_fts.rebuild_pending(db),
+    )
+    material_media = MaterialMedia(
+        db, settings, material_content, tools=ocr.tools, busy_check=busy, stop=material_stop
+    )
+    material_vectors = material_vectors_module.MaterialVectors(
+        db, settings, semantic, busy_check=busy, stop=material_stop
+    )
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
@@ -1106,6 +1151,69 @@ def create_app(
                 logger.exception("文件名索引这一轮失败")
             await asyncio.sleep(MATERIAL_INDEX_SECONDS)
 
+    async def material_content_loop() -> None:
+        """材料内容（3a）：第一轮前等 5 秒；有活时每 10 秒一轮，没活时每 60 秒。不进健康检查。"""
+        await asyncio.sleep(5)
+        while not material_stop.is_set():
+            stats: dict[str, Any] = {}
+            try:
+                stats = await asyncio.to_thread(material_content.run_round)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("材料内容这一轮失败")
+            await asyncio.sleep(
+                material_content_module.WORK_LOOP_SECONDS
+                if stats.get("work")
+                else material_content_module.IDLE_LOOP_SECONDS
+            )
+
+    async def material_media_loop() -> None:
+        """材料录音和视频（3d）：一次一个文件；第一轮前等 5 秒，没活时每 60 秒看一次。不进健康检查。"""
+        await asyncio.sleep(material_media_module.FIRST_DELAY_SECONDS)
+        while not material_stop.is_set():
+            stats: dict[str, Any] = {}
+            try:
+                stats = await asyncio.to_thread(material_media.run_once)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("材料录音转写这一轮失败")
+            await asyncio.sleep(
+                material_media_module.WORK_LOOP_SECONDS
+                if stats.get("work")
+                else material_media_module.IDLE_LOOP_SECONDS
+            )
+
+    async def material_embed_loop() -> None:
+        """材料片段的向量（3f）：第一轮前等 5 秒，每 30 秒一轮、每轮最多 30 秒；语义检索关着时不跑。
+        每轮之后顺手补内存矩阵，搜索时不用现建。不改 semantic_status。"""
+        await asyncio.sleep(material_vectors_module.FIRST_DELAY_SECONDS)
+        while not material_stop.is_set():
+            try:
+                await asyncio.to_thread(material_vectors.embed_round)
+                await asyncio.to_thread(material_vectors.refresh)
+            except asyncio.CancelledError:
+                raise
+            except SemanticUnavailable:
+                logger.warning("本地语义模型不可用，材料向量先不补")
+            except Exception:  # noqa: BLE001
+                logger.exception("材料向量这一轮失败")
+            await asyncio.sleep(material_vectors_module.LOOP_SECONDS)
+
+    async def material_fts_task() -> None:
+        """恢复备份后补材料全文表（3f）：单独一个任务，不看材料开关和忙信号。"""
+        try:
+            stats = await asyncio.to_thread(
+                material_fts.run_rebuild, db, should_stop=material_stop.is_set
+            )
+            if stats["state"] == "done":
+                logger.info("材料全文表补完：%d 批%s", stats["batches"], "，核对不通过已整张重建" if stats["rebuilt"] else "")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("补材料全文表失败，下次启动接着补")
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         application.state.lifespan_active = True
@@ -1167,9 +1275,53 @@ def create_app(
         )
         roots_worker = asyncio.create_task(roots_loop(), name="meeting-workbench-graph-roots")
         index_worker = asyncio.create_task(material_index_loop(), name="meeting-workbench-material-index")
+        content_worker: asyncio.Task[None] | None = None
+        media_worker: asyncio.Task[None] | None = None
+        embed_worker: asyncio.Task[None] | None = None
+        fts_worker: asyncio.Task[None] | None = None
+        if await asyncio.to_thread(material_fts.rebuild_pending, db):
+            material_stop.clear()
+            fts_worker = asyncio.create_task(material_fts_task(), name="meeting-workbench-material-fts")
+        if settings.material_content_enabled:
+            material_stop.clear()
+            # 重启清理放在材料循环启动之前：上次留下的转写进程、临时文件
+            try:
+                await asyncio.to_thread(cleanup_leftovers, db, settings.data_dir)
+            except Exception:  # noqa: BLE001
+                logger.exception("清理上次留下的材料进程失败")
+            content_worker = asyncio.create_task(
+                material_content_loop(), name="meeting-workbench-material-content"
+            )
+            media_worker = asyncio.create_task(
+                material_media_loop(), name="meeting-workbench-material-media"
+            )
+            if settings.semantic_enabled:
+                embed_worker = asyncio.create_task(
+                    material_embed_loop(), name="meeting-workbench-material-embed"
+                )
         try:
             yield
         finally:
+            # 先置停止标记（同时杀掉读取、认字、转写进程），再取消循环、等线程返回
+            material_stop.set()
+            for worker in (embed_worker, fts_worker):
+                if worker is not None:
+                    worker.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await worker
+            if content_worker is not None:
+                content_worker.cancel()
+                with suppress(asyncio.CancelledError):
+                    await content_worker
+                if media_worker is not None:
+                    media_worker.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await media_worker
+                await asyncio.to_thread(material_content.wait_idle, 10.0)
+                await asyncio.to_thread(material_media.wait_idle, 10.0)
+                material_content.close()
+                material_media.close()
+                ocr.close()
             scanner.cancel()
             relay_probe.cancel()
             qwen_worker.cancel()
@@ -1194,6 +1346,12 @@ def create_app(
     app.state.service = service
     app.state.importer = importer
     app.state.semantic = semantic
+    app.state.busy = busy
+    app.state.material_content = material_content
+    app.state.ocr = ocr
+    app.state.material_media = material_media
+    app.state.material_vectors = material_vectors
+    app.state.material_stop = material_stop
     app.state.waveforms = waveforms
     app.state.relay = relay
     app.state.uploads = uploads
@@ -1337,6 +1495,8 @@ def create_app(
                 "pending_confirm_count": task_service.list_tasks(
                     status="pending_confirm", limit=1
                 )["total"],
+                # 「在访达中显示」「打开文件夹」只在本机打开声档时出现（和关系图 roots 接口同一个算法）
+                "can_reveal": local_request(request),
             }
         )
         response.set_cookie(
@@ -1350,8 +1510,20 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    def material_paused() -> str | None:
+        """转写会议时材料循环先停（内容循环或录音循环任一在让路）。"""
+        if material_content.progress.get("paused") == "busy" or material_media.progress.get("paused") == "busy":
+            return "busy"
+        return None
+
     @app.get("/api/health")
     def health():
+        progress = material_content.progress
+        materials_progress = {
+            "pending": int(progress.get("pending") or 0),
+            "paused": material_paused() if progress.get("pending") else None,
+            "offline_pending": int(progress.get("offline_pending") or 0),
+        }
         database_ok = db.query_one("SELECT 1 AS ok") is not None
         archive_ok = settings.archive_root.is_dir() and not settings.archive_root.is_symlink()
         staging_ok = settings.staging_root.is_dir() and not settings.staging_root.is_symlink()
@@ -1544,6 +1716,8 @@ def create_app(
                 "queued_jobs": int(relay_counts.get("queued") or 0),
                 "scan_errors": scan_errors,
                 "quarantined_dirs": quarantined_count,
+                # 3e：材料还没读的活文件（来自材料循环内存里的计数，不进 services、不影响 status）
+                "material_pending": materials_progress["pending"],
             },
             "details": {
                 "process": process_details,
@@ -1577,6 +1751,7 @@ def create_app(
                     ),
                 },
                 "backup": backup_details,
+                "materials": materials_progress,
             },
         }
 
@@ -2059,9 +2234,13 @@ def create_app(
     ):
         if _has_forbidden_control_character(q):
             raise HTTPException(422, "搜索词包含禁止控制字符")
+        # 自己查长度：Query 的 max_length 回的是英文
+        if len(q) > search_module.QUERY_MAX_CHARS:
+            raise HTTPException(422, f"搜索词最多 {search_module.QUERY_MAX_CHARS} 个字")
+        scope = project_id or None
         if mode == "semantic":
             try:
-                return {"mode": mode, "items": semantic.search(q, limit=limit)}
+                return {"mode": mode, "items": semantic.search(q, limit=limit, scope=scope)}
             except SemanticBusy as error:
                 raise HTTPException(409, str(error)) from error
             except SemanticPaused as error:
@@ -2069,7 +2248,6 @@ def create_app(
             except SemanticUnavailable as error:
                 raise HTTPException(503, str(error)) from error
 
-        scope = project_id or None
         if scope and scope != "none" and db.query_one(
             "SELECT 1 FROM projects WHERE id=?", (scope,)
         ) is None:
@@ -2077,35 +2255,68 @@ def create_app(
         expansion = search_module.expand_query(db, q, project_id=scope)
         needles = [q.strip(), *expansion["expanded"]]
         items = search_module.literal_search(db, needles, scope=scope, limit=limit)
+        materials_found = material_search.material_search(db, needles, scope=scope)
         payload: dict[str, Any] = {
             "mode": mode,
             "items": items,
             "expanded": expansion["expanded"],
             "expand_hints": expansion["hints"],
+            "materials": materials_found["items"],
+            "material_similar": [],
+            "material_state": {
+                "pending": material_pending_in(scope),
+                "rebuilding": material_fts.rebuild_pending(db),
+                "partial": materials_found["partial"],
+            },
         }
         if scope and scope != "none":
             payload["unattributed_hits"] = len(
                 search_module.literal_search(db, needles, scope="none", limit=limit)
             )
         if mode == "hybrid":
-            similar, unavailable = similar_segments(q, items, scope=scope)
+            similar, material_similar, unavailable = similar_results(
+                q, items, materials_found["items"], scope=scope
+            )
             payload["similar"] = similar
+            payload["material_similar"] = material_similar
             if unavailable:
                 payload["semantic_unavailable"] = unavailable
         return payload
 
-    def similar_segments(
-        query: str, literal: list[dict[str, Any]], *, scope: str | None
-    ) -> tuple[list[dict[str, Any]], str | None]:
-        """意思相近的段落：去掉已经按原词列出的，只留同一范围的。正在转写或模型不可用时不搜。"""
+    def material_pending_in(scope: str | None) -> int:
+        """还有多少材料没读完：全部项目用内容循环记下的数；选了项目时只数这个项目的根目录。"""
+        if scope == "none":
+            return 0
+        if not scope:
+            return int(material_content.progress.get("pending") or 0)
+        root_ids = [
+            int(row["id"])
+            for row in db.query_all("SELECT id FROM project_material_roots WHERE project_id = ?", (scope,))
+        ]
+        if not root_ids:
+            return 0
+        return int(material_content_module.pending_counts(db, root_ids=root_ids, online=set(root_ids))["pending"])
+
+    def similar_results(
+        query: str,
+        literal: list[dict[str, Any]],
+        materials_listed: list[dict[str, Any]],
+        *,
+        scope: str | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+        """意思相近的会议段落和材料：查询向量只算一次，两边都先按范围过滤再取前 60；
+        去掉已经按原词列出的。正在转写或模型不可用时两边都不搜。"""
         if not settings.semantic_enabled:
-            return [], None
+            return [], [], None
         if semantic.busy_check():
-            return [], "正在转写，意思相近的结果等转写完再搜"
+            return [], [], "正在转写，意思相近的结果等转写完再搜"
         try:
-            rows = semantic.search(query, limit=search_module.SIMILAR_FETCH)
+            query_vector = semantic.encode_query(query)
         except (SemanticBusy, SemanticPaused, SemanticUnavailable) as error:
-            return [], str(error)
+            return [], [], str(error)
+        if query_vector is None:
+            return [], [], None
+        rows = semantic.search_vector(query_vector, scope=scope, limit=search_module.SIMILAR_FETCH)
         listed = {item["segment_id"] for item in literal if item.get("segment_id")}
         similar: list[dict[str, Any]] = []
         for row in rows:
@@ -2113,14 +2324,24 @@ def create_app(
                 continue
             if row.get("score", 0) < search_module.SIMILAR_MIN_SCORE:
                 continue
-            if scope == "none" and row.get("project_id"):
-                continue
-            if scope and scope != "none" and row.get("project_id") != scope:
-                continue
             similar.append(row)
             if len(similar) >= search_module.SIMILAR_LIMIT:
                 break
-        return similar, None
+        material_similar: list[dict[str, Any]] = []
+        allowed = material_search.allowed_content_keys(db, scope)
+        if allowed:
+            scored = material_vectors.search(query_vector, allowed=allowed, fetch=search_module.SIMILAR_FETCH)
+            material_similar, missing = material_search.similar_rows(
+                db,
+                scored,
+                scope=scope,
+                exclude={str(item["content_key"]) for item in materials_listed if item.get("content_key")},
+                limit=search_module.SIMILAR_LIMIT,
+                min_score=search_module.SIMILAR_MIN_SCORE,
+            )
+            if missing:
+                material_vectors.forget(missing)
+        return similar, material_similar, None
 
     @app.get("/api/media/{artifact_id}")
     def media(artifact_id: int):
@@ -3117,7 +3338,10 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/cards/reveal")
-    def cards_reveal(body: CardsTargetInput):
+    def cards_reveal(body: CardsTargetInput, request: Request):
+        # 3g：远程的设备不能让服务器那台电脑打开访达
+        if not local_request(request):
+            raise HTTPException(403, "只能在声档所在的这台电脑上打开访达")
         try:
             return {"path": card_writer.reveal(project_id=body.project_id, meeting_id=body.meeting_id)}
         except CardsError as error:
@@ -3353,6 +3577,10 @@ def create_app(
                 result = graph_module.project_roots(connection, roots_cache, project_id)
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
+            # 3g：最近改过的文件、每个根目录读了多少、散放文件的 file_id（只查库）
+            material_graph.decorate_roots(
+                connection, project_id, result, counts=material_content.progress.get("roots")
+            )
         if result["checking"]:
             roots_cache.refresh_in_background()
         # 「在访达中显示」只在本机打开声档时出现
@@ -3395,13 +3623,23 @@ def create_app(
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
         try:
-            return graph_module.expand_folder(row, dir)
+            payload = graph_module.expand_folder(row, dir)
         except graph_module.GraphNotFound as error:
             raise HTTPException(404, str(error)) from error
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
         except OSError as error:
             raise HTTPException(503, "读不了这个文件夹，资料盘可能在休眠") from error
+        # 3g：读完盘再到库里给文件行补 file_id（库里还没有的为 null）
+        with db.autocommit() as connection:
+            return material_graph.decorate_expand(connection, payload)
+
+    @app.get("/api/graph/projects/{project_id}/cards-files")
+    def project_graph_cards_files(project_id: str):
+        with db.autocommit() as connection:
+            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+                raise HTTPException(404, "项目不存在")
+            return {"files": material_graph.cards_files(connection, project_id)}
 
     @app.post("/api/materials/reveal")
     def reveal_material(body: RevealInput, request: Request):
@@ -3449,13 +3687,21 @@ def create_app(
     def graph_file_detail(file_id: int):
         with db.autocommit() as connection:
             try:
-                return file_mentions.file_detail(
+                result = file_mentions.file_detail(
                     connection,
                     file_id,
                     quotes=lambda meeting_id, starts: graph_module._segments_at(connection, meeting_id, starts),
                 )
             except file_mentions.MentionNotFound as error:
                 raise HTTPException(404, str(error)) from error
+            # 3g：读到哪一步、是哪些任务的交付物
+            row = material_status.file_row(connection, file_id)
+            if row is not None:
+                result["state"] = material_status.state_for_row(
+                    connection, row, engines=ocr, paused=material_paused()
+                )
+                result["deliverables"] = material_status.file_deliverables(connection, row)
+            return result
 
     def _mention_action(action: Any, *args: Any) -> dict[str, Any]:
         try:
@@ -3481,6 +3727,84 @@ def create_app(
     def material_index_status(project_id: str | None = Query(default=None, max_length=200)):
         with db.autocommit() as connection:
             return {"roots": index_status(connection, project_id)}
+
+    @app.get("/api/materials/coverage")
+    def material_coverage(project_id: str | None = Query(default=None, max_length=200)):
+        with db.autocommit() as connection:
+            return {"roots": material_status.coverage(connection, project_id, engines=ocr, paused=material_paused())}
+
+    @app.get("/api/materials/unreadable")
+    def material_unreadable(
+        project_id: str = Query(max_length=200),
+        root_id: int | None = None,
+        reason: Literal["password", "corrupt", "unsupported", "timeout", "permission"] | None = None,
+        offset: int = Query(0, ge=0),
+    ):
+        with db.autocommit() as connection:
+            return material_status.unreadable_files(
+                connection, project_id, root_id=root_id, reason=reason, offset=offset
+            )
+
+    @app.get("/api/materials/files/{file_id}/preview")
+    def material_file_preview(file_id: int, request: Request, parts: Literal["preview"] | None = None):
+        with db.autocommit() as connection:
+            result = material_status.file_preview(
+                connection,
+                file_id,
+                engines=ocr,
+                paused=material_paused(),
+                quotes=lambda meeting_id, starts: graph_module._segments_at(connection, meeting_id, starts),
+                parts=parts,
+                can_reveal=local_request(request),
+            )
+        if result is None:
+            raise HTTPException(404, "文件不在索引里（可能已经挪走或删掉了）")
+        return result
+
+    def checked_material_file(file_id: int) -> dict[str, Any]:
+        """读盘的三个接口：按 file_id 找，realpath 必须还在根目录里；盘不在回 503。"""
+        with db.autocommit() as connection:
+            status, row = material_status.resolve_file(connection, file_id)
+        if status == "offline":
+            raise HTTPException(503, "资料盘未连接")
+        if status == "outside":
+            raise HTTPException(403, "这个文件指到了材料根目录外面")
+        if status != "ok":
+            raise HTTPException(404, "找不到这个文件了")
+        return row
+
+    def material_picture(file_id: int, kind: str) -> Response:
+        row = checked_material_file(file_id)
+        exts = IMAGE_EXTS if kind == "image" else PDF_EXTS
+        if row["ext"] not in exts:
+            raise HTTPException(415, "这种文件没有这种预览图")
+        key = row["content_key"] or f"file{row['id']}-{row['mtime_ns']}"
+        try:
+            target = material_previews.preview(
+                settings.data_dir, key, Path(row["real_path"]), kind=kind, build=ocr.build, sips=ocr.tools().sips
+            )
+        except material_previews.PreviewTimeout as error:
+            raise HTTPException(503, "预览图生成超时") from error
+        except material_previews.PreviewUnavailable as error:
+            raise HTTPException(503, "这台电脑上生成不了预览图") from error
+        return FileResponse(target, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+    @app.get("/api/materials/files/{file_id}/thumb")
+    def material_thumb(file_id: int):
+        return material_picture(file_id, "image")
+
+    @app.get("/api/materials/files/{file_id}/page1")
+    def material_page1(file_id: int):
+        return material_picture(file_id, "pdf")
+
+    @app.get("/api/materials/files/{file_id}/media")
+    def material_media_file(file_id: int):
+        row = checked_material_file(file_id)
+        media_type = PLAYABLE_TYPES.get(str(row["ext"]))
+        if media_type is None:
+            raise HTTPException(415, "这种格式浏览器放不了，在访达里打开")
+        path = Path(row["real_path"])
+        return FileResponse(path, filename=path.name, content_disposition_type="inline", media_type=media_type)
 
     @app.get("/api/meetings/{meeting_id}/quotes")
     def meeting_quotes_endpoint(
@@ -3857,12 +4181,17 @@ def create_app(
                 task_id,
                 kind=body.kind,
                 url=body.url,
+                file_id=body.file_id,
                 title=body.title,
                 note=body.note,
                 mark_done=body.mark_done,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    @app.delete("/api/tasks/{task_id}/deliverables/{deliverable_id}")
+    def remove_task_deliverable(task_id: str, deliverable_id: int):
+        return task_service.remove_deliverable(task_id, deliverable_id)
 
     @app.post("/api/meetings/{meeting_id}/tasks/re-extract")
     def re_extract(meeting_id: str, body: ReExtractInput):

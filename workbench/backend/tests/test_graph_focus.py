@@ -84,7 +84,18 @@ def test_meeting_focus_has_timeline_items_and_neighbours(tmp_path):
     late = body["tasks"][1]
     assert late["requirement_title"] == "白名单运营后台"
     assert late["anchor_quote"] == "这个月底前把白名单做完"
-    assert late["deliverables"] == [{"kind": "file", "url": "/Volumes/资料盘/云图AI/白名单/v1.xlsx", "title": ""}]
+    # 3g：file 类交付物带上 file_id、name、gone（这个路径不在任何根目录里，没法找，不记 gone）
+    assert late["deliverables"] == [
+        {
+            "id": 1,
+            "kind": "file",
+            "url": "/Volumes/资料盘/云图AI/白名单/v1.xlsx",
+            "title": "",
+            "file_id": None,
+            "name": "v1.xlsx",
+            "gone": False,
+        }
+    ]
     assert [item["id"] for item in body["requirements"]] == ["r-1"]
     assert body["previous"]["meeting_id"] == "m-old" and body["previous"]["title"] == "上一场"
     assert body["next"]["meeting_id"] == "m-new"

@@ -3,7 +3,8 @@
 // 方向是类型，远近是新旧：会议在左、材料在右、进行中的需求在上、线索词在下；内圈最近 7 天、
 // 中圈最近 28 天、外圈更早。整体是横向拉宽的椭圆。同一圈、同一方向用固定槽位：
 // 会议按天数落槽（今天在最上面），多一场会只占一个空槽，不会把别的节点挤走；
-// 需求、材料按顺序从中间往两边填；会上提到的文件挂在它的根目录外侧，占离根目录最近的空槽。
+// 需求、材料按顺序从中间往两边填；会上提到的文件挂在它的根目录外侧，占离根目录最近的空槽；
+// 最近改过的文件（3g）挂在所属文件夹外侧，最后一轮放。
 // 坐标单位是缩放为 1 时的像素。
 
 import { formatTime } from "../../format";
@@ -588,13 +589,13 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
       x: place.x,
       y: place.y,
       box: rightLabelBox(place.x, place.y, FILE_ICON_W + textWidth(text)),
-      label: `文件：${file.name}`,
+      label: file.recent ? `最近改过的文件：${file.name}` : `文件：${file.name}`,
       data: file,
       text,
     });
   };
   const files = graph.files ?? [];
-  files.filter((file) => !file.extra).forEach(placeFile);
+  files.filter((file) => !file.extra && !file.recent && !file.pinned).forEach(placeFile);
   if (graph.files_more) {
     const more = graph.files_more;
     const anchor = fileAnchor(files[0]?.folder ?? "");
@@ -633,6 +634,9 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
   }
   // 选中一场会时从简报补出来的文件最后放：占剩下的空槽，已有的节点都不动
   files.filter((file) => file.extra).forEach(placeFile);
+  // 3g：从面板点出来的那一个文件、再是最近改过的文件，各单独一轮：会上提到的优先，最近的可能让位
+  files.filter((file) => file.pinned).forEach(placeFile);
+  files.filter((file) => file.recent).forEach(placeFile);
 
   // 线索词：下方一排，次数多的在前，字号三档
   const sizes = graph.cues.map((cue) => cueFontSize(cue.total));

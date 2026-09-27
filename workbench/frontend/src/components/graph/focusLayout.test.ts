@@ -70,3 +70,50 @@ describe("layoutMeetingFocus", () => {
     expect(bare.ticks).toEqual([]);
   });
 });
+
+describe("交付物小签（3g）", () => {
+  const file = (id: number, name: string, extra: Partial<{ gone: boolean; file_id: number | null }> = {}) => ({
+    id,
+    kind: "file",
+    url: `/材料/云图AI/交付/${name}`,
+    title: "",
+    file_id: id,
+    name,
+    gone: false,
+    ...extra,
+  });
+
+  it("每条任务最多画 1 个（最近标的），多的写 +N；找不到的、没有 file_id 的、链接类不画", () => {
+    const tasks = [
+      task("t1", 100_000, {
+        deliverables: [file(1, "旧稿.pdf"), file(2, "定稿非常非常长的文件名称v3.pdf"), { id: 3, kind: "figma", url: "https://figma.com/x", title: "稿" }],
+      }),
+      task("t2", 300_000, { deliverables: [file(4, "没了.pdf", { gone: true }), file(5, "手填.pdf", { file_id: null })] }),
+    ];
+    const layout = layoutMeetingFocus(focusPayload({ tasks }));
+    const first = layout.items.find((item) => item.id === "task:t1")!;
+    expect(first.tag).toMatchObject({ fileId: 2, ext: "pdf", more: 1 });
+    expect(first.tag!.box.w).toBeLessThanOrEqual(80);
+    expect(first.tag!.box.x).toBeGreaterThan(first.box.x + first.box.w);
+    expect(first.tag!.label.endsWith("…")).toBe(true);
+    expect(layout.items.find((item) => item.id === "task:t2")!.tag).toBeUndefined();
+  });
+
+  it("小签算进任务卡的占位宽度：同一排里不重叠，同样的数据每次一样", () => {
+    const tasks = [0, 1, 2, 3, 4, 5].map((index) =>
+      task(`t${index}`, index < 3 ? 200_000 + index * 20_000 : null, { deliverables: [file(index + 1, `交付物${index}.docx`)] }),
+    );
+    const one = layoutMeetingFocus(focusPayload({ tasks }));
+    const two = layoutMeetingFocus(focusPayload({ tasks }));
+    expect(two).toEqual(one);
+    const boxes = one.items.flatMap((item) => [item.box, ...(item.tag ? [item.tag.box] : [])]);
+    for (let a = 0; a < boxes.length; a += 1) {
+      for (let b = a + 1; b < boxes.length; b += 1) {
+        expect(overlaps(boxes[a], boxes[b])).toBe(false);
+      }
+    }
+    // 范围包进了小签
+    const right = Math.max(...boxes.map((box) => box.x + box.w));
+    expect(one.bounds.x + one.bounds.w).toBeGreaterThanOrEqual(right);
+  });
+});

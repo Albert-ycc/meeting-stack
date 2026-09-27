@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from .materials import (
     assert_no_hidden_segment,
     folder_stat,
     list_folder_files,
+    volume_state,
 )
 from .service import ConflictError, NotFoundError
 from .tasks import OPEN_TASK_STATUSES, TaskService, resolve_requirement_and_project
@@ -379,15 +381,31 @@ def remove_folder(task_service: TaskService, requirement_id: str, folder_id: int
 
 
 def folder_files(
-    db: Database, requirement_id: str, folder_id: int, *, limit: int = 2000, offset: int = 0
+    db: Database,
+    requirement_id: str,
+    folder_id: int,
+    *,
+    limit: int = 2000,
+    offset: int = 0,
+    state_of: Callable[[str], str] = volume_state,
 ) -> dict[str, Any]:
+    from .material_graph import folder_files_from_index
+
     folder = db.query_one(
-        "SELECT * FROM requirement_folders WHERE id=? AND requirement_id=?",
+        """SELECT f.*, r.project_id FROM requirement_folders f
+             JOIN requirements r ON r.id = f.requirement_id
+            WHERE f.id=? AND f.requirement_id=?""",
         (folder_id, requirement_id),
     )
     if folder is None:
         raise NotFoundError("材料文件夹不存在")
-    payload = list_folder_files(Path(folder["path"]), limit=limit, offset=offset)
+    # 3g：根目录在线、文件名索引扫完时查库，否则照旧读盘
+    with db.autocommit() as connection:
+        payload = folder_files_from_index(
+            connection, str(folder["project_id"]), str(folder["path"]), limit=limit, offset=offset, state_of=state_of
+        )
+    if payload is None:
+        payload = list_folder_files(Path(folder["path"]), limit=limit, offset=offset)
     return {"folder_id": folder_id, "path": folder["path"], **payload}
 
 

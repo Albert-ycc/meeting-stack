@@ -37,6 +37,7 @@ from .materials import (
     assert_no_hidden_segment,
     volume_state,
 )
+from .material_rules import hidden_in_browse
 from .name_hints import HintContext
 from .project_folders import pending_path
 from .project_linking import DRAFT_TASK_STATUSES
@@ -1826,16 +1827,21 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
             (meeting_id, *FOCUS_TASK_STATUSES),
         ).fetchall()
     ]
+    from .material_graph import decorate_deliverables
+
     deliverables: dict[str, list[dict[str, Any]]] = {}
     for row in connection.execute(
-        """SELECT d.task_id, d.kind, d.url, d.title FROM deliverables d
+        """SELECT d.id, d.task_id, d.kind, d.url, d.title FROM deliverables d
              JOIN tasks t ON t.id = d.task_id
             WHERE t.meeting_id = ? ORDER BY d.id""",
         (meeting_id,),
     ).fetchall():
         deliverables.setdefault(row["task_id"], []).append(
-            {"kind": row["kind"], "url": row["url"], "title": row["title"]}
+            {"id": row["id"], "kind": row["kind"], "url": row["url"], "title": row["title"]}
         )
+    # 3g：file 类交付物带上 file_id、name、gone
+    for items in deliverables.values():
+        decorate_deliverables(connection, items)
     for task in tasks:
         task["title"] = _truncate(task["title"] or "", 200)
         task["detail"] = _truncate(task["detail"] or "", 600)
@@ -2117,12 +2123,11 @@ ROOTS_REFRESH_SECONDS = 30.0
 
 
 RECENT_DIRS = 3
-_SHADOW_NAMES = ("Thumbs.db", "desktop.ini", "Icon\r")
 _SKIP_DIRS = ("node_modules", "__MACOSX")
 
 
 def _hidden(name: str) -> bool:
-    return name.startswith((".", "~$")) or name in _SHADOW_NAMES
+    return hidden_in_browse(name)
 
 
 def _loose_files(path: Path) -> tuple[int, list[dict[str, Any]]]:

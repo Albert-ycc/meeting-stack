@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from .ocr_engines import image_size, machine_info
 from .material_walk import (
     IMAGE_EXTS,
     NAME_ONLY_DIRS,
@@ -250,7 +251,10 @@ def run_trial(images: list[Path], engines: dict[str, Engine], *, progress: Calla
             size = path.stat().st_size
         except OSError:
             size = 0
-        row: dict[str, Any] = {"path": str(path), "bytes": size, "engines": {}}
+        pixels = image_size(path)
+        row: dict[str, Any] = {
+            "path": str(path), "bytes": size, "pixels": list(pixels) if pixels else None, "engines": {},
+        }
         for name, engine in engines.items():
             outcome = engine(path)
             outcome["chars"] = _chars(outcome.get("text") or "")
@@ -276,9 +280,29 @@ def run_trial(images: list[Path], engines: dict[str, Engine], *, progress: Calla
     }
 
 
+def machine_summary() -> dict[str, str]:
+    """这台机器：macOS 版本、芯片、tesseract 版本，方便对照试跑结果。"""
+    info = dict(machine_info())
+    tesseract = shutil.which("tesseract")
+    if tesseract:
+        try:
+            result = subprocess.run([tesseract, "--version"], capture_output=True, text=True, timeout=30, check=False)
+            lines = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()
+            info["tesseract"] = lines[0] if lines else ""
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return info
+
+
 def render_markdown(report: dict[str, Any], notes: list[str]) -> str:
     lines = ["# 图片文字识别试跑", ""]
     lines.append(f"{len(report['images'])} 张图，{report['generated_at'][:19].replace('T', ' ')}（UTC）。")
+    machine = report.get("machine")
+    if machine:
+        lines.append(
+            f"机器：macOS {machine.get('macos') or '—'}，{machine.get('chip') or '—'}，"
+            f"tesseract {machine.get('tesseract') or '没装'}。"
+        )
     for note in notes:
         lines.append(f"- {note}")
     lines += ["", "| 引擎 | 认出来的 | 平均每张 | 总字数 | 一个字也没认出 |", "| --- | --- | --- | --- | --- |"]
@@ -289,7 +313,8 @@ def render_markdown(report: dict[str, Any], notes: list[str]) -> str:
             f"{item['chars']} | {item['empty']} |"
         )
     for index, row in enumerate(report["images"], start=1):
-        lines += ["", f"## {index}. {row['path']}（{human_bytes(row['bytes'])}）"]
+        pixels = f"，{row['pixels'][0]}×{row['pixels'][1]}" if row.get("pixels") else ""
+        lines += ["", f"## {index}. {row['path']}（{human_bytes(row['bytes'])}{pixels}）"]
         for name, outcome in row["engines"].items():
             label = ENGINE_LABELS.get(name, name)
             if outcome.get("error"):

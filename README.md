@@ -194,6 +194,10 @@ P0–P3 只挂在需求上，任务不单设优先级，从所属需求派生；
 
 音频、逐字稿、说话人分离、语义检索全部在本机完成，不依赖任何外部服务，断网可用。
 
+项目材料（按项目挂的材料文件夹）的正文、图片和扫描件里的字、录音里说的话，也都在本机读：文档用本地进程解析，
+认字用 macOS 自带的 Vision 或本地 tesseract，录音用同一套本地 FunASR 转写。读出的文字只留在声档里，
+只用来搜索和预览，**不进纪要、不进词典，也不交给任何大模型**。
+
 唯一出本机的是纪要生成与任务抽取环节：文本逐字稿与纪要会递给你配置的 Agent（默认 Claude Code，
 可切 Codex 或本地 LLM）。录音本身从不上传。**任务确认卡片外发的只是任务标题、来源会议名与一段会上原话，**
 **不是会议全文。** 如果你的会议连任务信息都不能外传，可以不启用飞书推送，任务确认回到工作台网页内完成。
@@ -315,6 +319,8 @@ python3 task-notify/card_listener.py             # 任务确认卡片回调监�
 | `TRANSCRIBE_ENGINE` | `observe` | `observe`=双跑、`funasr`=只主稿、`whisper`=只对照稿 |
 | `MEETING_WORKBENCH_LARK_CHAT_ID` | 空 | 飞书任务确认卡发送到的群；留空则确认闭环在网页内完成 |
 | `MEETING_WORKBENCH_MATERIAL_BROWSE_ROOT` | `~` | 项目材料目录可浏览、可挂靠的范围 |
+| `MEETING_WORKBENCH_MATERIAL_CONTENT_ENABLED` | `true` | 后台读材料的正文、图片文字、录音；关掉只建文件名索引 |
+| `MEETING_WORKBENCH_FUNASR_PYTHON` | 同 `MEETING_RELAY_FUNASR_PYTHON` | 转写材料里的录音用哪个 FunASR Python |
 | `LARK_CLI_BIN` | `lark-cli` | 发卡/收回调用的飞书 CLI 路径 |
 
 完整清单见 [.env.example](.env.example) 与各组件 README。

@@ -117,6 +117,23 @@ describe("工作台会议卡片横幅", () => {
     expect(await screen.findByText("已在 云图AI/声档会议记录/ 写入第一张会议卡片，给你和 Claude Code 看")).toBeInTheDocument();
   });
 
+  it("远程的设备（can_reveal 为 false）不显示［打开文件夹］", async () => {
+    const apiClient = client({
+      backfill: null,
+      notices: [
+        { project_id: "p1", project_name: "云图AI", path: "/Volumes/资料盘/云图AI/声档会议记录", at: "" },
+        { kind: "folder_created", project_id: "p2", project_name: "云图看板", path: "/Volumes/资料盘/项目/云图看板", cards_written: 0, at: "" },
+      ],
+    });
+    render(<MeetingCardsBanner apiClient={apiClient} canReveal={false} />);
+
+    expect(await screen.findByText("插上资料盘后建好了 /Volumes/资料盘/项目/云图看板，已挂到『云图看板』")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "打开文件夹" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "知道了" }));
+    expect(await screen.findByText("已在 云图AI/声档会议记录/ 写入第一张会议卡片，给你和 Claude Code 看")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "打开文件夹" })).not.toBeInTheDocument();
+  });
+
   it("补建好文件夹但没有会要补写时不说补写", async () => {
     const apiClient = client({
       backfill: null,
@@ -251,6 +268,28 @@ describe("项目页会议卡片汇总", () => {
     );
 
     await userEvent.click(screen.getByRole("button", { name: "打开文件夹" }));
+    expect(onCopy).toHaveBeenCalledWith("/Volumes/资料盘/云图AI/声档会议记录", "已复制卡片文件夹路径");
+  });
+
+  it("远程的设备（can_reveal 为 false）直接给［复制路径］", async () => {
+    const onCopy = vi.fn();
+    const revealCards = vi.fn();
+    render(
+      <ProjectCardsRow
+        apiClient={{ revealCards } as unknown as ApiClient}
+        canPickFolders
+        canReveal={false}
+        canWrite
+        cards={summary({ waiting_reason: null, waiting: 0 })}
+        onChanged={vi.fn()}
+        onCopy={onCopy}
+        projectId="p1"
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "打开文件夹" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "复制路径" }));
+    expect(revealCards).not.toHaveBeenCalled();
     expect(onCopy).toHaveBeenCalledWith("/Volumes/资料盘/云图AI/声档会议记录", "已复制卡片文件夹路径");
   });
 });

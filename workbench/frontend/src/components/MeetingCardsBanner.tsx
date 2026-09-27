@@ -10,6 +10,8 @@ import "./MeetingCardsBanner.css";
 
 interface MeetingCardsBannerProps {
   apiClient: ApiClient;
+  /** 3g：只在声档所在的这台电脑上打开访达；远程的设备不显示［打开文件夹］ */
+  canReveal?: boolean;
 }
 
 /** 「/Volumes/资料盘/云图AI/声档会议记录」→「云图AI/声档会议记录/」 */
@@ -22,7 +24,7 @@ function shortDir(path: string) {
  * 先报「插上资料盘后建好了 X」（盘不在时建的项目补建好了文件夹），再报「在 X 写入了第一张会议卡片」，
  * 最后问要不要把上线前的会补写成卡片。
  */
-export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
+export function MeetingCardsBanner({ apiClient, canReveal = true }: MeetingCardsBannerProps) {
   const [banner, setBanner] = useState<CardsBanner | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -113,18 +115,20 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
           插上资料盘后建好了 {created.path}，已挂到『{created.project_name}』
           {created.cards_written ? `，补写了 ${created.cards_written} 张会议卡片` : ""}
         </span>
-        <button
-          className="ghost-button"
-          disabled={busy}
-          onClick={() =>
-            void run(async () => {
-              await apiClient.revealMaterial(created.path);
-            })
-          }
-          type="button"
-        >
-          打开文件夹
-        </button>
+        {canReveal && (
+          <button
+            className="ghost-button"
+            disabled={busy}
+            onClick={() =>
+              void run(async () => {
+                await apiClient.revealMaterial(created.path);
+              })
+            }
+            type="button"
+          >
+            打开文件夹
+          </button>
+        )}
         <button className="text-button" disabled={busy} onClick={() => void dismissOne(created.project_id)} type="button">
           知道了
         </button>
@@ -145,7 +149,7 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
                 .map((item) => item.project_name)
                 .join("、")}`}
         </span>
-        {notices.length === 1 && (
+        {notices.length === 1 && canReveal && (
           <button
             className="ghost-button"
             disabled={busy}

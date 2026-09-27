@@ -1,7 +1,8 @@
 """1f 材料盘点：给第三期（全量材料索引）摸底，只读，不写库、不写盘。
 
 按第三期定下的规则走一遍项目材料文件夹：
-- 只静默跳过系统影子文件（._*、.DS_Store、__MACOSX 以及卷根上的系统目录）；
+- 只静默跳过系统影子文件（._*、.DS_Store、__MACOSX 以及卷根上的系统目录）和 Office 的 ~$ 锁文件，
+  和文件名索引、内容读取用同一套规则（material_rules）；
 - node_modules、.git 这类目录和声档自己写的「声档会议记录」只收文件名，单独计数；
 - 其余文件按要做的事分四层：文档正文、图片文字、音视频转写、只收文件名；
 - 读不了的只分五种原因：要密码、文件损坏、格式不支持、处理超时、没有权限。
@@ -25,6 +26,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import extract_formats as formats
+from . import material_rules as rules
 from .materials import CARDS_DIR_NAME
 
 # —— 分层 ——
@@ -39,18 +42,11 @@ LAYER_LABELS = {
     NAME_ONLY: "只收文件名",
 }
 
-TEXT_EXTS = {
-    "pdf", "doc", "docx", "docm", "dot", "dotx", "xls", "xlsx", "xlsm", "xlt", "csv", "tsv",
-    "ppt", "pptx", "pps", "ppsx", "odt", "ods", "odp", "rtf", "txt", "md", "markdown",
-    "html", "htm", "xml", "json", "yaml", "yml", "epub", "wps", "et", "dps", "key", "pages",
-    "numbers", "log", "ini", "toml", "conf", "sql", "py", "js", "ts", "tsx", "jsx", "java",
-    "go", "rs", "c", "h", "cpp", "hpp", "cs", "rb", "php", "sh", "css", "scss", "ipynb",
-}
-IMAGE_EXTS = {"png", "jpg", "jpeg", "heic", "heif", "gif", "bmp", "tif", "tiff", "webp"}
-AUDIO_EXTS = {"mp3", "m4a", "wav", "aac", "flac", "ogg", "opus", "wma", "amr", "aiff", "aif", "caf"}
-VIDEO_EXTS = {"mp4", "mov", "m4v", "avi", "mkv", "webm", "wmv", "flv", "3gp", "mts", "m2ts"}
-OOXML_EXTS = {"docx", "docm", "dotx", "xlsx", "xlsm", "pptx", "ppsx"}
-IWORK_EXTS = {"key", "pages", "numbers"}
+OOXML_EXTS = rules.OOXML_EXTS
+IWORK_EXTS = rules.IWORK_EXTS
+IMAGE_EXTS = rules.IMAGE_EXTS
+AUDIO_EXTS = rules.AUDIO_EXTS
+VIDEO_EXTS = rules.VIDEO_EXTS
 # macOS 上以文件夹形式存在、在 Finder 里看起来是一个文件的「包」
 PACKAGE_EXTS = IWORK_EXTS | {
     "app", "bundle", "framework", "photoslibrary", "rtfd", "xcodeproj", "xcworkspace",
@@ -58,28 +54,19 @@ PACKAGE_EXTS = IWORK_EXTS | {
 }
 
 # —— 跳过与只收文件名 ——
-SYSTEM_NAMES = {
-    ".DS_Store", "__MACOSX", ".Spotlight-V100", ".Trashes", ".fseventsd", ".TemporaryItems",
-    ".DocumentRevisions-V100", ".VolumeIcon.icns", ".apdisk", "Thumbs.db", "desktop.ini", "Icon\r",
-}
+SYSTEM_NAMES = rules.SYSTEM_NAMES
 NAME_ONLY_DIRS = {
     "node_modules", ".git", ".svn", ".hg", ".venv", "venv", "__pycache__", ".idea", ".vscode",
     CARDS_DIR_NAME,
 }
 
-# —— 读不了的五种原因 ——
-PASSWORD = "password"
-CORRUPT = "corrupt"
-UNSUPPORTED = "unsupported"
-TIMEOUT = "timeout"
-PERMISSION = "permission"
-REASON_LABELS = {
-    PASSWORD: "要密码",
-    CORRUPT: "文件损坏",
-    UNSUPPORTED: "格式不支持",
-    TIMEOUT: "处理超时",
-    PERMISSION: "没有权限",
-}
+# —— 读不了的五种原因（说法和第三期的状态表放在一处，material_rules）——
+PASSWORD = rules.PASSWORD
+CORRUPT = rules.CORRUPT
+UNSUPPORTED = rules.UNSUPPORTED
+TIMEOUT = rules.TIMEOUT
+PERMISSION = rules.PERMISSION
+REASON_LABELS = rules.REASON_LABELS
 
 PDF_WHOLE_LIMIT = 8 * 1024 * 1024
 PDF_HEAD = 2 * 1024 * 1024
@@ -96,24 +83,24 @@ _PDF_RAW_MARKERS = (b"/Font",)
 _PDF_STREAM_MARKERS = (b"/Font", b" Tf", b"BT\n", b"BT\r", b"BT ")
 
 
-def file_ext(name: str) -> str:
-    _stem, dot, ext = name.rpartition(".")
-    return ext.lower() if dot and _stem else ""
+file_ext = rules.file_ext
 
 
 def layer_for(name: str) -> str:
-    ext = file_ext(name)
-    if ext in TEXT_EXTS:
+    """盘点报告的四层：PDF 和 iWork 算在文档正文里。"""
+    layer = rules.layer_for(name)
+    if layer in {rules.LAYER_TEXT, rules.LAYER_PDF, rules.LAYER_UNSUPPORTED}:
         return TEXT
-    if ext in IMAGE_EXTS:
+    if layer == rules.LAYER_IMAGE:
         return IMAGE
-    if ext in AUDIO_EXTS or ext in VIDEO_EXTS:
+    if layer == rules.LAYER_MEDIA:
         return MEDIA
     return NAME_ONLY
 
 
 def is_system_shadow(name: str) -> bool:
-    return name.startswith("._") or name in SYSTEM_NAMES
+    """静默跳过的名字，和文件名索引、内容读取共用 material_rules.silent_skip。"""
+    return rules.silent_skip(name)
 
 
 # —— 内容偷看 ——
@@ -137,7 +124,8 @@ def peek_pdf(path: Path, size: int) -> tuple[str | None, str | None]:
     if b"%PDF" not in data[:1024]:
         return CORRUPT, None
     if b"/Encrypt" in data:
-        return PASSWORD, None
+        # 只禁止复制、打印的 PDF 也带这个标记，多数能读；第三期读的时候才知道是不是真要密码
+        return None, "encrypted"
     if any(marker in data for marker in _PDF_RAW_MARKERS):
         return None, "text"
     for index, match in enumerate(_STREAM_RE.finditer(data)):
@@ -164,8 +152,16 @@ def peek_ooxml(path: Path) -> str | None:
     with path.open("rb") as handle:
         head = handle.read(8)
     if head == _OLE_MAGIC:
-        # 加密的 docx/xlsx/pptx 外面是一层 OLE 容器
-        return PASSWORD
+        # 加密的 docx/xlsx/pptx 外面是一层复合文档，里面有 EncryptedPackage；
+        # 没有的是改了扩展名的老 Office 文件，照老格式读
+        try:
+            document, handle = formats.open_cfb(path)
+        except formats.Unreadable:
+            return CORRUPT
+        try:
+            return PASSWORD if formats.cfb_kind(document) == "encrypted_ooxml" else None
+        finally:
+            handle.close()
     try:
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
@@ -212,7 +208,7 @@ class Walk:
         self.layers[IMAGE]["small"] = 0
         self.layers[MEDIA].update({"audio": 0, "video": 0, "seconds": 0.0, "probed": 0})
         self.extensions: Counter[str] = Counter()
-        self.pdf = Counter({"text": 0, "scanned": 0, "unknown": 0})
+        self.pdf = Counter({"text": 0, "scanned": 0, "unknown": 0, "encrypted": 0})
         self.unreadable: dict[str, dict[str, Any]] = {
             reason: {"count": 0, "samples": []} for reason in REASON_LABELS
         }
@@ -484,6 +480,8 @@ def render_report(report: dict[str, Any]) -> str:
             f"  PDF：有文字层 {pdf['text']} 个，像扫描件 {pdf['scanned']} 个（要走图片文字识别），"
             f"看不出来 {pdf['unknown']} 个"
         )
+        if pdf.get("encrypted"):
+            lines.append(f"  PDF 带加密标记（多数能读，第三期读的时候才知道）：{pdf['encrypted']} 个")
     if report["name_only_dirs"]:
         lines.append("")
         lines.append("只收文件名的文件夹：")

@@ -7,7 +7,8 @@
   出现不算（它们作为「挡板」一起扫）；字母词前后不能是字母。次数只数逐字稿；只在纪要里写到的，词干要
   3 字以上才连，source=minutes。
 - 一个词干对应多份文件时一场会只连一份：说出了带版本的全名就连那份；否则连修改时间不晚于这场会的
-  最新一份；都晚于这场会就连最早的一份。你手动换过的（picked）不再自动改，文件不在了才换。
+  最新一份；都晚于这场会就连最早的一份。你手动换过的（picked）不再自动改；文件不在了先按内容标识
+  在同名文件里找回（3a），同名文件的标识还没算完就原样保留，找不回才换。
 - rejected（不是这份文件）永远不会被改回 active，只挡同一场会、同一个项目。
 - 通用词干（被本项目一半以上、至少 4 场会提到）照样存，读的时候标 generic。
 """
@@ -23,6 +24,7 @@ from typing import Any, Callable
 
 from .db import Database, utc_now
 from .file_stems import STEM_NO, STEM_TWICE, STEM_YES, stem_usability
+from .material_content import key_file_now
 from .material_index import MATCH_ZONES, STATE_MISSING, STATE_OFFLINE
 from .project_names import also_entries
 from .project_profile import MAX_ANCHORS, light_key, norm_key
@@ -110,7 +112,8 @@ class ProjectContext:
         files = [
             dict(row)
             for row in connection.execute(
-                f"""SELECT f.id, f.root_id, f.rel_path, f.name, f.stem, f.stem_key, f.mtime_ns
+                f"""SELECT f.id, f.root_id, f.rel_path, f.name, f.stem, f.stem_key, f.mtime_ns, f.size,
+                           f.content_key, f.content_size, f.content_mtime_ns
                       FROM material_files f JOIN project_material_roots r ON r.id = f.root_id
                      WHERE r.project_id = ? AND f.gone_at IS NULL AND f.stem_key != ''
                        AND f.zone IN ({_ZONES_SQL})""",
@@ -148,6 +151,22 @@ class ProjectContext:
         forms += [light_key(text) for text in blockers if light_key(text) and light_key(text) not in self.needles]
         self.scanner = FormScanner(forms) if self.needles else None
         self.files_by_id = {row["id"]: row for group in self.groups.values() for row in group}
+
+    def follow_picked(self, key: str, content_key: str | None) -> tuple[dict[str, Any] | None, bool]:
+        """你手动换过的文件不见了：在同一词干组的活文件里按内容标识找。返回 (找到的文件, 要不要等)。
+
+        组里还有没算出标识（或标识过时）的活文件时要等：这条提到原样保留，不退回自动选。"""
+        if not content_key:
+            return None, False
+        waiting = False
+        for row in sorted(self.groups.get(key, []), key=lambda item: item["id"]):
+            fresh = row["content_size"] == row["size"] and row["content_mtime_ns"] == row["mtime_ns"]
+            if row["content_key"] is None or not fresh:
+                waiting = True
+                continue
+            if row["content_key"] == content_key:
+                return row, False
+        return None, waiting
 
 
 # ---------------------------------------------------------------------- 一场会
@@ -264,8 +283,29 @@ def compute_mentions(
             continue
         group = context.groups[key]
         picked = 0
+        followed: dict[str, Any] | None = None
+        waiting = False
+        if previous is not None and previous["picked"] and previous["file_id"] not in context.files_by_id:
+            followed, waiting = context.follow_picked(key, previous.get("picked_key"))
+        if waiting:
+            # 还有没算出标识的同名文件：原样保留你选的那份，等内容循环算完标识再比
+            result[key] = {
+                "stem_key": key,
+                "file_id": previous["file_id"],
+                "needle": previous["needle"],
+                "count": count,
+                "first_ms": first_ms,
+                "anchors_json": json.dumps(anchors),
+                "minutes_count": wrote["count"] if wrote else 0,
+                "source": source,
+                "picked": 1,
+            }
+            continue
         if previous is not None and previous["picked"] and previous["file_id"] in context.files_by_id:
             chosen = context.files_by_id[previous["file_id"]]
+            picked = 1
+        elif followed is not None:
+            chosen = followed  # 挪了位置、改了文件夹：按内容找回，仍算你选的
             picked = 1
         elif versions:
             chosen = max(
@@ -383,7 +423,10 @@ def match_meeting(db: Database, row: dict[str, Any], contexts: dict[str, Project
         existing_all = [
             dict(item)
             for item in connection.execute(
-                "SELECT * FROM meeting_file_mentions WHERE meeting_id = ?", (meeting_id,)
+                """SELECT fm.*, pf.content_key AS picked_key
+                     FROM meeting_file_mentions fm LEFT JOIN material_files pf ON pf.id = fm.file_id
+                    WHERE fm.meeting_id = ?""",
+                (meeting_id,),
             ).fetchall()
         ]
     existing = {item["stem_key"]: item for item in existing_all if item["project_id"] == project_id}
@@ -709,5 +752,10 @@ def pick_mention_file(db: Database, meeting_id: str, stem_key: str, file_id: int
         )
         _invalidate_scan(connection, meeting_id)
         row.update(file_id=file_id, picked=1, status="active")
+    # 当场算好内容标识：以后文件挪了位置，按内容找回你选的这份（盘不在、读不了就算了）
+    try:
+        key_file_now(db, file_id)
+    except Exception:  # noqa: BLE001
+        pass
     return _result(row)
 

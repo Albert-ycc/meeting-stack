@@ -30,6 +30,8 @@ PUBLIC_SCOPE = "通用"
 SIMILAR_LIMIT = 10
 SIMILAR_FETCH = 60
 SIMILAR_MIN_SCORE = 0.45
+# 搜索词最多 200 个字（3f）
+QUERY_MAX_CHARS = 200
 
 # 纪要里的时间点：[00:12:34]、[12:34]，也认全角冒号
 _TIMESTAMP_RE = re.compile(r"\[(\d{1,2})[:：](\d{2})(?:[:：](\d{2}))?\]")

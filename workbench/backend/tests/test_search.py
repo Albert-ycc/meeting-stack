@@ -1,6 +1,7 @@
 """1e 检索：纪要可搜、词典同义展开、项目范围和没归项目的会、原词命中和意思相近的分开列。"""
 import json
 
+import numpy as np
 from fastapi.testclient import TestClient
 
 from meeting_workbench.config import Settings
@@ -200,15 +201,22 @@ def test_hybrid_lists_similar_segments_separately_and_skips_what_is_already_list
     semantic = app.state.semantic
     monkeypatch.setattr(semantic, "busy_check", lambda: False)
 
-    def fake_search(query, limit):
-        return [
+    def fake_search_vector(vector, *, scope=None, limit=20):
+        rows = [
             {"segment_id": "vm-1-s0", "meeting_id": "vm-1", "project_id": "p-yt", "score": 0.9, "text": "随访方案发给研发"},
             {"segment_id": "vm-1-s1", "meeting_id": "vm-1", "project_id": "p-yt", "score": 0.7, "text": "复诊安排"},
             {"segment_id": "vm-2-s0", "meeting_id": "vm-2", "project_id": None, "score": 0.6, "text": "回访计划"},
             {"segment_id": "vm-x", "meeting_id": "vm-2", "project_id": None, "score": 0.2, "text": "无关"},
         ]
+        # 3f：范围在取前 60 之前就过滤掉
+        if scope == "none":
+            rows = [row for row in rows if not row["project_id"]]
+        elif scope:
+            rows = [row for row in rows if row["project_id"] == scope]
+        return rows[:limit]
 
-    monkeypatch.setattr(semantic, "search", fake_search)
+    monkeypatch.setattr(semantic, "encode_query", lambda query: np.ones(4, dtype=np.float32))
+    monkeypatch.setattr(semantic, "search_vector", fake_search_vector)
     client = TestClient(app)
 
     body = client.get("/api/search", params={"q": "随访方案"}).json()
@@ -229,7 +237,8 @@ def test_search_still_answers_while_transcribing_or_without_the_model(tmp_path, 
     semantic = app.state.semantic
     calls = []
     monkeypatch.setattr(semantic, "busy_check", lambda: True)
-    monkeypatch.setattr(semantic, "search", lambda query, limit: calls.append(query) or [])
+    monkeypatch.setattr(semantic, "encode_query", lambda query: calls.append(query) or np.ones(4, dtype=np.float32))
+    monkeypatch.setattr(semantic, "search_vector", lambda vector, *, scope=None, limit=20: [])
     client = TestClient(app)
 
     busy = client.get("/api/search", params={"q": "随访方案"})
@@ -238,11 +247,11 @@ def test_search_still_answers_while_transcribing_or_without_the_model(tmp_path, 
     assert [item["segment_id"] for item in busy.json()["items"]] == ["vm-1-s0"]
     assert calls == []
 
-    def missing_model(query, limit):
+    def missing_model(query):
         raise SemanticUnavailable("本地语义模型依赖尚未安装")
 
     monkeypatch.setattr(semantic, "busy_check", lambda: False)
-    monkeypatch.setattr(semantic, "search", missing_model)
+    monkeypatch.setattr(semantic, "encode_query", missing_model)
     unavailable = client.get("/api/search", params={"q": "随访方案"}).json()
     assert unavailable["semantic_unavailable"] == "本地语义模型依赖尚未安装"
     assert unavailable["similar"] == []

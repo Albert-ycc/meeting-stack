@@ -19,6 +19,7 @@ import type {
   MeetingFocus,
   StatusPhrase,
 } from "./graphTypes";
+import { fileExt, withRecentFiles, type PinnedFile } from "./graphFiles";
 import { readGraphWindow, recordGraphOpen, writeGraphWindow } from "./graphPrefs";
 import { attentionOrder, layoutStarMap, mentionLabel, type StarLayout } from "./layout";
 import { MeetingFocusView } from "./MeetingFocusView";
@@ -77,11 +78,6 @@ function withSubfolders(graph: GraphPayload, roots: GraphRootsPayload | null): G
   }
   if (!folders.length) return graph;
   return { ...graph, folders: [...graph.folders, ...folders], edges: [...graph.edges, ...edges] };
-}
-
-function fileExt(name: string) {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
 /**
@@ -179,6 +175,7 @@ function sameUndo(a: GraphNoticeUndo, b: GraphNoticeUndo) {
   }
   if (a.kind === "task" && b.kind === "task") return a.taskId === b.taskId;
   if (a.kind === "mention" && b.kind === "mention") return a.meetingId === b.meetingId && a.stemKey === b.stemKey;
+  if (a.kind === "deliverable" && b.kind === "deliverable") return a.deliverableId === b.deliverableId;
   return false;
 }
 
@@ -300,6 +297,8 @@ export interface ProjectGraphProps {
   onOpenProject: (projectId: string) => void;
   onOpenAttributionReview?: () => void;
   onProjectsChanged?: () => void | Promise<void>;
+  /** 3g：打开预览抽屉（图上放不下的文件、展开一场会里的交付物小签） */
+  onOpenPreview?: (fileId: number, startMs?: number) => void;
 }
 
 export function ProjectGraph({
@@ -319,6 +318,7 @@ export function ProjectGraph({
   onOpenProject,
   onOpenAttributionReview,
   onProjectsChanged,
+  onOpenPreview,
 }: ProjectGraphProps) {
   const [windowChoice, setWindowChoice] = useState<GraphWindow | null>(() => readGraphWindow(projectId));
   // 用户一旦自己选了时间窗，深链目标就不再撑大窗口
@@ -350,6 +350,9 @@ export function ProjectGraph({
   const player = useMiniPlayer();
   const requestRef = useRef(0);
   const missingRef = useRef<string | null>(null);
+  // 3g：从面板、深链点出来要在图上补出的那一个文件；深链的文件先取名字和根目录
+  const [pinned, setPinned] = useState<PinnedFile | null>(null);
+  const [fileLookup, setFileLookup] = useState<{ id: string; state: "loading" | "failed" } | null>(null);
 
   useEffect(() => {
     recordGraphOpen();
@@ -439,8 +442,9 @@ export function ProjectGraph({
     if (!graph) return null;
     const movedOut = graph.moved_out.filter((item) => Date.parse(item.undo_until) > clock);
     const base = withSubfolders(movedOut.length === graph.moved_out.length ? graph : { ...graph, moved_out: movedOut }, roots);
-    return withMentionedFiles(base, contextOnGraph, extraFiles);
-  }, [clock, contextOnGraph, extraFiles, graph, roots]);
+    // 3g：会上提到的文件优先，再补从面板点出来的那一个、最近改过的文件
+    return withRecentFiles(withMentionedFiles(base, contextOnGraph, extraFiles), roots, pinned);
+  }, [clock, contextOnGraph, extraFiles, graph, pinned, roots]);
 
   useEffect(() => {
     const deadlines = [
@@ -501,6 +505,36 @@ export function ProjectGraph({
       onSelectionChange(resolved);
       return;
     }
+    // 3g：点出来的文件补到了图上却放不下（材料那一侧的槽位满了）：直接打开预览抽屉，不留空选中
+    if (pinned && selection === `file:${pinned.file_id}`) {
+      setPinned(null);
+      onSelectionChange(null);
+      if (onOpenPreview) onOpenPreview(pinned.file_id);
+      else setNotice("图上放不下这个文件了", "warning");
+      return;
+    }
+    // 3g：深链到不在图上的文件：先取文件信息补成节点，取回前不说「不在当前的图上」
+    const fileId = /^file:(\d+)$/.exec(selection)?.[1];
+    if (fileId && selection === focus && typeof apiClient.getGraphFile === "function") {
+      if (fileLookup?.id !== selection) {
+        setFileLookup({ id: selection, state: "loading" });
+        apiClient
+          .getGraphFile(Number(fileId))
+          .then((detail) => {
+            if (detail.file.project_id !== projectId || detail.file.gone) throw new Error("不在这个项目里");
+            setPinned({
+              file_id: detail.file.id,
+              name: detail.file.name,
+              rel_path: detail.file.rel_path,
+              root_id: detail.file.root_id,
+              folder: `root:${detail.file.root_id}`,
+            });
+          })
+          .catch(() => setFileLookup({ id: selection, state: "failed" }));
+        return;
+      }
+      if (fileLookup.state === "loading") return;
+    }
     // 会上提到的文件、像是新需求、等补建的文件夹会随着数据来去（常常是你作答以后就没了）：
     // 不是深链进来的，就悄悄收起面板，不说「不在当前的图上」
     if (selection !== focus && /^(file:|e:file:|nr:|e:nr:|pending:)/.test(selection)) {
@@ -516,7 +550,24 @@ export function ProjectGraph({
       "warning",
     );
     onSelectionChange(null);
-  }, [contextOnGraph, extraFiles, focus, graph, layout, onSelectionChange, resolved, roots, selection, setNotice]);
+  }, [
+    apiClient,
+    contextOnGraph,
+    extraFiles,
+    fileLookup,
+    focus,
+    graph,
+    layout,
+    onOpenPreview,
+    onSelectionChange,
+    pinned,
+    projectId,
+    resolved,
+    roots,
+    selection,
+    setNotice,
+  ]);
+
 
   const select = useCallback(
     (id: string | null) => {
@@ -529,6 +580,15 @@ export function ProjectGraph({
       onSelectionChange(id);
     },
     [onSelectionChange, selection],
+  );
+
+  /** 文件夹面板、最近改过的文件、散放文件的文件行：在图上补出这个文件并打开文件面板（放不下时打开预览抽屉） */
+  const openFile = useCallback(
+    (file: PinnedFile) => {
+      setPinned(file);
+      select(`file:${file.file_id}`);
+    },
+    [select],
   );
 
   const goBack = () => {
@@ -617,6 +677,11 @@ export function ProjectGraph({
         await apiClient.restoreFileMention(entry.meetingId, entry.stemKey);
         clearBriefCache();
         showNotice(`已撤销：这场会又连回「${entry.name}」`);
+      } else if (entry.kind === "deliverable") {
+        await apiClient.removeDeliverable(entry.taskId, entry.deliverableId);
+        showNotice(`已撤销：「${entry.name}」不再是「${entry.taskTitle}」的交付物`);
+        // 展开的会马上重读，交付物小签跟着消失
+        setFocusTick((tick) => tick + 1);
       } else {
         await apiClient.updateTask(entry.taskId, entry.before);
         clearBriefCache();
@@ -753,6 +818,7 @@ export function ProjectGraph({
           onCollapse={() => setExpanded(null)}
           onExpand={(meetingId) => setExpanded(meetingId)}
           onOpenMeeting={onOpenMeeting}
+          onOpenPreview={onOpenPreview}
           onRetry={() => setFocusTick((tick) => tick + 1)}
           onSelect={setFocusSel}
           panelOpen={Boolean(focusSel && shownFocus)}
@@ -775,6 +841,7 @@ export function ProjectGraph({
               onChanged={changed}
               onClose={() => setFocusSel(null)}
               onNotice={showNotice}
+              onOpenPreview={onOpenPreview}
               onOpenRequirement={onOpenRequirement}
               onSelect={setFocusSel}
               player={player}
@@ -840,6 +907,7 @@ export function ProjectGraph({
               onOpenMeeting={onOpenMeeting}
               onOpenProject={onOpenProject}
               onOpenRequirement={onOpenRequirement}
+              onOpenFile={openFile}
               onSelect={select}
               player={player}
               playerNode={player.node}

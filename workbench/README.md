@@ -97,9 +97,18 @@ Google Fonts CDN**，否则断网时字体掉回系统默认。
 .venv/bin/meeting-workbench backup
 .venv/bin/meeting-workbench verify-audio
 .venv/bin/meeting-workbench doctor
+# 材料读了多少、还剩多少、哪些读不了（只读；--project 只看一个项目，--json 出 JSON）
+.venv/bin/meeting-workbench materials status
+# 图片和扫描页用哪套认字：auto（默认，有 Vision 用 Vision，没有用 tesseract）、vision、tesseract、off；
+# 不给参数只看现在用的是哪套；不用重启服务
+.venv/bin/meeting-workbench materials ocr-engine tesseract
 ```
 
-### 材料盘点与图片文字识别试跑（给第三期摸底，只读）
+`doctor` 多了两项，只报告、不影响退出码：`materials`（Vision 程序编译好没有、tesseract 和中文语言包、
+textutil、ffmpeg、FunASR 找到没有，以及 macOS 版本和芯片型号）和 `material_fts`（材料全文表和片段对得上是 `ok`，
+恢复备份后还没补完是 `rebuilding`）。
+
+### 材料盘点与图片文字识别试跑（只读）
 
 ```bash
 # 走一遍所有项目挂的材料文件夹，按「文档正文 / 图片文字 / 音视频转写 / 只收文件名」分层统计，
@@ -237,11 +246,22 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
   后台循环会调 `SemanticIndex.rebuild()` 自动补齐，补齐前语义检索结果为空、全文检索不受影响。
   receipt 里的 `derived_stripped` 标明该快照是否做过这步剥离
 - 文件名索引（`material_files`、`material_dirs`、`material_index_state`）留在备份里，三张表要么一起留、要么一起清；
-  每 10 万个文件约 30–40 MB。只存文件名、大小和修改时间，不读文件内容
+  每 10 万个文件约 30–40 MB。只存文件名、大小和修改时间
+- 材料读出的文字（`material_contents`、`material_chunks`，以及转写断点 `material_media_jobs`、交付物连到的文件
+  `deliverable_files`）留在备份里：重新认字、重新转写要几个小时，还要资料盘插着。备份因此会变大，按资料盘约
+  10 万个文件估，每份多几百 MB，本机和外置盘各留 14 份，两边各多占几 GB（等你的材料盘点报告回来再校准）。
+  材料的全文表 `material_chunks_fts` 和向量 `material_chunk_vectors` 不进备份：全文表用 `'delete-all'` 清空
+  （普通 DELETE 反而让备份变大），同时在副本里记下 `material_fts_rebuild`。**用这份备份恢复后不需要额外操作**：
+  服务启动后由一个后台任务分批补回全文表（约 40 万段半分钟，断点续补），补完跑一次 integrity-check；补完之前
+  搜索页写「材料的全文索引在重建，结果可能不全」，读内容、转写的循环不动片段。向量由向量循环慢慢补，补完前
+  「意思相近的」材料结果少一些。receipt 的 `derived_tables` 只列这份备份实际清空了的表
+- 材料的文字只留在声档里：不进词典、不进项目线索、不进会议的全文索引，也不交给任何大模型。和会议录音一样，
+  Tailnet 里的设备（比如手机）能搜到材料、能预览、能播放材料里的录音；［在访达中显示］［打开文件夹］只在
+  声档所在的这台电脑上出现，远程的设备改成复制路径
 - 所有写接口要求同源、双提交 CSRF 与 `application/json`
 - 移动端界面只读，用于资料库、检索、播放和阅读；接口权限仍由 Tailnet ACL 控制，不把 UA 或屏幕尺寸当成鉴权凭据
 - 大录音通过 4 MiB JSON 分块上传，仅接受 `m4a/mp3/wav`，不会在浏览器或服务端一次性展开整段 Base64
-- 数据库使用 schema v14；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层和项目材料的文件名索引都保存在 SQLite。
+- 数据库使用 schema v15；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层、项目材料的文件名索引和材料内容都保存在 SQLite。
   外部文件与数据库草稿冲突时，必须明确选择保留草稿、
   采用外部版本或丢弃草稿；音频完整性及发布恢复冲突只能由对应复验流程关闭，解决一种冲突不会清除其他冲突
 - 逐字稿和纪要保存携带页面打开时的基础版本；遇到并发变化返回 409，并保留浏览器中的未保存文字
@@ -364,13 +384,71 @@ AI 还会提「这个项目里一件还没有的事」（新需求名）和会�
 会议面板列出这场会提到的文件，项目图画成文件节点和「提到」线；［不是这份文件］只挡这场会、这个项目。
 项目页材料那一节有每个文件夹的索引进度（`GET /api/materials/index-status`）。
 
+## 项目材料的内容索引（260927，第三期）
+
+第二期只收文件名，这期把材料的内容也读进来：搜索能搜到 Word 正文、扫描件和截图里的字、录音里说过的话，
+点开就能预览；关系图上看得到每个文件夹最近改过的文件，文件能标成任务的交付物。都在后台慢慢做，
+会议在转写时让路，不用你管。设计和开发清单在 Claude Doc「录音与项目材料智能关联方案」的第三期两页。
+
+**四层**（`material_rules.py`）：文件名（第二期，所有文件都收）之外，按扩展名分三层读内容。
+
+| 层 | 哪些文件 | 怎么读 |
+|---|---|---|
+| 文档正文 | 纯文字和代码、docx/xlsx/pptx、ODF、EPUB、HTML、老 Word 和 RTF（macOS 自带的 textutil）、老 Office 复合文档 | 常驻读取进程 `extract_worker.py`，每份最多 20 万字，60 秒超时（超时的下次给 120 秒） |
+| 图片文字和 PDF | 图片；PDF | PDF 的文字层一直由 macOS 自带的 PDFKit 读，字少或乱码的页再认字；认字用 Vision（macOS 自带，要 Xcode 命令行工具）或 tesseract，`materials ocr-engine` 切换。PDF 最多读 300 页 |
+| 音视频转写 | 录音、视频 | 声档自己用 FunASR 转，不走中转、不变成会议（`material_media.py`）；按 10 分钟一段，最多转前 6 小时，断点续转；和某场会议原始录音一模一样的不再转 |
+
+Keynote、Pages、Numbers 直接记「格式不支持」；`声档会议记录/` 里的卡片、编译产物这类只收文件名。
+
+**按内容认文件**（`material_content.py`）：每个文件算一个内容标识（16 MB 以内整份 sha256，更大的取头尾和几段样本），
+读出的文字挂在标识上。所以文件挪位置、改名、复制都不重读；改了内容才重读。刚改过的文件（2 分钟内，音视频 10 分钟内）
+等它写完再读。读的时候出错一律先看盘还在不在，盘掉了就停这一轮，不记成读不了；读不了分五种：要密码、文件损坏、
+格式不支持、处理超时、没有权限。没人引用的内容 30 天后、所有盘都在线且扫完时才删。
+
+**让路**（`busy.py`）：中转在稳定录音或转写、会后在跑 Whisper 对照稿或千问影子转写时，读内容、认字、转写、补向量
+都先停，首页标签写「转写会议时先停」；材料转写进程会被立刻杀掉，转好的段留着下次接着转。所有读取程序在 macOS 上
+用 `taskpolicy -b`（后台优先级）启动，只读原文件，输出都写在 `~/.meeting-workbench/` 下，不在资料盘上留东西。
+Vision 程序第一次用时在 `~/.meeting-workbench/bin/` 下编译。
+
+**在哪看**：首页「材料 还剩 N 个」；项目页每个根目录一行「正文、图片文字、录音已读 N 个，还剩 M 个」，读不了的
+可以展开逐个看、点开预览；命令行 `materials status`。识别程序没装时写明缺什么、怎么装，装好后 10 分钟内自动接着读。
+
+**搜索**（`material_search.py`、`material_vectors.py`）：检索页在会议结果后面列「材料里的」，一份内容一行
+（放在几处写几处），带命中的原文和位置（第几页、哪张表、录音里的第几分几秒），点开预览抽屉；最多 20 份，
+按修改时间从新到旧。3 个字以上的词走全文表；两个字的词选了项目时逐段扫，「全部项目」时只比文件名。
+「意思相近的」材料用同一个本地语义模型，向量在后台慢慢补（语义检索关着时不补）。资料盘没插时照样能搜、
+能看上次读到的文字，图片那块写「资料盘未连接」。
+
+**预览抽屉**（`MaterialPreview`）：搜索结果、项目页读不了的列表、关系图文件面板、任务抽屉里的文件交付物都打开它：
+读到哪一步、文字前 40 行、表格前 5 行、图片和 PDF 第一页的预览图（缓存在 `~/.meeting-workbench/material-previews/`，
+超过 500 MB 删最久没用的）、录音和视频能直接播放并跳到命中的那句。
+
+**关系图**（`material_graph.py`、`graphFiles.ts`）：每个文件夹最多补 3 个最近改过的文件、全图最多 12 个，不挤动已有节点；
+还没读到、在等你装识别程序、读不了的文件节点上有小标记。项目、文件夹、散放、会议记录面板里的文件都能点，点了在图上
+补出来（放不下时直接打开预览）。文件面板有预览和［标为交付物］（选一个没做完的任务，能撤销）。交付物按内容标识连到文件，
+挪了位置也找得到，找不到时写「找不到这个文件了」；展开一场会时任务旁边画交付物小签，点了预览。
+
+**升级到这一版**（在跑声档的 Mac 上）：
+
+1. 拉到最新代码后跑 `./workbench/scripts/install-local.sh`（装依赖、跑测试、构建前端），再
+   `cd workbench && ./scripts/stop-web.sh && ./scripts/start-via-ssh.sh` 重启。第一次启动会先自动备份，再迁移到 schema v15。
+2. 要读 PDF、认图片里的字，先装 Xcode 命令行工具（`xcode-select --install`）；只想认图片也可以装
+   `brew install tesseract tesseract-lang`。没装时那些文件标「在等你」，装好后 10 分钟内自动接着读。
+3. 跑 `.venv/bin/meeting-workbench doctor`，看 `materials` 那项：Vision 程序编译好了、ffmpeg 和 FunASR 都找到了。
+   Vision 程序第一次在后台编译，要一两分钟。
+4. 首页出现「材料 还剩 N 个」并慢慢变少。资料盘大时第一轮要读很久，期间照常用；会议转写时它自己停下。
+
 ## 数据库迁移
 
-首次启动会自动备份并把数据库迁移到当前 schema v14（v7 曾新增 tasks / task_events /
+首次启动会自动备份并把数据库迁移到当前 schema v15（v7 曾新增 tasks / task_events /
 deliverables / task_extractions / notifications 五张表及 projects.origin 列；v8 新增
 术语词典 glossary_terms / glossary_suggestions 两张表，快照导出到
 `~/.meeting-workbench/glossary-snapshot.json` 供转写侧消费；v9 新增 `meetings.project_origin` 与
-`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列。都是只加不改）。
+`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`。都是只加不改）。
+
+**从 v15 退回 v14**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=14` 后用 v14 的代码启动。
+不要删 v15 的新表和新列：v14 用不到它们，删列还得先删索引。回滚期间文件名索引照常更新；回到 v15 时大小或修改时间
+对不上的文件会重算内容标识，内容没变就不重读。
 
 **从 v14 退回 v13**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=13` 后用 v13 的代码启动。
 不要删 v14 的新表：meetings、events 上的新触发器会引用它们，删了表 v13 下改会议会报错。v13 会忽略新表和新列；

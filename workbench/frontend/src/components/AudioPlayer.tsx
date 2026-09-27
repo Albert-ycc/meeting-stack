@@ -9,6 +9,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import WaveSurfer from "wavesurfer.js";
 
 import { formatTime } from "../format";
+import { claimSound } from "./soundFocus";
 import { useTheme } from "../theme";
 
 export interface AudioPlayerHandle {
@@ -256,7 +257,14 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(funct
           </div>
           <div className="transport-buttons">
             <button aria-label="后退 10 秒" onClick={() => jump(-10)} type="button">−10</button>
-            <audio aria-label="录音播放器" controls preload="metadata" ref={audioRef} src={mediaUrl} />
+            <audio
+              aria-label="录音播放器"
+              controls
+              onPlay={(event) => claimSound(event.currentTarget)}
+              preload="metadata"
+              ref={audioRef}
+              src={mediaUrl}
+            />
             <button aria-label="前进 10 秒" onClick={() => jump(10)} type="button">+10</button>
           </div>
           <label className="speed-control">

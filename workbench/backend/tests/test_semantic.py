@@ -143,7 +143,7 @@ def test_semantic_search_get_does_not_rebuild_or_sync_relay_substate(tmp_path, m
         return {}
 
     monkeypatch.setattr(app.state.semantic, "rebuild", rebuild)
-    monkeypatch.setattr(app.state.semantic, "search", lambda _query, limit: [])
+    monkeypatch.setattr(app.state.semantic, "search", lambda _query, limit, scope=None: [])
     monkeypatch.setattr(app.state.relay, "status", relay_status)
     monkeypatch.setattr(app.state.relay, "set_substate", relay_set)
 

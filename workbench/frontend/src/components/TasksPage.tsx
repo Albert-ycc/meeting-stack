@@ -20,6 +20,8 @@ interface TasksPageProps {
   onOpenProject: (projectId: string) => void;
   onOpenMeeting: (meetingId: string, seekMs?: number) => void;
   onOpenRequirement: (id: string) => void;
+  /** 3g：任务抽屉里的文件交付物点了打开预览抽屉 */
+  onOpenPreview?: (fileId: number) => void;
 }
 
 type TabKey = "all" | "pending" | "in_progress" | "done" | "expired" | "cancelled";
@@ -92,6 +94,7 @@ export function TasksPage({
   onOpenProject,
   onOpenMeeting,
   onOpenRequirement,
+  onOpenPreview,
 }: TasksPageProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [total, setTotal] = useState(0);
@@ -829,6 +832,7 @@ export function TasksPage({
           onChanged={() => void load()}
           onClose={() => setDrawerTaskId(null)}
           onOpenMeeting={onOpenMeeting}
+          onOpenPreview={onOpenPreview}
           onOpenRequirement={onOpenRequirement}
           parentBusy={busy}
           taskId={drawerTaskId}

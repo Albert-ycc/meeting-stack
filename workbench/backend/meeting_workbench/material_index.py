@@ -26,7 +26,8 @@ from typing import Any, Callable
 
 from .db import Database, utc_now
 from .file_stems import derive_stem, stem_key
-from .material_walk import NAME_ONLY_DIRS, PACKAGE_EXTS, file_ext, is_system_shadow
+from .material_rules import silent_skip
+from .material_walk import NAME_ONLY_DIRS, PACKAGE_EXTS, file_ext
 from .materials import CARDS_DIR_NAME, ROOT_MISSING, ROOT_ONLINE, volume_state
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ def _file_zone(name: str, dir_zone: str, *, package: bool) -> str:
 
 
 def _skipped_name(name: str) -> bool:
-    return is_system_shadow(name) or name.startswith("~$")
+    return silent_skip(name)
 
 
 def _prefix_where(column: str = "dir_rel") -> str:
@@ -221,7 +222,7 @@ class MaterialIndexer:
         self._dirs = {
             row["dir_rel"]: row
             for row in self.db.query_all(
-                "SELECT dir_rel, mtime_ns, zone, child_count FROM material_dirs WHERE root_id = ?",
+                "SELECT dir_rel, mtime_ns, zone, child_count, symlinks FROM material_dirs WHERE root_id = ?",
                 (root_id,),
             )
         }
@@ -349,6 +350,8 @@ class MaterialIndexer:
             return self._unreadable(dir_rel, error)
         files: dict[str, dict[str, Any]] = {}
         subdirs: list[str] = []
+        partial = False
+        symlinks = 0
         for entry in entries:
             name = entry.name
             self._entries += 1
@@ -357,6 +360,7 @@ class MaterialIndexer:
             rel = _join(dir_rel, name)
             try:
                 if entry.is_symlink():
+                    symlinks += 1  # 不跟进去，只记个数
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     if rel in self._skip:
@@ -368,17 +372,26 @@ class MaterialIndexer:
                         subdirs.append(rel)
                     continue
                 child = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue  # 列目录和 stat 之间被删掉了：就当不在
             except OSError:
+                # 一时读不了（资料盘刚从休眠醒来最常见）：先看盘还在不在，不在就停这一轮；
+                # 在的话这个目录这次没读全，已知的行一律不标不见、不删子树，下一轮一定重读。
+                self._check_root(self._root)
+                partial = True
                 continue
             if not stat.S_ISREG(child.st_mode):
                 continue
             files[rel] = self._file_row(name, dir_rel, zone, child.st_size, child.st_mtime_ns, package=False)
         unchanged_listing = (
-            unchanged and known is not None and int(known["child_count"]) == len(entries)
+            unchanged
+            and known is not None
+            and int(known["child_count"]) == len(entries)
+            and int(known.get("symlinks") or 0) == symlinks
         )
         self._write_dir(
-            root_id, dir_rel, info.st_mtime_ns, zone, len(entries), files=files, subdirs=subdirs,
-            touch_dir=not unchanged_listing,
+            root_id, dir_rel, None if partial else info.st_mtime_ns, zone, len(entries), files=files,
+            subdirs=subdirs, touch_dir=partial or not unchanged_listing, partial=partial, symlinks=symlinks,
         )
         return subdirs
 
@@ -409,14 +422,18 @@ class MaterialIndexer:
         self,
         root_id: int,
         dir_rel: str,
-        mtime_ns: int,
+        mtime_ns: int | None,
         zone: str,
         child_count: int,
         *,
         files: dict[str, dict[str, Any]] | None,
         subdirs: list[str] | None,
         touch_dir: bool = True,
+        partial: bool = False,
+        symlinks: int = 0,
     ) -> None:
+        """partial：这次有条目没读出来。列出来的照常写，没列出来的行不标不见、子目录不删；
+        mtime_ns 写成空（和新子目录的占位一样），下一轮一定重读。"""
         now = utc_now()
         with self.db.transaction() as connection:
             self._same_root(connection)
@@ -464,7 +481,11 @@ class MaterialIndexer:
                         new_stems.add(item["stem_key"])
                     if row["stem_key"] != item["stem_key"] or item["zone"] not in MATCH_ZONES:
                         dirty_files.append(row["id"])
-                gone = [row["id"] for rel, row in existing.items() if rel not in files and row["gone_at"] is None]
+                gone = [
+                    row["id"]
+                    for rel, row in existing.items()
+                    if rel not in files and row["gone_at"] is None and not partial
+                ]
                 if gone:
                     connection.executemany(
                         "UPDATE material_files SET gone_at = ? WHERE id = ?", [(now, file_id) for file_id in gone]
@@ -472,6 +493,9 @@ class MaterialIndexer:
                     dirty_files.extend(gone)
             if subdirs is not None:
                 current = set(subdirs)
+                if partial:
+                    # 这次列不出的子目录照旧保留
+                    current |= self._children.get(dir_rel, set())
                 for child in sorted(self._children.get(dir_rel, set()) - current):
                     dirty_files.extend(self._drop_subtree(connection, root_id, child, now))
                 # 先给新出现的子目录占一行（修改时间为空＝还没读过）：本轮在读到它之前停下时，
@@ -485,15 +509,17 @@ class MaterialIndexer:
                 self._children[dir_rel] = current
             if touch_dir:
                 connection.execute(
-                    """INSERT INTO material_dirs(root_id, dir_rel, mtime_ns, listed_at, zone, child_count)
-                       VALUES (?, ?, ?, ?, ?, ?)
+                    """INSERT INTO material_dirs(root_id, dir_rel, mtime_ns, listed_at, zone, child_count, symlinks)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(root_id, dir_rel) DO UPDATE SET mtime_ns = excluded.mtime_ns,
                            listed_at = excluded.listed_at, zone = excluded.zone,
-                           child_count = excluded.child_count""",
-                    (root_id, dir_rel, mtime_ns, now, zone, child_count),
+                           child_count = excluded.child_count, symlinks = excluded.symlinks""",
+                    (root_id, dir_rel, mtime_ns, now, zone, child_count, symlinks),
                 )
             self._dirty_meetings(connection, root_id, dirty_files, new_stems)
-        self._dirs[dir_rel] = {"dir_rel": dir_rel, "mtime_ns": mtime_ns, "zone": zone, "child_count": child_count}
+        self._dirs[dir_rel] = {
+            "dir_rel": dir_rel, "mtime_ns": mtime_ns, "zone": zone, "child_count": child_count, "symlinks": symlinks,
+        }
 
     def _drop_subtree(self, connection: Any, root_id: int, dir_rel: str, now: str) -> list[int]:
         """父目录里不见了的子目录：整棵子树的文件写 gone_at，目录记录删掉。"""

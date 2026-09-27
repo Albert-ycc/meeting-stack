@@ -1,13 +1,19 @@
-/* 关系图面板里第二期的几类：会上提到的文件（2d）、「像是新需求」和等补建的文件夹（2c） */
-import { useEffect, useState } from "react";
+/* 关系图面板里第二期的几类：会上提到的文件（2d）、「像是新需求」和等补建的文件夹（2c）；
+   第三期文件面板加预览、交付物、［标为交付物 ▾］（3g） */
+import { useEffect, useId, useState } from "react";
 
 import { formatMonthDayClock, formatTime } from "../../format";
-import type { NameCandidatesPayload } from "../../types";
+import type { MaterialFilePreview, NameCandidatesPayload, Task } from "../../types";
+import { PreviewBlock } from "../MaterialPreview";
 import { NewNamePrompt } from "../NewNamePrompt";
 import type { GraphPanelProps } from "./GraphPanel";
 import type { FilesState, GraphEdge, GraphFileDetail, GraphFolder, GraphSuggestedRequirement, MeetingBrief } from "./graphTypes";
 import { meetingDateLabel } from "./layout";
-import { CopyPath, PlayButton, Section, loadBrief, localUndoUntil, playMeetingAt } from "./panelParts";
+import { CopyPath, PlayButton, Section, TASK_STATUS, loadBrief, localUndoUntil, playMeetingAt } from "./panelParts";
+
+/** ［标为交付物 ▾］最多列这么多个任务 */
+export const DELIVERABLE_TASKS_MAX = 30;
+const OPEN_TASK_STATUSES = "pending_confirm,confirmed,in_progress";
 
 /** 会议面板里文件列表为空时的说法（盘没插时列表照常显示，这句写在上面） */
 export const FILES_STATE_TEXT: Record<FilesState, string> = {
@@ -115,6 +121,142 @@ function formatClockHms(ms: number) {
   return formatTime(ms, true);
 }
 
+/** 文件面板顶上的预览：状态那一句加预览（?parts=preview，和预览抽屉同一个 PreviewBlock）；旧后端没有时不显示 */
+function FilePreview({ props, fileId }: { props: GraphPanelProps; fileId: number }) {
+  const [state, setState] = useState<{ id: number; data: MaterialFilePreview | null }>({ id: fileId, data: null });
+  const canLoad = typeof props.apiClient.getMaterialPreview === "function";
+  useEffect(() => {
+    if (!canLoad) return;
+    let active = true;
+    props.apiClient
+      .getMaterialPreview(fileId, "preview")
+      .then((data) => active && setState({ id: fileId, data }))
+      .catch(() => active && setState({ id: fileId, data: null }));
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canLoad, fileId, props.version]);
+  const data = state.id === fileId ? state.data : null;
+  if (!data) return null;
+  return <PreviewBlock data={data} onOpenMeeting={props.onOpenMeeting} player={props.player} />;
+}
+
+/** 最近的会的任务排前面（会的日期新的在前，没有会的按建的时间） */
+export function tasksForPicker(tasks: Task[], query: string): Task[] {
+  const needle = query.trim().toLocaleLowerCase();
+  return [...tasks]
+    .sort(
+      (a, b) =>
+        (b.meeting_recording_date ?? "").localeCompare(a.meeting_recording_date ?? "") ||
+        b.created_at.localeCompare(a.created_at),
+    )
+    .filter((task) => !needle || task.title.toLocaleLowerCase().includes(needle))
+    .slice(0, DELIVERABLE_TASKS_MAX);
+}
+
+/**
+ * ［标为交付物 ▾］：列本项目没做完的任务（待确认、已确认、进行中），能打字筛；选了立即生效，
+ * 不顺带把任务标成完成，提示里有［撤销］（10 分钟内，⌘Z 也能撤）。
+ */
+function MarkDeliverable({ props, fileId, fileName }: { props: GraphPanelProps; fileId: number; fileName: string }) {
+  const [open, setOpen] = useState(false);
+  const [tasks, setTasks] = useState<Task[] | null>(null);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const listId = useId();
+
+  useEffect(() => {
+    if (!open || tasks) return;
+    let active = true;
+    props.apiClient
+      .tasks({ project_id: props.graph.project.id, status: OPEN_TASK_STATUSES, limit: 500 })
+      .then((payload) => active && setTasks(payload.items))
+      .catch((reason: unknown) => active && setError(errorText(reason, "任务读取失败")));
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, tasks]);
+
+  const mark = async (task: Task) => {
+    setBusy(true);
+    try {
+      const detail = await props.apiClient.addDeliverable(task.id, { file_id: fileId });
+      setOpen(false);
+      props.onNotice(
+        `已标为『${task.title}』的交付物`,
+        detail.deliverable_id
+          ? {
+              kind: "deliverable",
+              taskId: task.id,
+              deliverableId: detail.deliverable_id,
+              taskTitle: task.title,
+              name: fileName,
+              until: localUndoUntil(),
+            }
+          : undefined,
+      );
+      await props.onChanged();
+    } catch (reason) {
+      props.onNotice(errorText(reason, "没标成"), undefined, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const shown = tasks ? tasksForPicker(tasks, query) : [];
+  return (
+    <div className="graph-panel__mark">
+      <button
+        aria-controls={open ? listId : undefined}
+        aria-expanded={open}
+        className="ghost-button"
+        disabled={busy}
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        标为交付物 ▾
+      </button>
+      {open && (
+        <div className="graph-panel__picker" id={listId}>
+          <input
+            aria-label="筛选任务"
+            autoFocus
+            maxLength={100}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="筛选任务"
+            type="search"
+            value={query}
+          />
+          {error ? (
+            <p className="graph-panel__error">{error}</p>
+          ) : !tasks ? (
+            <p className="graph-panel__muted">正在读任务…</p>
+          ) : shown.length === 0 ? (
+            <p className="graph-panel__muted">{tasks.length ? "没有对得上的任务" : "这个项目没有没做完的任务"}</p>
+          ) : (
+            <ul aria-label="选一个任务" className="graph-panel__list">
+              {shown.map((task) => (
+                <li key={task.id}>
+                  <button className="text-button" disabled={busy} onClick={() => void mark(task)} type="button">
+                    {task.title}
+                  </button>
+                  <small>
+                    {TASK_STATUS[task.status] ?? task.status}
+                    {task.meeting_title ? ` · ${task.meeting_title}` : ""}
+                  </small>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function FilePanelBody({
   props,
   fileId,
@@ -176,8 +318,13 @@ export function FilePanelBody({
       await props.onChanged();
     }, "撤销失败");
 
+  const deliverables = payload.deliverables;
+  // 旧后端的文件面板没有交付物：不显示这一节和［标为交付物］
+  const canMark = deliverables !== undefined && typeof props.apiClient.addDeliverable === "function" && !file.gone;
+
   return (
     <>
+      <FilePreview fileId={fileId} props={props} />
       <dl className="graph-panel__facts">
         <div>
           <dt>所在文件夹</dt>
@@ -254,7 +401,26 @@ export function FilePanelBody({
           </ul>
         </Section>
       )}
-      <CopyPath apiClient={props.apiClient} canReveal={canReveal} onNotice={props.onNotice} path={file.path} />
+      {deliverables !== undefined && (
+        <Section title={deliverables.length ? `是 ${deliverables.length} 个任务的交付物` : "交付物"}>
+          {deliverables.length ? (
+            <ul aria-label="是哪些任务的交付物" className="graph-panel__list">
+              {deliverables.map((item) => (
+                <li key={item.deliverable_id}>
+                  <span>{item.title}</span>
+                  <small>{TASK_STATUS[item.status] ?? item.status}</small>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="graph-panel__muted">还不是哪个任务的交付物</p>
+          )}
+        </Section>
+      )}
+      <div className="graph-panel__file-actions">
+        <CopyPath apiClient={props.apiClient} canReveal={canReveal} onNotice={props.onNotice} path={file.path} />
+        {canMark && <MarkDeliverable fileId={file.id} fileName={file.name} props={props} />}
+      </div>
     </>
   );
 }

@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import type { DiskState, GraphEdge, GraphMeeting, GraphPayload, GraphRootsPayload } from "./graphTypes";
+import { fileMark } from "./graphFiles";
 import { readHintSeen, writeHintSeen } from "./graphPrefs";
 import {
   DIRECTION_NAMES,
@@ -658,20 +659,27 @@ export function GraphCanvas({
         );
       case "file": {
         const file = node.data;
+        // 3g：读到哪一步的小标记（最近改过的、从面板点出来的文件才有 state）
+        const mark = fileMark(file.state, diskState(roots, file.folder) === "volume_offline");
         return positioned(
           node,
           {},
           <>
             <span aria-hidden="true" className="graph-file__icon">
               <span className="graph-file__ext">{(file.ext || "").replace(/^\./, "").slice(0, 4)}</span>
+              {mark && (
+                <span className={`graph-file__mark graph-file__mark--${mark.tone}`} title={mark.text}>
+                  {mark.symbol}
+                </span>
+              )}
             </span>
             {detail !== "summary" && (
-              <span className="graph-node__label" title={file.rel_path || file.name}>
+              <span className="graph-node__label" title={mark ? `${file.rel_path || file.name}（${mark.text}）` : file.rel_path || file.name}>
                 {detail === "full" ? node.text : file.name.slice(0, 6)}
               </span>
             )}
           </>,
-          `graph-node--right${file.extra ? " graph-node--extra" : ""}`,
+          `graph-node--right${file.extra || file.recent ? " graph-node--extra" : ""}`,
           -10,
         );
       }

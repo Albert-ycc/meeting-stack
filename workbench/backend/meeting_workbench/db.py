@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -776,6 +776,8 @@ CREATE TABLE IF NOT EXISTS material_dirs (
     listed_at TEXT NOT NULL,
     zone TEXT NOT NULL DEFAULT 'normal' CHECK (zone IN ('normal', 'name_only', 'cards')),
     child_count INTEGER NOT NULL DEFAULT 0,
+    -- v15 / 3e：这一层里没跟进去的符号链接个数（覆盖率里写「符号链接 N 个没跟进去」）
+    symlinks INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (root_id, dir_rel)
 );
 
@@ -860,6 +862,99 @@ BEGIN
     DELETE FROM meeting_file_mentions
      WHERE meeting_id = NEW.id AND status = 'active' AND project_id IS NOT NEW.project_id;
 END;
+
+-- v15 / 3a：材料内容，一份内容一行（按 material_files.content_key），挪位置、改名、复制都共用。
+-- layer：text / pdf / image / media。state：pending 待读、done 读完、unreadable 读不了（reason
+-- 四种之一）、waiting 在等识别程序（note=engine_missing）。note 都不算读不了：small_image、
+-- no_text、no_speech、truncated、meeting_audio、engine_missing。没有权限记在文件行上，不在这里。
+CREATE TABLE IF NOT EXISTS material_contents (
+    content_key TEXT PRIMARY KEY,
+    layer TEXT NOT NULL CHECK (layer IN ('text', 'pdf', 'image', 'media')),
+    state TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending', 'done', 'unreadable', 'waiting')),
+    reason TEXT CHECK (reason IS NULL OR reason IN ('password', 'corrupt', 'unsupported', 'timeout')),
+    note TEXT,
+    extractor TEXT,
+    extractor_version INTEGER,
+    size INTEGER,
+    chars INTEGER NOT NULL DEFAULT 0,
+    chunks INTEGER NOT NULL DEFAULT 0,
+    pages INTEGER,
+    duration_ms INTEGER,
+    sha256 TEXT,
+    meeting_id TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_try_at TEXT,
+    orphan_since TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_material_contents_state ON material_contents(state, layer);
+
+-- 段落级片段，每段不超过 400 字。id 只增不复用：向量循环和内存矩阵靠它判断新旧。
+CREATE TABLE IF NOT EXISTS material_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_key TEXT NOT NULL REFERENCES material_contents(content_key) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL,
+    loc TEXT,
+    start_ms INTEGER,
+    end_ms INTEGER,
+    text TEXT NOT NULL,
+    UNIQUE(content_key, ordinal)
+);
+
+-- 材料的全文索引：外部内容表，文字只存一份；和会议的两张全文表分开。
+CREATE VIRTUAL TABLE IF NOT EXISTS material_chunks_fts USING fts5(
+    text,
+    content='material_chunks',
+    content_rowid='id',
+    tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS material_chunks_fts_insert
+AFTER INSERT ON material_chunks
+BEGIN
+    INSERT INTO material_chunks_fts(rowid, text) VALUES (NEW.id, NEW.text);
+END;
+CREATE TRIGGER IF NOT EXISTS material_chunks_fts_delete
+AFTER DELETE ON material_chunks
+BEGIN
+    INSERT INTO material_chunks_fts(material_chunks_fts, rowid, text) VALUES ('delete', OLD.id, OLD.text);
+END;
+CREATE TRIGGER IF NOT EXISTS material_chunks_fts_update
+AFTER UPDATE OF text ON material_chunks
+BEGIN
+    INSERT INTO material_chunks_fts(material_chunks_fts, rowid, text) VALUES ('delete', OLD.id, OLD.text);
+    INSERT INTO material_chunks_fts(rowid, text) VALUES (NEW.id, NEW.text);
+END;
+
+-- 意思相近用的向量（float16）。会议那张 embeddings 表的外键指着逐字稿段落，放不进材料。
+CREATE TABLE IF NOT EXISTS material_chunk_vectors (
+    chunk_id INTEGER NOT NULL REFERENCES material_chunks(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (chunk_id, model)
+);
+
+-- 音视频转写的断点，转完就删。parts 是已转好的句子（JSON）。
+CREATE TABLE IF NOT EXISTS material_media_jobs (
+    content_key TEXT PRIMARY KEY REFERENCES material_contents(content_key) ON DELETE CASCADE,
+    done_ms INTEGER NOT NULL DEFAULT 0,
+    total_ms INTEGER,
+    parts TEXT NOT NULL DEFAULT '[]',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    pid INTEGER,
+    updated_at TEXT NOT NULL
+);
+
+-- 交付物是资料盘里的文件时记下它的内容标识，挪了位置照样找得到。
+CREATE TABLE IF NOT EXISTS deliverable_files (
+    deliverable_id INTEGER PRIMARY KEY REFERENCES deliverables(id) ON DELETE CASCADE,
+    content_key TEXT,
+    root_id INTEGER,
+    rel_path TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_deliverable_files_content ON deliverable_files(content_key);
 """
 
 # 1g：关系图的持久版本号。这些表每次增删改都给 app_state 里的 graph_rev 加一，图接口拿它
@@ -1194,6 +1289,40 @@ class Database:
                          FROM meetings m
                          JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id"""
                 )
+            file_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(material_files)").fetchall()
+            }
+            for name, declaration in (
+                # v15 / 3a：内容标识和算它那一刻的大小、修改时间；只和这一处文件有关的出错
+                # （permission / io / corrupt / unsupported）、IO 错第几次、上次检查的时间。
+                ("content_key", "TEXT"),
+                ("content_size", "INTEGER"),
+                ("content_mtime_ns", "INTEGER"),
+                ("content_error", "TEXT"),
+                ("content_attempts", "INTEGER"),
+                ("content_checked_at", "TEXT"),
+            ):
+                if name not in file_columns:
+                    connection.execute(
+                        f"ALTER TABLE material_files ADD COLUMN {name} {declaration}"
+                    )
+            dir_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(material_dirs)").fetchall()
+            }
+            if "symlinks" not in dir_columns:
+                connection.execute(
+                    "ALTER TABLE material_dirs ADD COLUMN symlinks INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_material_files_content "
+                "ON material_files(content_key)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_material_files_mtime "
+                "ON material_files(root_id, mtime_ns)"
+            )
             # 会议卡片（1c）默认开启，但只对这之后新生成纪要的会自动写；上线前的历史会议
             # 等工作台横幅问过再补写。两个键都只在第一次启动时写入，之后不再改。
             now = utc_now()
@@ -1206,6 +1335,12 @@ class Database:
                 """INSERT OR IGNORE INTO app_state(key, value, updated_at)
                    VALUES ('cards_since', ?, ?)""",
                 (now, now),
+            )
+            # v15：认字引擎（auto / vision / tesseract / off），命令 materials ocr-engine 改。
+            connection.execute(
+                """INSERT OR IGNORE INTO app_state(key, value, updated_at)
+                   VALUES ('ocr_engine', 'auto', ?)""",
+                (now,),
             )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

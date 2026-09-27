@@ -12,6 +12,7 @@ import re
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -21,6 +22,7 @@ from urllib.error import HTTPError, URLError
 from .config import Settings
 from .db import Database, escape_like_pattern, utc_now
 from .glossary import rewrite_snapshot
+from .material_graph import decorate_deliverables
 from .materials import annotate_root, replace_material_roots
 from .notify import LarkNotifier
 from .project_names import (
@@ -68,6 +70,7 @@ EVENT_KINDS = {
     "comment",
     "status_changed",
     "deliverable_added",
+    "deliverable_removed",
     "regenerated",
     "expired",
     "reverted",
@@ -478,9 +481,11 @@ class TaskService:
                 "SELECT * FROM deliverables WHERE task_id=? ORDER BY id",
                 (task_id,),
             ).fetchall()
+            # 3g：file 类交付物带上 file_id、name、gone
+            deliverable_items = decorate_deliverables(connection, [dict(row) for row in deliverables])
         summary = self.task_summary(task)
         summary["events"] = [dict(row) for row in events]
-        summary["deliverables"] = [dict(row) for row in deliverables]
+        summary["deliverables"] = deliverable_items
         return summary
 
     def create_task(
@@ -908,24 +913,40 @@ class TaskService:
         self,
         task_id: str,
         *,
-        kind: str,
-        url: str,
+        kind: str | None = None,
+        url: str | None = None,
+        file_id: int | None = None,
         title: str = "",
         note: str = "",
         mark_done: bool = False,
+        state_of: Callable[[str], str] | None = None,
     ) -> dict[str, Any]:
+        """登记交付物。给 file_id（3g，关系图文件面板［标为交付物］）时服务端填 kind=file、url=完整路径、
+        title=文件名，另记 deliverable_files（内容标识、根目录、相对路径），文件挪了也找得到。
+        返回任务详情，另加 deliverable_id。"""
+        link: dict[str, Any] | None = None
+        if file_id is not None:
+            link = self._file_link(file_id, state_of=state_of)
+            kind, url = "file", link["path"]
+            title = title.strip() or link["name"]
         if kind not in DELIVERABLE_KINDS:
             raise ValueError(f"交付物类型必须是 {'/'.join(DELIVERABLE_KINDS)}")
-        url = url.strip()
+        url = (url or "").strip()
         if not url:
             raise ValueError("交付物链接不能为空")
         with self.db.transaction() as connection:
             self._row(connection, task_id)
-            connection.execute(
+            cursor = connection.execute(
                 """INSERT INTO deliverables(task_id, kind, url, title, note, created_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (task_id, kind, url, title.strip(), note.strip(), utc_now()),
             )
+            deliverable_id = int(cursor.lastrowid)
+            if link is not None:
+                connection.execute(
+                    "INSERT INTO deliverable_files(deliverable_id, content_key, root_id, rel_path) VALUES (?, ?, ?, ?)",
+                    (deliverable_id, link["content_key"], link["root_id"], link["rel_path"]),
+                )
             connection.execute(
                 "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_added', ?, ?)",
                 (task_id, f"登记交付物：{kind} {url}", utc_now()),
@@ -943,6 +964,56 @@ class TaskService:
                         "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'status_changed', ?, ?)",
                         (task_id, f"{task['status']} → done", now),
                     )
+        return {**self.get_task(task_id), "deliverable_id": deliverable_id}
+
+    def _file_link(self, file_id: int, *, state_of: Callable[[str], str] | None = None) -> dict[str, Any]:
+        """资料盘里的一个活文件：完整路径、文件名、内容标识。还没算过标识、盘又在线时现算一个（读这一个
+        文件；大文件只读头尾和几段样本）。算不出来就不记标识，之后按根目录加相对路径找。"""
+        from .material_content import compute_content_key
+        from .materials import ROOT_ONLINE, volume_state
+
+        row = self.db.query_one(
+            """SELECT f.id, f.name, f.rel_path, f.root_id, f.content_key, r.path AS root_path
+                 FROM material_files f JOIN project_material_roots r ON r.id = f.root_id
+                WHERE f.id = ? AND f.gone_at IS NULL""",
+            (file_id,),
+        )
+        if row is None:
+            raise NotFoundError("文件不在索引里（可能已经挪走或删掉了）")
+        root_path = str(row["root_path"]).rstrip("/")
+        path = f"{root_path}/{row['rel_path']}"
+        content_key = row["content_key"]
+        if not content_key and (state_of or volume_state)(str(row["root_path"])) == ROOT_ONLINE:
+            try:
+                content_key, _size = compute_content_key(Path(path))
+            except OSError:
+                content_key = None
+        return {
+            "name": row["name"],
+            "path": path,
+            "root_id": row["root_id"],
+            "rel_path": row["rel_path"],
+            "content_key": content_key,
+        }
+
+    def remove_deliverable(self, task_id: str, deliverable_id: int) -> dict[str, Any]:
+        """删一个交付物（［撤销］用），记一条 deliverable_removed。不属于这个任务的回 404。"""
+        with self.db.transaction() as connection:
+            self._row(connection, task_id)
+            row = connection.execute(
+                "SELECT kind, url FROM deliverables WHERE id = ? AND task_id = ?",
+                (deliverable_id, task_id),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("交付物不存在")
+            connection.execute("DELETE FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,))
+            connection.execute("DELETE FROM deliverables WHERE id = ?", (deliverable_id,))
+            now = utc_now()
+            connection.execute(
+                "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_removed', ?, ?)",
+                (task_id, f"撤下交付物：{row['kind']} {row['url']}", now),
+            )
+            connection.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, task_id))
         return self.get_task(task_id)
 
     # ------------------------------------------------------------------ 项目聚合与看板

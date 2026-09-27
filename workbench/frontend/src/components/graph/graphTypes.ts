@@ -1,6 +1,6 @@
 // 关系图（1g、1h）接口的数据形状，和后端 graph.py 一一对应。
 
-import type { MeetingAttribution, MeetingCard } from "../../types";
+import type { MaterialDeliverable, MaterialFileState, MeetingAttribution, MeetingCard } from "../../types";
 
 export type GraphWindow = "7d" | "28d" | "90d" | "all";
 export type Ring = "inner" | "middle" | "outer";
@@ -106,6 +106,26 @@ export interface GraphFile {
   meeting_count?: number;
   /** 选中一场会时前端从简报补出来的，不在后端的 files 里 */
   extra?: boolean;
+  /** 3g：根目录、需求文件夹里最近改过的文件（前端从资料盘状态补的），挂在那个文件夹外侧 */
+  recent?: true;
+  /** 3g：从面板点出来、要在图上补出的那一个文件 */
+  pinned?: true;
+  /** 3g：读到哪一步，画节点上的小标记；会上提到的文件没有 */
+  state?: FileNodeState;
+}
+
+/** 文件读到哪一步（同预览的 state.kind，不含 gone） */
+export type FileNodeState = "done" | "pending" | "waiting" | "unreadable" | "names_only";
+
+/** 最近改过的文件（3g）：每个根目录、需求文件夹最多 6 个候选 */
+export interface RecentFile {
+  file_id: number;
+  name: string;
+  ext: string;
+  /** 相对根目录的所在文件夹 */
+  dir_rel: string;
+  mtime: string | null;
+  state: FileNodeState;
 }
 
 export interface GraphCue {
@@ -242,9 +262,26 @@ export interface GraphRootsPayload {
     loose_count: number | null;
     checked_at: string | null;
     recent_dirs?: RecentDir[];
+    /** 3g：最近改过的文件（只查库，不含声档会议记录、不含需求文件夹里的） */
+    recent_files?: RecentFile[];
+    /** 3g：文件名多少个、内容读完多少、读不了多少；内容循环还没数过时为 null */
+    content?: { files: number; done: number; unreadable: number } | null;
   }>;
-  folders: Array<{ id: string; folder_id: number; requirement_id: string; path: string; state: DiskState }>;
-  loose: { count: number; recent: Array<{ name: string; path: string; size: number; mtime: string }> };
+  folders: Array<{
+    id: string;
+    folder_id: number;
+    requirement_id: string;
+    path: string;
+    state: DiskState;
+    /** 3g：所在的根目录（不在任何根目录里时为 null）和里面最近改过的文件 */
+    root_id?: number | null;
+    recent_files?: RecentFile[];
+  }>;
+  loose: {
+    count: number;
+    /** file_id：3g，文件名索引里有的才有 */
+    recent: Array<{ name: string; path: string; size: number; mtime: string; file_id?: number | null }>;
+  };
   checking: boolean;
   /** 本机打开声档时才给「在访达中显示」 */
   can_reveal?: boolean;
@@ -260,8 +297,14 @@ export interface ExpandPayload {
   crumbs: Array<{ name: string; dir: string }>;
   dirs: Array<{ name: string; dir: string; path: string; mtime: string }>;
   dirs_total: number;
-  files: Array<{ name: string; path: string; size: number; mtime: string }>;
+  /** file_id：3g，文件名索引里有的才有，能在图上打开 */
+  files: Array<{ name: string; path: string; size: number; mtime: string; file_id?: number | null }>;
   files_total: number;
+}
+
+/** 声档会议记录里的文件（3g）：只查库，最多 20 个 */
+export interface CardsFilesPayload {
+  files: Array<{ file_id: number; name: string; rel_path: string; root_id: number; mtime: string | null }>;
 }
 
 export interface FulltextPayload {
@@ -287,7 +330,18 @@ export interface FocusTask {
   project_id: string | null;
   requirement_id: string | null;
   requirement_title: string | null;
-  deliverables: Array<{ kind: string; url: string; title: string }>;
+  deliverables: FocusDeliverable[];
+}
+
+/** 展开一场会时任务的交付物；file 类带 file_id、name、gone（3g，旧后端没有） */
+export interface FocusDeliverable {
+  id?: number;
+  kind: string;
+  url: string;
+  title: string;
+  file_id?: number | null;
+  name?: string;
+  gone?: boolean;
 }
 
 export interface FocusNeighbour {
@@ -404,6 +458,9 @@ export interface GraphFileDetail {
     project_id: string;
     project_name: string;
   };
+  /** 3g：读到哪一步（同预览）、是哪些任务的交付物；旧后端没有 */
+  state?: MaterialFileState;
+  deliverables?: MaterialDeliverable[];
   /** 同名的其他文件（报价单 v1、v2） */
   siblings: Array<{ id: number; name: string; rel_path: string; root_id: number; modified_at: string | null }>;
   meetings: Array<{

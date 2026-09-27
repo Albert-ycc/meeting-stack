@@ -11,6 +11,8 @@ from meeting_workbench import cli, material_walk, ocr_trial
 from meeting_workbench.db import Database, utc_now
 from meeting_workbench.material_walk import render_report, walk_materials
 
+from .material_fixtures import build_doc, build_encrypted_ooxml
+
 
 def write(path: Path, data: bytes | str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,7 +37,9 @@ def build_tree(root: Path) -> None:
     packed = zlib.compress(b"<< /Type /Font /Subtype /Type0 >>")
     write(root / "合同" / "新版.pdf", b"%PDF-1.7\n3 0 obj << /Type /ObjStm /Filter /FlateDecode >>\nstream\n" + packed + b"\nendstream\n")
     docx(root / "文档" / "方案.docx")
-    write(root / "文档" / "加密.docx", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 64)
+    build_encrypted_ooxml(root / "文档" / "加密.docx")
+    build_doc(root / "文档" / "改了扩展名的老文档.docx")
+    write(root / "文档" / "~$方案.docx", b"lock")
     write(root / "文档" / "坏.docx", b"PK broken")
     write(root / "文档" / "总结.pages" / "Index.zip", b"x" * 100)
     write(root / "文档" / "总结.pages" / "preview.jpg", b"y" * 50)
@@ -62,15 +66,17 @@ def test_walk_counts_layers_skips_system_files_and_keeps_name_only_dirs_apart(tm
     report = walk_materials([{"path": str(root), "project_name": "云图AI"}], probe_media=False)
 
     layers = report["layers"]
-    # 文档：5 个 PDF、3 个 docx、1 个 pages 包、1 个 md
-    assert layers["text"]["count"] == 10
+    # 文档：5 个 PDF、4 个 docx（~$ 锁文件不算）、1 个 pages 包、1 个 md
+    assert layers["text"]["count"] == 11
     assert (layers["image"]["count"], layers["image"]["small"]) == (3, 1)
     assert (layers["media"]["count"], layers["media"]["audio"], layers["media"]["video"]) == (2, 1, 1)
     assert layers["name_only"]["count"] == 1
-    assert report["pdf"] == {"text": 2, "scanned": 1, "unknown": 0}
+    # 带 /Encrypt 的 PDF 单列，不直接算要密码；改了扩展名的老 .doc 也不算
+    assert report["pdf"] == {"text": 2, "scanned": 1, "unknown": 0, "encrypted": 1}
     unreadable = {reason: bucket["count"] for reason, bucket in report["unreadable"].items()}
-    assert unreadable == {"password": 2, "corrupt": 2, "unsupported": 1, "timeout": 0, "permission": 0}
-    assert report["skipped_system"] == 3
+    assert unreadable == {"password": 1, "corrupt": 2, "unsupported": 1, "timeout": 0, "permission": 0}
+    assert "带加密标记（多数能读，第三期读的时候才知道）：1 个" in render_report(report)
+    assert report["skipped_system"] == 4
     assert report["symlinks"] == 1
     assert report["packages"] == 1
     assert {name: bucket["files"] for name, bucket in report["name_only_dirs"].items()} == {
@@ -78,7 +84,7 @@ def test_walk_counts_layers_skips_system_files_and_keeps_name_only_dirs_apart(tm
     }
     assert report["duplicates"]["groups"] == 1
     # 总数也算上只收文件名的那 3 个
-    assert report["roots"][0]["files"] == report["files"] == 19
+    assert report["roots"][0]["files"] == report["files"] == 20
     assert report["media_probe"] == "off"
 
 
@@ -177,14 +183,14 @@ def test_cli_walk_needs_dry_run_and_reads_roots_from_the_database(tmp_path, monk
     stamp = db_file.stat().st_mtime_ns
 
     assert cli.main(["materials", "walk", "--project", "云图AI"]) == 2
-    assert "请加 --dry-run" in capsys.readouterr().err
+    assert "请加 --dry-run：材料索引由服务在后台自动建，这个命令只做盘点" in capsys.readouterr().err
 
     out = tmp_path / "walk.json"
     assert cli.main(["materials", "walk", "--dry-run", "--project", "云图ai", "--no-probe", "--json", str(out)]) == 0
     printed = capsys.readouterr().out
     assert f"云图AI：{root}" in printed
     assert "读不了的（文件名照样能搜到）" in printed
-    assert json.loads(out.read_text(encoding="utf-8"))["files"] == 19
+    assert json.loads(out.read_text(encoding="utf-8"))["files"] == 20
     assert db_file.stat().st_mtime_ns == stamp
 
     with pytest.raises(SystemExit, match="没有叫「数据中台」的项目。现有项目：云图AI"):

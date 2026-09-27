@@ -6,6 +6,8 @@ export interface BootstrapPayload {
   mobile_task_write: boolean;
   semantic_enabled: boolean;
   pending_confirm_count: number;
+  /** 本机打开声档时才有［在访达中显示］［打开文件夹］（3e） */
+  can_reveal?: boolean;
 }
 
 export interface HealthPayload {
@@ -20,10 +22,13 @@ export interface HealthPayload {
     /** 还没被确认归档的失败/归档未完成任务数；relay 清单暂不可用时为 null */
     attention_jobs?: number | null;
     acknowledged_jobs?: number;
+    /** 材料还没读的活文件（3e）；旧后端没有 */
+    material_pending?: number;
   };
   details?: {
     attention?: { by_kind: Record<AttentionKind, number> | null; quarantined?: number };
     process?: { open_files: number | null; open_files_limit: number | null };
+    materials?: MaterialsProgress;
   };
   scanner?: Record<string, unknown>;
   semantic?: Record<string, unknown>;
@@ -825,6 +830,60 @@ export interface SearchPayload {
   unattributed_hits?: number;
   /** 意思相近的这次没搜成的原因（正在转写、模型不可用） */
   semantic_unavailable?: string;
+  /** 3f：材料里包含这个词的，一份内容一行，最多 20 份，按修改时间从新到旧 */
+  materials?: MaterialSearchItem[];
+  /** 3f：意思相近的材料，已去掉 materials 里列过的 */
+  material_similar?: MaterialSearchItem[];
+  material_state?: MaterialSearchState;
+}
+
+export type MaterialHitKind = "text" | "pdf" | "image" | "media";
+
+export interface MaterialHit {
+  kind: MaterialHitKind;
+  /** 「第 3 页」「表『预算』」这类位置 */
+  loc: string | null;
+  /** 录音文字的时间点 */
+  start_ms: number | null;
+  text: string;
+  matched: string;
+}
+
+export interface MaterialSearchItem {
+  file_id: number;
+  content_key: string | null;
+  name: string;
+  ext: string;
+  path: string;
+  rel_path: string;
+  folder_path: string;
+  root_id: number;
+  project_id: string;
+  project_name: string;
+  project_color: string | null;
+  modified_at: string | null;
+  root_online: boolean;
+  playable: boolean;
+  /** 同一份内容还放在别的几个地方 */
+  copies: number;
+  name_hit: boolean;
+  hits: MaterialHit[];
+  /** 没列出来的命中处数 */
+  more_hits: number;
+  /** 「读不了：要密码」「资料盘未连接」 */
+  state_text: string | null;
+  mentioned_meetings: number;
+  /** 意思相近的才有 */
+  score?: number;
+}
+
+export interface MaterialSearchState {
+  /** 还没读完的材料个数 */
+  pending: number;
+  /** 恢复备份后全文索引在重建 */
+  rebuilding: boolean;
+  /** 查询预算用完，结果可能不全 */
+  partial: boolean;
 }
 
 export interface MeetingFilters {
@@ -930,6 +989,10 @@ export interface Deliverable {
   title: string;
   note: string;
   created_at: string;
+  /** 3g：file 类交付物连到的资料盘文件；挪了位置按内容找，找不到时 gone */
+  file_id?: number | null;
+  name?: string;
+  gone?: boolean;
 }
 
 export interface Task {
@@ -965,6 +1028,8 @@ export interface Task {
 export interface TaskDetail extends Task {
   events: TaskEvent[];
   deliverables: Deliverable[];
+  /** 3g：POST 交付物时回刚登记的那一条，［撤销］用 */
+  deliverable_id?: number;
 }
 
 export interface TaskFilters {
@@ -1180,6 +1245,131 @@ export interface MaterialIndexStatus {
   roots: MaterialIndexRoot[];
 }
 
+/** 首页「材料 还剩 N 个」（3e）：来自材料循环内存里的计数 */
+export interface MaterialsProgress {
+  pending: number;
+  /** busy：转写会议时先停 */
+  paused: "busy" | null;
+  /** 还剩的里面在没插的盘上的 */
+  offline_pending: number;
+}
+
+export type UnreadableReason = "password" | "corrupt" | "unsupported" | "timeout" | "permission";
+export type MaterialNote = "small_image" | "no_text" | "no_speech" | "truncated" | "meeting_audio";
+
+/** 每个根目录读了多少、为什么停（3e），按文件数算 */
+export interface MaterialCoverageRoot {
+  root_id: number;
+  project_id: string;
+  path: string;
+  state: MaterialIndexRoot["state"];
+  online: boolean;
+  names: { files: number; name_only_dirs: number; symlinks: number };
+  content: {
+    total: number;
+    done: number;
+    pending: number;
+    paused: "busy" | null;
+    waiting: { what: string; files: number; hint: string }[];
+    unreadable: Record<UnreadableReason, number>;
+    notes: Record<MaterialNote, number>;
+    names_only: { cards: number; other: number };
+  };
+}
+
+export interface MaterialCoverage {
+  roots: MaterialCoverageRoot[];
+}
+
+export interface MaterialUnreadableItem {
+  file_id: number;
+  name: string;
+  rel_path: string;
+  path: string;
+  root_id: number;
+  reason: UnreadableReason;
+  checked_at: string | null;
+}
+
+export interface MaterialUnreadablePage {
+  items: MaterialUnreadableItem[];
+  total: number;
+  next_offset: number | null;
+}
+
+export type MaterialStateKind = "done" | "pending" | "waiting" | "unreadable" | "names_only" | "gone";
+
+/** 文件状态：text 是后端说法表里的那一句，前端只显示它 */
+export interface MaterialFileState {
+  kind: MaterialStateKind;
+  reason: UnreadableReason | null;
+  note: string | null;
+  what: string | null;
+  paused: "busy" | null;
+  meeting: { id: string; title: string } | null;
+  text: string;
+}
+
+export type MaterialPreviewKind = "text" | "table" | "image" | "pdf" | "media" | "none";
+
+export interface MaterialPreviewContent {
+  kind: MaterialPreviewKind;
+  lines: string[];
+  /** 超出显示的行数 */
+  more: boolean;
+  rows: string[][];
+  sheet: string | null;
+  image_url: string | null;
+  page_url: string | null;
+  media_url: string | null;
+  playable: boolean;
+  duration_ms: number | null;
+  transcript: { start_ms: number | null; end_ms: number | null; text: string }[];
+}
+
+export interface MaterialFileInfo {
+  id: number;
+  name: string;
+  ext: string;
+  rel_path: string;
+  root_id: number;
+  folder_path: string;
+  path: string;
+  size: number | null;
+  modified_at: string | null;
+  project_id: string;
+  project_name: string;
+  root_online: boolean;
+  gone: boolean;
+}
+
+export interface MaterialMention {
+  meeting_id: string;
+  title: string;
+  date: string;
+  count: number;
+  first_ms: number | null;
+  quote: string;
+  audio_url: string | null;
+}
+
+export interface MaterialDeliverable {
+  deliverable_id: number;
+  task_id: string;
+  title: string;
+  status: string;
+}
+
+/** 预览抽屉和关系图文件面板的数据；?parts=preview 时没有后三项 */
+export interface MaterialFilePreview {
+  file: MaterialFileInfo;
+  state: MaterialFileState;
+  preview: MaterialPreviewContent;
+  mentions?: MaterialMention[];
+  deliverables?: MaterialDeliverable[];
+  can_reveal?: boolean;
+}
+
 /** 冷启动：还没挂文件夹的项目找到的同名（默认勾选）或相近（默认不勾）文件夹 */
 export interface ColdStartFolderItem {
   project_id: string;
@@ -1282,6 +1472,8 @@ export interface RequirementFile {
   relative_path: string;
   size_bytes: number;
   modified_at: string;
+  /** 3g：从文件名索引查出来时带着，能在关系图上打开；读盘时没有 */
+  file_id?: number;
 }
 
 export interface RequirementFolder extends MaterialFolderStat {

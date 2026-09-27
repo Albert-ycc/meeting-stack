@@ -36,7 +36,9 @@ export type GraphNoticeUndo =
       until: string;
     }
   /** ［不是这份文件］：撤销就改回有效（restore） */
-  | { kind: "mention"; meetingId: string; stemKey: string; name: string; until: string };
+  | { kind: "mention"; meetingId: string; stemKey: string; name: string; until: string }
+  /** ［标为交付物］（3g）：撤销就删掉刚登记的那一条 */
+  | { kind: "deliverable"; taskId: string; deliverableId: number; taskTitle: string; name: string; until: string };
 
 /** 前端自己记的撤销（关联需求、搬任务）也只留 10 分钟 */
 export const LOCAL_UNDO_MS = 10 * 60_000;

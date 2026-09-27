@@ -164,3 +164,55 @@ describe("TaskDrawer 所属需求", () => {
     expect(screen.queryByRole("button", { name: "北辰仓快递配送" })).not.toBeInTheDocument();
   });
 });
+
+describe("TaskDrawer 文件交付物（3g）", () => {
+  const base = { task_id: "t1", title: "", note: "", created_at: "2026-09-27T02:00:00Z" };
+
+  function renderWithDeliverables(deliverables: TaskDetail["deliverables"], onOpenPreview?: (fileId: number) => void) {
+    const apiClient = {
+      task: vi.fn().mockResolvedValue({ ...makeTask("in_progress"), deliverables }),
+    } as unknown as ApiClient;
+    render(
+      <TaskDrawer
+        apiClient={apiClient}
+        canWrite
+        onChanged={vi.fn()}
+        onClose={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenPreview={onOpenPreview}
+        taskId="t1"
+      />,
+    );
+  }
+
+  it("有 file_id 时是按钮，点了打开预览抽屉；找不到时标「找不到这个文件了」", async () => {
+    const onOpenPreview = vi.fn();
+    renderWithDeliverables(
+      [
+        { ...base, id: 1, kind: "file", url: "/Volumes/资料盘/云图AI/交付/定稿.pdf", file_id: 42, name: "定稿.pdf", gone: false },
+        { ...base, id: 2, kind: "file", url: "/Volumes/资料盘/云图AI/旧稿.docx", file_id: 43, name: "旧稿.docx", gone: true },
+        { ...base, id: 3, kind: "link", url: "https://example.com/doc", title: "在线文档" },
+      ],
+      onOpenPreview,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "定稿.pdf" }));
+    expect(onOpenPreview).toHaveBeenCalledWith(42);
+    expect(screen.getByText("找不到这个文件了")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "在线文档" })).toHaveAttribute("href", "https://example.com/doc");
+    expect(screen.queryByRole("link", { name: /定稿/ })).not.toBeInTheDocument();
+  });
+
+  it("没有 file_id（旧数据）时显示路径和［复制路径］，不做成打不开的链接", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const path = "/Volumes/资料盘/云图AI/交付/定稿.pdf";
+    renderWithDeliverables([{ ...base, id: 1, kind: "file", url: path, file_id: null }], vi.fn());
+
+    expect(await screen.findByText(path)).toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "复制路径" }));
+    expect(writeText).toHaveBeenCalledWith(path);
+    expect(await screen.findByText("路径已复制")).toBeInTheDocument();
+  });
+});

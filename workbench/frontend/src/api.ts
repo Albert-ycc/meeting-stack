@@ -62,9 +62,13 @@ import type {
   NameAsRequirementResult,
   NameCandidatesPayload,
   NameDecisionResult,
+  MaterialCoverage,
+  MaterialFilePreview,
   MaterialIndexStatus,
+  MaterialUnreadablePage,
 } from "./types";
 import type {
+  CardsFilesPayload,
   CollapsedPayload,
   CueTermDetail,
   ExpandPayload,
@@ -156,6 +160,11 @@ export interface UploadReceipt {
   size_bytes: number;
   status: string;
   job_id: string | null;
+}
+
+/** 材料原文件的播放地址：从搜索的 ▶ 进来时不等预览数据，由 file_id 直接拼出 */
+export function materialMediaUrl(fileId: number): string {
+  return `/api/materials/files/${fileId}/media`;
 }
 
 export function setCsrfToken(token: string) {
@@ -345,6 +354,9 @@ export const api = {
   // ---------------------------------------------------------------- 会上提到的文件、文件名索引（2d）
   /** 文件面板：文件信息、同名的其他文件、在哪几场会上被提到；404 是文件不在索引里 */
   getGraphFile: (fileId: number) => read<GraphFileDetail>(`/api/graph/files/${fileId}`),
+  /** 声档会议记录里的文件（3g）：只给文件名和 file_id */
+  graphCardsFiles: (projectId: string) =>
+    read<CardsFilesPayload>(`/api/graph/projects/${encodeURIComponent(projectId)}/cards-files`),
   /** ［不是这份文件］：只挡这场会；立即生效 */
   rejectFileMention: (meetingId: string, stemKey: string) =>
     write<FileMentionResult>(
@@ -369,6 +381,17 @@ export const api = {
   /** 每个根目录的文件名索引进度 */
   getMaterialIndexStatus: (projectId: string) =>
     read<MaterialIndexStatus>(`/api/materials/index-status${queryString({ project_id: projectId })}`),
+  /** 每个根目录的内容读了多少、为什么停、读不了的分类数（3e） */
+  getMaterialCoverage: (projectId: string) =>
+    read<MaterialCoverage>(`/api/materials/coverage${queryString({ project_id: projectId })}`),
+  /** 读不了的文件，每页 100 个 */
+  getMaterialUnreadable: (projectId: string, rootId: number, offset = 0) =>
+    read<MaterialUnreadablePage>(
+      `/api/materials/unreadable${queryString({ project_id: projectId, root_id: rootId, offset })}`,
+    ),
+  /** 预览抽屉的数据；parts=preview 只要状态和预览（关系图文件面板用） */
+  getMaterialPreview: (fileId: number, parts?: "preview") =>
+    read<MaterialFilePreview>(`/api/materials/files/${fileId}/preview${parts ? `?parts=${parts}` : ""}`),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>
@@ -583,10 +606,20 @@ export const api = {
     ),
   addTaskComment: (taskId: string, body: string) =>
     write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/comments`, "POST", { body }),
+  /** url 和 file_id 二选一；给 file_id 时 kind、url、title 由服务端填（3g） */
   addDeliverable: (
     taskId: string,
-    data: { kind: string; url: string; title?: string; note?: string; mark_done?: boolean },
+    data:
+      | { kind: string; url: string; title?: string; note?: string; mark_done?: boolean }
+      | { file_id: number; title?: string; note?: string },
   ) => write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/deliverables`, "POST", data),
+  /** 删一个交付物（［撤销］用） */
+  removeDeliverable: (taskId: string, deliverableId: number) =>
+    write<TaskDetail>(
+      `/api/tasks/${encodeURIComponent(taskId)}/deliverables/${deliverableId}`,
+      "DELETE",
+      {},
+    ),
   reExtractTasks: (meetingId: string, supplement: string) =>
     write<{ status: string }>(
       `/api/meetings/${encodeURIComponent(meetingId)}/tasks/re-extract`,

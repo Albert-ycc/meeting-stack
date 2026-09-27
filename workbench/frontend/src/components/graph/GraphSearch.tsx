@@ -18,6 +18,9 @@ function searchableText(node: LaidNode): string {
       return node.data.title;
     case "folder":
       return node.data.name;
+    // 3g：文件节点按文件名找
+    case "file":
+      return node.data.name;
     case "cue":
       return node.data.text;
     case "beacon":
@@ -29,7 +32,7 @@ function searchableText(node: LaidNode): string {
   }
 }
 
-/** 图上标题、需求、文件夹、线索词里含这个词的节点，按从上到下、从左到右排 */
+/** 图上标题、需求、文件夹、文件名、线索词里含这个词的节点，按从上到下、从左到右排 */
 export function localMatches(layout: StarLayout, query: string): string[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [];

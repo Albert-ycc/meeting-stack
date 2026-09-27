@@ -19,6 +19,7 @@ from .importer import ArchiveImporter
 from .integrity import AudioIntegrityError, AudioIntegrityVerifier, last_audio_integrity_result
 from .gold_export import GoldExportError, export_gold_jsonl
 from .main import create_app
+from .ocr_engines import tools_report
 from .project_linking import ProjectLinker
 from .semantic import SemanticIndex, SemanticPaused, SemanticUnavailable
 
@@ -69,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     backfill_projects.add_argument("--limit", type=int, help="最多处理的会议数")
 
-    materials_cmd = subcommands.add_parser("materials", help="项目材料：盘点、图片文字识别试跑（只读）")
+    materials_cmd = subcommands.add_parser("materials", help="项目材料：盘点、读了多少、图片文字识别试跑和引擎")
     materials_sub = materials_cmd.add_subparsers(dest="materials_command", required=True)
     walk = materials_sub.add_parser(
         "walk", help="走一遍项目材料文件夹，统计第三期要索引的量（只读，不改数据库）"
@@ -91,6 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--engine", action="append", choices=["vision", "tesseract"], help="只跑某一个，默认两个都跑"
     )
     ocr.add_argument("--out", type=Path, help="结果写到哪个文件夹，默认数据目录下的 ocr-trial/")
+    status = materials_sub.add_parser("status", help="看材料读了多少、还剩多少、哪些读不了（只读）")
+    status.add_argument("--project", help="只看这个项目（项目 id 或名字）")
+    status.add_argument("--json", action="store_true", help="输出 JSON")
+    engine = materials_sub.add_parser(
+        "ocr-engine", help="选图片和扫描页用哪套认字：auto（默认）、vision、tesseract、off；不用重启服务"
+    )
+    engine.add_argument(
+        "engine", nargs="?", choices=["auto", "vision", "tesseract", "off"], help="不给就只看现在用的是哪套"
+    )
     return parser
 
 
@@ -153,21 +163,7 @@ def _material_roots(
     connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
-        projects = [dict(row) for row in connection.execute("SELECT id, name FROM projects ORDER BY name")]
-        chosen = None
-        if project:
-            wanted = unicodedata.normalize("NFKC", project).casefold().strip()
-            chosen = next(
-                (
-                    item for item in projects
-                    if item["id"] == project
-                    or unicodedata.normalize("NFKC", item["name"]).casefold().strip() == wanted
-                ),
-                None,
-            )
-            if chosen is None:
-                names = "、".join(item["name"] for item in projects) or "（还没有项目）"
-                raise SystemExit(f"没有叫「{project}」的项目。现有项目：{names}")
+        chosen = _find_project(connection, project)
         rows = connection.execute(
             """SELECT r.path, r.project_id, p.name AS project_name
                  FROM project_material_roots r JOIN projects p ON p.id = r.project_id
@@ -182,13 +178,97 @@ def _material_roots(
     return [dict(row) for row in rows]
 
 
+def _find_project(connection: sqlite3.Connection, project: str | None) -> dict[str, Any] | None:
+    """--project 按 id 或名字（不分全半角、大小写）找项目；找不到就列出现有项目退出。"""
+    if not project:
+        return None
+    projects = [dict(row) for row in connection.execute("SELECT id, name FROM projects ORDER BY name")]
+    wanted = unicodedata.normalize("NFKC", project).casefold().strip()
+    chosen = next(
+        (
+            item for item in projects
+            if item["id"] == project or unicodedata.normalize("NFKC", item["name"]).casefold().strip() == wanted
+        ),
+        None,
+    )
+    if chosen is None:
+        names = "、".join(item["name"] for item in projects) or "（还没有项目）"
+        raise SystemExit(f"没有叫「{project}」的项目。现有项目：{names}")
+    return chosen
+
+
+class _ReadOnlyDb:
+    """只读连接包一层 query_one，给 OcrEngines 查认字引擎的设置用。"""
+
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def query_one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+        row = self.connection.execute(sql, params).fetchone()
+        return dict(row) if row is not None else None
+
+
+def _materials_status(args: argparse.Namespace, settings: Settings) -> int:
+    """materials status：直接查库（读不到服务内存，所以不写「转写会议时先停」）。"""
+    from .material_status import coverage, render_status
+    from .ocr_engines import OcrEngines
+
+    assert settings.database_path is not None
+    if not settings.database_path.exists():
+        raise SystemExit(f"找不到声档数据库：{settings.database_path}")
+    connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        chosen = _find_project(connection, args.project)
+        engines = OcrEngines(_ReadOnlyDb(connection), settings)  # type: ignore[arg-type]
+        roots = coverage(connection, chosen["id"] if chosen else None, engines=engines)
+        names = {row["id"]: row["name"] for row in connection.execute("SELECT id, name FROM projects")}
+    finally:
+        connection.close()
+    if args.json:
+        print(json.dumps({"roots": roots}, ensure_ascii=False, indent=2))
+    else:
+        print(render_status(roots, names))
+    return 0
+
+
+ENGINE_LABELS = {"vision": "Vision（macOS 自带）", "tesseract": "tesseract", "off": "不认字（只读 PDF 文字层）"}
+
+
+def _ocr_engine(args: argparse.Namespace, settings: Settings) -> int:
+    from .ocr_engines import OcrEngines
+
+    engines = OcrEngines(_database(settings), settings)
+    reread = engines.set_engine(args.engine)["reread"] if args.engine else 0
+    print("正在检查认字程序（第一次要编译 Vision 程序，可能要一两分钟）…", file=sys.stderr, flush=True)
+    engines.refresh(force=True)
+    current = engines.image_engine()
+    print(f"设置：{engines.setting()}；图片和扫描页现在用：{ENGINE_LABELS.get(current or '', '没有能用的（先装一套）')}")
+    tools = engines.tools()
+    print(f"Vision：{engines.build.describe() if sys.platform == 'darwin' else '只能在 Mac 上用'}")
+    if not tools.tesseract:
+        print("tesseract：没装（brew install tesseract tesseract-lang）")
+    elif not tools.tesseract_chinese:
+        print("tesseract：没有中文语言包（brew install tesseract-lang）")
+    else:
+        print(f"tesseract：能用（{tools.tesseract_version}）")
+    print("PDF 的文字层：" + ("能读" if engines.build.ready() else "要等 Vision 程序编译好"))
+    if reread:
+        print(f"关着认字时跳过的 {reread} 份图片和扫描件会重新认字")
+    return 0
+
+
 def _materials(args: argparse.Namespace, settings: Settings) -> int:
     from . import material_walk, ocr_trial
 
+    if args.materials_command == "ocr-engine":
+        return _ocr_engine(args, settings)
+    if args.materials_command == "status":
+        return _materials_status(args, settings)
     roots = _material_roots(settings, args.project, args.root)
     if args.materials_command == "walk":
         if not args.dry_run:
-            print("现在只做盘点：请加 --dry-run。真正建材料索引是第三期的事。", file=sys.stderr)
+            print("请加 --dry-run：材料索引由服务在后台自动建，这个命令只做盘点。", file=sys.stderr)
             return 2
         report = material_walk.walk_materials(
             roots, probe_media=not args.no_probe, progress=material_walk.stderr_progress
@@ -227,6 +307,7 @@ def _materials(args: argparse.Namespace, settings: Settings) -> int:
         )
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+    report["machine"] = ocr_trial.machine_summary()
     (out_dir / "结果.md").write_text(ocr_trial.render_markdown(report, notes), encoding="utf-8")
     (out_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(ocr_trial.render_summary(report, out_dir))
@@ -251,6 +332,15 @@ def _raise_open_file_limit(target: int = 4096) -> None:
             resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
         except (ValueError, OSError):
             pass
+
+
+def _material_fts_check(db: Database) -> str:
+    from .material_fts import integrity_ok, rebuild_pending
+
+    if rebuild_pending(db):
+        return "rebuilding"
+    with db.transaction() as connection:
+        return "ok" if integrity_ok(connection) else "failed"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -392,6 +482,10 @@ def main(argv: list[str] | None = None) -> int:
             "staging": settings.staging_root.is_dir(),
             "loopback": settings.host == "127.0.0.1",
             "last_audio_verification": last_audio_integrity_result(db),
+            # 第三期：材料读取用到的程序，只报告、不进 required（装机脚本最后会跑 doctor）
+            "materials": tools_report(settings),
+            # 3f：材料全文表和片段对得上（恢复备份后还没补完时写 rebuilding）
+            "material_fts": _material_fts_check(db),
         }
         print(json.dumps(checks, ensure_ascii=False))
         required = (checks["database"], checks["archive"], checks["staging"], checks["loopback"])

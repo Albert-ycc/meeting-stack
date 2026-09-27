@@ -34,6 +34,8 @@ interface OverviewPageProps {
   onOpenAttributionReview?: () => void;
   /** 挂文件夹只在桌面端：为 true 时才问「要不要挂上同名文件夹」 */
   canPickFolders?: boolean;
+  /** 3g：本机打开声档时才给［打开文件夹］ */
+  canReveal?: boolean;
   onProjectsChanged?: () => void | Promise<void>;
   /** 确认待办之后通知外层刷新侧栏「任务池」角标。 */
   onTasksChanged?: () => void;
@@ -91,6 +93,23 @@ function niceTicks(max: number): number[] {
 const PENDING_LIMIT = 5;
 // 后端各服务的正常取值不统一，只有落在这个集合外的才值得占版面。
 const HEALTHY_SERVICE_STATES = new Set(["healthy", "ok", "ready", "enabled"]);
+// 语义检索在会议转写时让路（paused）是正常的，不多出一行告警。
+function serviceHealthy(name: string, status: string): boolean {
+  return HEALTHY_SERVICE_STATES.has(status) || (name === "semantic" && status === "paused");
+}
+
+const MATERIAL_COUNT = new Intl.NumberFormat("en-US");
+
+/** 首页「正在处理」里本地服务那一行下面的灰色小标签（3e）；0 个或旧后端没有这个字段时不显示。 */
+export function materialTagText(health: HealthPayload | null | undefined): string | null {
+  const materials = health?.details?.materials;
+  const pending = health?.counts?.material_pending ?? materials?.pending;
+  if (!materials || typeof pending !== "number" || pending <= 0) return null;
+  const text = `材料 还剩 ${MATERIAL_COUNT.format(pending)} 个`;
+  if (materials.paused === "busy") return `${text} · 转写会议时先停`;
+  if (materials.offline_pending >= pending) return `${text} · 资料盘未连接`;
+  return text;
+}
 
 function startOfWeek(reference: Date): Date {
   const start = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate());
@@ -113,6 +132,7 @@ export function OverviewPage({
   attributionSummary,
   onOpenAttributionReview,
   canPickFolders = false,
+  canReveal = true,
   onProjectsChanged,
   onTasksChanged,
 }: OverviewPageProps) {
@@ -150,7 +170,7 @@ export function OverviewPage({
   const failedJobs = health?.counts.attention_jobs ?? health?.counts.failed_jobs ?? 0;
   const attentionText = describeAttention(health?.details?.attention?.by_kind ?? null, failedJobs);
   const degradedServices = Object.entries(health?.services ?? {}).filter(
-    ([, status]) => !HEALTHY_SERVICE_STATES.has(status),
+    ([name, status]) => !serviceHealthy(name, status),
   );
 
   const [chartSource, setChartSource] = useState<MeetingSummary[] | null>(null);
@@ -297,7 +317,7 @@ export function OverviewPage({
         />
       )}
       {/* 一次性横幅同一时间只出一条：同名文件夹问完了，才轮到会议卡片 */}
-      {canPickFolders && folderBannerActive === false && <MeetingCardsBanner apiClient={apiClient} />}
+      {canPickFolders && folderBannerActive === false && <MeetingCardsBanner apiClient={apiClient} canReveal={canReveal} />}
 
       <div className={`metric-strip ${reviewCount > 0 ? "metric-strip--five" : ""}`}>
         {jobsInteractive ? (
@@ -585,6 +605,7 @@ export function OverviewPage({
               </ul>
             )}
           </div>
+          {materialTagText(health) && <p className="material-tag">{materialTagText(health)}</p>}
         </section>
       </div>
     </section>

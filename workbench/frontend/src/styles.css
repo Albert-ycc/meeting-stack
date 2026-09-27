@@ -1144,6 +1144,17 @@ textarea {
 
 .service-summary li { display: inline-flex; align-items: center; gap: 6px; }
 .service-summary li small { color: var(--ink-faint); font-size: 9px; }
+/* 首页「材料 还剩 N 个」：灰色小标签，不能点，不用红黄灯 */
+.material-tag {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 2px 9px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+}
 
 .filter-drawer {
   min-height: calc(100vh - 74px);
@@ -2481,4 +2492,21 @@ textarea {
   .metric-strip--five {
     grid-template-columns: 1fr 1fr;
   }
+}
+
+/* 搜索页的材料（3f）：计数写成一句，材料行和会议行同一个格子 */
+.record-count--text span { margin-top: 0; color: var(--ink-soft); font-size: 13px; white-space: nowrap; }
+.material-hit__name { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.material-hit__name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.material-hit__ext { flex: none; padding: 1px 5px; color: var(--ink-soft); font-family: var(--font-mono); font-size: 9px; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; }
+.material-hit__quotes { display: grid; gap: 6px; min-width: 0; }
+.material-hit__quotes p { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.65; }
+.material-hit__path { color: var(--ink-faint) !important; font-size: 12px !important; word-break: break-all; }
+.material-hit__loc { display: inline-block; margin-right: 8px; color: var(--ink-faint); font-size: 10px; }
+.material-hit__seek { margin-right: 8px; padding: 1px 6px; color: var(--signal-dark); font-family: var(--font-mono); font-size: 10px; background: transparent; border: 1px solid var(--signal-line); border-radius: 6px; }
+.search-materials .search-note { margin: 4px 0 8px; }
+@media (max-width: 720px) {
+  .material-hit__quotes { grid-row: 2; grid-column: 1 / -1; }
+  .material-hit__quotes p { grid-row: auto; grid-column: auto; }
+  .record-count--text span { white-space: normal; }
 }
