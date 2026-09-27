@@ -203,6 +203,7 @@ class MaterialContent:
         wall: Callable[[], float] = time.time,
         round_seconds: float = ROUND_SECONDS,
         extractors: dict[str, Extractor] | None = None,
+        before_round: Callable[[], Any] | None = None,
     ):
         self.db = db
         self.settings = settings
@@ -214,6 +215,7 @@ class MaterialContent:
         self.wall = wall
         self.round_seconds = round_seconds
         self.extractors: dict[str, Extractor] = dict(extractors or {})
+        self.before_round = before_round
         self._last_orphan_pass: float | None = None
         self._running = threading.Lock()
         self.progress: dict[str, Any] = {"pending": 0, "paused": None, "offline_pending": 0}
@@ -251,6 +253,12 @@ class MaterialContent:
             stats["ended"] = "busy"
             self._refresh_progress(paused="busy")
             return stats
+        if self.before_round is not None:
+            # 3c：每 10 分钟看一次认字、转写程序有没有新装上（没到时间立刻返回）
+            try:
+                self.before_round()
+            except Exception:  # noqa: BLE001
+                logger.exception("检查材料读取程序失败")
         deadline = self.clock() + self.round_seconds
         roots = {
             int(row["id"]): row["path"]
@@ -556,7 +564,12 @@ class MaterialContent:
 
     def extract_candidates(self, online: dict[int, str], limit: int = EXTRACT_BATCH) -> list[dict[str, Any]]:
         """要读的内容：有读取器的层、state=pending、到了该试的时间，每份内容挑一个在线的副本。"""
-        layers = [layer for layer in self.extractors if layer != LAYER_MEDIA]
+        # 读取器可以说「这一层这会儿先别读」（例如 Vision 程序正在编译）
+        layers = [
+            layer
+            for layer, extractor in self.extractors.items()
+            if layer != LAYER_MEDIA and getattr(extractor, "available", lambda: True)()
+        ]
         if not layers or not online:
             return []
         marks = ", ".join("?" for _ in online)

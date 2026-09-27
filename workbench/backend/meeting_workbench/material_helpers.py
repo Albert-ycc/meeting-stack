@@ -112,9 +112,15 @@ class StopFlag:
     def is_set(self) -> bool:
         return self._event.is_set()
 
-    def register(self, helper: "HelperProcess") -> None:
+    def register(self, helper: Any) -> None:
+        """登记一个有 kill() 的东西：常驻进程，或者 run_background 的一次性进程。"""
         with self._lock:
             self._helpers.append(helper)
+
+    def unregister(self, helper: Any) -> None:
+        with self._lock:
+            if helper in self._helpers:
+                self._helpers.remove(helper)
 
     def set(self) -> None:
         """置停止标记并杀掉所有登记过的子进程。"""
@@ -129,6 +135,56 @@ class StopFlag:
 
     def wait(self, seconds: float) -> bool:
         return self._event.wait(seconds)
+
+
+class _OneShot:
+    def __init__(self, process: subprocess.Popen[bytes]):
+        self.process = process
+        self.killed = False
+
+    def kill(self) -> None:
+        self.killed = True
+        kill_group(self.process.pid)
+
+
+def run_background(
+    argv: list[str],
+    *,
+    timeout: float,
+    stop: "StopFlag | None" = None,
+    env: dict[str, str] | None = None,
+    background: bool = True,
+) -> subprocess.CompletedProcess[bytes]:
+    """一次性的外部程序（tesseract、sips、ffprobe 这类）：后台优先级、自己的进程组，超时杀整个组、
+    抛 HelperTimeout；服务关闭时一起杀掉，抛 HelperStopped。stdout、stderr 都收回来。"""
+    if stop is not None and stop.is_set():
+        raise HelperStopped("stopping")
+    merged = dict(os.environ)
+    merged.update(env or {})
+    process = subprocess.Popen(
+        [*(background_prefix() if background else []), *argv],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=merged,
+        start_new_session=True,
+    )
+    handle = _OneShot(process)
+    if stop is not None:
+        stop.register(handle)
+    try:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            kill_group(process.pid)
+            process.communicate()
+            raise HelperTimeout(f"{Path(argv[0]).name} 超过 {timeout:g} 秒") from error
+    finally:
+        if stop is not None:
+            stop.unregister(handle)
+    if handle.killed:
+        raise HelperStopped("stopping")
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
 class HelperProcess:

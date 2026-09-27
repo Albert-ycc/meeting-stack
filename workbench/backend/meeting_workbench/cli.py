@@ -19,6 +19,7 @@ from .importer import ArchiveImporter
 from .integrity import AudioIntegrityError, AudioIntegrityVerifier, last_audio_integrity_result
 from .gold_export import GoldExportError, export_gold_jsonl
 from .main import create_app
+from .ocr_engines import tools_report
 from .project_linking import ProjectLinker
 from .semantic import SemanticIndex, SemanticPaused, SemanticUnavailable
 
@@ -91,6 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--engine", action="append", choices=["vision", "tesseract"], help="只跑某一个，默认两个都跑"
     )
     ocr.add_argument("--out", type=Path, help="结果写到哪个文件夹，默认数据目录下的 ocr-trial/")
+    engine = materials_sub.add_parser(
+        "ocr-engine", help="选图片和扫描页用哪套认字：auto（默认）、vision、tesseract、off；不用重启服务"
+    )
+    engine.add_argument(
+        "engine", nargs="?", choices=["auto", "vision", "tesseract", "off"], help="不给就只看现在用的是哪套"
+    )
     return parser
 
 
@@ -182,9 +189,37 @@ def _material_roots(
     return [dict(row) for row in rows]
 
 
+ENGINE_LABELS = {"vision": "Vision（macOS 自带）", "tesseract": "tesseract", "off": "不认字（只读 PDF 文字层）"}
+
+
+def _ocr_engine(args: argparse.Namespace, settings: Settings) -> int:
+    from .ocr_engines import OcrEngines
+
+    engines = OcrEngines(_database(settings), settings)
+    reread = engines.set_engine(args.engine)["reread"] if args.engine else 0
+    print("正在检查认字程序（第一次要编译 Vision 程序，可能要一两分钟）…", file=sys.stderr, flush=True)
+    engines.refresh(force=True)
+    current = engines.image_engine()
+    print(f"设置：{engines.setting()}；图片和扫描页现在用：{ENGINE_LABELS.get(current or '', '没有能用的（先装一套）')}")
+    tools = engines.tools()
+    print(f"Vision：{engines.build.describe() if sys.platform == 'darwin' else '只能在 Mac 上用'}")
+    if not tools.tesseract:
+        print("tesseract：没装（brew install tesseract tesseract-lang）")
+    elif not tools.tesseract_chinese:
+        print("tesseract：没有中文语言包（brew install tesseract-lang）")
+    else:
+        print(f"tesseract：能用（{tools.tesseract_version}）")
+    print("PDF 的文字层：" + ("能读" if engines.build.ready() else "要等 Vision 程序编译好"))
+    if reread:
+        print(f"关着认字时跳过的 {reread} 份图片和扫描件会重新认字")
+    return 0
+
+
 def _materials(args: argparse.Namespace, settings: Settings) -> int:
     from . import material_walk, ocr_trial
 
+    if args.materials_command == "ocr-engine":
+        return _ocr_engine(args, settings)
     roots = _material_roots(settings, args.project, args.root)
     if args.materials_command == "walk":
         if not args.dry_run:
@@ -227,6 +262,7 @@ def _materials(args: argparse.Namespace, settings: Settings) -> int:
         )
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+    report["machine"] = ocr_trial.machine_summary()
     (out_dir / "结果.md").write_text(ocr_trial.render_markdown(report, notes), encoding="utf-8")
     (out_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(ocr_trial.render_summary(report, out_dir))
@@ -392,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
             "staging": settings.staging_root.is_dir(),
             "loopback": settings.host == "127.0.0.1",
             "last_audio_verification": last_audio_integrity_result(db),
+            # 第三期：材料读取用到的程序，只报告、不进 required（装机脚本最后会跑 doctor）
+            "materials": tools_report(settings),
         }
         print(json.dumps(checks, ensure_ascii=False))
         required = (checks["database"], checks["archive"], checks["staging"], checks["loopback"])

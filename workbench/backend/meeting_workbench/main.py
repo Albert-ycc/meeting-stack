@@ -63,7 +63,8 @@ from . import file_mentions
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from . import material_content as material_content_module
 from .extract_worker import TextExtractor
-from .material_rules import LAYER_TEXT
+from .material_rules import LAYER_IMAGE, LAYER_PDF, LAYER_TEXT
+from .ocr_engines import ImageExtractor, OcrEngines, PdfExtractor
 from .busy import BusySignal
 from .material_helpers import StopFlag, cleanup_leftovers
 from .project_folders import folder_matches
@@ -709,12 +710,18 @@ def create_app(
     roots_cache = graph_module.RootsCache(db, settings=settings)
     material_indexer = MaterialIndexer(db, settings, busy_check=busy)
     material_stop = StopFlag()
+    ocr = OcrEngines(db, settings, stop=material_stop, busy_check=busy)
     material_content = material_content_module.MaterialContent(
         db,
         settings,
         busy_check=busy,
         stop=material_stop,
-        extractors={LAYER_TEXT: TextExtractor(settings.data_dir, stop=material_stop)},
+        extractors={
+            LAYER_TEXT: TextExtractor(settings.data_dir, stop=material_stop),
+            LAYER_PDF: PdfExtractor(ocr),
+            LAYER_IMAGE: ImageExtractor(ocr),
+        },
+        before_round=ocr.refresh,
     )
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
@@ -1221,6 +1228,7 @@ def create_app(
                     await content_worker
                 await asyncio.to_thread(material_content.wait_idle, 10.0)
                 material_content.close()
+                ocr.close()
             scanner.cancel()
             relay_probe.cancel()
             qwen_worker.cancel()
@@ -1247,6 +1255,7 @@ def create_app(
     app.state.semantic = semantic
     app.state.busy = busy
     app.state.material_content = material_content
+    app.state.ocr = ocr
     app.state.material_stop = material_stop
     app.state.waveforms = waveforms
     app.state.relay = relay
