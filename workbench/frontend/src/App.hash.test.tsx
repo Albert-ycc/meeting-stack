@@ -407,3 +407,55 @@ describe("材料预览抽屉（3e）", () => {
     expect(screen.getByText("内容都读完了，读不了 1 个（要密码 1）")).toBeInTheDocument();
   });
 });
+
+describe("搜索里的材料（3f）", () => {
+  it("录音文字命中的 ▶ 打开预览抽屉，不等预览数据就从那个时间放", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+    const search = vi.fn().mockResolvedValue({
+      mode: "hybrid",
+      items: [],
+      similar: [],
+      materials: [
+        {
+          file_id: 9,
+          content_key: "k-9",
+          name: "访谈.m4a",
+          ext: "m4a",
+          path: "/Volumes/资料盘/云图/访谈.m4a",
+          rel_path: "访谈.m4a",
+          folder_path: "/Volumes/资料盘/云图",
+          root_id: 1,
+          project_id: "p",
+          project_name: "云图",
+          project_color: null,
+          modified_at: null,
+          root_online: true,
+          playable: true,
+          copies: 0,
+          name_hit: false,
+          hits: [{ kind: "media", loc: null, start_ms: 92_000, text: "报价单下周给", matched: "报价单" }],
+          more_hits: 0,
+          state_text: null,
+          mentioned_meetings: 0,
+        },
+      ],
+      material_similar: [],
+      material_state: { pending: 0, rebuilding: false, partial: false },
+    });
+    const getMaterialPreview = vi.fn(() => new Promise(() => undefined));
+    render(<App apiClient={client({ search, getMaterialPreview } as Partial<ApiClient>)} />);
+
+    const input = await screen.findByLabelText("全局检索");
+    expect(input).toHaveAttribute("maxLength", "200");
+    expect(input).toHaveAttribute("placeholder", "搜索会议、原句、材料或关键词");
+    await user.type(input, "报价单");
+    await user.click(screen.getByRole("button", { name: "检索" }));
+    await user.click(await screen.findByRole("button", { name: "从 01:32 放 访谈.m4a" }));
+
+    const drawer = await screen.findByRole("dialog", { name: "材料预览" });
+    expect(getMaterialPreview).toHaveBeenCalledWith(9);
+    expect(drawer.querySelector("audio")?.getAttribute("src")).toBe("/api/materials/files/9/media");
+  });
+});

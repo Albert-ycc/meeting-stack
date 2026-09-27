@@ -67,6 +67,8 @@ from .material_media import MaterialMedia
 from .extract_worker import TextExtractor
 from .material_rules import IMAGE_EXTS, LAYER_IMAGE, LAYER_PDF, LAYER_TEXT, PDF_EXTS, PLAYABLE_TYPES
 from . import material_previews, material_status
+from . import material_fts, material_search
+from . import material_vectors as material_vectors_module
 from .ocr_engines import ImageExtractor, OcrEngines, PdfExtractor
 from .busy import BusySignal
 from .material_helpers import StopFlag, cleanup_leftovers
@@ -725,9 +727,13 @@ def create_app(
             LAYER_IMAGE: ImageExtractor(ocr),
         },
         before_round=ocr.refresh,
+        fts_rebuilding=lambda: material_fts.rebuild_pending(db),
     )
     material_media = MaterialMedia(
         db, settings, material_content, tools=ocr.tools, busy_check=busy, stop=material_stop
+    )
+    material_vectors = material_vectors_module.MaterialVectors(
+        db, settings, semantic, busy_check=busy, stop=material_stop
     )
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
@@ -1168,6 +1174,35 @@ def create_app(
                 else material_media_module.IDLE_LOOP_SECONDS
             )
 
+    async def material_embed_loop() -> None:
+        """材料片段的向量（3f）：第一轮前等 5 秒，每 30 秒一轮、每轮最多 30 秒；语义检索关着时不跑。
+        每轮之后顺手补内存矩阵，搜索时不用现建。不改 semantic_status。"""
+        await asyncio.sleep(material_vectors_module.FIRST_DELAY_SECONDS)
+        while not material_stop.is_set():
+            try:
+                await asyncio.to_thread(material_vectors.embed_round)
+                await asyncio.to_thread(material_vectors.refresh)
+            except asyncio.CancelledError:
+                raise
+            except SemanticUnavailable:
+                logger.warning("本地语义模型不可用，材料向量先不补")
+            except Exception:  # noqa: BLE001
+                logger.exception("材料向量这一轮失败")
+            await asyncio.sleep(material_vectors_module.LOOP_SECONDS)
+
+    async def material_fts_task() -> None:
+        """恢复备份后补材料全文表（3f）：单独一个任务，不看材料开关和忙信号。"""
+        try:
+            stats = await asyncio.to_thread(
+                material_fts.run_rebuild, db, should_stop=material_stop.is_set
+            )
+            if stats["state"] == "done":
+                logger.info("材料全文表补完：%d 批%s", stats["batches"], "，核对不通过已整张重建" if stats["rebuilt"] else "")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("补材料全文表失败，下次启动接着补")
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         application.state.lifespan_active = True
@@ -1231,6 +1266,11 @@ def create_app(
         index_worker = asyncio.create_task(material_index_loop(), name="meeting-workbench-material-index")
         content_worker: asyncio.Task[None] | None = None
         media_worker: asyncio.Task[None] | None = None
+        embed_worker: asyncio.Task[None] | None = None
+        fts_worker: asyncio.Task[None] | None = None
+        if await asyncio.to_thread(material_fts.rebuild_pending, db):
+            material_stop.clear()
+            fts_worker = asyncio.create_task(material_fts_task(), name="meeting-workbench-material-fts")
         if settings.material_content_enabled:
             material_stop.clear()
             # 重启清理放在材料循环启动之前：上次留下的转写进程、临时文件
@@ -1244,11 +1284,20 @@ def create_app(
             media_worker = asyncio.create_task(
                 material_media_loop(), name="meeting-workbench-material-media"
             )
+            if settings.semantic_enabled:
+                embed_worker = asyncio.create_task(
+                    material_embed_loop(), name="meeting-workbench-material-embed"
+                )
         try:
             yield
         finally:
             # 先置停止标记（同时杀掉读取、认字、转写进程），再取消循环、等线程返回
             material_stop.set()
+            for worker in (embed_worker, fts_worker):
+                if worker is not None:
+                    worker.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await worker
             if content_worker is not None:
                 content_worker.cancel()
                 with suppress(asyncio.CancelledError):
@@ -1290,6 +1339,7 @@ def create_app(
     app.state.material_content = material_content
     app.state.ocr = ocr
     app.state.material_media = material_media
+    app.state.material_vectors = material_vectors
     app.state.material_stop = material_stop
     app.state.waveforms = waveforms
     app.state.relay = relay
@@ -2173,9 +2223,13 @@ def create_app(
     ):
         if _has_forbidden_control_character(q):
             raise HTTPException(422, "搜索词包含禁止控制字符")
+        # 自己查长度：Query 的 max_length 回的是英文
+        if len(q) > search_module.QUERY_MAX_CHARS:
+            raise HTTPException(422, f"搜索词最多 {search_module.QUERY_MAX_CHARS} 个字")
+        scope = project_id or None
         if mode == "semantic":
             try:
-                return {"mode": mode, "items": semantic.search(q, limit=limit)}
+                return {"mode": mode, "items": semantic.search(q, limit=limit, scope=scope)}
             except SemanticBusy as error:
                 raise HTTPException(409, str(error)) from error
             except SemanticPaused as error:
@@ -2183,7 +2237,6 @@ def create_app(
             except SemanticUnavailable as error:
                 raise HTTPException(503, str(error)) from error
 
-        scope = project_id or None
         if scope and scope != "none" and db.query_one(
             "SELECT 1 FROM projects WHERE id=?", (scope,)
         ) is None:
@@ -2191,35 +2244,68 @@ def create_app(
         expansion = search_module.expand_query(db, q, project_id=scope)
         needles = [q.strip(), *expansion["expanded"]]
         items = search_module.literal_search(db, needles, scope=scope, limit=limit)
+        materials_found = material_search.material_search(db, needles, scope=scope)
         payload: dict[str, Any] = {
             "mode": mode,
             "items": items,
             "expanded": expansion["expanded"],
             "expand_hints": expansion["hints"],
+            "materials": materials_found["items"],
+            "material_similar": [],
+            "material_state": {
+                "pending": material_pending_in(scope),
+                "rebuilding": material_fts.rebuild_pending(db),
+                "partial": materials_found["partial"],
+            },
         }
         if scope and scope != "none":
             payload["unattributed_hits"] = len(
                 search_module.literal_search(db, needles, scope="none", limit=limit)
             )
         if mode == "hybrid":
-            similar, unavailable = similar_segments(q, items, scope=scope)
+            similar, material_similar, unavailable = similar_results(
+                q, items, materials_found["items"], scope=scope
+            )
             payload["similar"] = similar
+            payload["material_similar"] = material_similar
             if unavailable:
                 payload["semantic_unavailable"] = unavailable
         return payload
 
-    def similar_segments(
-        query: str, literal: list[dict[str, Any]], *, scope: str | None
-    ) -> tuple[list[dict[str, Any]], str | None]:
-        """意思相近的段落：去掉已经按原词列出的，只留同一范围的。正在转写或模型不可用时不搜。"""
+    def material_pending_in(scope: str | None) -> int:
+        """还有多少材料没读完：全部项目用内容循环记下的数；选了项目时只数这个项目的根目录。"""
+        if scope == "none":
+            return 0
+        if not scope:
+            return int(material_content.progress.get("pending") or 0)
+        root_ids = [
+            int(row["id"])
+            for row in db.query_all("SELECT id FROM project_material_roots WHERE project_id = ?", (scope,))
+        ]
+        if not root_ids:
+            return 0
+        return int(material_content_module.pending_counts(db, root_ids=root_ids, online=set(root_ids))["pending"])
+
+    def similar_results(
+        query: str,
+        literal: list[dict[str, Any]],
+        materials_listed: list[dict[str, Any]],
+        *,
+        scope: str | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+        """意思相近的会议段落和材料：查询向量只算一次，两边都先按范围过滤再取前 60；
+        去掉已经按原词列出的。正在转写或模型不可用时两边都不搜。"""
         if not settings.semantic_enabled:
-            return [], None
+            return [], [], None
         if semantic.busy_check():
-            return [], "正在转写，意思相近的结果等转写完再搜"
+            return [], [], "正在转写，意思相近的结果等转写完再搜"
         try:
-            rows = semantic.search(query, limit=search_module.SIMILAR_FETCH)
+            query_vector = semantic.encode_query(query)
         except (SemanticBusy, SemanticPaused, SemanticUnavailable) as error:
-            return [], str(error)
+            return [], [], str(error)
+        if query_vector is None:
+            return [], [], None
+        rows = semantic.search_vector(query_vector, scope=scope, limit=search_module.SIMILAR_FETCH)
         listed = {item["segment_id"] for item in literal if item.get("segment_id")}
         similar: list[dict[str, Any]] = []
         for row in rows:
@@ -2227,14 +2313,24 @@ def create_app(
                 continue
             if row.get("score", 0) < search_module.SIMILAR_MIN_SCORE:
                 continue
-            if scope == "none" and row.get("project_id"):
-                continue
-            if scope and scope != "none" and row.get("project_id") != scope:
-                continue
             similar.append(row)
             if len(similar) >= search_module.SIMILAR_LIMIT:
                 break
-        return similar, None
+        material_similar: list[dict[str, Any]] = []
+        allowed = material_search.allowed_content_keys(db, scope)
+        if allowed:
+            scored = material_vectors.search(query_vector, allowed=allowed, fetch=search_module.SIMILAR_FETCH)
+            material_similar, missing = material_search.similar_rows(
+                db,
+                scored,
+                scope=scope,
+                exclude={str(item["content_key"]) for item in materials_listed if item.get("content_key")},
+                limit=search_module.SIMILAR_LIMIT,
+                min_score=search_module.SIMILAR_MIN_SCORE,
+            )
+            if missing:
+                material_vectors.forget(missing)
+        return similar, material_similar, None
 
     @app.get("/api/media/{artifact_id}")
     def media(artifact_id: int):

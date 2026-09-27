@@ -805,7 +805,8 @@ export default function App({ apiClient = api }: AppProps) {
         aria-label="全局检索"
         disabled={detailNavigationLocked}
         onChange={(event) => setQuery(event.target.value)}
-        placeholder="搜索会议、原句或关键词"
+        maxLength={200}
+        placeholder="搜索会议、原句、材料或关键词"
         value={query}
       />
       <MagneticButton className="search-submit" disabled={detailNavigationLocked} type="submit">
@@ -864,6 +865,7 @@ export default function App({ apiClient = api }: AppProps) {
       <SearchPage
         error={searchError}
         onOpen={(meetingId, startMs, tab) => openMeeting(meetingId, startMs, false, tab)}
+        onOpenMaterial={(fileId, startMs) => setPreviewTarget({ fileId, startMs })}
         onScopeChange={(scope) => void submitSearch({ word: searchedQuery, scope })}
         onSearchWord={(word) => void submitSearch({ word })}
         projects={projects}

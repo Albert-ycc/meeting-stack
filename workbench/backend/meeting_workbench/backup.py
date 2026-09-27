@@ -17,11 +17,16 @@ import fcntl
 
 from .config import Settings
 from .db import Database
+from .material_fts import mark_for_rebuild
 
 # 可从 segments 重算的派生数据，备份时清空。embeddings 占主库七成体积，
 # 而服务启动后的后台循环会调 SemanticIndex.rebuild() 自动补齐，
 # 留在备份里只是把同一批向量复制 retention 份。
-DERIVED_TABLES: tuple[str, ...] = ("embeddings",)
+# 第三期 3f：材料的全文表和向量也不进备份（片段本身留着：重新认字、转写要几个小时，还要资料盘插着）。
+# 全文表是外部内容表，用 'delete-all' 清空（普通 DELETE 反而让备份变大），同一个事务里在副本写
+# material_fts_rebuild，恢复后由后台任务补回；向量由向量循环慢慢补。
+FTS_TABLE = "material_chunks_fts"
+DERIVED_TABLES: tuple[str, ...] = ("embeddings", FTS_TABLE, "material_chunk_vectors")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +38,7 @@ class BackupResult:
     mirror_sha256: str | None = None
     mirror_error: str | None = None
     derived_stripped: bool = False
+    derived_tables: tuple[str, ...] = ()
 
 
 class BackupManager:
@@ -49,7 +55,8 @@ class BackupManager:
                 f"workbench-{now.strftime('%Y%m%dT%H%M%S.%fZ')}-{secrets.token_hex(4)}.sqlite3"
             )
             local_path = self.settings.backup_dir / filename
-            derived_stripped = self._online_backup(local_path)
+            derived_tables = self._online_backup(local_path)
+            derived_stripped = bool(derived_tables)
             local_sha256 = self._sha256(local_path)
             self._verify_database(local_path)
             self._rotate(self.settings.backup_dir)
@@ -100,7 +107,8 @@ class BackupManager:
                 "mirror_ok": mirror_path is not None,
                 "mirror_error": mirror_error,
                 "derived_stripped": derived_stripped,
-                "derived_tables": list(DERIVED_TABLES) if derived_stripped else [],
+                # 只列副本里实际清空了的表
+                "derived_tables": list(derived_tables),
             }
             self._atomic_text(
                 self.settings.backup_dir / "last-backup.json",
@@ -114,6 +122,7 @@ class BackupManager:
                 mirror_sha256=mirror_sha256,
                 mirror_error=mirror_error,
                 derived_stripped=derived_stripped,
+                derived_tables=derived_tables,
             )
 
     @contextmanager
@@ -126,7 +135,7 @@ class BackupManager:
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
-    def _online_backup(self, destination: Path) -> bool:
+    def _online_backup(self, destination: Path) -> tuple[str, ...]:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{destination.name}.", dir=destination.parent
         )
@@ -153,33 +162,40 @@ class BackupManager:
             raise
 
     @staticmethod
-    def _strip_derived_tables(connection: sqlite3.Connection) -> bool:
-        """清空 DERIVED_TABLES 并回收页面，让备份只留业务数据本身。
+    def _strip_derived_tables(connection: sqlite3.Connection) -> tuple[str, ...]:
+        """清空 DERIVED_TABLES 并回收页面，让备份只留业务数据本身。返回实际清空了的表。
 
         清理失败不该拖垮备份 —— 宁可留一份完整副本，也不能因为省空间没备份成。
         """
         placeholders = ",".join("?" * len(DERIVED_TABLES))
         try:
-            present = [
+            present = {
                 row[0]
                 for row in connection.execute(
                     f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})",
                     DERIVED_TABLES,
                 )
-            ]
+            }
             if not present:
-                return False
-            for table in present:
-                connection.execute(f'DELETE FROM "{table}"')
+                return ()
+            cleared = tuple(table for table in DERIVED_TABLES if table in present)
+            connection.execute("BEGIN IMMEDIATE")
+            for table in cleared:
+                if table == FTS_TABLE:
+                    # 'delete-all' 和补建标记在同一个事务里、commit 之前做
+                    connection.execute(f"INSERT INTO {FTS_TABLE}({FTS_TABLE}) VALUES('delete-all')")
+                    mark_for_rebuild(connection)
+                else:
+                    connection.execute(f'DELETE FROM "{table}"')
             connection.commit()
         except sqlite3.DatabaseError:
             with suppress(sqlite3.DatabaseError):
                 connection.rollback()
-            return False
+            return ()
         # VACUUM 必须在事务外执行；它失败只是没回收到页面，备份内容已经是干净的。
         with suppress(sqlite3.DatabaseError):
             connection.execute("VACUUM")
-        return True
+        return cleared
 
     @staticmethod
     def _atomic_copy(source: Path, destination: Path) -> None:

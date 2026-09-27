@@ -297,6 +297,10 @@ class MaterialMedia:
                 self.progress["paused"] = "busy"
                 return stats
             self.progress["paused"] = None
+            if self.content.chunks_frozen():
+                # 3f：全文表补完之前不写片段
+                stats["ended"] = "fts_rebuild"
+                return stats
             try:
                 stats["work"] = self._run_once()
             except _EndRound as end:

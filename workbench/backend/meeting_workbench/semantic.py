@@ -77,6 +77,22 @@ class SemanticIndex:
         vectors = self._normalize(self._model().encode(texts, show_progress_bar=False))
         return vectors.tolist()
 
+    def encode_texts(self, texts: list[str], *, batch_size: int = 32) -> np.ndarray:
+        """材料片段的向量（3f 向量循环用）：归一化的 float32，一行一段。"""
+        return self._normalize(
+            self._model().encode(
+                texts, batch_size=batch_size, show_progress_bar=False, normalize_embeddings=False
+            )
+        )
+
+    def encode_query(self, query: str) -> np.ndarray | None:
+        """搜索词的向量只算一次，会议和材料的「意思相近」共用。语义检索关着或词为空时回 None。"""
+        if not self.settings.semantic_enabled or not query.strip():
+            return None
+        return self._normalize(
+            self._model().encode([query.strip()], show_progress_bar=False, normalize_embeddings=False)
+        )[0]
+
     @staticmethod
     def _normalize(vectors: np.ndarray) -> np.ndarray:
         vectors = np.asarray(vectors, dtype=np.float32)
@@ -140,16 +156,26 @@ class SemanticIndex:
                 )
         return len(rows)
 
-    def search(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
-        if not self.settings.semantic_enabled or not query.strip():
+    def search(self, query: str, *, limit: int = 20, scope: str | None = None) -> list[dict[str, Any]]:
+        query_vector = self.encode_query(query)
+        if query_vector is None:
             return []
-        query_vector = self._normalize(
-            self._model().encode(
-                [query.strip()], show_progress_bar=False, normalize_embeddings=False
-            )
-        )[0]
+        return self.search_vector(query_vector, scope=scope, limit=limit)
+
+    def search_vector(
+        self, query_vector: np.ndarray, *, scope: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """会议段落里意思相近的。先按范围过滤再打分（以前先取全局前 60 再过滤，小项目里常常什么都不剩）。
+        scope：None 全部；"none" 只看没归项目的会；其他是项目 id。"""
+        clause = ""
+        params: list[Any] = [self.settings.semantic_model]
+        if scope == "none":
+            clause = " AND m.project_id IS NULL"
+        elif scope:
+            clause = " AND m.project_id = ?"
+            params.append(scope)
         rows = self.db.query_all(
-            """SELECT s.id AS segment_id, s.meeting_id, m.title, m.canonical_dir,
+            f"""SELECT s.id AS segment_id, s.meeting_id, m.title, m.canonical_dir,
                       m.recording_date, m.project_id,
                       p.name AS project_name, p.color AS project_color,
                       'segment' AS match_kind, s.start_ms, s.end_ms,
@@ -158,8 +184,8 @@ class SemanticIndex:
                  JOIN segments s ON s.id = e.segment_id
                  JOIN meetings m ON m.current_transcript_version_id = s.version_id
                  LEFT JOIN projects p ON p.id = m.project_id
-                WHERE e.model = ?""",
-            (self.settings.semantic_model,),
+                WHERE e.model = ?{clause}""",
+            params,
         )
         scored = []
         for row in rows:

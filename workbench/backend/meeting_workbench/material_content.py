@@ -208,6 +208,7 @@ class MaterialContent:
         round_seconds: float = ROUND_SECONDS,
         extractors: dict[str, Extractor] | None = None,
         before_round: Callable[[], Any] | None = None,
+        fts_rebuilding: Callable[[], bool] | None = None,
     ):
         self.db = db
         self.settings = settings
@@ -220,6 +221,8 @@ class MaterialContent:
         self.round_seconds = round_seconds
         self.extractors: dict[str, Extractor] = dict(extractors or {})
         self.before_round = before_round
+        # 3f：恢复备份后全文表还没补完时，只算内容标识，不写、不删 material_chunks
+        self.fts_rebuilding = fts_rebuilding
         self._last_orphan_pass: float | None = None
         self._running = threading.Lock()
         self.progress: dict[str, Any] = {"pending": 0, "paused": None, "offline_pending": 0}
@@ -270,11 +273,16 @@ class MaterialContent:
         }
         online = {root_id: path for root_id, path in roots.items() if self.state_of(path) == ROOT_ONLINE}
         self._offline_now: set[int] = set()
+        rebuilding = self.chunks_frozen()
         try:
             if online:
                 stats["keyed"] = self._key_pass(online, deadline)
-                stats["read"] = self._extract_pass(online, deadline)
-            self._maybe_orphan_pass(roots, online)
+                if not rebuilding:
+                    stats["read"] = self._extract_pass(online, deadline)
+            if rebuilding:
+                stats["ended"] = "fts_rebuild"
+            else:
+                self._maybe_orphan_pass(roots, online)
         except _EndRound as end:
             stats["ended"] = end.reason
         except sqlite3.OperationalError as error:
@@ -292,6 +300,15 @@ class MaterialContent:
 
     def _stopping(self) -> bool:
         return self.stop is not None and self.stop.is_set()
+
+    def chunks_frozen(self) -> bool:
+        """恢复备份后全文表还没补完：在没补进去的片段上删除会报 malformed，补到时再插又会重复索引。"""
+        if self.fts_rebuilding is None:
+            return False
+        try:
+            return bool(self.fts_rebuilding())
+        except Exception:  # noqa: BLE001
+            return True
 
     def _checkpoint(self, deadline: float) -> None:
         """每处理完一个文件查一次：停止标记、忙信号、预算。"""
@@ -804,17 +821,27 @@ def _media_exts() -> frozenset[str]:
 
 
 def pending_counts(
-    db: Database, *, online: set[int] | None = None, state_of: Callable[[str], str] = volume_state
+    db: Database,
+    *,
+    online: set[int] | None = None,
+    state_of: Callable[[str], str] = volume_state,
+    root_ids: list[int] | None = None,
 ) -> dict[str, int]:
     """还没读的活文件：扩展名在内容层、不在声档会议记录里、content_error 为空，而且没有内容标识
-    或内容 state=pending。不含 waiting 和读不了的。offline_pending 是其中在没插的盘上的。"""
+    或内容 state=pending。不含 waiting 和读不了的。offline_pending 是其中在没插的盘上的。
+    root_ids：只数这几个根目录（搜索选了项目时）。"""
+    root_clause = ""
+    if root_ids is not None:
+        if not root_ids:
+            return {"pending": 0, "offline_pending": 0}
+        root_clause = f" AND f.root_id IN ({', '.join(str(int(root_id)) for root_id in root_ids)})"
     rows = db.query_all(
         f"""SELECT f.root_id, COUNT(*) AS n
               FROM material_files f
               LEFT JOIN material_contents c ON c.content_key = f.content_key
              WHERE f.gone_at IS NULL AND f.zone != 'cards' AND f.ext IN ({_KEYED_EXTS_SQL})
                AND f.content_error IS NULL
-               AND (f.content_key IS NULL OR c.state = 'pending' OR c.content_key IS NULL)
+               AND (f.content_key IS NULL OR c.state = 'pending' OR c.content_key IS NULL){root_clause}
              GROUP BY f.root_id"""
     )
     if not rows:

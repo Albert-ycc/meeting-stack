@@ -236,7 +236,7 @@ def test_backup_excludes_embeddings_and_keeps_business_data(tmp_path):
     assert result.local_path.stat().st_size < settings.database_path.stat().st_size
     receipt = json.loads((settings.backup_dir / "last-backup.json").read_text())
     assert receipt["derived_stripped"] is True
-    assert receipt["derived_tables"] == ["embeddings"]
+    assert receipt["derived_tables"] == ["embeddings", "material_chunks_fts", "material_chunk_vectors"]
 
 
 def test_backup_survives_when_derived_table_is_absent(tmp_path):
@@ -251,6 +251,8 @@ def test_backup_survives_when_derived_table_is_absent(tmp_path):
     db.initialize()
     db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-noemb', '无向量表', 'published')")
     db.execute("DROP TABLE embeddings")
+    db.execute("DROP TABLE material_chunk_vectors")
+    db.execute("DROP TABLE material_chunks_fts")
 
     result = BackupManager(db, settings).create()
 

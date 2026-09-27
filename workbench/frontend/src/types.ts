@@ -830,6 +830,60 @@ export interface SearchPayload {
   unattributed_hits?: number;
   /** 意思相近的这次没搜成的原因（正在转写、模型不可用） */
   semantic_unavailable?: string;
+  /** 3f：材料里包含这个词的，一份内容一行，最多 20 份，按修改时间从新到旧 */
+  materials?: MaterialSearchItem[];
+  /** 3f：意思相近的材料，已去掉 materials 里列过的 */
+  material_similar?: MaterialSearchItem[];
+  material_state?: MaterialSearchState;
+}
+
+export type MaterialHitKind = "text" | "pdf" | "image" | "media";
+
+export interface MaterialHit {
+  kind: MaterialHitKind;
+  /** 「第 3 页」「表『预算』」这类位置 */
+  loc: string | null;
+  /** 录音文字的时间点 */
+  start_ms: number | null;
+  text: string;
+  matched: string;
+}
+
+export interface MaterialSearchItem {
+  file_id: number;
+  content_key: string | null;
+  name: string;
+  ext: string;
+  path: string;
+  rel_path: string;
+  folder_path: string;
+  root_id: number;
+  project_id: string;
+  project_name: string;
+  project_color: string | null;
+  modified_at: string | null;
+  root_online: boolean;
+  playable: boolean;
+  /** 同一份内容还放在别的几个地方 */
+  copies: number;
+  name_hit: boolean;
+  hits: MaterialHit[];
+  /** 没列出来的命中处数 */
+  more_hits: number;
+  /** 「读不了：要密码」「资料盘未连接」 */
+  state_text: string | null;
+  mentioned_meetings: number;
+  /** 意思相近的才有 */
+  score?: number;
+}
+
+export interface MaterialSearchState {
+  /** 还没读完的材料个数 */
+  pending: number;
+  /** 恢复备份后全文索引在重建 */
+  rebuilding: boolean;
+  /** 查询预算用完，结果可能不全 */
+  partial: boolean;
 }
 
 export interface MeetingFilters {

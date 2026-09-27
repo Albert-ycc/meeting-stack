@@ -334,6 +334,15 @@ def _raise_open_file_limit(target: int = 4096) -> None:
             pass
 
 
+def _material_fts_check(db: Database) -> str:
+    from .material_fts import integrity_ok, rebuild_pending
+
+    if rebuild_pending(db):
+        return "rebuilding"
+    with db.transaction() as connection:
+        return "ok" if integrity_ok(connection) else "failed"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = Settings()
@@ -475,6 +484,8 @@ def main(argv: list[str] | None = None) -> int:
             "last_audio_verification": last_audio_integrity_result(db),
             # 第三期：材料读取用到的程序，只报告、不进 required（装机脚本最后会跑 doctor）
             "materials": tools_report(settings),
+            # 3f：材料全文表和片段对得上（恢复备份后还没补完时写 rebuilding）
+            "material_fts": _material_fts_check(db),
         }
         print(json.dumps(checks, ensure_ascii=False))
         required = (checks["database"], checks["archive"], checks["staging"], checks["loopback"])
