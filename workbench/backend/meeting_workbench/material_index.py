@@ -349,6 +349,7 @@ class MaterialIndexer:
             return self._unreadable(dir_rel, error)
         files: dict[str, dict[str, Any]] = {}
         subdirs: list[str] = []
+        partial = False
         for entry in entries:
             name = entry.name
             self._entries += 1
@@ -368,7 +369,13 @@ class MaterialIndexer:
                         subdirs.append(rel)
                     continue
                 child = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue  # 列目录和 stat 之间被删掉了：就当不在
             except OSError:
+                # 一时读不了（资料盘刚从休眠醒来最常见）：先看盘还在不在，不在就停这一轮；
+                # 在的话这个目录这次没读全，已知的行一律不标不见、不删子树，下一轮一定重读。
+                self._check_root(self._root)
+                partial = True
                 continue
             if not stat.S_ISREG(child.st_mode):
                 continue
@@ -377,8 +384,8 @@ class MaterialIndexer:
             unchanged and known is not None and int(known["child_count"]) == len(entries)
         )
         self._write_dir(
-            root_id, dir_rel, info.st_mtime_ns, zone, len(entries), files=files, subdirs=subdirs,
-            touch_dir=not unchanged_listing,
+            root_id, dir_rel, None if partial else info.st_mtime_ns, zone, len(entries), files=files,
+            subdirs=subdirs, touch_dir=partial or not unchanged_listing, partial=partial,
         )
         return subdirs
 
@@ -409,14 +416,17 @@ class MaterialIndexer:
         self,
         root_id: int,
         dir_rel: str,
-        mtime_ns: int,
+        mtime_ns: int | None,
         zone: str,
         child_count: int,
         *,
         files: dict[str, dict[str, Any]] | None,
         subdirs: list[str] | None,
         touch_dir: bool = True,
+        partial: bool = False,
     ) -> None:
+        """partial：这次有条目没读出来。列出来的照常写，没列出来的行不标不见、子目录不删；
+        mtime_ns 写成空（和新子目录的占位一样），下一轮一定重读。"""
         now = utc_now()
         with self.db.transaction() as connection:
             self._same_root(connection)
@@ -464,7 +474,11 @@ class MaterialIndexer:
                         new_stems.add(item["stem_key"])
                     if row["stem_key"] != item["stem_key"] or item["zone"] not in MATCH_ZONES:
                         dirty_files.append(row["id"])
-                gone = [row["id"] for rel, row in existing.items() if rel not in files and row["gone_at"] is None]
+                gone = [
+                    row["id"]
+                    for rel, row in existing.items()
+                    if rel not in files and row["gone_at"] is None and not partial
+                ]
                 if gone:
                     connection.executemany(
                         "UPDATE material_files SET gone_at = ? WHERE id = ?", [(now, file_id) for file_id in gone]
@@ -472,6 +486,9 @@ class MaterialIndexer:
                     dirty_files.extend(gone)
             if subdirs is not None:
                 current = set(subdirs)
+                if partial:
+                    # 这次列不出的子目录照旧保留
+                    current |= self._children.get(dir_rel, set())
                 for child in sorted(self._children.get(dir_rel, set()) - current):
                     dirty_files.extend(self._drop_subtree(connection, root_id, child, now))
                 # 先给新出现的子目录占一行（修改时间为空＝还没读过）：本轮在读到它之前停下时，

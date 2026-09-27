@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import threading
 from collections.abc import Callable
 from typing import Any, Protocol
 
 import numpy as np
 
+from .busy import BusySignal
 from .config import Settings
 from .db import Database, utc_now
 
@@ -28,20 +28,6 @@ class SemanticPaused(RuntimeError):
     pass
 
 
-def funasr_is_busy() -> bool:
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", "funasr|auto_model|transcribe_funasr"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        return result.returncode == 0 and bool(result.stdout.strip())
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
 class SemanticIndex:
     def __init__(
         self,
@@ -49,12 +35,13 @@ class SemanticIndex:
         settings: Settings,
         *,
         embedder: Embedder | None = None,
-        busy_check: Callable[[], bool] = funasr_is_busy,
+        busy_check: Callable[[], bool] | None = None,
     ):
         self.db = db
         self.settings = settings
         self._embedder = embedder
-        self.busy_check = busy_check
+        # 默认只看进程列表和库（命令行 semantic-index 用）；服务里传完整的 busy.BusySignal。
+        self.busy_check = busy_check if busy_check is not None else BusySignal(db)
         self._rebuild_lock = threading.Lock()
 
     def _model(self) -> Embedder:
@@ -102,7 +89,7 @@ class SemanticIndex:
         if not self.settings.semantic_enabled:
             return 0
         if self.busy_check():
-            raise SemanticPaused("FunASR 转写运行中，语义索引已暂停")
+            raise SemanticPaused("会议正在转写，语义索引已暂停")
         if not self._rebuild_lock.acquire(blocking=False):
             raise SemanticBusy("语义索引正在重建")
         try:

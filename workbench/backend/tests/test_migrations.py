@@ -513,8 +513,48 @@ V14_TRIGGERS = (
 V14_LINK_COLUMNS = ("new_requirement_name", "new_name_project_id", "new_name_spoken")
 
 
+# v15 / 3a：材料内容。触发器建在新表上，删表时一起删；material_files 上的新列和两个索引。
+V15_TRIGGERS = (
+    "material_chunks_fts_insert",
+    "material_chunks_fts_delete",
+    "material_chunks_fts_update",
+)
+V15_TABLES = (
+    "deliverable_files",
+    "material_media_jobs",
+    "material_chunk_vectors",
+    "material_chunks_fts",
+    "material_chunks",
+    "material_contents",
+)
+V15_FILE_INDEXES = ("idx_material_files_content", "idx_material_files_mtime")
+V15_FILE_COLUMNS = (
+    "content_key",
+    "content_size",
+    "content_mtime_ns",
+    "content_error",
+    "content_attempts",
+    "content_checked_at",
+)
+
+
+def _downgrade_to_v14(connection: sqlite3.Connection) -> None:
+    """把刚建好的 v15 库退回 v14 的形状：先删新触发器，再删新表，再删两个新索引，最后删六个新列。"""
+    for trigger in V15_TRIGGERS:
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    for table in V15_TABLES:
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
+    for index in V15_FILE_INDEXES:
+        connection.execute(f"DROP INDEX IF EXISTS {index}")
+    for column in V15_FILE_COLUMNS:
+        connection.execute(f"ALTER TABLE material_files DROP COLUMN {column}")
+    connection.execute("DELETE FROM app_state WHERE key='ocr_engine'")
+    connection.execute("PRAGMA user_version=14")
+
+
 def _downgrade_to_v13(connection: sqlite3.Connection) -> None:
     """把刚建好的 v14 库退回 v13 的形状：先删新触发器（它们引用新表），再删新表。"""
+    _downgrade_to_v14(connection)
     for table in V14_GRAPH_REV_TABLES:
         for action in ("insert", "update", "delete"):
             connection.execute(f"DROP TRIGGER IF EXISTS graph_rev_{table}_{action}")
@@ -727,7 +767,7 @@ def test_version_fourteen_migration_adds_tables_and_keeps_data(tmp_path):
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [13]
-    assert db.user_version() == SCHEMA_VERSION == 14
+    assert db.user_version() == SCHEMA_VERSION == 15
     assert set(V14_TABLES) <= _tables(db)
     assert db.query_one("SELECT name FROM projects WHERE id='p-a'") == {"name": "云图AI"}
     assert db.query_one("SELECT decision FROM name_decisions") == {"decision": "ignored"}
@@ -743,8 +783,82 @@ def test_version_fourteen_migration_adds_tables_and_keeps_data(tmp_path):
     # 再跑一遍什么都不变
     db.initialize()
     db.initialize()
-    assert db.user_version() == 14
+    assert db.user_version() == 15
     assert db.query_one("SELECT COUNT(*) AS n FROM project_material_roots") == {"n": 1}
+
+
+def test_version_fifteen_migration_adds_material_content_and_keeps_data(tmp_path):
+    database_path = tmp_path / "workbench.sqlite3"
+    db = Database(database_path)
+    db.initialize()
+    with sqlite3.connect(database_path) as connection:
+        _downgrade_to_v14(connection)
+        connection.executescript(
+            """
+            INSERT INTO projects(id, name, created_at) VALUES ('p-a', '云图AI', '2026-09-01');
+            INSERT INTO project_material_roots(project_id, path, created_at)
+            VALUES ('p-a', '/Volumes/资料盘/项目/云图AI', '2026-09-01');
+            INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, size, mtime_ns, seen_at)
+            VALUES (1, '报价单.xlsx', '', '报价单.xlsx', '报价单', '报价单', 10, 20, '2026-09-01');
+            """
+        )
+    assert not set(V15_TABLES) & _tables(db)
+    backups: list[int] = []
+
+    db.initialize(before_migrate=lambda: backups.append(db.user_version()))
+
+    assert backups == [14]
+    assert db.user_version() == SCHEMA_VERSION == 15
+    assert set(V15_TABLES) | set(V15_TRIGGERS) <= _tables(db)
+    columns = {row["name"] for row in db.query_all("PRAGMA table_info(material_files)")}
+    assert set(V15_FILE_COLUMNS) <= columns
+    indexes = {row["name"] for row in db.query_all("PRAGMA index_list(material_files)")}
+    assert set(V15_FILE_INDEXES) <= indexes
+    assert db.query_one("SELECT name, size, content_key FROM material_files") == {
+        "name": "报价单.xlsx",
+        "size": 10,
+        "content_key": None,
+    }
+    assert db.query_one("SELECT value FROM app_state WHERE key='ocr_engine'") == {"value": "auto"}
+    db.initialize()
+    db.initialize()
+    assert db.user_version() == 15
+    assert db.query_one("SELECT COUNT(*) AS n FROM material_files") == {"n": 1}
+
+
+def test_material_chunks_keep_the_full_text_index_in_sync(tmp_path):
+    db = Database(tmp_path / "workbench.sqlite3")
+    db.initialize()
+    db.execute(
+        """INSERT INTO material_contents(content_key, layer, created_at, updated_at)
+           VALUES ('q2:a', 'text', 'x', 'x')"""
+    )
+    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 0, '报价单第一版')")
+    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 1, '排期表')")
+
+    def hits(word):
+        return [
+            row["rowid"]
+            for row in db.query_all(
+                "SELECT rowid FROM material_chunks_fts WHERE material_chunks_fts MATCH ?", (f'"{word}"',)
+            )
+        ]
+
+    assert len(hits("报价单")) == 1
+    db.execute("UPDATE material_chunks SET text='报价单第二版' WHERE ordinal=0")
+    assert len(hits("第二版")) == 1 and hits("第一版") == []
+    first_id = db.query_one("SELECT MAX(id) AS id FROM material_chunks")["id"]
+    db.execute("DELETE FROM material_contents")  # 级联删片段，触发器同步删全文索引
+    assert hits("报价单") == [] and hits("排期表") == []
+    # id 只增不复用
+    db.execute(
+        """INSERT INTO material_contents(content_key, layer, created_at, updated_at)
+           VALUES ('q2:b', 'text', 'x', 'x')"""
+    )
+    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:b', 0, '新的')")
+    assert db.query_one("SELECT id FROM material_chunks")["id"] > first_id
+    db.execute("PRAGMA integrity_check")
+    assert db.query_one("SELECT COUNT(*) AS n FROM material_chunks_fts")["n"] == 1
 
 
 def test_version_fourteen_tables_bump_the_graph_revision(tmp_path):
@@ -794,6 +908,16 @@ def test_version_fourteen_tables_bump_the_graph_revision(tmp_path):
            VALUES ('m', 'p', '报价单', 1, '报价单', 'x')"""
     )
     assert rev() == after_root + 2
+    # 3a：材料内容那几张表都是后台在写，不进版本号
+    marker = rev()
+    db.execute("UPDATE material_files SET content_key='q2:a', content_size=1, content_mtime_ns=1")
+    db.execute(
+        """INSERT INTO material_contents(content_key, layer, created_at, updated_at)
+           VALUES ('q2:a', 'text', 'x', 'x')"""
+    )
+    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 0, '片段')")
+    db.execute("INSERT INTO material_media_jobs(content_key, updated_at) VALUES ('q2:a', 'x')")
+    assert rev() == marker
 
 
 def test_mounting_a_folder_drops_the_pending_folder(tmp_path):

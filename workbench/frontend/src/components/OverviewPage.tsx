@@ -91,6 +91,10 @@ function niceTicks(max: number): number[] {
 const PENDING_LIMIT = 5;
 // 后端各服务的正常取值不统一，只有落在这个集合外的才值得占版面。
 const HEALTHY_SERVICE_STATES = new Set(["healthy", "ok", "ready", "enabled"]);
+// 语义检索在会议转写时让路（paused）是正常的，不多出一行告警。
+function serviceHealthy(name: string, status: string): boolean {
+  return HEALTHY_SERVICE_STATES.has(status) || (name === "semantic" && status === "paused");
+}
 
 function startOfWeek(reference: Date): Date {
   const start = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate());
@@ -150,7 +154,7 @@ export function OverviewPage({
   const failedJobs = health?.counts.attention_jobs ?? health?.counts.failed_jobs ?? 0;
   const attentionText = describeAttention(health?.details?.attention?.by_kind ?? null, failedJobs);
   const degradedServices = Object.entries(health?.services ?? {}).filter(
-    ([, status]) => !HEALTHY_SERVICE_STATES.has(status),
+    ([name, status]) => !serviceHealthy(name, status),
   );
 
   const [chartSource, setChartSource] = useState<MeetingSummary[] | null>(null);

@@ -82,6 +82,22 @@ describe("OverviewPage mobile safety", () => {
     expect(onOpenTasks).not.toHaveBeenCalled();
   });
 
+  it("treats semantic search pausing for a meeting transcription as healthy", async () => {
+    render(
+      <OverviewPage
+        {...baseProps({
+          health: {
+            status: "ok",
+            services: { database: "healthy", semantic: "paused" },
+            counts: { meetings: 0, unreviewed: 0, failed_jobs: 0, scan_errors: 0 },
+          },
+        })}
+      />,
+    );
+    await act(async () => {});
+    expect(screen.getByText("本地服务全部正常")).toBeInTheDocument();
+  });
+
   it("summarises recent meetings by recording date", async () => {
     render(
       <OverviewPage

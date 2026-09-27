@@ -61,6 +61,9 @@ from . import name_actions, name_hints, project_folders
 from . import overview as overview_module
 from . import file_mentions
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
+from . import material_content as material_content_module
+from .busy import BusySignal
+from .material_helpers import StopFlag, cleanup_leftovers
 from .project_folders import folder_matches
 from .project_names import (
     SimilarProjectError,
@@ -680,7 +683,9 @@ def create_app(
         source_signature_resolver=importer.signature_for_meeting_locked,
         relay_jobs_db=settings.relay_jobs_db,
     )
-    semantic = SemanticIndex(db, settings)
+    # 3a：统一的「会议在转写」信号。中转状态从 app.state.relay_health 取（每 5 秒刷新）。
+    busy = BusySignal(db, relay_state=lambda: getattr(app.state, "relay_health", None))
+    semantic = SemanticIndex(db, settings, busy_check=busy)
     waveforms = WaveformPeaks(settings)
     relay = relay_client or RelayClient(settings)
     notifier = LarkNotifier(
@@ -700,7 +705,11 @@ def create_app(
     project_linker = ProjectLinker(db, settings)
     card_writer = CardWriter(db, settings)
     roots_cache = graph_module.RootsCache(db, settings=settings)
-    material_indexer = MaterialIndexer(db, settings, busy_check=semantic.busy_check)
+    material_indexer = MaterialIndexer(db, settings, busy_check=busy)
+    material_stop = StopFlag()
+    material_content = material_content_module.MaterialContent(
+        db, settings, busy_check=busy, stop=material_stop
+    )
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
@@ -1106,6 +1115,23 @@ def create_app(
                 logger.exception("文件名索引这一轮失败")
             await asyncio.sleep(MATERIAL_INDEX_SECONDS)
 
+    async def material_content_loop() -> None:
+        """材料内容（3a）：第一轮前等 5 秒；有活时每 10 秒一轮，没活时每 60 秒。不进健康检查。"""
+        await asyncio.sleep(5)
+        while not material_stop.is_set():
+            stats: dict[str, Any] = {}
+            try:
+                stats = await asyncio.to_thread(material_content.run_round)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("材料内容这一轮失败")
+            await asyncio.sleep(
+                material_content_module.WORK_LOOP_SECONDS
+                if stats.get("work")
+                else material_content_module.IDLE_LOOP_SECONDS
+            )
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         application.state.lifespan_active = True
@@ -1167,9 +1193,27 @@ def create_app(
         )
         roots_worker = asyncio.create_task(roots_loop(), name="meeting-workbench-graph-roots")
         index_worker = asyncio.create_task(material_index_loop(), name="meeting-workbench-material-index")
+        content_worker: asyncio.Task[None] | None = None
+        if settings.material_content_enabled:
+            material_stop.clear()
+            # 重启清理放在材料循环启动之前：上次留下的转写进程、临时文件
+            try:
+                await asyncio.to_thread(cleanup_leftovers, db, settings.data_dir)
+            except Exception:  # noqa: BLE001
+                logger.exception("清理上次留下的材料进程失败")
+            content_worker = asyncio.create_task(
+                material_content_loop(), name="meeting-workbench-material-content"
+            )
         try:
             yield
         finally:
+            # 先置停止标记（同时杀掉读取、认字、转写进程），再取消循环、等线程返回
+            material_stop.set()
+            if content_worker is not None:
+                content_worker.cancel()
+                with suppress(asyncio.CancelledError):
+                    await content_worker
+                await asyncio.to_thread(material_content.wait_idle, 10.0)
             scanner.cancel()
             relay_probe.cancel()
             qwen_worker.cancel()
@@ -1194,6 +1238,9 @@ def create_app(
     app.state.service = service
     app.state.importer = importer
     app.state.semantic = semantic
+    app.state.busy = busy
+    app.state.material_content = material_content
+    app.state.material_stop = material_stop
     app.state.waveforms = waveforms
     app.state.relay = relay
     app.state.uploads = uploads

@@ -1,4 +1,5 @@
 import math
+import os
 from pathlib import Path
 
 from pydantic import Field
@@ -85,6 +86,17 @@ class Settings(BaseSettings):
     task_stall_cooldown_days: float = 2.0
     # 项目归属语义匹配相似度阈值（0~1）
     project_similarity_threshold: float = 0.62
+    # —— 材料内容（第三期）——
+    # 材料的正文、图片文字、录音文字在后台慢慢读；关掉后只建文件名索引。
+    material_content_enabled: bool = True
+    # 材料录音转写用的 FunASR Python：本变量优先，没有时跟中转一样取
+    # MEETING_RELAY_FUNASR_PYTHON，再没有用 ~/.venvs/funasr/bin/python。
+    funasr_python: Path | None = None
+    # 一张图认字的超时；一份 PDF 多久没有新的一页算超时；每段录音的转写超时（实际取
+    # 「音频长度 × 3」和它的较大者）。手工验收量过以后再定。
+    material_image_timeout_s: float = 60.0
+    material_pdf_idle_timeout_s: float = 60.0
+    material_media_segment_timeout_s: float = 900.0
 
     def model_post_init(self, __context: object) -> None:
         positive_values = {
@@ -128,6 +140,20 @@ class Settings(BaseSettings):
             raise ValueError("qwen_model 固定为 Qwen/Qwen3-ASR-0.6B")
         if self.qwen_heartbeat_seconds >= self.qwen_lease_seconds:
             raise ValueError("qwen_heartbeat_seconds 必须小于 qwen_lease_seconds")
+        if self.funasr_python is None:
+            relay_python = os.environ.get("MEETING_RELAY_FUNASR_PYTHON", "").strip()
+            self.funasr_python = (
+                Path(relay_python) if relay_python else Path.home() / ".venvs/funasr/bin/python"
+            )
+        self.funasr_python = self.funasr_python.expanduser()
+        for name in (
+            "material_image_timeout_s",
+            "material_pdf_idle_timeout_s",
+            "material_media_segment_timeout_s",
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} 必须大于 0")
         if self.database_path is None:
             self.database_path = self.data_dir / "workbench.sqlite3"
         else:
