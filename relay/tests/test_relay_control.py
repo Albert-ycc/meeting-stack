@@ -1335,6 +1335,48 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual("queued", status["attempts"][-1]["status"])
         self.assertEqual("transcribing", status["attempts"][-1]["requested_stage"])
 
+    def test_retry_records_requested_backend_and_hands_it_to_the_worker(self):
+        """工作台「用 Claude 重写纪要」靠这条链路：backend 落 attempt，
+        claim 时原样交给 watchdog 覆盖全局默认。"""
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.fail(job_id, stage="transcribing", error="FunASR failed")
+
+        self.control.retry(
+            job_id,
+            "minutes_generating",
+            transcript_path=self.input_transcript,
+            llm_backend="claude",
+        )
+
+        claim = self.control.claim_next(worker_id="worker-backend-test")
+        self.assertEqual("claude", claim["llm_backend"])
+
+    def test_retry_rejects_an_unknown_backend(self):
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.fail(job_id, stage="transcribing", error="FunASR failed")
+
+        with self.assertRaises(self.module.RelayControlError):
+            self.control.retry(
+                job_id,
+                "minutes_generating",
+                transcript_path=self.input_transcript,
+                llm_backend="gpt5",
+            )
+
+    def test_retry_without_backend_leaves_the_global_default_in_charge(self):
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.fail(job_id, stage="transcribing", error="FunASR failed")
+
+        self.control.retry(
+            job_id, "minutes_generating", transcript_path=self.input_transcript
+        )
+
+        claim = self.control.claim_next(worker_id="worker-backend-default")
+        self.assertIsNone(claim["llm_backend"])
+
     def test_retry_can_resume_directly_at_requested_later_stage(self):
         job_id = self.control.enqueue(self.audio)
         self.control.record_stage(job_id, "transcribing")

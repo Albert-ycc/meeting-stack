@@ -35,10 +35,18 @@ Voice Memos 桥接只是众多入口之一，任何来源的音频文件落进�
 | `MEETING_RELAY_PRODUCTS_ROOT` | `~/Movies/meeting-relay-products` | 转写产物工作目录 |
 | `MEETING_RELAY_JOBS_DB` | `~/.meeting-relay/workbench-jobs.sqlite3` | 任务队列库 |
 | `MEETING_RELAY_AGENT` | `claude` | 派单目标，`claude` 或 `codex` |
+| `MEETING_RELAY_LLM_BACKEND` | `deepseek` | Claude Code 派单用哪个模型后端：`deepseek`（走 DeepSeek 的 Anthropic 兼容端点，Agent 会话里需有 `DEEPSEEK_API_KEY`）或 `claude`；工作台「用 Claude 重写」按单次指定 |
+| `MEETING_RELAY_DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek 后端的模型 |
+| `MEETING_RELAY_CLAUDE_MODEL` | `opus` | Claude 后端的模型 |
+| `MEETING_RELAY_TMUX_SOCKET` / `MEETING_RELAY_TMUX_SESSION` | `~/.tmux-socket/cc` / `agent` | 派单目标 tmux 会话 |
+| `MEETING_RELAY_TRANSCRIBE_SH` / `MEETING_RELAY_TRANSCRIBE_DUAL_SH` | 仓库内 `transcribe/` | 转写脚本 |
 | `MEETING_RELAY_CLAUDE_BIN` | 自动探测 | Claude Code 可执行文件路径 |
 | `MEETING_RELAY_CODEX_BIN` | 自动探测 | Codex 可执行文件路径 |
 | `MEETING_RELAY_WHISPER_BIN` | 自动探测 | whisper 可执行文件路径 |
-| `RELAY_LARK_USER_ID` | 空 | 飞书通知 open_id，留空则不通知 |
+| `MEETING_RELAY_LARK_CHAT_ID` | 空 | 飞书通知发到这个群（lark-cli 以 bot 身份）；优先于私聊 |
+| `MEETING_RELAY_LARK_APP_ID` / `MEETING_RELAY_LARK_APP_SECRET_FILE` | 空 | 配了就用自建应用直连开放平台发群，不经 lark-cli |
+| `RELAY_LARK_USER_ID` | 空 | 没配群时私聊这个 open_id；群和私聊都留空则不通知 |
+| `MEETING_RELAY_LARK_LOG_FILE` | `~/Library/Logs/meeting-relay-notify.log` | 通知发送日志 |
 | `MEETING_RELAY_GLOSSARY_SNAPSHOT` | `~/.meeting-workbench/glossary-snapshot.json` | 工作台写的词典快照，出纪要前按这场会挑词 |
 
 状态文件都在 `~/.meeting-relay/`：

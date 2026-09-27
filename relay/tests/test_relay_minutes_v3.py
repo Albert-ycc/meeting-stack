@@ -416,6 +416,50 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             self.assertGreater(cue["source_end_sec"], cue["source_start_sec"])
             previous_end = cue["source_end_sec"]
 
+    def test_plan_clamps_boundary_when_long_silence_would_overflow_window(self):
+        # 260623 那场 2 小时 35 分的历史录音：尾部有 576 秒静默，边界取两组
+        # 中点时把 W014 撑到 750 秒，超过 720 秒上限，整份计划被判
+        # minutes_plan_window_duration，转写成功却出不来纪要。静默区内边界
+        # 本来就有挪动余地，夹回上限即可，不该让整场会没有纪要。
+        def timestamp(seconds: int) -> str:
+            hours, remainder = divmod(seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d},000"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            srt = root / "meeting.srt"
+            plan_path = root / "minutes-plan.json"
+            blocks = []
+            # 前 20 分钟正常密集说话，每 30 秒一句
+            for index in range(40):
+                blocks.append(
+                    f"{index + 1}\n"
+                    f"{timestamp(index * 30)} --> {timestamp(index * 30 + 29)}\n"
+                    f"第{index + 1}段"
+                )
+            # 静默 9 分钟后只剩收尾一句
+            blocks.append(f"41\n{timestamp(1740)} --> {timestamp(1770)}\n散会")
+            srt.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+
+            plan = self.module.create_minutes_plan(
+                srt, plan_path, total_duration_sec=1800
+            )
+            _, errors = self.module._minutes_plan_context(
+                plan_path, source_srt_path=srt
+            )
+
+        self.assertEqual([], errors)
+        for window in plan["windows"]:
+            span = window["end_sec"] - window["start_sec"]
+            self.assertLessEqual(span, 720)
+            self.assertGreaterEqual(span, 360)
+        # 窗口必须仍然首尾相接、完整覆盖整场录音
+        self.assertEqual(0.0, plan["windows"][0]["start_sec"])
+        self.assertEqual(1800, plan["windows"][-1]["end_sec"])
+        for left, right in zip(plan["windows"], plan["windows"][1:]):
+            self.assertEqual(left["end_sec"], right["start_sec"])
+
     def test_plan_still_rejects_negative_duration_cue(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

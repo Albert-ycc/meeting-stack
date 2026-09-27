@@ -78,6 +78,8 @@ RETRYABLE_JOB_STATES = {
     "published",
 }
 SUBSTATE_NAMES = {"whisper", "index"}
+# attempt 级模型后端覆盖；NULL/缺省 = 跟 watchdog 的全局默认（当前是 deepseek）
+LLM_BACKENDS = {"claude", "deepseek"}
 SUBSTATE_STATUSES = {"pending", "running", "ready", "failed", "absent"}
 SUBSTATE_COLUMNS = {
     "whisper": (
@@ -267,6 +269,10 @@ def _parse_srt_cues(srt_path: Path) -> list[dict[str, Any]]:
     return cues
 
 
+# 把边界夹到 720 秒上限时留的余量，避免浮点减法算出 720.0000001 反而判超限。
+_WINDOW_BOUND_EPSILON = 1e-6
+
+
 def _minimum_minutes_window_duration(
     total_duration_sec: float, window_count: int
 ) -> float:
@@ -340,7 +346,18 @@ def create_minutes_plan(
     for index in range(len(groups) - 1):
         left_end = float(groups[index][-1]["source_end_sec"])
         right_start = float(groups[index + 1][0]["source_start_sec"])
-        boundaries.append((left_end + right_start) / 2)
+        # 边界落在两组之间的空白里，取哪个位置都不会切开 cue，默认取中点。
+        # 但录音中间出现长静默时，中点会把左窗撑过 720 秒上限——260623 那场
+        # 2 小时 35 分的录音尾部静默 576 秒，中点让 W014 长到 750 秒，整份
+        # 计划直接判 minutes_plan_window_duration。静默区内本来就有挪动余地，
+        # 所以先把边界夹回合法区间；区间无解时保持中点，交给下面的窗口校验。
+        previous = boundaries[-1]
+        lower = max(left_end, previous + minimum_window_duration)
+        upper = min(right_start, previous + 720 - _WINDOW_BOUND_EPSILON)
+        boundary = (left_end + right_start) / 2
+        if lower <= upper:
+            boundary = min(max(boundary, lower), upper)
+        boundaries.append(boundary)
     boundaries.append(duration)
     windows: list[dict[str, Any]] = []
     for index, group in enumerate(groups):
@@ -2455,6 +2472,7 @@ class RelayControl:
                     source_srt_sha256 TEXT,
                     minutes_plan_sha256 TEXT,
                     minutes_protocol_version INTEGER NOT NULL DEFAULT 1,
+                    llm_backend TEXT,
                     error TEXT,
                     started_at TEXT NOT NULL,
                     finished_at TEXT,
@@ -2667,6 +2685,9 @@ class RelayControl:
                     INTEGER NOT NULL DEFAULT 1
                     """
                 )
+            if "llm_backend" not in attempt_columns:
+                # 本次 attempt 指定跑哪个模型后端；NULL = 跟 watchdog 的全局默认
+                connection.execute("ALTER TABLE attempts ADD COLUMN llm_backend TEXT")
             needs_published_backfill = connection.execute(
                 """
                 SELECT 1 FROM jobs
@@ -3170,10 +3191,15 @@ class RelayControl:
         requested_stage: str | None = None,
         transcript_path: str | Path | None = None,
         hotword_prompt_path: str | Path | None = None,
+        llm_backend: str | None = None,
         project_hint: str | None = None,
     ) -> str:
         project_hint = _normalize_project_hint(project_hint)
         minutes_only = requested_stage == "minutes_generating"
+        if llm_backend is not None and llm_backend not in LLM_BACKENDS:
+            raise RelayControlError(
+                f"未知后端: {llm_backend}；允许值: {', '.join(sorted(LLM_BACKENDS))}"
+            )
         if requested_stage not in {None, "minutes_generating"}:
             raise RelayControlError("enqueue --stage 仅支持 minutes_generating")
         if minutes_only != (transcript_path is not None):
@@ -3287,8 +3313,9 @@ class RelayControl:
                 INSERT INTO attempts (
                     job_id, attempt_no, requested_stage, status,
                     input_transcript_path, input_transcript_sha256,
-                    input_transcript_bytes, minutes_protocol_version, started_at
-                ) VALUES (?, 1, ?, 'discovered', ?, ?, ?, ?, ?)
+                    input_transcript_bytes, minutes_protocol_version,
+                    llm_backend, started_at
+                ) VALUES (?, 1, ?, 'discovered', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -3297,6 +3324,7 @@ class RelayControl:
                     snapshot_sha256,
                     snapshot_size,
                     CURRENT_MINUTES_PROTOCOL_VERSION,
+                    llm_backend,
                     now,
                 ),
             )
@@ -4023,7 +4051,7 @@ class RelayControl:
                 SELECT input_transcript_path, input_transcript_sha256,
                        input_transcript_bytes, source_srt_sha256,
                        minutes_plan_sha256,
-                       minutes_protocol_version
+                       minutes_protocol_version, llm_backend
                 FROM attempts WHERE job_id = ? AND attempt_no = ?
                 """,
                 (row["job_id"], row["current_attempt"]),
@@ -4047,6 +4075,7 @@ class RelayControl:
                 "minutes_protocol_version": int(
                     attempt_row["minutes_protocol_version"]
                 ),
+                "llm_backend": attempt_row["llm_backend"],
                 "attempt": row["current_attempt"],
                 "start_stage": start_stage,
                 "worker_id": token,
@@ -4329,9 +4358,14 @@ class RelayControl:
         stage: str,
         transcript_path: str | Path | None = None,
         hotword_prompt_path: str | Path | None = None,
+        llm_backend: str | None = None,
         project_hint: str | None = None,
     ) -> int:
         project_hint = _normalize_project_hint(project_hint)
+        if llm_backend is not None and llm_backend not in LLM_BACKENDS:
+            raise RelayControlError(
+                f"未知后端: {llm_backend}；允许值: {', '.join(sorted(LLM_BACKENDS))}"
+            )
         if stage not in RETRYABLE_STAGES:
             raise RelayControlError(
                 f"不可重试的阶段: {stage}；允许值: {', '.join(sorted(RETRYABLE_STAGES))}"
@@ -4392,8 +4426,9 @@ class RelayControl:
                 INSERT INTO attempts (
                     job_id, attempt_no, requested_stage, status,
                     input_transcript_path, input_transcript_sha256,
-                    input_transcript_bytes, minutes_protocol_version, started_at
-                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+                    input_transcript_bytes, minutes_protocol_version,
+                    llm_backend, started_at
+                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -4403,6 +4438,7 @@ class RelayControl:
                     snapshot_sha256,
                     snapshot_size,
                     CURRENT_MINUTES_PROTOCOL_VERSION,
+                    llm_backend,
                     now,
                 ),
             )
@@ -4944,6 +4980,7 @@ class RelayControl:
                                 required_paths.update(
                                     str(path.relative_to(root))
                                     for path in sorted((root / "minutes-ledger").glob("*.json"))
+                                    if not _is_archive_noise(path, root)
                                 )
                         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                             pass
@@ -6480,6 +6517,7 @@ def enqueue(
     requested_stage: str | None = None,
     transcript_path: str | Path | None = None,
     hotword_prompt_path: str | Path | None = None,
+    llm_backend: str | None = None,
     project_hint: str | None = None,
 ) -> str:
     return _service(db_path).enqueue(
@@ -6488,6 +6526,7 @@ def enqueue(
         requested_stage=requested_stage,
         transcript_path=transcript_path,
         hotword_prompt_path=hotword_prompt_path,
+        llm_backend=llm_backend,
         project_hint=project_hint,
     )
 
@@ -6498,10 +6537,11 @@ def retry(
     db_path: str | Path | None = None,
     *,
     transcript_path: str | Path | None = None,
+    llm_backend: str | None = None,
     project_hint: str | None = None,
 ) -> int:
     return _service(db_path).retry(
-        job_id, stage, transcript_path, project_hint=project_hint
+        job_id, stage, transcript_path, llm_backend=llm_backend, project_hint=project_hint
     )
 
 
@@ -6805,6 +6845,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--hotwords", help="本任务使用的 UTF-8 热词文件，最多 20 个词"
     )
     enqueue_parser.add_argument(
+        "--backend",
+        choices=sorted(LLM_BACKENDS),
+        help="本任务指定模型后端；不传则跟 watchdog 全局默认",
+    )
+    enqueue_parser.add_argument(
         "--project-hint",
         help=f"这场会所属项目（id 或名字），出纪要时按它挑词；也可用环境变量 {PROJECT_HINT_ENV}",
     )
@@ -6816,6 +6861,11 @@ def build_parser() -> argparse.ArgumentParser:
     retry_parser.add_argument("--transcript")
     retry_parser.add_argument(
         "--hotwords", help="可选替换任务热词快照；不传则沿用原任务热词"
+    )
+    retry_parser.add_argument(
+        "--backend",
+        choices=sorted(LLM_BACKENDS),
+        help="本次 attempt 指定模型后端；不传则跟 watchdog 全局默认",
     )
     retry_parser.add_argument(
         "--project-hint",
@@ -6922,6 +6972,7 @@ def main(argv: list[str] | None = None) -> int:
                 requested_stage=args.stage,
                 transcript_path=args.transcript,
                 hotword_prompt_path=args.hotwords,
+                llm_backend=args.backend,
                 project_hint=_cli_project_hint(args),
             )
             if args.as_json:
@@ -6934,6 +6985,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.stage,
                 transcript_path=args.transcript,
                 hotword_prompt_path=args.hotwords,
+                llm_backend=args.backend,
                 project_hint=_cli_project_hint(args),
             )
             status_result = control.status(args.job_id)
