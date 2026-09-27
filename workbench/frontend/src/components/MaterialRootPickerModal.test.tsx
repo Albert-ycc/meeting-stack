@@ -1,9 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { MaterialRootPickerModal } from "./MaterialRootPickerModal";
-import type { ApiClient } from "../api";
+import { ApiError, type ApiClient } from "../api";
 import type { MaterialBrowsePayload } from "../types";
 
 function payloadAt(path: string, parent: string | null, dirs: string[]): MaterialBrowsePayload {
@@ -105,6 +105,83 @@ describe("MaterialRootPickerModal", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("不能选择隐藏目录");
     // 弹窗本身还在（没有因为报错被卸载）
     expect(screen.getByRole("dialog", { name: "添加材料根目录" })).toBeInTheDocument();
+  });
+
+  it("可以直接选当前打开的这个文件夹", async () => {
+    const browseMaterials = vi
+      .fn()
+      .mockResolvedValueOnce(payloadAt("/Volumes/资料盘", null, ["项目"]))
+      .mockResolvedValueOnce(payloadAt("/Volumes/资料盘/项目", "/Volumes/资料盘", ["云图AI", "北辰"]));
+    const onConfirm = vi.fn();
+    render(
+      <MaterialRootPickerModal
+        apiClient={makeClient({ browseMaterials } as Partial<ApiClient>)}
+        confirmLabel="设为项目总文件夹"
+        description="选放项目文件夹的那一层"
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        title="选项目总文件夹"
+      />,
+    );
+
+    expect(screen.getByRole("dialog", { name: "选项目总文件夹" })).toBeInTheDocument();
+    expect(screen.getByText("选放项目文件夹的那一层")).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "进入 项目" }));
+    await screen.findByText("云图AI");
+    expect(screen.getByRole("button", { name: "设为项目总文件夹" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "选当前文件夹" }));
+    expect(screen.getByRole("button", { name: "选当前文件夹" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByRole("button", { name: "设为项目总文件夹" }));
+    expect(onConfirm).toHaveBeenCalledWith("/Volumes/资料盘/项目");
+  });
+
+  it("资料盘没插时照原文显示服务端的原因", async () => {
+    const browseMaterials = vi
+      .fn()
+      .mockRejectedValue(new ApiError("资料盘未连接，插上后再选", 409, { detail: "资料盘未连接，插上后再选" }));
+    render(
+      <MaterialRootPickerModal
+        apiClient={makeClient({ browseMaterials } as Partial<ApiClient>)}
+        onClose={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("资料盘未连接，插上后再选")).toBeInTheDocument();
+    expect(screen.queryByText("目录读取失败")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "选当前文件夹" })).not.toBeInTheDocument();
+  });
+
+  it("底部的文字选项交给上层处理", async () => {
+    const onSelect = vi.fn();
+    render(
+      <MaterialRootPickerModal
+        apiClient={makeClient()}
+        extraOption={{ label: "不建了，以后自己挂文件夹", onSelect }}
+        onClose={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "不建了，以后自己挂文件夹" }));
+    expect(onSelect).toHaveBeenCalled();
+  });
+
+  it("按对话框约定：Esc 和点背景都关，点弹窗里面不关", async () => {
+    const onClose = vi.fn();
+    render(<MaterialRootPickerModal apiClient={makeClient()} onClose={onClose} onConfirm={vi.fn()} />);
+
+    await userEvent.click(await screen.findByText("蓝鲸云"));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    const overlay = screen.getByRole("dialog").parentElement!;
+    await userEvent.click(overlay);
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 
   it("busy 为 true 时确定按钮禁用并显示处理中，避免重复提交", async () => {

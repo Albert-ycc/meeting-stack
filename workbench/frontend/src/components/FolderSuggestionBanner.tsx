@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../api";
 import type { ColdStartFolderItem } from "../types";
+import { pollWhileChecking } from "./checkingPoll";
 import { FolderIcon } from "./FolderIcon";
 import { NoticeBanner, useNotice } from "./Notice";
 import "./FolderSuggestionBanner.css";
@@ -33,23 +34,19 @@ export function FolderSuggestionBanner({ apiClient, onProjectsChanged, onActiveC
       setLoaded(true);
       return;
     }
-    let alive = true;
-    apiClient
-      .coldStartFolders()
-      .then((payload) => {
-        if (!alive) return;
+    // 后台还在看磁盘（state: checking）时先什么都不出，每 2 秒再问一次，卸载就停
+    return pollWhileChecking(
+      () => apiClient.coldStartFolders(),
+      (payload) => payload.state === "checking",
+      (payload) => {
+        if (payload.state === "checking") return;
         setItems(payload.items);
         setChecked(new Set(payload.items.filter((item) => item.match === "exact").map((item) => item.project_id)));
-      })
-      .catch(() => {
-        // 只是个提醒，读不到就不出现
-      })
-      .finally(() => {
-        if (alive) setLoaded(true);
-      });
-    return () => {
-      alive = false;
-    };
+        setLoaded(true);
+      },
+      // 只是个提醒，读不到就不出现
+      { onError: () => setLoaded(true) },
+    );
   }, [apiClient]);
 
   const active = items.length > 0;

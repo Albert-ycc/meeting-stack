@@ -90,6 +90,16 @@ export interface Project {
   meetings_assigned?: number;
   needs_review_meeting_ids?: string[];
   folder_pending?: { path: string; reason: string };
+  /** 盘不在时先建了项目、插上后再补建的文件夹（旧后端没有） */
+  pending_folder?: PendingProjectFolder | null;
+}
+
+/** waiting：等资料盘插上；stopped：建不了（位置不存在、没权限……），reason 说为什么，不再每轮重试 */
+export interface PendingProjectFolder {
+  path: string;
+  parent: string;
+  state: "waiting" | "stopped";
+  reason: string | null;
 }
 
 export interface ProjectAlsoName {
@@ -100,10 +110,14 @@ export interface ProjectAlsoName {
 /** 新建项目撞上近似重名时 409 带回来的已有项目 */
 export interface SimilarProjectSuggestion {
   project_id: string;
+  /** 和 project_id 同值（新后端才有） */
+  id?: string;
   name: string;
   also_names: string[];
   matched: string;
   match: "same" | "similar";
+  /** 正式名完全相同：只能用它，不能仍然新建 */
+  exact?: boolean;
 }
 
 export interface FolderMatch {
@@ -114,12 +128,130 @@ export interface FolderMatch {
 }
 
 export interface FolderMatchesPayload {
+  /** checking：后台还在看磁盘，matches / recent 先是空的，2 秒后再查（旧后端没有，当作 ready） */
+  state?: "ready" | "checking";
   matches: FolderMatch[];
   recent: FolderMatch[];
-  create_parent: string;
-  create_parent_state: MaterialRootState;
+  /** 新文件夹放哪；null：还没有可参照的项目文件夹，这次先不建文件夹 */
+  create_parent: string | null;
+  /** setting：项目总文件夹；suggested：多数项目文件夹所在的位置（推荐，没写进设置） */
+  create_parent_source?: "setting" | "suggested" | null;
+  create_parent_state: FolderListingState | null;
   create_name: string;
   create_replaced: string[];
+}
+
+/** 后台缓存里一个目录的状态：比根目录多「读不了」和「还在看」 */
+export type FolderListingState = MaterialRootState | "unreadable" | "checking";
+
+// ---------------------------------------------------------------------------
+// 项目总文件夹（2a）
+// ---------------------------------------------------------------------------
+
+/** 项目总文件夹下还没挂到项目的一级文件夹，带默认动作 */
+export interface UnclaimedFolder {
+  path: string;
+  name: string;
+  modified_at: string;
+  /**
+   * exact：和一个还没挂文件夹的项目同名；exact_mounted：和一个已经挂了文件夹的项目同名；
+   * similar：名字相近；generic：通用名，看起来不是项目；new：和谁都不像，建成项目
+   */
+  kind: "exact" | "exact_mounted" | "similar" | "new" | "generic";
+  /** generic 时为 null */
+  action: "mount" | "create" | null;
+  project_id: string | null;
+  project_name: string | null;
+  /** exact_mounted 时是这个项目已挂的文件夹 */
+  project_roots: string[];
+  /** 默认勾选 */
+  checked: boolean;
+}
+
+export interface ProjectParentStatus {
+  path: string | null;
+  /** invalid / conflict 时 reason 是原因文案，可直接显示 */
+  state: FolderListingState | "invalid" | "conflict" | null;
+  reason: string | null;
+  /** 只在 path 为 null 时给：已挂根目录里最常见的父目录 */
+  suggested: { path: string; count: number; total: number } | null;
+  unclaimed: {
+    state: "unset" | "ready" | FolderListingState | "invalid" | "conflict";
+    folders: UnclaimedFolder[];
+    total: number;
+  };
+}
+
+export interface ClaimItem {
+  path: string;
+  action: "mount" | "create";
+  project_id?: string;
+  /** 近似重名时你选了「仍然新建」 */
+  force?: boolean;
+}
+
+/** 认领撞上已有项目时带回来的那个项目（id 和 project_id 同值） */
+export interface ClaimSuggestion {
+  id: string;
+  project_id?: string;
+  name: string;
+  also_names?: string[];
+  /** 正式名完全相同：只能挂到它，不能仍然新建 */
+  exact?: boolean;
+}
+
+export interface ClaimItemResult {
+  path: string;
+  action: "mount" | "create";
+  ok: boolean;
+  project_id?: string;
+  project_name?: string | null;
+  /** 挂上的文件夹里还嵌着别的项目的文件夹 */
+  nested?: { path: string; project_id: string; project_name: string }[];
+  cards_written?: number;
+  error?: string;
+  suggestion?: ClaimSuggestion | null;
+}
+
+export interface ClaimResult {
+  items: ClaimItemResult[];
+  created: number;
+  mounted: number;
+  cards_written: number;
+  /** 新项目建好后，没认出的会里提到它、改成待你选的场数 */
+  needs_review: number;
+}
+
+/** 根目录找不到了（盘在、文件夹没了）时，可能是它改名后的样子 */
+export interface RenameCandidate {
+  path: string;
+  name: string;
+  modified_at: string;
+  /** 3：里面有这个项目的会议卡片；2：子文件夹对得上；1：名字相近 */
+  strength: 1 | 2 | 3;
+  evidence: {
+    kind: "cards" | "children" | "name";
+    /** 可直接显示的一句话，如「里面有这个项目的会议卡片」 */
+    text: string;
+    count?: number;
+    matched?: number;
+    total?: number;
+  };
+}
+
+export interface RenameCandidatesPayload {
+  /** online / volume_offline：文件夹其实不算找不到了，没有候选 */
+  state: "checking" | "ready" | "online" | "volume_offline";
+  candidates: RenameCandidate[];
+  /** 前两名一样强时为 null，不默认选 */
+  default_path: string | null;
+}
+
+/** 根目录换到新路径（［是它］、重新选…）后：嵌在里面一起跟着改的 */
+export interface MaterialRootRepoint extends MaterialRoot {
+  moved_roots?: { id: number; project_id: string; project_name: string; old: string; new: string }[];
+  /** 一起改了的需求文件夹个数 */
+  moved_folders?: number;
 }
 
 export interface Tag {
@@ -307,12 +439,18 @@ export interface CardsBackfillPreview {
   top: { project_id: string; project_name: string; count: number; path: string | null; paused: boolean }[];
 }
 
-/** 某个项目第一次建出「声档会议记录/」时的一次性提示 */
+/**
+ * 卡片提示。没有 kind：某个项目第一次建出「声档会议记录/」；
+ * folder_created：盘不在时建的项目，插上资料盘后补建好了文件夹（path 是项目文件夹）。
+ */
 export interface CardsNotice {
+  kind?: "folder_created";
   project_id: string;
   project_name: string;
   path: string;
   at: string;
+  /** folder_created：挂上后补写了几张会议卡片 */
+  cards_written?: number;
 }
 
 export interface CardsBanner {
@@ -933,6 +1071,8 @@ export interface ColdStartFolderItem {
 export interface ColdStartFoldersPayload {
   items: ColdStartFolderItem[];
   snoozed_until: string | null;
+  /** checking：后台还在看磁盘，2 秒后再查（旧后端没有，当作 ready） */
+  state?: "ready" | "checking";
 }
 
 /** 词典里自动整理过的旧分组；project_id 为空表示归到了公共 */

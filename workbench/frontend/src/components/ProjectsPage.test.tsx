@@ -128,6 +128,35 @@ describe("ProjectsPage 表格与查询", () => {
   });
 });
 
+describe("ProjectsPage 项目总文件夹（2a）", () => {
+  it("标题下一行写项目总文件夹", async () => {
+    const projectParent = vi.fn().mockResolvedValue({
+      path: "/Volumes/资料盘/项目",
+      state: "online",
+      reason: null,
+      suggested: null,
+      unclaimed: { state: "ready", folders: [], total: 0 },
+    });
+    renderPage({ apiClient: makeClient({ projectParent, setProjectParent: vi.fn() } as Partial<ApiClient>) });
+
+    const heading = screen.getByRole("heading", { name: "项目" }).parentElement!;
+    expect(await within(heading).findByText("/Volumes/资料盘/项目")).toBeInTheDocument();
+    expect(within(heading).getByRole("button", { name: "改" })).toBeInTheDocument();
+  });
+
+  it("盘不在时建的项目：材料根目录列写插上后自动建", () => {
+    renderPage({
+      projects: [
+        {
+          ...PROJECTS[1],
+          pending_folder: { path: "/Volumes/资料盘/项目/Keep", parent: "/Volumes/资料盘/项目", state: "waiting", reason: null },
+        },
+      ],
+    });
+    expect(screen.getByRole("cell", { name: "插上后自动建 /Volumes/资料盘/项目/Keep" })).toBeInTheDocument();
+  });
+});
+
 describe("ProjectsPage 新建 / 编辑项目", () => {
   it("新建项目成功后关闭弹窗、通知父级刷新，并直接进入新项目详情", async () => {
     const onProjectsChanged = vi.fn();

@@ -81,6 +81,55 @@ describe("工作台会议卡片横幅", () => {
     expect(await screen.findByText(/可以把已归项目的 186 场会/)).toBeInTheDocument();
   });
 
+  it("插上资料盘后补建好了文件夹：先报这条，［打开文件夹］打开它，［知道了］只收这一条", async () => {
+    const revealMaterial = vi.fn().mockResolvedValue({ ok: true, path: "/Volumes/资料盘/项目/云图看板" });
+    const apiClient = client(
+      {
+        backfill: null,
+        notices: [
+          { project_id: "p1", project_name: "云图AI", path: "/Volumes/资料盘/云图AI/声档会议记录", at: "" },
+          {
+            kind: "folder_created",
+            project_id: "p2",
+            project_name: "云图看板",
+            path: "/Volumes/资料盘/项目/云图看板",
+            cards_written: 3,
+            at: "",
+          },
+        ],
+      },
+      { revealMaterial } as Partial<ApiClient>,
+    );
+    render(<MeetingCardsBanner apiClient={apiClient} />);
+
+    expect(
+      await screen.findByText("插上资料盘后建好了 /Volumes/资料盘/项目/云图看板，已挂到『云图看板』，补写了 3 张会议卡片"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/写入第一张会议卡片/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "打开文件夹" }));
+    expect(revealMaterial).toHaveBeenCalledWith("/Volumes/资料盘/项目/云图看板");
+
+    await userEvent.click(screen.getByRole("button", { name: "知道了" }));
+    expect(apiClient.dismissCardsNotice).toHaveBeenCalledWith("p2");
+    expect(apiClient.dismissCardsNotice).toHaveBeenCalledTimes(1);
+    // 第一张卡片的提示照旧
+    expect(await screen.findByText("已在 云图AI/声档会议记录/ 写入第一张会议卡片，给你和 Claude Code 看")).toBeInTheDocument();
+  });
+
+  it("补建好文件夹但没有会要补写时不说补写", async () => {
+    const apiClient = client({
+      backfill: null,
+      notices: [
+        { kind: "folder_created", project_id: "p2", project_name: "云图看板", path: "/Volumes/资料盘/项目/云图看板", cards_written: 0, at: "" },
+      ],
+    });
+    render(<MeetingCardsBanner apiClient={apiClient} />);
+
+    expect(await screen.findByText("插上资料盘后建好了 /Volumes/资料盘/项目/云图看板，已挂到『云图看板』")).toBeInTheDocument();
+    expect(screen.queryByText(/补写/)).not.toBeInTheDocument();
+  });
+
   it("同名文件夹横幅读完之后才告诉工作台它在不在", async () => {
     const onActiveChange = vi.fn();
     const apiClient = { coldStartFolders: vi.fn().mockResolvedValue({ items: [], snoozed_until: null }) } as unknown as ApiClient;

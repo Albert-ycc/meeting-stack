@@ -393,4 +393,36 @@ describe("API write protection", () => {
       expect.objectContaining({ method: "PUT", body: JSON.stringify({ project_id: null, scope: "儿科" }) }),
     );
   });
+
+  it("项目总文件夹（2a）：设置、认领、撤销「不是项目」、改名找回、补建位置都走带 CSRF 的写接口", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("local-token");
+
+    await api.setProjectParent("/Volumes/资料盘/项目");
+    await api.claimFolders([{ path: "/Volumes/资料盘/项目/蓝鲸云", action: "create" }]);
+    await api.undeclineFolder("/Volumes/资料盘/项目/资料 & 备份");
+    await api.repointProjectMaterialRoot("project-1", 3, "/Volumes/资料盘/云图AI-2026");
+    await api.dropPendingFolder("project-1");
+
+    const calls = fetchMock.mock.calls as [string, RequestInit][];
+    expect(calls[0][0]).toBe("/api/settings/project-parent");
+    expect(calls[0][1]).toMatchObject({ method: "PUT", body: JSON.stringify({ path: "/Volumes/资料盘/项目" }) });
+    expect(calls[1][1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ items: [{ path: "/Volumes/资料盘/项目/蓝鲸云", action: "create" }] }),
+    });
+    // 撤销「不是项目」的路径放在查询串里，要编码
+    expect(calls[2][0]).toBe(
+      `/api/settings/project-parent/decline?path=${encodeURIComponent("/Volumes/资料盘/项目/资料 & 备份").replace(/%20/g, "+")}`,
+    );
+    expect(calls[2][1]).toMatchObject({
+      method: "DELETE",
+      headers: expect.objectContaining({ "Content-Type": "application/json", "X-CSRF-Token": "local-token" }),
+    });
+    expect(calls[3][0]).toBe("/api/projects/project-1/material-roots/3/repoint");
+    expect(calls[4]).toEqual(["/api/projects/project-1/pending-folder", expect.objectContaining({ method: "DELETE" })]);
+  });
 });

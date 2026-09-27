@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FolderSuggestionBanner } from "./FolderSuggestionBanner";
 import type { ApiClient } from "../api";
@@ -26,6 +26,10 @@ function makeClient(overrides: Partial<ApiClient> = {}) {
     ...overrides,
   } as unknown as ApiClient;
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("FolderSuggestionBanner", () => {
   it("同名的默认勾选、相近的不勾；挂上勾选的，没勾的记为不挂", async () => {
@@ -74,6 +78,39 @@ describe("FolderSuggestionBanner", () => {
 
     expect(apiClient.snoozeFolderSuggestions).toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("button", { name: "看看" })).not.toBeInTheDocument());
+  });
+
+  it("后台还在看磁盘时先什么都不出、也不说自己不在，每 2 秒再问，卸载就停", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const coldStartFolders = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [], snoozed_until: null, state: "checking" })
+      .mockResolvedValueOnce({ items: ITEMS, snoozed_until: null, state: "ready" });
+    const onActiveChange = vi.fn();
+    const first = render(
+      <FolderSuggestionBanner apiClient={makeClient({ coldStartFolders } as Partial<ApiClient>)} onActiveChange={onActiveChange} />,
+    );
+
+    await waitFor(() => expect(coldStartFolders).toHaveBeenCalledTimes(1));
+    expect(first.container).toBeEmptyDOMElement();
+    expect(onActiveChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(await screen.findByText("2 个项目找到了同名或名字相近的文件夹，要挂上吗？")).toBeInTheDocument();
+    expect(onActiveChange).toHaveBeenCalledWith(true);
+    first.unmount();
+
+    // 卸载之后不再问
+    const stillChecking = vi.fn().mockResolvedValue({ items: [], snoozed_until: null, state: "checking" });
+    const second = render(<FolderSuggestionBanner apiClient={makeClient({ coldStartFolders: stillChecking } as Partial<ApiClient>)} />);
+    await waitFor(() => expect(stillChecking).toHaveBeenCalledTimes(1));
+    second.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(stillChecking).toHaveBeenCalledTimes(1);
   });
 
   it("没有候选时什么都不显示", async () => {

@@ -4,6 +4,7 @@ import type { ApiClient } from "../api";
 import type { MeetingSummary, Project, Tag } from "../types";
 import { BlurText } from "./motion/BlurText";
 import { ProjectFormModal } from "./ProjectFormModal";
+import { ProjectParentRow } from "./ProjectParentRow";
 import "./ProjectsPage.css";
 import { NoticeBanner, useNotice } from "./Notice";
 import { usePersistentState } from "../viewState";
@@ -28,6 +29,11 @@ function meetingCount(project: Project, meetings: MeetingSummary[]): number {
 
 function rootsLabel(project: Project): { text: string; attached: boolean } {
   const roots = project.material_roots ?? [];
+  const pending = project.pending_folder;
+  // 盘不在时建的项目：文件夹还在等补建
+  if (roots.length === 0 && pending) {
+    return { text: pending.state === "waiting" ? `插上后自动建 ${pending.path}` : pending.reason ?? "未挂", attached: false };
+  }
   if (roots.length === 0) return { text: "未挂", attached: false };
   if (roots.length === 1) return { text: roots[0].path, attached: true };
   return { text: `${roots[0].path}（等 ${roots.length} 个）`, attached: true };
@@ -104,6 +110,12 @@ export function ProjectsPage({
         <div>
           <span className="eyebrow">PROJECTS / 项目管理</span>
           <h1><BlurText text="项目" /></h1>
+          <ProjectParentRow
+            apiClient={apiClient}
+            canEdit={canEdit}
+            onNotice={setNotice}
+            onProjectsChanged={onProjectsChanged}
+          />
         </div>
         {canEdit && (
           <button

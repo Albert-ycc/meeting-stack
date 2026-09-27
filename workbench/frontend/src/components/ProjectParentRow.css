@@ -1,0 +1,41 @@
+/* 项目页标题下：项目总文件夹那一行 */
+
+.project-parent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.project-parent__path {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.project-parent__note {
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.project-parent__unclaimed {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  margin-left: 8px;
+}
+
+/* 行内的［改］［用这个］［看看］是橙色文字链接 */
+.project-parent .text-button {
+  min-height: 24px;
+  padding: 0 4px;
+  color: var(--signal-dark);
+  font-size: 13px;
+}
+
+.project-parent .text-button:hover:not(:disabled) {
+  color: var(--signal);
+}

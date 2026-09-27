@@ -19,7 +19,8 @@ function shortDir(path: string) {
 
 /**
  * 工作台上会议卡片的一次性横幅，同一时间只出一条：
- * 先报「在 X 写入了第一张会议卡片」，再问要不要把上线前的会补写成卡片。
+ * 先报「插上资料盘后建好了 X」（盘不在时建的项目补建好了文件夹），再报「在 X 写入了第一张会议卡片」，
+ * 最后问要不要把上线前的会补写成卡片。
  */
 export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
   const [banner, setBanner] = useState<CardsBanner | null>(null);
@@ -55,14 +56,26 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
     }
   };
 
-  const notices = banner?.notices ?? [];
+  const allNotices = banner?.notices ?? [];
+  const folderNotices = allNotices.filter((item) => item.kind === "folder_created");
+  // 第一张卡片的提示没有 kind；以后多出来的别的 kind 不认得就不出
+  const notices = allNotices.filter((item) => !item.kind);
   const backfill = banner?.backfill ?? null;
 
   const dismissNotices = () =>
     run(async () => {
       const ids = notices.map((item) => item.project_id);
-      setBanner((current) => (current ? { ...current, notices: [] } : current));
+      setBanner((current) => (current ? { ...current, notices: current.notices.filter((item) => item.kind) } : current));
       await Promise.all(ids.map((id) => apiClient.dismissCardsNotice(id)));
+    });
+
+  // 同一个项目只留最新的一条提示，按项目收掉这一条
+  const dismissOne = (projectId: string) =>
+    run(async () => {
+      setBanner((current) =>
+        current ? { ...current, notices: current.notices.filter((item) => item.project_id !== projectId) } : current,
+      );
+      await apiClient.dismissCardsNotice(projectId);
     });
 
   const answer = (value: "yes" | "no" | "later") =>
@@ -90,6 +103,35 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
       setRetireOffer(false);
       setNotice(retiredBackfillMessage(result));
     });
+
+  if (folderNotices.length > 0) {
+    const created = folderNotices[0];
+    return (
+      <div className="folder-suggestion" role="status">
+        <FolderIcon className="folder-suggestion__icon" />
+        <span>
+          插上资料盘后建好了 {created.path}，已挂到『{created.project_name}』
+          {created.cards_written ? `，补写了 ${created.cards_written} 张会议卡片` : ""}
+        </span>
+        <button
+          className="ghost-button"
+          disabled={busy}
+          onClick={() =>
+            void run(async () => {
+              await apiClient.revealMaterial(created.path);
+            })
+          }
+          type="button"
+        >
+          打开文件夹
+        </button>
+        <button className="text-button" disabled={busy} onClick={() => void dismissOne(created.project_id)} type="button">
+          知道了
+        </button>
+        {notice && <p className="cards-banner__notice">{notice.message}</p>}
+      </div>
+    );
+  }
 
   if (notices.length > 0) {
     const first = notices[0];
@@ -124,7 +166,9 @@ export function MeetingCardsBanner({ apiClient }: MeetingCardsBannerProps) {
             onClick={() =>
               void run(async () => {
                 const result = await apiClient.pauseProjectCards(first.project_id);
-                setBanner((current) => (current ? { ...current, notices: current.notices.slice(1) } : current));
+                setBanner((current) =>
+                  current ? { ...current, notices: current.notices.filter((item) => item !== first) } : current,
+                );
                 setNotice(`「${first.project_name}」不再写会议卡片，已撤下 ${result.retired} 张；想恢复在项目页点一下`);
               })
             }

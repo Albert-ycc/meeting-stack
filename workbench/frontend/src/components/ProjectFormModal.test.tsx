@@ -1,6 +1,6 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectFormModal } from "./ProjectFormModal";
 import { ApiError } from "../api";
@@ -337,6 +337,99 @@ describe("ProjectFormModal 新建：项目文件夹", () => {
   });
 });
 
+describe("ProjectFormModal 新建：新文件夹放哪（2a）", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("后台还在看磁盘时说一声，每 2 秒再查，好了列出文件夹", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const folderMatches = vi
+      .fn()
+      .mockResolvedValueOnce({ ...folderPayload(), state: "checking", matches: [], recent: [] })
+      .mockResolvedValue({ ...folderPayload(), state: "ready" });
+    renderCreate(makeClient({ folderMatches } as Partial<ApiClient>));
+
+    expect(await screen.findByText("正在看磁盘上有没有同名文件夹…")).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /数据中台/ })).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(folderMatches).toHaveBeenCalledTimes(2);
+    expect(await screen.findByRole("radio", { name: /数据中台/ })).toBeInTheDocument();
+    expect(screen.queryByText("正在看磁盘上有没有同名文件夹…")).not.toBeInTheDocument();
+  });
+
+  it("还没有可参照的项目文件夹：这次先不建，［选项目总文件夹…］就地设好再重查", async () => {
+    const folderMatches = vi.fn((name?: string) =>
+      Promise.resolve(
+        setProjectParent.mock.calls.length
+          ? { ...folderPayload(name), create_parent_source: "setting" as const }
+          : { ...folderPayload(name), create_parent: null, create_parent_source: null, create_parent_state: null },
+      ),
+    );
+    const setProjectParent = vi.fn().mockResolvedValue({});
+    renderCreate(
+      makeClient({
+        folderMatches,
+        setProjectParent,
+        browseMaterials: vi.fn().mockResolvedValue({
+          base: "/Volumes/资料盘",
+          path: "/Volumes/资料盘",
+          parent: null,
+          breadcrumbs: [{ name: "资料盘", path: "/Volumes/资料盘" }],
+          dirs: [{ name: "项目", path: "/Volumes/资料盘/项目" }],
+        }),
+      } as Partial<ApiClient>),
+    );
+
+    await userEvent.type(screen.getByPlaceholderText("例如：互联网医院"), "北辰仓储");
+    expect(await screen.findByText("还没有可参照的项目文件夹，这次先不建文件夹")).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /下新建/ })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "选项目总文件夹…" }));
+    const picker = screen.getByRole("dialog", { name: "选项目总文件夹" });
+    await userEvent.click(await within(picker).findByText("项目"));
+    await userEvent.click(within(picker).getByRole("button", { name: "确定" }));
+
+    expect(setProjectParent).toHaveBeenCalledWith("/Volumes/资料盘/项目");
+    expect(await screen.findByRole("radio", { name: /在 \/Volumes\/资料盘\/项目 下新建「北辰仓储」/ })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "选项目总文件夹" })).not.toBeInTheDocument();
+    expect(screen.queryByText("还没有可参照的项目文件夹，这次先不建文件夹")).not.toBeInTheDocument();
+  });
+
+  it("用的是推荐位置时加一行灰字，可以［设为项目总文件夹］", async () => {
+    const setProjectParent = vi.fn().mockResolvedValue({});
+    const folderMatches = vi.fn((name?: string) =>
+      Promise.resolve({
+        ...folderPayload(name),
+        create_parent_source: setProjectParent.mock.calls.length ? ("setting" as const) : ("suggested" as const),
+      }),
+    );
+    renderCreate(makeClient({ folderMatches, setProjectParent } as Partial<ApiClient>));
+
+    await userEvent.type(screen.getByPlaceholderText("例如：互联网医院"), "云图看板2");
+    expect(await screen.findByText("这是你多数项目文件夹所在的位置")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "设为项目总文件夹" }));
+
+    expect(setProjectParent).toHaveBeenCalledWith("/Volumes/资料盘/项目");
+    await waitFor(() => expect(screen.queryByText("这是你多数项目文件夹所在的位置")).not.toBeInTheDocument());
+  });
+
+  it("资料盘没连接：写全路径，项目照常建", async () => {
+    const folderMatches = vi.fn((name?: string) =>
+      Promise.resolve({ ...folderPayload(name), create_parent_state: "volume_offline" as const }),
+    );
+    renderCreate(makeClient({ folderMatches } as Partial<ApiClient>));
+
+    await userEvent.type(screen.getByPlaceholderText("例如：互联网医院"), "云图看板2");
+    expect(
+      await screen.findByText("资料盘没连接：项目照常建，插上后自动建 /Volumes/资料盘/项目/云图看板2"),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("ProjectFormModal 新建：近似重名", () => {
   const suggestion = {
     project_id: "p1",
@@ -376,6 +469,23 @@ describe("ProjectFormModal 新建：近似重名", () => {
 
     expect(createProjectWith).toHaveBeenLastCalledWith({ name: "云图科研", color: "#3f51b5", force: true });
     expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: "p9" }));
+  });
+});
+
+describe("ProjectFormModal 新建：完全同名", () => {
+  it("正式名完全相同时只有［用它］，不给仍然新建", async () => {
+    const exact = { project_id: "p1", id: "p1", name: "云图科研用药", also_names: [], matched: "云图科研用药", match: "same", exact: true };
+    const createProjectWith = vi
+      .fn()
+      .mockRejectedValue(new ApiError("已有「云图科研用药」，是不是它？", 409, { detail: "已有「云图科研用药」，是不是它？", suggestion: exact }));
+    renderCreate(makeClient({ createProjectWith } as Partial<ApiClient>));
+
+    await userEvent.type(screen.getByPlaceholderText("例如：互联网医院"), "云图科研用药");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("已有「云图科研用药」，是不是它？");
+    expect(screen.getByRole("button", { name: "用它" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "仍然新建" })).not.toBeInTheDocument();
   });
 });
 

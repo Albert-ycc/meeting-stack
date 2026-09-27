@@ -54,6 +54,11 @@ import type {
   MeetingGlossary,
   MeetingCardEffect,
   ProjectCardsSummary,
+  ProjectParentStatus,
+  ClaimItem,
+  ClaimResult,
+  RenameCandidatesPayload,
+  MaterialRootRepoint,
 } from "./types";
 import type {
   CollapsedPayload,
@@ -520,11 +525,49 @@ export const api = {
       { path },
     ),
   replaceProjectMaterialRoot: (projectId: string, rootId: number, path: string) =>
-    write<MaterialRoot>(
+    write<MaterialRootRepoint>(
       `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/replace`,
       "POST",
       { path },
     ),
+  /** 根目录「找不到」时：可能是它改名后的样子；后台缓存没好时 state=checking */
+  renameCandidates: (projectId: string, rootId: number) =>
+    read<RenameCandidatesPayload>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/rename-candidates`,
+    ),
+  /** ［是它］：根目录换到改名后的路径，嵌在里面的文件夹一起跟着改 */
+  repointProjectMaterialRoot: (projectId: string, rootId: number, path: string) =>
+    write<MaterialRootRepoint>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/repoint`,
+      "POST",
+      { path },
+    ),
+  /** ［不是］：这个候选以后不再问 */
+  declineRenameCandidate: (projectId: string, rootId: number, path: string) =>
+    write<{ ok: boolean }>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/rename-decline`,
+      "POST",
+      { path },
+    ),
+  /** 等补建的文件夹换个位置；盘在线就当场建好，返回项目详情 */
+  movePendingFolder: (projectId: string, parent: string) =>
+    write<Project>(`/api/projects/${encodeURIComponent(projectId)}/pending-folder`, "PUT", { parent }),
+  /** 「不建了，以后自己挂文件夹」 */
+  dropPendingFolder: (projectId: string) =>
+    write<{ ok: boolean }>(`/api/projects/${encodeURIComponent(projectId)}/pending-folder`, "DELETE", {}),
+  // ---------------------------------------------------------------- 项目总文件夹（2a）
+  projectParent: () => read<ProjectParentStatus>("/api/settings/project-parent"),
+  /** path 为 null 清除；400 的 detail（「这个文件夹不存在」等）直接显示 */
+  setProjectParent: (path: string | null) =>
+    write<ProjectParentStatus>("/api/settings/project-parent", "PUT", { path }),
+  /** 认领：一次发整批，逐项返回结果 */
+  claimFolders: (items: ClaimItem[]) =>
+    write<ClaimResult>("/api/settings/project-parent/claim", "POST", { items }),
+  /** 「不是项目」 */
+  declineFolder: (path: string) =>
+    write<{ ok: boolean }>("/api/settings/project-parent/decline", "POST", { path }),
+  undeclineFolder: (path: string) =>
+    write<{ ok: boolean }>(`/api/settings/project-parent/decline${queryString({ path })}`, "DELETE", {}),
   removeProjectMaterialRoot: (projectId: string, rootId: number) =>
     write<{ ok: boolean }>(
       `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}`,
