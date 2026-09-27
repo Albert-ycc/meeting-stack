@@ -58,6 +58,7 @@ from . import cold_start, glossary_checkup, graph as graph_module, materials, re
 from . import search as search_module
 from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
+from . import overview as overview_module
 from .project_folders import folder_matches
 from .project_names import (
     SimilarProjectError,
@@ -3287,6 +3288,26 @@ def create_app(
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
         return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
+    @app.get("/api/graph/overview")
+    def graph_overview_endpoint(
+        request: Request, window: Literal["7d", "28d", "90d", "all"] = "28d"
+    ):
+        today = datetime.now().astimezone().date()
+        ai_configured = llm_ready(settings)
+        with db.autocommit() as connection:
+            etag = overview_module.overview_etag(connection, window, today, ai_configured)
+            if request.headers.get("if-none-match") == etag:
+                return Response(status_code=304, headers={"ETag": etag})
+            payload = overview_module.overview(
+                connection, window=window, ai_configured=ai_configured, today=today
+            )
+        return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
+    @app.get("/api/graph/overview/folders")
+    def graph_overview_folders():
+        with db.autocommit() as connection:
+            return overview_module.overview_folders(connection, settings, roots_cache)
 
     def local_request(request: Request) -> bool:
         return graph_module.is_local_request(

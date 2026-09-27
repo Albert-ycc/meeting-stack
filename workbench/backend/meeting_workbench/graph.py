@@ -36,7 +36,10 @@ from .materials import (
     assert_no_hidden_segment,
     volume_state,
 )
+from .name_hints import HintContext
+from .project_folders import pending_path
 from .project_linking import DRAFT_TASK_STATUSES
+from .project_profile import light_key
 from .notify import (
     _ANCHOR,
     _DECISION_SECTION,
@@ -52,7 +55,7 @@ from .tasks import OPEN_TASK_STATUSES, UNDO_WINDOW_SECONDS
 logger = logging.getLogger(__name__)
 
 # 前端缓存按这个版本失效：接口字段改了就加一，免得浏览器拿旧 ETag 命中旧结构。
-GRAPH_API_VERSION = 1
+GRAPH_API_VERSION = 2
 
 WINDOWS: dict[str, int | None] = {"7d": 7, "28d": 28, "90d": 90, "all": None}
 DEFAULT_WINDOW = "28d"
@@ -78,6 +81,8 @@ CUE_MIN = 4
 CUE_MIN_COUNT = 2
 MONTH_CLUSTER_CAP = 6
 BEACON_CAP = 6
+# 「像是新需求」节点最多几个（计入可见节点预算）。
+SUGGESTED_REQUIREMENT_CAP = 3
 VISIBLE_BUDGET = 40
 WEEKS = 12
 
@@ -352,10 +357,10 @@ def project_graph(
     today = today or datetime.now().astimezone().date()
     now = now or datetime.now(UTC)
 
-    # ① 全部项目（候选、信标要项目名和颜色）
+    # ① 全部项目（候选、信标要项目名和颜色；也叫给「像是新需求」的判断用）
     projects = {
         row["id"]: dict(row)
-        for row in connection.execute("SELECT id, name, color FROM projects").fetchall()
+        for row in connection.execute("SELECT id, name, color, also_names FROM projects").fetchall()
     }
     project = projects.get(project_id)
     if project is None:
@@ -395,6 +400,7 @@ def project_graph(
                            AND t.project_id = m.project_id) AS tasks_stay,
                        c.state AS card_state, c.reason AS card_reason, c.error AS card_error,
                        c.synced_at AS card_synced_at, c.project_id AS card_project_id,
+                       pl.new_requirement_name, pl.new_name_project_id, pl.new_name_spoken,
                        (SELECT e.event_type FROM events e
                          WHERE e.meeting_id = m.id
                            AND e.event_type IN ('meeting_project_confirmed',
@@ -424,8 +430,8 @@ def project_graph(
         ).fetchall()
     ]
 
-    # ⑤ 进行中的需求
-    requirement_rows = [
+    # ⑤ 本项目的需求（全部状态：「像是新需求」要和任何状态的需求标题比；进行中的在下面分出来）
+    all_requirement_rows = [
         dict(row)
         for row in connection.execute(
             f"""SELECT r.id, r.title, r.priority, r.status, r.created_at, r.updated_at,
@@ -442,10 +448,11 @@ def project_graph(
                           FROM requirement_meetings rm JOIN meetings m ON m.id = rm.meeting_id
                          WHERE rm.requirement_id = r.id) AS meeting_activity
                   FROM requirements r
-                 WHERE r.project_id = ? AND r.status = 'active'""",
+                 WHERE r.project_id = ?""",
             (project_id,),
         ).fetchall()
     ]
+    requirement_rows = [row for row in all_requirement_rows if row["status"] == "active"]
 
     # ⑥ 会议和需求的关联（任意一头在本项目）
     link_rows = [
@@ -475,15 +482,24 @@ def project_graph(
         ).fetchall()
     ]
 
-    # ⑧ 材料根目录
-    root_rows = [
+    # ⑧ 材料根目录，和等补建的文件夹（kind 区分，进 _assemble 之前拆开）
+    folder_source_rows = [
         dict(row)
         for row in connection.execute(
-            """SELECT id, path FROM project_material_roots WHERE project_id = ?
-                ORDER BY created_at, id""",
-            (project_id,),
+            """SELECT 'root' AS kind, id, path, created_at AS sort_at,
+                      NULL AS parent, NULL AS name, NULL AS state, NULL AS last_error
+                 FROM project_material_roots WHERE project_id = ?
+               UNION ALL
+               SELECT 'pending' AS kind, NULL, NULL, created_at, parent, name, state, last_error
+                 FROM pending_project_folders WHERE project_id = ?
+               ORDER BY 4, 2""",
+            (project_id, project_id),
         ).fetchall()
     ]
+    root_rows = [
+        {"id": row["id"], "path": row["path"]} for row in folder_source_rows if row["kind"] == "root"
+    ]
+    pending_row = next((row for row in folder_source_rows if row["kind"] == "pending"), None)
 
     # ⑨ 项目不一致的未完成任务
     cross_task_rows = [
@@ -533,6 +549,17 @@ def project_graph(
     return _assemble(
         project=project,
         projects=projects,
+        requirement_titles=[row["title"] for row in all_requirement_rows],
+        pending_folder=(
+            {
+                "path": pending_path(pending_row["parent"], pending_row["name"], project["name"]),
+                "parent": pending_row["parent"],
+                "state": pending_row["state"],
+                "reason": pending_row["last_error"],
+            }
+            if pending_row
+            else None
+        ),
         cards_on=cards_on and bool(root_rows),
         meeting_rows=meeting_rows,
         unattributed=unattributed,
@@ -554,6 +581,8 @@ def _assemble(
     *,
     project: dict[str, Any],
     projects: dict[str, dict[str, Any]],
+    requirement_titles: list[str],
+    pending_folder: dict[str, Any] | None,
     cards_on: bool,
     meeting_rows: list[dict[str, Any]],
     unattributed: list[dict[str, Any]],
@@ -678,11 +707,64 @@ def _assemble(
                 "ring": "middle",
             }
         )
+    if pending_folder is not None:
+        # 盘不在时先建了项目、插上后自动建的文件夹：灰色虚边，只有这一个节点，不算根目录。
+        folders.insert(
+            len(root_rows),
+            {
+                "id": f"pending:{project_id}",
+                "kind": "pending",
+                "name": Path(pending_folder["path"]).name,
+                "path": pending_folder["path"],
+                "parent": pending_folder["parent"],
+                "state": pending_folder["state"],
+                "reason": pending_folder["reason"],
+                "ring": "inner",
+            },
+        )
     loose = (
         {"id": "loose", "kind": "loose", "name": "散放文件", "ring": "outer", "count": None}
         if root_rows
         else None
     )
+
+    # ---- 像是新需求：和会议页同一个 name_hint，按轻键分组，最多 3 个
+    hints = HintContext(
+        None, projects=projects.values(), requirement_titles={project_id: requirement_titles}
+    )
+    suggested_map: dict[str, dict[str, Any]] = {}
+    for row in meeting_rows:
+        hint = hints.hint(
+            project_id=row["project_id"],
+            state=row["state"],
+            new_project_name=None,
+            new_requirement_name=row.get("new_requirement_name"),
+            new_name_project_id=row.get("new_name_project_id"),
+            new_name_spoken=row.get("new_name_spoken"),
+        )
+        if hint is None or hint["kind"] != "requirement":
+            continue
+        key = light_key(hint["name"])
+        bucket = suggested_map.setdefault(
+            key,
+            {
+                "id": f"nr:{_short_hash(key)}",
+                "kind": "suggested_requirement",
+                "name": hint["name"],
+                "meeting_ids": [],
+                "spoken": [],
+                "last_day": row["day"].isoformat(),
+            },
+        )
+        bucket["meeting_ids"].append(row["id"])
+        for spoken in hint["spoken"]:
+            if spoken not in bucket["spoken"] and len(bucket["spoken"]) < 3:
+                bucket["spoken"].append(spoken)
+    suggested_requirements = sorted(
+        suggested_map.values(), key=lambda item: (-len(item["meeting_ids"]), item["last_day"], item["name"])
+    )[:SUGGESTED_REQUIREMENT_CAP]
+    for item in suggested_requirements:
+        item["count"] = len(item["meeting_ids"])
 
     # ---- 线索词：窗口内、AI 判断过的会的证据里，来源是项目词或文件夹名的条目
     cue_map: dict[str, dict[str, Any]] = {}
@@ -752,6 +834,7 @@ def _assemble(
             + (1 if loose else 0)
             + min(len(cues_all), cue_cap)
             + len(beacons)
+            + len(suggested_requirements)
         )
 
     while visible_count() > VISIBLE_BUDGET and middle_cap > MIDDLE_MIN:
@@ -886,6 +969,24 @@ def _assemble(
                 "requirement_id": link["requirement_id"],
             }
         )
+    for item in suggested_requirements:
+        seen_targets: set[str] = set()
+        for meeting_id in item["meeting_ids"]:
+            target = _meeting_node_id(meeting_id, visible_ids, collapsed_of)
+            if target is None or target in seen_targets:
+                continue
+            seen_targets.add(target)
+            edges.append(
+                {
+                    "id": f"e:nr:{item['id'][3:]}:{meeting_id}",
+                    "kind": "suggested",
+                    "from": target,
+                    "to": item["id"],
+                    "label": "",
+                    "meeting_id": meeting_id,
+                    "name": item["name"],
+                }
+            )
     shown_folder_ids = {item["id"] for item in shown_folders}
     for folder in folders:
         if folder["kind"] != "requirement_folder" or folder["requirement_id"] not in requirement_ids:
@@ -1008,6 +1109,7 @@ def _assemble(
         "doorstep_more": doorstep_more,
         "requirements": requirement_nodes,
         "requirements_more": more_requirements,
+        "suggested_requirements": suggested_requirements,
         "folders": shown_folders,
         "folders_more": (
             {"id": "f:more", "count": len(hidden_folders), "paths": [f["path"] for f in hidden_folders]}
