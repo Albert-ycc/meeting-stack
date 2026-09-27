@@ -182,6 +182,11 @@ def _line_anchor(line: str) -> int | None:
     return ((int(first) * 60 + int(second)) * 60 + int(third)) * 1000
 
 
+def _continues_number(text: str, end: int) -> bool:
+    following = text[end : end + 2]
+    return following[:1].isdigit() or (following[:1] == "." and following[1:2].isdigit())
+
+
 def _pick_by_date(group: list[dict[str, Any]], meeting_ns: int | None) -> dict[str, Any]:
     def mtime(row: dict[str, Any]) -> int:
         return int(row["mtime_ns"] or 0)
@@ -216,6 +221,8 @@ def compute_mentions(
             if target is None:
                 continue  # 挡板
             key, file_id = target
+            if file_id is not None and _continues_number(text, _end):
+                file_id = None  # 说的是「报价单 v30」，不是 v3 那一份
             entry = spoken.setdefault(key, {"count": 0, "first_ms": start_ms, "anchors": [], "versions": Counter()})
             entry["count"] += 1
             if (not entry["anchors"] or entry["anchors"][-1] != start_ms) and len(entry["anchors"]) < MAX_ANCHORS:
@@ -231,6 +238,8 @@ def compute_mentions(
             if target is None:
                 continue
             key, file_id = target
+            if file_id is not None and _continues_number(line, _end):
+                file_id = None
             entry = written.setdefault(key, {"count": 0, "first_ms": _line_anchor(line), "versions": Counter()})
             entry["count"] += 1
             if file_id is not None:
@@ -642,6 +651,15 @@ def _result(row: dict[str, Any], **extra: Any) -> dict[str, Any]:
     }
 
 
+def _invalidate_scan(connection: Any, meeting_id: str) -> None:
+    """你改了这场会的提到：正在进行的比对写不进来（dirty 变了），下一轮按你的改动重新比对。"""
+    connection.execute(
+        """INSERT INTO meeting_file_scan(meeting_id, dirty) VALUES (?, 1)
+           ON CONFLICT(meeting_id) DO UPDATE SET dirty = dirty + 1""",
+        (meeting_id,),
+    )
+
+
 def reject_mention(db: Database, meeting_id: str, stem_key: str) -> dict[str, Any]:
     """「不是这份文件」：只挡这场会、这个项目；以后比对也不会改回来。"""
     with db.transaction() as connection:
@@ -652,6 +670,7 @@ def reject_mention(db: Database, meeting_id: str, stem_key: str) -> dict[str, An
                     WHERE meeting_id = ? AND project_id = ? AND stem_key = ?""",
                 (utc_now(), meeting_id, row["project_id"], stem_key),
             )
+            _invalidate_scan(connection, meeting_id)
         row["status"] = "rejected"
     return _result(row)
 
@@ -666,11 +685,7 @@ def restore_mention(db: Database, meeting_id: str, stem_key: str) -> dict[str, A
                     WHERE meeting_id = ? AND project_id = ? AND stem_key = ?""",
                 (utc_now(), meeting_id, row["project_id"], stem_key),
             )
-            connection.execute(
-                """INSERT INTO meeting_file_scan(meeting_id, dirty) VALUES (?, 1)
-                   ON CONFLICT(meeting_id) DO UPDATE SET dirty = dirty + 1""",
-                (meeting_id,),
-            )
+            _invalidate_scan(connection, meeting_id)
         row["status"] = "active"
     return _result(row)
 
@@ -692,6 +707,7 @@ def pick_mention_file(db: Database, meeting_id: str, stem_key: str, file_id: int
                 WHERE meeting_id = ? AND project_id = ? AND stem_key = ?""",
             (file_id, utc_now(), meeting_id, row["project_id"], stem_key),
         )
+        _invalidate_scan(connection, meeting_id)
         row.update(file_id=file_id, picked=1, status="active")
     return _result(row)
 

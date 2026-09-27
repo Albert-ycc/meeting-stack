@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import date
 
 from .project_profile import light_key
 
@@ -26,15 +27,15 @@ _TRAILING = re.compile(
     re.IGNORECASE,
 )
 
-# 日期：长的先去，前后不能紧挨数字。
+# 日期：长的先去，前后不能紧挨数字；不存在的日子（260931、0230）不当日期。
 _DATE_PATTERNS = (
-    re.compile(r"(?<!\d)(?:19|20)\d{2}年\d{1,2}月\d{1,2}日(?!\d)"),
-    re.compile(r"(?<!\d)(?:19|20)\d{2}[-._](?:0?[1-9]|1[0-2])[-._](?:0?[1-9]|[12]\d|3[01])(?!\d)"),
-    re.compile(r"(?<!\d)(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)"),
-    re.compile(r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)"),
+    re.compile(r"(?<!\d)(?P<y>(?:19|20)\d{2})年(?P<m>\d{1,2})月(?P<d>\d{1,2})日(?!\d)"),
+    re.compile(r"(?<!\d)(?P<y>(?:19|20)\d{2})[-._](?P<m>0?[1-9]|1[0-2])[-._](?P<d>0?[1-9]|[12]\d|3[01])(?!\d)"),
+    re.compile(r"(?<!\d)(?P<y>(?:19|20)\d{2})(?P<m>0[1-9]|1[0-2])(?P<d>0[1-9]|[12]\d|3[01])(?!\d)"),
+    re.compile(r"(?<!\d)(?P<y>\d{2})(?P<m>0[1-9]|1[0-2])(?P<d>0[1-9]|[12]\d|3[01])(?!\d)"),
 )
 # MMDD 只在前后是 - _ 或空格（或者开头结尾）时去，并且至少有一边是分隔符。
-_MMDD = re.compile(r"(?:(?<=[\s_\-])|^)(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?=[\s_\-]|$)")
+_MMDD = re.compile(r"(?:(?<=[\s_\-])|^)(?P<m>0[1-9]|1[0-2])(?P<d>0[1-9]|[12]\d|3[01])(?=[\s_\-]|$)")
 
 # 时刻（截图名里常见）：10.12.33、下午3.12.33
 _TIME = re.compile(r"(?<!\d)(?:上午|下午)?\d{1,2}[.:]\d{2}(?:[.:]\d{2})?(?!\d)")
@@ -101,11 +102,22 @@ def _strip_trailing(text: str) -> str:
     return text
 
 
+def _real_date(match: re.Match[str]) -> str:
+    year = match.groupdict().get("y")
+    # 两位年份按 20xx 算；没有年份（MMDD）按闰年算，0229 也算日期
+    year_number = 2000 if year is None else int(year) + (2000 if len(year) == 2 else 0)
+    try:
+        date(year_number, int(match["m"]), int(match["d"]))
+    except ValueError:
+        return match[0]
+    return " "
+
+
 def _strip_dates(text: str) -> str:
     for pattern in _DATE_PATTERNS:
-        text = pattern.sub(" ", text)
+        text = pattern.sub(_real_date, text)
     text = _TIME.sub(" ", text)
-    return _MMDD.sub(" ", text)
+    return _MMDD.sub(_real_date, text)
 
 
 def _strip_leading(text: str) -> str:

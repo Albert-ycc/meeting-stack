@@ -40,6 +40,20 @@ def test_derive_stem(name, stem, usable):
     assert stem_usability(stem_key(stem)) == usable
 
 
+@pytest.mark.parametrize(
+    ("name", "stem"),
+    [
+        ("260931 报价单.xlsx", "260931 报价单"),
+        ("报价单_0230.xlsx", "报价单_0230"),
+        ("报价单_0229.xlsx", "报价单"),
+        ("2026-02-30 报价单.xlsx", "2026-02-30 报价单"),
+        ("230229 纪要整理.docx", "230229 纪要整理"),
+    ],
+)
+def test_impossible_dates_are_not_stripped(name, stem):
+    assert derive_stem(name) == stem
+
+
 # ---------------------------------------------------------------------- 索引
 
 
@@ -308,3 +322,50 @@ def test_root_path_change_restarts_with_a_full_pass(tmp_path):
     run_until_done(indexer)
     assert set(files(db)) == {"报价单.xlsx", "权限中心说明.docx"}
     assert db.query_one("SELECT stems_rev FROM material_index_state")["stems_rev"] == 2
+
+
+def test_nested_root_added_later_takes_its_files_from_the_outer_root(tmp_path):
+    db, settings = make(tmp_path)
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),))
+    outer = tmp_path / "资料"
+    write(outer / "总体规划.docx")
+    write(outer / "数据中台" / "接口清单说明.xlsx")
+    outer_id = add_root(db, outer)
+    indexer = MaterialIndexer(db, settings, clock=lambda: 0.0)
+    run_until_done(indexer)
+    assert set(files(db, outer_id)) == {"总体规划.docx", "数据中台/接口清单说明.xlsx"}
+
+    inner_id = add_root(db, outer / "数据中台", project_id="q")  # 磁盘上什么都没变
+    run_until_done(indexer)
+
+    assert set(files(db, outer_id)) == {"总体规划.docx"}
+    assert set(files(db, inner_id)) == {"接口清单说明.xlsx"}
+
+
+def test_moving_the_root_mid_round_does_not_write_back_the_old_cursor(tmp_path):
+    db, settings = make(tmp_path)
+    root = tmp_path / "云图AI"
+    for name in "abcdef":
+        write(root / name / f"{name}文件说明.docx")
+    root_id = add_root(db, root)
+    run_until_done(MaterialIndexer(db, settings, clock=lambda: 0.0))
+    other = tmp_path / "新位置"
+    write(other / "x" / "新的报价单.xlsx")
+
+    indexer = MaterialIndexer(db, settings, clock=lambda: 0.0, round_entries=4)
+    visit = indexer._visit
+    calls = []
+
+    def visit_then_move(root_id_, base, dir_rel, *, full):
+        calls.append(dir_rel)
+        if len(calls) == 2:  # 两个文件夹之间，你在项目页「重新选…」了位置
+            db.execute("UPDATE project_material_roots SET path=? WHERE id=?", (str(other), root_id_))
+        return visit(root_id_, base, dir_rel, full=full)
+
+    indexer._visit = visit_then_move
+    indexer.run_round()
+
+    assert db.query_one("SELECT cursor FROM material_index_state WHERE root_id=?", (root_id,))["cursor"] is None
+    indexer._visit = visit
+    run_until_done(indexer)
+    assert set(files(db, root_id)) == {"x/新的报价单.xlsx"}

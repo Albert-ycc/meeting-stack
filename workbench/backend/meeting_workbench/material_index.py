@@ -97,8 +97,9 @@ def _skipped_name(name: str) -> bool:
 
 
 def _prefix_where(column: str = "dir_rel") -> str:
-    """dir_rel 等于它、或在它下面（按 substr 比，不用 LIKE：文件夹名里的 _ 和 % 会被当成通配符）。"""
-    return f"({column} = ? OR substr({column}, 1, length(?) + 1) = ? || '/')"
+    """dir_rel 等于它、或在它下面。按范围比（'/' 后面紧跟的字符是 '0'），能用上 (root_id, dir_rel)
+    索引；不用 LIKE：文件夹名里的 _ 和 % 会被当成通配符。参数：同一个 dir_rel 传三次。"""
+    return f"({column} = ? OR ({column} >= ? || '/' AND {column} < ? || '0'))"
 
 
 class MaterialIndexer:
@@ -240,6 +241,8 @@ class MaterialIndexer:
 
     def _save_cursor(self, root_id: int, cursor: dict[str, Any]) -> None:
         with self.db.transaction() as connection:
+            # 本轮中途换了位置：触发器已经清掉断点，不能再把旧位置的栈写回去
+            self._same_root(connection)
             connection.execute(
                 """INSERT INTO material_index_state(root_id, state, cursor, sweep_started_at, error, updated_at)
                    VALUES (?, 'walking', ?, ?, NULL, ?)
@@ -250,18 +253,23 @@ class MaterialIndexer:
             )
 
     def _finish_pass(self, root_id: int, *, full: bool, started_at: str) -> None:
-        """一整轮扫完：词干集合变了才给 stems_rev 加一。"""
+        """一整轮扫完：词干和它们的位置变了才给 stems_rev 加一。
+
+        摘要带上 rel_path：文件从先扫的目录挪到后扫的目录时，中间比对的那一轮会把提到删掉（那时
+        新位置还没收进来），新行入库时又没有提到可以置脏；只看词干集合的话这场会就再也不会重比。"""
         with self.db.transaction() as connection:
             self._same_root(connection)
             digest = hashlib.sha1()
             for row in connection.execute(
-                f"""SELECT DISTINCT stem_key FROM material_files
+                f"""SELECT stem_key, rel_path FROM material_files
                      WHERE root_id = ? AND gone_at IS NULL AND stem_key != ''
                        AND zone IN ({", ".join("?" for _ in MATCH_ZONES)})
-                     ORDER BY stem_key""",
+                     ORDER BY stem_key, rel_path""",
                 (root_id, *MATCH_ZONES),
             ):
                 digest.update(row["stem_key"].encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(row["rel_path"].encode("utf-8"))
                 digest.update(b"\0")
             stems_hash = digest.hexdigest()
             files = connection.execute(
@@ -321,7 +329,19 @@ class MaterialIndexer:
             self._write_dir(root_id, dir_rel, info.st_mtime_ns, zone, count, files=None, subdirs=None)
             return []
         if unchanged and not full:
-            return sorted(self._children.get(dir_rel, ()))
+            children = self._children.get(dir_rel, set())
+            nested = {child for child in children if child in self._skip}
+            if nested:
+                # 后来挂上的嵌套根目录（或受保护目录）：文件归内层项目，外层这边整棵去掉
+                now = utc_now()
+                with self.db.transaction() as connection:
+                    self._same_root(connection)
+                    dropped: list[int] = []
+                    for child in sorted(nested):
+                        dropped.extend(self._drop_subtree(connection, root_id, child, now))
+                    self._dirty_meetings(connection, root_id, dropped, set())
+                self._children[dir_rel] = children - nested
+            return sorted(children - nested)
         try:
             with os.scandir(absolute) as iterator:
                 entries = list(iterator)

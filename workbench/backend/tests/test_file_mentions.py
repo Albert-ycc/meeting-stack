@@ -5,9 +5,10 @@ from datetime import datetime
 from meeting_workbench import file_mentions, graph
 from meeting_workbench.db import utc_now
 from meeting_workbench.file_stems import derive_stem, stem_key
+from meeting_workbench.material_index import MaterialIndexer
 
 from .test_graph import TODAY, add_meeting
-from .test_material_index import add_root, make
+from .test_material_index import add_root, make, run_until_done, write
 
 
 def ns(day):
@@ -116,6 +117,21 @@ def test_versions_prefer_the_full_name_then_the_meeting_date(tmp_path):
     assert mentions(db, "sep-26")["报价单"]["file_id"] == v3
 
 
+def test_a_longer_version_number_is_not_that_version(tmp_path):
+    db, root_id = setup(tmp_path)
+    v3 = add_file(db, root_id, "报价单 v3.xlsx", day="2026-09-10")
+    v1 = add_file(db, root_id, "报价单 v1.xlsx", day="2026-09-20")
+    add_meeting(db, "v30", ago=1, project_id="p", segments=said("报价单 v30 发了"))
+    add_meeting(db, "v3-1", ago=1, project_id="p", segments=said("报价单 V3.1 再看看"))
+    add_meeting(db, "v3", ago=1, project_id="p", segments=said("报价单 v3，下周定"))
+
+    run(db)
+
+    assert mentions(db, "v30")["报价单"]["file_id"] == v1  # 按会议日期挑，不是 v3
+    assert mentions(db, "v3-1")["报价单"]["file_id"] == v1
+    assert mentions(db, "v3")["报价单"]["file_id"] == v3
+
+
 def test_minutes_only_mentions_need_three_characters(tmp_path):
     db, root_id = setup(tmp_path)
     add_file(db, root_id, "需求说明书.docx")
@@ -212,6 +228,53 @@ def test_changed_while_matching_is_left_for_the_next_round(tmp_path):
     assert file_mentions.match_meeting(db, row, {}) is False
     assert mentions(db) == {}
     assert run(db)["written"] == 1
+
+
+def test_your_pick_during_a_match_is_kept(tmp_path, monkeypatch):
+    db, root_id = setup(tmp_path)
+    v1 = add_file(db, root_id, "报价单 v1.xlsx", day="2026-08-01")
+    v2 = add_file(db, root_id, "报价单 v2.xlsx", day="2026-09-01")
+    add_meeting(db, "m", ago=1, project_id="p", segments=said("报价单明天发"))
+    run(db)
+    assert mentions(db)["报价单"]["file_id"] == v2
+    version = db.query_one("SELECT current_transcript_version_id AS id FROM meetings WHERE id='m'")["id"]
+    db.execute("UPDATE segments SET text='报价单明天发，报价单要盖章' WHERE version_id=?", (version,))
+    db.add_event("transcript_draft_saved", meeting_id="m")
+    compute = file_mentions.compute_mentions
+
+    def compute_then_pick(*args, **kwargs):
+        result = compute(*args, **kwargs)
+        file_mentions.pick_mention_file(db, "m", "报价单", v1)  # 比对算到一半，你点了［换成这份］
+        return result
+
+    monkeypatch.setattr(file_mentions, "compute_mentions", compute_then_pick)
+    run(db)
+    monkeypatch.setattr(file_mentions, "compute_mentions", compute)
+    run(db)
+
+    row = mentions(db)["报价单"]
+    assert (row["file_id"], row["picked"]) == (v1, 1)
+
+
+def test_a_file_moved_to_a_later_folder_keeps_its_mention(tmp_path):
+    db, settings = make(tmp_path)
+    root = tmp_path / "云图AI"
+    write(root / "a" / "报价单.xlsx")
+    (root / "z").mkdir()
+    add_root(db, root)
+    run_until_done(MaterialIndexer(db, settings, clock=lambda: 0.0))
+    add_meeting(db, "m", ago=1, project_id="p", segments=said("报价单明天发"))
+    run(db)
+    assert "报价单" in mentions(db)
+
+    (root / "a" / "报价单.xlsx").rename(root / "z" / "报价单.xlsx")
+    MaterialIndexer(db, settings, clock=lambda: 0.0, round_entries=2).run_round()  # 读完 a/ 就停，z/ 还没读
+    run(db)  # 这时比对：旧位置没了、新位置还没收进来
+    run_until_done(MaterialIndexer(db, settings, clock=lambda: 0.0))
+    run(db)
+
+    moved = db.query_one("SELECT id FROM material_files WHERE rel_path='z/报价单.xlsx'")["id"]
+    assert mentions(db)["报价单"]["file_id"] == moved
 
 
 def test_brief_lists_files_and_states(tmp_path):
