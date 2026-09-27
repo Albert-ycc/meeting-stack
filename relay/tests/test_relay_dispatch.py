@@ -215,6 +215,41 @@ class RelayDispatchTests(unittest.TestCase):
         self.assertIn(str(target), command)
         self.assertNotIn(str(link), command)
 
+    def test_claude_dispatch_always_pins_model_and_defaults_to_deepseek(self):
+        """派单命令必须显式 --model：不带就继承 settings.json 的全局 pin，
+        2026-07-31 曾因该文件被切成裸跑档位（无 BASE_URL）导致派单进程秒退。
+        断言的是「模型被钉死且带 DeepSeek 端点」，档位本身可随 DEEPSEEK_MODEL 调。"""
+        module = load_watchdog_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            claude = tmp / "claude"
+            claude.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            claude.chmod(0o755)
+            module.CLAUDE_BIN = str(claude)
+            with patch.dict(os.environ, {
+                "MEETING_RELAY_AGENT": "claude",
+                "MEETING_RELAY_CLAUDE_BIN": str(claude),
+            }, clear=False):
+                os.environ.pop("MEETING_RELAY_LLM_BACKEND", None)
+                default = module.build_agent_shell_command(tmp / "prompt.md")
+                pinned = module.build_agent_shell_command(tmp / "prompt.md", "claude")
+
+        self.assertIn(f"--model {module.DEEPSEEK_MODEL}", default)
+        self.assertTrue(module.DEEPSEEK_MODEL.startswith("deepseek-"))
+        self.assertIn("api.deepseek.com/anthropic", default)
+        self.assertIn("DEEPSEEK_API_KEY", default)
+        # attempt 级覆盖必须能把这一场拉回 Claude，且不再带 DeepSeek 端点
+        self.assertIn("--model opus", pinned)
+        self.assertNotIn("api.deepseek.com", pinned)
+
+    def test_attempt_backend_overrides_the_global_default(self):
+        module = load_watchdog_module()
+        with patch.dict(os.environ, {"MEETING_RELAY_LLM_BACKEND": "deepseek"}):
+            self.assertEqual("claude", module.resolve_llm_backend("claude"))
+            self.assertEqual("deepseek", module.resolve_llm_backend(None))
+            # 乱填的值不该让派单直接崩，回落全局默认
+            self.assertEqual("deepseek", module.resolve_llm_backend("gpt5"))
+
     def test_codex_agent_uses_codex_exec_in_tmux_shell_pane(self):
         module = load_watchdog_module()
         calls = []
@@ -352,8 +387,7 @@ class RelayDispatchTests(unittest.TestCase):
 
 
 class LarkNotifyTests(unittest.TestCase):
-    def test_notify_lark_skips_when_user_id_not_configured(self):
-        """未配置 RELAY_LARK_USER_ID 时静默跳过，不影响主流程。"""
+    def _capture_notify(self, *, chat_id: str, user_id: str):
         module = load_watchdog_module()
         calls = []
 
@@ -363,25 +397,17 @@ class LarkNotifyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             module.LARK_LOG_FILE = Path(tmpdir) / "lark.log"
-            module.LARK_USER_ID = ""
+            module.LARK_CHAT_ID = chat_id
+            module.LARK_USER_ID = user_id
+            module.LARK_APP_ID = ""
             module._tmux = fake_tmux
             module.notify_lark("测试标题", "测试正文")
+        return calls
 
-        self.assertEqual([], calls)
-
-    def test_notify_lark_schedules_bot_send_via_tmux(self):
-        module = load_watchdog_module()
-        calls = []
-
-        def fake_tmux(*args):
-            calls.append(args)
-            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            module.LARK_LOG_FILE = Path(tmpdir) / "lark.log"
-            module.LARK_USER_ID = "ou_test_user_id"
-            module._tmux = fake_tmux
-            module.notify_lark("测试标题", "测试正文")
+    def test_notify_lark_sends_to_group_as_bot_via_tmux(self):
+        """配了群就以 bot 身份发群（--chat-id），经 tmux run-shell 绕 keychain；
+        群优先于私聊，不得回退 --user-id。"""
+        calls = self._capture_notify(chat_id="oc_test_group", user_id="ou_test_user_id")
 
         self.assertEqual(1, len(calls))
         self.assertEqual("run-shell", calls[0][0])
@@ -389,8 +415,22 @@ class LarkNotifyTests(unittest.TestCase):
         command = calls[0][2]
         self.assertIn("lark-cli im +messages-send", command)
         self.assertIn("--as bot", command)
-        self.assertIn("--user-id", command)
+        self.assertIn("--chat-id oc_test_group", command)
+        self.assertNotIn("--user-id", command)
         self.assertNotIn("--as user", command)
+
+    def test_notify_lark_falls_back_to_direct_message_without_group(self):
+        calls = self._capture_notify(chat_id="", user_id="ou_test_user_id")
+
+        self.assertEqual(1, len(calls))
+        command = calls[0][2]
+        self.assertIn("--as bot", command)
+        self.assertIn("--user-id ou_test_user_id", command)
+        self.assertNotIn("--chat-id", command)
+
+    def test_notify_lark_skips_when_nothing_configured(self):
+        """群和私聊都没配时静默跳过，不影响主流程。"""
+        self.assertEqual([], self._capture_notify(chat_id="", user_id=""))
 
 
 class WorkbenchControlCompatibilityTests(unittest.TestCase):
@@ -475,9 +515,39 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 module.handle_audio(audio)
 
         notification_text = "\n".join("\n".join(item) for item in notifications)
-        self.assertIn("failed", notification_text)
+        # 通知正文是给人看的说法，不再回显 failed 这类内部状态码。
+        self.assertIn("没能处理完", notification_text)
         self.assertNotIn(audio.name, notification_text)
         self.assertNotIn(str(module.PRODUCTS_DIR), notification_text)
+
+    def test_status_notifications_speak_plainly_and_scope_job_id_to_failures(self):
+        """通知是发给人看的：说人话、报时长、不回显内部状态码；任务号只给失败态。"""
+        module = load_watchdog_module()
+        sent = []
+        with patch.object(
+            module, "notify_lark", side_effect=lambda title, body: sent.append((title, body))
+        ):
+            module.notify_workbench_status("job-abc", "minutes_generating", 46.0)
+            module.notify_workbench_status("job-abc", "failed", 90.0)
+            module.notify_relay_status("dispatched", 0.5)
+            module.notify_workbench_status("job-abc", "brand_new_state")
+
+        ok_title, ok_body = sent[0]
+        self.assertEqual("录音转写完成", ok_title)
+        self.assertIn("46 分钟", ok_body)
+        self.assertNotIn("minutes_generating", ok_body)
+        self.assertNotIn("job-abc", ok_body)
+
+        fail_title, fail_body = sent[1]
+        self.assertIn("没能处理完", fail_title)
+        self.assertIn("1 小时 30 分钟", fail_body)
+        self.assertIn("job-abc", fail_body)
+
+        self.assertEqual("录音转写完成", sent[2][0])
+        self.assertIn("1 分钟", sent[2][1])
+
+        # 新状态还没写文案时保底可读，不静默丢通知
+        self.assertIn("brand_new_state", sent[3][1])
 
     def test_enabled_flag_records_stages_and_adds_completion_callback(self):
         module = load_watchdog_module()
@@ -490,7 +560,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             def fake_record(job_id, status, **kwargs):
                 recorded.append((job_id, status, kwargs))
 
-            def fake_dispatch(prompt, kind):
+            def fake_dispatch(prompt, kind, backend=None):
                 prompts.append(prompt)
                 return True
 
@@ -537,7 +607,10 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         self.assertNotIn("IMA", prompts[0])
         whisper_progress.assert_called_once()
         notification_text = "\n".join("\n".join(item) for item in notifications)
-        self.assertIn("job-test-123", notification_text)
+        # 转写顺利时说人话、不摆任务号；下一条「纪要写好了」带会议标题接得上。
+        # 任务号只在失败通知里出现（那时才需要拿它排障）。
+        self.assertIn("录音转写完成", notification_text)
+        self.assertNotIn("job-test-123", notification_text)
         self.assertNotIn(audio.name, notification_text)
         self.assertNotIn("这是不能发到飞书的逐字稿正文", notification_text)
 
@@ -555,7 +628,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "_control_update_whisper_progress"), \
                     patch.object(module, "_control_record_stage", side_effect=lambda _, status, **kwargs: recorded.append((status, kwargs))), \
                     patch.object(module, "_control_interrupt_if_requested", return_value=False), \
-                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind: prompts.append((prompt, kind)) or True), \
+                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append((prompt, kind)) or True), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "notify_lark"), \
                     patch.object(module, "save_last_meeting"), \
@@ -700,7 +773,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             with patch.object(module, "PRODUCTS_DIR", root), \
                     patch.object(module, "get_audio_duration_sec", return_value=601), \
                     patch.object(module, "transcribe", side_effect=AssertionError) as transcribe, \
-                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind: prompts.append(prompt) or True), \
+                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "_control_fail") as fail, \
                     patch.object(module, "notify_lark"), \
@@ -749,7 +822,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             with patch.object(module, "PRODUCTS_DIR", products), \
                     patch.object(module, "get_audio_duration_sec", return_value=601), \
                     patch.object(module, "transcribe", side_effect=AssertionError) as transcribe, \
-                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind: prompts.append(prompt) or True), \
+                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "_control_fail") as fail, \
                     patch.object(module, "notify_lark"), \
@@ -805,7 +878,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             with patch.object(module, "PRODUCTS_DIR", products), \
                     patch.object(module, "get_audio_duration_sec", return_value=601), \
                     patch.object(module, "transcribe", side_effect=AssertionError), \
-                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind: prompts.append(prompt) or True), \
+                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "_control_fail") as fail, \
                     patch.object(module, "notify_lark"), \

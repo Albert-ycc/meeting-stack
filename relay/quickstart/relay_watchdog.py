@@ -39,9 +39,9 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 # ssh localhost 链只给裸 PATH（/usr/bin:/bin:/usr/sbin:/sbin），ffprobe 和
-# whisper 解码用的 ffmpeg 通常装在 Homebrew 里，这里自愈补全；子进程（含
+# whisper 解码用的 ffmpeg 都在 Homebrew 里，这里自愈补全；子进程（含
 # transcribe.sh）继承 os.environ，一处补全全链路生效。
-# 缺了它的典型症状：长录音在 ffprobe 探测时长处抛 FileNotFoundError 后静默搁浅。
+# 2026-07-03 事故：3 小时录音因 ffprobe 不在 PATH 抛 FileNotFoundError 搁浅。
 for _p in ("/opt/homebrew/bin", "/usr/local/bin"):
     if _p not in os.environ.get("PATH", "").split(":"):
         os.environ["PATH"] = _p + ":" + os.environ.get("PATH", "")
@@ -84,6 +84,16 @@ GLOSSARY_INJECTION_PY  = REPO_ROOT / "glossary" / "injection.py"
 TMUX_SOCKET            = _env_path("MEETING_RELAY_TMUX_SOCKET", Path.home() / ".tmux-socket" / "cc")
 TMUX_SESSION           = os.getenv("MEETING_RELAY_TMUX_SESSION", "agent")
 DEFAULT_AGENT          = "claude"
+# 派单后端：deepseek（默认，走 DeepSeek 的 Anthropic 兼容端点，不吃 Claude 订阅额度，
+# 需要 Agent 会话里有 DEEPSEEK_API_KEY）或 claude（直接用 Claude Code 自己的账号）。
+# 用 MEETING_RELAY_LLM_BACKEND 切换；工作台「用 Claude 重写」按 attempt 单独指定。
+DEFAULT_LLM_BACKEND    = "deepseek"
+DEEPSEEK_BASE_URL      = "https://api.deepseek.com/anthropic"
+# 纪要是照着转写稿抽议题的机械活，结构由 minutes-protocol v3 的硬校验兜底，
+# flash 足够；要临时抬档用 MEETING_RELAY_DEEPSEEK_MODEL=deepseek-v4-pro。
+DEEPSEEK_MODEL         = os.getenv("MEETING_RELAY_DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_SMALL_MODEL   = "deepseek-v4-flash"   # 会话标题等后台小任务，别回落官方端点
+CLAUDE_MODEL           = os.getenv("MEETING_RELAY_CLAUDE_MODEL", "opus")
 CLAUDE_BIN             = os.getenv("MEETING_RELAY_CLAUDE_BIN", "")
 CLAUDE_FALLBACKS       = (
     str(Path.home() / ".local/bin/claude"),
@@ -96,10 +106,17 @@ CODEX_FALLBACKS        = (
     "/Applications/Codex.app/Contents/Resources/codex",
     "/Applications/ChatGPT.app/Contents/Resources/codex",
 )
-# 可选的飞书（Lark）通知：留空则整个通知环节静默跳过，不影响转写与归档主流程。
-# 需要通知时设置为自己的 open_id，并确保 lark-cli 已登录。
+# 可选的飞书（Lark）通知，全部留空则整个通知环节静默跳过，不影响转写与归档主流程：
+# - MEETING_RELAY_LARK_CHAT_ID：发到群（经 lark-cli 以 bot 身份，需 lark-cli 已登录）；
+#   再配 MEETING_RELAY_LARK_APP_ID + _APP_SECRET_FILE 则直连开放平台，不依赖 keychain；
+# - RELAY_LARK_USER_ID：没配群时发私聊给这个 open_id。
+LARK_CHAT_ID           = os.getenv("MEETING_RELAY_LARK_CHAT_ID", "")
 LARK_USER_ID           = os.getenv("RELAY_LARK_USER_ID", "")
-LARK_LOG_FILE          = Path.home() / "Library" / "Logs" / "meeting-relay-notify.log"
+LARK_APP_ID            = os.getenv("MEETING_RELAY_LARK_APP_ID", "")
+LARK_APP_SECRET_FILE   = os.getenv("MEETING_RELAY_LARK_APP_SECRET_FILE", "")
+LARK_LOG_FILE          = _env_path(
+    "MEETING_RELAY_LARK_LOG_FILE", Path.home() / "Library" / "Logs" / "meeting-relay-notify.log"
+)
 LARK_NOTIFY_PATH       = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 AUDIO_EXTS             = {".m4a", ".mp3", ".wav"}
 STABLE_SECS            = 5
@@ -797,7 +814,7 @@ def build_meeting_prompt(
             f"\n## ⚠️ 疑似同场会议的连续分段\n\n"
             f"上一段会议录音 `{last['audio']}` 在 **{last['dispatched_at_human']}**"
             f"（不到 45 分钟前）刚派发过。中途停录再续录的会议很常见。\n"
-            f"归档前必须先 `ls ~/MeetingArchive/ | grep {yymmdd}` "
+            f"归档前必须先 `ls {ARCHIVE_ROOT}/ | grep {yymmdd}` "
             f"查看今天已有的文件夹：如果本段与上一段是同一场会（主题相同/内容延续），"
             f"**并入已有文件夹**——本段音频、转写、字幕拷进去（文件名加 -part2 等后缀区分），"
             f"纪要在已有 md 基础上补充合并后重新生成 HTML，**不要另建文件夹**。\n"
@@ -807,8 +824,10 @@ def build_meeting_prompt(
         # 工作台稿件先落隐藏草稿区，完成回执后提升为归档根一级目录；发布在
         # 同一目录原子换入规范产物。重跑绝不覆盖已有正式文件或旧版本。
         merge_section = ""
+        # 路径必须走 ARCHIVE_ROOT：prompt 在 cc1 里被执行，写死主根会让
+        # 第二实例的产物归档进主实例归档根（260825 实测踩过）。
         archive_location = (
-            f"~/MeetingArchive/.workbench-drafts/"
+            f"{ARCHIVE_ROOT}/.workbench-drafts/"
             f"{job_id}/attempt-{attempt_no}/"
         )
         minutes_only = (
@@ -844,6 +863,15 @@ def build_meeting_prompt(
                 "不得修改或删除，必须列进 manifest 的 artifacts\n"
             )
         relayctl = Path(__file__).with_name("relayctl").resolve()
+        precheck = Path(__file__).with_name("precheck_minutes.py").resolve()
+        # precheck/relayctl 在 cc1 会话里执行，不继承本进程环境；命令必须
+        # 显式带任务库与归档根，否则多实例部署时回执会写进主实例的库和归档根。
+        # 默认值与 relay_control 的 DEFAULT_* 一致，主实例行为不变。
+        relay_env = (
+            f'MEETING_RELAY_JOBS_DB="'
+            f'{os.getenv("MEETING_RELAY_JOBS_DB", str(Path.home() / ".meeting-relay" / "workbench-jobs.sqlite3"))}" '
+            f'MEETING_RELAY_ARCHIVE_ROOT="{ARCHIVE_ROOT}"'
+        )
         completion_section = (
             f"\n## 工作台任务回执（强制）\n\n"
             f"- `job_id`：`{job_id}`。不得省略、替换或另建任务。\n"
@@ -857,8 +885,17 @@ def build_meeting_prompt(
             f"`whisper-ref/` 不属于本次完成回执的前置条件；AppleDouble `._*` 与 "
             f"`.DS_Store` 是噪音，不得写入 artifacts。\n"
             f"- 草稿目录固定为 `{archive_location}`；**禁止覆盖、改名或删除任何正式目录中的旧文件**。\n"
-            f"- 所有归档文件写完并自检后，最后执行：\n\n"
-            f"  `{relayctl} complete-minutes {job_id} --attempt {attempt_no} "
+            f"- 所有归档文件写完后，**先跑本地预检**（这一步不是可选的，"
+            f"`complete-minutes` 用的是同一套校验，本地不过那边一定不过）：\n\n"
+            f"  `{relay_env} python3 {precheck} \"{archive_location}\"`\n\n"
+            f"  返回不是 `NONE` 就按错误码逐条修，改完重跑，直到 `NONE` 为止。"
+            f"常见错误码：`minutes_evidence_anchor:<item_id>` 是该 item 的 "
+            f"`minutes_anchor` 与 `source_start_sec` 差超过 5 秒、或正文里没有这个"
+            f"锚点字符串；`minutes_evidence_coverage` 是 coverage 键名或计数不对；"
+            f"`minutes_evidence_source:<item_id>` 是时间/哈希与 plan 的 cue 对不上"
+            f"或越出了 topic 区间。\n"
+            f"- 预检返回 `NONE` 后，才执行：\n\n"
+            f"  `{relay_env} {relayctl} complete-minutes {job_id} --attempt {attempt_no} "
             f"--archive-dir \"{archive_location}\"`\n\n"
             f"- `complete-minutes` 成功后 Relay 会自动提升为归档根下可见的一级会议"
             f"目录；校对状态只在工作台显示，不再创建「待校对」分层。不要手工搬移"
@@ -870,7 +907,7 @@ def build_meeting_prompt(
         )
     else:
         archive_location = (
-            f"~/MeetingArchive/{yymmdd} <会议主题>/"
+            f"{ARCHIVE_ROOT}/{yymmdd} <会议主题>/"
         )
         artifact_requirement = (
             "- 文件夹里必须齐 **5 类文件**：原音频 `.m4a`、转写 `.txt`、字幕 `.srt`、"
@@ -907,11 +944,19 @@ def build_meeting_prompt(
         f"`strategy`、`topics[]` 和 `coverage`。每个 topic 包含 "
         f"`topic_id/title/start_sec/end_sec/items[]`；每个 item 包含 "
         f"`item_id/kind/text/source_start_sec/status`。`kind` 仅允许 "
-        f"`fact/decision/action/risk/open_question/number`；included 项必须填写出现在"
-        f"正文中的 `minutes_anchor`，omitted 项必须填写 `omitted_reason`；action 还必须"
-        f"填写 `owner/deadline`。coverage 的 total/included/omitted 必须与 items 实际"
-        f"数量一致；协议 v3 的 item 还必须包含 `source_end_sec/source_text_sha256/"
-        f"source_window_id`，所有来源必须能在对应窗口 ledger 和 plan 中双重核验\n"
+        f"`fact/decision/action/risk/open_question/number`；included 项必须填写 "
+        f"`minutes_anchor`，omitted 项必须填写 `omitted_reason`；action 还必须"
+        f"填写 `owner/deadline`。\n"
+        f"   - `minutes_anchor` 有三条硬性约束，缺一即回执失败：格式为 "
+        f"`[HH:MM:SS]`；换算成秒后与本 item 的 `source_start_sec` **相差不得超过 "
+        f"5 秒**（照抄 `source_start_sec` 换算，不要取整到整分钟或议题开头）；"
+        f"该字符串必须**原样出现在纪要正文里**\n"
+        f"   - `coverage` 的键名精确为 `total_items` / `included_items` / "
+        f"`omitted_items`（不是 total/included/omitted），数值与 items 实际数量一致\n"
+        f"   - 协议 v3 的 item 还必须包含 `source_end_sec/source_text_sha256/"
+        f"source_window_id`，三者取自 plan 中的同一条 cue（`source_start_sec` 与 "
+        f"`source_end_sec` 必须与 cue 精确一致到 0.001 秒），且该区间必须落在所属 "
+        f"topic 的 `start_sec`–`end_sec` 内\n"
         f"6. pandoc 转 HTML，纪要 md/html 都按会议主题命名（不要用「会议纪要」泛称）\n"
         f"7. 原始产物（转写/纪要）保留在原音频所在的产物目录（留作原始档案）\n"
         f"{merge_section}"
@@ -981,7 +1026,29 @@ def resolve_claude_bin() -> str:
     )
 
 
-def build_agent_shell_command(prompt_file: Path) -> str:
+def resolve_llm_backend(override: str | None = None) -> str:
+    """派单跑哪个后端：deepseek（默认）| claude（回滚）。
+
+    `override` 是 attempt 级指定（工作台「用 Claude 重写纪要」按钮会带上），
+    优先级高于全局环境变量——单场会议想换个模型重跑，不该去动全局配置。
+    """
+    if override:
+        candidate = override.strip().lower()
+        if candidate in {"deepseek", "claude"}:
+            return candidate
+        log.warning("未知 attempt 后端=%s，回落全局默认", override)
+    backend = os.getenv("MEETING_RELAY_LLM_BACKEND", DEFAULT_LLM_BACKEND).strip().lower()
+    if backend not in {"deepseek", "claude"}:
+        log.warning(
+            "未知 MEETING_RELAY_LLM_BACKEND=%s，按 %s 处理", backend, DEFAULT_LLM_BACKEND
+        )
+        backend = DEFAULT_LLM_BACKEND
+    return backend
+
+
+def build_agent_shell_command(
+    prompt_file: Path, backend_override: str | None = None
+) -> str:
     agent = os.getenv("MEETING_RELAY_AGENT", DEFAULT_AGENT).strip().lower()
     quoted_prompt = shlex.quote(str(prompt_file))
     if agent not in {"claude", "codex"}:
@@ -989,12 +1056,34 @@ def build_agent_shell_command(prompt_file: Path) -> str:
         agent = DEFAULT_AGENT
     if agent == "claude":
         claude_bin = shlex.quote(resolve_claude_bin())
-        return f"cat {quoted_prompt} | {claude_bin} --print"
+        backend = resolve_llm_backend(backend_override)
+        # --model 必须显式传：不传就继承 ~/.claude/settings.json 的全局 pin。
+        # 2026-07-31 该文件被切成 deepseek-v4-flash 后派单进程秒退，根因是
+        # 裸跑没带 BASE_URL/token 去打官方端点，与模型档位无关——下面这条
+        # 命令自带端点与鉴权，所以主模型走 flash 也不会重演。
+        if backend == "deepseek":
+            # DEEPSEEK_API_KEY 由 cc1 的登录 shell 提供；缺失时用 :? 立即报错，
+            # 不静默回落 Claude——回落等于偷订阅额度，与配置意图相反。
+            env_prefix = " ".join([
+                "env",
+                f"ANTHROPIC_BASE_URL={shlex.quote(DEEPSEEK_BASE_URL)}",
+                'ANTHROPIC_AUTH_TOKEN="${DEEPSEEK_API_KEY:?relay 派单缺 DEEPSEEK_API_KEY}"',
+                f"ANTHROPIC_MODEL={shlex.quote(DEEPSEEK_MODEL)}",
+                f"ANTHROPIC_SMALL_FAST_MODEL={shlex.quote(DEEPSEEK_SMALL_MODEL)}",
+            ])
+            return (
+                f"cat {quoted_prompt} | {env_prefix} {claude_bin} "
+                f"--print --model {shlex.quote(DEEPSEEK_MODEL)}"
+            )
+        return (
+            f"cat {quoted_prompt} | {claude_bin} "
+            f"--print --model {shlex.quote(CLAUDE_MODEL)}"
+        )
 
     args = [
         resolve_codex_bin(),
         "exec",
-        "--cd", str(Path.home() / "workspace" / "meeting-relay"),
+        "--cd", str(REPO_ROOT / "relay"),
         "--add-dir", str(ARCHIVE_ROOT),
         "--add-dir", str(PRODUCTS_DIR),
         "--add-dir", str(INBOX),
@@ -1006,13 +1095,15 @@ def build_agent_shell_command(prompt_file: Path) -> str:
     return f"cat {quoted_prompt} | " + " ".join(shlex.quote(arg) for arg in args)
 
 
-def dispatch_to_cc1(prompt: str, kind: str):
+def dispatch_to_cc1(prompt: str, kind: str, backend: str | None = None):
     """把 prompt 落盘为文件，向 cc1 面板派发。
 
     cc1 常态是普通 zsh，严禁 send-keys 自然语言——会被 zsh 当命令解析。
     姿势是把「cat 文件管给 Agent CLI」整体作为 shell 命令发过去，
     非交互跑完自动退回 zsh。默认走 Claude Code，可用
-    `MEETING_RELAY_AGENT=codex` 回切 Codex。"""
+    `MEETING_RELAY_AGENT=codex` 回切 Codex。
+
+    `backend` 是 attempt 级模型后端覆盖，工作台「用 Claude 重写纪要」会带上。"""
     PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
     prompt_file = PROMPTS_DIR / f"relay-{os.urandom(4).hex()}.md"
     prompt_file.write_text(prompt, encoding="utf-8")
@@ -1035,7 +1126,7 @@ def dispatch_to_cc1(prompt: str, kind: str):
         "send-keys",
         "-t",
         TMUX_SESSION,
-        build_agent_shell_command(prompt_file),
+        build_agent_shell_command(prompt_file, backend),
         "Enter",
     )
 
@@ -1043,7 +1134,13 @@ def dispatch_to_cc1(prompt: str, kind: str):
         log.error("tmux 派单失败（prompt 保留在 %s）：%s", prompt_file, sent.stderr)
         return False
 
-    log.info("已派 %s 给 cc1（prompt: %s，pane=%s）", kind, prompt_file.name, pane_cmd)
+    log.info(
+        "已派 %s 给 cc1（prompt: %s，pane=%s，后端=%s）",
+        kind,
+        prompt_file.name,
+        pane_cmd,
+        resolve_llm_backend(backend),
+    )
     return True
 
 
@@ -1087,16 +1184,80 @@ def _agent_pane_available() -> bool:
     return foreground_found
 
 
+def _lark_app_secret() -> str:
+    """自建应用 secret 只落本机文件；读不到就当没配，回落到 lark-cli 通道。"""
+    if not LARK_APP_SECRET_FILE:
+        return ""
+    try:
+        return Path(LARK_APP_SECRET_FILE).expanduser().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _notify_lark_via_app(title: str, body: str) -> bool:
+    """配了自建应用就直连开放平台发：不依赖 keychain，也就不必绕 tmux。"""
+    secret = _lark_app_secret()
+    if not (LARK_APP_ID and secret and LARK_CHAT_ID):
+        return False
+    import json
+    import urllib.request
+
+    def _post(url: str, payload: dict, token: str = "") -> dict:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+        )
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read(64 * 1024).decode("utf-8"))
+
+    try:
+        auth = _post(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            {"app_id": LARK_APP_ID, "app_secret": secret},
+        )
+        token = auth.get("tenant_access_token")
+        if not token:
+            return False
+        card = {
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "header": {"template": "blue", "title": {"tag": "plain_text", "content": title}},
+            "body": {"elements": [{"tag": "markdown", "content": body}]},
+        }
+        result = _post(
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+            {
+                "receive_id": LARK_CHAT_ID,
+                "msg_type": "interactive",
+                "content": json.dumps(card, ensure_ascii=False),
+            },
+            token,
+        )
+    except Exception as exc:  # noqa: BLE001 - 通知失败绝不能拖垮转写主流程
+        log.warning("飞书直连通知失败（不影响主流程）：%s", str(exc)[:200])
+        return False
+    if result.get("code") != 0:
+        log.warning("飞书直连通知被拒（不影响主流程）：%s", str(result.get("msg"))[:200])
+        return False
+    log.info("飞书通知已直连发送到 %s", LARK_CHAT_ID)
+    return True
+
+
 def notify_lark(title: str, body: str):
-    if not LARK_USER_ID:
-        log.debug("未配置 RELAY_LARK_USER_ID，跳过飞书通知")
+    if not (LARK_CHAT_ID or LARK_USER_ID):
+        log.debug("未配置 MEETING_RELAY_LARK_CHAT_ID / RELAY_LARK_USER_ID，跳过飞书通知")
+        return
+    if _notify_lark_via_app(title, body):
         return
     msg = f"**{title}**\n\n{body}"
     LARK_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     args = [
         "lark-cli", "im", "+messages-send",
         "--as", "bot",
-        "--user-id", LARK_USER_ID,
+        *(["--chat-id", LARK_CHAT_ID] if LARK_CHAT_ID else ["--user-id", LARK_USER_ID]),
         "--markdown", msg,
     ]
     command = (
@@ -1106,8 +1267,8 @@ def notify_lark(title: str, body: str):
     )
 
     # relay_watchdog 经 ssh localhost 启动以继承 TCC 权限；这个环境读不到
-    # macOS keychain。把 bot 通知交给 tmux server 的普通 shell 执行，避免
-    # 退回 user 身份导致消息变成“自己发给自己”而不提醒。
+    # macOS keychain。把 bot 通知交给 tmux server 的普通 shell 执行——tmux
+    # server 由登录会话拉起，keychain 已解锁，lark-cli 的 bot 凭证可用。
     r = _tmux("run-shell", "-b", command)
     if r.returncode != 0:
         log.warning("飞书通知调度失败（不影响主流程）：%s", (r.stderr or r.stdout)[:200])
@@ -1115,23 +1276,79 @@ def notify_lark(title: str, body: str):
         log.info("飞书通知已交给 tmux/bot 发送（日志：%s）", LARK_LOG_FILE)
 
 
+def _human_duration(duration_min: float | None) -> str:
+    """时长写成人读的说法；拿不到时长返回空串，由调用方决定怎么绕开。"""
+    if duration_min is None or duration_min <= 0:
+        return ""
+    total = max(1, int(round(duration_min)))
+    if total < 60:
+        return f"{total} 分钟"
+    hours, minutes = divmod(total, 60)
+    return f"{hours} 小时 {minutes} 分钟" if minutes else f"{hours} 小时"
+
+
+def _clip_phrase(duration_min: float | None) -> str:
+    """通知开头的主语：拿得到时长就说「46 分钟的录音」，拿不到就说「这段录音」。"""
+    duration = _human_duration(duration_min)
+    return f"{duration}的录音" if duration else "这段录音"
+
+
+# 状态 → （标题，正文）。每条都要答完：发生了什么、要不要我动手、动手去哪。
+# 隐私边界不变：只用时长这类元数据，不写标题、正文、文件名和客户信息。
+_STATUS_MESSAGES: dict[str, tuple[str, str]] = {
+    "minutes_generating": (
+        "录音转写完成",
+        "{clip}已经转成文字，我接着写纪要。\n"
+        "纪要写好会再发一条过来，大约还要几分钟，不用守着。",
+    ),
+    "dispatched": (
+        "录音转写完成",
+        "{clip}已经转成文字，里面的指令我已经派出去执行了。",
+    ),
+    "failed": (
+        "这段录音没能处理完",
+        "{clip}在处理途中停下了，原音频还在本机，一个字节都没丢。\n"
+        "去声档的失败列表点一次重试；要是连着失败，把下面这行任务号发我。",
+    ),
+    "deduplicated": (
+        "这段录音跟已有的重复了",
+        "库里已经有同一场录音，这次不重复转写，也不重复占额度。",
+    ),
+    "interrupted": (
+        "处理中途停下了",
+        "{clip}处理到一半被打断，进度已经存好。\n"
+        "下一轮扫描会自己接着往下跑，不用管。",
+    ),
+}
+# 这些状态多半要我一起排查，附任务号方便定位；顺利的时候没人想看编号。
+_TROUBLESHOOT_STATUSES = {"failed"}
+
+
+def _status_message(status: str, duration_min: float | None) -> tuple[str, str]:
+    template = _STATUS_MESSAGES.get(status)
+    if template is None:
+        # 新状态还没写文案时保底可读，不至于静默丢通知。
+        duration = _human_duration(duration_min)
+        return (
+            "录音处理状态更新",
+            f"当前状态：`{status}`" + (f"\n时长：{duration}" if duration else ""),
+        )
+    title, body = template
+    return title, body.format(clip=_clip_phrase(duration_min))
+
+
 def notify_workbench_status(job_id: str, status: str, duration_min: float | None = None):
     """工作台通知只发状态元数据，不携带标题、正文、文件名或客户信息。"""
-    duration_line = (
-        f"\n时长：`{duration_min:.1f} 分钟`" if duration_min is not None else ""
-    )
-    notify_lark(
-        "[Relay] 工作台任务状态",
-        f"任务：`{job_id}`\n状态：`{status}`{duration_line}",
-    )
+    title, body = _status_message(status, duration_min)
+    if status in _TROUBLESHOOT_STATUSES:
+        body += f"\n\n任务号 `{job_id}`"
+    notify_lark(title, body)
 
 
 def notify_relay_status(status: str, duration_min: float | None = None):
     """回滚路径同样遵守隐私边界，不向飞书发送标题、路径或正文。"""
-    duration_line = (
-        f"\n时长：`{duration_min:.1f} 分钟`" if duration_min is not None else ""
-    )
-    notify_lark("[Relay] 状态更新", f"状态：`{status}`{duration_line}")
+    title, body = _status_message(status, duration_min)
+    notify_lark(title, body)
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -1772,7 +1989,9 @@ def process_controlled_claim(claim: dict) -> bool:
             glossary_table=glossary_table,
             glossary_receipt=glossary_receipt,
         )
-        if not dispatch_to_cc1(prompt, kind="会议录音"):
+        if not dispatch_to_cc1(
+            prompt, kind="会议录音", backend=claim.get("llm_backend")
+        ):
             _control_fail(
                 job_id,
                 "minutes_generating",
@@ -1956,6 +2175,12 @@ if __name__ == "__main__":
         configured_agent = DEFAULT_AGENT
     log.info("派工 Agent：%s（MEETING_RELAY_AGENT，codex 为回滚通道）", configured_agent)
     if configured_agent == "claude":
+        backend = resolve_llm_backend()
+        log.info(
+            "派工后端：%s · %s（MEETING_RELAY_LLM_BACKEND=claude 可回滚吃订阅额度）",
+            backend,
+            DEEPSEEK_MODEL if backend == "deepseek" else CLAUDE_MODEL,
+        )
         try:
             log.info("Claude Code CLI：%s [✓]", resolve_claude_bin())
         except FileNotFoundError as exc:
