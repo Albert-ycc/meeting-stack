@@ -28,8 +28,19 @@ from urllib.parse import urlsplit
 from .attribution import ATTRIBUTION_STATE_SQL, LATEST_LINK_JOIN
 from .cards import BLOCKED, MISSING, STOP_REASONS, SYNCED, USER_EDITED
 from .db import GRAPH_REV_KEY
-from .materials import CARDS_DIR_NAME, ROOT_ONLINE, assert_no_hidden_segment, volume_state
+from . import file_mentions
+from . import folder_scan
+from .materials import (
+    CARDS_DIR_NAME,
+    ROOT_MISSING,
+    ROOT_ONLINE,
+    assert_no_hidden_segment,
+    volume_state,
+)
+from .name_hints import HintContext
+from .project_folders import pending_path
 from .project_linking import DRAFT_TASK_STATUSES
+from .project_profile import light_key
 from .notify import (
     _ANCHOR,
     _DECISION_SECTION,
@@ -45,7 +56,7 @@ from .tasks import OPEN_TASK_STATUSES, UNDO_WINDOW_SECONDS
 logger = logging.getLogger(__name__)
 
 # 前端缓存按这个版本失效：接口字段改了就加一，免得浏览器拿旧 ETag 命中旧结构。
-GRAPH_API_VERSION = 1
+GRAPH_API_VERSION = 3
 
 WINDOWS: dict[str, int | None] = {"7d": 7, "28d": 28, "90d": 90, "all": None}
 DEFAULT_WINDOW = "28d"
@@ -71,6 +82,12 @@ CUE_MIN = 4
 CUE_MIN_COUNT = 2
 MONTH_CLUSTER_CAP = 6
 BEACON_CAP = 6
+# 「像是新需求」节点最多几个（计入可见节点预算）。
+SUGGESTED_REQUIREMENT_CAP = 3
+# 2d：会上提到的文件。每场可见的会最多 3 个，全图最多 12 个，多出来的收成一个节点。
+FILES_PER_MEETING = 3
+FILE_CAP = 12
+FILE_MIN = 3
 VISIBLE_BUDGET = 40
 WEEKS = 12
 
@@ -345,10 +362,10 @@ def project_graph(
     today = today or datetime.now().astimezone().date()
     now = now or datetime.now(UTC)
 
-    # ① 全部项目（候选、信标要项目名和颜色）
+    # ① 全部项目（候选、信标要项目名和颜色；也叫给「像是新需求」的判断用）
     projects = {
         row["id"]: dict(row)
-        for row in connection.execute("SELECT id, name, color FROM projects").fetchall()
+        for row in connection.execute("SELECT id, name, color, also_names FROM projects").fetchall()
     }
     project = projects.get(project_id)
     if project is None:
@@ -388,6 +405,7 @@ def project_graph(
                            AND t.project_id = m.project_id) AS tasks_stay,
                        c.state AS card_state, c.reason AS card_reason, c.error AS card_error,
                        c.synced_at AS card_synced_at, c.project_id AS card_project_id,
+                       pl.new_requirement_name, pl.new_name_project_id, pl.new_name_spoken,
                        (SELECT e.event_type FROM events e
                          WHERE e.meeting_id = m.id
                            AND e.event_type IN ('meeting_project_confirmed',
@@ -417,8 +435,8 @@ def project_graph(
         ).fetchall()
     ]
 
-    # ⑤ 进行中的需求
-    requirement_rows = [
+    # ⑤ 本项目的需求（全部状态：「像是新需求」要和任何状态的需求标题比；进行中的在下面分出来）
+    all_requirement_rows = [
         dict(row)
         for row in connection.execute(
             f"""SELECT r.id, r.title, r.priority, r.status, r.created_at, r.updated_at,
@@ -435,10 +453,11 @@ def project_graph(
                           FROM requirement_meetings rm JOIN meetings m ON m.id = rm.meeting_id
                          WHERE rm.requirement_id = r.id) AS meeting_activity
                   FROM requirements r
-                 WHERE r.project_id = ? AND r.status = 'active'""",
+                 WHERE r.project_id = ?""",
             (project_id,),
         ).fetchall()
     ]
+    requirement_rows = [row for row in all_requirement_rows if row["status"] == "active"]
 
     # ⑥ 会议和需求的关联（任意一头在本项目）
     link_rows = [
@@ -468,15 +487,24 @@ def project_graph(
         ).fetchall()
     ]
 
-    # ⑧ 材料根目录
-    root_rows = [
+    # ⑧ 材料根目录，和等补建的文件夹（kind 区分，进 _assemble 之前拆开）
+    folder_source_rows = [
         dict(row)
         for row in connection.execute(
-            """SELECT id, path FROM project_material_roots WHERE project_id = ?
-                ORDER BY created_at, id""",
-            (project_id,),
+            """SELECT 'root' AS kind, id, path, created_at AS sort_at,
+                      NULL AS parent, NULL AS name, NULL AS state, NULL AS last_error
+                 FROM project_material_roots WHERE project_id = ?
+               UNION ALL
+               SELECT 'pending' AS kind, NULL, NULL, created_at, parent, name, state, last_error
+                 FROM pending_project_folders WHERE project_id = ?
+               ORDER BY 4, 2""",
+            (project_id, project_id),
         ).fetchall()
     ]
+    root_rows = [
+        {"id": row["id"], "path": row["path"]} for row in folder_source_rows if row["kind"] == "root"
+    ]
+    pending_row = next((row for row in folder_source_rows if row["kind"] == "pending"), None)
 
     # ⑨ 项目不一致的未完成任务
     cross_task_rows = [
@@ -523,9 +551,35 @@ def project_graph(
         ).fetchall()
     }
 
+    # ⑫ 会上提到的文件（不按窗口过滤：通用词干要按本项目全部的会算）
+    mention_rows = [
+        dict(row)
+        for row in connection.execute(
+            """SELECT fm.meeting_id, fm.stem_key, fm.needle, fm.count, fm.first_ms, fm.anchors_json,
+                      fm.minutes_count, fm.source,
+                      f.id AS file_id, f.name, f.ext, f.rel_path, f.root_id
+                 FROM meeting_file_mentions fm
+                 JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
+                 JOIN material_files f ON f.id = fm.file_id AND f.gone_at IS NULL
+                WHERE fm.project_id = ? AND fm.status = 'active'""",
+            (project_id,),
+        ).fetchall()
+    ]
+
     return _assemble(
         project=project,
         projects=projects,
+        requirement_titles=[row["title"] for row in all_requirement_rows],
+        pending_folder=(
+            {
+                "path": pending_path(pending_row["parent"], pending_row["name"], project["name"]),
+                "parent": pending_row["parent"],
+                "state": pending_row["state"],
+                "reason": pending_row["last_error"],
+            }
+            if pending_row
+            else None
+        ),
         cards_on=cards_on and bool(root_rows),
         meeting_rows=meeting_rows,
         unattributed=unattributed,
@@ -536,6 +590,7 @@ def project_graph(
         cross_task_rows=cross_task_rows,
         moved_rows=moved_rows,
         terms=terms,
+        mention_rows=mention_rows,
         window=window,
         focus=focus,
         today=today,
@@ -543,10 +598,24 @@ def project_graph(
     )
 
 
+def _clock_hms(ms: int | None) -> str:
+    total = max(0, int(ms or 0)) // 1000
+    return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
+
+
+def mention_label(row: dict[str, Any]) -> str:
+    """「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」。"""
+    if row["source"] == "minutes":
+        return f"纪要里写到『{row['needle']}』"
+    return f"会上说『{row['needle']}』{row['count']} 次 · {_clock_hms(row['first_ms'])}"
+
+
 def _assemble(
     *,
     project: dict[str, Any],
     projects: dict[str, dict[str, Any]],
+    requirement_titles: list[str],
+    pending_folder: dict[str, Any] | None,
     cards_on: bool,
     meeting_rows: list[dict[str, Any]],
     unattributed: list[dict[str, Any]],
@@ -557,12 +626,14 @@ def _assemble(
     cross_task_rows: list[dict[str, Any]],
     moved_rows: list[dict[str, Any]],
     terms: dict[str, dict[str, Any]],
+    mention_rows: list[dict[str, Any]] | None = None,
     window: str | None,
     focus: str | None,
     today: date,
     now: datetime,
 ) -> dict[str, Any]:
     project_id = project["id"]
+    mention_rows = mention_rows or []
 
     # ---- 会议：本地日期、年龄
     for row in meeting_rows:
@@ -671,11 +742,64 @@ def _assemble(
                 "ring": "middle",
             }
         )
+    if pending_folder is not None:
+        # 盘不在时先建了项目、插上后自动建的文件夹：灰色虚边，只有这一个节点，不算根目录。
+        folders.insert(
+            len(root_rows),
+            {
+                "id": f"pending:{project_id}",
+                "kind": "pending",
+                "name": Path(pending_folder["path"]).name,
+                "path": pending_folder["path"],
+                "parent": pending_folder["parent"],
+                "state": pending_folder["state"],
+                "reason": pending_folder["reason"],
+                "ring": "inner",
+            },
+        )
     loose = (
         {"id": "loose", "kind": "loose", "name": "散放文件", "ring": "outer", "count": None}
         if root_rows
         else None
     )
+
+    # ---- 像是新需求：和会议页同一个 name_hint，按轻键分组，最多 3 个
+    hints = HintContext(
+        None, projects=projects.values(), requirement_titles={project_id: requirement_titles}
+    )
+    suggested_map: dict[str, dict[str, Any]] = {}
+    for row in meeting_rows:
+        hint = hints.hint(
+            project_id=row["project_id"],
+            state=row["state"],
+            new_project_name=None,
+            new_requirement_name=row.get("new_requirement_name"),
+            new_name_project_id=row.get("new_name_project_id"),
+            new_name_spoken=row.get("new_name_spoken"),
+        )
+        if hint is None or hint["kind"] != "requirement":
+            continue
+        key = light_key(hint["name"])
+        bucket = suggested_map.setdefault(
+            key,
+            {
+                "id": f"nr:{_short_hash(key)}",
+                "kind": "suggested_requirement",
+                "name": hint["name"],
+                "meeting_ids": [],
+                "spoken": [],
+                "last_day": row["day"].isoformat(),
+            },
+        )
+        bucket["meeting_ids"].append(row["id"])
+        for spoken in hint["spoken"]:
+            if spoken not in bucket["spoken"] and len(bucket["spoken"]) < 3:
+                bucket["spoken"].append(spoken)
+    suggested_requirements = sorted(
+        suggested_map.values(), key=lambda item: (-len(item["meeting_ids"]), item["last_day"], item["name"])
+    )[:SUGGESTED_REQUIREMENT_CAP]
+    for item in suggested_requirements:
+        item["count"] = len(item["meeting_ids"])
 
     # ---- 线索词：窗口内、AI 判断过的会的证据里，来源是项目词或文件夹名的条目
     cue_map: dict[str, dict[str, Any]] = {}
@@ -721,9 +845,33 @@ def _assemble(
     # ---- 信标
     beacons = _beacons(project_id, projects, link_rows, cross_task_rows)
 
-    # ---- 可见节点预算：先收中圈的会，再收线索词、需求、文件夹
+    # ---- 会上提到的文件：每场会按次数取前 3 个（通用词干不占名额），再按被几场可见的会提到排
+    stem_meetings: dict[str, set[str]] = {}
+    for row in mention_rows:
+        stem_meetings.setdefault(row["stem_key"], set()).add(row["meeting_id"])
+    generic_stems = {
+        key for key, ids in stem_meetings.items() if file_mentions.is_generic(len(ids), len(meeting_rows))
+    }
+    top_mentions: dict[str, list[dict[str, Any]]] = {}
+    for row in mention_rows:
+        if row["stem_key"] not in generic_stems:
+            top_mentions.setdefault(row["meeting_id"], []).append(row)
+    for rows in top_mentions.values():
+        rows.sort(key=lambda row: (-int(row["count"]), -int(row["minutes_count"]), row["name"]))
+        del rows[FILES_PER_MEETING:]
+
+    def mentioned_files(meeting_ids: list[str]) -> list[int]:
+        score: dict[int, tuple[int, int, str]] = {}
+        for meeting_id in meeting_ids:
+            for row in top_mentions.get(meeting_id, []):
+                meetings, count, name = score.get(row["file_id"], (0, 0, row["name"]))
+                score[row["file_id"]] = (meetings + 1, count + int(row["count"]), name)
+        return sorted(score, key=lambda file_id: (-score[file_id][0], -score[file_id][1], score[file_id][2], file_id))
+
+    # ---- 可见节点预算：先收会上提到的文件，再收中圈的会、线索词、需求、文件夹
     requirement_cap = REQUIREMENT_CAP
     folder_cap = FOLDER_CAP
+    file_cap = FILE_CAP
 
     def visible_count() -> int:
         shown_middle = min(len(middle), middle_cap)
@@ -745,8 +893,16 @@ def _assemble(
             + (1 if loose else 0)
             + min(len(cues_all), cue_cap)
             + len(beacons)
+            + len(suggested_requirements)
+            + file_nodes(middle_cap)
         )
 
+    def file_nodes(cap: int) -> int:
+        shown = mentioned_files([row["id"] for row in inner + middle[:cap]])
+        return min(len(shown), file_cap) + (1 if len(shown) > file_cap else 0)
+
+    while visible_count() > VISIBLE_BUDGET and file_cap > FILE_MIN:
+        file_cap -= 1
     while visible_count() > VISIBLE_BUDGET and middle_cap > MIDDLE_MIN:
         middle_cap -= 1
     while visible_count() > VISIBLE_BUDGET and cue_cap > CUE_MIN:
@@ -879,6 +1035,24 @@ def _assemble(
                 "requirement_id": link["requirement_id"],
             }
         )
+    for item in suggested_requirements:
+        seen_targets: set[str] = set()
+        for meeting_id in item["meeting_ids"]:
+            target = _meeting_node_id(meeting_id, visible_ids, collapsed_of)
+            if target is None or target in seen_targets:
+                continue
+            seen_targets.add(target)
+            edges.append(
+                {
+                    "id": f"e:nr:{item['id'][3:]}:{meeting_id}",
+                    "kind": "suggested",
+                    "from": target,
+                    "to": item["id"],
+                    "label": "",
+                    "meeting_id": meeting_id,
+                    "name": item["name"],
+                }
+            )
     shown_folder_ids = {item["id"] for item in shown_folders}
     for folder in folders:
         if folder["kind"] != "requirement_folder" or folder["requirement_id"] not in requirement_ids:
@@ -928,6 +1102,48 @@ def _assemble(
                     "from": source_id,
                     "to": beacon["id"],
                     "label": f"→ {beacon['project_name']}",
+                }
+            )
+
+    ranked_files = mentioned_files([row["id"] for row in visible_meetings])
+    shown_file_ids = ranked_files[:file_cap]
+    hidden_file_ids = ranked_files[file_cap:]
+    file_rows = {row["file_id"]: row for row in mention_rows}
+    file_meetings: dict[int, set[str]] = {}
+    for row in mention_rows:
+        file_meetings.setdefault(row["file_id"], set()).add(row["meeting_id"])
+    file_nodes_out = [
+        {
+            "id": f"file:{file_id}",
+            "kind": "file",
+            "file_id": file_id,
+            "name": file_rows[file_id]["name"],
+            "ext": file_rows[file_id]["ext"],
+            "rel_path": file_rows[file_id]["rel_path"],
+            "root_id": file_rows[file_id]["root_id"],
+            "folder": f"root:{file_rows[file_id]['root_id']}",
+            "meeting_count": len(file_meetings[file_id]),
+        }
+        for file_id in shown_file_ids
+    ]
+    shown_file_set = set(shown_file_ids)
+    for row in visible_meetings:
+        for mention in top_mentions.get(row["id"], []):
+            if mention["file_id"] not in shown_file_set:
+                continue
+            edges.append(
+                {
+                    "id": f"e:file:{mention['file_id']}:{row['id']}",
+                    "kind": "mentioned",
+                    "from": f"m:{row['id']}",
+                    "to": f"file:{mention['file_id']}",
+                    "label": mention_label(mention),
+                    "count": int(mention["count"]),
+                    "source": mention["source"],
+                    "needle": mention["needle"],
+                    "stem_key": mention["stem_key"],
+                    "meeting_id": row["id"],
+                    "anchors_ms": _json_list(mention["anchors_json"]),
                 }
             )
 
@@ -1001,6 +1217,7 @@ def _assemble(
         "doorstep_more": doorstep_more,
         "requirements": requirement_nodes,
         "requirements_more": more_requirements,
+        "suggested_requirements": suggested_requirements,
         "folders": shown_folders,
         "folders_more": (
             {"id": "f:more", "count": len(hidden_folders), "paths": [f["path"] for f in hidden_folders]}
@@ -1008,6 +1225,12 @@ def _assemble(
             else None
         ),
         "loose": loose,
+        "files": file_nodes_out,
+        "files_more": (
+            {"id": "file:more", "count": len(hidden_file_ids), "file_ids": hidden_file_ids}
+            if hidden_file_ids
+            else None
+        ),
         "cues": shown_cues,
         "beacons": beacons,
         "edges": edges,
@@ -1538,7 +1761,7 @@ def meeting_brief(
         "tasks_more": max(0, len(tasks) - _BRIEF_TASKS),
         "requirements": requirements,
         "card": card,
-        "files_note": "第二期起在这里列出会上提到的文件",
+        **file_mentions.meeting_files(connection, meeting_id, meeting["project_id"]),
     }
 
 
@@ -1958,21 +2181,47 @@ def _recent_dirs(path: Path) -> list[dict[str, Any]]:
 
 
 class RootsCache:
-    """材料根目录和需求文件夹的在线状态、根目录散放文件。后台每 30 秒刷新一次；图接口只读。
+    """资料盘在后台读到的东西，接口只读它、不在请求里读盘（外置盘休眠时可能卡几秒）：
 
-    读盘可能卡住（外置盘休眠），所以刷新只在后台线程里跑，同一时间最多一个。
+    - 材料根目录和需求文件夹的在线状态，在线根目录的散放文件、最近的子文件夹、全部一级子文件夹名；
+    - 「目录清单」：项目总文件夹、已挂根目录的父目录各一层的文件夹（没有时浏览根往下两层），
+      给「还没挂的文件夹」用；哪些已挂、被拒过在请求时现算，写完立刻生效；
+    - 「找不到」的根目录：原来父目录里还没挂的文件夹各自的子文件夹名和卡片里的会议 id，改名找回用。
+
+    刷新只在后台线程里跑，同一时间最多一轮；正在刷新时又有人要刷新，这一轮结束后再跑一轮，
+    几个人同时要只多跑一轮。
     """
 
     def __init__(
-        self, db: Any, *, state_of=volume_state, loose_of=_loose_files, dirs_of=_recent_dirs
+        self,
+        db: Any,
+        *,
+        settings: Any = None,
+        state_of=volume_state,
+        loose_of=_loose_files,
+        dirs_of=_recent_dirs,
+        list_dirs=folder_scan.list_child_dirs,
+        names_of=folder_scan.child_names,
+        probe_of=folder_scan.probe_candidate,
     ):
         self.db = db
+        self.settings = settings
         self._state_of = state_of
         self._loose_of = loose_of
         self._dirs_of = dirs_of
+        self._list_dirs = list_dirs
+        self._names_of = names_of
+        self._probe_of = probe_of
         self._entries: dict[str, dict[str, Any]] = {}
+        self._listings: dict[str, dict[str, Any]] = {}
+        self._probes: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
         self._running = threading.Lock()
+        self._flag = threading.Lock()
+        self._rerun = False
+        self.rounds = 0
+        # 每轮刷新之后要做的事（补建文件夹），在同一个后台线程里跑。
+        self.after_refresh: list[Any] = []
 
     def paths(self) -> tuple[list[str], list[str]]:
         with self.db.autocommit() as connection:
@@ -1991,17 +2240,39 @@ class RootsCache:
         return roots, folders
 
     def refresh(self) -> None:
-        if not self._running.acquire(blocking=False):
-            return
+        """刷新一轮；返回时保证有一轮在这次调用之后开始的刷新已经跑完（可能是别的线程跑的）。
+        不要在 after_refresh 里直接调它（锁不可重入），要用 refresh_in_background。"""
+        with self._flag:
+            self._rerun = True
+        while True:
+            self._running.acquire()
+            try:
+                with self._flag:
+                    if not self._rerun:
+                        return
+                    self._rerun = False
+                self._refresh_once()
+                for hook in list(self.after_refresh):
+                    try:
+                        hook()
+                    except Exception:  # noqa: BLE001 — 补建失败不影响下一轮
+                        logger.exception("刷新资料盘状态后的任务失败")
+            finally:
+                self._running.release()
+
+    def _state(self, path: str) -> str:
+        try:
+            return self._state_of(path)
+        except OSError:
+            return "missing"
+
+    def _refresh_once(self) -> None:
         try:
             roots, folders = self.paths()
             fresh: dict[str, dict[str, Any]] = {}
             for path in roots + [p for p in folders if p not in roots]:
                 checked_at = datetime.now(UTC).isoformat()
-                try:
-                    state = self._state_of(path)
-                except OSError:
-                    state = "missing"
+                state = self._state(path)
                 entry: dict[str, Any] = {"state": state, "checked_at": checked_at}
                 if path in roots and state == ROOT_ONLINE:
                     try:
@@ -2012,13 +2283,118 @@ class RootsCache:
                         entry["recent_dirs"] = self._dirs_of(Path(path))
                     except OSError:
                         entry["recent_dirs"] = []
+                    try:
+                        entry["child_dirs"] = self._names_of(path)
+                    except OSError:
+                        entry["child_dirs"] = None
                 fresh[path] = entry
+            listings = self._read_listings()
+            probes = self._read_probes(roots, fresh, listings)
             with self._lock:
                 self._entries = fresh
+                self._listings = listings
+                self._probes = probes
+                self.rounds += 1
+            self._write_fingerprints(fresh)
         except Exception:  # noqa: BLE001 — 后台刷新失败只记日志，下一轮再来
             logger.exception("刷新资料盘状态失败")
-        finally:
-            self._running.release()
+
+    def _read_listings(self) -> dict[str, dict[str, Any]]:
+        if self.settings is None:
+            return {}
+        with self.db.autocommit() as connection:
+            targets, depth = folder_scan.listing_targets(connection, self.settings)
+        listings: dict[str, dict[str, Any]] = {}
+        for target in targets:
+            state = self._state(target)
+            item: dict[str, Any] = {
+                "state": state,
+                "depth": depth,
+                "entries": [],
+                "checked_at": datetime.now(UTC).isoformat(),
+            }
+            if state == ROOT_ONLINE:
+                try:
+                    entries = self._list_dirs(target)
+                except OSError as error:
+                    item["state"] = "unreadable"
+                    item["error"] = str(error)
+                    entries = []
+                if depth > 1:
+                    nested: list[dict[str, Any]] = []
+                    for entry in entries:
+                        try:
+                            nested.extend(self._list_dirs(entry["path"]))
+                        except OSError:
+                            continue
+                    entries = entries + nested
+                item["entries"] = entries
+            listings[target] = item
+        return listings
+
+    def _read_probes(
+        self,
+        roots: list[str],
+        entries: dict[str, dict[str, Any]],
+        listings: dict[str, dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """「找不到」的根目录：在它原来的父目录里，给还没挂的文件夹（最近改过的 20 个）各读一次。"""
+        probes: dict[str, list[dict[str, Any]]] = {}
+        mounted = [Path(path) for path in roots]
+        for path in roots:
+            if entries.get(path, {}).get("state") != ROOT_MISSING:
+                continue
+            parent = str(Path(path).parent)
+            listing = listings.get(parent)
+            if listing is not None:
+                children = listing["entries"] if listing["state"] == ROOT_ONLINE else None
+            elif self._state(parent) == ROOT_ONLINE:
+                try:
+                    children = self._list_dirs(parent)
+                except OSError:
+                    children = None
+            else:
+                children = None
+            if children is None:
+                continue
+            candidates = [
+                child
+                for child in children
+                if Path(child["path"]).parent == Path(parent)
+                and not any(
+                    other == Path(child["path"]) or other.is_relative_to(Path(child["path"]))
+                    for other in mounted
+                )
+            ]
+            candidates.sort(key=lambda item: (item["mtime"], item["name"]), reverse=True)
+            probes[path] = [
+                {**child, **self._probe_of(child["path"])}
+                for child in candidates[: folder_scan.MAX_PROBE_CANDIDATES]
+            ]
+        return probes
+
+    def _write_fingerprints(self, entries: dict[str, dict[str, Any]]) -> None:
+        """在线根目录的一级子文件夹名写进 root_fingerprints，内容变了才写。"""
+        with self.db.autocommit() as connection:
+            rows = connection.execute(
+                """SELECT r.id, r.path, f.child_names FROM project_material_roots r
+                     LEFT JOIN root_fingerprints f ON f.root_id = r.id"""
+            ).fetchall()
+            now = datetime.now(UTC).isoformat()
+            for row in rows:
+                names = entries.get(row["path"], {}).get("child_dirs")
+                if names is None:
+                    continue
+                encoded = json.dumps(names, ensure_ascii=False)
+                if encoded == row["child_names"]:
+                    continue
+                connection.execute(
+                    """INSERT INTO root_fingerprints(root_id, child_names, updated_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(root_id) DO UPDATE
+                          SET child_names = excluded.child_names, updated_at = excluded.updated_at""",
+                    (row["id"], encoded, now),
+                )
 
     def refresh_in_background(self) -> None:
         threading.Thread(target=self.refresh, name="graph-roots-refresh", daemon=True).start()
@@ -2027,6 +2403,16 @@ class RootsCache:
         with self._lock:
             entry = self._entries.get(path)
             return dict(entry) if entry else None
+
+    def listing(self, path: str) -> dict[str, Any] | None:
+        with self._lock:
+            item = self._listings.get(path)
+            return {**item, "entries": list(item["entries"])} if item else None
+
+    def probes(self, root_path: str) -> list[dict[str, Any]] | None:
+        with self._lock:
+            found = self._probes.get(root_path)
+            return list(found) if found is not None else None
 
 
 def project_roots(connection: Any, cache: RootsCache, project_id: str) -> dict[str, Any]:

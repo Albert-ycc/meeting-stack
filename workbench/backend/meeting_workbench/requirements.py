@@ -237,6 +237,39 @@ def get_requirement(task_service: TaskService, requirement_id: str) -> dict[str,
 # ---------------------------------------------------------------- CRUD
 
 
+def insert_requirement(
+    connection: Any,
+    *,
+    project_id: str,
+    title: str,
+    priority: str,
+    folder_paths: list[str] | None = None,
+) -> str:
+    """在调用方的事务里建需求，返回需求 id（建成需求的提示要和改归属、关联会放进同一个事务）。"""
+    title = _normalize_title(title)
+    _assert_priority(priority)
+    folder_paths = folder_paths or []
+    requirement_id = f"requirement-{uuid.uuid4().hex}"
+    now = utc_now()
+    _assert_project_exists(connection, project_id)
+    if folder_paths:
+        _validate_folder_paths(connection, project_id, folder_paths)
+    try:
+        connection.execute(
+            """INSERT INTO requirements(id, project_id, title, priority, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'active', ?, ?)""",
+            (requirement_id, project_id, title, priority, now, now),
+        )
+    except sqlite3.IntegrityError as error:
+        raise ConflictError("该项目下已有同名需求") from error
+    for raw in folder_paths:
+        connection.execute(
+            "INSERT INTO requirement_folders(requirement_id, path, created_at) VALUES (?, ?, ?)",
+            (requirement_id, str(Path(raw).resolve(strict=False)), now),
+        )
+    return requirement_id
+
+
 def create_requirement(
     task_service: TaskService,
     *,
@@ -245,29 +278,14 @@ def create_requirement(
     priority: str,
     folder_paths: list[str] | None = None,
 ) -> dict[str, Any]:
-    db = task_service.db
-    title = _normalize_title(title)
-    _assert_priority(priority)
-    folder_paths = folder_paths or []
-    requirement_id = f"requirement-{uuid.uuid4().hex}"
-    now = utc_now()
-    with db.transaction() as connection:
-        _assert_project_exists(connection, project_id)
-        if folder_paths:
-            _validate_folder_paths(connection, project_id, folder_paths)
-        try:
-            connection.execute(
-                """INSERT INTO requirements(id, project_id, title, priority, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'active', ?, ?)""",
-                (requirement_id, project_id, title, priority, now, now),
-            )
-        except sqlite3.IntegrityError as error:
-            raise ConflictError("该项目下已有同名需求") from error
-        for raw in folder_paths:
-            connection.execute(
-                "INSERT INTO requirement_folders(requirement_id, path, created_at) VALUES (?, ?, ?)",
-                (requirement_id, str(Path(raw).resolve(strict=False)), now),
-            )
+    with task_service.db.transaction() as connection:
+        requirement_id = insert_requirement(
+            connection,
+            project_id=project_id,
+            title=title,
+            priority=priority,
+            folder_paths=folder_paths,
+        )
     return get_requirement(task_service, requirement_id)
 
 
@@ -446,18 +464,24 @@ def set_meetings(task_service: TaskService, requirement_id: str, meeting_ids: li
     return get_requirement(task_service, requirement_id)
 
 
-def add_meeting(task_service: TaskService, requirement_id: str, meeting_id: str) -> dict[str, Any]:
-    """关系图面板里［＋ 关联一场会］/［＋ 关联需求］：只加这一条，已经关联过就什么都不做。"""
-    db = task_service.db
-    with db.transaction() as connection:
-        _requirement_row(connection, requirement_id)
-        if connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
-            raise NotFoundError(f"会议不存在：{meeting_id}")
+def link_meeting(connection: Any, requirement_id: str, meeting_id: str) -> bool:
+    """在调用方的事务里关联一场会；已经关联过返回 False。"""
+    _requirement_row(connection, requirement_id)
+    if connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
+        raise NotFoundError(f"会议不存在：{meeting_id}")
+    return bool(
         connection.execute(
             """INSERT OR IGNORE INTO requirement_meetings(requirement_id, meeting_id, created_at)
                VALUES (?, ?, ?)""",
             (requirement_id, meeting_id, utc_now()),
-        )
+        ).rowcount
+    )
+
+
+def add_meeting(task_service: TaskService, requirement_id: str, meeting_id: str) -> dict[str, Any]:
+    """关系图面板里［＋ 关联一场会］/［＋ 关联需求］：只加这一条，已经关联过就什么都不做。"""
+    with task_service.db.transaction() as connection:
+        link_meeting(connection, requirement_id, meeting_id)
     return get_requirement(task_service, requirement_id)
 
 

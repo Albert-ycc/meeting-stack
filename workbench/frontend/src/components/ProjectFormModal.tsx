@@ -4,9 +4,11 @@ import type { ReactNode } from "react";
 import { similarProjectFrom } from "../api";
 import type { ApiClient } from "../api";
 import type { FolderMatch, FolderMatchesPayload, Project, SimilarProjectSuggestion } from "../types";
+import { pollWhileChecking } from "./checkingPoll";
 import { FolderIcon } from "./FolderIcon";
 import { useDialogFocus } from "./useDialog";
 import { MaterialRootPickerModal } from "./MaterialRootPickerModal";
+import { PROJECT_PARENT_PICKER } from "./ProjectParentRow";
 import { SimilarProjectQuestion } from "./SimilarProjectQuestion";
 import "./ProjectFormModal.css";
 
@@ -30,8 +32,8 @@ export interface ProjectFormModalProps {
   initialAction?: "merge" | "delete";
 }
 
-/** 项目颜色的 8 个可选色块，和样板数据里实际用到的项目色对齐。 */
-const PROJECT_COLORS = [
+/** 项目颜色的 8 个可选色块，和样板数据里实际用到的项目色对齐（「像是新项目」建项目时也照这个轮流取）。 */
+export const PROJECT_COLORS = [
   "#3ecf8e",
   "#2c8d83",
   "#3f51b5",
@@ -47,6 +49,8 @@ const MAX_FOLDER_OPTIONS = 5;
 const FOLDER_LOOKUP_DELAY_MS = 250;
 
 type FolderChoice = { kind: "none" } | { kind: "mount"; path: string } | { kind: "create" };
+/** root：挂根目录（编辑）；folder：选别的文件夹；parent：改新文件夹的位置；projectParent：设项目总文件夹 */
+type PickerTarget = "root" | "folder" | "parent" | "projectParent";
 
 const MATCH_LABELS: Record<string, string> = { exact: "同名", similar: "相近" };
 
@@ -81,7 +85,11 @@ export function ProjectFormModal({
   const [extraFolder, setExtraFolder] = useState<string | null>(null);
   /** 用户改过新文件夹放在哪 */
   const [createParent, setCreateParent] = useState<string | null>(null);
-  const [pickerTarget, setPickerTarget] = useState<"root" | "folder" | "parent">("root");
+  const [pickerTarget, setPickerTarget] = useState<PickerTarget>("root");
+  // 设项目总文件夹：请求中、失败原因（取径器开着时就地显示，D27）；设好后重查一次文件夹放哪
+  const [parentBusy, setParentBusy] = useState(false);
+  const [pickerError, setPickerError] = useState("");
+  const [lookupKey, setLookupKey] = useState(0);
   /** 名字是从选中的文件夹自动填的：再换文件夹时跟着换 */
   const autoNameRef = useRef<string | null>(null);
   const [suggestion, setSuggestion] = useState<SimilarProjectSuggestion | null>(null);
@@ -111,29 +119,28 @@ export function ProjectFormModal({
 
   const trimmedName = name.trim();
 
-  // 名字一变就重新找同名/相近的文件夹；打开弹窗时先列最近修改的
+  // 名字一变就重新找同名/相近的文件夹；打开弹窗时先列最近修改的。
+  // 后台还在看磁盘（state: checking）时每 2 秒再查一次。
   useEffect(() => {
     if (!canLookupFolders) return;
-    let cancelled = false;
+    let stop = () => {};
     const timer = window.setTimeout(
       () => {
-        apiClient
-          .folderMatches(trimmedName || undefined)
-          .then((payload) => {
-            if (!cancelled) setFolders(payload);
-          })
-          .catch(() => {
-            // 找不到推荐文件夹不影响建项目，照样能「选别的文件夹」
-            if (!cancelled) setFolders(null);
-          });
+        stop = pollWhileChecking(
+          () => apiClient.folderMatches(trimmedName || undefined),
+          (payload) => payload.state === "checking",
+          setFolders,
+          // 找不到推荐文件夹不影响建项目，照样能「选别的文件夹」
+          { onError: () => setFolders(null) },
+        );
       },
       trimmedName ? FOLDER_LOOKUP_DELAY_MS : 0,
     );
     return () => {
-      cancelled = true;
       window.clearTimeout(timer);
+      stop();
     };
-  }, [apiClient, canLookupFolders, trimmedName]);
+  }, [apiClient, canLookupFolders, trimmedName, lookupKey]);
 
   const folderOptions = useMemo(() => {
     const options: FolderMatch[] = [];
@@ -187,12 +194,36 @@ export function ProjectFormModal({
 
   const removeRoot = (path: string) => setRoots((current) => current.filter((entry) => entry !== path));
 
-  const openPicker = (target: "root" | "folder" | "parent") => {
+  const openPicker = (target: PickerTarget) => {
     setPickerTarget(target);
+    setPickerError("");
     setPickerOpen(true);
   };
 
+  const canSetProjectParent = typeof apiClient.setProjectParent === "function";
+  // 设项目总文件夹（取径器里选的，或者把推荐位置设成总文件夹），设好后重新查新文件夹放哪
+  const saveProjectParent = async (path: string, fromPicker: boolean) => {
+    setParentBusy(true);
+    setPickerError("");
+    setError("");
+    try {
+      await apiClient.setProjectParent(path);
+      if (fromPicker) setPickerOpen(false);
+      setLookupKey((key) => key + 1);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "没设成，请稍后重试";
+      if (fromPicker) setPickerError(message);
+      else setError(message);
+    } finally {
+      setParentBusy(false);
+    }
+  };
+
   const onPicked = (path: string) => {
+    if (pickerTarget === "projectParent") {
+      void saveProjectParent(path, true);
+      return;
+    }
     setPickerOpen(false);
     if (pickerTarget === "parent") {
       setCreateParent(path);
@@ -323,6 +354,10 @@ export function ProjectFormModal({
 
   const offlineParent = folders?.create_parent_state === "volume_offline" && createParent === null;
   const replaced = folders?.create_replaced ?? [];
+  // 新文件夹用的是推荐位置（多数项目文件夹所在的地方），还没设成项目总文件夹
+  const suggestedParent = folders?.create_parent_source === "suggested" && createParent === null;
+  // 还没有可参照的项目文件夹：这次先不建文件夹
+  const noParent = Boolean(trimmedName && folders && !folders.create_parent && createParent === null);
 
   return (
     <div className="project-form-modal__overlay">
@@ -409,6 +444,11 @@ export function ProjectFormModal({
             {canLookupFolders ? (
               <div aria-label="项目文件夹" className="project-form-modal__field" role="radiogroup">
                 <span className="project-form-modal__label">项目文件夹</span>
+                {folders?.state === "checking" && (
+                  <p className="project-form-modal__folder-note" role="status">
+                    正在看磁盘上有没有同名文件夹…
+                  </p>
+                )}
                 {folderOptions.map((folder) =>
                   folderRadio(
                     folder.path,
@@ -443,8 +483,38 @@ export function ProjectFormModal({
                       在 {parentForCreate} 下新建「{createName}」
                       {replaced.length > 0 && `（${replaced.join(" ")} 已换成 -）`}
                     </>,
-                    offlineParent ? "资料盘未连接，会先建项目，插上后再建文件夹" : undefined,
+                    offlineParent ? `资料盘没连接：项目照常建，插上后自动建 ${createTarget}` : undefined,
                   )}
+                {canCreateFolder && suggestedParent && (
+                  <p className="project-form-modal__folder-note">
+                    这是你多数项目文件夹所在的位置
+                    {canSetProjectParent && (
+                      <button
+                        className="project-form-modal__add-root"
+                        disabled={saving || parentBusy}
+                        onClick={() => void saveProjectParent(parentForCreate, false)}
+                        type="button"
+                      >
+                        设为项目总文件夹
+                      </button>
+                    )}
+                  </p>
+                )}
+                {noParent && (
+                  <p className="project-form-modal__folder-note">
+                    还没有可参照的项目文件夹，这次先不建文件夹
+                    {canSetProjectParent && (
+                      <button
+                        className="project-form-modal__add-root"
+                        disabled={saving || parentBusy}
+                        onClick={() => openPicker("projectParent")}
+                        type="button"
+                      >
+                        选项目总文件夹…
+                      </button>
+                    )}
+                  </p>
+                )}
                 {folderRadio("none", effectiveChoice.kind === "none", chooseNone, "先不挂文件夹")}
                 <span className="project-form-modal__folder-links">
                   <button className="project-form-modal__add-root" disabled={saving} onClick={() => openPicker("folder")} type="button">
@@ -602,8 +672,11 @@ export function ProjectFormModal({
       {pickerOpen && (
         <MaterialRootPickerModal
           apiClient={apiClient}
+          busy={parentBusy}
+          error={pickerError}
           onClose={() => setPickerOpen(false)}
           onConfirm={onPicked}
+          {...(pickerTarget === "projectParent" ? PROJECT_PARENT_PICKER : {})}
         />
       )}
     </div>

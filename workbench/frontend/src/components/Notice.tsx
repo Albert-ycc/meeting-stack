@@ -9,12 +9,19 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
  */
 export type NoticeTone = "success" | "warning" | "error";
 
+/** 跟着这一条提示的操作按钮（［撤销］［打开需求］）；换下一条提示时一起换掉。 */
+export interface NoticeAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface NoticeState {
   message: string;
   tone: NoticeTone;
   /** 每次 setNotice 递增，同一句话连着出现两次也会重新计时。 */
   key: number;
   durationMs?: number;
+  actions?: NoticeAction[];
 }
 
 export const NOTICE_AUTO_HIDE_MS = 5000;
@@ -23,15 +30,18 @@ export function useNotice() {
   const [state, setState] = useState<NoticeState | null>(null);
   const sequence = useRef(0);
 
-  /** 空字符串等于清掉提示；durationMs 只对 success 生效，用来覆盖默认的 5 秒。 */
-  const setNotice = useCallback((message: string, tone: NoticeTone = "success", durationMs?: number) => {
-    if (!message) {
-      setState(null);
-      return;
-    }
-    sequence.current += 1;
-    setState({ message, tone, key: sequence.current, durationMs });
-  }, []);
+  /** 空字符串等于清掉提示；durationMs 只对 success 生效，用来覆盖默认的 5 秒；actions 是这条提示自带的按钮。 */
+  const setNotice = useCallback(
+    (message: string, tone: NoticeTone = "success", durationMs?: number, actions?: NoticeAction[]) => {
+      if (!message) {
+        setState(null);
+        return;
+      }
+      sequence.current += 1;
+      setState({ message, tone, key: sequence.current, durationMs, actions: actions?.length ? actions : undefined });
+    },
+    [],
+  );
 
   const dismissNotice = useCallback(() => setState(null), []);
 
@@ -52,7 +62,7 @@ interface NoticeBannerProps {
   notice: NoticeState | null;
   onDismiss: () => void;
   className?: string;
-  /** 附在提示后面的操作按钮，比如「撤销」。 */
+  /** 附在提示后面的操作按钮，比如「撤销」。notice.actions 排在它们前面。 */
   children?: ReactNode;
 }
 
@@ -70,6 +80,11 @@ export function NoticeBanner({ notice, onDismiss, className = "", children }: No
         {TONE_ICON[notice.tone]}
       </span>
       <span className="action-banner__text">{notice.message}</span>
+      {notice.actions?.map((action) => (
+        <button className="text-button action-banner__undo" key={action.label} onClick={action.onClick} type="button">
+          {action.label}
+        </button>
+      ))}
       {children}
       <button aria-label="关闭提示" className="action-banner__close" onClick={onDismiss} type="button">
         ✕

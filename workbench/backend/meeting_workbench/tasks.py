@@ -30,12 +30,14 @@ from .project_names import (
     add_former_name,
     also_entries,
     create_project_folder,
+    exact_project_suggestion,
     find_similar_project,
     merge_also_names,
     rescan_unresolved_for_project,
     sanitize_folder_name,
     similar_project_message,
 )
+from .project_folders import pending_folders, queue_pending_folder
 from .project_profile import norm_key
 from .semantic import SemanticIndex
 from .service import ConflictError, NotFoundError
@@ -995,6 +997,8 @@ class TaskService:
             OPEN_TASK_STATUSES,
         )
         open_task_counts = {row["project_id"]: row["n"] for row in open_task_rows}
+        with self.db.autocommit() as connection:
+            pending = pending_folders(connection)
         material_roots_by_project: dict[str, list[dict[str, Any]]] = {}
         for row in self.db.query_all(
             "SELECT * FROM project_material_roots ORDER BY project_id, created_at, id"
@@ -1012,6 +1016,7 @@ class TaskService:
             project["open_task_count"] = open_task_counts.get(project["id"], 0)
             project["material_roots"] = material_roots_by_project.get(project["id"], [])
             project["also_names"] = also_entries(project.get("also_names"))
+            project["pending_folder"] = pending.get(project["id"])
         return projects
 
     def create_project(
@@ -1024,11 +1029,21 @@ class TaskService:
         folder: dict[str, str] | None = None,
         meeting_ids: list[str] | None = None,
         force: bool = False,
+        snapshot: bool = True,
+        source_name: str | None = None,
     ) -> dict[str, Any]:
         """新建项目。人工新建时先查近似重名（带 force 仍然新建）；可以顺手挂上或新建
         项目文件夹、把几场会归进来；建好后在「没认出」的会里按名字找，命中的变成待你选。
+
+        新建文件夹时盘没插：项目照常建，记一条待补建的文件夹，插上盘后后台补建并挂上。
+        snapshot=False 时不刷新词典快照，由调用方整批处理完后刷新一次（认领）。
+
+        从「像是新项目」建（source_name 是 AI 起的名字）：这个名字和最终名字都记成「建成了项目」，
+        清掉同名的提示；会上说得最多的叫法和最终名字不同、又够格时记进也叫（spoken_added）。
         """
         # 本模块被 project_linking 引用，这里按需导入避免循环。
+        from .name_actions import add_spoken_also
+        from .name_hints import settle_project_name
         from .project_linking import reassign_meeting
 
         name = name.strip()
@@ -1038,16 +1053,20 @@ class TaskService:
             raise ValueError(f"项目来源必须是 {'/'.join(PROJECT_ORIGINS)}")
         created_folder: str | None = None
         folder_pending: dict[str, str] | None = None
+        spoken_added: dict[str, Any] | None = None
         try:
             with self.db.transaction() as connection:
                 existing = connection.execute(
                     "SELECT id FROM projects WHERE name=?", (name,)
                 ).fetchone()
                 if existing:
-                    # 人工建项目撞名要报错，不能悄悄把 material_roots 挂到别人项目上（D26）；
+                    # 人工建项目撞名要报错，不能悄悄把 material_roots 挂到别人项目上（D26），
+                    # 但带上已有项目，界面问「是不是它？」（只有［用它］）；
                     # AI 建项目（origin=ai）撞名时直接返回已有项目，不改写它的来源。
                     if origin == "manual":
-                        raise ConflictError("已有同名项目")
+                        suggestion = exact_project_suggestion(connection, name)
+                        assert suggestion is not None
+                        raise SimilarProjectError(similar_project_message(suggestion), suggestion)
                     return self._project_detail(existing["id"])
                 if origin == "manual" and not force:
                     suggestion = find_similar_project(connection, name)
@@ -1073,6 +1092,13 @@ class TaskService:
                         )
                         if pending_reason is not None:
                             folder_pending = {"path": folder_path, "reason": pending_reason}
+                            queue_pending_folder(
+                                connection,
+                                project_id,
+                                str(Path(folder_path).parent),
+                                folder_name,
+                                name,
+                            )
                         else:
                             if not existed:
                                 created_folder = folder_path
@@ -1089,7 +1115,20 @@ class TaskService:
                         raise NotFoundError(f"会议不存在：{meeting_id}")
                     reassign_meeting(connection, meeting_id, project_id, actor="user")
                     assigned += 1
+                # 先按名字回扫（AI 提过同名新项目的会要变成待你选），再清提示。
                 flagged = rescan_unresolved_for_project(connection, project_id)
+                # 最终名字（人工新建时也算）和 AI 起的名字都记成「建成了这个项目」，同名提示一起清掉。
+                settle_project_name(
+                    connection, [name, *([source_name] if source_name else [])], "project", project_id
+                )
+                if source_name:
+                    spoken_added = add_spoken_also(
+                        connection,
+                        project_id=project_id,
+                        final_name=name,
+                        source_name=source_name,
+                        meeting_ids=list(dict.fromkeys(meeting_ids or [])),
+                    )
         except Exception:
             if created_folder is not None:
                 # 数据库没写成，刚建的空文件夹也收回，不留半截。
@@ -1097,10 +1136,12 @@ class TaskService:
                     Path(created_folder).rmdir()
             raise
         # 新项目的名字和文件夹要进快照，relay 才认得出它的会。
-        rewrite_snapshot(self.db, self.settings.data_dir / "glossary-snapshot.json")
+        if snapshot:
+            rewrite_snapshot(self.db, self.settings.data_dir / "glossary-snapshot.json")
         detail = self._project_detail(project_id)
         detail["meetings_assigned"] = assigned
         detail["needs_review_meeting_ids"] = flagged
+        detail["spoken_added"] = spoken_added
         if folder_pending is not None:
             detail["folder_pending"] = folder_pending
         return detail
@@ -1232,6 +1273,8 @@ class TaskService:
             ]
             root["cards_owner_id"] = owners[0]["project_id"] if owners else project_id
         project["also_names"] = also_entries(project.get("also_names"))
+        with self.db.autocommit() as connection:
+            project["pending_folder"] = pending_folders(connection, project_id).get(project_id)
         return project
 
     def project_board(self, project_id: str) -> dict[str, Any]:

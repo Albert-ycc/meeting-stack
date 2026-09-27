@@ -3,17 +3,27 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 import type { ApiClient } from "../../api";
 import { reassignNote } from "../../cardCopy";
 import type { Project } from "../../types";
-import { NoticeBanner, useNotice, type NoticeTone } from "../Notice";
-import { GraphCanvas, forgetGraphViews, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
+import { NoticeBanner, useNotice, type NoticeAction, type NoticeTone } from "../Notice";
+import { GraphCanvas, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
 import { FocusPanel } from "./FocusPanel";
 import { GraphPanel, clearBriefCache } from "./GraphPanel";
 import { GraphSearch } from "./GraphSearch";
-import { localUndoUntil, type GraphNoticeUndo } from "./panelParts";
-import type { GraphPayload, GraphRootsPayload, GraphWindow, MeetingFocus, StatusPhrase } from "./graphTypes";
+import { loadBrief, localUndoUntil, type GraphNoticeUndo } from "./panelParts";
+import type {
+  BriefFile,
+  GraphEdge,
+  GraphFile,
+  GraphPayload,
+  GraphRootsPayload,
+  GraphWindow,
+  MeetingFocus,
+  StatusPhrase,
+} from "./graphTypes";
 import { readGraphWindow, recordGraphOpen, writeGraphWindow } from "./graphPrefs";
-import { attentionOrder, layoutStarMap, type StarLayout } from "./layout";
+import { attentionOrder, layoutStarMap, mentionLabel, type StarLayout } from "./layout";
 import { MeetingFocusView } from "./MeetingFocusView";
 import { useMiniPlayer } from "./MiniPlayer";
+import { forgetViewportViews } from "./useGraphViewport";
 import "./ProjectGraph.css";
 
 /** 带［撤销］的提示多停一会儿，和会议页一致 */
@@ -31,6 +41,16 @@ const WINDOW_OPTIONS: Array<{ key: GraphWindow; label: string }> = [
   { key: "all", label: "全部" },
 ];
 
+/** 短 hash（FNV-1a，36 进制）：子文件夹节点 id 里用它代替相对路径，中文路径不进地址栏 */
+export function shortHash(text: string): string {
+  let hash = 0x811c9dc5;
+  for (const char of text) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
+}
+
 /** 根目录外侧挂最近改过的子文件夹（资料盘状态里带着，最多 3 个），细线连回根目录 */
 function withSubfolders(graph: GraphPayload, roots: GraphRootsPayload | null): GraphPayload {
   if (!roots) return graph;
@@ -41,7 +61,7 @@ function withSubfolders(graph: GraphPayload, roots: GraphRootsPayload | null): G
     const root = roots.roots.find((item) => item.root_id === folder.root_id);
     if (!root || root.state !== "online") continue;
     for (const recent of (root.recent_dirs ?? []).slice(0, 3)) {
-      const id = `sub:${folder.root_id}:${recent.dir}`;
+      const id = `sub:${folder.root_id}:${shortHash(recent.dir)}`;
       folders.push({
         id,
         kind: "subfolder",
@@ -57,6 +77,78 @@ function withSubfolders(graph: GraphPayload, roots: GraphRootsPayload | null): G
   }
   if (!folders.length) return graph;
   return { ...graph, folders: [...graph.folders, ...folders], edges: [...graph.edges, ...edges] };
+}
+
+function fileExt(name: string) {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+/**
+ * 选中一场会时，用简报补出它提到的全部文件（照子文件夹的做法：补的节点排在最后，不挤动已有节点），
+ * 已在图上的文件只补这场会连过去的线。
+ */
+function withMentionedFiles(graph: GraphPayload, meetingId: string | null, files: BriefFile[] | null): GraphPayload {
+  if (!meetingId || !files?.length) return graph;
+  const from = `m:${meetingId}`;
+  if (!graph.meetings.some((meeting) => meeting.id === from)) return graph;
+  const known = new Set((graph.files ?? []).map((file) => file.id));
+  const edgeIds = new Set(graph.edges.map((edge) => edge.id));
+  const addFiles: GraphFile[] = [];
+  const addEdges: GraphEdge[] = [];
+  for (const file of files) {
+    const id = `file:${file.file_id}`;
+    if (!known.has(id)) {
+      known.add(id);
+      addFiles.push({
+        id,
+        kind: "file",
+        file_id: file.file_id,
+        name: file.name,
+        ext: fileExt(file.name),
+        rel_path: file.rel_path,
+        root_id: file.root_id,
+        folder: `root:${file.root_id}`,
+        extra: true,
+      });
+    }
+    const edgeId = `e:file:${file.file_id}:${meetingId}`;
+    if (edgeIds.has(edgeId)) continue;
+    edgeIds.add(edgeId);
+    addEdges.push({
+      id: edgeId,
+      kind: "mentioned",
+      from,
+      to: id,
+      label: mentionLabel(file),
+      count: file.count,
+      source: file.source,
+      needle: file.needle,
+      stem_key: file.stem_key,
+      meeting_id: meetingId,
+      anchors_ms: file.first_ms === null ? [] : [file.first_ms],
+    });
+  }
+  if (!addFiles.length && !addEdges.length) return graph;
+  return { ...graph, files: [...(graph.files ?? []), ...addFiles], edges: [...graph.edges, ...addEdges] };
+}
+
+/** 文件节点和「提到」线：可能是从简报补出来的 */
+function isFileSelection(id: string) {
+  return id.startsWith("file:") || id.startsWith("e:file:");
+}
+
+/** 从哪场会点进文件面板或「提到」线：往回找上一个选中的会，中间只隔着文件或「提到」线 */
+function contextMeetingOf(selection: string | null, trail: string[]): string | null {
+  if (!selection) return null;
+  if (selection.startsWith("m:")) return selection.slice(2);
+  if (!isFileSelection(selection)) return null;
+  for (let index = trail.length - 1; index >= 0; index -= 1) {
+    const id = trail[index];
+    if (id.startsWith("m:")) return id.slice(2);
+    if (!isFileSelection(id)) return null;
+  }
+  return null;
 }
 
 // 按（项目，时间窗，深链目标）缓存一份：切回画布先画旧数据，再到后台对一次
@@ -76,7 +168,7 @@ function cachedGraph(projectId: string, window: GraphWindow | null, focus: strin
 export function forgetGraphCache() {
   graphCache.clear();
   rootsCache.clear();
-  forgetGraphViews();
+  forgetViewportViews();
   clearBriefCache();
 }
 
@@ -86,6 +178,7 @@ function sameUndo(a: GraphNoticeUndo, b: GraphNoticeUndo) {
     return a.meetingId === b.meetingId && a.requirementId === b.requirementId;
   }
   if (a.kind === "task" && b.kind === "task") return a.taskId === b.taskId;
+  if (a.kind === "mention" && b.kind === "mention") return a.meetingId === b.meetingId && a.stemKey === b.stemKey;
   return false;
 }
 
@@ -324,12 +417,30 @@ export function ProjectGraph({
     };
   }, [apiClient, projectId, rootsTick]);
 
+  // 选中的会（或从它点进去的文件、「提到」线）：从简报补出它提到的全部文件
+  const contextMeeting = contextMeetingOf(selection, trail);
+  const contextOnGraph =
+    contextMeeting && graph?.meetings.some((meeting) => meeting.meeting_id === contextMeeting) ? contextMeeting : null;
+  const [briefFiles, setBriefFiles] = useState<{ meetingId: string; files: BriefFile[] } | null>(null);
+  useEffect(() => {
+    if (!contextOnGraph) return;
+    let active = true;
+    loadBrief(apiClient, contextOnGraph)
+      .then((brief) => active && setBriefFiles({ meetingId: contextOnGraph, files: brief.files ?? [] }))
+      .catch(() => active && setBriefFiles({ meetingId: contextOnGraph, files: [] }));
+    return () => {
+      active = false;
+    };
+  }, [apiClient, contextOnGraph, version]);
+  const extraFiles = briefFiles && briefFiles.meetingId === contextOnGraph ? briefFiles.files : null;
+
   // 残影只在撤销期内画；最早的一个到期时重画一次
   const liveGraph = useMemo(() => {
     if (!graph) return null;
     const movedOut = graph.moved_out.filter((item) => Date.parse(item.undo_until) > clock);
-    return withSubfolders(movedOut.length === graph.moved_out.length ? graph : { ...graph, moved_out: movedOut }, roots);
-  }, [clock, graph, roots]);
+    const base = withSubfolders(movedOut.length === graph.moved_out.length ? graph : { ...graph, moved_out: movedOut }, roots);
+    return withMentionedFiles(base, contextOnGraph, extraFiles);
+  }, [clock, contextOnGraph, extraFiles, graph, roots]);
 
   useEffect(() => {
     const deadlines = [
@@ -384,8 +495,16 @@ export function ProjectGraph({
     if (resolved === selection) return;
     // 子文件夹跟着资料盘状态一起到，先等一等
     if (selection.startsWith("sub:") && !roots) return;
+    // 从简报补出来的文件节点、「提到」线：简报还在路上时也等一等
+    if (isFileSelection(selection) && contextOnGraph && !extraFiles) return;
     if (resolved) {
       onSelectionChange(resolved);
+      return;
+    }
+    // 会上提到的文件、像是新需求、等补建的文件夹会随着数据来去（常常是你作答以后就没了）：
+    // 不是深链进来的，就悄悄收起面板，不说「不在当前的图上」
+    if (selection !== focus && /^(file:|e:file:|nr:|e:nr:|pending:)/.test(selection)) {
+      onSelectionChange(null);
       return;
     }
     if (missingRef.current === selection) return;
@@ -397,7 +516,7 @@ export function ProjectGraph({
       "warning",
     );
     onSelectionChange(null);
-  }, [graph, layout, onSelectionChange, resolved, roots, selection, setNotice]);
+  }, [contextOnGraph, extraFiles, focus, graph, layout, onSelectionChange, resolved, roots, selection, setNotice]);
 
   const select = useCallback(
     (id: string | null) => {
@@ -431,8 +550,8 @@ export function ProjectGraph({
   }, [onProjectsChanged, refresh]);
 
   const showNotice = useCallback(
-    (message: string, undoTarget?: GraphNoticeUndo, tone: NoticeTone = "success") => {
-      setNotice(message, tone, undoTarget ? UNDO_NOTICE_MS : undefined);
+    (message: string, undoTarget?: GraphNoticeUndo, tone: NoticeTone = "success", actions?: NoticeAction[]) => {
+      setNotice(message, tone, undoTarget || actions?.length ? UNDO_NOTICE_MS : undefined, actions);
       if (undoTarget) setUndoStack((current) => [...current, undoTarget].slice(-UNDO_STACK_MAX));
     },
     [setNotice],
@@ -494,6 +613,10 @@ export function ProjectGraph({
         await apiClient.addRequirementMeeting(entry.requirementId, entry.meetingId);
         clearBriefCache();
         showNotice(`已撤销：重新关联了「${entry.title}」`);
+      } else if (entry.kind === "mention") {
+        await apiClient.restoreFileMention(entry.meetingId, entry.stemKey);
+        clearBriefCache();
+        showNotice(`已撤销：这场会又连回「${entry.name}」`);
       } else {
         await apiClient.updateTask(entry.taskId, entry.before);
         clearBriefCache();
@@ -702,6 +825,7 @@ export function ProjectGraph({
             <GraphPanel
               apiClient={apiClient}
               canGoBack={trail.length > 0}
+              contextMeetingId={contextOnGraph}
               graph={liveGraph ?? graph}
               layout={layout}
               onAnswerDoorstep={(meetingId, target) => void answerDoorstep({ meetingId, projectId: target })}
@@ -735,6 +859,9 @@ export function ProjectGraph({
       {player.audioElement}
       <header className="project-graph__top">
         <nav aria-label="面包屑" className="project-graph__crumb">
+          {/* 全部项目概览的路由在 App 里（#graph） */}
+          <a href="#graph">全部项目</a>
+          <span aria-hidden="true">/</span>
           <button onClick={onBack} type="button">
             项目管理
           </button>
@@ -766,7 +893,8 @@ export function ProjectGraph({
         </ul>
       )}
       <NoticeBanner className="project-graph__notice" notice={notice} onDismiss={dismissNotice}>
-        {lastUndo && notice?.tone === "success" && (
+        {/* 提示自带按钮（像是新项目 / 新需求的［撤销］）时，不再另给一个撤销最近一步的 */}
+        {lastUndo && notice?.tone === "success" && !notice.actions && (
           <button className="text-button action-banner__undo" disabled={busy} onClick={() => void runUndo(lastUndo)} type="button">
             撤销
           </button>

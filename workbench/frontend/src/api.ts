@@ -54,12 +54,23 @@ import type {
   MeetingGlossary,
   MeetingCardEffect,
   ProjectCardsSummary,
+  ProjectParentStatus,
+  ClaimItem,
+  ClaimResult,
+  RenameCandidatesPayload,
+  MaterialRootRepoint,
+  NameAsRequirementResult,
+  NameCandidatesPayload,
+  NameDecisionResult,
+  MaterialIndexStatus,
 } from "./types";
 import type {
   CollapsedPayload,
   CueTermDetail,
   ExpandPayload,
+  FileMentionResult,
   FulltextPayload,
+  GraphFileDetail,
   GraphPayload,
   GraphRootsPayload,
   GraphWindow,
@@ -67,6 +78,7 @@ import type {
   MeetingFocus,
   QuotesPayload,
 } from "./components/graph/graphTypes";
+import type { GraphOverview, GraphOverviewFetch, OverviewFolders } from "./components/graph/overviewTypes";
 
 let csrfToken = "";
 
@@ -302,6 +314,21 @@ export const api = {
   },
   glossaryTermDetail: (termId: string) =>
     read<CueTermDetail>(`/api/glossary/terms/${encodeURIComponent(termId)}`),
+  // ---------------------------------------------------------------- 全部项目概览（2c）
+  /**
+   * 全部项目概览。带上次的 etag 时发 If-None-Match：没变是 304，返回 overview: null，照旧用手上的那份。
+   */
+  getGraphOverview: async (window: GraphWindow, etag?: string | null): Promise<GraphOverviewFetch> => {
+    const response = await fetch(`/api/graph/overview${queryString({ window })}`, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
+    });
+    if (response.status === 304) return { overview: null, etag: response.headers.get("etag") ?? etag ?? null };
+    const overview = await parseResponse<GraphOverview>(response);
+    return { overview, etag: response.headers.get("etag") };
+  },
+  /** 项目总文件夹下还没挂的文件夹（读缓存）；state 是 checking 时 2 秒后再取 */
+  getOverviewFolders: () => read<OverviewFolders>("/api/graph/overview/folders"),
   // ---------------------------------------------------------------- 关系图（1h）
   graphMeetingFocus: (meetingId: string) =>
     read<MeetingFocus>(`/api/graph/meetings/${encodeURIComponent(meetingId)}`),
@@ -315,6 +342,33 @@ export const api = {
     ),
   revealMaterial: (path: string) =>
     write<{ ok: boolean; path: string }>("/api/materials/reveal", "POST", { path }),
+  // ---------------------------------------------------------------- 会上提到的文件、文件名索引（2d）
+  /** 文件面板：文件信息、同名的其他文件、在哪几场会上被提到；404 是文件不在索引里 */
+  getGraphFile: (fileId: number) => read<GraphFileDetail>(`/api/graph/files/${fileId}`),
+  /** ［不是这份文件］：只挡这场会；立即生效 */
+  rejectFileMention: (meetingId: string, stemKey: string) =>
+    write<FileMentionResult>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/file-mentions/${encodeURIComponent(stemKey)}/reject`,
+      "POST",
+      {},
+    ),
+  /** 撤销［不是这份文件］ */
+  restoreFileMention: (meetingId: string, stemKey: string) =>
+    write<FileMentionResult>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/file-mentions/${encodeURIComponent(stemKey)}/restore`,
+      "POST",
+      {},
+    ),
+  /** ［换成这份］：换成同名的另一份文件，以后不再自动改；400 是不在这个项目文件夹里或不同名 */
+  pickFileMention: (meetingId: string, stemKey: string, fileId: number) =>
+    write<FileMentionResult>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/file-mentions/${encodeURIComponent(stemKey)}/pick`,
+      "POST",
+      { file_id: fileId },
+    ),
+  /** 每个根目录的文件名索引进度 */
+  getMaterialIndexStatus: (projectId: string) =>
+    read<MaterialIndexStatus>(`/api/materials/index-status${queryString({ project_id: projectId })}`),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>
@@ -323,7 +377,10 @@ export const api = {
       "POST",
       materialRoots ? { name, color, material_roots: materialRoots } : { name, color },
     ),
-  /** 新建项目的完整入口：近似重名时 409（ApiError.data.suggestion），force 仍然新建。 */
+  /**
+   * 新建项目的完整入口：近似重名（或完全同名）时 409（ApiError.data.suggestion），force 仍然新建。
+   * source_name：从「像是新项目」提示建时 AI 起的名字，建好后它和最终名字都不再提示。
+   */
   createProjectWith: (body: {
     name: string;
     color: string;
@@ -331,7 +388,15 @@ export const api = {
     folder?: { mode: "mount" | "create"; path: string; name?: string };
     meeting_ids?: string[];
     force?: boolean;
+    source_name?: string;
   }) => write<Project>("/api/projects", "POST", body),
+  /** 撤销建成项目时自动记进也叫的会上叫法；过期或已撤销是 409 */
+  undoSpokenAlsoName: (projectId: string, eventId: number) =>
+    write<{ ok: boolean; removed: boolean }>(
+      `/api/projects/${encodeURIComponent(projectId)}/also-names/spoken/undo`,
+      "POST",
+      { event_id: eventId },
+    ),
   deleteProject: (projectId: string) =>
     write<{ ok: boolean; tasks_unassigned: number; terms_to_public: number }>(
       `/api/projects/${encodeURIComponent(projectId)}`,
@@ -350,8 +415,35 @@ export const api = {
     read<FolderMatchesPayload>(
       `/api/projects/${encodeURIComponent(projectId)}/folder-suggestions`,
     ),
-  ignoreProjectName: (name: string) =>
-    write<{ name: string; meetings_updated: number }>("/api/project-names/ignore", "POST", { name }),
+  /**
+   * 「不是新项目」（kind 默认 project）/「不算新需求」（kind=requirement，要带 project_id）。
+   * meeting_id 只用来记事件。返回的 event_id 用来撤销。
+   */
+  ignoreProjectName: (
+    name: string,
+    options: { kind?: "project" | "requirement"; project_id?: string; meeting_id?: string } = {},
+  ) => write<NameDecisionResult>("/api/project-names/ignore", "POST", { name, ...options }),
+  /** 撤销「不是新项目」「不算新需求」；过期或已撤销是 409 */
+  undoNameDecision: (eventId: number) =>
+    write<{ ok: boolean; meetings_restored: number }>("/api/name-decisions/undo", "POST", { event_id: eventId }),
+  // ---------------------------------------------------------------- 像是新项目 / 新需求（2b）
+  /** 提示的候选名、同名的会、默认动作和文件夹动作；文件夹缓存没好时 folders_state=checking */
+  nameCandidates: (meetingId: string) =>
+    read<NameCandidatesPayload>(`/api/meetings/${encodeURIComponent(meetingId)}/name-candidates`),
+  /** 建成需求：会已归项目时 project_id 可省；没归项目时必填 */
+  nameAsRequirement: (meetingId: string, body: { title: string; project_id?: string; folder_path?: string }) =>
+    write<NameAsRequirementResult>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/name-as-requirement`,
+      "POST",
+      body,
+    ),
+  /** 10 分钟内撤销建成需求；过期 409 */
+  undoNameAsRequirement: (meetingId: string) =>
+    write<{ ok: boolean; requirement_deleted: boolean; meetings_restored: number; meeting_ids: string[] }>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/name-as-requirement/undo`,
+      "POST",
+      {},
+    ),
   attributionSummary: () => read<AttributionSummary>("/api/attribution/summary"),
   coldStartFolders: () => read<ColdStartFoldersPayload>("/api/cold-start/folders"),
   declineFolderSuggestions: (projectIds: string[]) =>
@@ -520,11 +612,49 @@ export const api = {
       { path },
     ),
   replaceProjectMaterialRoot: (projectId: string, rootId: number, path: string) =>
-    write<MaterialRoot>(
+    write<MaterialRootRepoint>(
       `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/replace`,
       "POST",
       { path },
     ),
+  /** 根目录「找不到」时：可能是它改名后的样子；后台缓存没好时 state=checking */
+  renameCandidates: (projectId: string, rootId: number) =>
+    read<RenameCandidatesPayload>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/rename-candidates`,
+    ),
+  /** ［是它］：根目录换到改名后的路径，嵌在里面的文件夹一起跟着改 */
+  repointProjectMaterialRoot: (projectId: string, rootId: number, path: string) =>
+    write<MaterialRootRepoint>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/repoint`,
+      "POST",
+      { path },
+    ),
+  /** ［不是］：这个候选以后不再问 */
+  declineRenameCandidate: (projectId: string, rootId: number, path: string) =>
+    write<{ ok: boolean }>(
+      `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}/rename-decline`,
+      "POST",
+      { path },
+    ),
+  /** 等补建的文件夹换个位置；盘在线就当场建好，返回项目详情 */
+  movePendingFolder: (projectId: string, parent: string) =>
+    write<Project>(`/api/projects/${encodeURIComponent(projectId)}/pending-folder`, "PUT", { parent }),
+  /** 「不建了，以后自己挂文件夹」 */
+  dropPendingFolder: (projectId: string) =>
+    write<{ ok: boolean }>(`/api/projects/${encodeURIComponent(projectId)}/pending-folder`, "DELETE", {}),
+  // ---------------------------------------------------------------- 项目总文件夹（2a）
+  projectParent: () => read<ProjectParentStatus>("/api/settings/project-parent"),
+  /** path 为 null 清除；400 的 detail（「这个文件夹不存在」等）直接显示 */
+  setProjectParent: (path: string | null) =>
+    write<ProjectParentStatus>("/api/settings/project-parent", "PUT", { path }),
+  /** 认领：一次发整批，逐项返回结果 */
+  claimFolders: (items: ClaimItem[]) =>
+    write<ClaimResult>("/api/settings/project-parent/claim", "POST", { items }),
+  /** 「不是项目」 */
+  declineFolder: (path: string) =>
+    write<{ ok: boolean }>("/api/settings/project-parent/decline", "POST", { path }),
+  undeclineFolder: (path: string) =>
+    write<{ ok: boolean }>(`/api/settings/project-parent/decline${queryString({ path })}`, "DELETE", {}),
   removeProjectMaterialRoot: (projectId: string, rootId: number) =>
     write<{ ok: boolean }>(
       `/api/projects/${encodeURIComponent(projectId)}/material-roots/${rootId}`,

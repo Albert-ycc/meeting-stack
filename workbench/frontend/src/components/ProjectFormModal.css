@@ -252,12 +252,11 @@
   overflow-wrap: anywhere;
 }
 
+/* 路径都写全，放不下就折行 */
 .project-form-modal__option-hint {
-  overflow: hidden;
   color: var(--ink-faint);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .project-form-modal__option-hint:empty {
@@ -356,4 +355,20 @@
 
 .project-form-modal__confirm-actions .project-form-modal__danger:disabled {
   opacity: 0.5;
+}
+
+/* 新文件夹放哪的说明：正在看磁盘、推荐位置、还没有可参照的项目文件夹 */
+.project-form-modal__folder-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.project-form-modal__folder-note .project-form-modal__add-root {
+  align-self: auto;
 }

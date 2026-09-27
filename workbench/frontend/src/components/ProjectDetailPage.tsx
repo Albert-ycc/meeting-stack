@@ -3,7 +3,10 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import type { ApiClient } from "../api";
 import { formatDurationText, formatMonthDay } from "../format";
 import type {
+  MaterialIndexRoot,
+  MaterialIndexStatus,
   MaterialRoot,
+  MaterialRootRepoint,
   Project,
   ProjectBoard,
   ProjectMeetingRow,
@@ -14,12 +17,14 @@ import type {
   RequirementsPayload,
 } from "../types";
 import { AsyncState } from "./AsyncState";
+import { nestedHints } from "./ClaimFoldersDialog";
 import { FolderIcon } from "./FolderIcon";
 import { MaterialRootPickerModal } from "./MaterialRootPickerModal";
 import { ProjectCardsRow } from "./ProjectCardsRow";
 import { Pagination } from "./Pagination";
 import { ProjectFormModal } from "./ProjectFormModal";
 import { ProjectRecognitionCard } from "./ProjectRecognitionCard";
+import { RootRenameQuestion, movedNote } from "./RootRenameQuestion";
 import { PriorityBadge, RequirementStatusBadge } from "./RequirementBadges";
 // FE-1 负责的需求弹窗；写这个文件时它可能还不存在，tsc 报「模块不存在」属于预期（简报第 5 节已钉死 props）。
 import { RequirementModal } from "./RequirementModal";
@@ -57,6 +62,40 @@ type LoadState = "loading" | "ready" | "error";
 
 const REQUIREMENTS_PAGE_SIZE = 10;
 const MEETINGS_PAGE_SIZE = 8;
+/** 文件名还在认（pending / walking）时隔一会儿再问一次进度 */
+export const INDEX_POLL_MS = 15_000;
+
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
+function agoText(value: string | null, now: number): string {
+  if (!value) return "";
+  const at = Date.parse(value);
+  if (Number.isNaN(at)) return "";
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours} 小时前` : `${Math.floor(hours / 24)} 天前`;
+}
+
+/** 材料那一节每个根目录一行文件名索引的进度（2d） */
+export function indexStatusText(item: MaterialIndexRoot, now = Date.now()): string {
+  switch (item.state) {
+    case "done": {
+      const ago = agoText(item.updated_at, now);
+      const dirs = item.name_only_dirs ? `（node_modules、.git 等 ${item.name_only_dirs} 个文件夹只记了个数）` : "";
+      return `已认得 ${COUNT_FORMAT.format(item.files)} 个文件名${ago ? ` · ${ago}` : ""}${dirs}`;
+    }
+    case "offline":
+      return "资料盘未连接，插上后接着认";
+    case "missing":
+      return "找不到这个文件夹，先按上次认得的算";
+    case "error":
+      return `读不了：${item.error ?? "原因不明"}`;
+    default:
+      return `正在认文件名，已认 ${COUNT_FORMAT.format(item.files)} 个`;
+  }
+}
 
 const REQUIREMENT_TABS: Array<{ key: RequirementStatus | "all"; label: string }> = [
   { key: "active", label: "进行中" },
@@ -101,6 +140,7 @@ export function ProjectDetailPage({
   const [board, setBoard] = useState<ProjectBoard | null>(null);
   const [boardState, setBoardState] = useState<LoadState>("loading");
   const [subfolders, setSubfolders] = useState<ProjectSubfoldersPayload | null>(null);
+  const [indexStatus, setIndexStatus] = useState<MaterialIndexStatus | null>(null);
 
   const [meetingRows, setMeetingRows] = useState<ProjectMeetingRow[] | null>(null);
   const [meetingsState, setMeetingsState] = useState<LoadState>("loading");
@@ -116,6 +156,8 @@ export function ProjectDetailPage({
   const [creatingRequirement, setCreatingRequirement] = useState(false);
   const [addingRoot, setAddingRoot] = useState(false);
   const [reselectingRoot, setReselectingRoot] = useState<MaterialRoot | null>(null);
+  // 等补建的文件夹停了：重新选位置
+  const [movingPending, setMovingPending] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
   const [rootBusy, setRootBusy] = useState(false);
   // 挂/重选根目录失败的原因：显示在还开着的取径器里（D27），不是页面级 notice
@@ -183,6 +225,31 @@ export function ProjectDetailPage({
     void loadRequirements();
   }, [loadRequirements, reloadKey]);
 
+  // 文件名索引的进度：挂的根目录变了就重问；还在认时每 15 秒再问一次
+  const rootsKey = (board?.material_roots ?? []).map((root) => `${root.id}:${root.path}`).join("|");
+  useEffect(() => {
+    if (!rootsKey || typeof apiClient.getMaterialIndexStatus !== "function") return;
+    let active = true;
+    let timer = 0;
+    const run = async () => {
+      try {
+        const payload = await apiClient.getMaterialIndexStatus(projectId);
+        if (!active) return;
+        setIndexStatus(payload);
+        if (payload.roots.some((item) => item.state === "pending" || item.state === "walking")) {
+          timer = window.setTimeout(() => void run(), INDEX_POLL_MS);
+        }
+      } catch {
+        // 进度只是辅助信息，读不到就不写这一行
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [apiClient, projectId, reloadKey, rootsKey]);
+
   const subfolderCounts = useMemo(() => {
     const map = new Map<number, number>();
     subfolders?.roots.forEach((entry) => map.set(entry.root_id, entry.folders.length));
@@ -228,7 +295,7 @@ export function ProjectDetailPage({
     try {
       const added = await apiClient.addProjectMaterialRoot(projectId, path);
       setAddingRoot(false);
-      setNotice(`材料根目录已添加${cardsWrittenNote(added)}`);
+      setNotice([`材料根目录已添加${cardsWrittenNote(added)}`, ...nestedHints(added.path, added.nested)].join("。"));
       await refreshAfterRootChange();
     } catch (error) {
       // D27：取径器还开着，错误要就地显示在弹窗里，不能吞掉／丢到被弹窗盖住的页面级提示
@@ -246,10 +313,52 @@ export function ProjectDetailPage({
       // 原子替换：只改路径，根目录 id 不变；失败时旧根目录原样保留，不会「删了没加上」。
       const replaced = await apiClient.replaceProjectMaterialRoot(projectId, reselectingRoot.id, path);
       setReselectingRoot(null);
-      setNotice(`材料根目录已更新${cardsWrittenNote(replaced)}`);
+      setNotice(`材料根目录已更新${movedNote(replaced)}`);
       await refreshAfterRootChange();
     } catch (error) {
       setRootError(error instanceof Error ? error.message : "更新失败，请稍后重试");
+    } finally {
+      setRootBusy(false);
+    }
+  };
+
+  // 改名找回的［是它］：说出一起改了哪些，再重读项目
+  const onRepointed = async (result: MaterialRootRepoint) => {
+    setNotice(`材料根目录已改到 ${result.path}${movedNote(result)}`);
+    await refreshAfterRootChange();
+  };
+
+  // 等补建的文件夹换个位置：盘在线就当场建好并挂上
+  const movePending = async (parent: string) => {
+    setRootBusy(true);
+    setRootError("");
+    try {
+      const detail = await apiClient.movePendingFolder(projectId, parent);
+      setMovingPending(false);
+      const mounted = detail.material_roots?.[0];
+      const pending = detail.pending_folder;
+      if (!pending && mounted) setNotice(`已建好 ${mounted.path}，挂到了这个项目`);
+      else if (pending?.state === "waiting") setNotice(`位置改好了，插上资料盘后自动建 ${pending.path}`);
+      else setNotice(`位置改好了，但还没建成：${pending?.reason ?? "请稍后再试"}`, "warning");
+      await refreshAfterRootChange();
+    } catch (error) {
+      setRootError(error instanceof Error ? error.message : "没改成，请稍后重试");
+    } finally {
+      setRootBusy(false);
+    }
+  };
+
+  // 「不建了，以后自己挂文件夹」
+  const dropPending = async () => {
+    setRootBusy(true);
+    setRootError("");
+    try {
+      await apiClient.dropPendingFolder(projectId);
+      setMovingPending(false);
+      setNotice("好的，不建了；以后在这里挂文件夹就行");
+      await refreshAfterRootChange();
+    } catch (error) {
+      setRootError(error instanceof Error ? error.message : "操作失败，请稍后重试");
     } finally {
       setRootBusy(false);
     }
@@ -286,6 +395,7 @@ export function ProjectDetailPage({
   };
 
   const roots = board?.material_roots ?? [];
+  const pendingFolder = roots.length === 0 ? board?.pending_folder ?? null : null;
   const requirementCounts = board?.requirement_counts;
   // 挂/移/重选根目录既要能写这个项目，也要在桌面端；复制路径不受限，谁都能读
   const canManageFolders = canWrite && canPickFolders;
@@ -375,7 +485,34 @@ export function ProjectDetailPage({
                 </button>
               )}
             </header>
-            {roots.length === 0 ? (
+            {pendingFolder ? (
+              <ul className="material-root-list">
+                <li className="material-root-row material-root-row--pending">
+                  <FolderIcon className="material-root-row__icon" />
+                  {pendingFolder.state === "waiting" ? (
+                    <span className="material-root-row__path">资料盘未连接，插上后自动建 {pendingFolder.path}</span>
+                  ) : (
+                    <>
+                      <span className="material-root-row__path">{pendingFolder.path}</span>
+                      <span className="material-root-row__missing">{pendingFolder.reason ?? "文件夹没建成"}</span>
+                      {canManageFolders && typeof apiClient.movePendingFolder === "function" && (
+                        <span className="material-root-row__ops">
+                          <button
+                            onClick={() => {
+                              setRootError("");
+                              setMovingPending(true);
+                            }}
+                            type="button"
+                          >
+                            重新选位置…
+                          </button>
+                        </span>
+                      )}
+                    </>
+                  )}
+                </li>
+              </ul>
+            ) : roots.length === 0 ? (
               <div className="detail-card__empty">
                 <p>还没有材料根目录</p>
                 {canManageFolders && (
@@ -388,6 +525,7 @@ export function ProjectDetailPage({
               <ul className="material-root-list">
                 {roots.map((root) => {
                   const state = root.state ?? (root.exists ? "online" : "missing");
+                  const index = indexStatus?.roots.find((item) => item.root_id === root.id);
                   return (
                     <li className="material-root-row" key={root.id}>
                       <FolderIcon className="material-root-row__icon" />
@@ -399,7 +537,24 @@ export function ProjectDetailPage({
                       ) : state === "volume_offline" ? (
                         <span className="material-root-row__offline">资料盘未连接，插上后自动恢复</span>
                       ) : (
-                        <span className="material-root-row__missing">找不到该目录</span>
+                        // 盘在、文件夹没了：问是不是改了名，没候选时照旧「重新选…」
+                        <RootRenameQuestion
+                          apiClient={apiClient}
+                          canManage={canManageFolders}
+                          onRepointed={onRepointed}
+                          onReselect={() => openReselectRoot(root)}
+                          projectId={projectId}
+                          root={root}
+                        />
+                      )}
+                      {index && (
+                        <span
+                          className={`material-root-row__index${
+                            index.state === "error" || index.state === "missing" ? " is-stopped" : ""
+                          }`}
+                        >
+                          {indexStatusText(index)}
+                        </span>
                       )}
                       {(root.shared_with?.length ?? 0) > 0 && (
                         <span className="material-root-row__shared" role="note">
@@ -412,17 +567,10 @@ export function ProjectDetailPage({
                         </span>
                       )}
                       <span className="material-root-row__ops">
-                        {state === "online" ? (
+                        {state === "online" && (
                           <button onClick={() => void copyPath(root.path)} type="button">
                             复制路径
                           </button>
-                        ) : (
-                          state === "missing" &&
-                          canManageFolders && (
-                            <button onClick={() => openReselectRoot(root)} type="button">
-                              重新选择
-                            </button>
-                          )
                         )}
                         {canManageFolders && (
                           <button
@@ -679,6 +827,19 @@ export function ProjectDetailPage({
           error={rootError}
           onClose={() => setReselectingRoot(null)}
           onConfirm={(path) => void reselectRoot(path)}
+        />
+      )}
+
+      {movingPending && board?.pending_folder && (
+        <MaterialRootPickerModal
+          apiClient={apiClient}
+          busy={rootBusy}
+          description={`项目文件夹「${board.pending_folder.path.split("/").filter(Boolean).pop() ?? ""}」会建在选中的文件夹里面`}
+          error={rootError}
+          extraOption={{ label: "不建了，以后自己挂文件夹", onSelect: () => void dropPending() }}
+          onClose={() => setMovingPending(false)}
+          onConfirm={(path) => void movePending(path)}
+          title="重新选位置"
         />
       )}
 

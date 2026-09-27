@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -201,13 +201,15 @@ describe("AttributionBar 等待与像新项目", () => {
       updateMeeting,
     });
 
-    expect(screen.getByText("像是一个新项目「云图」")).toBeInTheDocument();
+    // 旧数据没有 name_hint：照 new_project_name 出提示；取不到候选时名字就是 AI 起的
+    expect(screen.getByText("像是一个新项目")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "名字" })).toHaveValue("云图");
     await userEvent.click(screen.getByRole("button", { name: "建成项目" }));
     expect(createProjectWith).toHaveBeenCalledWith({
       name: "云图",
-      color: "#667085",
+      color: "#5090ff",
+      source_name: "云图",
       meeting_ids: ["m-1"],
-      force: false,
     });
     expect(screen.getByText("已有「云图AI」（又称 云图），是不是它？")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "用它" }));
@@ -234,21 +236,81 @@ describe("AttributionBar 等待与像新项目", () => {
 
     expect(createProjectWith).toHaveBeenLastCalledWith(expect.objectContaining({ force: true }));
     expect(meeting).toHaveBeenCalledWith("m-1");
-    expect(onNotice).toHaveBeenCalledWith("已建成项目「云图」，这场会归进去了");
+    expect(onNotice).toHaveBeenCalledWith("已建成项目『云图』，1 场会归进去了", undefined, "success", undefined);
     expect(onProjectsChanged).toHaveBeenCalled();
   });
 
-  it("［不是新项目］记下名字，归属变成没认出", async () => {
-    const ignoreProjectName = vi.fn().mockResolvedValue({ name: "内部分享", meetings_updated: 2 });
-    const value = attribution({ state: "new_project", project_id: null, origin: null, new_project_name: "内部分享" });
-    const { onChange } = setup(value, { ignoreProjectName });
+  it("完全同名时只问是不是它，没有［仍然新建］", async () => {
+    const createProjectWith = vi.fn().mockRejectedValue(
+      new ApiError("已有「云图AI」，是不是它？", 409, {
+        suggestion: { id: "p-a", project_id: "p-a", name: "云图AI", also_names: [], matched: "云图AI", match: "same", exact: true },
+      }),
+    );
+    setup(
+      attribution({
+        state: "new_project",
+        project_id: null,
+        origin: null,
+        new_project_name: "云图AI",
+        name_hint: { kind: "project", name: "云图AI", spoken: [] },
+      }),
+      { createProjectWith },
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "建成项目" }));
+
+    expect(await screen.findByText("已有「云图AI」，是不是它？")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "用它" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "仍然新建" })).not.toBeInTheDocument();
+  });
+
+  it("［不是新项目］记下名字，归属变成没认出，提示里能撤销", async () => {
+    const ignoreProjectName = vi.fn().mockResolvedValue({
+      name: "内部分享",
+      norm_key: "内部分享",
+      kind: "project",
+      meetings_updated: 2,
+      event_id: 31,
+      undo_until: "2099-01-01T00:00:00Z",
+    });
+    const undoNameDecision = vi.fn().mockResolvedValue({ ok: true, meetings_restored: 2 });
+    const meeting = vi.fn().mockResolvedValue(detail(null, { state: "new_project", new_project_name: "内部分享" }));
+    const value = attribution({
+      state: "new_project",
+      project_id: null,
+      origin: null,
+      new_project_name: "内部分享",
+      name_hint: { kind: "project", name: "内部分享", spoken: [] },
+    });
+    const { onChange, onNotice } = setup(value, { ignoreProjectName, undoNameDecision, meeting });
 
     await userEvent.click(screen.getByRole("button", { name: "不是新项目" }));
 
-    expect(ignoreProjectName).toHaveBeenCalledWith("内部分享");
+    expect(ignoreProjectName).toHaveBeenCalledWith("内部分享", { kind: "project", meeting_id: "m-1" });
     expect(onChange).toHaveBeenCalledWith({
-      attribution: { ...value, state: "none", new_project_name: null },
+      attribution: { ...value, state: "none", new_project_name: null, name_hint: null },
     });
+    const [message, until, tone, actions] = onNotice.mock.calls[0];
+    expect([message, until, tone]).toEqual(["以后不再把『内部分享』当成新项目提示", undefined, "success"]);
+    expect(actions.map((action: { label: string }) => action.label)).toEqual(["撤销"]);
+
+    await act(async () => {
+      actions[0].onClick();
+      actions[0].onClick();
+    });
+    expect(undoNameDecision).toHaveBeenCalledTimes(1);
+    expect(undoNameDecision).toHaveBeenCalledWith(31);
+    expect(meeting).toHaveBeenCalledWith("m-1");
+    expect(onNotice).toHaveBeenLastCalledWith("已撤销：『内部分享』还会当成新项目提示");
+  });
+
+  it("name_hint 为 null 的像新项目（名字已被占用）按没认出显示", () => {
+    setup(
+      attribution({ state: "new_project", project_id: null, origin: null, new_project_name: "云图", name_hint: null }),
+    );
+
+    expect(screen.getByText("AI 没认出这场会属于哪个项目")).toBeInTheDocument();
+    expect(screen.queryByText("像是一个新项目")).not.toBeInTheDocument();
   });
 });
 

@@ -19,6 +19,7 @@ const SOURCE_NOTES: Record<ProjectAlsoName["source"], string> = {
   manual: "",
   former: "曾用名",
   merged: "合并来的",
+  spoken: "会上的叫法",
 };
 
 const LENGTH_MESSAGE = "叫法要 2–20 个字，不能是纯数字";

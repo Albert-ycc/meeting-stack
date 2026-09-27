@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import type { GraphPayload } from "./graphTypes";
-import { RING_GUIDES, attentionOrder, layoutStarMap, overlaps, textWidth, fitText, nearestInDirection } from "./layout";
+import type { GraphFile, GraphPayload } from "./graphTypes";
+import {
+  RING_GUIDES,
+  attentionOrder,
+  layoutStarMap,
+  mentionLabel,
+  overlaps,
+  pendingNote,
+  textWidth,
+  fitText,
+  nearestInDirection,
+} from "./layout";
 import { day, meeting, payload, requirement } from "./testFixtures";
 
 /** 「7 天内 6 个需求、10 场会」，外加门口、折叠、满额的文件夹和线索词、两个信标 */
@@ -218,3 +228,110 @@ describe("layoutStarMap", () => {
   });
 });
 
+function file(id: number, name: string, overrides: Partial<GraphFile> = {}): GraphFile {
+  return {
+    id: `file:${id}`,
+    kind: "file",
+    file_id: id,
+    name,
+    ext: name.split(".").pop() ?? "",
+    rel_path: name,
+    root_id: 1,
+    folder: "root:1",
+    meeting_count: 1,
+    ...overrides,
+  };
+}
+
+describe("layoutStarMap 第二期的新节点", () => {
+  const graph = () =>
+    payload({
+      requirements: [requirement("r1"), requirement("r2")],
+      suggested_requirements: [
+        {
+          id: "nr:1abc",
+          kind: "suggested_requirement",
+          name: "数据看板",
+          meeting_ids: ["a", "b"],
+          spoken: ["数据看板"],
+          last_day: day(0),
+          count: 2,
+        },
+      ],
+      folders: [
+        ...payload().folders,
+        {
+          id: "pending:p",
+          kind: "pending",
+          name: "云图AI",
+          path: "/Volumes/资料盘/云图AI",
+          parent: "/Volumes/资料盘",
+          ring: "inner",
+          state: "waiting",
+          reason: null,
+        },
+      ],
+      files: [file(7, "报价单v2.xlsx", { meeting_count: 2 }), file(8, "初审规则口径说明（最终版）很长很长的文件名.docx")],
+      files_more: { id: "file:more", count: 3, file_ids: [9, 10, 11] },
+      edges: [
+        { id: "e:file:7:a", from: "m:a", to: "file:7", kind: "mentioned", label: "会上说『报价单』3 次 · 00:12:34" },
+      ],
+    });
+
+  it("像是新需求排在需求那一侧的末尾；等补建的文件夹画在材料那一侧", () => {
+    const layout = layoutStarMap(graph());
+    const suggested = layout.byId.get("nr:1abc")!;
+    expect(suggested.kind).toBe("suggested_requirement");
+    expect(suggested.direction).toBe("top");
+    expect(suggested.label).toBe("像是新需求『数据看板』· 2 场会");
+    expect(suggested.box.y + suggested.box.h).toBeLessThan(-44);
+    const requirementSlots = layout.nodes.filter((node) => node.kind === "requirement").map((node) => Math.abs(node.x));
+    expect(Math.abs(suggested.x)).toBeGreaterThanOrEqual(Math.max(...requirementSlots));
+
+    const pending = layout.byId.get("pending:p")!;
+    expect(pending.direction).toBe("right");
+    expect(pending.label).toBe("等补建的文件夹：云图AI");
+    expect(pendingNote({ ...payload().folders[0], kind: "pending", state: "waiting" })).toBe("插上后自动建");
+    expect(pendingNote({ ...payload().folders[0], kind: "pending", state: "stopped", reason: "盘是只读的" })).toBe("盘是只读的");
+  });
+
+  it("文件挂在根目录外侧，长名字截断，任意两个节点不重叠", () => {
+    const layout = layoutStarMap(graph());
+    const root = layout.byId.get("root:1")!;
+    const files = layout.nodes.filter((node) => node.kind === "file");
+    expect(files.map((node) => node.id)).toEqual(["file:7", "file:8"]);
+    for (const node of files) {
+      expect(node.direction).toBe("right");
+      expect(node.ring).toBe("middle");
+      expect(node.x).toBeGreaterThan(root.x);
+    }
+    const long = layout.byId.get("file:8")!;
+    expect(long.kind === "file" && long.text.endsWith("…")).toBe(true);
+    expect(long.label).toBe("文件：初审规则口径说明（最终版）很长很长的文件名.docx");
+    expect(layout.byId.get("file:more")?.label).toBe("另有 3 个被提到的文件");
+    const { nodes } = layout;
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        if (overlaps(nodes[i].box, nodes[j].box)) throw new Error(`${nodes[i].id} 和 ${nodes[j].id} 重叠`);
+      }
+    }
+  });
+
+  it("选中会议时补出来的文件占剩下的空槽，已有节点一个都不挪", () => {
+    const base = graph();
+    const before = layoutStarMap(base);
+    const after = layoutStarMap({
+      ...base,
+      files: [...base.files, ...[20, 21, 22, 23].map((id) => file(id, `补出来的文件${id}.pdf`, { extra: true, meeting_count: undefined }))],
+    });
+    for (const node of before.nodes) {
+      expect([after.byId.get(node.id)!.x, after.byId.get(node.id)!.y]).toEqual([node.x, node.y]);
+    }
+    for (const id of [20, 21, 22, 23]) expect(after.byId.get(`file:${id}`)?.direction).toBe("right");
+  });
+
+  it("「提到」线上的字：逐字稿里数出来的带次数和带小时的时间，纪要里写到的只写词", () => {
+    expect(mentionLabel({ needle: "报价单", count: 3, first_ms: 754_000, source: "transcript" })).toBe("会上说『报价单』3 次 · 00:12:34");
+    expect(mentionLabel({ needle: "报价单", count: 0, first_ms: null, source: "minutes" })).toBe("纪要里写到『报价单』");
+  });
+});

@@ -17,10 +17,30 @@ import type {
   MeetingBrief,
   QuotesPayload,
 } from "./graphTypes";
+import {
+  FilePanelBody,
+  MeetingFiles,
+  MentionEdgeBody,
+  PendingFolderBody,
+  SuggestedEdgeBody,
+  SuggestedRequirementBody,
+} from "./FilePanels";
 import { meetingDateLabel, type LaidNode, type StarLayout } from "./layout";
 import type { MiniPlayerHandle } from "./MiniPlayer";
-import { BeaconPanelBody, FolderBrowser, LoosePanelBody, ProjectPanelBody, baseName } from "./MaterialPanels";
-import { CopyPath, PlayButton, Section, TASK_STATUS, localUndoUntil, type GraphNoticeUndo, type NoticeFn } from "./panelParts";
+import { BeaconPanelBody, FolderBrowser, LoosePanelBody, ProjectPanelBody, RootMissingBody, baseName } from "./MaterialPanels";
+import {
+  CopyPath,
+  PlayButton,
+  Section,
+  TASK_STATUS,
+  clearBriefCache,
+  forgetBrief,
+  loadBrief,
+  localUndoUntil,
+  playMeetingAt,
+  type GraphNoticeUndo,
+  type NoticeFn,
+} from "./panelParts";
 import "./GraphPanel.css";
 
 const EDGE_KIND: Record<GraphEdge["kind"], string> = {
@@ -30,6 +50,8 @@ const EDGE_KIND: Record<GraphEdge["kind"], string> = {
   folder: "文件夹",
   write: "写入会议卡片",
   cross: "跨项目",
+  suggested: "像是新需求",
+  mentioned: "会上提到",
 };
 
 const KIND_LABEL: Record<LaidNode["kind"], string> = {
@@ -40,30 +62,18 @@ const KIND_LABEL: Record<LaidNode["kind"], string> = {
   doorstep_more: "门口",
   requirement: "需求",
   requirement_more: "需求",
+  suggested_requirement: "像是新需求",
   folder: "文件夹",
   folder_more: "文件夹",
   loose: "散放文件",
+  file: "会上提到的文件",
+  file_more: "会上提到的文件",
   cue: "线索词",
   beacon: "跨项目",
   ghost: "刚改走的会",
 };
 
-// 同一场会的简报在面板之间复用；图数据一变就清掉。
-const briefCache = new Map<string, Promise<MeetingBrief>>();
-
-export function clearBriefCache() {
-  briefCache.clear();
-}
-
-function loadBrief(apiClient: ApiClient, meetingId: string): Promise<MeetingBrief> {
-  let pending = briefCache.get(meetingId);
-  if (!pending) {
-    pending = apiClient.meetingBrief(meetingId);
-    pending.catch(() => briefCache.delete(meetingId));
-    briefCache.set(meetingId, pending);
-  }
-  return pending;
-}
+export { clearBriefCache } from "./panelParts";
 
 function useBrief(apiClient: ApiClient, meetingId: string | null, version: number) {
   const [brief, setBrief] = useState<MeetingBrief | null>(null);
@@ -107,6 +117,8 @@ export interface GraphPanelProps {
   onOpenGlossary: (projectId: string) => void;
   onOpenProject: (projectId: string) => void;
   onOpenAttributionReview?: () => void;
+  /** 从哪场会点进文件面板、「提到」线的（上一个选中的会）：那一行给［不是这份文件］ */
+  contextMeetingId?: string | null;
 }
 
 // ------------------------------------------------------------------ 会议
@@ -127,7 +139,7 @@ function MeetingPanelBody({
     setBusy(true);
     try {
       await work();
-      briefCache.delete(meetingId);
+      forgetBrief(meetingId);
       props.onNotice(message, undo);
       await props.onChanged();
     } catch (reason) {
@@ -154,13 +166,15 @@ function MeetingPanelBody({
           attribution={brief.attribution}
           meetingId={meetingId}
           onChange={(change) => {
-            briefCache.delete(meetingId);
+            forgetBrief(meetingId);
             setBrief({ ...brief, attribution: change.attribution, card: change.card ?? brief.card });
             void props.onChanged();
           }}
-          onNotice={(message, undoUntil, tone) =>
-            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone)
+          onNotice={(message, undoUntil, tone, actions) =>
+            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone, actions)
           }
+          onOpenRequirement={props.onOpenRequirement}
+          onPlayMeeting={(otherId, ms) => void playMeetingAt(props, otherId, ms)}
           onProjectsChanged={props.onChanged}
           onSeek={(ms) => audio && player.play(audio, ms, title)}
           projects={projects}
@@ -308,7 +322,7 @@ function MeetingPanelBody({
             card={brief.card}
             meetingId={meetingId}
             onCardChange={(card: MeetingCard) => {
-              briefCache.delete(meetingId);
+              forgetBrief(meetingId);
               setBrief({ ...brief, card });
               void props.onChanged();
             }}
@@ -318,7 +332,7 @@ function MeetingPanelBody({
           />
         </Section>
       )}
-      <p className="graph-panel__muted">{brief.files_note}</p>
+      <MeetingFiles brief={brief} props={props} />
     </>
   );
 }
@@ -747,6 +761,17 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
   );
   const [busy, setBusy] = useState(false);
   const meetingId = edge.meeting_id ?? (edge.from.startsWith("m:") ? edge.from.slice(2) : null);
+  if (edge.kind === "mentioned" || edge.kind === "suggested") {
+    return (
+      <>
+        <p className="graph-panel__meta">
+          {EDGE_KIND[edge.kind]} · {edge.kind === "suggested" ? "AI 读纪要的判断" : edge.source === "minutes" ? "纪要里写到的" : "逐字稿里数出来的"}
+        </p>
+        {edge.kind === "mentioned" ? <MentionEdgeBody edge={edge} props={props} /> : <SuggestedEdgeBody edge={edge} props={props} />}
+        <p className="graph-panel__muted">两头：{describe(props.layout, edge.from)} ↔ {describe(props.layout, edge.to)}</p>
+      </>
+    );
+  }
   const who =
     edge.kind === "attribution"
       ? edge.source === "confirmed"
@@ -774,13 +799,15 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
           attribution={brief.attribution}
           meetingId={meetingId}
           onChange={(change) => {
-            briefCache.delete(meetingId);
+            forgetBrief(meetingId);
             setBrief({ ...brief, attribution: change.attribution });
             void props.onChanged();
           }}
-          onNotice={(message, undoUntil, tone) =>
-            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone)
+          onNotice={(message, undoUntil, tone, actions) =>
+            props.onNotice(message, undoUntil ? { kind: "project", meetingId, until: undoUntil } : undefined, tone, actions)
           }
+          onOpenRequirement={props.onOpenRequirement}
+          onPlayMeeting={(otherId, ms) => void playMeetingAt(props, otherId, ms)}
           onProjectsChanged={props.onChanged}
           onSeek={(ms) => brief.meeting.audio_url && player.play(brief.meeting.audio_url, ms, brief.meeting.title)}
           projects={props.projects}
@@ -832,6 +859,8 @@ function describe(layout: StarLayout, id: string): string {
   if (node.kind === "project") return node.data.name;
   if (node.kind === "folder") return node.data.name;
   if (node.kind === "beacon") return node.data.project_name;
+  if (node.kind === "file") return node.data.name;
+  if (node.kind === "suggested_requirement") return `像是新需求『${node.data.name}』`;
   return node.label;
 }
 
@@ -897,6 +926,10 @@ function titleOf(node: LaidNode | undefined, edge: GraphEdge | undefined, props:
       return node.data.label;
     case "loose":
       return `散放 ${props.roots?.loose.count ?? "…"} 个文件`;
+    case "suggested_requirement":
+      return `像是新需求『${node.data.name}』`;
+    case "file":
+      return node.data.name;
     default:
       return node.label;
   }
@@ -940,10 +973,37 @@ export function GraphPanel(props: GraphPanelProps) {
       case "project":
         body = <ProjectPanelBody props={props} />;
         break;
+      case "suggested_requirement":
+        body = <SuggestedRequirementBody item={node.data} props={props} />;
+        break;
+      case "file":
+        body = (
+          <FilePanelBody
+            fileId={node.data.file_id}
+            fromMeetingId={props.contextMeetingId ?? null}
+            key={node.id}
+            props={props}
+          />
+        );
+        break;
+      case "file_more":
+        body = (
+          <p className="graph-panel__muted">
+            还有 {node.data.count} 个被提到的文件放不下。点开一场会，能看到它提到的全部文件。
+          </p>
+        );
+        break;
       case "folder": {
         const folder = node.data;
         const canReveal = Boolean(props.roots?.can_reveal);
-        if ((folder.kind === "root" || folder.kind === "subfolder") && folder.root_id !== undefined) {
+        const rootState =
+          folder.kind === "root" ? props.roots?.roots.find((item) => item.root_id === folder.root_id)?.state : undefined;
+        if (folder.kind === "pending") {
+          body = <PendingFolderBody folder={folder} />;
+        } else if (folder.kind === "root" && folder.root_id !== undefined && rootState === "missing") {
+          // 盘在、文件夹没了：问是不是改了名（和项目页同一个组件）
+          body = <RootMissingBody path={folder.path} props={props} rootId={folder.root_id} />;
+        } else if ((folder.kind === "root" || folder.kind === "subfolder") && folder.root_id !== undefined) {
           const root = graph.folders.find((item) => item.kind === "root" && item.root_id === folder.root_id);
           body = (
             <FolderBrowser
@@ -1020,7 +1080,15 @@ export function GraphPanel(props: GraphPanelProps) {
           </button>
         </div>
       </header>
-      {(node?.kind === "meeting" || node?.kind === "doorstep" || node?.kind === "cue" || edge?.kind === "attribution" || edge?.kind === "cue") &&
+      {(node?.kind === "meeting" ||
+        node?.kind === "doorstep" ||
+        node?.kind === "cue" ||
+        node?.kind === "file" ||
+        node?.kind === "suggested_requirement" ||
+        edge?.kind === "attribution" ||
+        edge?.kind === "cue" ||
+        edge?.kind === "mentioned" ||
+        edge?.kind === "suggested") &&
         props.playerNode}
       <div className="graph-panel__body">{body}</div>
       {action && (

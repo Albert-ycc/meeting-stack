@@ -8,7 +8,10 @@ interface SimilarProjectQuestionProps {
   onForce: () => void;
 }
 
-/** 新建项目撞上近似重名时问一句「已有『X』（又称 …），是不是它？［用它］［仍然新建］」。 */
+/**
+ * 新建项目撞上近似重名时问一句「已有『X』（又称 …），是不是它？［用它］［仍然新建］」。
+ * 正式名完全相同（exact）时只有［用它］：同名项目建不出来。
+ */
 export function SimilarProjectQuestion({ suggestion, disabled = false, onUse, onForce }: SimilarProjectQuestionProps) {
   const also = suggestion.also_names.slice(0, 3);
   return (
@@ -20,9 +23,11 @@ export function SimilarProjectQuestion({ suggestion, disabled = false, onUse, on
         <button className="ghost-button" disabled={disabled} onClick={() => onUse(suggestion.project_id)} type="button">
           用它
         </button>
-        <button className="text-button" disabled={disabled} onClick={onForce} type="button">
-          仍然新建
-        </button>
+        {!suggestion.exact && (
+          <button className="text-button" disabled={disabled} onClick={onForce} type="button">
+            仍然新建
+          </button>
+        )}
       </span>
     </div>
   );

@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App, { MOBILE_READ_ONLY_QUERY } from "./App";
 import type { ApiClient } from "./api";
+import { forgetOverviewCache } from "./components/graph/OverviewGraph";
+import { foldersPayload, overviewPayload } from "./components/graph/overviewFixtures";
 import { forgetGraphCache } from "./components/graph/ProjectGraph";
 import { focusPayload, payload } from "./components/graph/testFixtures";
 
@@ -163,7 +165,10 @@ describe("地址栏锚点直达", () => {
     expect(graph).toHaveBeenCalledWith("p", undefined, "m:a");
     expect(meetingBrief).toHaveBeenCalledWith("a");
     expect(window.location.hash).toBe("#projects/p/graph?sel=m:a");
-    expect(screen.getByRole("button", { name: "关系图" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(screen.getByRole("group", { name: "项目视图" })).getByRole("button", { name: "关系图" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
 
     const depth = window.history.length;
     await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 b/ }));
@@ -201,5 +206,57 @@ describe("地址栏锚点直达", () => {
     render(<App apiClient={apiClient} />);
     expect(await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" })).toBeInTheDocument();
     expect(graphMeetingFocus).toHaveBeenLastCalledWith("a");
+  });
+});
+
+describe("全部项目概览的地址 #graph", () => {
+  function overviewClient() {
+    return client({
+      projects: vi.fn().mockResolvedValue([
+        { id: "a", name: "云图AI", color: "#2c8d83" },
+        { id: "b", name: "数据中台", color: "#7a5af8" },
+      ]),
+      getGraphOverview: vi.fn().mockResolvedValue({ overview: overviewPayload(), etag: 'W/"o-1"' }),
+      getOverviewFolders: vi.fn().mockResolvedValue(foldersPayload()),
+    } as unknown as Partial<ApiClient>);
+  }
+
+  it("冷加载 #graph?sel=p:a 打开概览并选中那个岛；换选中只改地址栏不压历史", async () => {
+    forgetOverviewCache();
+    window.history.replaceState(null, "", "/#graph?sel=p:a");
+    render(<App apiClient={overviewClient()} />);
+
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(panel).getByRole("heading", { name: "云图AI" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#graph?sel=p:a");
+    expect(screen.getByRole("button", { name: "关系图" })).toHaveAttribute("aria-current", "page");
+
+    const depth = window.history.length;
+    await userEvent.click(screen.getByRole("button", { name: /^项目：数据中台/ }));
+    await waitFor(() => expect(window.location.hash).toBe("#graph?sel=p:b"));
+    expect(window.history.length).toBe(depth);
+  });
+
+  it("左侧导航「关系图」打开概览，地址是 #graph", async () => {
+    forgetOverviewCache();
+    const apiClient = overviewClient();
+    render(<App apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "关系图" }));
+    expect(await screen.findByRole("application", { name: "全部项目关系图" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#graph"));
+    expect(apiClient.getGraphOverview).toHaveBeenCalledWith("28d", null);
+  });
+
+  it("手机上打开 #graph 退回项目列表，也没有「关系图」导航", async () => {
+    forgetOverviewCache();
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ ...desktopMatchMedia(), matches: true })));
+    window.history.replaceState(null, "", "/#graph?sel=p:a");
+    const apiClient = overviewClient();
+    render(<App apiClient={apiClient} />);
+
+    expect(await screen.findByRole("heading", { name: "项目" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#projects"));
+    expect(screen.queryByRole("button", { name: "关系图" })).not.toBeInTheDocument();
+    expect(apiClient.getGraphOverview).not.toHaveBeenCalled();
   });
 });

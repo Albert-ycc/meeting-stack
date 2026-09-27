@@ -22,6 +22,10 @@
   box-shadow: var(--shadow);
 }
 
+.material-picker__card:focus {
+  outline: none;
+}
+
 .material-picker__head {
   display: flex;
   flex: none;
@@ -51,6 +55,14 @@
   background: var(--paper-deep);
 }
 
+.material-picker__desc {
+  margin: 6px 0 0;
+  padding: 0 20px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .material-picker__nav {
   display: flex;
   flex: none;
@@ -58,6 +70,34 @@
   justify-content: space-between;
   gap: 12px;
   padding: 16px 20px;
+}
+
+.material-picker__nav-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 14px;
+}
+
+/* 选当前打开的这个文件夹 */
+.material-picker__current {
+  padding: 4px 10px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.material-picker__current:hover {
+  color: var(--signal-dark);
+  border-color: var(--signal);
+}
+
+.material-picker__current.is-selected {
+  color: var(--ink);
+  background: var(--signal-bg);
+  border-color: var(--signal);
 }
 
 .material-picker__breadcrumbs {
@@ -166,6 +206,12 @@
   color: var(--danger);
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* 底部额外的文字选项，如「不建了，以后自己挂文件夹」 */
+.material-picker__extra {
+  flex: none;
+  padding: 0 14px 8px;
 }
 
 .material-picker__foot {

@@ -482,8 +482,54 @@ def test_real_version_five_running_shadow_migrates_and_completes_idempotently(
     }
 
 
+V14_TABLES = (
+    "requirement_name_decisions",
+    "pending_project_folders",
+    "folder_declines",
+    "root_fingerprints",
+    "meeting_file_mentions",
+    "meeting_file_scan",
+    "material_index_state",
+    "material_dirs",
+    "material_files",
+)
+V14_GRAPH_REV_TABLES = (
+    "name_decisions",
+    "requirement_name_decisions",
+    "pending_project_folders",
+    "meeting_file_mentions",
+)
+# v14 / 2d：建在旧表上、引用新表的触发器，退回 v13 时要先删。
+V14_TRIGGERS = (
+    "pending_project_folders_drop_on_mount",
+    "meeting_file_scan_dirty_meeting",
+    "meeting_file_scan_dirty_transcript_edit",
+    "meeting_file_mentions_leave_project",
+    "material_index_root_moved",
+)
+
+
+# v14 / 2b：project_links 上的新需求名、AI 当时选的项目、会上的叫法。
+V14_LINK_COLUMNS = ("new_requirement_name", "new_name_project_id", "new_name_spoken")
+
+
+def _downgrade_to_v13(connection: sqlite3.Connection) -> None:
+    """把刚建好的 v14 库退回 v13 的形状：先删新触发器（它们引用新表），再删新表。"""
+    for table in V14_GRAPH_REV_TABLES:
+        for action in ("insert", "update", "delete"):
+            connection.execute(f"DROP TRIGGER IF EXISTS graph_rev_{table}_{action}")
+    for trigger in V14_TRIGGERS:
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    for table in V14_TABLES:
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
+    for column in V14_LINK_COLUMNS:
+        connection.execute(f"ALTER TABLE project_links DROP COLUMN {column}")
+    connection.execute("PRAGMA user_version=13")
+
+
 def _downgrade_to_v12(connection: sqlite3.Connection) -> None:
-    """把刚建好的 v13 库退回 v12 的形状：去掉 v13 新增的表、虚表和触发器。"""
+    """把刚建好的库退回 v12 的形状：先退到 v13，再去掉 v13 新增的表、虚表和触发器。"""
+    _downgrade_to_v13(connection)
     for (name,) in connection.execute(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'graph_rev_%'"
     ).fetchall():
@@ -550,7 +596,7 @@ def test_version_thirteen_migration_backfills_tasks_glossary_and_minutes_index(t
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [12]
-    assert db.user_version() == SCHEMA_VERSION == 13
+    assert db.user_version() == SCHEMA_VERSION
     columns = {
         table: {row["name"] for row in db.query_all(f"PRAGMA table_info({table})")}
         for table in ("projects", "project_links", "glossary_terms")
@@ -647,3 +693,127 @@ def test_minutes_index_follows_the_current_minutes_pointer(tmp_path):
     assert db.query_one("SELECT COUNT(*) AS n FROM minutes_fts")["n"] == 1
     db.execute("DELETE FROM meetings WHERE id='m-1'")
     assert hits("全量上线") == []
+
+
+def _tables(db: Database) -> set[str]:
+    return {
+        row["name"]
+        for row in db.query_all("SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger')")
+    }
+
+
+def test_version_fourteen_migration_adds_tables_and_keeps_data(tmp_path):
+    database_path = tmp_path / "workbench.sqlite3"
+    db = Database(database_path)
+    db.initialize()
+    with sqlite3.connect(database_path) as connection:
+        _downgrade_to_v13(connection)
+        connection.executescript(
+            """
+            INSERT INTO projects(id, name, created_at) VALUES ('p-a', '云图AI', '2026-09-01');
+            INSERT INTO project_material_roots(project_id, path, created_at)
+            VALUES ('p-a', '/Volumes/资料盘/项目/云图AI', '2026-09-01');
+            INSERT INTO name_decisions(norm_key, name, decision, decided_at)
+            VALUES ('云图二期', '云图二期', 'ignored', '2026-09-01');
+            INSERT INTO meetings(id, title, status, created_at, updated_at)
+            VALUES ('m-1', '周会', 'completed_unreviewed', '2026-09-01', '2026-09-01');
+            INSERT INTO project_links(meeting_id, minutes_version_id, status, new_project_name, created_at)
+            VALUES ('m-1', 'mv-1', 'unresolved', '数据中台', '2026-09-01');
+            """
+        )
+    assert not set(V14_TABLES) & _tables(db)
+    backups: list[int] = []
+
+    db.initialize(before_migrate=lambda: backups.append(db.user_version()))
+
+    assert backups == [13]
+    assert db.user_version() == SCHEMA_VERSION == 14
+    assert set(V14_TABLES) <= _tables(db)
+    assert db.query_one("SELECT name FROM projects WHERE id='p-a'") == {"name": "云图AI"}
+    assert db.query_one("SELECT decision FROM name_decisions") == {"decision": "ignored"}
+    assert db.query_one(
+        """SELECT new_project_name, new_requirement_name, new_name_project_id, new_name_spoken
+             FROM project_links"""
+    ) == {
+        "new_project_name": "数据中台",
+        "new_requirement_name": None,
+        "new_name_project_id": None,
+        "new_name_spoken": "[]",
+    }
+    # 再跑一遍什么都不变
+    db.initialize()
+    db.initialize()
+    assert db.user_version() == 14
+    assert db.query_one("SELECT COUNT(*) AS n FROM project_material_roots") == {"n": 1}
+
+
+def test_version_fourteen_tables_bump_the_graph_revision(tmp_path):
+    db = Database(tmp_path / "workbench.sqlite3")
+    db.initialize()
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', 'x')")
+
+    def rev() -> int:
+        row = db.query_one("SELECT value FROM app_state WHERE key='graph_rev'")
+        return int(row["value"]) if row else 0
+
+    before = rev()
+    db.execute(
+        """INSERT INTO pending_project_folders(project_id, parent, created_at)
+           VALUES ('p', '/Volumes/资料盘/项目', 'x')"""
+    )
+    db.execute(
+        """INSERT INTO requirement_name_decisions(project_id, name_key, name, decision, decided_at)
+           VALUES ('p', '数据看板', '数据看板', 'ignored', 'x')"""
+    )
+    db.execute(
+        "INSERT INTO name_decisions(norm_key, name, decision, decided_at) VALUES ('k', 'k', 'ignored', 'x')"
+    )
+    assert rev() == before + 3
+    # 后台写的指纹和拒绝记录不进版本号，免得每轮刷新都让关系图缓存失效
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/x/云图AI', 'x')"
+    )
+    after_root = rev()
+    db.execute("INSERT INTO root_fingerprints(root_id, child_names, updated_at) VALUES (1, '[]', 'x')")
+    db.execute(
+        "INSERT INTO folder_declines(kind, scope, path, decided_at) VALUES ('unclaimed', '', '/x/资料', 'x')"
+    )
+    assert rev() == after_root
+    # 2d：文件名索引每扫一轮都会写，也不进版本号；会上提到的文件进
+    db.execute(
+        """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, seen_at)
+           VALUES (1, '报价单.xlsx', '', '报价单.xlsx', '报价单', '报价单', 'x')"""
+    )
+    db.execute("INSERT INTO material_dirs(root_id, dir_rel, listed_at) VALUES (1, '', 'x')")
+    db.execute("INSERT INTO material_index_state(root_id) VALUES (1)")
+    db.execute("INSERT INTO meetings(id, title) VALUES ('m', '周会')")
+    db.execute("INSERT INTO meeting_file_scan(meeting_id) VALUES ('m')")
+    assert rev() == after_root + 1  # 插入会议本身
+    db.execute(
+        """INSERT INTO meeting_file_mentions(meeting_id, project_id, stem_key, file_id, needle, updated_at)
+           VALUES ('m', 'p', '报价单', 1, '报价单', 'x')"""
+    )
+    assert rev() == after_root + 2
+
+
+def test_mounting_a_folder_drops_the_pending_folder(tmp_path):
+    db = Database(tmp_path / "workbench.sqlite3")
+    db.initialize()
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', 'x')")
+    db.execute(
+        """INSERT INTO pending_project_folders(project_id, parent, created_at)
+           VALUES ('p', '/Volumes/资料盘/项目', 'x')"""
+    )
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/x/云图AI', 'x')"
+    )
+    assert db.query_one("SELECT COUNT(*) AS n FROM pending_project_folders") == {"n": 0}
+    # 删项目时待办和指纹跟着删
+    db.execute(
+        """INSERT INTO pending_project_folders(project_id, parent, created_at)
+           VALUES ('p', '/Volumes/资料盘/项目', 'x')"""
+    )
+    db.execute("INSERT INTO root_fingerprints(root_id, child_names, updated_at) VALUES (1, '[]', 'x')")
+    db.execute("DELETE FROM projects WHERE id='p'")
+    assert db.query_one("SELECT COUNT(*) AS n FROM pending_project_folders") == {"n": 0}
+    assert db.query_one("SELECT COUNT(*) AS n FROM root_fingerprints") == {"n": 0}

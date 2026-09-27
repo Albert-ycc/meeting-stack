@@ -393,4 +393,77 @@ describe("API write protection", () => {
       expect.objectContaining({ method: "PUT", body: JSON.stringify({ project_id: null, scope: "儿科" }) }),
     );
   });
+
+  it("项目总文件夹（2a）：设置、认领、撤销「不是项目」、改名找回、补建位置都走带 CSRF 的写接口", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("local-token");
+
+    await api.setProjectParent("/Volumes/资料盘/项目");
+    await api.claimFolders([{ path: "/Volumes/资料盘/项目/蓝鲸云", action: "create" }]);
+    await api.undeclineFolder("/Volumes/资料盘/项目/资料 & 备份");
+    await api.repointProjectMaterialRoot("project-1", 3, "/Volumes/资料盘/云图AI-2026");
+    await api.dropPendingFolder("project-1");
+
+    const calls = fetchMock.mock.calls as [string, RequestInit][];
+    expect(calls[0][0]).toBe("/api/settings/project-parent");
+    expect(calls[0][1]).toMatchObject({ method: "PUT", body: JSON.stringify({ path: "/Volumes/资料盘/项目" }) });
+    expect(calls[1][1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ items: [{ path: "/Volumes/资料盘/项目/蓝鲸云", action: "create" }] }),
+    });
+    // 撤销「不是项目」的路径放在查询串里，要编码
+    expect(calls[2][0]).toBe(
+      `/api/settings/project-parent/decline?path=${encodeURIComponent("/Volumes/资料盘/项目/资料 & 备份").replace(/%20/g, "+")}`,
+    );
+    expect(calls[2][1]).toMatchObject({
+      method: "DELETE",
+      headers: expect.objectContaining({ "Content-Type": "application/json", "X-CSRF-Token": "local-token" }),
+    });
+    expect(calls[3][0]).toBe("/api/projects/project-1/material-roots/3/repoint");
+    expect(calls[4]).toEqual(["/api/projects/project-1/pending-folder", expect.objectContaining({ method: "DELETE" })]);
+  });
+
+  it("像是新项目 / 新需求（2b）：候选名、建成需求和撤销、不算新需求和撤销、撤销也叫都走对的路径", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("local-token");
+
+    await api.nameCandidates("vm 1");
+    await api.nameAsRequirement("vm-1", { title: "数据看板", folder_path: "/Volumes/资料盘/云图AI/数据看板" });
+    await api.undoNameAsRequirement("vm-1");
+    await api.ignoreProjectName("云图二期", { kind: "requirement", project_id: "project-1", meeting_id: "vm-1" });
+    await api.ignoreProjectName("内部分享");
+    await api.undoNameDecision(12);
+    await api.undoSpokenAlsoName("project-1", 34);
+    await api.createProjectWith({ name: "云图看板", color: "#3f51b5", source_name: "云图数据看板", meeting_ids: ["vm-1"] });
+
+    const calls = fetchMock.mock.calls as [string, RequestInit][];
+    expect(calls[0][0]).toBe("/api/meetings/vm%201/name-candidates");
+    expect(calls[0][1].method).toBeUndefined();
+    expect(calls[1]).toEqual([
+      "/api/meetings/vm-1/name-as-requirement",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ title: "数据看板", folder_path: "/Volumes/资料盘/云图AI/数据看板" }),
+        headers: expect.objectContaining({ "X-CSRF-Token": "local-token" }),
+      }),
+    ]);
+    expect(calls[2]).toEqual(["/api/meetings/vm-1/name-as-requirement/undo", expect.objectContaining({ method: "POST", body: "{}" })]);
+    expect(calls[3][1].body).toBe(
+      JSON.stringify({ name: "云图二期", kind: "requirement", project_id: "project-1", meeting_id: "vm-1" }),
+    );
+    expect(calls[4][1].body).toBe(JSON.stringify({ name: "内部分享" }));
+    expect(calls[5]).toEqual(["/api/name-decisions/undo", expect.objectContaining({ body: JSON.stringify({ event_id: 12 }) })]);
+    expect(calls[6]).toEqual([
+      "/api/projects/project-1/also-names/spoken/undo",
+      expect.objectContaining({ body: JSON.stringify({ event_id: 34 }) }),
+    ]);
+    expect(JSON.parse(String(calls[7][1].body))).toMatchObject({ source_name: "云图数据看板", meeting_ids: ["vm-1"] });
+  });
 });
+

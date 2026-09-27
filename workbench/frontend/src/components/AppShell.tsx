@@ -11,7 +11,8 @@ export type AppView =
   | "glossary"
   | "jobs"
   | "projects"
-  | "projectDetail";
+  | "projectDetail"
+  | "graph";
 
 interface AppShellProps {
   activeView: AppView;
@@ -81,6 +82,14 @@ const icons: Record<AppView, ReactNode> = {
       <path d="M13.2 1.4v3.3H10" />
     </svg>
   ),
+  graph: (
+    <svg viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+      <circle cx="3.6" cy="4" r="2.1" />
+      <circle cx="11.2" cy="3.4" r="1.7" />
+      <circle cx="8.6" cy="11.4" r="2.3" />
+      <path d="M5.6 3.8l3.9-.3M4.8 5.8l2.6 3.7M10.6 5l-1.1 4.1" />
+    </svg>
+  ),
 };
 
 const themeOptions: Array<{ value: ThemePreference; label: string; icon: ReactNode }> = [
@@ -144,6 +153,8 @@ const navItems: Array<{ view: AppView; label: string; desktopOnly?: boolean }> =
   { view: "tasks", label: "任务池" },
   { view: "glossary", label: "词典" },
   { view: "projects", label: "项目管理" },
+  // 全部项目概览（2c）：画布只在电脑上有
+  { view: "graph", label: "关系图", desktopOnly: true },
   { view: "jobs", label: "转写录音", desktopOnly: true },
 ];
 

@@ -143,6 +143,33 @@
   stroke-dasharray: 5 5;
 }
 
+/* 「像是新需求」和会之间的虚线（2c） */
+.graph-edge--suggested .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.28);
+  stroke-dasharray: 5 4;
+}
+
+/* 会上提到文件（2d）：默认淡色，悬停或选中时加深 */
+.graph-edge--mentioned .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.13);
+  stroke-width: 1.1;
+}
+
+.graph-edge__quote circle {
+  fill: var(--stage);
+  stroke: rgb(var(--fg-rgb) / 0.18);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-edge__quote text {
+  fill: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
 .graph-edge.is-dim {
   opacity: 0.12;
 }
@@ -153,8 +180,14 @@
 
 .graph-edge--discussion.is-lit .graph-edge__line,
 .graph-edge--cue.is-lit .graph-edge__line,
-.graph-edge--folder.is-lit .graph-edge__line {
+.graph-edge--folder.is-lit .graph-edge__line,
+.graph-edge--suggested.is-lit .graph-edge__line {
   stroke: rgb(var(--fg-rgb) / 0.5);
+}
+
+.graph-edge--mentioned.is-lit .graph-edge__line {
+  stroke: color-mix(in srgb, var(--signal) 70%, transparent);
+  stroke-width: 1.8;
 }
 
 .graph-edge__label {
@@ -395,6 +428,36 @@
   box-shadow: none;
 }
 
+/* 像是新需求（2c）：需求那一侧末尾的虚线圆角框 */
+.graph-node--suggested_requirement {
+  width: 170px;
+  height: 36px;
+  justify-content: center;
+  padding: 0 8px;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  border: 1.5px dashed var(--line-strong);
+  border-radius: 10px;
+}
+
+.graph-node--suggested_requirement .graph-node__label {
+  align-items: center;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  background: none;
+  overflow: hidden;
+}
+
+.graph-node--suggested_requirement:hover,
+.graph-node--suggested_requirement.is-selected {
+  border-color: var(--signal);
+}
+
+.graph-node--suggested_requirement.is-selected .graph-node__label {
+  background: none;
+  box-shadow: none;
+}
+
 .graph-requirement__bar {
   flex: none;
   align-self: stretch;
@@ -460,6 +523,8 @@
   display: none;
 }
 
+/* 等补建的文件夹（2c）：灰色虚边 */
+.graph-node.is-pending .graph-folder__icon,
 .graph-node.is-offline .graph-folder__icon,
 .graph-node.is-missing .graph-folder__icon {
   background: none;
@@ -473,6 +538,71 @@
 
 .graph-node.is-missing small {
   color: var(--danger);
+}
+
+.graph-node.is-pending .graph-node__label {
+  color: var(--muted);
+}
+
+.graph-node.is-pending-stopped small {
+  color: var(--warn);
+}
+
+/* 会上提到的文件（2d）：纸张图标，底下写扩展名 */
+.graph-file__icon {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: flex-end;
+  justify-content: center;
+  width: 20px;
+  height: 22px;
+  padding-bottom: 2px;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px 7px 2px 2px;
+}
+
+.graph-file__icon::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  background: linear-gradient(225deg, var(--stage) 50%, var(--surface-2) 50%);
+  border-bottom: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-strong);
+  border-radius: 0 0 0 2px;
+}
+
+.graph-file__ext {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.graph-node--file .graph-node__label {
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+
+/* 选中会议时从简报补出来的文件：和最近改过的子文件夹一样淡一档 */
+.graph-node--file.graph-node--extra .graph-node__label {
+  color: var(--muted);
+}
+
+.graph-node--file.is-selected .graph-file__icon {
+  border-color: var(--signal);
+}
+
+.graph-node--file_more .graph-node__label {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 /* 门口：会议那一侧外面的琥珀色虚线胶囊，按钮直接挂在上面 */

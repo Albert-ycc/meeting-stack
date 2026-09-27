@@ -21,6 +21,29 @@
   border-color: var(--signal-dark);
 }
 
+.projects-page__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.projects-graph-link {
+  padding: 10px 14px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+
+.projects-graph-link:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
 .projects-query {
   display: flex;
   flex-wrap: wrap;

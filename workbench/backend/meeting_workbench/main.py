@@ -57,12 +57,15 @@ from .attribution import (
 from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
 from . import search as search_module
 from .cards import CardsError, CardWriter
+from . import name_actions, name_hints, project_folders
+from . import overview as overview_module
+from . import file_mentions
+from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
+from .project_folders import folder_matches
 from .project_names import (
     SimilarProjectError,
     also_entries,
     delete_empty_project,
-    folder_matches,
-    ignore_project_name,
     merge_project,
 )
 from .tasks import TaskService, llm_ready
@@ -291,6 +294,16 @@ class ProjectInput(BaseModel):
     folder: ProjectFolderInput | None = None
     meeting_ids: list[str] | None = None
     force: bool = False
+    # 第二期 2b：从「像是新项目」建时 AI 起的名字（建好后它和最终名字都不再提示）。
+    source_name: str | None = None
+
+
+class NameAsRequirementInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    project_id: str | None = None
+    folder_path: str | None = None
 
 
 class ProjectUpdateInput(BaseModel):
@@ -312,12 +325,50 @@ class ProjectNameInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    # 第二期 2b：kind=requirement 是「不算新需求」，要带 project_id；meeting_id 只用来记事件。
+    kind: Literal["project", "requirement"] = "project"
+    project_id: str | None = None
+    meeting_id: str | None = None
+
+
+class EventUndoInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: int
 
 
 class MaterialRootInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=4096)
+
+
+class ProjectParentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # null 或空串：清除项目总文件夹
+    path: str | None = Field(default=None, max_length=4096)
+
+
+class ClaimItemInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+    action: Literal["mount", "create"]
+    project_id: str | None = None
+    force: bool = False
+
+
+class ClaimInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ClaimItemInput] = Field(min_length=1, max_length=200)
+
+
+class PendingFolderInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent: str = Field(min_length=1, max_length=4096)
 
 
 class CardActionInput(BaseModel):
@@ -401,6 +452,12 @@ class RevealInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=4096)
+
+
+class FileMentionPickInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: int = Field(ge=1)
 
 
 class TaskStatusInput(BaseModel):
@@ -642,7 +699,9 @@ def create_app(
     )
     project_linker = ProjectLinker(db, settings)
     card_writer = CardWriter(db, settings)
-    roots_cache = graph_module.RootsCache(db)
+    roots_cache = graph_module.RootsCache(db, settings=settings)
+    material_indexer = MaterialIndexer(db, settings, busy_check=semantic.busy_check)
+    pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
     csrf_token = secrets.token_urlsafe(32)
@@ -907,6 +966,13 @@ def create_app(
                     # 任务抽取是旁路，失败只记账，不影响扫描与纪要主链。
                     phase_errors.append(error)
                 try:
+                    await asyncio.to_thread(file_mentions.match_pending, db)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 会上提到文件名是旁路，每轮最多 20 场或 5 秒，失败只记账。
+                    phase_errors.append(error)
+                try:
                     await asyncio.to_thread(card_writer.reconcile)
                 except asyncio.CancelledError:
                     raise
@@ -1005,6 +1071,18 @@ def create_app(
         finally:
             state["loop_alive"] = False
 
+    def finish_pending_folders(done: list[dict[str, Any]]) -> None:
+        """补建好的文件夹：刷新快照、补写卡片，往卡片提示里放一条「插上资料盘后建好了…」。"""
+        if not done:
+            return
+        rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+        for item in done:
+            written = backfill_project_cards(item["project_id"])
+            card_writer.push_notice({"kind": "folder_created", **item, "cards_written": written})
+        roots_cache.refresh_in_background()
+
+    roots_cache.after_refresh.append(lambda: finish_pending_folders(pending_worker.drain()))
+
     async def roots_loop() -> None:
         """关系图的资料盘状态：每 30 秒在后台线程里刷新一次，图接口只读缓存。"""
         while True:
@@ -1015,6 +1093,18 @@ def create_app(
             except Exception:  # noqa: BLE001
                 logger.exception("刷新资料盘状态失败")
             await asyncio.sleep(graph_module.ROOTS_REFRESH_SECONDS)
+
+    async def material_index_loop() -> None:
+        """文件名索引：每 60 秒一轮，和扫描循环分开，不影响扫描器的健康检查。"""
+        await asyncio.sleep(5)
+        while True:
+            try:
+                await asyncio.to_thread(material_indexer.run_round)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("文件名索引这一轮失败")
+            await asyncio.sleep(MATERIAL_INDEX_SECONDS)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -1076,6 +1166,7 @@ def create_app(
             qwen_shadow_loop(application), name="meeting-workbench-qwen-shadow"
         )
         roots_worker = asyncio.create_task(roots_loop(), name="meeting-workbench-graph-roots")
+        index_worker = asyncio.create_task(material_index_loop(), name="meeting-workbench-material-index")
         try:
             yield
         finally:
@@ -1083,6 +1174,9 @@ def create_app(
             relay_probe.cancel()
             qwen_worker.cancel()
             roots_worker.cancel()
+            index_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await index_worker
             with suppress(asyncio.CancelledError):
                 await roots_worker
             with suppress(asyncio.CancelledError):
@@ -1568,6 +1662,9 @@ def create_app(
                    {ATTRIBUTION_STATE_SQL} AS attribution_state,
                    pl.candidates_json AS _candidates_json,
                    pl.new_project_name AS _new_project_name,
+                   pl.new_requirement_name AS _new_requirement_name,
+                   pl.new_name_project_id AS _new_name_project_id,
+                   pl.new_name_spoken AS _new_name_spoken,
                    (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
                     ORDER BY CASE a.source_root WHEN 'archive' THEN 0 ELSE 1 END LIMIT 1) AS audio_artifact_id,
                    (SELECT COUNT(*) FROM segments s WHERE s.version_id = m.current_transcript_version_id) AS segment_count
@@ -3049,7 +3146,7 @@ def create_app(
     @app.get("/api/cold-start/folders")
     def cold_start_folders():
         with db.autocommit() as connection:
-            return cold_start.folder_suggestions(connection, settings)
+            return cold_start.folder_suggestions(connection, settings, roots_cache)
 
     @app.post("/api/cold-start/folders/decline")
     def cold_start_folders_decline(body: ProjectIdsInput):
@@ -3069,12 +3166,13 @@ def create_app(
     @app.post("/api/projects")
     def create_project(body: ProjectInput):
         try:
-            return task_service.create_project(
+            detail = task_service.create_project(
                 name=body.name, color=body.color, origin="manual",
                 material_roots=body.material_roots,
                 folder=body.folder.model_dump() if body.folder else None,
                 meeting_ids=body.meeting_ids,
                 force=body.force,
+                source_name=(body.source_name or "").strip() or None,
             )
         except SimilarProjectError as error:
             return JSONResponse(
@@ -3082,6 +3180,50 @@ def create_app(
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+        if body.source_name and detail.get("meetings_assigned"):
+            # 从提示建的：归进来的会当场补写卡片，提示里说「挂上了 …」时卡片已经在了。
+            detail["cards_written"] = backfill_project_cards(detail["id"])
+        return detail
+
+    @app.post("/api/projects/{project_id}/also-names/spoken/undo")
+    def undo_spoken_also_endpoint(project_id: str, body: EventUndoInput):
+        with db.transaction() as connection:
+            result = name_actions.undo_spoken_also(connection, project_id, body.event_id)
+        rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+        return result
+
+    @app.get("/api/meetings/{meeting_id}/name-candidates")
+    def meeting_name_candidates(meeting_id: str):
+        with db.autocommit() as connection:
+            return name_actions.name_candidates(connection, settings, roots_cache, meeting_id)
+
+    @app.post("/api/meetings/{meeting_id}/name-as-requirement")
+    def meeting_name_as_requirement(meeting_id: str, body: NameAsRequirementInput):
+        try:
+            with db.transaction() as connection:
+                result = name_actions.name_as_requirement(
+                    connection,
+                    meeting_id=meeting_id,
+                    title=body.title,
+                    project_id=body.project_id,
+                    folder_path=body.folder_path,
+                )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        if result["meetings_assigned"]:
+            for affected in result["meeting_ids"]:
+                sync_card(affected)
+        if result["folder_attached"]:
+            roots_cache.refresh_in_background()
+        return result
+
+    @app.post("/api/meetings/{meeting_id}/name-as-requirement/undo")
+    def undo_meeting_name_as_requirement(meeting_id: str, _body: dict[str, Any] | None = None):
+        with db.transaction() as connection:
+            result = name_actions.undo_name_as_requirement(connection, meeting_id)
+        for affected in result["meeting_ids"]:
+            sync_card(affected)
+        return result
 
     @app.patch("/api/projects/{project_id}")
     def update_project(project_id: str, body: ProjectUpdateInput):
@@ -3118,7 +3260,7 @@ def create_app(
     @app.get("/api/projects/folder-matches")
     def project_folder_matches(name: str | None = None):
         with db.autocommit() as connection:
-            return folder_matches(connection, settings, names=[name] if name else [])
+            return folder_matches(connection, settings, roots_cache, names=[name] if name else [])
 
     @app.get("/api/projects/{project_id}/folder-suggestions")
     def project_folder_suggestions(project_id: str):
@@ -3127,15 +3269,27 @@ def create_app(
             raise HTTPException(404, "项目不存在")
         names = [project["name"], *(entry["name"] for entry in also_entries(project["also_names"]))]
         with db.autocommit() as connection:
-            return folder_matches(connection, settings, names=names)
+            return folder_matches(connection, settings, roots_cache, names=names)
 
     @app.post("/api/project-names/ignore")
     def ignore_project_name_endpoint(body: ProjectNameInput):
+        """「不是新项目」「不算新需求」：清掉提示，10 分钟内能撤销。"""
         try:
             with db.transaction() as connection:
-                return ignore_project_name(connection, body.name)
+                return name_hints.decide_name(
+                    connection,
+                    kind=body.kind,
+                    name=body.name,
+                    project_id=body.project_id,
+                    meeting_id=body.meeting_id,
+                )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/name-decisions/undo")
+    def undo_name_decision_endpoint(body: EventUndoInput):
+        with db.transaction() as connection:
+            return name_hints.undo_name_decision(connection, body.event_id)
 
     @app.get("/api/projects/{project_id}/board")
     def project_board(project_id: str):
@@ -3166,6 +3320,26 @@ def create_app(
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
         return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
+    @app.get("/api/graph/overview")
+    def graph_overview_endpoint(
+        request: Request, window: Literal["7d", "28d", "90d", "all"] = "28d"
+    ):
+        today = datetime.now().astimezone().date()
+        ai_configured = llm_ready(settings)
+        with db.autocommit() as connection:
+            etag = overview_module.overview_etag(connection, window, today, ai_configured)
+            if request.headers.get("if-none-match") == etag:
+                return Response(status_code=304, headers={"ETag": etag})
+            payload = overview_module.overview(
+                connection, window=window, ai_configured=ai_configured, today=today
+            )
+        return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
+    @app.get("/api/graph/overview/folders")
+    def graph_overview_folders():
+        with db.autocommit() as connection:
+            return overview_module.overview_folders(connection, settings, roots_cache)
 
     def local_request(request: Request) -> bool:
         return graph_module.is_local_request(
@@ -3271,6 +3445,43 @@ def create_app(
                 connection, meeting_id, attribution=attribution, card=card
             )
 
+    @app.get("/api/graph/files/{file_id}")
+    def graph_file_detail(file_id: int):
+        with db.autocommit() as connection:
+            try:
+                return file_mentions.file_detail(
+                    connection,
+                    file_id,
+                    quotes=lambda meeting_id, starts: graph_module._segments_at(connection, meeting_id, starts),
+                )
+            except file_mentions.MentionNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    def _mention_action(action: Any, *args: Any) -> dict[str, Any]:
+        try:
+            return action(db, *args)
+        except file_mentions.MentionNotFound as error:
+            raise HTTPException(404, str(error)) from error
+        except file_mentions.MentionError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/reject")
+    def reject_file_mention(meeting_id: str, stem_key: str):
+        return _mention_action(file_mentions.reject_mention, meeting_id, stem_key)
+
+    @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/restore")
+    def restore_file_mention(meeting_id: str, stem_key: str):
+        return _mention_action(file_mentions.restore_mention, meeting_id, stem_key)
+
+    @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/pick")
+    def pick_file_mention(meeting_id: str, stem_key: str, body: FileMentionPickInput):
+        return _mention_action(file_mentions.pick_mention_file, meeting_id, stem_key, body.file_id)
+
+    @app.get("/api/materials/index-status")
+    def material_index_status(project_id: str | None = Query(default=None, max_length=200)):
+        with db.autocommit() as connection:
+            return {"roots": index_status(connection, project_id)}
+
     @app.get("/api/meetings/{meeting_id}/quotes")
     def meeting_quotes_endpoint(
         meeting_id: str,
@@ -3303,13 +3514,121 @@ def create_app(
             logger.exception("补写会议卡片失败：%s", project_id)
             return 0
 
-    @app.post("/api/projects/{project_id}/material-roots/{root_id}/replace")
-    def replace_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+    def repoint_root(project_id: str, root_id: int, raw_path: str) -> dict[str, Any]:
+        """根目录换到新路径：改名找回的［是它］和「重新选…」都走这里。"""
         try:
-            root = materials.replace_material_root(db, settings, project_id, root_id, body.path)
+            result = project_folders.repoint_material_root(
+                db, settings, project_id, root_id, raw_path
+            )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
-        return {**root, "cards_written": backfill_project_cards(project_id)}
+        written = 0
+        if result["projects"]:
+            # 文件夹路径是项目线索，要进快照
+            rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+            for affected in result["projects"]:
+                written += backfill_project_cards(affected)
+            roots_cache.refresh_in_background()
+        root = materials.annotate_root(
+            db.query_one("SELECT * FROM project_material_roots WHERE id=?", (root_id,))
+        )
+        return {
+            **root,
+            "nested": result["nested"],
+            "moved_roots": result["moved_roots"],
+            "moved_folders": result["moved_folders"],
+            "cards_written": written,
+        }
+
+    @app.post("/api/projects/{project_id}/material-roots/{root_id}/replace")
+    def replace_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+        return repoint_root(project_id, root_id, body.path)
+
+    @app.post("/api/projects/{project_id}/material-roots/{root_id}/repoint")
+    def repoint_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+        return repoint_root(project_id, root_id, body.path)
+
+    @app.get("/api/projects/{project_id}/material-roots/{root_id}/rename-candidates")
+    def project_root_rename_candidates(project_id: str, root_id: int):
+        with db.autocommit() as connection:
+            return project_folders.rename_candidates(connection, roots_cache, project_id, root_id)
+
+    @app.post("/api/projects/{project_id}/material-roots/{root_id}/rename-decline")
+    def project_root_rename_decline(project_id: str, root_id: int, body: MaterialRootInput):
+        if db.query_one(
+            "SELECT 1 FROM project_material_roots WHERE id=? AND project_id=?", (root_id, project_id)
+        ) is None:
+            raise HTTPException(404, "材料根目录不存在")
+        project_folders.decline(db, body.path, kind=project_folders.RENAME, scope=str(root_id))
+        return {"ok": True}
+
+    @app.put("/api/projects/{project_id}/pending-folder")
+    def project_pending_folder_move(project_id: str, body: PendingFolderInput):
+        try:
+            project_folders.set_pending_parent(db, settings, project_id, body.parent)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        # 盘在线就当场建
+        finish_pending_folders(pending_worker.drain(project_ids=[project_id], force=True))
+        return task_service._project_detail(project_id)
+
+    @app.delete("/api/projects/{project_id}/pending-folder")
+    def project_pending_folder_drop(project_id: str):
+        project_folders.drop_pending(db, project_id)
+        return {"ok": True}
+
+    # ------------------------------------------------------------ 项目总文件夹（2a）
+
+    @app.get("/api/settings/project-parent")
+    def project_parent_get():
+        with db.autocommit() as connection:
+            return project_folders.parent_status(connection, settings, roots_cache)
+
+    @app.put("/api/settings/project-parent")
+    def project_parent_put(body: ProjectParentInput):
+        try:
+            project_folders.set_parent(db, settings, body.path)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        roots_cache.refresh_in_background()
+        with db.autocommit() as connection:
+            return project_folders.parent_status(connection, settings, roots_cache)
+
+    @app.post("/api/settings/project-parent/claim")
+    def project_parent_claim(body: ClaimInput):
+        def create(**fields: Any) -> dict[str, Any]:
+            with db.autocommit() as connection:
+                color = project_folders.next_color(connection)
+            return task_service.create_project(
+                color=color, origin="manual", snapshot=False, **fields
+            )
+
+        def after(project_ids: list[str]) -> dict[str, int]:
+            rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+            return {project_id: backfill_project_cards(project_id) for project_id in project_ids}
+
+        result = project_folders.claim(
+            db,
+            settings,
+            [item.model_dump() for item in body.items],
+            create_project=create,
+            mount=lambda project_id, path: materials.add_material_root(
+                db, settings, project_id, path
+            ),
+            after=after,
+        )
+        roots_cache.refresh_in_background()
+        return result
+
+    @app.post("/api/settings/project-parent/decline")
+    def project_parent_decline(body: MaterialRootInput):
+        project_folders.decline(db, body.path)
+        return {"ok": True}
+
+    @app.delete("/api/settings/project-parent/decline")
+    def project_parent_undecline(path: str):
+        project_folders.undecline(db, path)
+        return {"ok": True}
 
     @app.delete("/api/projects/{project_id}/material-roots/{root_id}")
     def remove_project_material_root(project_id: str, root_id: int):

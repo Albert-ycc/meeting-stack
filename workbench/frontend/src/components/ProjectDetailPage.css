@@ -502,3 +502,76 @@
   background: var(--warn-bg);
   border-radius: 8px;
 }
+
+/* 文件名索引的进度（整行宽，排在路径下面，2d） */
+.material-root-row__index {
+  flex-basis: 100%;
+  order: 9;
+  padding-left: 24px;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+}
+
+.material-root-row__index.is-stopped {
+  color: var(--warn);
+}
+
+/* 根目录找不到时问「是不是改了名」（整行宽，排在路径下面） */
+.material-root-row__rename {
+  flex-basis: 100%;
+  order: 11;
+  padding: 8px 10px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 8px;
+}
+
+.material-root-row__rename p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.material-root-row__rename ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.material-root-row__rename li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.material-root-row__link {
+  padding: 0;
+  color: var(--signal-dark);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  background: transparent;
+  border: 0;
+}
+
+.material-root-row__rename-error {
+  display: block;
+  margin-top: 4px;
+  color: var(--danger);
+}
+
+/* 盘不在时建的项目：文件夹等补建 */
+.material-root-row--pending .material-root-row__path {
+  color: var(--ink-soft);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

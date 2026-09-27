@@ -53,28 +53,34 @@ interface LibraryPageProps {
   onConfirmProject?: (meetingId: string) => Promise<void>;
 }
 
-/** 资料库项目列：没归项目的会按归属状态说清楚是在等 AI、没认出、像新项目还是你标的。 */
+/**
+ * 资料库项目列：没归项目的会统一成三种说法（等 AI 判断 / AI 没认出 / 不归项目（你标的）），
+ * 另外两种是有待办的：像新项目「X」、待你选。会议页主项目下拉同一套。
+ */
 function unassignedLabel(meeting: MeetingSummary): string {
   switch (meeting.attribution_state) {
     case "ai_pending":
       return "等 AI 判断";
+    case "none":
+      return "AI 没认出";
+    case "manual_none":
+      return "不归项目（你标的）";
     case "needs_review":
       return "待你选";
     case "new_project":
       return meeting.new_project_name ? `像新项目「${meeting.new_project_name}」` : "像新项目";
-    case "manual_none":
-      return "不归项目";
     default:
       return "未归项目";
   }
 }
 
-function ReviewStrip({
+/** 待你选的一行：［A］［B（原来的）］［不归项目］。全部项目概览的港湾里也用它。 */
+export function ReviewStrip({
   meeting,
   onAssignProject,
   onConfirmProject,
 }: {
-  meeting: MeetingSummary;
+  meeting: Pick<MeetingSummary, "id" | "title" | "candidates">;
   onAssignProject: (meetingId: string, projectId: string) => Promise<void>;
   onConfirmProject?: (meetingId: string) => Promise<void>;
 }) {

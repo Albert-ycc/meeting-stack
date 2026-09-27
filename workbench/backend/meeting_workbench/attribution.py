@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .name_hints import HintContext
 from .project_linking import last_reassignment
 from .project_names import also_entries
 from .project_profile import norm_key
@@ -187,6 +188,7 @@ def meeting_attribution(
         f"""SELECT m.project_id, m.project_origin,
                    pl.id AS link_id, pl.status AS link_status, pl.method, pl.reason,
                    pl.evidence_json, pl.candidates_json, pl.new_project_name,
+                   pl.new_requirement_name, pl.new_name_project_id, pl.new_name_spoken,
                    {ATTRIBUTION_STATE_SQL} AS state
               FROM meetings m {LATEST_LINK_JOIN}
              WHERE m.id = ?""",
@@ -209,6 +211,15 @@ def meeting_attribution(
         ),
         "reason": row["reason"] or "",
         "new_project_name": row["new_project_name"] if state == "new_project" else None,
+        # 第二期 2b：「像是新项目 / 新需求」，各处共用 HintContext 的同一套判断。
+        "name_hint": HintContext(connection).hint(
+            project_id=row["project_id"],
+            state=state,
+            new_project_name=row["new_project_name"],
+            new_requirement_name=row["new_requirement_name"],
+            new_name_project_id=row["new_name_project_id"],
+            new_name_spoken=row["new_name_spoken"],
+        ),
         "reassigned_from": (
             _reassigned_from(connection, meeting_id, row["project_id"])
             if row["project_origin"] == "manual"
@@ -219,17 +230,69 @@ def meeting_attribution(
 
 
 def decorate_meeting_rows(connection: Any, rows: list[dict[str, Any]]) -> None:
-    """列表行：查询里已带 attribution_state、_candidates_json、_new_project_name，就地整理。"""
+    """列表行：查询里已带 attribution_state、_candidates_json、_new_project_name 和
+    _new_requirement_name、_new_name_project_id、_new_name_spoken，就地整理。"""
+    if not rows:
+        return
+    hints = HintContext(connection)
     for row in rows:
         candidates_json = row.pop("_candidates_json", None)
         new_project_name = row.pop("_new_project_name", None)
+        new_requirement_name = row.pop("_new_requirement_name", None)
+        new_name_project_id = row.pop("_new_name_project_id", None)
+        new_name_spoken = row.pop("_new_name_spoken", None)
         state = row.get("attribution_state")
+        row["name_hint"] = hints.hint(
+            project_id=row.get("project_id"),
+            state=state,
+            new_project_name=new_project_name,
+            new_requirement_name=new_requirement_name,
+            new_name_project_id=new_name_project_id,
+            new_name_spoken=new_name_spoken,
+        )
         row["candidates"] = (
             resolve_candidates(connection, candidates_json, row.get("project_id"))
             if state == "needs_review"
             else []
         )
         row["new_project_name"] = new_project_name if state == "new_project" else None
+
+
+def group_new_project_names(
+    rows: list[dict[str, Any]], taken: set[str]
+) -> list[dict[str, Any]]:
+    """「像新项目」按名字分组（资料库、工作台、全部项目概览共用）：norm_key 相同的算一组，
+    名字用最近那场会的写法；已被占用的名字不提。按场数、再按最近排。
+    rows 要带 id、recording_date、created_at、state、new_project_name。"""
+    names: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row["state"] != "new_project":
+            continue
+        key = norm_key(row["new_project_name"])
+        if not key or key in taken:
+            continue
+        when = row["recording_date"] or (row["created_at"] or "")[:10]
+        bucket = names.setdefault(
+            key, {"name": row["new_project_name"], "meetings": [], "last_at": ""}
+        )
+        bucket["meetings"].append((when, row["id"]))
+        if when > bucket["last_at"]:
+            bucket["last_at"] = when
+            bucket["name"] = row["new_project_name"]
+    grouped = [
+        {
+            "name": bucket["name"],
+            "norm_key": key,
+            "meeting_count": len(bucket["meetings"]),
+            # 最近的一场在最前（概览的幽灵岛对它打开提示）
+            "meeting_ids": [meeting_id for _when, meeting_id in sorted(bucket["meetings"], reverse=True)],
+            "last_at": bucket["last_at"],
+        }
+        for key, bucket in names.items()
+    ]
+    grouped.sort(key=lambda item: item["last_at"], reverse=True)
+    grouped.sort(key=lambda item: item["meeting_count"], reverse=True)
+    return grouped
 
 
 def attribution_summary(connection: Any) -> dict[str, Any]:
@@ -244,42 +307,16 @@ def attribution_summary(connection: Any) -> dict[str, Any]:
     ).fetchall()
     needs_review_total = 0
     needs_review_recent = 0
-    names: dict[str, dict[str, Any]] = {}
     for row in states:
         when = row["recording_date"] or (row["created_at"] or "")[:10]
         if row["state"] == "needs_review":
             needs_review_total += 1
             if when >= since_date:
                 needs_review_recent += 1
-        elif row["state"] == "new_project":
-            key = norm_key(row["new_project_name"])
-            if not key:
-                continue
-            bucket = names.setdefault(
-                key,
-                {"name": row["new_project_name"], "meeting_ids": [], "last_at": ""},
-            )
-            bucket["meeting_ids"].append(row["id"])
-            if when > bucket["last_at"]:
-                bucket["last_at"] = when
-                bucket["name"] = row["new_project_name"]
-    # 用户说过「不是新项目」的名字、已经有同名项目的名字都不再提。
-    taken = {
-        row["norm_key"] for row in connection.execute("SELECT norm_key FROM name_decisions")
-    } | {norm_key(row["name"]) for row in connection.execute("SELECT name FROM projects")}
-    new_project_names = [
-        {
-            "name": bucket["name"],
-            "norm_key": key,
-            "meeting_count": len(bucket["meeting_ids"]),
-            "meeting_ids": bucket["meeting_ids"],
-            "last_at": bucket["last_at"],
-        }
-        for key, bucket in names.items()
-        if key not in taken
-    ]
-    new_project_names.sort(key=lambda item: item["last_at"], reverse=True)
-    new_project_names.sort(key=lambda item: item["meeting_count"], reverse=True)
+    # 用户说过「不是新项目」的名字、已经有同名项目（正式名或也叫）的名字都不再提。
+    new_project_names = group_new_project_names(
+        [dict(row) for row in states], HintContext(connection).taken_project_keys
+    )
     auto_30d = connection.execute(
         """SELECT COUNT(DISTINCT meeting_id) AS n FROM events
             WHERE event_type='meeting_project_auto_assigned' AND created_at >= ?""",

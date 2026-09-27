@@ -1872,6 +1872,18 @@ class CardWriter:
     def notices(self, connection: Any) -> list[dict[str, Any]]:
         return [item for item in _json_state(connection, NOTICES_KEY) if isinstance(item, dict)]
 
+    def push_notice(self, notice: dict[str, Any]) -> None:
+        """首页和项目页的卡片提示里放一条（同一个项目只留最新的一条），例如
+        {"kind": "folder_created", "project_id", "project_name", "path", "cards_written"}。"""
+        with self.db.transaction() as connection:
+            notices = [
+                item
+                for item in _json_state(connection, NOTICES_KEY)
+                if isinstance(item, dict) and item.get("project_id") != notice.get("project_id")
+            ]
+            notices.append({**notice, "at": utc_now()})
+            write_state(connection, NOTICES_KEY, json.dumps(notices[-10:], ensure_ascii=False))
+
     def dismiss_notice(self, project_id: str) -> None:
         with self.db.transaction() as connection:
             remaining = [

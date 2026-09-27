@@ -1,7 +1,4 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { select } from "d3-selection";
-import "d3-transition";
-import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from "d3-zoom";
 import {
   useCallback,
   useEffect,
@@ -25,23 +22,17 @@ import {
   meetingDateLabel,
   nearestInDirection,
   overlaps,
+  pendingNote,
+  suggestedText,
   textWidth,
   type Box,
   type Direction,
   type LaidNode,
   type StarLayout,
 } from "./layout";
+import { useGraphViewport } from "./useGraphViewport";
 import "./GraphCanvas.css";
 
-/** 画布上的视角按项目记住：进对象页再回来，选中和视角都还在。 */
-const savedViews = new Map<string, { x: number; y: number; k: number }>();
-
-export function forgetGraphViews() {
-  savedViews.clear();
-}
-
-const MIN_ZOOM = 0.3;
-const MAX_ZOOM = 2.5;
 const BASE_FONT = 13;
 const PANEL_W = 400;
 /** 超过这么多条讨论线就只在选中时画 */
@@ -153,6 +144,9 @@ function edgeVisible(edge: GraphEdge, focus: string | null, discussionCount: num
   switch (edge.kind) {
     case "folder":
     case "cross":
+    // 「像是新需求」的虚线、会上提到文件的线默认画出（后者淡色，每场会最多 3 条）
+    case "suggested":
+    case "mentioned":
       return true;
     case "discussion":
       return discussionCount <= DISCUSSION_ALWAYS_MAX || touches;
@@ -161,12 +155,38 @@ function edgeVisible(edge: GraphEdge, focus: string | null, discussionCount: num
   }
 }
 
+/** 「提到」线离中心的项目圆至少留这么远（项目圆半高 44） */
+const MENTION_CLEAR = 64;
+
+/**
+ * 「提到」线：从左边的会绕开中心连到右边的文件。三次贝塞尔，两个控制点在横向三等分处、同一个高度，
+ * 高度取到线经过 x=0 时离中心至少 MENTION_CLEAR；从两端偏上还是偏下的那一侧绕。
+ */
+export function mentionCurve(from: { x: number; y: number }, to: { x: number; y: number }) {
+  const { x: x1, y: y1 } = from;
+  const { x: x2, y: y2 } = to;
+  if (x2 - x1 < 1) return { path: `M${x1},${y1} L${x2},${y2}`, mid: { x: (x1 + x2) / 2, y: (y1 + y2) / 2 } };
+  const side = y1 + y2 >= 0 ? 1 : -1;
+  const t = Math.min(0.95, Math.max(0.05, -x1 / (x2 - x1)));
+  const u = 1 - t;
+  const pull = 3 * u * u * t + 3 * u * t * t;
+  const ends = side * (u * u * u * y1 + t * t * t * y2);
+  const cy = side * Math.max(110, (MENTION_CLEAR - ends) / pull);
+  const cx1 = x1 + (x2 - x1) / 3;
+  const cx2 = x1 + ((x2 - x1) * 2) / 3;
+  return {
+    path: `M${x1},${y1} C${cx1},${cy} ${cx2},${cy} ${x2},${y2}`,
+    mid: { x: (x1 + x2) / 2, y: (y1 + y2) / 8 + (cy * 3) / 4 },
+  };
+}
+
 function edgePath(from: LaidNode, to: LaidNode, kind: GraphEdge["kind"]): string {
   const x1 = from.x;
   const y1 = from.y;
   const x2 = to.x;
   const y2 = to.y;
-  if (kind === "discussion" || kind === "cue" || kind === "cross") {
+  if (kind === "mentioned") return mentionCurve(from, to).path;
+  if (kind === "discussion" || kind === "cue" || kind === "cross" || kind === "suggested") {
     const mx = (x1 + x2) / 2;
     const my = (y1 + y2) / 2;
     const dx = x2 - x1;
@@ -226,13 +246,14 @@ export function GraphCanvas({
   onExpandMeeting,
   onOpenRequirement,
 }: GraphCanvasProps) {
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const zoomRef = useRef<ZoomBehavior<HTMLDivElement, unknown> | null>(null);
-  const [transform, setTransform] = useState<{ x: number; y: number; k: number }>(
-    () => savedViews.get(viewKey) ?? { x: 500, y: 320, k: 1 },
-  );
-  const transformRef = useRef(transform);
-  transformRef.current = transform;
+  // 平移缩放和全部项目概览共用一个 hook；视角按项目记住，进对象页再回来，选中和视角都还在
+  const { viewportRef, transform, fitView, zoomBy, reveal, toWorld } = useGraphViewport({
+    viewKey,
+    initialBounds: layout.focusBounds,
+    // 门口的按钮上按下不平移；会议节点按住是拖放，不是平移
+    ignorePointer: (target) =>
+      Boolean(target.closest?.(".graph-doorstep__actions") || (onDropMeeting && target.closest?.("[data-draggable]"))),
+  });
   const dragRef = useRef<DragState | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const suppressClickRef = useRef(false);
@@ -240,6 +261,8 @@ export function GraphCanvas({
   const dropRef = useRef(onDropMeeting);
   dropRef.current = onDropMeeting;
   const [hoverId, setHoverId] = useState<string | null>(null);
+  // 悬停在「提到」线上：加深并显示线上的字
+  const [hoverEdge, setHoverEdge] = useState<string | null>(null);
   const [ringHint, setRingHint] = useState<string | null>(null);
   const [active, setActive] = useState<Partial<Record<Direction, string>>>({});
   const reduceMotion = useReducedMotion();
@@ -257,101 +280,10 @@ export function GraphCanvas({
     [graph.edges],
   );
 
-  const fitView = useCallback(
-    (box: Box, animate = false) => {
-      const viewport = viewportRef.current;
-      const behaviour = zoomRef.current;
-      if (!viewport || !behaviour) return;
-      const width = viewport.clientWidth || 1000;
-      const height = viewport.clientHeight || 600;
-      const pad = 32;
-      const k = Math.max(
-        MIN_ZOOM,
-        Math.min(1.25, (width - pad * 2) / Math.max(box.w, 1), (height - pad * 2) / Math.max(box.h, 1)),
-      );
-      const x = width / 2 - (box.x + box.w / 2) * k;
-      const y = height / 2 - (box.y + box.h / 2) * k;
-      const target = zoomIdentity.translate(x, y).scale(k);
-      const selection = select(viewport);
-      if (animate && !reduceMotion) selection.transition().duration(260).call(behaviour.transform, target);
-      else selection.call(behaviour.transform, target);
-    },
-    [reduceMotion],
-  );
-
-  // d3-zoom：拖空白处平移；触控板双指滑动（普通滚轮）平移，捏合或 Ctrl 滚动缩放
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    const behaviour = zoom<HTMLDivElement, unknown>()
-      .scaleExtent([MIN_ZOOM, MAX_ZOOM])
-      .clickDistance(6)
-      .filter((event: Event) => {
-        if (event.type === "wheel" || event.type === "dblclick") return false;
-        // 程序派发的鼠标事件没有 view，d3 拖拽要用它找 document
-        if (!(event as UIEvent).view) return false;
-        const target = event.target as HTMLElement | null;
-        if (target?.closest?.(".graph-doorstep__actions")) return false;
-        // 会议节点按住是拖放，不是平移
-        if (onDropMeeting && target?.closest?.("[data-draggable]")) return false;
-        return !(event as MouseEvent).button;
-      })
-      .on("zoom", (event: { transform: ZoomTransform }) => {
-        const next = { x: event.transform.x, y: event.transform.y, k: event.transform.k };
-        savedViews.set(viewKey, next);
-        setTransform(next);
-      });
-    zoomRef.current = behaviour;
-    const selection = select(viewport);
-    selection.call(behaviour);
-    const saved = savedViews.get(viewKey);
-    if (saved) selection.call(behaviour.transform, zoomIdentity.translate(saved.x, saved.y).scale(saved.k));
-    else fitView(layout.focusBounds);
-    const onWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      if (event.ctrlKey || event.metaKey) {
-        const factor = Math.pow(2, -event.deltaY * 0.01);
-        const rect = viewport.getBoundingClientRect();
-        behaviour.scaleBy(selection, factor, [event.clientX - rect.left, event.clientY - rect.top]);
-      } else {
-        const current = savedViews.get(viewKey) ?? { k: 1 };
-        behaviour.translateBy(selection, -event.deltaX / current.k, -event.deltaY / current.k);
-      }
-    };
-    viewport.addEventListener("wheel", onWheel, { passive: false });
-    return () => {
-      viewport.removeEventListener("wheel", onWheel);
-      selection.on(".zoom", null);
-    };
-    // 只在换项目时重新挂；布局变化不重置视角
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewKey]);
-
   // 选中的节点在屏幕外或被面板挡住时，平移到看得见的地方（深链进来、「← 上一个」、面板里点别的节点都会遇到）
   useEffect(() => {
-    const viewport = viewportRef.current;
-    const behaviour = zoomRef.current;
-    if (!viewport || !behaviour || !selectedNode) return;
-    const width = viewport.clientWidth;
-    const height = viewport.clientHeight;
-    if (!width || !height) return;
-    const margin = 24;
-    const right = width - (panelOpen ? PANEL_W + margin : 0) - margin;
-    const box = selectedNode.box;
-    const left = box.x * transform.k + transform.x;
-    const top = box.y * transform.k + transform.y;
-    const boxRight = left + box.w * transform.k;
-    const bottom = top + box.h * transform.k;
-    let dx = 0;
-    let dy = 0;
-    if (boxRight > right) dx = right - boxRight;
-    if (left + dx < margin) dx = margin - left;
-    if (bottom > height - margin) dy = height - margin - bottom;
-    if (top + dy < margin) dy = margin - top;
-    if (!dx && !dy) return;
-    const selection = select(viewport);
-    if (reduceMotion) behaviour.translateBy(selection, dx / transform.k, dy / transform.k);
-    else selection.transition().duration(220).call(behaviour.translateBy, dx / transform.k, dy / transform.k);
+    if (!selectedNode) return;
+    reveal(selectedNode.box, panelOpen ? PANEL_W + 24 : 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNode?.id, panelOpen]);
 
@@ -360,12 +292,6 @@ export function GraphCanvas({
     const timer = window.setTimeout(() => setDragHint(""), DRAG_HINT_MS);
     return () => window.clearTimeout(timer);
   }, [dragHint]);
-
-  const toWorld = (clientX: number, clientY: number) => {
-    const rect = viewportRef.current?.getBoundingClientRect();
-    const t = transformRef.current;
-    return { x: (clientX - (rect?.left ?? 0) - t.x) / t.k, y: (clientY - (rect?.top ?? 0) - t.y) / t.k };
-  };
 
   const endDrag = useCallback(
     (drop: boolean) => {
@@ -467,13 +393,6 @@ export function GraphCanvas({
   };
 
   const detail = labelDetailFor(transform.k);
-
-  const zoomBy = (factor: number) => {
-    const viewport = viewportRef.current;
-    const behaviour = zoomRef.current;
-    if (!viewport || !behaviour) return;
-    behaviour.scaleBy(select(viewport), factor);
-  };
 
   const focusNode = (id: string) => {
     const elements = viewportRef.current?.querySelectorAll<HTMLElement>("[data-node-id]") ?? [];
@@ -728,12 +647,55 @@ export function GraphCanvas({
       }
       case "requirement_more":
         return positioned(node, {}, <span className="graph-node__label">其余 {node.data.count} 个需求</span>);
+      case "suggested_requirement":
+        return positioned(
+          node,
+          {},
+          <span className="graph-node__label" title={node.label}>
+            {detail === "full" ? suggestedText(node.data) : node.data.name.slice(0, 6)}
+            {detail === "full" && <small>{node.data.count} 场会</small>}
+          </span>,
+        );
+      case "file": {
+        const file = node.data;
+        return positioned(
+          node,
+          {},
+          <>
+            <span aria-hidden="true" className="graph-file__icon">
+              <span className="graph-file__ext">{(file.ext || "").replace(/^\./, "").slice(0, 4)}</span>
+            </span>
+            {detail !== "summary" && (
+              <span className="graph-node__label" title={file.rel_path || file.name}>
+                {detail === "full" ? node.text : file.name.slice(0, 6)}
+              </span>
+            )}
+          </>,
+          `graph-node--right${file.extra ? " graph-node--extra" : ""}`,
+          -10,
+        );
+      }
+      case "file_more":
+        return positioned(
+          node,
+          {},
+          <span className="graph-node__label">另有 {node.data.count} 个被提到的文件</span>,
+          "graph-node--right",
+          -6,
+        );
       case "folder": {
         const folder = node.data;
         const state = diskState(roots, folder.id);
         const offline = state === "volume_offline";
         const missing = state === "missing";
-        const extra = offline ? "is-offline" : missing ? "is-missing" : "";
+        const pending = folder.kind === "pending";
+        const extra = pending
+          ? `is-pending${folder.state === "stopped" ? " is-pending-stopped" : ""}`
+          : offline
+            ? "is-offline"
+            : missing
+              ? "is-missing"
+              : "";
         const label = folder.kind === "cards" ? folder.name : `${folder.name}/`;
         return positioned(
           node,
@@ -752,6 +714,7 @@ export function GraphCanvas({
                 {folder.kind === "subfolder" && folder.mtime && (
                   <small>{meetingDateLabel(folder.mtime.slice(0, 10), graph.today)} 改过</small>
                 )}
+                {pending && <small>{pendingNote(folder)}</small>}
                 {offline && <small>资料盘未连接</small>}
                 {missing && <small>找不到了</small>}
               </span>
@@ -838,11 +801,16 @@ export function GraphCanvas({
   const placed: Box[] = [layout.byId.get("project"), focusId ? layout.byId.get(focusId) : undefined]
     .filter((node): node is LaidNode => Boolean(node))
     .map((node) => node.box);
+  const isLit = (edge: GraphEdge) =>
+    edge.id === selectedEdge ||
+    focusId === edge.from ||
+    focusId === edge.to ||
+    (edge.kind === "mentioned" && edge.id === hoverEdge);
   for (const { edge, from, to } of edges) {
-    const lit = edge.id === selectedEdge || focusId === edge.from || focusId === edge.to;
+    const lit = isLit(edge);
     if (!lit || !edge.label) continue;
     const text = edge.state === "review" ? `? ${edge.label}` : edge.label;
-    const mid = edgeMid(from, to);
+    const mid = edge.kind === "mentioned" ? mentionCurve(from, to).mid : edgeMid(from, to);
     const w = textWidth(text, 11) + 16;
     const box: Box = { x: mid.x - w / 2, y: mid.y - 10, w, h: 20 };
     const step = mid.y < 0 ? -22 : 22;
@@ -913,9 +881,11 @@ export function GraphCanvas({
           )}
           {edges.map(({ edge, from, to }) => {
             const path = edgePath(from, to, edge.kind);
-            const lit = edge.id === selectedEdge || focusId === edge.from || focusId === edge.to;
+            const lit = isLit(edge);
             const width =
               edge.kind === "cue" ? (edge.count && edge.count >= 6 ? 2.6 : edge.count && edge.count >= 3 ? 1.8 : 1.1) : undefined;
+            // 「提到」线中段的引号小图标；线亮起时线上的字盖在它上面
+            const quote = edge.kind === "mentioned" && !lit ? mentionCurve(from, to).mid : null;
             return (
               <g
                 className={`graph-edge graph-edge--${edge.kind}${edge.state ? ` graph-edge--${edge.state}` : ""}${lit ? " is-lit" : ""}${
@@ -924,12 +894,22 @@ export function GraphCanvas({
                 key={edge.id}
               >
                 <path className="graph-edge__line" d={path} style={width ? { strokeWidth: width } : undefined} />
+                {quote && (
+                  <g className="graph-edge__quote" transform={`translate(${quote.x} ${quote.y})`}>
+                    <circle r={6.5} />
+                    <text dy="0.36em">”</text>
+                  </g>
+                )}
                 <path
-                  aria-label={`连线：${edge.label || edge.kind}`}
+                  aria-label={`连线：${edge.label || (edge.kind === "suggested" && edge.name ? `像是新需求『${edge.name}』` : edge.kind)}`}
                   className="graph-edge__hit"
                   d={path}
                   onClick={() => onSelect(edge.id === selectedEdge ? null : edge.id)}
-                  onMouseEnter={() => setHoverId(null)}
+                  onMouseEnter={() => {
+                    setHoverId(null);
+                    if (edge.kind === "mentioned") setHoverEdge(edge.id);
+                  }}
+                  onMouseLeave={() => setHoverEdge((current) => (current === edge.id ? null : current))}
                   role="button"
                 />
               </g>
