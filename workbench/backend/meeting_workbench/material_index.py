@@ -26,7 +26,8 @@ from typing import Any, Callable
 
 from .db import Database, utc_now
 from .file_stems import derive_stem, stem_key
-from .material_walk import NAME_ONLY_DIRS, PACKAGE_EXTS, file_ext, is_system_shadow
+from .material_rules import silent_skip
+from .material_walk import NAME_ONLY_DIRS, PACKAGE_EXTS, file_ext
 from .materials import CARDS_DIR_NAME, ROOT_MISSING, ROOT_ONLINE, volume_state
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ def _file_zone(name: str, dir_zone: str, *, package: bool) -> str:
 
 
 def _skipped_name(name: str) -> bool:
-    return is_system_shadow(name) or name.startswith("~$")
+    return silent_skip(name)
 
 
 def _prefix_where(column: str = "dir_rel") -> str:

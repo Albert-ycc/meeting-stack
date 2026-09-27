@@ -11,7 +11,15 @@
 """
 from __future__ import annotations
 
-from .material_walk import AUDIO_EXTS, SYSTEM_NAMES, VIDEO_EXTS, file_ext
+AUDIO_EXTS = frozenset({"mp3", "m4a", "wav", "aac", "flac", "ogg", "opus", "wma", "amr", "aiff", "aif", "caf"})
+VIDEO_EXTS = frozenset({"mp4", "mov", "m4v", "avi", "mkv", "webm", "wmv", "flv", "3gp", "mts", "m2ts"})
+# 系统影子文件：静默跳过，不进任何统计
+SYSTEM_NAMES = frozenset(
+    {
+        ".DS_Store", "__MACOSX", ".Spotlight-V100", ".Trashes", ".fseventsd", ".TemporaryItems",
+        ".DocumentRevisions-V100", ".VolumeIcon.icns", ".apdisk", "Thumbs.db", "desktop.ini", "Icon\r",
+    }
+)
 
 LAYER_TEXT = "text"
 LAYER_PDF = "pdf"
@@ -47,6 +55,11 @@ IWORK_EXTS = frozenset({"key", "pages", "numbers"})
 NAME_ONLY_EXTS = frozenset({"pyc", "class", "o", "so", "dll", "dylib", "whl", "env", "lock", "map"})
 
 CONTENT_EXTS = TEXT_LAYER_EXTS | PDF_EXTS | IMAGE_EXTS | MEDIA_EXTS
+
+
+def file_ext(name: str) -> str:
+    _stem, dot, ext = name.rpartition(".")
+    return ext.lower() if dot and _stem else ""
 
 
 def layer_for_ext(ext: str) -> str | None:

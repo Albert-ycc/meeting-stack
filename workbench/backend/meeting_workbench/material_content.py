@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import sqlite3
 import stat as stat_module
 import threading
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .db import Database, utc_now
-from .material_helpers import StopFlag
+from .material_helpers import HelperStopped, StopFlag
 from .material_rules import (
     CONTENT_EXTS,
     CONTENT_LAYERS,
@@ -145,7 +146,7 @@ def stat_signature(path: Path) -> tuple[int | None, int]:
 @dataclass
 class ExtractResult:
     """读取一份内容的结果。status：ok，或 io_error、password、corrupt、unsupported、timeout、
-    permission、waiting（识别程序没装，note=engine_missing）。"""
+    permission、waiting（识别程序没装，note=engine_missing）、relayer（其实是别的层）。"""
 
     status: str
     blocks: list[dict[str, Any]] = field(default_factory=list)
@@ -157,13 +158,11 @@ class ExtractResult:
     extractor: str | None = None
     extractor_version: int | None = None
     what: str | None = None
+    layer: str | None = None  # status=relayer 时：看开头字节后该换到的层
 
 
 class Extractor(Protocol):
     def __call__(self, path: Path, layer: str, row: dict[str, Any]) -> ExtractResult: ...
-
-
-StoreResult = Callable[[sqlite3.Connection, str, ExtractResult], None]
 
 
 # ---------------------------------------------------------------------- 循环
@@ -204,7 +203,6 @@ class MaterialContent:
         wall: Callable[[], float] = time.time,
         round_seconds: float = ROUND_SECONDS,
         extractors: dict[str, Extractor] | None = None,
-        store: StoreResult | None = None,
     ):
         self.db = db
         self.settings = settings
@@ -216,10 +214,19 @@ class MaterialContent:
         self.wall = wall
         self.round_seconds = round_seconds
         self.extractors: dict[str, Extractor] = dict(extractors or {})
-        self.store = store
         self._last_orphan_pass: float | None = None
         self._running = threading.Lock()
         self.progress: dict[str, Any] = {"pending": 0, "paused": None, "offline_pending": 0}
+
+    def close(self) -> None:
+        """服务关闭：关掉各层读取器的常驻进程。"""
+        for extractor in self.extractors.values():
+            close = getattr(extractor, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    logger.exception("关闭材料读取器失败")
 
     def wait_idle(self, timeout: float) -> bool:
         """服务关闭时等正在跑的这一轮返回（停止标记置上后最多 1 秒左右）。"""
@@ -584,7 +591,10 @@ class MaterialContent:
 
     def _extract_pass(self, online: dict[int, str], deadline: float) -> int:
         read = 0
-        for row in self.extract_candidates(online):
+        candidates = self.extract_candidates(online)
+        if not candidates and self.queue_rereads(online):
+            candidates = self.extract_candidates(online)
+        for row in candidates:
             if int(row["root_id"]) in self._offline_now:
                 continue
             try:
@@ -593,6 +603,34 @@ class MaterialContent:
                 self._offline_now.add(int(row["root_id"]))
             self._checkpoint(deadline)
         return read
+
+    def queue_rereads(self, online: dict[int, str], limit: int = EXTRACT_BATCH) -> int:
+        """读取程序升级了（extractor_version 变大）：没有别的活时，把旧版本读的内容低优先级地重读。
+        只挑有在线副本的，免得盘不在时读好的内容变成等待读取。"""
+        if not online:
+            return 0
+        marks = ", ".join("?" for _ in online)
+        queued = 0
+        for layer, extractor in self.extractors.items():
+            version = getattr(extractor, "version", None)
+            if layer == LAYER_MEDIA or not version:
+                continue
+            with self.db.transaction() as connection:
+                queued += connection.execute(
+                    f"""UPDATE material_contents
+                           SET state = 'pending', reason = NULL, attempts = 0, next_try_at = NULL, updated_at = ?
+                         WHERE content_key IN (
+                               SELECT c.content_key FROM material_contents c
+                                WHERE c.layer = ? AND c.extractor_version IS NOT NULL AND c.extractor_version < ?
+                                  AND (c.state = 'done' OR (c.state = 'unreadable' AND c.reason IN ('corrupt', 'unsupported')))
+                                  AND EXISTS (
+                                      SELECT 1 FROM material_files f
+                                       WHERE f.content_key = c.content_key AND f.gone_at IS NULL
+                                         AND f.root_id IN ({marks}) AND f.content_error IS NULL)
+                                LIMIT ?)""",
+                    (utc_now(), layer, int(version), *online, limit),
+                ).rowcount
+        return queued
 
     def extract_one(self, row: dict[str, Any], root_path: str) -> bool:
         extractor = self.extractors.get(row["layer"])
@@ -609,7 +647,11 @@ class MaterialContent:
             return False
         if before != expected:
             return False  # 下一轮先重算标识
-        result = extractor(path, row["layer"], row)
+        try:
+            result = extractor(path, row["layer"], row)
+        except HelperStopped as stopped:
+            # 服务在关、或者会议开始转写：这份下一轮从头读，什么都不写
+            raise _EndRound(stopped.reason or "stopping") from stopped
         if result.status == "io_error":
             self._on_os_error(row, root_path, OSError("io_error"), keep_key=True)
             return False
@@ -635,11 +677,8 @@ class MaterialContent:
             ).fetchone()
             if current is None:
                 return False
-            if self.store is not None:
-                self.store(connection, row["content_key"], result)
-            else:
-                store_status(connection, row["content_key"], result, attempts=int(current["attempts"] or 0),
-                             now=self.now())
+            store_result(connection, row["content_key"], result, attempts=int(current["attempts"] or 0),
+                         now=self.now())
             if row.get("content_attempts"):
                 connection.execute(
                     "UPDATE material_files SET content_attempts = NULL WHERE id = ? AND content_error IS NULL",
@@ -756,7 +795,76 @@ def pending_counts(
     return {"pending": total, "offline_pending": offline}
 
 
-def store_status(
+CHUNK_CHARS = 400
+MAX_CONTENT_CHARS = 200_000
+TIMEOUT_RETRY = timedelta(hours=1)
+_SENTENCE_END = re.compile(r"(?<=[。？！；?!;\n])|(?<=\.)(?=\s)")
+
+
+def _split_long(text: str, limit: int) -> list[str]:
+    """一段超过 400 字：在句号、问号、叹号、分号、换行处切，一句还超过的硬切。"""
+    pieces: list[str] = []
+    current = ""
+    for sentence in _SENTENCE_END.split(text):
+        if not sentence:
+            continue
+        while len(sentence) > limit:
+            if current:
+                pieces.append(current)
+                current = ""
+            pieces.append(sentence[:limit])
+            sentence = sentence[limit:]
+        if len(current) + len(sentence) > limit:
+            pieces.append(current)
+            current = ""
+        current += sentence
+    if current:
+        pieces.append(current)
+    return [piece.strip() for piece in pieces if piece.strip()]
+
+
+def chunk_blocks(
+    blocks: list[dict[str, Any]], *, limit: int = CHUNK_CHARS, max_chars: int = MAX_CONTENT_CHARS
+) -> tuple[list[tuple[str | None, str]], bool]:
+    """按段落切成片段：每段不超过 400 字；同一个位置里相邻的短段合并到 400 字以内。
+    每份内容最多收 20 万字，多的丢掉。返回 (片段 [(loc, text)], 是否截断)。"""
+    chunks: list[tuple[str | None, str]] = []
+    total = 0
+    truncated = False
+    buffer = ""
+    buffer_loc: str | None = None
+
+    def flush() -> None:
+        nonlocal buffer
+        if buffer.strip():
+            chunks.append((buffer_loc, buffer.strip()))
+        buffer = ""
+
+    for block in blocks:
+        loc = block.get("loc") or None
+        text = str(block.get("text") or "").replace("\x00", "").strip()
+        if not text:
+            continue
+        if total + len(text) > max_chars:
+            text = text[: max(max_chars - total, 0)]
+            truncated = True
+        total += len(text)
+        if loc != buffer_loc:
+            flush()
+            buffer_loc = loc
+        for piece in _split_long(text, limit) if len(text) > limit else [text]:
+            if buffer and len(buffer) + 1 + len(piece) <= limit:
+                buffer = f"{buffer}\n{piece}"
+            else:
+                flush()
+                buffer = piece
+        if truncated:
+            break
+    flush()
+    return chunks, truncated
+
+
+def store_result(
     connection: sqlite3.Connection,
     content_key: str,
     result: ExtractResult,
@@ -764,28 +872,54 @@ def store_status(
     attempts: int,
     now: datetime,
 ) -> None:
-    """只写状态、不写片段（3a 的默认，3b 起换成带片段的写法）。"""
+    """把一份内容的读取结果写进去（在 extract_one 的短事务里）：片段和状态同一个事务。"""
     stamp = utc_now()
     if result.status == "ok":
+        chunks, cut = chunk_blocks(result.blocks)
+        truncated = result.truncated or cut
+        note = "truncated" if truncated else result.note
+        connection.execute("DELETE FROM material_chunks WHERE content_key = ?", (content_key,))
+        connection.executemany(
+            """INSERT INTO material_chunks(content_key, ordinal, loc, start_ms, end_ms, text)
+               VALUES (?, ?, ?, NULL, NULL, ?)""",
+            [(content_key, ordinal, loc, text) for ordinal, (loc, text) in enumerate(chunks)],
+        )
         connection.execute(
             """UPDATE material_contents SET state = 'done', reason = NULL, note = ?, extractor = ?,
-                   extractor_version = ?, chars = ?, pages = ?, duration_ms = ?, next_try_at = NULL,
-                   updated_at = ?
+                   extractor_version = ?, chars = ?, chunks = ?, pages = ?, duration_ms = ?, attempts = 0,
+                   next_try_at = NULL, updated_at = ?
              WHERE content_key = ?""",
-            (result.note, result.extractor, result.extractor_version, result.chars, result.pages,
-             result.duration_ms, stamp, content_key),
+            (note, result.extractor, result.extractor_version, sum(len(text) for _loc, text in chunks),
+             len(chunks), result.pages, result.duration_ms, stamp, content_key),
+        )
+    elif result.status == "relayer" and result.layer in CONTENT_LAYERS:
+        # 扩展名骗人（.doc 其实是 PDF）：换层，照旧等着读
+        connection.execute(
+            """UPDATE material_contents SET layer = ?, state = 'pending', reason = NULL, attempts = 0,
+                   next_try_at = NULL, updated_at = ? WHERE content_key = ?""",
+            (result.layer, stamp, content_key),
         )
     elif result.status == "waiting":
         connection.execute(
-            """UPDATE material_contents SET state = 'waiting', reason = NULL, note = ?, updated_at = ?
+            """UPDATE material_contents SET state = 'waiting', reason = NULL, note = 'engine_missing',
+                   updated_at = ? WHERE content_key = ?""",
+            (stamp, content_key),
+        )
+    elif result.status == "timeout" and attempts == 0:
+        # 第一次处理超时：一小时后用 120 秒再试一次
+        connection.execute(
+            """UPDATE material_contents SET state = 'pending', reason = 'timeout', attempts = 1,
+                   next_try_at = ?, extractor = ?, extractor_version = ?, updated_at = ?
              WHERE content_key = ?""",
-            (result.note or "engine_missing", stamp, content_key),
+            (_iso(now + TIMEOUT_RETRY), result.extractor, result.extractor_version, stamp, content_key),
         )
     else:
+        reason = result.status if result.status in {"password", "corrupt", "unsupported", "timeout"} else "corrupt"
         connection.execute(
             """UPDATE material_contents SET state = 'unreadable', reason = ?, note = NULL, attempts = ?,
-                   updated_at = ? WHERE content_key = ?""",
-            (result.status, attempts + 1, stamp, content_key),
+                   next_try_at = NULL, extractor = ?, extractor_version = ?, updated_at = ?
+             WHERE content_key = ?""",
+            (reason, attempts + 1, result.extractor, result.extractor_version, stamp, content_key),
         )
 
 

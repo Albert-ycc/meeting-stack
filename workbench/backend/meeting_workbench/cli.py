@@ -188,7 +188,7 @@ def _materials(args: argparse.Namespace, settings: Settings) -> int:
     roots = _material_roots(settings, args.project, args.root)
     if args.materials_command == "walk":
         if not args.dry_run:
-            print("现在只做盘点：请加 --dry-run。真正建材料索引是第三期的事。", file=sys.stderr)
+            print("请加 --dry-run：材料索引由服务在后台自动建，这个命令只做盘点。", file=sys.stderr)
             return 2
         report = material_walk.walk_materials(
             roots, probe_media=not args.no_probe, progress=material_walk.stderr_progress

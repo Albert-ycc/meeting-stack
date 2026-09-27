@@ -62,6 +62,8 @@ from . import overview as overview_module
 from . import file_mentions
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from . import material_content as material_content_module
+from .extract_worker import TextExtractor
+from .material_rules import LAYER_TEXT
 from .busy import BusySignal
 from .material_helpers import StopFlag, cleanup_leftovers
 from .project_folders import folder_matches
@@ -708,7 +710,11 @@ def create_app(
     material_indexer = MaterialIndexer(db, settings, busy_check=busy)
     material_stop = StopFlag()
     material_content = material_content_module.MaterialContent(
-        db, settings, busy_check=busy, stop=material_stop
+        db,
+        settings,
+        busy_check=busy,
+        stop=material_stop,
+        extractors={LAYER_TEXT: TextExtractor(settings.data_dir, stop=material_stop)},
     )
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
@@ -1214,6 +1220,7 @@ def create_app(
                 with suppress(asyncio.CancelledError):
                     await content_worker
                 await asyncio.to_thread(material_content.wait_idle, 10.0)
+                material_content.close()
             scanner.cancel()
             relay_probe.cancel()
             qwen_worker.cancel()

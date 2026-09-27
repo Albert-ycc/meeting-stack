@@ -37,6 +37,7 @@ from .materials import (
     assert_no_hidden_segment,
     volume_state,
 )
+from .material_rules import hidden_in_browse
 from .name_hints import HintContext
 from .project_folders import pending_path
 from .project_linking import DRAFT_TASK_STATUSES
@@ -2117,12 +2118,11 @@ ROOTS_REFRESH_SECONDS = 30.0
 
 
 RECENT_DIRS = 3
-_SHADOW_NAMES = ("Thumbs.db", "desktop.ini", "Icon\r")
 _SKIP_DIRS = ("node_modules", "__MACOSX")
 
 
 def _hidden(name: str) -> bool:
-    return name.startswith((".", "~$")) or name in _SHADOW_NAMES
+    return hidden_in_browse(name)
 
 
 def _loose_files(path: Path) -> tuple[int, list[dict[str, Any]]]:
