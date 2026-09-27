@@ -55,3 +55,23 @@ DERIVED_TABLES: tuple[str, ...] = ("embeddings",)
 
 每份备份的 receipt 里记录 `derived_stripped` 与 `derived_tables` 两个字段，一眼能看出这份备份
 剥了哪些表、是不是完整副本。出问题排查时先看这个，再决定要不要怀疑是剥离导致的差异。
+`derived_tables` 只列这份备份里实际清空了的表（副本里没有的表不列）。
+
+## 项目材料的全文表和向量（第三期）
+
+schema v15 起白名单多了两张表：
+
+```python
+DERIVED_TABLES: tuple[str, ...] = ("embeddings", "material_chunks_fts", "material_chunk_vectors")
+```
+
+- `material_chunk_vectors`：材料片段的向量，和 embeddings 一样由后台的向量循环按「还没有向量的片段」增量补，
+  空表就全量补。补完之前「意思相近的」材料结果少一些。
+- `material_chunks_fts`：材料片段的全文表，是外部内容表（内容在 `material_chunks` 里）。这张表不能用
+  `DELETE` 清（实测备份反而变大），改用 `INSERT INTO material_chunks_fts(material_chunks_fts) VALUES('delete-all')`；
+  同一个事务里在副本的 `app_state` 写 `material_fts_rebuild`。用这份备份恢复后，服务启动时的后台任务看到
+  这个键就分批把全文表补回来（断点续补，补完跑 integrity-check 再删键），补完之前读内容、转写的循环不写不删片段。
+  副本里没有这张表时不写这个键。
+
+材料读出的文字本身（`material_contents`、`material_chunks`）和转写断点（`material_media_jobs`）**不剥**：
+它们能重算，但要重新认字、重新转写几个小时，还要资料盘插着，不符合「重启就能自动补齐」这条判据。

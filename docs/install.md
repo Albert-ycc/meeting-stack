@@ -7,6 +7,8 @@
 - Node 20 以上
 - ffmpeg / ffprobe（`brew install ffmpeg`）
 - pandoc，可选，用于纪要转 HTML（`brew install pandoc`）
+- Xcode 命令行工具，可选，用于读 PDF、认图片和扫描件里的字（`xcode-select --install`）；没有时可以装
+  tesseract 认图片里的字（`brew install tesseract tesseract-lang`），但 PDF 要等命令行工具装上才读
 - 内存 16GB 以上。cam++ 说话人聚类在长音频上吃内存，8GB 机器跑 90 分钟以上录音会被系统杀掉
 
 ## 一、工作台
@@ -133,7 +135,8 @@ cd workbench
 .venv/bin/meeting-workbench semantic-index   # 重建语义索引
 .venv/bin/meeting-workbench backup           # 立即备份数据库
 .venv/bin/meeting-workbench verify-audio     # 核验原音频哈希
-.venv/bin/meeting-workbench doctor           # 体检
+.venv/bin/meeting-workbench doctor           # 体检（含读材料用到的程序）
+.venv/bin/meeting-workbench materials status # 材料读了多少、哪些读不了
 ```
 
 备份保留 14 份，本机在 `~/.meeting-workbench/backups/`，归档根下另有一份镜像。
