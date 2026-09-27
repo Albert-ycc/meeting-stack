@@ -745,6 +745,121 @@ CREATE TABLE IF NOT EXISTS root_fingerprints (
     child_names TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL
 );
+
+-- v14 / 2d：文件名索引，只存名字，不读内容（material_index.py 在后台一轮轮扫）。
+-- zone：normal 拿来比对；cards 是声档自己写的会议卡片、code 是代码和配置文件，只收名字；
+-- package 是 .key、.pages 这类在访达里看起来是一个文件的包。gone_at 只按目录重读时判断。
+CREATE TABLE IF NOT EXISTS material_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_id INTEGER NOT NULL REFERENCES project_material_roots(id) ON DELETE CASCADE,
+    rel_path TEXT NOT NULL,
+    dir_rel TEXT NOT NULL,
+    name TEXT NOT NULL,
+    stem TEXT NOT NULL,
+    stem_key TEXT NOT NULL,
+    ext TEXT NOT NULL DEFAULT '',
+    size INTEGER,
+    mtime_ns INTEGER,
+    zone TEXT NOT NULL DEFAULT 'normal' CHECK (zone IN ('normal', 'cards', 'code', 'package')),
+    seen_at TEXT NOT NULL,
+    gone_at TEXT,
+    UNIQUE(root_id, rel_path)
+);
+CREATE INDEX IF NOT EXISTS idx_material_files_dir ON material_files(root_id, dir_rel);
+CREATE INDEX IF NOT EXISTS idx_material_files_stem ON material_files(stem_key);
+
+-- 目录修改时间没变就不重读；name_only（node_modules、.git、点开头的）只记直接子项个数。
+CREATE TABLE IF NOT EXISTS material_dirs (
+    root_id INTEGER NOT NULL REFERENCES project_material_roots(id) ON DELETE CASCADE,
+    dir_rel TEXT NOT NULL,
+    mtime_ns INTEGER,
+    listed_at TEXT NOT NULL,
+    zone TEXT NOT NULL DEFAULT 'normal' CHECK (zone IN ('normal', 'name_only', 'cards')),
+    child_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (root_id, dir_rel)
+);
+
+-- 每个根目录一行，断点续扫：cursor 是 DFS 栈（JSON），只在每轮结束时写。stems_rev 只在一整轮
+-- 扫完、词干集合（stems_hash）变了时加一，会议比对的 stems_sig 靠它。
+CREATE TABLE IF NOT EXISTS material_index_state (
+    root_id INTEGER PRIMARY KEY REFERENCES project_material_roots(id) ON DELETE CASCADE,
+    state TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending', 'walking', 'done', 'offline', 'missing', 'error')),
+    cursor TEXT,
+    files INTEGER NOT NULL DEFAULT 0,
+    stems_rev INTEGER NOT NULL DEFAULT 0,
+    stems_hash TEXT,
+    sweep_started_at TEXT,
+    last_full_at TEXT,
+    error TEXT,
+    updated_at TEXT
+);
+-- 根目录换了路径（改名找回、重新选）：下一轮从头整轮重读，旧位置才有的文件按目录判断成不见了。
+CREATE TRIGGER IF NOT EXISTS material_index_root_moved
+AFTER UPDATE OF path ON project_material_roots
+WHEN NEW.path IS NOT OLD.path
+BEGIN
+    UPDATE material_index_state SET state = 'pending', cursor = NULL, last_full_at = NULL
+     WHERE root_id = NEW.id;
+END;
+
+-- 会上提到文件名。rejected 是「不是这份文件」，只挡同一场会、同一个项目，比对永远不改回 active；
+-- picked 是你手动换过文件，比对不再自动改（文件不在了才换）。
+CREATE TABLE IF NOT EXISTS meeting_file_mentions (
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL,
+    stem_key TEXT NOT NULL,
+    file_id INTEGER REFERENCES material_files(id) ON DELETE SET NULL,
+    needle TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    first_ms INTEGER,
+    anchors_json TEXT NOT NULL DEFAULT '[]',
+    minutes_count INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'transcript' CHECK (source IN ('transcript', 'minutes')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'rejected')),
+    picked INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (meeting_id, project_id, stem_key)
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_file_mentions_file ON meeting_file_mentions(file_id);
+CREATE INDEX IF NOT EXISTS idx_meeting_file_mentions_stem ON meeting_file_mentions(project_id, stem_key);
+
+-- 哪些会要重新比对文件名。dirty 是计数（和卡片一样防丢更新）：比对开始时记下值，写结果时
+-- 只在值没变时写。已归项目、还没有这一行的会也要比对。触发器用插入或加一，免得比对进行中
+-- 第一次改稿时没有行可加、结果被旧稿覆盖。
+CREATE TABLE IF NOT EXISTS meeting_file_scan (
+    meeting_id TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+    stems_sig TEXT NOT NULL DEFAULT '',
+    dirty INTEGER NOT NULL DEFAULT 0,
+    scanned_at TEXT
+);
+CREATE TRIGGER IF NOT EXISTS meeting_file_scan_dirty_meeting
+AFTER UPDATE OF project_id, current_transcript_version_id, current_minutes_version_id ON meetings
+WHEN NEW.project_id IS NOT OLD.project_id
+    OR NEW.current_transcript_version_id IS NOT OLD.current_transcript_version_id
+    OR NEW.current_minutes_version_id IS NOT OLD.current_minutes_version_id
+BEGIN
+    INSERT INTO meeting_file_scan(meeting_id, dirty) VALUES (NEW.id, 1)
+    ON CONFLICT(meeting_id) DO UPDATE SET dirty = dirty + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_file_scan_dirty_transcript_edit
+AFTER INSERT ON events
+WHEN NEW.meeting_id IS NOT NULL AND NEW.event_type IN (
+    'speaker_renamed', 'segment_split', 'segments_merged',
+    'transcript_draft_saved', 'minutes_saved')
+BEGIN
+    INSERT INTO meeting_file_scan(meeting_id, dirty)
+    SELECT id, 1 FROM meetings WHERE id = NEW.meeting_id
+    ON CONFLICT(meeting_id) DO UPDATE SET dirty = dirty + 1;
+END;
+-- 会议离开项目：它在旧项目的有效提到立刻去掉，「不是这份文件」留着（只挡原项目）。
+CREATE TRIGGER IF NOT EXISTS meeting_file_mentions_leave_project
+AFTER UPDATE OF project_id ON meetings
+WHEN NEW.project_id IS NOT OLD.project_id
+BEGIN
+    DELETE FROM meeting_file_mentions
+     WHERE meeting_id = NEW.id AND status = 'active' AND project_id IS NOT NEW.project_id;
+END;
 """
 
 # 1g：关系图的持久版本号。这些表每次增删改都给 app_state 里的 graph_rev 加一，图接口拿它
@@ -765,6 +880,8 @@ GRAPH_REV_TABLES = (
     "name_decisions",
     "requirement_name_decisions",
     "pending_project_folders",
+    # 2d：会上提到的文件。文件名索引那几张表不进，否则后台每扫一轮都会让关系图缓存失效。
+    "meeting_file_mentions",
 )
 SCHEMA += "".join(
     f"""

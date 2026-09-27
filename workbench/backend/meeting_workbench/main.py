@@ -59,6 +59,8 @@ from . import search as search_module
 from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
 from . import overview as overview_module
+from . import file_mentions
+from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from .project_folders import folder_matches
 from .project_names import (
     SimilarProjectError,
@@ -452,6 +454,12 @@ class RevealInput(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 
 
+class FileMentionPickInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: int = Field(ge=1)
+
+
 class TaskStatusInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -692,6 +700,7 @@ def create_app(
     project_linker = ProjectLinker(db, settings)
     card_writer = CardWriter(db, settings)
     roots_cache = graph_module.RootsCache(db, settings=settings)
+    material_indexer = MaterialIndexer(db, settings, busy_check=semantic.busy_check)
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
@@ -957,6 +966,13 @@ def create_app(
                     # 任务抽取是旁路，失败只记账，不影响扫描与纪要主链。
                     phase_errors.append(error)
                 try:
+                    await asyncio.to_thread(file_mentions.match_pending, db)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # 会上提到文件名是旁路，每轮最多 20 场或 5 秒，失败只记账。
+                    phase_errors.append(error)
+                try:
                     await asyncio.to_thread(card_writer.reconcile)
                 except asyncio.CancelledError:
                     raise
@@ -1078,6 +1094,18 @@ def create_app(
                 logger.exception("刷新资料盘状态失败")
             await asyncio.sleep(graph_module.ROOTS_REFRESH_SECONDS)
 
+    async def material_index_loop() -> None:
+        """文件名索引：每 60 秒一轮，和扫描循环分开，不影响扫描器的健康检查。"""
+        await asyncio.sleep(5)
+        while True:
+            try:
+                await asyncio.to_thread(material_indexer.run_round)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("文件名索引这一轮失败")
+            await asyncio.sleep(MATERIAL_INDEX_SECONDS)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         application.state.lifespan_active = True
@@ -1138,6 +1166,7 @@ def create_app(
             qwen_shadow_loop(application), name="meeting-workbench-qwen-shadow"
         )
         roots_worker = asyncio.create_task(roots_loop(), name="meeting-workbench-graph-roots")
+        index_worker = asyncio.create_task(material_index_loop(), name="meeting-workbench-material-index")
         try:
             yield
         finally:
@@ -1145,6 +1174,9 @@ def create_app(
             relay_probe.cancel()
             qwen_worker.cancel()
             roots_worker.cancel()
+            index_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await index_worker
             with suppress(asyncio.CancelledError):
                 await roots_worker
             with suppress(asyncio.CancelledError):
@@ -3412,6 +3444,43 @@ def create_app(
             return graph_module.meeting_brief(
                 connection, meeting_id, attribution=attribution, card=card
             )
+
+    @app.get("/api/graph/files/{file_id}")
+    def graph_file_detail(file_id: int):
+        with db.autocommit() as connection:
+            try:
+                return file_mentions.file_detail(
+                    connection,
+                    file_id,
+                    quotes=lambda meeting_id, starts: graph_module._segments_at(connection, meeting_id, starts),
+                )
+            except file_mentions.MentionNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    def _mention_action(action: Any, *args: Any) -> dict[str, Any]:
+        try:
+            return action(db, *args)
+        except file_mentions.MentionNotFound as error:
+            raise HTTPException(404, str(error)) from error
+        except file_mentions.MentionError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/reject")
+    def reject_file_mention(meeting_id: str, stem_key: str):
+        return _mention_action(file_mentions.reject_mention, meeting_id, stem_key)
+
+    @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/restore")
+    def restore_file_mention(meeting_id: str, stem_key: str):
+        return _mention_action(file_mentions.restore_mention, meeting_id, stem_key)
+
+    @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/pick")
+    def pick_file_mention(meeting_id: str, stem_key: str, body: FileMentionPickInput):
+        return _mention_action(file_mentions.pick_mention_file, meeting_id, stem_key, body.file_id)
+
+    @app.get("/api/materials/index-status")
+    def material_index_status(project_id: str | None = Query(default=None, max_length=200)):
+        with db.autocommit() as connection:
+            return {"roots": index_status(connection, project_id)}
 
     @app.get("/api/meetings/{meeting_id}/quotes")
     def meeting_quotes_endpoint(

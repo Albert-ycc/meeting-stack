@@ -273,9 +273,9 @@ def group_new_project_names(
             continue
         when = row["recording_date"] or (row["created_at"] or "")[:10]
         bucket = names.setdefault(
-            key, {"name": row["new_project_name"], "meeting_ids": [], "last_at": ""}
+            key, {"name": row["new_project_name"], "meetings": [], "last_at": ""}
         )
-        bucket["meeting_ids"].append(row["id"])
+        bucket["meetings"].append((when, row["id"]))
         if when > bucket["last_at"]:
             bucket["last_at"] = when
             bucket["name"] = row["new_project_name"]
@@ -283,8 +283,9 @@ def group_new_project_names(
         {
             "name": bucket["name"],
             "norm_key": key,
-            "meeting_count": len(bucket["meeting_ids"]),
-            "meeting_ids": bucket["meeting_ids"],
+            "meeting_count": len(bucket["meetings"]),
+            # 最近的一场在最前（概览的幽灵岛对它打开提示）
+            "meeting_ids": [meeting_id for _when, meeting_id in sorted(bucket["meetings"], reverse=True)],
             "last_at": bucket["last_at"],
         }
         for key, bucket in names.items()

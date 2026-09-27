@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 from .attribution import ATTRIBUTION_STATE_SQL, LATEST_LINK_JOIN
 from .cards import BLOCKED, MISSING, STOP_REASONS, SYNCED, USER_EDITED
 from .db import GRAPH_REV_KEY
+from . import file_mentions
 from . import folder_scan
 from .materials import (
     CARDS_DIR_NAME,
@@ -55,7 +56,7 @@ from .tasks import OPEN_TASK_STATUSES, UNDO_WINDOW_SECONDS
 logger = logging.getLogger(__name__)
 
 # 前端缓存按这个版本失效：接口字段改了就加一，免得浏览器拿旧 ETag 命中旧结构。
-GRAPH_API_VERSION = 2
+GRAPH_API_VERSION = 3
 
 WINDOWS: dict[str, int | None] = {"7d": 7, "28d": 28, "90d": 90, "all": None}
 DEFAULT_WINDOW = "28d"
@@ -83,6 +84,10 @@ MONTH_CLUSTER_CAP = 6
 BEACON_CAP = 6
 # 「像是新需求」节点最多几个（计入可见节点预算）。
 SUGGESTED_REQUIREMENT_CAP = 3
+# 2d：会上提到的文件。每场可见的会最多 3 个，全图最多 12 个，多出来的收成一个节点。
+FILES_PER_MEETING = 3
+FILE_CAP = 12
+FILE_MIN = 3
 VISIBLE_BUDGET = 40
 WEEKS = 12
 
@@ -546,6 +551,21 @@ def project_graph(
         ).fetchall()
     }
 
+    # ⑫ 会上提到的文件（不按窗口过滤：通用词干要按本项目全部的会算）
+    mention_rows = [
+        dict(row)
+        for row in connection.execute(
+            """SELECT fm.meeting_id, fm.stem_key, fm.needle, fm.count, fm.first_ms, fm.anchors_json,
+                      fm.minutes_count, fm.source,
+                      f.id AS file_id, f.name, f.ext, f.rel_path, f.root_id
+                 FROM meeting_file_mentions fm
+                 JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
+                 JOIN material_files f ON f.id = fm.file_id AND f.gone_at IS NULL
+                WHERE fm.project_id = ? AND fm.status = 'active'""",
+            (project_id,),
+        ).fetchall()
+    ]
+
     return _assemble(
         project=project,
         projects=projects,
@@ -570,11 +590,24 @@ def project_graph(
         cross_task_rows=cross_task_rows,
         moved_rows=moved_rows,
         terms=terms,
+        mention_rows=mention_rows,
         window=window,
         focus=focus,
         today=today,
         now=now,
     )
+
+
+def _clock_hms(ms: int | None) -> str:
+    total = max(0, int(ms or 0)) // 1000
+    return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
+
+
+def mention_label(row: dict[str, Any]) -> str:
+    """「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」。"""
+    if row["source"] == "minutes":
+        return f"纪要里写到『{row['needle']}』"
+    return f"会上说『{row['needle']}』{row['count']} 次 · {_clock_hms(row['first_ms'])}"
 
 
 def _assemble(
@@ -593,12 +626,14 @@ def _assemble(
     cross_task_rows: list[dict[str, Any]],
     moved_rows: list[dict[str, Any]],
     terms: dict[str, dict[str, Any]],
+    mention_rows: list[dict[str, Any]] | None = None,
     window: str | None,
     focus: str | None,
     today: date,
     now: datetime,
 ) -> dict[str, Any]:
     project_id = project["id"]
+    mention_rows = mention_rows or []
 
     # ---- 会议：本地日期、年龄
     for row in meeting_rows:
@@ -810,9 +845,33 @@ def _assemble(
     # ---- 信标
     beacons = _beacons(project_id, projects, link_rows, cross_task_rows)
 
-    # ---- 可见节点预算：先收中圈的会，再收线索词、需求、文件夹
+    # ---- 会上提到的文件：每场会按次数取前 3 个（通用词干不占名额），再按被几场可见的会提到排
+    stem_meetings: dict[str, set[str]] = {}
+    for row in mention_rows:
+        stem_meetings.setdefault(row["stem_key"], set()).add(row["meeting_id"])
+    generic_stems = {
+        key for key, ids in stem_meetings.items() if file_mentions.is_generic(len(ids), len(meeting_rows))
+    }
+    top_mentions: dict[str, list[dict[str, Any]]] = {}
+    for row in mention_rows:
+        if row["stem_key"] not in generic_stems:
+            top_mentions.setdefault(row["meeting_id"], []).append(row)
+    for rows in top_mentions.values():
+        rows.sort(key=lambda row: (-int(row["count"]), -int(row["minutes_count"]), row["name"]))
+        del rows[FILES_PER_MEETING:]
+
+    def mentioned_files(meeting_ids: list[str]) -> list[int]:
+        score: dict[int, tuple[int, int, str]] = {}
+        for meeting_id in meeting_ids:
+            for row in top_mentions.get(meeting_id, []):
+                meetings, count, name = score.get(row["file_id"], (0, 0, row["name"]))
+                score[row["file_id"]] = (meetings + 1, count + int(row["count"]), name)
+        return sorted(score, key=lambda file_id: (-score[file_id][0], -score[file_id][1], score[file_id][2], file_id))
+
+    # ---- 可见节点预算：先收会上提到的文件，再收中圈的会、线索词、需求、文件夹
     requirement_cap = REQUIREMENT_CAP
     folder_cap = FOLDER_CAP
+    file_cap = FILE_CAP
 
     def visible_count() -> int:
         shown_middle = min(len(middle), middle_cap)
@@ -835,8 +894,15 @@ def _assemble(
             + min(len(cues_all), cue_cap)
             + len(beacons)
             + len(suggested_requirements)
+            + file_nodes(middle_cap)
         )
 
+    def file_nodes(cap: int) -> int:
+        shown = mentioned_files([row["id"] for row in inner + middle[:cap]])
+        return min(len(shown), file_cap) + (1 if len(shown) > file_cap else 0)
+
+    while visible_count() > VISIBLE_BUDGET and file_cap > FILE_MIN:
+        file_cap -= 1
     while visible_count() > VISIBLE_BUDGET and middle_cap > MIDDLE_MIN:
         middle_cap -= 1
     while visible_count() > VISIBLE_BUDGET and cue_cap > CUE_MIN:
@@ -1039,6 +1105,48 @@ def _assemble(
                 }
             )
 
+    ranked_files = mentioned_files([row["id"] for row in visible_meetings])
+    shown_file_ids = ranked_files[:file_cap]
+    hidden_file_ids = ranked_files[file_cap:]
+    file_rows = {row["file_id"]: row for row in mention_rows}
+    file_meetings: dict[int, set[str]] = {}
+    for row in mention_rows:
+        file_meetings.setdefault(row["file_id"], set()).add(row["meeting_id"])
+    file_nodes_out = [
+        {
+            "id": f"file:{file_id}",
+            "kind": "file",
+            "file_id": file_id,
+            "name": file_rows[file_id]["name"],
+            "ext": file_rows[file_id]["ext"],
+            "rel_path": file_rows[file_id]["rel_path"],
+            "root_id": file_rows[file_id]["root_id"],
+            "folder": f"root:{file_rows[file_id]['root_id']}",
+            "meeting_count": len(file_meetings[file_id]),
+        }
+        for file_id in shown_file_ids
+    ]
+    shown_file_set = set(shown_file_ids)
+    for row in visible_meetings:
+        for mention in top_mentions.get(row["id"], []):
+            if mention["file_id"] not in shown_file_set:
+                continue
+            edges.append(
+                {
+                    "id": f"e:file:{mention['file_id']}:{row['id']}",
+                    "kind": "mentioned",
+                    "from": f"m:{row['id']}",
+                    "to": f"file:{mention['file_id']}",
+                    "label": mention_label(mention),
+                    "count": int(mention["count"]),
+                    "source": mention["source"],
+                    "needle": mention["needle"],
+                    "stem_key": mention["stem_key"],
+                    "meeting_id": row["id"],
+                    "anchors_ms": _json_list(mention["anchors_json"]),
+                }
+            )
+
     # ---- 状态句
     status = _status_sentence(
         inner=inner,
@@ -1117,6 +1225,12 @@ def _assemble(
             else None
         ),
         "loose": loose,
+        "files": file_nodes_out,
+        "files_more": (
+            {"id": "file:more", "count": len(hidden_file_ids), "file_ids": hidden_file_ids}
+            if hidden_file_ids
+            else None
+        ),
         "cues": shown_cues,
         "beacons": beacons,
         "edges": edges,
@@ -1647,7 +1761,7 @@ def meeting_brief(
         "tasks_more": max(0, len(tasks) - _BRIEF_TASKS),
         "requirements": requirements,
         "card": card,
-        "files_note": "第二期起在这里列出会上提到的文件",
+        **file_mentions.meeting_files(connection, meeting_id, meeting["project_id"]),
     }
 
 

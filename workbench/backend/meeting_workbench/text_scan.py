@@ -45,16 +45,28 @@ class FormScanner:
             key = light_key(form)
             if key and key not in self.keys:
                 self.keys[key] = form
-        self.lengths = sorted({len(key) for key in self.keys}, reverse=True)
+        # 按开头两个字建索引（1 个字的叫法按那一个字）：每个位置只试开头对得上的长度，最长的先试。
+        self.by_prefix: dict[str, list[int]] = {}
+        for key in self.keys:
+            self.by_prefix.setdefault(key[:2], []).append(len(key))
+        for prefix, lengths in self.by_prefix.items():
+            self.by_prefix[prefix] = sorted(set(lengths), reverse=True)
+
+    def matches(self, text: str) -> list[tuple[str, int, int]]:
+        """(叫法, 原文起点, 原文终点) 的列表。"""
+        return self._matches(text)
 
     def _matches(self, text: str) -> list[tuple[str, int, int]]:
-        """(叫法, 原文起点, 原文终点) 的列表。"""
         folded, positions = fold_with_map(text)
         found: list[tuple[str, int, int]] = []
         index = 0
         size = len(folded)
+        empty: list[int] = []
         while index < size:
-            for length in self.lengths:
+            lengths = self.by_prefix.get(folded[index : index + 2], empty) + self.by_prefix.get(
+                folded[index], empty
+            )
+            for length in lengths:
                 if index + length > size:
                     continue
                 piece = folded[index : index + length]

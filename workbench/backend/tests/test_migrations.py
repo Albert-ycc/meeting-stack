@@ -487,8 +487,26 @@ V14_TABLES = (
     "pending_project_folders",
     "folder_declines",
     "root_fingerprints",
+    "meeting_file_mentions",
+    "meeting_file_scan",
+    "material_index_state",
+    "material_dirs",
+    "material_files",
 )
-V14_GRAPH_REV_TABLES = ("name_decisions", "requirement_name_decisions", "pending_project_folders")
+V14_GRAPH_REV_TABLES = (
+    "name_decisions",
+    "requirement_name_decisions",
+    "pending_project_folders",
+    "meeting_file_mentions",
+)
+# v14 / 2d：建在旧表上、引用新表的触发器，退回 v13 时要先删。
+V14_TRIGGERS = (
+    "pending_project_folders_drop_on_mount",
+    "meeting_file_scan_dirty_meeting",
+    "meeting_file_scan_dirty_transcript_edit",
+    "meeting_file_mentions_leave_project",
+    "material_index_root_moved",
+)
 
 
 # v14 / 2b：project_links 上的新需求名、AI 当时选的项目、会上的叫法。
@@ -500,7 +518,8 @@ def _downgrade_to_v13(connection: sqlite3.Connection) -> None:
     for table in V14_GRAPH_REV_TABLES:
         for action in ("insert", "update", "delete"):
             connection.execute(f"DROP TRIGGER IF EXISTS graph_rev_{table}_{action}")
-    connection.execute("DROP TRIGGER IF EXISTS pending_project_folders_drop_on_mount")
+    for trigger in V14_TRIGGERS:
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for table in V14_TABLES:
         connection.execute(f"DROP TABLE IF EXISTS {table}")
     for column in V14_LINK_COLUMNS:
@@ -760,6 +779,21 @@ def test_version_fourteen_tables_bump_the_graph_revision(tmp_path):
         "INSERT INTO folder_declines(kind, scope, path, decided_at) VALUES ('unclaimed', '', '/x/资料', 'x')"
     )
     assert rev() == after_root
+    # 2d：文件名索引每扫一轮都会写，也不进版本号；会上提到的文件进
+    db.execute(
+        """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, seen_at)
+           VALUES (1, '报价单.xlsx', '', '报价单.xlsx', '报价单', '报价单', 'x')"""
+    )
+    db.execute("INSERT INTO material_dirs(root_id, dir_rel, listed_at) VALUES (1, '', 'x')")
+    db.execute("INSERT INTO material_index_state(root_id) VALUES (1)")
+    db.execute("INSERT INTO meetings(id, title) VALUES ('m', '周会')")
+    db.execute("INSERT INTO meeting_file_scan(meeting_id) VALUES ('m')")
+    assert rev() == after_root + 1  # 插入会议本身
+    db.execute(
+        """INSERT INTO meeting_file_mentions(meeting_id, project_id, stem_key, file_id, needle, updated_at)
+           VALUES ('m', 'p', '报价单', 1, '报价单', 'x')"""
+    )
+    assert rev() == after_root + 2
 
 
 def test_mounting_a_folder_drops_the_pending_folder(tmp_path):
