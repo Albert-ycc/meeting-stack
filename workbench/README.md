@@ -236,10 +236,12 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
   重算，快照体积因此从 400 MB 级降到 120 MB 级。**从备份恢复后不需要额外操作** —— 服务启动后的
   后台循环会调 `SemanticIndex.rebuild()` 自动补齐，补齐前语义检索结果为空、全文检索不受影响。
   receipt 里的 `derived_stripped` 标明该快照是否做过这步剥离
+- 文件名索引（`material_files`、`material_dirs`、`material_index_state`）留在备份里，三张表要么一起留、要么一起清；
+  每 10 万个文件约 30–40 MB。只存文件名、大小和修改时间，不读文件内容
 - 所有写接口要求同源、双提交 CSRF 与 `application/json`
 - 移动端界面只读，用于资料库、检索、播放和阅读；接口权限仍由 Tailnet ACL 控制，不把 UA 或屏幕尺寸当成鉴权凭据
 - 大录音通过 4 MiB JSON 分块上传，仅接受 `m4a/mp3/wav`，不会在浏览器或服务端一次性展开整段 Base64
-- 数据库使用 schema v12；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属及项目/需求/任务三层都保存在 SQLite。
+- 数据库使用 schema v14；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层和项目材料的文件名索引都保存在 SQLite。
   外部文件与数据库草稿冲突时，必须明确选择保留草稿、
   采用外部版本或丢弃草稿；音频完整性及发布恢复冲突只能由对应复验流程关闭，解决一种冲突不会清除其他冲突
 - 逐字稿和纪要保存携带页面打开时的基础版本；遇到并发变化返回 409，并保留浏览器中的未保存文字
@@ -323,13 +325,56 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 文件；外置盘 exFAT 递归慢，项目材料子文件夹统计按根目录短 TTL 缓存。相关代码在
 `materials.py`（文件系统）与 `requirements.py`（需求业务）。
 
+## 会议和项目材料的智能关联（260927，第一期和第二期）
+
+一边是会议录音，一边是按项目放在外置盘上的材料文件夹（每个项目一个顶层文件夹，东西都放在里面）。
+这部分让两边尽量自己连起来，只在拿不准的时候问你。设计和开发清单在 Claude Doc「录音与项目材料智能关联方案」。
+
+**归属流程**（`project_linking.py`、`attribution.py`）：新纪要出来后，先按项目线索（项目名、也叫、文件夹名、
+项目词条）在逐字稿里字面计次，再让模型在候选里挑并核对它的理由。结论分五种：自动归上（`auto`）、待你选
+（`needs_review`，候选前两名在资料库那一行就地给按钮）、像新项目（`new_project`）、AI 没认出（`none`）、
+等 AI 判断（`ai_pending`）；你改过的会（`manual`）以后不再自动改。任务跟着会议走。
+AI 还会提「这个项目里一件还没有的事」（新需求名）和会上的原样叫法；会议页和关系图用同一个提示
+`NewNamePrompt`：［建成项目］（同名的会一起归、挂上或新建同名文件夹、会上说得最多的叫法记进也叫）、
+［建成需求］（P2，同名的会一起关联，根目录下有同名子文件夹时挂成需求文件夹）、［不是新项目］/［不算新需求］，
+都能在 10 分钟内撤销。`meeting-workbench backfill-projects --evaluate` 回测命中率和「有新需求提示的会」的比例。
+
+**项目总文件夹**（`project_folders.py`）：设好以后（项目页标题下那一行），新建项目默认在它下面建同名文件夹；
+下面还没挂到项目的文件夹会列出来让你认领（挂到已有项目、建成新项目、不是项目）。资料盘没插时照常建项目，
+插上后 1 分钟内自动补建文件夹并提示；文件夹在 Finder 里改了名，项目页会问「是不是改名成了『X』」，
+点［是它］后根目录、需求文件夹和卡片跟着换过去。所有「看磁盘」的接口都读后台每 30 秒刷新一次的文件夹缓存，
+不在请求里读盘；缓存没好时返回 `state: "checking"`，前端 2 秒后再取。
+
+**会议卡片**（`cards.py`）：每场归了项目的会在项目文件夹的 `声档会议记录/` 下写一张 Markdown 卡片，
+跟着会议和 Finder 里的改动走；你在 Finder 里改过的卡片不覆盖，可以暂停、撤下、补写历史。
+
+**关系图**（`graph.py`、`overview.py`）：左侧导航「关系图」打开全部项目概览（`#graph`）：项目岛、
+没归项目的会（港湾）、像新项目的名字、还没挂的文件夹、跨项目的线。双击岛进项目图（`#projects/<id>/graph`）：
+左手录音、右手材料，会、需求、文件夹、线索词、会上提到的文件，点哪个都在右侧面板里看内容和原话 ▶；
+可以把会拖到别的项目或需求上，原位残影点一下撤销。只查库、SQL 条数固定，ETag 用 `app_state.graph_rev`
+（相关表的触发器维护）算。
+
+**文件名索引和「会上提到文件名」**（`material_index.py`、`file_stems.py`、`file_mentions.py`）：后台每 60 秒
+一轮、每轮最多 3 秒或 5000 个条目，把挂着的材料文件夹里的文件名收进库（只存名字，不读内容；FunASR 转写时让路）。
+断点续扫，目录修改时间没变就不重读，每 24 小时整轮重读一次；「不见了」只按目录重读的结果判断，资料盘掉了或
+读不了就停下、不当成空。系统影子文件和 Office 的 `~$` 锁文件跳过；`node_modules`、`.git` 和点开头的文件夹只记个数；
+`声档会议记录/` 里的卡片和代码、配置文件只收名字不比对；`.key`、`.pages` 这类包算一个文件；不跟随符号链接。
+文件名去掉版本号、副本编号、日期、编号后变成「会上会说的词」，扫描循环里拿逐字稿比对（每轮最多 20 场会或 5 秒）：
+最长优先、落在更长的项目名和词条里的不算、2 个字的词要说 2 次、同名多份时按会上说的版本或会议日期选一份。
+会议面板列出这场会提到的文件，项目图画成文件节点和「提到」线；［不是这份文件］只挡这场会、这个项目。
+项目页材料那一节有每个文件夹的索引进度（`GET /api/materials/index-status`）。
+
 ## 数据库迁移
 
-首次启动会自动备份并把数据库迁移到当前 schema v12（v7 曾新增 tasks / task_events /
+首次启动会自动备份并把数据库迁移到当前 schema v14（v7 曾新增 tasks / task_events /
 deliverables / task_extractions / notifications 五张表及 projects.origin 列；v8 新增
 术语词典 glossary_terms / glossary_suggestions 两张表，快照导出到
 `~/.meeting-workbench/glossary-snapshot.json` 供转写侧消费；v9 新增 `meetings.project_origin` 与
-`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列，只加不改）。
+`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列。都是只加不改）。
+
+**从 v14 退回 v13**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=13` 后用 v13 的代码启动。
+不要删 v14 的新表：meetings、events 上的新触发器会引用它们，删了表 v13 下改会议会报错。v13 会忽略新表和新列；
+盘不在时排队的文件夹 v13 下不会补建，回滚前在项目页看一眼有没有「插上后自动建」的项目。
 
 ## 术语词典（260821 新增，260905 与项目打通）
 
