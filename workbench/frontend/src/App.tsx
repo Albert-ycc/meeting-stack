@@ -24,6 +24,7 @@ import { LibraryPage } from "./components/LibraryPage";
 import { MeetingDetailPage } from "./components/MeetingDetailPage";
 import { OverviewPage } from "./components/OverviewPage";
 import { ProjectDetailPage } from "./components/ProjectDetailPage";
+import { OverviewGraph } from "./components/graph/OverviewGraph";
 import { ProjectGraph } from "./components/graph/ProjectGraph";
 import { ViewModeToggle } from "./components/graph/ViewModeToggle";
 import { readProjectMode, writeProjectMode, type ProjectViewMode } from "./components/graph/graphPrefs";
@@ -78,6 +79,7 @@ const VIEW_LABELS: Record<AppView, string> = {
   jobs: "转写录音",
   projects: "项目管理",
   projectDetail: "项目详情",
+  graph: "关系图",
 };
 
 /**
@@ -93,6 +95,11 @@ function projectGraphPath(projectId: string, graph: boolean, selection: string |
   return `#projects/${projectId}/graph${params.length ? `?${params.join("&")}` : ""}`;
 }
 
+/** 全部项目概览的地址：#graph，选中一个岛时带 ?sel=p:<id> */
+function overviewPath(selection: string | null) {
+  return selection ? `#graph?sel=${selection.split(":").map(encodeURIComponent).join(":")}` : "#graph";
+}
+
 function expandParam(hash: string) {
   const query = hash.split("?")[1];
   return query ? new URLSearchParams(query).get("expand") : null;
@@ -100,6 +107,9 @@ function expandParam(hash: string) {
 
 export default function App({ apiClient = api }: AppProps) {
   const isMobile = useMobileBreakpoint();
+  // applyHash 挂在 popstate 上，经 ref 读到是不是手机
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
   // 落地页是工作台（最近的会、待确认任务、处理中的录音）；按日期回忆某场会走侧栏「录音档案」。
   const [view, setView] = useState<AppView>("overview");
   // 冷加载时地址栏里的 #tasks 等锚点要先被读进视图，之后才允许把视图反写回地址栏，
@@ -123,6 +133,8 @@ export default function App({ apiClient = api }: AppProps) {
   const [graphFocus, setGraphFocus] = useState<string | null>(null);
   // 关系图里展开的那场会；展开压一条历史，后退键收起
   const [graphExpanded, setGraphExpanded] = useState<string | null>(null);
+  // 全部项目概览里选中的节点（地址栏 #graph?sel=p:<id>）
+  const [overviewSelection, setOverviewSelection] = useState<string | null>(null);
   // 从关系图点进需求页时，面包屑写「关系图」，返回回到画布
   const [requirementFromGraph, setRequirementFromGraph] = useState<{ projectId: string; selection: string } | null>(null);
   const [openRequirementId, setOpenRequirementId] = useState<string | null>(null);
@@ -316,7 +328,15 @@ export default function App({ apiClient = api }: AppProps) {
       setSearchActive(false);
     }
     setTaskDrawerId(null);
-    if (hash.startsWith("#projects/")) {
+    if (hash === "#graph" || hash.startsWith("#graph?")) {
+      // 全部项目概览，#graph?sel=p:<id> 选中一个岛；要在 #projects/ 之前认。手机上没有关系图，退回项目列表
+      if (isMobileRef.current) {
+        setView("projects");
+      } else {
+        setOverviewSelection(new URLSearchParams(hash.split("?")[1] ?? "").get("sel"));
+        setView("graph");
+      }
+    } else if (hash.startsWith("#projects/")) {
       // #projects/<id> 是清单，#projects/<id>/graph?sel=m:<id> 是关系图并选中一个节点
       const [pathPart, queryPart = ""] = hash.slice("#projects/".length).split("?");
       const [rawId, sub] = pathPart.split("/");
@@ -456,6 +476,8 @@ export default function App({ apiClient = api }: AppProps) {
 
   useEffect(() => {
     if (isMobile && view === "jobs") setView("library");
+    // 全部项目概览只在电脑上有：窗口变窄到手机布局时退回项目列表
+    if (isMobile && view === "graph") setView("projects");
   }, [isMobile, view]);
 
   const applyFilters = (next: MeetingFilters) => {
@@ -551,6 +573,8 @@ export default function App({ apiClient = api }: AppProps) {
     historySyncRef.current = false;
     resetDetailState();
     setView(nextView);
+    // 从侧栏回到全部项目概览时不带上次的选中
+    if (nextView === "graph") setOverviewSelection(null);
     setSearchActive(false);
     setTaskDrawerId(null);
     // 默认清空词典预筛；openGlossaryForProject 会在这之后同一批更新里重新设上。
@@ -559,7 +583,7 @@ export default function App({ apiClient = api }: AppProps) {
 
   const navigate = (nextView: AppView) => {
     if (detailNavigationLocked) return;
-    if (isMobile && nextView === "jobs") return;
+    if (isMobile && (nextView === "jobs" || nextView === "graph")) return;
     if (
       detail &&
       detailDirty &&
@@ -580,8 +604,9 @@ export default function App({ apiClient = api }: AppProps) {
     performNavigate("projectDetail");
   };
 
-  // 会议页、需求页的「在关系图里看」：打开项目的关系图并选中目标；目标在时间窗外时后端自动放宽
-  const openProjectGraph = (projectId: string, selection: string) => {
+  // 会议页、需求页的「在关系图里看」：打开项目的关系图并选中目标；目标在时间窗外时后端自动放宽。
+  // 全部项目概览里双击岛进来时不选中什么
+  const openProjectGraph = (projectId: string, selection: string | null = null) => {
     setOpenProjectId(projectId);
     setProjectMode("graph");
     setGraphSelection(selection);
@@ -597,6 +622,16 @@ export default function App({ apiClient = api }: AppProps) {
       return;
     }
     setGraphExpanded(meetingId);
+  };
+
+  // 全部项目概览面板里的［打开项目页］：打开清单，不改这个项目记住的视图
+  const openProjectList = (projectId: string) => {
+    setOpenProjectId(projectId);
+    setProjectMode("list");
+    setGraphSelection(null);
+    setGraphFocus(null);
+    setGraphExpanded(null);
+    performNavigate("projectDetail");
   };
 
   const changeProjectMode = (mode: ProjectViewMode) => {
@@ -651,13 +686,15 @@ export default function App({ apiClient = api }: AppProps) {
           : "#glossary"
         : view === "projectDetail" && openProjectId
           ? projectGraphPath(openProjectId, !isMobile && projectMode === "graph", graphSelection, graphExpanded)
-          : view === "requirementDetail" && openRequirementId
-            ? `#requirements/${openRequirementId}`
-            : view === "overview"
-              ? ""
-              : view === "projectDetail" || view === "requirementDetail"
+          : view === "graph"
+            ? overviewPath(overviewSelection)
+            : view === "requirementDetail" && openRequirementId
+              ? `#requirements/${openRequirementId}`
+              : view === "overview"
                 ? ""
-                : `#${view}`;
+                : view === "projectDetail" || view === "requirementDetail"
+                  ? ""
+                  : `#${view}`;
     const fromHistory = historySyncRef.current;
     historySyncRef.current = false;
     if (window.location.hash === path) return;
@@ -679,6 +716,7 @@ export default function App({ apiClient = api }: AppProps) {
     openMeetingId,
     openProjectId,
     openRequirementId,
+    overviewSelection,
     projectMode,
     view,
   ]);
@@ -997,6 +1035,24 @@ export default function App({ apiClient = api }: AppProps) {
           reloadKey={boardVersion}
         />
       );
+  } else if (view === "graph" && !isMobile) {
+    content = (
+      <OverviewGraph
+        apiClient={apiClient}
+        onOpenLibrary={(filter) => {
+          applyFilters(filter === "none" ? { project_id: "none" } : { attribution: "new_project" });
+          navigate("library");
+        }}
+        onOpenMeeting={openMeeting}
+        onOpenProject={openProjectList}
+        onOpenProjectGraph={(projectId) => openProjectGraph(projectId)}
+        onOpenRequirement={openRequirementDetail}
+        onProjectsChanged={refreshProjects}
+        onSelectionChange={setOverviewSelection}
+        projects={projects}
+        selection={overviewSelection}
+      />
+    );
   } else if (view === "jobs") {
     content = (
       <JobsPage

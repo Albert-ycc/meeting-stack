@@ -427,3 +427,90 @@ ol.graph-panel__list li::before {
   justify-content: space-between;
   gap: 8px;
 }
+
+/* ── 会上提到的文件、文件面板、像是新需求（2c、2d） ─────────── */
+
+.graph-panel__mentions li.is-generic > button,
+.graph-panel__mentions li.is-generic > small {
+  opacity: 0.6;
+}
+
+.graph-panel__facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0 0 10px;
+}
+
+.graph-panel__facts > div {
+  display: contents;
+}
+
+.graph-panel__facts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.graph-panel__facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+
+p.graph-panel__warn {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.graph-panel__rejected {
+  margin-top: 6px;
+}
+
+.graph-panel__rejected li {
+  border-bottom: 0;
+}
+
+.graph-panel__sibling {
+  display: flex;
+  flex: 1 1 180px;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.graph-panel__actions--start {
+  display: flex;
+  margin: 10px 0 0;
+}
+
+.graph-play--inline {
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+
+.graph-panel__rename {
+  margin-top: 10px;
+}
+
+.graph-panel__rename > .material-root-row__missing {
+  display: inline-block;
+  margin-right: 10px;
+}
+
+.graph-panel__rename .material-root-row__ops {
+  display: inline-flex;
+}
+
+.graph-panel__rename .material-root-row__ops button {
+  padding: 0;
+  color: var(--signal-dark);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.graph-panel .name-prompt {
+  margin-top: 4px;
+}

@@ -74,12 +74,13 @@ function unassignedLabel(meeting: MeetingSummary): string {
   }
 }
 
-function ReviewStrip({
+/** 待你选的一行：［A］［B（原来的）］［不归项目］。全部项目概览的港湾里也用它。 */
+export function ReviewStrip({
   meeting,
   onAssignProject,
   onConfirmProject,
 }: {
-  meeting: MeetingSummary;
+  meeting: Pick<MeetingSummary, "id" | "title" | "candidates">;
   onAssignProject: (meetingId: string, projectId: string) => Promise<void>;
   onConfirmProject?: (meetingId: string) => Promise<void>;
 }) {

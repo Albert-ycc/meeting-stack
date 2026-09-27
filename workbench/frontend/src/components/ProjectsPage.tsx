@@ -118,13 +118,19 @@ export function ProjectsPage({
           />
         </div>
         {canEdit && (
-          <button
-            className="projects-create"
-            onClick={() => setFormModal({ mode: "create", project: null })}
-            type="button"
-          >
-            ＋ 新建项目
-          </button>
+          <div className="projects-page__actions">
+            {/* 全部项目概览只在电脑上有（手机上 #graph 退回项目列表），路由在 App 里 */}
+            <a className="projects-graph-link" href="#graph">
+              全部项目图
+            </a>
+            <button
+              className="projects-create"
+              onClick={() => setFormModal({ mode: "create", project: null })}
+              type="button"
+            >
+              ＋ 新建项目
+            </button>
+          </div>
         )}
       </header>
 

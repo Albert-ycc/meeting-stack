@@ -2,9 +2,10 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { ProjectDetailPage } from "./ProjectDetailPage";
+import { INDEX_POLL_MS, ProjectDetailPage } from "./ProjectDetailPage";
 import { ApiError, type ApiClient } from "../api";
 import type {
+  MaterialIndexRoot,
   ProjectBoard,
   ProjectMeetingRow,
   RequirementsPayload,
@@ -509,6 +510,86 @@ describe("ProjectDetailPage 文件夹改名后找回", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("ProjectDetailPage 文件名索引", () => {
+  const indexRoot = (rootId: number, overrides: Partial<MaterialIndexRoot>): MaterialIndexRoot => ({
+    root_id: rootId,
+    project_id: "project-1",
+    path: `/Volumes/资料盘/蓝鲸云/r${rootId}`,
+    state: "done",
+    files: 0,
+    name_only_dirs: 0,
+    indexed_once: true,
+    last_full_at: null,
+    updated_at: null,
+    error: null,
+    ...overrides,
+  });
+  const fiveRoots: ProjectBoard = {
+    ...baseBoard,
+    material_roots: [1, 2, 3, 4, 5].map((id) => ({
+      id,
+      project_id: "project-1",
+      path: `/Volumes/资料盘/蓝鲸云/r${id}`,
+      exists: true,
+      created_at: "2026-09-01T00:00:00Z",
+    })),
+  };
+
+  it("每个根目录一行：认好了、正在认、盘没插、找不到、读不了", async () => {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000 - 20_000).toISOString();
+    const getMaterialIndexStatus = vi.fn().mockResolvedValue({
+      roots: [
+        indexRoot(1, { state: "done", files: 1234, name_only_dirs: 3, updated_at: fiveMinutesAgo }),
+        indexRoot(2, { state: "offline", files: 40 }),
+        indexRoot(3, { state: "missing", files: 12 }),
+        indexRoot(4, { state: "error", error: "没有读取权限" }),
+        indexRoot(5, { state: "done", files: 8, updated_at: fiveMinutesAgo }),
+      ],
+    });
+    renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(fiveRoots), getMaterialIndexStatus }) });
+
+    expect(
+      await screen.findByText("已认得 1,234 个文件名 · 5 分钟前（node_modules、.git 等 3 个文件夹只记了个数）"),
+    ).toBeInTheDocument();
+    expect(getMaterialIndexStatus).toHaveBeenCalledWith("project-1");
+    expect(screen.getByText("资料盘未连接，插上后接着认")).toBeInTheDocument();
+    expect(screen.getByText("找不到这个文件夹，先按上次认得的算")).toHaveClass("is-stopped");
+    expect(screen.getByText("读不了：没有读取权限")).toHaveClass("is-stopped");
+    // name_only_dirs 为 0 时不写括号
+    expect(screen.getByText("已认得 8 个文件名 · 5 分钟前")).toBeInTheDocument();
+  });
+
+  it("还在认时隔一会儿再问一次进度，认完就不再问", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const getMaterialIndexStatus = vi
+        .fn()
+        .mockResolvedValueOnce({ roots: [indexRoot(1, { state: "walking", files: 820, indexed_once: false })] })
+        .mockResolvedValue({ roots: [indexRoot(1, { state: "done", files: 1500, updated_at: new Date().toISOString() })] });
+      renderPage({ apiClient: client({ getMaterialIndexStatus }) });
+
+      expect(await screen.findByText("正在认文件名，已认 820 个")).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(INDEX_POLL_MS);
+      });
+      expect(getMaterialIndexStatus).toHaveBeenCalledTimes(2);
+      expect(await screen.findByText("已认得 1,500 个文件名 · 刚刚")).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(INDEX_POLL_MS * 2);
+      });
+      expect(getMaterialIndexStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("旧后端没有这个接口时不写这一行", async () => {
+    renderPage();
+    expect(await screen.findByText(baseBoard.material_roots![0].path)).toBeInTheDocument();
+    expect(document.querySelector(".material-root-row__index")).toBeNull();
   });
 });
 

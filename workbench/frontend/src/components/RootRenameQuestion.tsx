@@ -4,6 +4,20 @@ import type { ApiClient } from "../api";
 import type { MaterialRoot, MaterialRootRepoint, RenameCandidate, RenameCandidatesPayload } from "../types";
 import { pollWhileChecking } from "./checkingPoll";
 
+/**
+ * 根目录换了位置后一起跟着改的：「，嵌在里面的『北辰』文件夹一起改了，3 个需求文件夹一起改了，已补写 2 张会议卡片」。
+ * 旧后端只带 cards_written。项目页和关系图的文件夹面板共用。
+ */
+export function movedNote(result: Partial<MaterialRootRepoint> | undefined): string {
+  if (!result) return "";
+  const names = [...new Set((result.moved_roots ?? []).map((item) => item.project_name))];
+  return [
+    names.length ? `，嵌在里面的${names.map((name) => `『${name}』`).join("")}文件夹一起改了` : "",
+    result.moved_folders ? `，${result.moved_folders} 个需求文件夹一起改了` : "",
+    result.cards_written ? `，已补写 ${result.cards_written} 张会议卡片` : "",
+  ].join("");
+}
+
 interface RootRenameQuestionProps {
   apiClient: ApiClient;
   projectId: string;

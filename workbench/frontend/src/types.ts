@@ -1159,6 +1159,27 @@ export interface MaterialRoot {
   cards_written?: number;
 }
 
+/** 文件名索引的进度（2d），项目页材料那一节每个根目录一行 */
+export interface MaterialIndexRoot {
+  root_id: number;
+  project_id: string;
+  path: string;
+  state: "pending" | "walking" | "done" | "offline" | "missing" | "error";
+  /** 已认得的文件名个数 */
+  files: number;
+  /** node_modules、.git 等只记了个数的文件夹 */
+  name_only_dirs: number;
+  /** 至少扫完过一整轮 */
+  indexed_once: boolean;
+  last_full_at: string | null;
+  updated_at: string | null;
+  error: string | null;
+}
+
+export interface MaterialIndexStatus {
+  roots: MaterialIndexRoot[];
+}
+
 /** 冷启动：还没挂文件夹的项目找到的同名（默认勾选）或相近（默认不勾）文件夹 */
 export interface ColdStartFolderItem {
   project_id: string;

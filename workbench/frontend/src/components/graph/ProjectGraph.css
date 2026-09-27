@@ -35,8 +35,14 @@
   cursor: pointer;
 }
 
-.project-graph__crumb button:hover {
+.project-graph__crumb button:hover,
+.project-graph__crumb a:hover {
   color: var(--heading);
+}
+
+.project-graph__crumb a {
+  color: var(--muted);
+  text-decoration: none;
 }
 
 .project-graph__title {

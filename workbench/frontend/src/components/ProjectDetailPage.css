@@ -503,6 +503,19 @@
   border-radius: 8px;
 }
 
+/* 文件名索引的进度（整行宽，排在路径下面，2d） */
+.material-root-row__index {
+  flex-basis: 100%;
+  order: 9;
+  padding-left: 24px;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+}
+
+.material-root-row__index.is-stopped {
+  color: var(--warn);
+}
+
 /* 根目录找不到时问「是不是改了名」（整行宽，排在路径下面） */
 .material-root-row__rename {
   flex-basis: 100%;

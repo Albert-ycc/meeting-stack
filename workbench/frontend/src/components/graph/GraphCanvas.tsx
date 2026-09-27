@@ -25,6 +25,8 @@ import {
   meetingDateLabel,
   nearestInDirection,
   overlaps,
+  pendingNote,
+  suggestedText,
   textWidth,
   type Box,
   type Direction,
@@ -153,6 +155,9 @@ function edgeVisible(edge: GraphEdge, focus: string | null, discussionCount: num
   switch (edge.kind) {
     case "folder":
     case "cross":
+    // 「像是新需求」的虚线、会上提到文件的线默认画出（后者淡色，每场会最多 3 条）
+    case "suggested":
+    case "mentioned":
       return true;
     case "discussion":
       return discussionCount <= DISCUSSION_ALWAYS_MAX || touches;
@@ -161,12 +166,38 @@ function edgeVisible(edge: GraphEdge, focus: string | null, discussionCount: num
   }
 }
 
+/** 「提到」线离中心的项目圆至少留这么远（项目圆半高 44） */
+const MENTION_CLEAR = 64;
+
+/**
+ * 「提到」线：从左边的会绕开中心连到右边的文件。三次贝塞尔，两个控制点在横向三等分处、同一个高度，
+ * 高度取到线经过 x=0 时离中心至少 MENTION_CLEAR；从两端偏上还是偏下的那一侧绕。
+ */
+export function mentionCurve(from: { x: number; y: number }, to: { x: number; y: number }) {
+  const { x: x1, y: y1 } = from;
+  const { x: x2, y: y2 } = to;
+  if (x2 - x1 < 1) return { path: `M${x1},${y1} L${x2},${y2}`, mid: { x: (x1 + x2) / 2, y: (y1 + y2) / 2 } };
+  const side = y1 + y2 >= 0 ? 1 : -1;
+  const t = Math.min(0.95, Math.max(0.05, -x1 / (x2 - x1)));
+  const u = 1 - t;
+  const pull = 3 * u * u * t + 3 * u * t * t;
+  const ends = side * (u * u * u * y1 + t * t * t * y2);
+  const cy = side * Math.max(110, (MENTION_CLEAR - ends) / pull);
+  const cx1 = x1 + (x2 - x1) / 3;
+  const cx2 = x1 + ((x2 - x1) * 2) / 3;
+  return {
+    path: `M${x1},${y1} C${cx1},${cy} ${cx2},${cy} ${x2},${y2}`,
+    mid: { x: (x1 + x2) / 2, y: (y1 + y2) / 8 + (cy * 3) / 4 },
+  };
+}
+
 function edgePath(from: LaidNode, to: LaidNode, kind: GraphEdge["kind"]): string {
   const x1 = from.x;
   const y1 = from.y;
   const x2 = to.x;
   const y2 = to.y;
-  if (kind === "discussion" || kind === "cue" || kind === "cross") {
+  if (kind === "mentioned") return mentionCurve(from, to).path;
+  if (kind === "discussion" || kind === "cue" || kind === "cross" || kind === "suggested") {
     const mx = (x1 + x2) / 2;
     const my = (y1 + y2) / 2;
     const dx = x2 - x1;
@@ -240,6 +271,8 @@ export function GraphCanvas({
   const dropRef = useRef(onDropMeeting);
   dropRef.current = onDropMeeting;
   const [hoverId, setHoverId] = useState<string | null>(null);
+  // 悬停在「提到」线上：加深并显示线上的字
+  const [hoverEdge, setHoverEdge] = useState<string | null>(null);
   const [ringHint, setRingHint] = useState<string | null>(null);
   const [active, setActive] = useState<Partial<Record<Direction, string>>>({});
   const reduceMotion = useReducedMotion();
@@ -728,12 +761,55 @@ export function GraphCanvas({
       }
       case "requirement_more":
         return positioned(node, {}, <span className="graph-node__label">其余 {node.data.count} 个需求</span>);
+      case "suggested_requirement":
+        return positioned(
+          node,
+          {},
+          <span className="graph-node__label" title={node.label}>
+            {detail === "full" ? suggestedText(node.data) : node.data.name.slice(0, 6)}
+            {detail === "full" && <small>{node.data.count} 场会</small>}
+          </span>,
+        );
+      case "file": {
+        const file = node.data;
+        return positioned(
+          node,
+          {},
+          <>
+            <span aria-hidden="true" className="graph-file__icon">
+              <span className="graph-file__ext">{(file.ext || "").replace(/^\./, "").slice(0, 4)}</span>
+            </span>
+            {detail !== "summary" && (
+              <span className="graph-node__label" title={file.rel_path || file.name}>
+                {detail === "full" ? node.text : file.name.slice(0, 6)}
+              </span>
+            )}
+          </>,
+          `graph-node--right${file.extra ? " graph-node--extra" : ""}`,
+          -10,
+        );
+      }
+      case "file_more":
+        return positioned(
+          node,
+          {},
+          <span className="graph-node__label">另有 {node.data.count} 个被提到的文件</span>,
+          "graph-node--right",
+          -6,
+        );
       case "folder": {
         const folder = node.data;
         const state = diskState(roots, folder.id);
         const offline = state === "volume_offline";
         const missing = state === "missing";
-        const extra = offline ? "is-offline" : missing ? "is-missing" : "";
+        const pending = folder.kind === "pending";
+        const extra = pending
+          ? `is-pending${folder.state === "stopped" ? " is-pending-stopped" : ""}`
+          : offline
+            ? "is-offline"
+            : missing
+              ? "is-missing"
+              : "";
         const label = folder.kind === "cards" ? folder.name : `${folder.name}/`;
         return positioned(
           node,
@@ -752,6 +828,7 @@ export function GraphCanvas({
                 {folder.kind === "subfolder" && folder.mtime && (
                   <small>{meetingDateLabel(folder.mtime.slice(0, 10), graph.today)} 改过</small>
                 )}
+                {pending && <small>{pendingNote(folder)}</small>}
                 {offline && <small>资料盘未连接</small>}
                 {missing && <small>找不到了</small>}
               </span>
@@ -838,11 +915,16 @@ export function GraphCanvas({
   const placed: Box[] = [layout.byId.get("project"), focusId ? layout.byId.get(focusId) : undefined]
     .filter((node): node is LaidNode => Boolean(node))
     .map((node) => node.box);
+  const isLit = (edge: GraphEdge) =>
+    edge.id === selectedEdge ||
+    focusId === edge.from ||
+    focusId === edge.to ||
+    (edge.kind === "mentioned" && edge.id === hoverEdge);
   for (const { edge, from, to } of edges) {
-    const lit = edge.id === selectedEdge || focusId === edge.from || focusId === edge.to;
+    const lit = isLit(edge);
     if (!lit || !edge.label) continue;
     const text = edge.state === "review" ? `? ${edge.label}` : edge.label;
-    const mid = edgeMid(from, to);
+    const mid = edge.kind === "mentioned" ? mentionCurve(from, to).mid : edgeMid(from, to);
     const w = textWidth(text, 11) + 16;
     const box: Box = { x: mid.x - w / 2, y: mid.y - 10, w, h: 20 };
     const step = mid.y < 0 ? -22 : 22;
@@ -913,9 +995,11 @@ export function GraphCanvas({
           )}
           {edges.map(({ edge, from, to }) => {
             const path = edgePath(from, to, edge.kind);
-            const lit = edge.id === selectedEdge || focusId === edge.from || focusId === edge.to;
+            const lit = isLit(edge);
             const width =
               edge.kind === "cue" ? (edge.count && edge.count >= 6 ? 2.6 : edge.count && edge.count >= 3 ? 1.8 : 1.1) : undefined;
+            // 「提到」线中段的引号小图标；线亮起时线上的字盖在它上面
+            const quote = edge.kind === "mentioned" && !lit ? mentionCurve(from, to).mid : null;
             return (
               <g
                 className={`graph-edge graph-edge--${edge.kind}${edge.state ? ` graph-edge--${edge.state}` : ""}${lit ? " is-lit" : ""}${
@@ -924,12 +1008,22 @@ export function GraphCanvas({
                 key={edge.id}
               >
                 <path className="graph-edge__line" d={path} style={width ? { strokeWidth: width } : undefined} />
+                {quote && (
+                  <g className="graph-edge__quote" transform={`translate(${quote.x} ${quote.y})`}>
+                    <circle r={6.5} />
+                    <text dy="0.36em">”</text>
+                  </g>
+                )}
                 <path
-                  aria-label={`连线：${edge.label || edge.kind}`}
+                  aria-label={`连线：${edge.label || (edge.kind === "suggested" && edge.name ? `像是新需求『${edge.name}』` : edge.kind)}`}
                   className="graph-edge__hit"
                   d={path}
                   onClick={() => onSelect(edge.id === selectedEdge ? null : edge.id)}
-                  onMouseEnter={() => setHoverId(null)}
+                  onMouseEnter={() => {
+                    setHoverId(null);
+                    if (edge.kind === "mentioned") setHoverEdge(edge.id);
+                  }}
+                  onMouseLeave={() => setHoverEdge((current) => (current === edge.id ? null : current))}
                   role="button"
                 />
               </g>

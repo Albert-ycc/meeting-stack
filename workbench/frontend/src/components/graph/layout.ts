@@ -3,18 +3,22 @@
 // 方向是类型，远近是新旧：会议在左、材料在右、进行中的需求在上、线索词在下；内圈最近 7 天、
 // 中圈最近 28 天、外圈更早。整体是横向拉宽的椭圆。同一圈、同一方向用固定槽位：
 // 会议按天数落槽（今天在最上面），多一场会只占一个空槽，不会把别的节点挤走；
-// 需求、材料按顺序从中间往两边填。坐标单位是缩放为 1 时的像素。
+// 需求、材料按顺序从中间往两边填；会上提到的文件挂在它的根目录外侧，占离根目录最近的空槽。
+// 坐标单位是缩放为 1 时的像素。
 
+import { formatTime } from "../../format";
 import type {
   GraphBeacon,
   GraphCollapsed,
   GraphCue,
   GraphDoorstep,
+  GraphFile,
   GraphFolder,
   GraphMeeting,
   GraphMovedOut,
   GraphPayload,
   GraphRequirement,
+  GraphSuggestedRequirement,
   Ring,
 } from "./graphTypes";
 
@@ -26,9 +30,12 @@ export type NodeKind =
   | "doorstep_more"
   | "requirement"
   | "requirement_more"
+  | "suggested_requirement"
   | "folder"
   | "folder_more"
   | "loose"
+  | "file"
+  | "file_more"
   | "cue"
   | "beacon"
   | "ghost";
@@ -63,9 +70,12 @@ export type LaidNode =
   | (BaseNode & { kind: "doorstep_more"; data: { count: number } })
   | (BaseNode & { kind: "requirement"; data: GraphRequirement })
   | (BaseNode & { kind: "requirement_more"; data: NonNullable<GraphPayload["requirements_more"]> })
+  | (BaseNode & { kind: "suggested_requirement"; data: GraphSuggestedRequirement })
   | (BaseNode & { kind: "folder"; data: GraphFolder })
   | (BaseNode & { kind: "folder_more"; data: NonNullable<GraphPayload["folders_more"]> })
   | (BaseNode & { kind: "loose"; data: NonNullable<GraphPayload["loose"]> })
+  | (BaseNode & { kind: "file"; data: GraphFile; text: string })
+  | (BaseNode & { kind: "file_more"; data: NonNullable<GraphPayload["files_more"]> })
   | (BaseNode & { kind: "cue"; data: GraphCue; fontSize: number })
   | (BaseNode & { kind: "beacon"; data: GraphBeacon })
   | (BaseNode & { kind: "ghost"; data: GraphMovedOut; text: string });
@@ -98,11 +108,17 @@ const MIDDLE_SLOTS = 10;
 const MEETING_GAP = 38;
 const COLLAPSED_SLOTS = 7;
 const COLLAPSED_GAP = 50;
-const MATERIAL_SLOTS = 8;
+/** 材料每一圈的槽位；外圈往上下多放三个（上面的需求、下面的线索词都够不着那么右） */
+const MATERIAL_SLOTS: Record<Ring, number> = { inner: 8, middle: 8, outer: 11 };
 const REQUIREMENT_ROW_Y: Record<Ring, number> = { inner: -210, middle: -270, outer: -330 };
 const REQUIREMENT_SLOTS_X = [-90, 90, -270, 270];
+/** 需求三排都满了时，「像是新需求」放在最上面再加的一排 */
+const SUGGESTED_ROW_Y = -390;
 export const REQUIREMENT_W = 170;
 const REQUIREMENT_H = 36;
+/** 文件节点：左端纸张图标（带扩展名）的宽度，文件名最长多宽 */
+export const FILE_ICON_W = 22;
+export const FILE_NAME_MAX = 150;
 const CUE_Y = 235;
 const CUE_GAP = 18;
 const CUE_MIN_X = -170;
@@ -206,6 +222,17 @@ export function ghostNote(item: GraphMovedOut): string {
 }
 
 const GHOST_H = 36;
+
+/** 「像是新需求『数据看板』」写在虚线框里，场数写在下面一行小字 */
+export function suggestedText(item: GraphSuggestedRequirement): string {
+  return fitText(`像是新需求『${item.name}』`, REQUIREMENT_W - 20, 12);
+}
+
+/** 等补建的文件夹下面那行小字：在等写「插上后自动建」，停了写原因 */
+export function pendingNote(folder: GraphFolder): string {
+  if (folder.state === "stopped") return fitText(folder.reason || "文件夹没建成", MEETING_TITLE_MAX, 11);
+  return "插上后自动建";
+}
 
 function unionBox(boxes: Box[]): Box {
   if (boxes.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
@@ -415,17 +442,72 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
       });
     }
   }
+  // 像是新需求：排在需求那一侧的末尾（有「其余 N 个」时跟在它后面），三排都满了放到最上面一排
+  let suggestedOverflow = 0;
+  for (const item of graph.suggested_requirements ?? []) {
+    const place = placeRequirement(graph.requirements_more ? "outer" : "inner");
+    let x: number;
+    let y: number;
+    let ring: Ring;
+    if (place) {
+      x = REQUIREMENT_SLOTS_X[place.slot];
+      y = REQUIREMENT_ROW_Y[place.ring];
+      ring = place.ring;
+    } else if (suggestedOverflow < REQUIREMENT_SLOTS_X.length) {
+      x = REQUIREMENT_SLOTS_X[suggestedOverflow];
+      y = SUGGESTED_ROW_Y;
+      ring = "outer";
+      suggestedOverflow += 1;
+    } else {
+      continue;
+    }
+    add({
+      id: item.id,
+      kind: "suggested_requirement",
+      direction: "top",
+      ring,
+      x,
+      y,
+      box: { x: x - REQUIREMENT_W / 2, y: y - REQUIREMENT_H / 2, w: REQUIREMENT_W, h: REQUIREMENT_H },
+      label: `像是新需求『${item.name}』· ${item.count} 场会`,
+      data: item,
+    });
+  }
 
-  // 材料：项目文件夹和卡片文件夹靠内，需求文件夹在中圈，散放文件和「其余」在外圈
-  const materialY = centerOut(MATERIAL_SLOTS, MEETING_GAP);
-  const materialCount: Record<Ring, number> = { inner: 0, middle: 0, outer: 0 };
+  // 材料：项目文件夹和卡片文件夹靠内，需求文件夹在中圈，散放文件和「其余」在外圈；
+  // 会上提到的文件挂在根目录外侧。晚到的（子文件夹、选中会议时补出来的文件）排在最后，不挤动别的节点。
+  const materialY: Record<Ring, number[]> = {
+    inner: centerOut(MATERIAL_SLOTS.inner, MEETING_GAP),
+    middle: centerOut(MATERIAL_SLOTS.middle, MEETING_GAP),
+    outer: centerOut(MATERIAL_SLOTS.outer, MEETING_GAP),
+  };
+  const materialTaken: Record<Ring, boolean[]> = {
+    inner: Array(MATERIAL_SLOTS.inner).fill(false),
+    middle: Array(MATERIAL_SLOTS.middle).fill(false),
+    outer: Array(MATERIAL_SLOTS.outer).fill(false),
+  };
+  const takeMaterial = (ring: Ring, index: number) => {
+    materialTaken[ring][index] = true;
+    const y = materialY[ring][index];
+    return { ring, y, x: arcX(ring, y, 1) };
+  };
+  /** 从中间往两边占第一个空槽，这一圈满了顺延到外一圈 */
   const placeMaterial = (ring: Ring) => {
     for (const candidate of RING_ORDER.slice(RING_ORDER.indexOf(ring))) {
-      if (materialCount[candidate] < MATERIAL_SLOTS) {
-        const y = materialY[materialCount[candidate]];
-        materialCount[candidate] += 1;
-        return { ring: candidate, y, x: arcX(candidate, y, 1) };
-      }
+      const index = materialTaken[candidate].indexOf(false);
+      if (index >= 0) return takeMaterial(candidate, index);
+    }
+    return null;
+  };
+  /** 占离 y 最近的空槽，一样近时取靠中间的；这一圈满了顺延到外一圈 */
+  const placeMaterialNear = (ring: Ring, y: number) => {
+    for (const candidate of RING_ORDER.slice(RING_ORDER.indexOf(ring))) {
+      let best = -1;
+      materialY[candidate].forEach((slotY, index) => {
+        if (materialTaken[candidate][index]) return;
+        if (best < 0 || Math.abs(slotY - y) < Math.abs(materialY[candidate][best] - y)) best = index;
+      });
+      if (best >= 0) return takeMaterial(candidate, best);
     }
     return null;
   };
@@ -434,6 +516,10 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
     const place = placeMaterial(folder.ring);
     if (place === null) continue;
     const text = fitText(folder.kind === "cards" ? folder.name : `${folder.name}/`, MEETING_TITLE_MAX);
+    const width =
+      folder.kind === "pending"
+        ? Math.max(textWidth(text), textWidth(pendingNote(folder), 11))
+        : textWidth(text) + (folder.kind === "cards" ? 70 : 0);
     add({
       id: folder.id,
       kind: "folder",
@@ -441,17 +527,18 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
       ring: place.ring,
       x: place.x,
       y: place.y,
-      box: rightLabelBox(place.x, place.y, textWidth(text) + (folder.kind === "cards" ? 70 : 0)),
-      label: `文件夹：${folder.name}`,
+      box:
+        folder.kind === "pending"
+          ? { ...rightLabelBox(place.x, place.y, width), y: place.y - 18, h: 36 }
+          : rightLabelBox(place.x, place.y, width),
+      label: folder.kind === "pending" ? `等补建的文件夹：${folder.name}` : `文件夹：${folder.name}`,
       data: folder,
     });
   }
-  const outerMaterials: Array<() => void> = [];
   if (graph.loose) {
     const loose = graph.loose;
-    outerMaterials.push(() => {
-      const place = placeMaterial("outer");
-      if (place === null) return;
+    const place = placeMaterial("outer");
+    if (place !== null) {
       add({
         id: loose.id,
         kind: "loose",
@@ -463,13 +550,12 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
         label: "根目录里散放的文件",
         data: loose,
       });
-    });
+    }
   }
   if (graph.folders_more) {
     const more = graph.folders_more;
-    outerMaterials.push(() => {
-      const place = placeMaterial("outer");
-      if (place === null) return;
+    const place = placeMaterial("outer");
+    if (place !== null) {
       add({
         id: more.id,
         kind: "folder_more",
@@ -481,28 +567,72 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
         label: `其余 ${more.count} 个文件夹`,
         data: more,
       });
-    });
+    }
   }
-  // 根目录里最近改过的子文件夹排在外圈最后：资料盘状态晚一步到，到了也不挤动别的节点
-  for (const folder of graph.folders.filter((item) => item.kind === "subfolder")) {
-    outerMaterials.push(() => {
-      const place = placeMaterial("outer");
-      if (place === null) return;
-      const text = fitText(`${folder.name}/`, MEETING_TITLE_MAX);
+  // 文件挂在它所在根目录的外侧：根目录在内圈就放中圈，离根目录最近的空槽
+  const fileAnchor = (folderId: string): { ring: Ring; y: number } => {
+    const root = nodes.find((node) => node.id === folderId);
+    if (!root || root.ring === "center" || root.ring === "door") return { ring: "middle", y: 0 };
+    return { ring: root.ring === "inner" ? "middle" : "outer", y: root.y };
+  };
+  const placeFile = (file: GraphFile) => {
+    const anchor = fileAnchor(file.folder);
+    const place = placeMaterialNear(anchor.ring, anchor.y);
+    if (place === null) return;
+    const text = fitText(file.name, FILE_NAME_MAX);
+    add({
+      id: file.id,
+      kind: "file",
+      direction: "right",
+      ring: place.ring,
+      x: place.x,
+      y: place.y,
+      box: rightLabelBox(place.x, place.y, FILE_ICON_W + textWidth(text)),
+      label: `文件：${file.name}`,
+      data: file,
+      text,
+    });
+  };
+  const files = graph.files ?? [];
+  files.filter((file) => !file.extra).forEach(placeFile);
+  if (graph.files_more) {
+    const more = graph.files_more;
+    const anchor = fileAnchor(files[0]?.folder ?? "");
+    const place = placeMaterialNear(anchor.ring, anchor.y);
+    if (place !== null) {
+      const text = `另有 ${more.count} 个被提到的文件`;
       add({
-        id: folder.id,
-        kind: "folder",
+        id: more.id,
+        kind: "file_more",
         direction: "right",
         ring: place.ring,
         x: place.x,
         y: place.y,
         box: rightLabelBox(place.x, place.y, textWidth(text)),
-        label: `最近改过的子文件夹：${folder.name}`,
-        data: folder,
+        label: text,
+        data: more,
       });
+    }
+  }
+  // 根目录里最近改过的子文件夹排在外圈最后：资料盘状态晚一步到，到了也不挤动别的节点
+  for (const folder of graph.folders.filter((item) => item.kind === "subfolder")) {
+    const place = placeMaterial("outer");
+    if (place === null) continue;
+    const text = fitText(`${folder.name}/`, MEETING_TITLE_MAX);
+    add({
+      id: folder.id,
+      kind: "folder",
+      direction: "right",
+      ring: place.ring,
+      x: place.x,
+      y: place.y,
+      box: rightLabelBox(place.x, place.y, textWidth(text)),
+      label: `最近改过的子文件夹：${folder.name}`,
+      data: folder,
     });
   }
-  outerMaterials.forEach((place) => place());
+  // 选中一场会时从简报补出来的文件最后放：占剩下的空槽，已有的节点都不动
+  files.filter((file) => file.extra).forEach(placeFile);
 
   // 线索词：下方一排，次数多的在前，字号三档
   const sizes = graph.cues.map((cue) => cueFontSize(cue.total));
@@ -617,3 +747,9 @@ export const DIRECTION_NAMES: Record<Direction, string> = {
   right: "材料",
   bottom: "线索词",
 };
+
+/** 「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」。和后端 mention_label 一致 */
+export function mentionLabel(item: { needle: string; count: number; first_ms: number | null; source: string }): string {
+  if (item.source === "minutes") return `纪要里写到『${item.needle}』`;
+  return `会上说『${item.needle}』${item.count} 次 · ${formatTime(item.first_ms, true)}`;
+}

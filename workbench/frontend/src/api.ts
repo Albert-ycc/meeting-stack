@@ -62,12 +62,15 @@ import type {
   NameAsRequirementResult,
   NameCandidatesPayload,
   NameDecisionResult,
+  MaterialIndexStatus,
 } from "./types";
 import type {
   CollapsedPayload,
   CueTermDetail,
   ExpandPayload,
+  FileMentionResult,
   FulltextPayload,
+  GraphFileDetail,
   GraphPayload,
   GraphRootsPayload,
   GraphWindow,
@@ -75,6 +78,7 @@ import type {
   MeetingFocus,
   QuotesPayload,
 } from "./components/graph/graphTypes";
+import type { GraphOverview, GraphOverviewFetch, OverviewFolders } from "./components/graph/overviewTypes";
 
 let csrfToken = "";
 
@@ -310,6 +314,21 @@ export const api = {
   },
   glossaryTermDetail: (termId: string) =>
     read<CueTermDetail>(`/api/glossary/terms/${encodeURIComponent(termId)}`),
+  // ---------------------------------------------------------------- 全部项目概览（2c）
+  /**
+   * 全部项目概览。带上次的 etag 时发 If-None-Match：没变是 304，返回 overview: null，照旧用手上的那份。
+   */
+  getGraphOverview: async (window: GraphWindow, etag?: string | null): Promise<GraphOverviewFetch> => {
+    const response = await fetch(`/api/graph/overview${queryString({ window })}`, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
+    });
+    if (response.status === 304) return { overview: null, etag: response.headers.get("etag") ?? etag ?? null };
+    const overview = await parseResponse<GraphOverview>(response);
+    return { overview, etag: response.headers.get("etag") };
+  },
+  /** 项目总文件夹下还没挂的文件夹（读缓存）；state 是 checking 时 2 秒后再取 */
+  getOverviewFolders: () => read<OverviewFolders>("/api/graph/overview/folders"),
   // ---------------------------------------------------------------- 关系图（1h）
   graphMeetingFocus: (meetingId: string) =>
     read<MeetingFocus>(`/api/graph/meetings/${encodeURIComponent(meetingId)}`),
@@ -323,6 +342,33 @@ export const api = {
     ),
   revealMaterial: (path: string) =>
     write<{ ok: boolean; path: string }>("/api/materials/reveal", "POST", { path }),
+  // ---------------------------------------------------------------- 会上提到的文件、文件名索引（2d）
+  /** 文件面板：文件信息、同名的其他文件、在哪几场会上被提到；404 是文件不在索引里 */
+  getGraphFile: (fileId: number) => read<GraphFileDetail>(`/api/graph/files/${fileId}`),
+  /** ［不是这份文件］：只挡这场会；立即生效 */
+  rejectFileMention: (meetingId: string, stemKey: string) =>
+    write<FileMentionResult>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/file-mentions/${encodeURIComponent(stemKey)}/reject`,
+      "POST",
+      {},
+    ),
+  /** 撤销［不是这份文件］ */
+  restoreFileMention: (meetingId: string, stemKey: string) =>
+    write<FileMentionResult>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/file-mentions/${encodeURIComponent(stemKey)}/restore`,
+      "POST",
+      {},
+    ),
+  /** ［换成这份］：换成同名的另一份文件，以后不再自动改；400 是不在这个项目文件夹里或不同名 */
+  pickFileMention: (meetingId: string, stemKey: string, fileId: number) =>
+    write<FileMentionResult>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/file-mentions/${encodeURIComponent(stemKey)}/pick`,
+      "POST",
+      { file_id: fileId },
+    ),
+  /** 每个根目录的文件名索引进度 */
+  getMaterialIndexStatus: (projectId: string) =>
+    read<MaterialIndexStatus>(`/api/materials/index-status${queryString({ project_id: projectId })}`),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>

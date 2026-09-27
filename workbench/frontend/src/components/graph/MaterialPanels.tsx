@@ -1,9 +1,14 @@
 /* 关系图面板里项目、材料、跨项目信标这几类节点的完整版（1h） */
 import { useEffect, useState } from "react";
 
+import { copyText } from "../../clipboard";
 import { formatBytes } from "../../format";
+import type { MaterialRoot, MaterialRootRepoint } from "../../types";
+import { MaterialRootPickerModal } from "../MaterialRootPickerModal";
+import { RootRenameQuestion, movedNote } from "../RootRenameQuestion";
 import type { GraphPanelProps } from "./GraphPanel";
 import type { DiskState, ExpandPayload, GraphBeacon, GraphBeaconItem } from "./graphTypes";
+import { pendingNote } from "./layout";
 import { CopyPath, Section, localUndoUntil } from "./panelParts";
 
 const DISK_TEXT: Record<DiskState, string> = {
@@ -31,6 +36,7 @@ export function ProjectPanelBody({ props }: { props: GraphPanelProps }) {
   const requirementCount = graph.requirements.length + (graph.requirements_more?.count ?? 0);
   const cards = graph.folders.find((folder) => folder.kind === "cards");
   const rootFolders = graph.folders.filter((folder) => folder.kind === "root");
+  const pending = graph.folders.find((folder) => folder.kind === "pending");
   const cardsNote = !cards
     ? "没开"
     : [cards.stopped ? `停了 ${cards.stopped} 张` : "", cards.waiting ? `在等 ${cards.waiting} 张` : ""].filter(Boolean).join("，");
@@ -75,6 +81,15 @@ export function ProjectPanelBody({ props }: { props: GraphPanelProps }) {
                 </li>
               );
             })}
+          </ul>
+        ) : pending ? (
+          <ul className="graph-panel__list">
+            <li>
+              <button className="text-button" onClick={() => props.onSelect(pending.id)} type="button">
+                {pending.name}/
+              </button>
+              <small className={pending.state === "stopped" ? "graph-panel__warn" : undefined}>{pendingNote(pending)}</small>
+            </li>
           </ul>
         ) : (
           <p className="graph-panel__muted">还没挂材料文件夹，去清单视图里挂上，材料就会出现在右边。</p>
@@ -213,6 +228,65 @@ export function FolderBrowser({
   );
 }
 
+/**
+ * 根目录「找不到」（盘在、文件夹没了）：和项目页同一个改名找回的问题，［是它］［不是］，没有候选时［重新选…］。
+ */
+export function RootMissingBody({ props, rootId, path }: { props: GraphPanelProps; rootId: number; path: string }) {
+  const [picking, setPicking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const projectId = props.graph.project.id;
+  const root: MaterialRoot = { id: rootId, project_id: projectId, path, exists: false, state: "missing", created_at: "" };
+
+  const repointed = async (result: MaterialRootRepoint) => {
+    props.onNotice(`材料根目录已改到 ${result.path}${movedNote(result)}`);
+    await props.onChanged();
+  };
+
+  const reselect = async (next: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      const replaced = await props.apiClient.replaceProjectMaterialRoot(projectId, rootId, next);
+      setPicking(false);
+      props.onNotice(`材料根目录已更新${movedNote(replaced)}`);
+      await props.onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "更新失败，请稍后重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <CopyPath apiClient={props.apiClient} onNotice={props.onNotice} path={path} />
+      <div className="graph-panel__rename">
+        <RootRenameQuestion
+          apiClient={props.apiClient}
+          canManage
+          onRepointed={repointed}
+          onReselect={() => {
+            setError("");
+            setPicking(true);
+          }}
+          projectId={projectId}
+          root={root}
+        />
+      </div>
+      {picking && (
+        <MaterialRootPickerModal
+          apiClient={props.apiClient}
+          busy={busy}
+          error={error}
+          onClose={() => setPicking(false)}
+          onConfirm={(next) => void reselect(next)}
+        />
+      )}
+    </>
+  );
+}
+
 // ------------------------------------------------------------------ 散放文件
 
 export function LoosePanelBody({ props }: { props: GraphPanelProps }) {
@@ -231,21 +305,37 @@ export function LoosePanelBody({ props }: { props: GraphPanelProps }) {
                 {shortDate(file.mtime)} · {formatBytes(file.size)}
               </small>
             </span>
-            {canReveal && (
+            <span className="graph-panel__path-actions">
               <button
                 className="text-button"
                 onClick={async () => {
                   try {
-                    await props.apiClient.revealMaterial(file.path);
-                  } catch (reason) {
-                    props.onNotice(reason instanceof Error ? reason.message : "打不开访达", undefined, "error");
+                    await copyText(file.path);
+                    props.onNotice("已复制路径");
+                  } catch {
+                    props.onNotice("复制失败，请手动选中路径", undefined, "error");
                   }
                 }}
                 type="button"
               >
-                在访达中显示
+                复制路径
               </button>
-            )}
+              {canReveal && (
+                <button
+                  className="text-button"
+                  onClick={async () => {
+                    try {
+                      await props.apiClient.revealMaterial(file.path);
+                    } catch (reason) {
+                      props.onNotice(reason instanceof Error ? reason.message : "打不开访达", undefined, "error");
+                    }
+                  }}
+                  type="button"
+                >
+                  在访达中显示
+                </button>
+              )}
+            </span>
           </li>
         ))}
         {roots.loose.count > roots.loose.recent.length && (

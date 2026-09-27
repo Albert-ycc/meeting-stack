@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import type { ApiClient } from "../api";
 import { formatDurationText, formatMonthDay } from "../format";
 import type {
+  MaterialIndexRoot,
+  MaterialIndexStatus,
   MaterialRoot,
   MaterialRootRepoint,
   Project,
@@ -22,7 +24,7 @@ import { ProjectCardsRow } from "./ProjectCardsRow";
 import { Pagination } from "./Pagination";
 import { ProjectFormModal } from "./ProjectFormModal";
 import { ProjectRecognitionCard } from "./ProjectRecognitionCard";
-import { RootRenameQuestion } from "./RootRenameQuestion";
+import { RootRenameQuestion, movedNote } from "./RootRenameQuestion";
 import { PriorityBadge, RequirementStatusBadge } from "./RequirementBadges";
 // FE-1 负责的需求弹窗；写这个文件时它可能还不存在，tsc 报「模块不存在」属于预期（简报第 5 节已钉死 props）。
 import { RequirementModal } from "./RequirementModal";
@@ -60,6 +62,40 @@ type LoadState = "loading" | "ready" | "error";
 
 const REQUIREMENTS_PAGE_SIZE = 10;
 const MEETINGS_PAGE_SIZE = 8;
+/** 文件名还在认（pending / walking）时隔一会儿再问一次进度 */
+export const INDEX_POLL_MS = 15_000;
+
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
+function agoText(value: string | null, now: number): string {
+  if (!value) return "";
+  const at = Date.parse(value);
+  if (Number.isNaN(at)) return "";
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours} 小时前` : `${Math.floor(hours / 24)} 天前`;
+}
+
+/** 材料那一节每个根目录一行文件名索引的进度（2d） */
+export function indexStatusText(item: MaterialIndexRoot, now = Date.now()): string {
+  switch (item.state) {
+    case "done": {
+      const ago = agoText(item.updated_at, now);
+      const dirs = item.name_only_dirs ? `（node_modules、.git 等 ${item.name_only_dirs} 个文件夹只记了个数）` : "";
+      return `已认得 ${COUNT_FORMAT.format(item.files)} 个文件名${ago ? ` · ${ago}` : ""}${dirs}`;
+    }
+    case "offline":
+      return "资料盘未连接，插上后接着认";
+    case "missing":
+      return "找不到这个文件夹，先按上次认得的算";
+    case "error":
+      return `读不了：${item.error ?? "原因不明"}`;
+    default:
+      return `正在认文件名，已认 ${COUNT_FORMAT.format(item.files)} 个`;
+  }
+}
 
 const REQUIREMENT_TABS: Array<{ key: RequirementStatus | "all"; label: string }> = [
   { key: "active", label: "进行中" },
@@ -67,20 +103,6 @@ const REQUIREMENT_TABS: Array<{ key: RequirementStatus | "all"; label: string }>
   { key: "shelved", label: "已搁置" },
   { key: "all", label: "全部" },
 ];
-
-/**
- * 根目录换了位置后一起跟着改的：「，嵌在里面的『北辰』文件夹一起改了，3 个需求文件夹一起改了，已补写 2 张会议卡片」。
- * 旧后端只带 cards_written。
- */
-function movedNote(result: Partial<MaterialRootRepoint> | undefined): string {
-  if (!result) return "";
-  const names = [...new Set((result.moved_roots ?? []).map((item) => item.project_name))];
-  return [
-    names.length ? `，嵌在里面的${names.map((name) => `『${name}』`).join("")}文件夹一起改了` : "",
-    result.moved_folders ? `，${result.moved_folders} 个需求文件夹一起改了` : "",
-    result.cards_written ? `，已补写 ${result.cards_written} 张会议卡片` : "",
-  ].join("");
-}
 
 function RequirementRefChips({ items }: { items: RequirementRef[] }) {
   if (items.length === 0) return <span className="detail-table__muted">—</span>;
@@ -118,6 +140,7 @@ export function ProjectDetailPage({
   const [board, setBoard] = useState<ProjectBoard | null>(null);
   const [boardState, setBoardState] = useState<LoadState>("loading");
   const [subfolders, setSubfolders] = useState<ProjectSubfoldersPayload | null>(null);
+  const [indexStatus, setIndexStatus] = useState<MaterialIndexStatus | null>(null);
 
   const [meetingRows, setMeetingRows] = useState<ProjectMeetingRow[] | null>(null);
   const [meetingsState, setMeetingsState] = useState<LoadState>("loading");
@@ -201,6 +224,31 @@ export function ProjectDetailPage({
   useEffect(() => {
     void loadRequirements();
   }, [loadRequirements, reloadKey]);
+
+  // 文件名索引的进度：挂的根目录变了就重问；还在认时每 15 秒再问一次
+  const rootsKey = (board?.material_roots ?? []).map((root) => `${root.id}:${root.path}`).join("|");
+  useEffect(() => {
+    if (!rootsKey || typeof apiClient.getMaterialIndexStatus !== "function") return;
+    let active = true;
+    let timer = 0;
+    const run = async () => {
+      try {
+        const payload = await apiClient.getMaterialIndexStatus(projectId);
+        if (!active) return;
+        setIndexStatus(payload);
+        if (payload.roots.some((item) => item.state === "pending" || item.state === "walking")) {
+          timer = window.setTimeout(() => void run(), INDEX_POLL_MS);
+        }
+      } catch {
+        // 进度只是辅助信息，读不到就不写这一行
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [apiClient, projectId, reloadKey, rootsKey]);
 
   const subfolderCounts = useMemo(() => {
     const map = new Map<number, number>();
@@ -477,6 +525,7 @@ export function ProjectDetailPage({
               <ul className="material-root-list">
                 {roots.map((root) => {
                   const state = root.state ?? (root.exists ? "online" : "missing");
+                  const index = indexStatus?.roots.find((item) => item.root_id === root.id);
                   return (
                     <li className="material-root-row" key={root.id}>
                       <FolderIcon className="material-root-row__icon" />
@@ -497,6 +546,15 @@ export function ProjectDetailPage({
                           projectId={projectId}
                           root={root}
                         />
+                      )}
+                      {index && (
+                        <span
+                          className={`material-root-row__index${
+                            index.state === "error" || index.state === "missing" ? " is-stopped" : ""
+                          }`}
+                        >
+                          {indexStatusText(index)}
+                        </span>
                       )}
                       {(root.shared_with?.length ?? 0) > 0 && (
                         <span className="material-root-row__shared" role="note">

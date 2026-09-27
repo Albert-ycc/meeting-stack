@@ -210,6 +210,13 @@ describe("ProjectsPage 移动端只读", () => {
     expect(screen.queryByRole("button", { name: "＋ 新建项目" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "编辑" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "新建标签" })).not.toBeInTheDocument();
+    // 全部项目概览只在电脑上有
+    expect(screen.queryByRole("link", { name: "全部项目图" })).not.toBeInTheDocument();
+  });
+
+  it("电脑上标题旁有［全部项目图］，链接到全部项目概览", () => {
+    renderPage();
+    expect(screen.getByRole("link", { name: "全部项目图" })).toHaveAttribute("href", "#graph");
   });
 });
 
