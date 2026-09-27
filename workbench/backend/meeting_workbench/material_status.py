@@ -178,6 +178,33 @@ def coverage(
     return result
 
 
+def root_counts(connection: Any) -> dict[int, dict[str, int]]:
+    """每个根目录：files 活文件数（文件名都算）、done 内容读完的、unreadable 读不了的。关系图的项目面板用；
+    材料内容循环每轮算一次放在内存里。分法同 coverage。"""
+    errors = ", ".join(f"'{error}'" for error in FILE_ERRORS)
+    rows = connection.execute(
+        f"""SELECT f.root_id, COUNT(*) AS files,
+                   SUM(CASE WHEN f.zone != 'cards' AND f.ext IN ({_READABLE_SQL})
+                             AND f.content_error IS NULL AND c.state = 'done' THEN 1 ELSE 0 END) AS done,
+                   SUM(CASE WHEN f.zone != 'cards' AND f.ext IN ({_READABLE_SQL})
+                             AND (f.content_error IN ({errors})
+                                  OR (f.content_error IS NULL AND c.state = 'unreadable')) THEN 1 ELSE 0 END)
+                       AS unreadable
+              FROM material_files f
+              LEFT JOIN material_contents c ON c.content_key = f.content_key
+             WHERE f.gone_at IS NULL
+             GROUP BY f.root_id"""
+    ).fetchall()
+    return {
+        int(row["root_id"]): {
+            "files": int(row["files"] or 0),
+            "done": int(row["done"] or 0),
+            "unreadable": int(row["unreadable"] or 0),
+        }
+        for row in rows
+    }
+
+
 def _number(value: int) -> str:
     return f"{value:,}"
 
@@ -500,6 +527,28 @@ def file_deliverables(connection: Any, row: dict[str, Any]) -> list[dict[str, An
     return [dict(item) for item in rows]
 
 
+def _content_of(connection: Any, row: dict[str, Any]) -> dict[str, Any] | None:
+    if not row.get("content_key"):
+        return None
+    found = connection.execute(
+        "SELECT * FROM material_contents WHERE content_key = ?", (row["content_key"],)
+    ).fetchone()
+    return dict(found) if found is not None else None
+
+
+def state_for_row(
+    connection: Any,
+    row: dict[str, Any],
+    *,
+    engines: Any | None = None,
+    paused: str | None = None,
+    state_of: Callable[[str], str] = volume_state,
+) -> dict[str, Any]:
+    """关系图文件面板（GET /api/graph/files/{id}）的 state，和预览的一样。"""
+    online = state_of(str(row["root_path"])) == ROOT_ONLINE
+    return file_state(connection, row, _content_of(connection, row), online=online, paused=paused, engines=engines)
+
+
 def file_preview(
     connection: Any,
     file_id: int,
@@ -515,12 +564,7 @@ def file_preview(
     row = file_row(connection, file_id)
     if row is None:
         return None
-    content = None
-    if row.get("content_key"):
-        found = connection.execute(
-            "SELECT * FROM material_contents WHERE content_key = ?", (row["content_key"],)
-        ).fetchone()
-        content = dict(found) if found is not None else None
+    content = _content_of(connection, row)
     root_path = str(row["root_path"]).rstrip("/")
     online = state_of(str(row["root_path"])) == ROOT_ONLINE
     folder = f"{root_path}/{row['dir_rel']}" if row["dir_rel"] else root_path

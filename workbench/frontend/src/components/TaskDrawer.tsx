@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { type ApiClient } from "../api";
+import { copyText } from "../clipboard";
 import { formatClock, formatTime, formatTaskEventBody } from "../format";
 import type { TaskDetail, TaskStatus } from "../types";
 import { AsyncState } from "./AsyncState";
@@ -21,6 +22,8 @@ interface TaskDrawerProps {
   onChanged: () => void;
   onOpenMeeting: (meetingId: string, seekMs?: number) => void;
   onOpenRequirement?: (id: string) => void;
+  /** 3g：文件交付物有 file_id 时点了打开预览抽屉 */
+  onOpenPreview?: (fileId: number) => void;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -43,6 +46,7 @@ export function TaskDrawer({
   onChanged,
   onOpenMeeting,
   onOpenRequirement,
+  onOpenPreview,
 }: TaskDrawerProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
   useDialogFocus(drawerRef);
@@ -234,14 +238,47 @@ export function TaskDrawer({
                   <ul className="task-drawer__deliverables">
                     {task.deliverables.map((deliverable) => (
                       <li key={deliverable.id} className="task-drawer__deliverable">
-                        <a
-                          className="task-drawer__deliverable-title"
-                          href={deliverable.url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {deliverable.title || deliverable.url}
-                        </a>
+                        {deliverable.kind !== "file" ? (
+                          <a
+                            className="task-drawer__deliverable-title"
+                            href={deliverable.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {deliverable.title || deliverable.url}
+                          </a>
+                        ) : typeof deliverable.file_id === "number" && onOpenPreview ? (
+                          // 资料盘里的文件：浏览器打不开 /Volumes/… 这种地址，点了打开预览抽屉
+                          <button
+                            className="task-drawer__deliverable-title task-drawer__deliverable-file"
+                            onClick={() => onOpenPreview(deliverable.file_id as number)}
+                            title={deliverable.url}
+                            type="button"
+                          >
+                            {deliverable.name || deliverable.title || deliverable.url}
+                          </button>
+                        ) : (
+                          <span className="task-drawer__deliverable-path">
+                            <code title={deliverable.url}>{deliverable.url}</code>
+                            <button
+                              className="text-button"
+                              onClick={async () => {
+                                try {
+                                  await copyText(deliverable.url);
+                                  setNotice("路径已复制");
+                                } catch {
+                                  setNotice("复制失败，请手动选中路径", "error");
+                                }
+                              }}
+                              type="button"
+                            >
+                              复制路径
+                            </button>
+                          </span>
+                        )}
+                        {deliverable.kind === "file" && deliverable.gone && (
+                          <span className="task-drawer__deliverable-note">找不到这个文件了</span>
+                        )}
                         {deliverable.note && (
                           <span className="task-drawer__deliverable-note">{deliverable.note}</span>
                         )}

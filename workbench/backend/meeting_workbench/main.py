@@ -16,7 +16,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import Settings
 from .backup import BackupManager
@@ -67,7 +67,7 @@ from .material_media import MaterialMedia
 from .extract_worker import TextExtractor
 from .material_rules import IMAGE_EXTS, LAYER_IMAGE, LAYER_PDF, LAYER_TEXT, PDF_EXTS, PLAYABLE_TYPES
 from . import material_previews, material_status
-from . import material_fts, material_search
+from . import material_fts, material_graph, material_search
 from . import material_vectors as material_vectors_module
 from .ocr_engines import ImageExtractor, OcrEngines, PdfExtractor
 from .busy import BusySignal
@@ -490,13 +490,24 @@ class BatchConfirmInput(BaseModel):
 
 
 class DeliverableInput(BaseModel):
+    """url 和 file_id 二选一（3g：关系图文件面板按 file_id 标为交付物，kind、url 由服务端填）。"""
+
     model_config = ConfigDict(extra="forbid")
 
-    kind: str = Field(max_length=16)
-    url: str = Field(min_length=1, max_length=2000)
+    kind: str | None = Field(default=None, max_length=16)
+    url: str | None = Field(default=None, min_length=1, max_length=2000)
+    file_id: int | None = Field(default=None, ge=1)
     title: str = Field(default="", max_length=200)
     note: str = Field(default="", max_length=2000)
     mark_done: bool = False
+
+    @model_validator(mode="after")
+    def _one_target(self) -> "DeliverableInput":
+        if (self.url is None) == (self.file_id is None):
+            raise ValueError("url 和 file_id 要给且只给一个")
+        if self.url is not None and not self.kind:
+            raise ValueError("给 url 时要写交付物类型")
+        return self
 
 
 class ReExtractInput(BaseModel):
@@ -3327,7 +3338,10 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/cards/reveal")
-    def cards_reveal(body: CardsTargetInput):
+    def cards_reveal(body: CardsTargetInput, request: Request):
+        # 3g：远程的设备不能让服务器那台电脑打开访达
+        if not local_request(request):
+            raise HTTPException(403, "只能在声档所在的这台电脑上打开访达")
         try:
             return {"path": card_writer.reveal(project_id=body.project_id, meeting_id=body.meeting_id)}
         except CardsError as error:
@@ -3563,6 +3577,10 @@ def create_app(
                 result = graph_module.project_roots(connection, roots_cache, project_id)
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
+            # 3g：最近改过的文件、每个根目录读了多少、散放文件的 file_id（只查库）
+            material_graph.decorate_roots(
+                connection, project_id, result, counts=material_content.progress.get("roots")
+            )
         if result["checking"]:
             roots_cache.refresh_in_background()
         # 「在访达中显示」只在本机打开声档时出现
@@ -3605,13 +3623,23 @@ def create_app(
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
         try:
-            return graph_module.expand_folder(row, dir)
+            payload = graph_module.expand_folder(row, dir)
         except graph_module.GraphNotFound as error:
             raise HTTPException(404, str(error)) from error
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
         except OSError as error:
             raise HTTPException(503, "读不了这个文件夹，资料盘可能在休眠") from error
+        # 3g：读完盘再到库里给文件行补 file_id（库里还没有的为 null）
+        with db.autocommit() as connection:
+            return material_graph.decorate_expand(connection, payload)
+
+    @app.get("/api/graph/projects/{project_id}/cards-files")
+    def project_graph_cards_files(project_id: str):
+        with db.autocommit() as connection:
+            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+                raise HTTPException(404, "项目不存在")
+            return {"files": material_graph.cards_files(connection, project_id)}
 
     @app.post("/api/materials/reveal")
     def reveal_material(body: RevealInput, request: Request):
@@ -3659,13 +3687,21 @@ def create_app(
     def graph_file_detail(file_id: int):
         with db.autocommit() as connection:
             try:
-                return file_mentions.file_detail(
+                result = file_mentions.file_detail(
                     connection,
                     file_id,
                     quotes=lambda meeting_id, starts: graph_module._segments_at(connection, meeting_id, starts),
                 )
             except file_mentions.MentionNotFound as error:
                 raise HTTPException(404, str(error)) from error
+            # 3g：读到哪一步、是哪些任务的交付物
+            row = material_status.file_row(connection, file_id)
+            if row is not None:
+                result["state"] = material_status.state_for_row(
+                    connection, row, engines=ocr, paused=material_paused()
+                )
+                result["deliverables"] = material_status.file_deliverables(connection, row)
+            return result
 
     def _mention_action(action: Any, *args: Any) -> dict[str, Any]:
         try:
@@ -4145,12 +4181,17 @@ def create_app(
                 task_id,
                 kind=body.kind,
                 url=body.url,
+                file_id=body.file_id,
                 title=body.title,
                 note=body.note,
                 mark_done=body.mark_done,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    @app.delete("/api/tasks/{task_id}/deliverables/{deliverable_id}")
+    def remove_task_deliverable(task_id: str, deliverable_id: int):
+        return task_service.remove_deliverable(task_id, deliverable_id)
 
     @app.post("/api/meetings/{meeting_id}/tasks/re-extract")
     def re_extract(meeting_id: str, body: ReExtractInput):

@@ -480,9 +480,13 @@ def test_progress_counts_pending_and_offline(tmp_path):
     put(root / "预算.numbers", b"PK")
     index(indexer)
     content.run_round()
+    roots = content.progress.pop("roots")
     assert content.progress == {"pending": 2, "offline_pending": 0, "paused": None}
+    # 3g：每个根目录的计数（关系图项目面板用），文件名都算
+    assert roots[root_id]["files"] == 4
     online["online"] = False
     content.run_round()
+    content.progress.pop("roots")
     assert content.progress == {"pending": 2, "offline_pending": 2, "paused": None}
 
 

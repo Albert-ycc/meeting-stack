@@ -800,11 +800,20 @@ class MaterialContent:
     # ------------------------------------------------------------------ 进度（只给首页）
 
     def _refresh_progress(self, *, paused: str | None) -> None:
+        from .material_status import root_counts
+
         counts = pending_counts(self.db, online=None, state_of=self.state_of)
+        connection = self.db.connect()
+        try:
+            roots = root_counts(connection)
+        finally:
+            connection.close()
         self.progress = {
             "pending": counts["pending"],
             "offline_pending": counts["offline_pending"],
             "paused": paused,
+            # 3g：关系图项目面板「文件名 N 个 · 已读 N 个 · 读不了 N 个」
+            "roots": roots,
         }
 
 

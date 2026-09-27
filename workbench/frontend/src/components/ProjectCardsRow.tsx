@@ -11,6 +11,8 @@ interface ProjectCardsRowProps {
   canWrite: boolean;
   /** 打开文件夹只在桌面端（在运行声档的 Mac 上开访达） */
   canPickFolders: boolean;
+  /** 3g：远程的设备（经 Tailscale 打开）不能让服务器那台电脑开访达，改成［复制路径］ */
+  canReveal?: boolean;
   onCopy: (text: string, done: string) => void | Promise<void>;
   /** 恢复写入、开启、补写之后重读看板 */
   onChanged: () => void | Promise<void>;
@@ -42,6 +44,7 @@ export function ProjectCardsRow({
   cards,
   canWrite,
   canPickFolders,
+  canReveal = true,
   onCopy,
   onChanged,
 }: ProjectCardsRowProps) {
@@ -119,7 +122,7 @@ export function ProjectCardsRow({
   } else {
     line = `会议卡片写在 ${cards.root ?? ""}/ · ${counts.join(" · ")}`;
     if (cards.written > 0) {
-      action = canPickFolders
+      action = canPickFolders && canReveal
         ? { label: "打开文件夹", onClick: () => void reveal() }
         : { label: "复制路径", onClick: () => void onCopy(cards.root ?? "", "已复制卡片文件夹路径") };
     }

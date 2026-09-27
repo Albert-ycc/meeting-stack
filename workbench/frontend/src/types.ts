@@ -989,6 +989,10 @@ export interface Deliverable {
   title: string;
   note: string;
   created_at: string;
+  /** 3g：file 类交付物连到的资料盘文件；挪了位置按内容找，找不到时 gone */
+  file_id?: number | null;
+  name?: string;
+  gone?: boolean;
 }
 
 export interface Task {
@@ -1024,6 +1028,8 @@ export interface Task {
 export interface TaskDetail extends Task {
   events: TaskEvent[];
   deliverables: Deliverable[];
+  /** 3g：POST 交付物时回刚登记的那一条，［撤销］用 */
+  deliverable_id?: number;
 }
 
 export interface TaskFilters {
@@ -1466,6 +1472,8 @@ export interface RequirementFile {
   relative_path: string;
   size_bytes: number;
   modified_at: string;
+  /** 3g：从文件名索引查出来时带着，能在关系图上打开；读盘时没有 */
+  file_id?: number;
 }
 
 export interface RequirementFolder extends MaterialFolderStat {

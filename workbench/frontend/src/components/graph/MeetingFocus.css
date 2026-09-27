@@ -373,3 +373,67 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+
+/* 3g：任务卡右边的交付物文件小签，和卡片之间一条实线箭头 */
+.meeting-focus__deliverable {
+  stroke: var(--line-strong);
+  stroke-width: 1.2;
+}
+
+.meeting-focus__arrow-head {
+  fill: var(--line-strong);
+}
+
+.meeting-focus__tag {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 3px;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+button.meeting-focus__tag {
+  cursor: pointer;
+}
+
+button.meeting-focus__tag:hover,
+button.meeting-focus__tag:focus-visible {
+  border-color: var(--signal);
+}
+
+.meeting-focus__tag-icon {
+  display: inline-grid;
+  flex: none;
+  place-items: end center;
+  width: 12px;
+  height: 15px;
+  padding-bottom: 1px;
+  box-sizing: border-box;
+  border: 1px solid var(--line-strong);
+  border-radius: 1px 4px 1px 1px;
+  color: var(--muted);
+  font-size: 5px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.meeting-focus__tag-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meeting-focus__tag-more {
+  flex: none;
+  color: var(--muted);
+}

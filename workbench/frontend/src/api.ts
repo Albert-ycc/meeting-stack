@@ -68,6 +68,7 @@ import type {
   MaterialUnreadablePage,
 } from "./types";
 import type {
+  CardsFilesPayload,
   CollapsedPayload,
   CueTermDetail,
   ExpandPayload,
@@ -353,6 +354,9 @@ export const api = {
   // ---------------------------------------------------------------- 会上提到的文件、文件名索引（2d）
   /** 文件面板：文件信息、同名的其他文件、在哪几场会上被提到；404 是文件不在索引里 */
   getGraphFile: (fileId: number) => read<GraphFileDetail>(`/api/graph/files/${fileId}`),
+  /** 声档会议记录里的文件（3g）：只给文件名和 file_id */
+  graphCardsFiles: (projectId: string) =>
+    read<CardsFilesPayload>(`/api/graph/projects/${encodeURIComponent(projectId)}/cards-files`),
   /** ［不是这份文件］：只挡这场会；立即生效 */
   rejectFileMention: (meetingId: string, stemKey: string) =>
     write<FileMentionResult>(
@@ -602,10 +606,20 @@ export const api = {
     ),
   addTaskComment: (taskId: string, body: string) =>
     write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/comments`, "POST", { body }),
+  /** url 和 file_id 二选一；给 file_id 时 kind、url、title 由服务端填（3g） */
   addDeliverable: (
     taskId: string,
-    data: { kind: string; url: string; title?: string; note?: string; mark_done?: boolean },
+    data:
+      | { kind: string; url: string; title?: string; note?: string; mark_done?: boolean }
+      | { file_id: number; title?: string; note?: string },
   ) => write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/deliverables`, "POST", data),
+  /** 删一个交付物（［撤销］用） */
+  removeDeliverable: (taskId: string, deliverableId: number) =>
+    write<TaskDetail>(
+      `/api/tasks/${encodeURIComponent(taskId)}/deliverables/${deliverableId}`,
+      "DELETE",
+      {},
+    ),
   reExtractTasks: (meetingId: string, supplement: string) =>
     write<{ status: string }>(
       `/api/meetings/${encodeURIComponent(meetingId)}/tasks/re-extract`,

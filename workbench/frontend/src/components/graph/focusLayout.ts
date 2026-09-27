@@ -3,7 +3,7 @@
  * 和星图一样是纯函数：同样的数据每次得到同样的坐标。
  */
 import { formatTime } from "../../format";
-import type { MeetingFocus } from "./graphTypes";
+import type { FocusTask, MeetingFocus } from "./graphTypes";
 import { fitText, textWidth, type Box } from "./layout";
 
 /** 画在条上的决议、任务最多这么多，其余收进「+N」 */
@@ -27,6 +27,12 @@ const UNTIMED_LABEL_W = 84;
 const OPEN_TASK = new Set(["pending_confirm", "confirmed", "in_progress"]);
 const TICK_STEPS_MS = [30, 60, 120, 300, 600, 900, 1200, 1800, 3600].map((seconds) => seconds * 1000);
 const MAX_TICKS = 8;
+/** 交付物小签（3g）：纸张图标加文件名，最长 80 像素；和任务卡之间留一段画实线箭头 */
+export const TAG_MAX_W = 80;
+export const TAG_H = 22;
+const TAG_GAP = 18;
+const TAG_ICON_W = 16;
+const TAG_FONT = 11;
 
 export type FocusSide = -1 | 1;
 
@@ -43,6 +49,19 @@ export interface FocusItem {
   y: number;
   box: Box;
   status?: string;
+  /** 任务的交付物文件小签：每条任务最多画 1 个，多的写「+N」 */
+  tag?: FocusTag;
+}
+
+export interface FocusTag {
+  fileId: number;
+  name: string;
+  ext: string;
+  /** 截短后的文件名 */
+  label: string;
+  /** 另外还有几个文件交付物 */
+  more: number;
+  box: Box;
 }
 
 export interface FocusMore {
@@ -97,6 +116,42 @@ interface Pending {
   text: string;
   atMs: number | null;
   status?: string;
+  tag?: Omit<FocusTag, "box" | "label">;
+}
+
+function extOf(name: string) {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+/** 任务的交付物里能打开的文件（有 file_id、没找不到）：画最近标的那一个，其余记个数 */
+export function deliverableTag(task: FocusTask): Omit<FocusTag, "box" | "label"> | undefined {
+  const files = (task.deliverables ?? []).filter(
+    (item) => item.kind === "file" && typeof item.file_id === "number" && !item.gone,
+  );
+  const last = files[files.length - 1];
+  if (!last || typeof last.file_id !== "number") return undefined;
+  const name = last.name || last.url.split("/").pop() || last.title || "文件";
+  return { fileId: last.file_id, name, ext: extOf(name), more: files.length - 1 };
+}
+
+/** 小签的字和宽度：图标、截短的文件名、「+N」，合起来不超过 80 像素 */
+function tagMetrics(tag: Omit<FocusTag, "box" | "label">) {
+  const moreW = tag.more > 0 ? textWidth(`+${tag.more}`, TAG_FONT) + 4 : 0;
+  const label = fitText(tag.name, Math.max(12, TAG_MAX_W - TAG_ICON_W - 8 - moreW), TAG_FONT);
+  const w = Math.min(TAG_MAX_W, TAG_ICON_W + 8 + textWidth(label, TAG_FONT) + moreW);
+  return { label, w };
+}
+
+/** 卡片连同右边的小签一共占多宽（排的时候按这个算，同一排里不重叠） */
+function extraOf(entry: Pending) {
+  return entry.tag ? TAG_GAP + tagMetrics(entry.tag).w : 0;
+}
+
+function withTag(entry: Pending, card: Box, y: number): FocusTag | undefined {
+  if (!entry.tag) return undefined;
+  const { label, w } = tagMetrics(entry.tag);
+  return { ...entry.tag, label, box: { x: card.x + card.w + TAG_GAP, y: y - TAG_H / 2, w, h: TAG_H } };
 }
 
 /** 有时间点的按时间排，一排放不下就往外挪一排；返回用到的排数 */
@@ -108,8 +163,9 @@ function placeTimed(entries: Pending[], side: FocusSide, durationMs: number, bar
   for (const entry of timed) {
     const anchorX = msToX(entry.atMs as number, durationMs, barW);
     const { label, w } = cardOf(entry.text);
-    const x = Math.min(barW + OVERHANG - w / 2, Math.max(-OVERHANG + w / 2, anchorX));
-    const span: [number, number] = [x - w / 2 - H_GAP / 2, x + w / 2 + H_GAP / 2];
+    const extra = extraOf(entry);
+    const x = Math.min(barW + OVERHANG - w / 2 - extra, Math.max(-OVERHANG + w / 2, anchorX));
+    const span: [number, number] = [x - w / 2 - H_GAP / 2, x + w / 2 + extra + H_GAP / 2];
     let lane = lanes.findIndex((taken) => taken.every(([left, right]) => span[1] <= left || span[0] >= right));
     if (lane === -1) {
       lanes.push([]);
@@ -117,6 +173,7 @@ function placeTimed(entries: Pending[], side: FocusSide, durationMs: number, bar
     }
     lanes[lane].push(span);
     const y = side * (FIRST_LANE + lane * LANE_GAP);
+    const box = { x: x - w / 2, y: y - CARD_H / 2, w, h: CARD_H };
     out.push({
       id: entry.id,
       kind: entry.kind,
@@ -126,8 +183,9 @@ function placeTimed(entries: Pending[], side: FocusSide, durationMs: number, bar
       anchorX,
       x,
       y,
-      box: { x: x - w / 2, y: y - CARD_H / 2, w, h: CARD_H },
+      box,
       status: entry.status,
+      tag: withTag(entry, box, y),
     });
   }
   return lanes.length;
@@ -150,18 +208,20 @@ function placeOuter(
   const laneY = () => side * (FIRST_LANE + lane * LANE_GAP + 10);
   let left = untimed.length ? UNTIMED_LABEL_W : 0;
   if (untimed.length) labels.push({ side, x: 0, y: laneY() });
-  const next = (w: number) => {
-    if (left > 0 && left + w > barW + OVERHANG) {
+  /** 占一段宽 w 加 extra（小签）的位置，返回卡片中心 */
+  const next = (w: number, extra = 0) => {
+    if (left > 0 && left + w + extra > barW + OVERHANG) {
       lane += 1;
       left = untimed.length ? UNTIMED_LABEL_W : 0;
     }
     const x = left + w / 2;
-    left += w + H_GAP;
+    left += w + extra + H_GAP;
     return { x, y: laneY() };
   };
   for (const entry of untimed) {
     const { label, w } = cardOf(entry.text);
-    const { x, y } = next(w);
+    const { x, y } = next(w, extraOf(entry));
+    const box = { x: x - w / 2, y: y - CARD_H / 2, w, h: CARD_H };
     items.push({
       id: entry.id,
       kind: entry.kind,
@@ -171,8 +231,9 @@ function placeOuter(
       anchorX: null,
       x,
       y,
-      box: { x: x - w / 2, y: y - CARD_H / 2, w, h: CARD_H },
+      box,
       status: entry.status,
+      tag: withTag(entry, box, y),
     });
   }
   if (more) {
@@ -197,6 +258,7 @@ export function layoutMeetingFocus(focus: MeetingFocus, barW = BAR_W): FocusLayo
     text: task.title,
     atMs: task.anchor_ms,
     status: task.status,
+    tag: deliverableTag(task),
   }));
   const byTime = (a: Pending, b: Pending) =>
     (a.atMs === null ? 1 : 0) - (b.atMs === null ? 1 : 0) || (a.atMs ?? 0) - (b.atMs ?? 0);
@@ -252,7 +314,11 @@ export function layoutMeetingFocus(focus: MeetingFocus, barW = BAR_W): FocusLayo
     ticks.push({ x: barW, ms: durationMs, label: formatTime(durationMs) });
   }
 
-  const boxes = [...items.map((item) => item.box), ...more.map((item) => item.box)];
+  const boxes = [
+    ...items.map((item) => item.box),
+    ...items.flatMap((item) => (item.tag ? [item.tag.box] : [])),
+    ...more.map((item) => item.box),
+  ];
   const minX = Math.min(-20, ...boxes.map((box) => box.x));
   const maxX = Math.max(barW + 20, ...boxes.map((box) => box.x + box.w));
   const minY = Math.min(-FIRST_LANE, ...boxes.map((box) => box.y));

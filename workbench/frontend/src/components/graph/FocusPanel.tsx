@@ -20,6 +20,8 @@ export interface FocusPanelProps {
   onChanged: () => void | Promise<void>;
   onNotice: NoticeFn;
   onOpenRequirement: (requirementId: string) => void;
+  /** 3g：交付物里的文件点了打开预览抽屉 */
+  onOpenPreview?: (fileId: number) => void;
 }
 
 /** 前后各 20 秒的原话；换一条决议或任务时重读 */
@@ -195,8 +197,16 @@ function TaskBody({ props, task }: { props: FocusPanelProps; task: FocusTask }) 
         <Section title="交付物">
           <ul className="graph-panel__files">
             {task.deliverables.map((item) => (
-              <li key={`${item.kind}-${item.url}`} title={item.url}>
-                {item.title || item.url}
+              <li key={item.id ?? `${item.kind}-${item.url}`} title={item.url}>
+                {item.kind === "file" && typeof item.file_id === "number" && props.onOpenPreview ? (
+                  <button className="text-button" onClick={() => props.onOpenPreview?.(item.file_id as number)} type="button">
+                    {item.name || item.title || item.url}
+                  </button>
+                ) : (
+                  item.title || item.name || item.url
+                )}
+                {item.kind === "file" && item.gone && <small className="graph-panel__muted"> 找不到这个文件了</small>}
+                {item.kind === "file" && item.file_id !== undefined && <small className="graph-panel__muted"> · 你标的</small>}
               </li>
             ))}
           </ul>

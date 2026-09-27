@@ -34,6 +34,8 @@ interface OverviewPageProps {
   onOpenAttributionReview?: () => void;
   /** 挂文件夹只在桌面端：为 true 时才问「要不要挂上同名文件夹」 */
   canPickFolders?: boolean;
+  /** 3g：本机打开声档时才给［打开文件夹］ */
+  canReveal?: boolean;
   onProjectsChanged?: () => void | Promise<void>;
   /** 确认待办之后通知外层刷新侧栏「任务池」角标。 */
   onTasksChanged?: () => void;
@@ -130,6 +132,7 @@ export function OverviewPage({
   attributionSummary,
   onOpenAttributionReview,
   canPickFolders = false,
+  canReveal = true,
   onProjectsChanged,
   onTasksChanged,
 }: OverviewPageProps) {
@@ -314,7 +317,7 @@ export function OverviewPage({
         />
       )}
       {/* 一次性横幅同一时间只出一条：同名文件夹问完了，才轮到会议卡片 */}
-      {canPickFolders && folderBannerActive === false && <MeetingCardsBanner apiClient={apiClient} />}
+      {canPickFolders && folderBannerActive === false && <MeetingCardsBanner apiClient={apiClient} canReveal={canReveal} />}
 
       <div className={`metric-strip ${reviewCount > 0 ? "metric-strip--five" : ""}`}>
         {jobsInteractive ? (

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api";
 import type { Project } from "../../types";
+import type { MaterialFilePreview, Task } from "../../types";
 import type {
   BriefFile,
   ExpandPayload,
@@ -13,6 +14,7 @@ import type {
   GraphPayload,
   GraphRootsPayload,
   MeetingBrief,
+  RecentFile,
 } from "./graphTypes";
 import { ProjectGraph, forgetGraphCache, shortHash } from "./ProjectGraph";
 import { day, focusPayload, focusTask, meeting, payload, requirement } from "./testFixtures";
@@ -118,6 +120,7 @@ interface Handlers {
   onOpenGlossary?: (projectId: string) => void;
   onOpenMeeting?: (meetingId: string) => void;
   onOpenRequirement?: (requirementId: string) => void;
+  onOpenPreview?: (fileId: number, startMs?: number) => void;
 }
 
 function Harness({
@@ -138,6 +141,7 @@ function Harness({
         onBack={() => {}}
         onOpenGlossary={handlers.onOpenGlossary ?? (() => {})}
         onOpenMeeting={handlers.onOpenMeeting ?? (() => {})}
+        onOpenPreview={handlers.onOpenPreview}
         onOpenProject={() => {}}
         onOpenRequirement={handlers.onOpenRequirement ?? (() => {})}
         onSelectionChange={setSelection}
@@ -1228,5 +1232,324 @@ describe("ProjectGraph 材料面板的补充", () => {
   it("面包屑最前面是「全部项目」，链接到全部项目概览", async () => {
     render(<Harness apiClient={makeClient()} />);
     expect(await screen.findByRole("link", { name: "全部项目" })).toHaveAttribute("href", "#graph");
+  });
+});
+
+// ------------------------------------------------------------------ 第三期：关系图里的文件（3g）
+
+function recentFile(fileId: number, name: string, state: RecentFile["state"] = "done"): RecentFile {
+  return { file_id: fileId, name, ext: name.split(".").pop() ?? "", dir_rel: "方案", mtime: "2026-09-25T10:00:00+00:00", state };
+}
+
+const RECENT_ROOTS: GraphRootsPayload = {
+  ...ONLINE_ROOTS,
+  roots: [
+    {
+      ...ONLINE_ROOTS.roots[0],
+      recent_files: [recentFile(21, "方案.docx", "pending"), recentFile(22, "截图.png", "waiting"), recentFile(23, "旧稿.pdf", "unreadable")],
+      content: { files: 1234, done: 1020, unreadable: 7 },
+    },
+  ],
+  loose: { count: 1, recent: [{ name: "报价单.xlsx", path: "/材料/云图AI/报价单.xlsx", size: 2048, mtime: "2026-09-24T09:00:00", file_id: 41 }] },
+};
+
+function preview(fileId: number, name: string): MaterialFilePreview {
+  return {
+    file: {
+      id: fileId,
+      name,
+      ext: "xlsx",
+      rel_path: `商务/${name}`,
+      root_id: 1,
+      folder_path: "/材料/云图AI/商务",
+      path: `/材料/云图AI/商务/${name}`,
+      size: 2048,
+      modified_at: "2026-09-24T09:00:00",
+      project_id: "p",
+      project_name: "云图AI",
+      root_online: true,
+      gone: false,
+    },
+    state: { kind: "done", reason: null, note: null, what: null, paused: null, meeting: null, text: "" },
+    preview: {
+      kind: "text",
+      lines: ["报价单第一行：初审规则服务费"],
+      more: false,
+      rows: [],
+      sheet: null,
+      image_url: null,
+      page_url: null,
+      media_url: null,
+      playable: false,
+      duration_ms: null,
+      transcript: [],
+    },
+  };
+}
+
+function openTask(id: string, title: string, meetingDate: string | null): Task {
+  return {
+    id,
+    title,
+    detail: "",
+    status: "confirmed",
+    origin: "ai",
+    assignee: "me",
+    project_id: "p",
+    status_changed_at: "2026-09-20T00:00:00",
+    created_at: "2026-09-20T00:00:00",
+    updated_at: "2026-09-20T00:00:00",
+    stall_days: 0,
+    stalled: false,
+    meeting_title: meetingDate ? `会 ${meetingDate}` : null,
+    meeting_recording_date: meetingDate,
+  };
+}
+
+function materialClient(graph: GraphPayload = withFiles(), overrides: Record<string, unknown> = {}) {
+  return fileClient(graph, {
+    graphRoots: vi.fn(async () => RECENT_ROOTS),
+    getGraphFile: vi.fn(async (fileId: number) =>
+      fileId === 7
+        ? fileDetail({ deliverables: [] })
+        : fileDetail({
+            file: { ...fileDetail().file, id: fileId, name: `文件${fileId}.docx`, rel_path: `方案/文件${fileId}.docx` },
+            meetings: [],
+            active_meetings: 0,
+            siblings: [],
+            deliverables: [],
+          }),
+    ),
+    getMaterialPreview: vi.fn(async (fileId: number) => preview(fileId, fileId === 7 ? "报价单v2.xlsx" : `文件${fileId}.docx`)),
+    tasks: vi.fn(async () => ({
+      items: [openTask("t-old", "旧会里的任务", "2026-08-01"), openTask("t-new", "整理报价单", "2026-09-25")],
+      total: 2,
+      limit: 500,
+      offset: 0,
+    })),
+    addDeliverable: vi.fn(async (taskId: string) => ({ id: taskId, deliverables: [], events: [], deliverable_id: 9 })),
+    removeDeliverable: vi.fn(async (taskId: string) => ({ id: taskId, deliverables: [], events: [] })),
+    ...overrides,
+  });
+}
+
+describe("ProjectGraph 关系图里的文件（3g）", () => {
+  it("最近改过的文件挂在文件夹外侧，带读到哪一步的标记；根目录面板顶上能点", async () => {
+    const apiClient = materialClient(payload());
+    render(<Harness apiClient={apiClient} />);
+    const pending = await screen.findByRole("button", { name: "最近改过的文件：方案.docx" });
+    expect(pending.querySelector(".graph-file__mark--system")).toHaveTextContent("◷");
+    expect(screen.getByRole("button", { name: "最近改过的文件：截图.png" }).querySelector(".graph-file__mark--you")).toHaveTextContent("◷");
+    expect(screen.getByRole("button", { name: "最近改过的文件：旧稿.pdf" }).querySelector(".graph-file__mark--unreadable")).toHaveTextContent("⊘");
+
+    await userEvent.click(screen.getByRole("button", { name: "文件夹：云图AI" }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    const list = await within(panel).findByRole("list", { name: "最近改过的文件" });
+    expect(within(list).getByText(/还没读到/)).toBeInTheDocument();
+    await userEvent.click(within(list).getByRole("button", { name: "截图.png" }));
+    expect(screen.getByTestId("selection")).toHaveTextContent("file:22");
+    expect(apiClient.getGraphFile).toHaveBeenCalledWith(22);
+  });
+
+  it("文件夹面板、散放文件的文件行能点：在图上补出文件并打开文件面板", async () => {
+    const apiClient = materialClient(payload(), {
+      graphExpand: vi.fn(async (rootId: number, dir = "") => {
+        const base = expandPayload(rootId, dir);
+        return { ...base, files: base.files.map((file) => ({ ...file, file_id: dir ? 32 : 31 })) };
+      }),
+    });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "文件夹：云图AI" }));
+    let panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "报价单.xlsx" }));
+    expect(screen.getByTestId("selection")).toHaveTextContent("file:31");
+    expect(await screen.findByRole("button", { name: "文件：报价单.xlsx" })).toBeInTheDocument();
+    panel = screen.getByRole("complementary", { name: "详情面板" });
+    expect(within(panel).getByText("文件")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "根目录里散放的文件" }));
+    panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "报价单.xlsx" }));
+    expect(screen.getByTestId("selection")).toHaveTextContent("file:41");
+    expect(await screen.findByRole("button", { name: "文件：报价单.xlsx" })).toBeInTheDocument();
+  });
+
+  it("图上放不下点出来的文件时直接打开预览抽屉，不留空选中", async () => {
+    // 材料那一侧的槽位都被会上提到的文件占满
+    const crowded = payload({
+      files: Array.from({ length: 30 }, (_, index) => ({
+        id: `file:${500 + index}`,
+        kind: "file" as const,
+        file_id: 500 + index,
+        name: `提到${index}.xlsx`,
+        ext: "xlsx",
+        rel_path: "x",
+        root_id: 1,
+        folder: "root:1",
+      })),
+    });
+    const onOpenPreview = vi.fn();
+    const apiClient = materialClient(crowded, {
+      graphExpand: vi.fn(async (rootId: number, dir = "") => {
+        const base = expandPayload(rootId, dir);
+        return { ...base, files: base.files.map((file) => ({ ...file, file_id: 31 })) };
+      }),
+    });
+    render(<Harness apiClient={apiClient} handlers={{ onOpenPreview }} initial="root:1" />);
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "报价单.xlsx" }));
+    await waitFor(() => expect(onOpenPreview).toHaveBeenCalledWith(31));
+    expect(screen.getByTestId("selection")).toHaveTextContent("");
+    expect(screen.queryByText("要看的节点不在当前的图上，换个时间窗试试")).toBeNull();
+  });
+
+  it("深链到不在图上的文件：先取文件信息补成节点，不说不在图上", async () => {
+    const apiClient = materialClient(payload());
+    render(<Harness apiClient={apiClient} initial="file:77" />);
+    expect(await screen.findByRole("button", { name: "文件：文件77.docx" })).toBeInTheDocument();
+    expect(apiClient.getGraphFile).toHaveBeenCalledWith(77);
+    expect(screen.getByTestId("selection")).toHaveTextContent("file:77");
+    expect(screen.queryByText("要看的节点不在当前的图上，换个时间窗试试")).toBeNull();
+    expect(await screen.findByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+  });
+
+  it("文件面板：预览、交付物，［标为交付物 ▾］按最近的会排、能筛，选了立即生效，［撤销］删掉", async () => {
+    const apiClient = materialClient();
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    expect(within(panel).getByText("文件")).toBeInTheDocument();
+    expect(await within(panel).findByText("报价单第一行：初审规则服务费")).toBeInTheDocument();
+    expect(apiClient.getMaterialPreview).toHaveBeenCalledWith(7, "preview");
+    expect(within(panel).getByText("还不是哪个任务的交付物")).toBeInTheDocument();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "标为交付物 ▾" }));
+    const choices = await within(panel).findByRole("list", { name: "选一个任务" });
+    expect(within(choices).getAllByRole("button").map((button) => button.textContent)).toEqual(["整理报价单", "旧会里的任务"]);
+    expect(apiClient.tasks).toHaveBeenCalledWith({ project_id: "p", status: "pending_confirm,confirmed,in_progress", limit: 500 });
+    await userEvent.type(within(panel).getByRole("searchbox", { name: "筛选任务" }), "报价");
+    expect(within(choices).getAllByRole("button").map((button) => button.textContent)).toEqual(["整理报价单"]);
+
+    const graphCalls = vi.mocked(apiClient.graph).mock.calls.length;
+    await userEvent.click(within(choices).getByRole("button", { name: "整理报价单" }));
+    expect(apiClient.addDeliverable).toHaveBeenCalledWith("t-new", { file_id: 7 });
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("已标为『整理报价单』的交付物");
+    await waitFor(() => expect(vi.mocked(apiClient.graph).mock.calls.length).toBeGreaterThan(graphCalls));
+
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    expect(apiClient.removeDeliverable).toHaveBeenCalledWith("t-new", 9);
+    expect(await screen.findByText("已撤销：「报价单v2.xlsx」不再是「整理报价单」的交付物")).toBeInTheDocument();
+  });
+
+  it("文件面板列出是哪些任务的交付物", async () => {
+    const apiClient = materialClient(withFiles(), {
+      getGraphFile: vi.fn(async () =>
+        fileDetail({ deliverables: [{ deliverable_id: 3, task_id: "t1", title: "整理报价单", status: "in_progress" }] }),
+      ),
+    });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    const list = await within(panel).findByRole("list", { name: "是哪些任务的交付物" });
+    expect(list).toHaveTextContent("整理报价单");
+    expect(list).toHaveTextContent("进行中");
+  });
+
+  it("旧后端没有这些接口时不显示：交付物、［标为交付物］、预览、会议记录的文件", async () => {
+    const apiClient = fileClient(withFiles(), { graphRoots: vi.fn(async () => ONLINE_ROOTS) });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    expect(await within(panel).findByText("/材料/云图AI/商务")).toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "标为交付物 ▾" })).toBeNull();
+    expect(within(panel).queryByText("还不是哪个任务的交付物")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "文件夹：声档会议记录/" }));
+    const cards = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(cards).getByText("已写 3 张 · 停了 0 张 · 在等 0 张")).toBeInTheDocument();
+    expect(within(cards).queryByRole("heading", { name: "文件" })).toBeNull();
+  });
+
+  it("需求文件夹、声档会议记录面板的「文件」一节：从库里列，点了在图上打开", async () => {
+    const graph = payload({
+      folders: [
+        ...payload().folders,
+        { id: "rf:5", kind: "requirement_folder", name: "白名单", path: "/材料/云图AI/白名单", ring: "middle", requirement_id: "r1", folder_id: 5 },
+      ],
+    });
+    const requirementFolderFiles = vi.fn(async () => ({
+      folder_id: 5,
+      path: "/材料/云图AI/白名单",
+      exists: true,
+      total: 2,
+      capped: false,
+      items: [
+        { relative_path: "名单.xlsx", size_bytes: 10, modified_at: "2026-09-20T10:00:00", file_id: 51 },
+        { relative_path: "子/说明.docx", size_bytes: 10, modified_at: "2026-09-19T10:00:00" },
+      ],
+    }));
+    const graphCardsFiles = vi.fn(async () => ({
+      files: [{ file_id: 61, name: "0926 周会.md", rel_path: "声档会议记录/0926 周会.md", root_id: 1, mtime: "2026-09-26T10:00:00" }],
+    }));
+    const apiClient = materialClient(graph, {
+      graphRoots: vi.fn(async () => ({
+        ...RECENT_ROOTS,
+        folders: [
+          { id: "rf:5", folder_id: 5, requirement_id: "r1", path: "/材料/云图AI/白名单", state: "online", root_id: 1, recent_files: [recentFile(52, "最新名单.xlsx")] },
+        ],
+      })),
+      requirementFolderFiles,
+      graphCardsFiles,
+    });
+    render(<Harness apiClient={apiClient} initial="rf:5" />);
+    let panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(await within(panel).findByRole("list", { name: "最近改过的文件" })).toHaveTextContent("最新名单.xlsx");
+    const files = await within(panel).findByRole("list", { name: "文件夹里的文件" });
+    expect(requirementFolderFiles).toHaveBeenCalledWith("r1", 5, { limit: 40 });
+    expect(within(files).getByText("子/说明.docx")).toBeInTheDocument();
+    await userEvent.click(within(files).getByRole("button", { name: "名单.xlsx" }));
+    expect(screen.getByTestId("selection")).toHaveTextContent("file:51");
+    expect(apiClient.getGraphFile).toHaveBeenCalledWith(51);
+
+    await userEvent.click(screen.getByRole("button", { name: "文件夹：声档会议记录/" }));
+    panel = await screen.findByRole("complementary", { name: "详情面板" });
+    const cardList = await within(panel).findByRole("list", { name: "会议记录文件" });
+    await userEvent.click(within(cardList).getByRole("button", { name: "0926 周会.md" }));
+    expect(screen.getByTestId("selection")).toHaveTextContent("file:61");
+  });
+
+  it("项目面板每个根目录写「文件名 N 个 · 已读 N 个 · 读不了 N 个」；在图上找能找文件", async () => {
+    const apiClient = materialClient(withFiles(), { graphFulltext: vi.fn(async () => ({ variants: [], total: 0, meeting_count: 0, meetings: [] })) });
+    render(<Harness apiClient={apiClient} initial="project" />);
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(await within(panel).findByText("文件名 1,234 个 · 已读 1,020 个 · 读不了 7 个")).toBeInTheDocument();
+
+    const input = screen.getByRole("searchbox", { name: "在图上找" });
+    await userEvent.type(input, "报价单");
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByTestId("selection")).toHaveTextContent("file:7");
+  });
+
+  it("展开一场会：任务卡右边挂交付物小签，点了打开预览抽屉；任务面板里的文件也能点", async () => {
+    const onOpenPreview = vi.fn();
+    const deliverables = [
+      { id: 1, kind: "file", url: "/材料/云图AI/交付/定稿.pdf", title: "", file_id: 71, name: "定稿.pdf", gone: false },
+      { id: 2, kind: "file", url: "/材料/云图AI/交付/旧稿.pdf", title: "", file_id: null, name: "旧稿.pdf", gone: true },
+    ];
+    const apiClient = focusClient({
+      graphMeetingFocus: vi.fn(async () => focusPayload({ tasks: [focusTask("t1", 300_000, { deliverables })] })),
+    });
+    render(<Harness apiClient={apiClient} handlers={{ onOpenPreview }} />);
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    const view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    await userEvent.click(await within(view).findByRole("button", { name: "交付物 · 你标的：定稿.pdf，点了预览" }));
+    expect(onOpenPreview).toHaveBeenCalledWith(71);
+
+    await userEvent.click(within(view).getByRole("button", { name: /^任务（已确认）：任务 t1/ }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(within(panel).getByRole("button", { name: "定稿.pdf" }));
+    expect(onOpenPreview).toHaveBeenCalledTimes(2);
+    expect(within(panel).getByText(/找不到这个文件了/)).toBeInTheDocument();
   });
 });

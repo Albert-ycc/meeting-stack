@@ -52,6 +52,8 @@ export interface MeetingFocusViewProps {
   onExpand: (meetingId: string) => void;
   onOpenMeeting: (meetingId: string) => void;
   onRetry: () => void;
+  /** 3g：点任务卡右边的交付物小签，打开预览抽屉 */
+  onOpenPreview?: (fileId: number) => void;
 }
 
 function itemLabel(item: FocusItem) {
@@ -72,6 +74,7 @@ export function MeetingFocusView({
   onExpand,
   onOpenMeeting,
   onRetry,
+  onOpenPreview,
 }: MeetingFocusViewProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef<ZoomBehavior<HTMLDivElement, unknown> | null>(null);
@@ -254,6 +257,33 @@ export function MeetingFocusView({
               />
             ),
           )}
+          <defs>
+            <marker
+              id="meeting-focus-arrow"
+              markerHeight="6"
+              markerWidth="6"
+              orient="auto"
+              refX="5"
+              refY="3"
+              viewBox="0 0 6 6"
+            >
+              <path className="meeting-focus__arrow-head" d="M0,0 L6,3 L0,6 z" />
+            </marker>
+          </defs>
+          {/* 任务到它的交付物文件：只画实线箭头，「交付物 · 你标的」只在读屏名和面板里 */}
+          {layout.items.map((item) =>
+            item.tag ? (
+              <line
+                className="meeting-focus__deliverable"
+                key={`deliverable-${item.id}`}
+                markerEnd="url(#meeting-focus-arrow)"
+                x1={item.box.x + item.box.w}
+                x2={item.tag.box.x - 2}
+                y1={item.y}
+                y2={item.y}
+              />
+            ) : null,
+          )}
           {layout.ticks.map((tick) => (
             <g className="meeting-focus__tick" key={tick.ms}>
               <line x1={tick.x} x2={tick.x} y1={BAR_H / 2} y2={BAR_H / 2 + 5} />
@@ -339,6 +369,38 @@ export function MeetingFocusView({
             )}
           </button>
         ))}
+        {layout.items.map((item) => {
+          const tag = item.tag;
+          if (!tag) return null;
+          const content = (
+            <>
+              <span aria-hidden="true" className="meeting-focus__tag-icon">
+                {tag.ext.slice(0, 4)}
+              </span>
+              <span className="meeting-focus__tag-name">{tag.label}</span>
+              {tag.more > 0 && <span className="meeting-focus__tag-more">+{tag.more}</span>}
+            </>
+          );
+          const style = { left: tag.box.x, top: tag.box.y, width: tag.box.w, height: tag.box.h };
+          const label = `交付物 · 你标的：${tag.name}${tag.more > 0 ? `，另有 ${tag.more} 个` : ""}`;
+          return onOpenPreview ? (
+            <button
+              aria-label={`${label}，点了预览`}
+              className="meeting-focus__tag"
+              key={`tag-${item.id}`}
+              onClick={() => onOpenPreview(tag.fileId)}
+              style={style}
+              title={tag.name}
+              type="button"
+            >
+              {content}
+            </button>
+          ) : (
+            <span aria-label={label} className="meeting-focus__tag" key={`tag-${item.id}`} role="img" style={style} title={tag.name}>
+              {content}
+            </span>
+          );
+        })}
         {layout.more.map((item) => (
           <button
             aria-pressed={item.id === selectedId}

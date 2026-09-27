@@ -3,13 +3,81 @@ import { useEffect, useState } from "react";
 
 import { copyText } from "../../clipboard";
 import { formatBytes } from "../../format";
-import type { MaterialRoot, MaterialRootRepoint } from "../../types";
+import type { MaterialRoot, MaterialRootRepoint, RequirementFilesPayload } from "../../types";
 import { MaterialRootPickerModal } from "../MaterialRootPickerModal";
 import { RootRenameQuestion, movedNote } from "../RootRenameQuestion";
 import type { GraphPanelProps } from "./GraphPanel";
-import type { DiskState, ExpandPayload, GraphBeacon, GraphBeaconItem } from "./graphTypes";
+import type { PinnedFile } from "./graphFiles";
+import type { CardsFilesPayload, DiskState, ExpandPayload, GraphBeacon, GraphBeaconItem, RecentFile } from "./graphTypes";
 import { pendingNote } from "./layout";
 import { CopyPath, Section, localUndoUntil } from "./panelParts";
+
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+/** 需求文件夹面板里最多列这么多个文件，多的去需求页看 */
+const FOLDER_FILES_SHOWN = 40;
+
+/** 项目面板「材料文件夹」每个根目录那一句（3g），说法和项目页一致；内容循环还没数过时不写 */
+export function rootContentText(content: { files: number; done: number; unreadable: number } | null | undefined) {
+  if (!content) return "";
+  const parts = [`文件名 ${COUNT_FORMAT.format(content.files)} 个`, `已读 ${COUNT_FORMAT.format(content.done)} 个`];
+  if (content.unreadable > 0) parts.push(`读不了 ${COUNT_FORMAT.format(content.unreadable)} 个`);
+  return parts.join(" · ");
+}
+
+const RECENT_STATE_TEXT: Partial<Record<RecentFile["state"], string>> = {
+  pending: "还没读到",
+  waiting: "在等你装识别程序",
+  unreadable: "读不了",
+};
+
+/** 根目录、需求文件夹面板顶上的「最近改过的文件」（和画布同一份，最多 6 个）：每行能点，画布上放不下的在这里能看到 */
+export function RecentFilesSection({
+  props,
+  files,
+  rootId,
+  folder,
+}: {
+  props: GraphPanelProps;
+  files: RecentFile[] | undefined;
+  rootId: number | null | undefined;
+  folder: string;
+}) {
+  if (!files?.length || rootId === null || rootId === undefined) return null;
+  return (
+    <Section title="最近改过的文件">
+      <ul aria-label="最近改过的文件" className="graph-panel__list">
+        {files.map((file) => (
+          <li key={file.file_id}>
+            <FileButton
+              file={{
+                file_id: file.file_id,
+                name: file.name,
+                rel_path: file.dir_rel ? `${file.dir_rel}/${file.name}` : file.name,
+                root_id: rootId,
+                folder,
+              }}
+              props={props}
+            />
+            <small>
+              {file.mtime ? `${shortDate(file.mtime)} 改过` : ""}
+              {RECENT_STATE_TEXT[file.state] ? ` · ${RECENT_STATE_TEXT[file.state]}` : ""}
+            </small>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+/** 文件名：能在图上打开时是按钮（补出节点并打开文件面板，放不下时打开预览抽屉），否则是纯文字 */
+export function FileButton({ props, file }: { props: GraphPanelProps; file: PinnedFile }) {
+  if (!props.onOpenFile) return <span title={file.rel_path}>{file.name}</span>;
+  return (
+    <button className="text-button" onClick={() => props.onOpenFile?.(file)} title={file.rel_path} type="button">
+      {file.name}
+    </button>
+  );
+}
 
 const DISK_TEXT: Record<DiskState, string> = {
   online: "在线",
@@ -78,6 +146,7 @@ export function ProjectPanelBody({ props }: { props: GraphPanelProps }) {
                     {root ? DISK_TEXT[root.state] : "正在检查…"}
                     {root?.state === "online" && root.loose_count ? ` · 根目录散放 ${root.loose_count} 个文件` : ""}
                   </small>
+                  {rootContentText(root?.content) && <small>{rootContentText(root?.content)}</small>}
                 </li>
               );
             })}
@@ -154,9 +223,11 @@ export function FolderBrowser({
   const payload = state.key === key ? state.payload : null;
   const error = state.key === key ? state.error : "";
   const canReveal = Boolean(props.roots?.can_reveal);
+  const recent = props.roots?.roots.find((item) => item.root_id === rootId)?.recent_files;
 
   return (
     <>
+      {!dir && <RecentFilesSection files={recent} folder={`root:${rootId}`} props={props} rootId={rootId} />}
       <nav aria-label="文件夹位置" className="graph-panel__crumbs">
         <button className="text-button" disabled={!dir} onClick={() => setDir("")} type="button">
           {rootName}
@@ -208,7 +279,20 @@ export function FolderBrowser({
               <ul className="graph-panel__files">
                 {payload.files.map((file) => (
                   <li key={file.path} title={file.path}>
-                    {file.name}{" "}
+                    {file.file_id ? (
+                      <FileButton
+                        file={{
+                          file_id: file.file_id,
+                          name: file.name,
+                          rel_path: payload.dir ? `${payload.dir}/${file.name}` : file.name,
+                          root_id: rootId,
+                          folder: `root:${rootId}`,
+                        }}
+                        props={props}
+                      />
+                    ) : (
+                      file.name
+                    )}{" "}
                     <small>
                       {shortDate(file.mtime)} · {formatBytes(file.size)}
                     </small>
@@ -287,7 +371,162 @@ export function RootMissingBody({ props, rootId, path }: { props: GraphPanelProp
   );
 }
 
+// ------------------------------------------------------------------ 需求文件夹、声档会议记录（3g）
+
+/** 需求文件夹面板：最近改过的文件、文件夹里的文件（先查库，没扫完时照旧读盘）、路径、所属需求 */
+export function RequirementFolderBody({
+  props,
+  folderId,
+  requirementId,
+  path,
+  graphId,
+}: {
+  props: GraphPanelProps;
+  folderId: number;
+  requirementId: string;
+  path: string;
+  graphId: string;
+}) {
+  const entry = props.roots?.folders.find((item) => item.id === graphId);
+  const canList = typeof props.apiClient.requirementFolderFiles === "function";
+  const [state, setState] = useState<{ key: string; payload: RequirementFilesPayload | null; error: string }>({
+    key: "",
+    payload: null,
+    error: "",
+  });
+  const key = `${requirementId}|${folderId}`;
+  useEffect(() => {
+    if (!canList) return;
+    let active = true;
+    props.apiClient
+      .requirementFolderFiles(requirementId, folderId, { limit: FOLDER_FILES_SHOWN })
+      .then((payload) => active && setState({ key, payload, error: "" }))
+      .catch((reason: unknown) =>
+        active && setState({ key, payload: null, error: reason instanceof Error ? reason.message : "读不了这个文件夹" }),
+      );
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canList, key, props.version]);
+  const payload = state.key === key ? state.payload : null;
+  const error = state.key === key ? state.error : "";
+  const rootId = entry?.root_id;
+  const relative = rootId ? relativeTo(props, rootId, path) : null;
+  return (
+    <>
+      <RecentFilesSection files={entry?.recent_files} folder={graphId} props={props} rootId={rootId} />
+      {canList && (
+        <Section title={payload?.total ? `文件 ${payload.total}${payload.capped ? "+" : ""}` : "文件"}>
+          {error ? (
+            <p className="graph-panel__error">{error}</p>
+          ) : !payload ? (
+            <p className="graph-panel__muted">正在读文件…</p>
+          ) : !payload.exists ? (
+            <p className="graph-panel__muted">这个文件夹现在找不到了，可能被移走或改了名。</p>
+          ) : payload.items.length === 0 ? (
+            <p className="graph-panel__muted">文件夹里还没有文件</p>
+          ) : (
+            <ul aria-label="文件夹里的文件" className="graph-panel__files">
+              {payload.items.map((item) => {
+                const name = baseName(item.relative_path);
+                return (
+                  <li key={item.relative_path} title={item.relative_path}>
+                    {item.file_id && rootId ? (
+                      <FileButton
+                        file={{
+                          file_id: item.file_id,
+                          name,
+                          rel_path: relative ? `${relative}/${item.relative_path}` : item.relative_path,
+                          root_id: rootId,
+                          folder: graphId,
+                        }}
+                        props={props}
+                      />
+                    ) : (
+                      item.relative_path
+                    )}{" "}
+                    <small>
+                      {shortDate(item.modified_at)} · {formatBytes(item.size_bytes)}
+                    </small>
+                  </li>
+                );
+              })}
+              {payload.total > payload.items.length && (
+                <li className="graph-panel__muted">还有 {payload.total - payload.items.length} 个，去需求页看全部</li>
+              )}
+            </ul>
+          )}
+        </Section>
+      )}
+      <CopyPath apiClient={props.apiClient} canReveal={Boolean(props.roots?.can_reveal)} onNotice={props.onNotice} path={path} />
+      <button className="text-button" onClick={() => props.onSelect(`r:${requirementId}`)} type="button">
+        看它所属的需求
+      </button>
+    </>
+  );
+}
+
+/** 需求文件夹相对它所在根目录的路径（给补出来的文件节点写 rel_path） */
+function relativeTo(props: GraphPanelProps, rootId: number, path: string): string | null {
+  const root = props.roots?.roots.find((item) => item.root_id === rootId);
+  if (!root) return null;
+  const base = root.path.replace(/\/+$/, "");
+  return path.startsWith(`${base}/`) ? path.slice(base.length + 1) : null;
+}
+
+/** 声档会议记录面板的「文件」：只查库，最多 20 个，只给文件名；点了在图上补出、打开文件面板 */
+export function CardsFilesSection({ props }: { props: GraphPanelProps }) {
+  const canList = typeof props.apiClient.graphCardsFiles === "function";
+  const [files, setFiles] = useState<CardsFilesPayload["files"] | null>(null);
+  const projectId = props.graph.project.id;
+  useEffect(() => {
+    if (!canList) return;
+    let active = true;
+    props.apiClient
+      .graphCardsFiles(projectId)
+      .then((payload) => active && setFiles(payload.files))
+      .catch(() => active && setFiles([]));
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canList, projectId, props.version]);
+  if (!canList || files === null) return null;
+  return (
+    <Section title="文件">
+      {files.length ? (
+        <ul aria-label="会议记录文件" className="graph-panel__files">
+          {files.map((file) => (
+            <li key={file.file_id}>
+              <FileButton
+                file={{ file_id: file.file_id, name: file.name, rel_path: file.rel_path, root_id: file.root_id, folder: "cards" }}
+                props={props}
+              />
+              {file.mtime && <small> {shortDate(file.mtime)} 改过</small>}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="graph-panel__muted">文件名还没认到这里的会议记录</p>
+      )}
+    </Section>
+  );
+}
+
 // ------------------------------------------------------------------ 散放文件
+
+/** 散放文件挂在它所在根目录的节点上（按路径前缀找根目录） */
+function looseFile(roots: NonNullable<GraphPanelProps["roots"]>, path: string, fileId: number, name: string): PinnedFile {
+  const root = roots.roots.find((item) => path.startsWith(`${item.path.replace(/\/+$/, "")}/`));
+  return {
+    file_id: fileId,
+    name,
+    rel_path: name,
+    root_id: root?.root_id ?? 0,
+    folder: root ? `root:${root.root_id}` : "loose",
+  };
+}
 
 export function LoosePanelBody({ props }: { props: GraphPanelProps }) {
   const { roots } = props;
@@ -300,7 +539,11 @@ export function LoosePanelBody({ props }: { props: GraphPanelProps }) {
         {roots.loose.recent.map((file) => (
           <li className="graph-panel__file-row" key={file.path} title={file.path}>
             <span>
-              {file.name}{" "}
+              {file.file_id ? (
+                <FileButton file={looseFile(roots, file.path, file.file_id, file.name)} props={props} />
+              ) : (
+                file.name
+              )}{" "}
               <small>
                 {shortDate(file.mtime)} · {formatBytes(file.size)}
               </small>

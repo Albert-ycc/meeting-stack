@@ -27,7 +27,17 @@ import {
 } from "./FilePanels";
 import { meetingDateLabel, type LaidNode, type StarLayout } from "./layout";
 import type { MiniPlayerHandle } from "./MiniPlayer";
-import { BeaconPanelBody, FolderBrowser, LoosePanelBody, ProjectPanelBody, RootMissingBody, baseName } from "./MaterialPanels";
+import type { PinnedFile } from "./graphFiles";
+import {
+  BeaconPanelBody,
+  CardsFilesSection,
+  FolderBrowser,
+  LoosePanelBody,
+  ProjectPanelBody,
+  RequirementFolderBody,
+  RootMissingBody,
+  baseName,
+} from "./MaterialPanels";
 import {
   CopyPath,
   PlayButton,
@@ -66,7 +76,7 @@ const KIND_LABEL: Record<LaidNode["kind"], string> = {
   folder: "文件夹",
   folder_more: "文件夹",
   loose: "散放文件",
-  file: "会上提到的文件",
+  file: "文件",
   file_more: "会上提到的文件",
   cue: "线索词",
   beacon: "跨项目",
@@ -119,6 +129,8 @@ export interface GraphPanelProps {
   onOpenAttributionReview?: () => void;
   /** 从哪场会点进文件面板、「提到」线的（上一个选中的会）：那一行给［不是这份文件］ */
   contextMeetingId?: string | null;
+  /** 3g：文件夹面板、最近改过的文件、散放文件的文件行：在图上补出这个文件并打开文件面板，放不下时打开预览抽屉 */
+  onOpenFile?: (file: PinnedFile) => void;
 }
 
 // ------------------------------------------------------------------ 会议
@@ -1019,8 +1031,19 @@ export function GraphPanel(props: GraphPanelProps) {
               <p className="graph-panel__meta">
                 已写 {folder.written ?? 0} 张 · 停了 {folder.stopped ?? 0} 张 · 在等 {folder.waiting ?? 0} 张
               </p>
+              <CardsFilesSection props={props} />
               <CopyPath apiClient={props.apiClient} canReveal={canReveal} onNotice={props.onNotice} path={folder.path} />
             </>
+          );
+        } else if (folder.kind === "requirement_folder" && folder.folder_id !== undefined && folder.requirement_id) {
+          body = (
+            <RequirementFolderBody
+              folderId={folder.folder_id}
+              graphId={folder.id}
+              path={folder.path}
+              props={props}
+              requirementId={folder.requirement_id}
+            />
           );
         } else {
           body = (

@@ -4,6 +4,7 @@ from pathlib import Path
 from meeting_workbench.cards import CardWriter
 from meeting_workbench.db import Database, utc_now
 
+from .test_graph_focus import local_client
 from .test_cards import CARDS, MEETING, _card_files, _make_historical, _meeting, _mount
 from .test_project_linking import make_project
 from .test_tasks_api import make_client, write_headers
@@ -195,8 +196,12 @@ def test_backfill_banner_answer_and_notices(tmp_path):
     assert [notice["path"] for notice in banner["notices"]] == [str(root / CARDS)]
     client.post("/api/cards/notices/dismiss", json={"project_id": project_id}, headers=headers)
     assert client.get("/api/cards/banner").json()["notices"] == []
-    # 这台机器不是 Mac，打开文件夹要说清楚
-    reveal = client.post("/api/cards/reveal", json={"project_id": project_id}, headers=headers)
+    # 3g：远程的设备不能让服务器那台电脑打开访达
+    remote = client.post("/api/cards/reveal", json={"project_id": project_id}, headers=headers)
+    assert remote.status_code == 403
+    # 本机打开：这台机器不是 Mac，打开文件夹要说清楚
+    local, local_headers = local_client(client)
+    reveal = local.post("/api/cards/reveal", json={"project_id": project_id}, headers=local_headers)
     assert reveal.status_code == 409
 
 

@@ -57,6 +57,8 @@ interface ProjectDetailPageProps {
   onOpenRequirement: (id: string) => void;
   /** 挂根目录 / 选材料文件夹只在桌面端出现 */
   canPickFolders: boolean;
+  /** 3g：本机打开声档时才给［打开文件夹］，远程的设备改成［复制路径］ */
+  canReveal?: boolean;
   onProjectsChanged?: () => void | Promise<void>;
   /** 合并后跳到目标项目 */
   onOpenProject?: (projectId: string) => void;
@@ -282,6 +284,7 @@ export function ProjectDetailPage({
   projects,
   onOpenRequirement,
   canPickFolders,
+  canReveal = true,
   onProjectsChanged,
   onOpenProject,
   modeToggle,
@@ -796,6 +799,7 @@ export function ProjectDetailPage({
               <ProjectCardsRow
                 apiClient={apiClient}
                 canPickFolders={Boolean(canPickFolders)}
+                canReveal={canReveal}
                 canWrite={canWrite}
                 cards={board.cards}
                 onChanged={loadBoard}

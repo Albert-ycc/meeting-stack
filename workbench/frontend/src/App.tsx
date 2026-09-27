@@ -890,6 +890,7 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenTasks={() => navigate("tasks")}
         attributionSummary={attributionSummary}
         canPickFolders={!isMobile}
+        canReveal={canReveal}
         onProjectsChanged={refreshProjects}
         onOpenAttributionReview={() => {
           applyFilters({ attribution: "needs_review" });
@@ -985,6 +986,7 @@ export default function App({ apiClient = api }: AppProps) {
         apiClient={apiClient}
         canWrite={!isMobile || mobileTaskWrite}
         onOpenMeeting={openMeeting}
+        onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
         onOpenProject={openProjectDetail}
         onOpenRequirement={openRequirementDetail}
         projects={projects}
@@ -1018,6 +1020,7 @@ export default function App({ apiClient = api }: AppProps) {
           }}
           onOpenGlossary={openGlossaryForProject}
           onOpenMeeting={openMeeting}
+          onOpenPreview={(fileId, startMs) => setPreviewTarget({ fileId, startMs })}
           onOpenProject={openProjectDetail}
           onOpenRequirement={openRequirementFromGraph}
           onProjectsChanged={refreshProjects}
@@ -1032,6 +1035,7 @@ export default function App({ apiClient = api }: AppProps) {
           key={openProjectId}
           modeToggle={isMobile ? undefined : <ViewModeToggle mode="list" onChange={changeProjectMode} />}
           canPickFolders={!isMobile}
+          canReveal={canReveal}
           canWrite={!isMobile || mobileTaskWrite}
           onBack={() => navigate("projects")}
           onOpenGlossary={openGlossaryForProject}
@@ -1127,6 +1131,7 @@ export default function App({ apiClient = api }: AppProps) {
           }}
           onClose={() => setTaskDrawerId(null)}
           onOpenMeeting={openMeeting}
+          onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
           onOpenRequirement={openRequirementDetail}
           taskId={taskDrawerId}
         />
