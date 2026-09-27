@@ -358,6 +358,10 @@ def test_folder_matches_lists_unmounted_same_or_similar_folders(tmp_path):
     os.utime(root / "数据中台", (2_000_000_000, 2_000_000_000))
     _project(client, headers, "别的项目", material_roots=[str(root / "已挂的")])
 
+    # 文件夹从资料盘缓存里出：缓存还没读到时先说「正在看」
+    checking = client.get("/api/projects/folder-matches", params={"name": "云图AI"}).json()
+    assert checking["state"] == "checking" and checking["matches"] == []
+    client.app.state.roots_cache.refresh()
     result = client.get("/api/projects/folder-matches", params={"name": "云图AI"}).json()
 
     # 有已挂的根目录时只看它们的父目录一层，客户A/ 下的不算
@@ -368,7 +372,10 @@ def test_folder_matches_lists_unmounted_same_or_similar_folders(tmp_path):
     names = [folder["name"] for folder in result["recent"]]
     assert names[0] == "数据中台"
     assert not {".hidden", "声档会议记录", "已挂的"} & set(names)
+    assert result["state"] == "ready"
+    # 没设项目总文件夹：新文件夹放在已挂根目录最常见的父目录（推荐位置）
     assert result["create_parent"] == str(root.resolve())
+    assert result["create_parent_source"] == "suggested"
     assert result["create_name"] == "云图AI"
     assert result["create_parent_state"] == "online"
 
@@ -377,12 +384,15 @@ def test_folder_matches_walks_two_levels_when_nothing_is_mounted(tmp_path):
     client, _settings, headers, _db, root = _setup(tmp_path)
     (root / "客户A" / "云图AI").mkdir(parents=True)
     project = _project(client, headers, "云图AI")
+    client.app.state.roots_cache.refresh()
 
     result = client.get(f"/api/projects/{project['id']}/folder-suggestions").json()
 
     assert [(m["path"], m["match"]) for m in result["matches"]] == [
         (str((root / "客户A" / "云图AI").resolve()), "exact")
     ]
+    # 一个根目录都没挂过、也没设总文件夹：不建文件夹，不退回浏览根
+    assert result["create_parent"] is None
 
 
 def test_creating_a_project_can_mount_or_create_its_folder(tmp_path):

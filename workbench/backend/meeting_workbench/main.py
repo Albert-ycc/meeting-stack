@@ -57,11 +57,12 @@ from .attribution import (
 from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
 from . import search as search_module
 from .cards import CardsError, CardWriter
+from . import project_folders
+from .project_folders import folder_matches
 from .project_names import (
     SimilarProjectError,
     also_entries,
     delete_empty_project,
-    folder_matches,
     ignore_project_name,
     merge_project,
 )
@@ -318,6 +319,34 @@ class MaterialRootInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=4096)
+
+
+class ProjectParentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # null 或空串：清除项目总文件夹
+    path: str | None = Field(default=None, max_length=4096)
+
+
+class ClaimItemInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+    action: Literal["mount", "create"]
+    project_id: str | None = None
+    force: bool = False
+
+
+class ClaimInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ClaimItemInput] = Field(min_length=1, max_length=200)
+
+
+class PendingFolderInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent: str = Field(min_length=1, max_length=4096)
 
 
 class CardActionInput(BaseModel):
@@ -642,7 +671,8 @@ def create_app(
     )
     project_linker = ProjectLinker(db, settings)
     card_writer = CardWriter(db, settings)
-    roots_cache = graph_module.RootsCache(db)
+    roots_cache = graph_module.RootsCache(db, settings=settings)
+    pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
     csrf_token = secrets.token_urlsafe(32)
@@ -1004,6 +1034,18 @@ def create_app(
                 await asyncio.sleep(settings.scan_interval_seconds)
         finally:
             state["loop_alive"] = False
+
+    def finish_pending_folders(done: list[dict[str, Any]]) -> None:
+        """补建好的文件夹：刷新快照、补写卡片，往卡片提示里放一条「插上资料盘后建好了…」。"""
+        if not done:
+            return
+        rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+        for item in done:
+            written = backfill_project_cards(item["project_id"])
+            card_writer.push_notice({"kind": "folder_created", **item, "cards_written": written})
+        roots_cache.refresh_in_background()
+
+    roots_cache.after_refresh.append(lambda: finish_pending_folders(pending_worker.drain()))
 
     async def roots_loop() -> None:
         """关系图的资料盘状态：每 30 秒在后台线程里刷新一次，图接口只读缓存。"""
@@ -3049,7 +3091,7 @@ def create_app(
     @app.get("/api/cold-start/folders")
     def cold_start_folders():
         with db.autocommit() as connection:
-            return cold_start.folder_suggestions(connection, settings)
+            return cold_start.folder_suggestions(connection, settings, roots_cache)
 
     @app.post("/api/cold-start/folders/decline")
     def cold_start_folders_decline(body: ProjectIdsInput):
@@ -3118,7 +3160,7 @@ def create_app(
     @app.get("/api/projects/folder-matches")
     def project_folder_matches(name: str | None = None):
         with db.autocommit() as connection:
-            return folder_matches(connection, settings, names=[name] if name else [])
+            return folder_matches(connection, settings, roots_cache, names=[name] if name else [])
 
     @app.get("/api/projects/{project_id}/folder-suggestions")
     def project_folder_suggestions(project_id: str):
@@ -3127,7 +3169,7 @@ def create_app(
             raise HTTPException(404, "项目不存在")
         names = [project["name"], *(entry["name"] for entry in also_entries(project["also_names"]))]
         with db.autocommit() as connection:
-            return folder_matches(connection, settings, names=names)
+            return folder_matches(connection, settings, roots_cache, names=names)
 
     @app.post("/api/project-names/ignore")
     def ignore_project_name_endpoint(body: ProjectNameInput):
@@ -3303,13 +3345,121 @@ def create_app(
             logger.exception("补写会议卡片失败：%s", project_id)
             return 0
 
-    @app.post("/api/projects/{project_id}/material-roots/{root_id}/replace")
-    def replace_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+    def repoint_root(project_id: str, root_id: int, raw_path: str) -> dict[str, Any]:
+        """根目录换到新路径：改名找回的［是它］和「重新选…」都走这里。"""
         try:
-            root = materials.replace_material_root(db, settings, project_id, root_id, body.path)
+            result = project_folders.repoint_material_root(
+                db, settings, project_id, root_id, raw_path
+            )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
-        return {**root, "cards_written": backfill_project_cards(project_id)}
+        written = 0
+        if result["projects"]:
+            # 文件夹路径是项目线索，要进快照
+            rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+            for affected in result["projects"]:
+                written += backfill_project_cards(affected)
+            roots_cache.refresh_in_background()
+        root = materials.annotate_root(
+            db.query_one("SELECT * FROM project_material_roots WHERE id=?", (root_id,))
+        )
+        return {
+            **root,
+            "nested": result["nested"],
+            "moved_roots": result["moved_roots"],
+            "moved_folders": result["moved_folders"],
+            "cards_written": written,
+        }
+
+    @app.post("/api/projects/{project_id}/material-roots/{root_id}/replace")
+    def replace_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+        return repoint_root(project_id, root_id, body.path)
+
+    @app.post("/api/projects/{project_id}/material-roots/{root_id}/repoint")
+    def repoint_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+        return repoint_root(project_id, root_id, body.path)
+
+    @app.get("/api/projects/{project_id}/material-roots/{root_id}/rename-candidates")
+    def project_root_rename_candidates(project_id: str, root_id: int):
+        with db.autocommit() as connection:
+            return project_folders.rename_candidates(connection, roots_cache, project_id, root_id)
+
+    @app.post("/api/projects/{project_id}/material-roots/{root_id}/rename-decline")
+    def project_root_rename_decline(project_id: str, root_id: int, body: MaterialRootInput):
+        if db.query_one(
+            "SELECT 1 FROM project_material_roots WHERE id=? AND project_id=?", (root_id, project_id)
+        ) is None:
+            raise HTTPException(404, "材料根目录不存在")
+        project_folders.decline(db, body.path, kind=project_folders.RENAME, scope=str(root_id))
+        return {"ok": True}
+
+    @app.put("/api/projects/{project_id}/pending-folder")
+    def project_pending_folder_move(project_id: str, body: PendingFolderInput):
+        try:
+            project_folders.set_pending_parent(db, settings, project_id, body.parent)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        # 盘在线就当场建
+        finish_pending_folders(pending_worker.drain(project_ids=[project_id], force=True))
+        return task_service._project_detail(project_id)
+
+    @app.delete("/api/projects/{project_id}/pending-folder")
+    def project_pending_folder_drop(project_id: str):
+        project_folders.drop_pending(db, project_id)
+        return {"ok": True}
+
+    # ------------------------------------------------------------ 项目总文件夹（2a）
+
+    @app.get("/api/settings/project-parent")
+    def project_parent_get():
+        with db.autocommit() as connection:
+            return project_folders.parent_status(connection, settings, roots_cache)
+
+    @app.put("/api/settings/project-parent")
+    def project_parent_put(body: ProjectParentInput):
+        try:
+            project_folders.set_parent(db, settings, body.path)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        roots_cache.refresh_in_background()
+        with db.autocommit() as connection:
+            return project_folders.parent_status(connection, settings, roots_cache)
+
+    @app.post("/api/settings/project-parent/claim")
+    def project_parent_claim(body: ClaimInput):
+        def create(**fields: Any) -> dict[str, Any]:
+            with db.autocommit() as connection:
+                color = project_folders.next_color(connection)
+            return task_service.create_project(
+                color=color, origin="manual", snapshot=False, **fields
+            )
+
+        def after(project_ids: list[str]) -> dict[str, int]:
+            rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+            return {project_id: backfill_project_cards(project_id) for project_id in project_ids}
+
+        result = project_folders.claim(
+            db,
+            settings,
+            [item.model_dump() for item in body.items],
+            create_project=create,
+            mount=lambda project_id, path: materials.add_material_root(
+                db, settings, project_id, path
+            ),
+            after=after,
+        )
+        roots_cache.refresh_in_background()
+        return result
+
+    @app.post("/api/settings/project-parent/decline")
+    def project_parent_decline(body: MaterialRootInput):
+        project_folders.decline(db, body.path)
+        return {"ok": True}
+
+    @app.delete("/api/settings/project-parent/decline")
+    def project_parent_undecline(path: str):
+        project_folders.undecline(db, path)
+        return {"ok": True}
 
     @app.delete("/api/projects/{project_id}/material-roots/{root_id}")
     def remove_project_material_root(project_id: str, root_id: int):

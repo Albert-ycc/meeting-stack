@@ -47,6 +47,19 @@ def norm_key(name: str) -> str:
     return text
 
 
+def light_key(name: str) -> str:
+    """轻键：NFKC、casefold、去空白标点，不去「项目」「二期」「v2」这些后缀。
+
+    用在「完全是同一个名字」的判断上：「云图AI」和「云图 ai」相同，「云图二期」和「云图三期」不同。
+    """
+    text = unicodedata.normalize("NFKC", name or "").casefold()
+    return "".join(
+        char
+        for char in text
+        if not char.isspace() and not unicodedata.category(char).startswith(("P", "S"))
+    )
+
+
 def is_subsequence(short: str, long: str) -> bool:
     iterator = iter(long)
     return all(char in iterator for char in short)

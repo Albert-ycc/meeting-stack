@@ -36,6 +36,7 @@ from .project_names import (
     sanitize_folder_name,
     similar_project_message,
 )
+from .project_folders import pending_folders, queue_pending_folder
 from .project_profile import norm_key
 from .semantic import SemanticIndex
 from .service import ConflictError, NotFoundError
@@ -995,6 +996,8 @@ class TaskService:
             OPEN_TASK_STATUSES,
         )
         open_task_counts = {row["project_id"]: row["n"] for row in open_task_rows}
+        with self.db.autocommit() as connection:
+            pending = pending_folders(connection)
         material_roots_by_project: dict[str, list[dict[str, Any]]] = {}
         for row in self.db.query_all(
             "SELECT * FROM project_material_roots ORDER BY project_id, created_at, id"
@@ -1012,6 +1015,7 @@ class TaskService:
             project["open_task_count"] = open_task_counts.get(project["id"], 0)
             project["material_roots"] = material_roots_by_project.get(project["id"], [])
             project["also_names"] = also_entries(project.get("also_names"))
+            project["pending_folder"] = pending.get(project["id"])
         return projects
 
     def create_project(
@@ -1024,9 +1028,13 @@ class TaskService:
         folder: dict[str, str] | None = None,
         meeting_ids: list[str] | None = None,
         force: bool = False,
+        snapshot: bool = True,
     ) -> dict[str, Any]:
         """新建项目。人工新建时先查近似重名（带 force 仍然新建）；可以顺手挂上或新建
         项目文件夹、把几场会归进来；建好后在「没认出」的会里按名字找，命中的变成待你选。
+
+        新建文件夹时盘没插：项目照常建，记一条待补建的文件夹，插上盘后后台补建并挂上。
+        snapshot=False 时不刷新词典快照，由调用方整批处理完后刷新一次（认领）。
         """
         # 本模块被 project_linking 引用，这里按需导入避免循环。
         from .project_linking import reassign_meeting
@@ -1073,6 +1081,13 @@ class TaskService:
                         )
                         if pending_reason is not None:
                             folder_pending = {"path": folder_path, "reason": pending_reason}
+                            queue_pending_folder(
+                                connection,
+                                project_id,
+                                str(Path(folder_path).parent),
+                                folder_name,
+                                name,
+                            )
                         else:
                             if not existed:
                                 created_folder = folder_path
@@ -1097,7 +1112,8 @@ class TaskService:
                     Path(created_folder).rmdir()
             raise
         # 新项目的名字和文件夹要进快照，relay 才认得出它的会。
-        rewrite_snapshot(self.db, self.settings.data_dir / "glossary-snapshot.json")
+        if snapshot:
+            rewrite_snapshot(self.db, self.settings.data_dir / "glossary-snapshot.json")
         detail = self._project_detail(project_id)
         detail["meetings_assigned"] = assigned
         detail["needs_review_meeting_ids"] = flagged
@@ -1232,6 +1248,8 @@ class TaskService:
             ]
             root["cards_owner_id"] = owners[0]["project_id"] if owners else project_id
         project["also_names"] = also_entries(project.get("also_names"))
+        with self.db.autocommit() as connection:
+            project["pending_folder"] = pending_folders(connection, project_id).get(project_id)
         return project
 
     def project_board(self, project_id: str) -> dict[str, Any]:

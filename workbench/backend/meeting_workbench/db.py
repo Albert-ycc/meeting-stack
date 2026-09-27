@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -696,6 +696,55 @@ WHEN NEW.meeting_id IS NOT NULL AND NEW.event_type IN (
 BEGIN
     UPDATE meeting_cards SET dirty = dirty + 1 WHERE meeting_id = NEW.meeting_id;
 END;
+
+-- v14 / 2b：需求名的决定，按项目记。name_key 是「轻键」（project_profile.light_key：NFKC、
+-- 大小写、去空白标点，不去「二期」「v2」「项目」），所以「云图二期」和「云图三期」互不影响。
+-- decision=made 表示已建成需求 requirement_id；ignored 表示「不算新需求」。项目名的决定仍在
+-- name_decisions，两张表互不覆盖。
+CREATE TABLE IF NOT EXISTS requirement_name_decisions (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name_key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('made', 'ignored')),
+    requirement_id TEXT,
+    decided_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, name_key)
+);
+
+-- v14 / 2a：盘不在时先建项目、后补文件夹的待办。name 为 NULL 表示跟着项目当前的名字；
+-- state：waiting 等盘插上 / stopped 出错停下（原因在 last_error），盘重新插上或改了位置再试。
+-- 只在 state 或 last_error 变了时才写（这张表进关系图版本号）。
+CREATE TABLE IF NOT EXISTS pending_project_folders (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    parent TEXT NOT NULL,
+    name TEXT,
+    state TEXT NOT NULL DEFAULT 'waiting' CHECK (state IN ('waiting', 'stopped')),
+    last_error TEXT,
+    created_at TEXT NOT NULL
+);
+-- 你手动挂了文件夹，待办就作废。
+CREATE TRIGGER IF NOT EXISTS pending_project_folders_drop_on_mount
+AFTER INSERT ON project_material_roots
+BEGIN
+    DELETE FROM pending_project_folders WHERE project_id = NEW.project_id;
+END;
+
+-- v14 / 2a：「不是项目」（kind=unclaimed，scope 空串）和改名找回时的「不是它」（kind=rename，
+-- scope 是根目录 id）。
+CREATE TABLE IF NOT EXISTS folder_declines (
+    kind TEXT NOT NULL CHECK (kind IN ('unclaimed', 'rename')),
+    scope TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL,
+    decided_at TEXT NOT NULL,
+    PRIMARY KEY (kind, scope, path)
+);
+
+-- v14 / 2a：根目录在线时记下的一级子文件夹名（最多 200 个），文件夹改名后靠它找回。内容变了才写。
+CREATE TABLE IF NOT EXISTS root_fingerprints (
+    root_id INTEGER PRIMARY KEY REFERENCES project_material_roots(id) ON DELETE CASCADE,
+    child_names TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+);
 """
 
 # 1g：关系图的持久版本号。这些表每次增删改都给 app_state 里的 graph_rev 加一，图接口拿它
@@ -712,6 +761,10 @@ GRAPH_REV_TABLES = (
     "project_material_roots",
     "meeting_cards",
     "glossary_terms",
+    # v14：名字的决定和待补建的文件夹会改变图上的「像新项目 / 新需求」和文件夹节点。
+    "name_decisions",
+    "requirement_name_decisions",
+    "pending_project_folders",
 )
 SCHEMA += "".join(
     f"""

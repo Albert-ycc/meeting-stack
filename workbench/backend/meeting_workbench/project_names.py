@@ -6,13 +6,12 @@
   自动进也叫（source=former）。
 - 新项目建好后，在「没认出」的会里按名字找，命中的变成「待你选」，不调模型、不静默归属。
 - 忽略名字、合并项目、删除空项目。
-- 同名或相近的未挂文件夹，新建项目时可以直接挂上或新建。
+- 新建项目时可以直接挂上或新建同名文件夹（找同名文件夹在 project_folders，读资料盘缓存）。
 """
 from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +44,6 @@ RESCAN_MIN_ALSO_LENGTH = 3
 # exFAT 不允许出现在文件名里的字符。
 _EXFAT_ILLEGAL = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _HAS_WORD_CHAR = re.compile(r"[A-Za-z㐀-鿿]")
-MAX_RECENT_FOLDERS = 5
 
 
 class SimilarProjectError(ConflictError):
@@ -512,68 +510,6 @@ def _skipped_folder(path: Path, settings: Settings) -> bool:
     return any(_within(path, root) for root, _message in _protected_roots(settings))
 
 
-def _scan_parents(connection: Any, settings: Settings) -> tuple[list[Path], int]:
-    """去哪找同名文件夹：已挂根目录的父目录各看一层；一个根目录都没有时从浏览根往下两层。"""
-    browse_root = settings.material_browse_root.expanduser().resolve()
-    parents: list[Path] = []
-    for row in connection.execute(
-        "SELECT path FROM project_material_roots ORDER BY created_at DESC, id DESC"
-    ).fetchall():
-        parent = Path(row["path"]).parent
-        if parent not in parents and (parent == browse_root or parent.is_relative_to(browse_root)):
-            parents.append(parent)
-    if parents:
-        return parents, 1
-    return [browse_root], 2
-
-
-def _list_folders(connection: Any, settings: Settings) -> list[dict[str, Any]]:
-    mounted = {
-        row["path"] for row in connection.execute("SELECT path FROM project_material_roots")
-    }
-    parents, depth = _scan_parents(connection, settings)
-    folders: dict[str, dict[str, Any]] = {}
-
-    def walk(directory: Path, level: int) -> None:
-        if volume_state(directory) != ROOT_ONLINE:
-            return
-        try:
-            children = sorted(directory.iterdir(), key=lambda item: item.name)
-        except OSError:
-            return
-        for child in children:
-            try:
-                if child.is_symlink() or not child.is_dir():
-                    continue
-                if _skipped_folder(child, settings):
-                    continue
-                mtime = child.stat().st_mtime
-            except OSError:
-                continue
-            path = str(child.resolve())
-            if path not in mounted and path not in folders:
-                folders[path] = {"path": path, "name": child.name, "mtime": mtime}
-            if level < depth:
-                walk(child, level + 1)
-
-    for parent in parents:
-        walk(parent, 1)
-    return list(folders.values())
-
-
-def _default_create_parent(connection: Any, settings: Settings) -> str:
-    """新建项目文件夹默认放哪：已挂根目录里最常见的父目录，没有就放浏览根。"""
-    counts: dict[str, int] = {}
-    for row in connection.execute(
-        "SELECT path FROM project_material_roots ORDER BY created_at DESC, id DESC"
-    ).fetchall():
-        parent = str(Path(row["path"]).parent)
-        counts[parent] = counts.get(parent, 0) + 1
-    if counts:
-        return max(counts, key=lambda parent: counts[parent])
-    return str(settings.material_browse_root.expanduser().resolve())
-
-
 def _match_kind(folder_name: str, names: list[str]) -> str | None:
     folder_key = norm_key(folder_name)
     if not folder_key:
@@ -589,82 +525,6 @@ def _match_kind(folder_name: str, names: list[str]) -> str | None:
         if len(short) >= 3 and is_subsequence(short, long):
             best = "similar"
     return best
-
-
-def folder_matches(
-    connection: Any, settings: Settings, *, names: list[str]
-) -> dict[str, Any]:
-    """还没挂到项目的文件夹里，和 names 同名（exact）或相近（similar）的，外加最近修改的几个。"""
-    folders = _list_folders(connection, settings)
-    names = [name for name in names if name and name.strip()]
-
-    def item(folder: dict[str, Any], match: str | None) -> dict[str, Any]:
-        return {
-            "path": folder["path"],
-            "name": folder["name"],
-            "match": match,
-            "modified_at": datetime.fromtimestamp(folder["mtime"], tz=UTC).isoformat(),
-        }
-
-    matches = []
-    for folder in folders:
-        match = _match_kind(folder["name"], names) if names else None
-        if match:
-            matches.append(item(folder, match))
-    matches.sort(key=lambda entry: (entry["match"] != "exact", entry["name"]))
-    recent = [
-        item(folder, None)
-        for folder in sorted(folders, key=lambda folder: folder["mtime"], reverse=True)[
-            :MAX_RECENT_FOLDERS
-        ]
-    ]
-    create_parent = _default_create_parent(connection, settings)
-    create_name, replaced = sanitize_folder_name(names[0]) if names else ("", [])
-    return {
-        "matches": matches,
-        "recent": recent,
-        "create_parent": create_parent,
-        "create_parent_state": volume_state(create_parent),
-        "create_name": create_name,
-        "create_replaced": replaced,
-    }
-
-
-def unmounted_project_folders(connection: Any, settings: Settings) -> list[dict[str, Any]]:
-    """冷启动：还没挂文件夹的项目，各自找同名（默认勾选）或相近（默认不勾）的文件夹。
-
-    目录只扫一遍；一个项目只给最像的那一个文件夹（同名优先，再按名字排序）。
-    """
-    projects = connection.execute(
-        """SELECT p.id, p.name, p.also_names FROM projects p
-            WHERE NOT EXISTS (SELECT 1 FROM project_material_roots r WHERE r.project_id = p.id)
-            ORDER BY p.name"""
-    ).fetchall()
-    if not projects:
-        return []
-    folders = _list_folders(connection, settings)
-    items: list[dict[str, Any]] = []
-    for project in projects:
-        names = [project["name"], *(entry["name"] for entry in also_entries(project["also_names"]))]
-        found = [
-            (kind, folder)
-            for folder in folders
-            if (kind := _match_kind(folder["name"], names)) is not None
-        ]
-        if not found:
-            continue
-        found.sort(key=lambda pair: (pair[0] != "exact", pair[1]["name"]))
-        kind, folder = found[0]
-        items.append(
-            {
-                "project_id": project["id"],
-                "project_name": project["name"],
-                "path": folder["path"],
-                "folder_name": folder["name"],
-                "match": kind,
-            }
-        )
-    return items
 
 
 def create_project_folder(

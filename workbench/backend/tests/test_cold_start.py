@@ -206,6 +206,8 @@ def test_projects_without_folders_get_same_name_suggestions(tmp_path):
     yt = _project(client, headers, "云图科研用药")["id"]
     _project(client, headers, "蓝鲸云")  # 找不到文件夹的不出现
 
+    assert client.get("/api/cold-start/folders").json()["state"] == "checking"
+    client.app.state.roots_cache.refresh()
     items = client.get("/api/cold-start/folders").json()["items"]
     by_project = {item["project_id"]: item for item in items}
     assert set(by_project) == {zt, yt}
@@ -223,7 +225,8 @@ def test_projects_without_folders_get_same_name_suggestions(tmp_path):
     # 稍后：几天内都不问
     snoozed = client.post("/api/cold-start/folders/snooze", json={}, headers=headers).json()
     after = client.get("/api/cold-start/folders").json()
-    assert after == {"items": [], "snoozed_until": snoozed["snoozed_until"]}
+    assert after["items"] == []
+    assert after["snoozed_until"] == snoozed["snoozed_until"]
 
 
 def test_board_lists_other_projects_sharing_a_folder(tmp_path):

@@ -186,6 +186,16 @@ def test_browse_non_directory_is_not_found(tmp_path):
     assert response.status_code == 404
 
 
+def test_browse_on_an_unplugged_disk_says_so(tmp_path):
+    from pathlib import Path
+
+    client, _settings = make_client(tmp_path, material_browse_root=Path("/Volumes"))
+
+    response = client.get("/api/materials/browse", params={"path": "/Volumes/资料盘/项目"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "资料盘未连接，插上后再选"
+
+
 def test_browse_skips_hidden_and_blacklisted_dirs(tmp_path):
     (client, settings), browse_root = make_material_client(tmp_path)
     (browse_root / ".隐藏目录").mkdir()

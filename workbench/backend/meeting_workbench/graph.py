@@ -28,7 +28,14 @@ from urllib.parse import urlsplit
 from .attribution import ATTRIBUTION_STATE_SQL, LATEST_LINK_JOIN
 from .cards import BLOCKED, MISSING, STOP_REASONS, SYNCED, USER_EDITED
 from .db import GRAPH_REV_KEY
-from .materials import CARDS_DIR_NAME, ROOT_ONLINE, assert_no_hidden_segment, volume_state
+from . import folder_scan
+from .materials import (
+    CARDS_DIR_NAME,
+    ROOT_MISSING,
+    ROOT_ONLINE,
+    assert_no_hidden_segment,
+    volume_state,
+)
 from .project_linking import DRAFT_TASK_STATUSES
 from .notify import (
     _ANCHOR,
@@ -1958,21 +1965,47 @@ def _recent_dirs(path: Path) -> list[dict[str, Any]]:
 
 
 class RootsCache:
-    """材料根目录和需求文件夹的在线状态、根目录散放文件。后台每 30 秒刷新一次；图接口只读。
+    """资料盘在后台读到的东西，接口只读它、不在请求里读盘（外置盘休眠时可能卡几秒）：
 
-    读盘可能卡住（外置盘休眠），所以刷新只在后台线程里跑，同一时间最多一个。
+    - 材料根目录和需求文件夹的在线状态，在线根目录的散放文件、最近的子文件夹、全部一级子文件夹名；
+    - 「目录清单」：项目总文件夹、已挂根目录的父目录各一层的文件夹（没有时浏览根往下两层），
+      给「还没挂的文件夹」用；哪些已挂、被拒过在请求时现算，写完立刻生效；
+    - 「找不到」的根目录：原来父目录里还没挂的文件夹各自的子文件夹名和卡片里的会议 id，改名找回用。
+
+    刷新只在后台线程里跑，同一时间最多一轮；正在刷新时又有人要刷新，这一轮结束后再跑一轮，
+    几个人同时要只多跑一轮。
     """
 
     def __init__(
-        self, db: Any, *, state_of=volume_state, loose_of=_loose_files, dirs_of=_recent_dirs
+        self,
+        db: Any,
+        *,
+        settings: Any = None,
+        state_of=volume_state,
+        loose_of=_loose_files,
+        dirs_of=_recent_dirs,
+        list_dirs=folder_scan.list_child_dirs,
+        names_of=folder_scan.child_names,
+        probe_of=folder_scan.probe_candidate,
     ):
         self.db = db
+        self.settings = settings
         self._state_of = state_of
         self._loose_of = loose_of
         self._dirs_of = dirs_of
+        self._list_dirs = list_dirs
+        self._names_of = names_of
+        self._probe_of = probe_of
         self._entries: dict[str, dict[str, Any]] = {}
+        self._listings: dict[str, dict[str, Any]] = {}
+        self._probes: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
         self._running = threading.Lock()
+        self._flag = threading.Lock()
+        self._rerun = False
+        self.rounds = 0
+        # 每轮刷新之后要做的事（补建文件夹），在同一个后台线程里跑。
+        self.after_refresh: list[Any] = []
 
     def paths(self) -> tuple[list[str], list[str]]:
         with self.db.autocommit() as connection:
@@ -1991,17 +2024,39 @@ class RootsCache:
         return roots, folders
 
     def refresh(self) -> None:
-        if not self._running.acquire(blocking=False):
-            return
+        """刷新一轮；返回时保证有一轮在这次调用之后开始的刷新已经跑完（可能是别的线程跑的）。
+        不要在 after_refresh 里直接调它（锁不可重入），要用 refresh_in_background。"""
+        with self._flag:
+            self._rerun = True
+        while True:
+            self._running.acquire()
+            try:
+                with self._flag:
+                    if not self._rerun:
+                        return
+                    self._rerun = False
+                self._refresh_once()
+                for hook in list(self.after_refresh):
+                    try:
+                        hook()
+                    except Exception:  # noqa: BLE001 — 补建失败不影响下一轮
+                        logger.exception("刷新资料盘状态后的任务失败")
+            finally:
+                self._running.release()
+
+    def _state(self, path: str) -> str:
+        try:
+            return self._state_of(path)
+        except OSError:
+            return "missing"
+
+    def _refresh_once(self) -> None:
         try:
             roots, folders = self.paths()
             fresh: dict[str, dict[str, Any]] = {}
             for path in roots + [p for p in folders if p not in roots]:
                 checked_at = datetime.now(UTC).isoformat()
-                try:
-                    state = self._state_of(path)
-                except OSError:
-                    state = "missing"
+                state = self._state(path)
                 entry: dict[str, Any] = {"state": state, "checked_at": checked_at}
                 if path in roots and state == ROOT_ONLINE:
                     try:
@@ -2012,13 +2067,118 @@ class RootsCache:
                         entry["recent_dirs"] = self._dirs_of(Path(path))
                     except OSError:
                         entry["recent_dirs"] = []
+                    try:
+                        entry["child_dirs"] = self._names_of(path)
+                    except OSError:
+                        entry["child_dirs"] = None
                 fresh[path] = entry
+            listings = self._read_listings()
+            probes = self._read_probes(roots, fresh, listings)
             with self._lock:
                 self._entries = fresh
+                self._listings = listings
+                self._probes = probes
+                self.rounds += 1
+            self._write_fingerprints(fresh)
         except Exception:  # noqa: BLE001 — 后台刷新失败只记日志，下一轮再来
             logger.exception("刷新资料盘状态失败")
-        finally:
-            self._running.release()
+
+    def _read_listings(self) -> dict[str, dict[str, Any]]:
+        if self.settings is None:
+            return {}
+        with self.db.autocommit() as connection:
+            targets, depth = folder_scan.listing_targets(connection, self.settings)
+        listings: dict[str, dict[str, Any]] = {}
+        for target in targets:
+            state = self._state(target)
+            item: dict[str, Any] = {
+                "state": state,
+                "depth": depth,
+                "entries": [],
+                "checked_at": datetime.now(UTC).isoformat(),
+            }
+            if state == ROOT_ONLINE:
+                try:
+                    entries = self._list_dirs(target)
+                except OSError as error:
+                    item["state"] = "unreadable"
+                    item["error"] = str(error)
+                    entries = []
+                if depth > 1:
+                    nested: list[dict[str, Any]] = []
+                    for entry in entries:
+                        try:
+                            nested.extend(self._list_dirs(entry["path"]))
+                        except OSError:
+                            continue
+                    entries = entries + nested
+                item["entries"] = entries
+            listings[target] = item
+        return listings
+
+    def _read_probes(
+        self,
+        roots: list[str],
+        entries: dict[str, dict[str, Any]],
+        listings: dict[str, dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """「找不到」的根目录：在它原来的父目录里，给还没挂的文件夹（最近改过的 20 个）各读一次。"""
+        probes: dict[str, list[dict[str, Any]]] = {}
+        mounted = [Path(path) for path in roots]
+        for path in roots:
+            if entries.get(path, {}).get("state") != ROOT_MISSING:
+                continue
+            parent = str(Path(path).parent)
+            listing = listings.get(parent)
+            if listing is not None:
+                children = listing["entries"] if listing["state"] == ROOT_ONLINE else None
+            elif self._state(parent) == ROOT_ONLINE:
+                try:
+                    children = self._list_dirs(parent)
+                except OSError:
+                    children = None
+            else:
+                children = None
+            if children is None:
+                continue
+            candidates = [
+                child
+                for child in children
+                if Path(child["path"]).parent == Path(parent)
+                and not any(
+                    other == Path(child["path"]) or other.is_relative_to(Path(child["path"]))
+                    for other in mounted
+                )
+            ]
+            candidates.sort(key=lambda item: (item["mtime"], item["name"]), reverse=True)
+            probes[path] = [
+                {**child, **self._probe_of(child["path"])}
+                for child in candidates[: folder_scan.MAX_PROBE_CANDIDATES]
+            ]
+        return probes
+
+    def _write_fingerprints(self, entries: dict[str, dict[str, Any]]) -> None:
+        """在线根目录的一级子文件夹名写进 root_fingerprints，内容变了才写。"""
+        with self.db.autocommit() as connection:
+            rows = connection.execute(
+                """SELECT r.id, r.path, f.child_names FROM project_material_roots r
+                     LEFT JOIN root_fingerprints f ON f.root_id = r.id"""
+            ).fetchall()
+            now = datetime.now(UTC).isoformat()
+            for row in rows:
+                names = entries.get(row["path"], {}).get("child_dirs")
+                if names is None:
+                    continue
+                encoded = json.dumps(names, ensure_ascii=False)
+                if encoded == row["child_names"]:
+                    continue
+                connection.execute(
+                    """INSERT INTO root_fingerprints(root_id, child_names, updated_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(root_id) DO UPDATE
+                          SET child_names = excluded.child_names, updated_at = excluded.updated_at""",
+                    (row["id"], encoded, now),
+                )
 
     def refresh_in_background(self) -> None:
         threading.Thread(target=self.refresh, name="graph-roots-refresh", daemon=True).start()
@@ -2027,6 +2187,16 @@ class RootsCache:
         with self._lock:
             entry = self._entries.get(path)
             return dict(entry) if entry else None
+
+    def listing(self, path: str) -> dict[str, Any] | None:
+        with self._lock:
+            item = self._listings.get(path)
+            return {**item, "entries": list(item["entries"])} if item else None
+
+    def probes(self, root_path: str) -> list[dict[str, Any]] | None:
+        with self._lock:
+            found = self._probes.get(root_path)
+            return list(found) if found is not None else None
 
 
 def project_roots(connection: Any, cache: RootsCache, project_id: str) -> dict[str, Any]:

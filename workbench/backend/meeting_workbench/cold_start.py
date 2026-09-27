@@ -17,7 +17,8 @@ from .config import Settings
 from .db import Database, utc_now
 from .glossary import rewrite_snapshot
 from .project_linking import ProjectLinker
-from .project_names import also_entries, unmounted_project_folders
+from .project_folders import unmounted_project_folders
+from .project_names import also_entries
 from .project_profile import norm_key
 
 logger = logging.getLogger(__name__)
@@ -349,17 +350,18 @@ def _declined(connection: Any) -> set[str]:
     return {str(item) for item in value if item}
 
 
-def folder_suggestions(connection: Any, settings: Settings) -> dict[str, Any]:
-    """工作台横幅：还没挂文件夹的项目各自的同名/相近文件夹；说过不挂的项目不再出现。"""
+def folder_suggestions(connection: Any, settings: Settings, cache: Any) -> dict[str, Any]:
+    """工作台横幅：还没挂文件夹的项目各自的同名/相近文件夹；说过不挂的项目不再出现。
+    文件夹从资料盘缓存里出，缓存没好时 state=checking。"""
     snoozed_until = _state(connection, "folder_suggestions_snoozed_until")
     if snoozed_until and snoozed_until > datetime.now(UTC).isoformat():
-        return {"items": [], "snoozed_until": snoozed_until}
+        return {"items": [], "snoozed_until": snoozed_until, "state": "ready"}
     declined = _declined(connection)
-    items = [
-        item for item in unmounted_project_folders(connection, settings)
-        if item["project_id"] not in declined
-    ]
-    return {"items": items, "snoozed_until": None}
+    found = unmounted_project_folders(connection, settings, cache)
+    if found is None:
+        return {"items": [], "snoozed_until": None, "state": "checking"}
+    items = [item for item in found if item["project_id"] not in declined]
+    return {"items": items, "snoozed_until": None, "state": "ready"}
 
 
 def decline_folder_suggestions(connection: Any, project_ids: list[str]) -> None:
