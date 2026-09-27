@@ -16,7 +16,7 @@ from typing import Any
 from .config import Settings
 from .db import Database, utc_now
 from .glossary import rewrite_snapshot
-from .project_linking import ProjectLinker
+from .project_linking import ProjectLinker, name_columns
 from .project_folders import unmounted_project_folders
 from .project_names import also_entries
 from .project_profile import norm_key
@@ -143,9 +143,14 @@ def _reevaluate_one(
     evidence_json = json.dumps(result["evidence"], ensure_ascii=False)
     if result["decision"] == "auto" and result["project_id"] == original:
         db.execute(
-            """UPDATE project_links SET method=?, evidence_json=?, reason=?, raw_response=?
+            """UPDATE project_links
+                  SET method=?, evidence_json=?, reason=?, raw_response=?, new_project_name=?,
+                      new_requirement_name=?, new_name_project_id=?, new_name_spoken=?
                 WHERE id=?""",
-            (result["method"], evidence_json, result["reason"], result["raw_response"], row["link_id"]),
+            (
+                result["method"], evidence_json, result["reason"], result["raw_response"],
+                *name_columns(result), row["link_id"],
+            ),
         )
         return True
 
@@ -178,11 +183,12 @@ def _reevaluate_one(
         connection.execute(
             """UPDATE project_links
                   SET status='needs_review', method='reeval', candidates_json=?, evidence_json=?,
-                      reason=?, raw_response=?, finished_at=?
+                      reason=?, raw_response=?, new_project_name=?, new_requirement_name=?,
+                      new_name_project_id=?, new_name_spoken=?, finished_at=?
                 WHERE id=?""",
             (
                 json.dumps(candidates, ensure_ascii=False), evidence_json, reason,
-                result["raw_response"], now, row["link_id"],
+                result["raw_response"], *name_columns(result), now, row["link_id"],
             ),
         )
         db.add_event(

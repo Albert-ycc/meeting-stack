@@ -57,13 +57,12 @@ from .attribution import (
 from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
 from . import search as search_module
 from .cards import CardsError, CardWriter
-from . import project_folders
+from . import name_actions, name_hints, project_folders
 from .project_folders import folder_matches
 from .project_names import (
     SimilarProjectError,
     also_entries,
     delete_empty_project,
-    ignore_project_name,
     merge_project,
 )
 from .tasks import TaskService, llm_ready
@@ -292,6 +291,16 @@ class ProjectInput(BaseModel):
     folder: ProjectFolderInput | None = None
     meeting_ids: list[str] | None = None
     force: bool = False
+    # 第二期 2b：从「像是新项目」建时 AI 起的名字（建好后它和最终名字都不再提示）。
+    source_name: str | None = None
+
+
+class NameAsRequirementInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    project_id: str | None = None
+    folder_path: str | None = None
 
 
 class ProjectUpdateInput(BaseModel):
@@ -313,6 +322,16 @@ class ProjectNameInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    # 第二期 2b：kind=requirement 是「不算新需求」，要带 project_id；meeting_id 只用来记事件。
+    kind: Literal["project", "requirement"] = "project"
+    project_id: str | None = None
+    meeting_id: str | None = None
+
+
+class EventUndoInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: int
 
 
 class MaterialRootInput(BaseModel):
@@ -1610,6 +1629,9 @@ def create_app(
                    {ATTRIBUTION_STATE_SQL} AS attribution_state,
                    pl.candidates_json AS _candidates_json,
                    pl.new_project_name AS _new_project_name,
+                   pl.new_requirement_name AS _new_requirement_name,
+                   pl.new_name_project_id AS _new_name_project_id,
+                   pl.new_name_spoken AS _new_name_spoken,
                    (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
                     ORDER BY CASE a.source_root WHEN 'archive' THEN 0 ELSE 1 END LIMIT 1) AS audio_artifact_id,
                    (SELECT COUNT(*) FROM segments s WHERE s.version_id = m.current_transcript_version_id) AS segment_count
@@ -3111,12 +3133,13 @@ def create_app(
     @app.post("/api/projects")
     def create_project(body: ProjectInput):
         try:
-            return task_service.create_project(
+            detail = task_service.create_project(
                 name=body.name, color=body.color, origin="manual",
                 material_roots=body.material_roots,
                 folder=body.folder.model_dump() if body.folder else None,
                 meeting_ids=body.meeting_ids,
                 force=body.force,
+                source_name=(body.source_name or "").strip() or None,
             )
         except SimilarProjectError as error:
             return JSONResponse(
@@ -3124,6 +3147,50 @@ def create_app(
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+        if body.source_name and detail.get("meetings_assigned"):
+            # 从提示建的：归进来的会当场补写卡片，提示里说「挂上了 …」时卡片已经在了。
+            detail["cards_written"] = backfill_project_cards(detail["id"])
+        return detail
+
+    @app.post("/api/projects/{project_id}/also-names/spoken/undo")
+    def undo_spoken_also_endpoint(project_id: str, body: EventUndoInput):
+        with db.transaction() as connection:
+            result = name_actions.undo_spoken_also(connection, project_id, body.event_id)
+        rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
+        return result
+
+    @app.get("/api/meetings/{meeting_id}/name-candidates")
+    def meeting_name_candidates(meeting_id: str):
+        with db.autocommit() as connection:
+            return name_actions.name_candidates(connection, settings, roots_cache, meeting_id)
+
+    @app.post("/api/meetings/{meeting_id}/name-as-requirement")
+    def meeting_name_as_requirement(meeting_id: str, body: NameAsRequirementInput):
+        try:
+            with db.transaction() as connection:
+                result = name_actions.name_as_requirement(
+                    connection,
+                    meeting_id=meeting_id,
+                    title=body.title,
+                    project_id=body.project_id,
+                    folder_path=body.folder_path,
+                )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        if result["meetings_assigned"]:
+            for affected in result["meeting_ids"]:
+                sync_card(affected)
+        if result["folder_attached"]:
+            roots_cache.refresh_in_background()
+        return result
+
+    @app.post("/api/meetings/{meeting_id}/name-as-requirement/undo")
+    def undo_meeting_name_as_requirement(meeting_id: str, _body: dict[str, Any] | None = None):
+        with db.transaction() as connection:
+            result = name_actions.undo_name_as_requirement(connection, meeting_id)
+        for affected in result["meeting_ids"]:
+            sync_card(affected)
+        return result
 
     @app.patch("/api/projects/{project_id}")
     def update_project(project_id: str, body: ProjectUpdateInput):
@@ -3173,11 +3240,23 @@ def create_app(
 
     @app.post("/api/project-names/ignore")
     def ignore_project_name_endpoint(body: ProjectNameInput):
+        """「不是新项目」「不算新需求」：清掉提示，10 分钟内能撤销。"""
         try:
             with db.transaction() as connection:
-                return ignore_project_name(connection, body.name)
+                return name_hints.decide_name(
+                    connection,
+                    kind=body.kind,
+                    name=body.name,
+                    project_id=body.project_id,
+                    meeting_id=body.meeting_id,
+                )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/name-decisions/undo")
+    def undo_name_decision_endpoint(body: EventUndoInput):
+        with db.transaction() as connection:
+            return name_hints.undo_name_decision(connection, body.event_id)
 
     @app.get("/api/projects/{project_id}/board")
     def project_board(project_id: str):

@@ -848,9 +848,22 @@ class Database:
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(project_links)").fetchall()
             }
-            for name in ("evidence_json", "candidates_json", "new_project_name", "reason"):
+            for name in (
+                "evidence_json",
+                "candidates_json",
+                "new_project_name",
+                "reason",
+                # v14：AI 觉得像是这个项目里的新需求时起的名字、它当时选的项目。
+                "new_requirement_name",
+                "new_name_project_id",
+            ):
                 if name not in link_columns:
                     connection.execute(f"ALTER TABLE project_links ADD COLUMN {name} TEXT")
+            if "new_name_spoken" not in link_columns:
+                # v14：新名字在纪要里的原样写法（JSON 字符串数组，最多 3 个）。
+                connection.execute(
+                    "ALTER TABLE project_links ADD COLUMN new_name_spoken TEXT NOT NULL DEFAULT '[]'"
+                )
             glossary_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(glossary_terms)").fetchall()

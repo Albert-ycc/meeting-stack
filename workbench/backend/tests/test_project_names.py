@@ -62,6 +62,7 @@ def test_similar_project_name_asks_before_creating(tmp_path):
     assert same.status_code == 409
     assert same.json()["detail"] == "已有「云图科研用药」（又称 云图），是不是它？"
     assert same.json()["suggestion"] == {
+        "id": existing["id"],
         "project_id": existing["id"],
         "name": "云图科研用药",
         "also_names": ["云图"],

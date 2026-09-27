@@ -491,6 +491,10 @@ V14_TABLES = (
 V14_GRAPH_REV_TABLES = ("name_decisions", "requirement_name_decisions", "pending_project_folders")
 
 
+# v14 / 2b：project_links 上的新需求名、AI 当时选的项目、会上的叫法。
+V14_LINK_COLUMNS = ("new_requirement_name", "new_name_project_id", "new_name_spoken")
+
+
 def _downgrade_to_v13(connection: sqlite3.Connection) -> None:
     """把刚建好的 v14 库退回 v13 的形状：先删新触发器（它们引用新表），再删新表。"""
     for table in V14_GRAPH_REV_TABLES:
@@ -499,6 +503,8 @@ def _downgrade_to_v13(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TRIGGER IF EXISTS pending_project_folders_drop_on_mount")
     for table in V14_TABLES:
         connection.execute(f"DROP TABLE IF EXISTS {table}")
+    for column in V14_LINK_COLUMNS:
+        connection.execute(f"ALTER TABLE project_links DROP COLUMN {column}")
     connection.execute("PRAGMA user_version=13")
 
 
@@ -690,6 +696,10 @@ def test_version_fourteen_migration_adds_tables_and_keeps_data(tmp_path):
             VALUES ('p-a', '/Volumes/资料盘/项目/云图AI', '2026-09-01');
             INSERT INTO name_decisions(norm_key, name, decision, decided_at)
             VALUES ('云图二期', '云图二期', 'ignored', '2026-09-01');
+            INSERT INTO meetings(id, title, status, created_at, updated_at)
+            VALUES ('m-1', '周会', 'completed_unreviewed', '2026-09-01', '2026-09-01');
+            INSERT INTO project_links(meeting_id, minutes_version_id, status, new_project_name, created_at)
+            VALUES ('m-1', 'mv-1', 'unresolved', '数据中台', '2026-09-01');
             """
         )
     assert not set(V14_TABLES) & _tables(db)
@@ -702,6 +712,15 @@ def test_version_fourteen_migration_adds_tables_and_keeps_data(tmp_path):
     assert set(V14_TABLES) <= _tables(db)
     assert db.query_one("SELECT name FROM projects WHERE id='p-a'") == {"name": "云图AI"}
     assert db.query_one("SELECT decision FROM name_decisions") == {"decision": "ignored"}
+    assert db.query_one(
+        """SELECT new_project_name, new_requirement_name, new_name_project_id, new_name_spoken
+             FROM project_links"""
+    ) == {
+        "new_project_name": "数据中台",
+        "new_requirement_name": None,
+        "new_name_project_id": None,
+        "new_name_spoken": "[]",
+    }
     # 再跑一遍什么都不变
     db.initialize()
     db.initialize()

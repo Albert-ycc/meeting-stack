@@ -38,7 +38,7 @@ from .service import ConflictError, NotFoundError
 
 ALSO_MIN_LENGTH = 2
 ALSO_MAX_LENGTH = 20
-ALSO_SOURCES = ("manual", "former", "merged")
+ALSO_SOURCES = ("manual", "former", "merged", "spoken")
 # 新项目回扫时，也叫要 3 字以上才拿来找（2 字的太容易撞车）。
 RESCAN_MIN_ALSO_LENGTH = 3
 # exFAT 不允许出现在文件名里的字符。
@@ -192,6 +192,7 @@ def find_similar_project(
                     hit = len(short) >= 3 and short != long and is_subsequence(short, long)
                 if hit:
                     return {
+                        "id": row["id"],
                         "project_id": row["id"],
                         "name": row["name"],
                         "also_names": [entry["name"] for entry in also],
@@ -199,6 +200,24 @@ def find_similar_project(
                         "match": match,
                     }
     return None
+
+
+def exact_project_suggestion(connection: Any, name: str) -> dict[str, Any] | None:
+    """正式名完全相同的已有项目，格式和 find_similar_project 一样，另带 exact=True。"""
+    row = connection.execute(
+        "SELECT id, name, also_names FROM projects WHERE name=?", (name.strip(),)
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "project_id": row["id"],
+        "name": row["name"],
+        "also_names": [entry["name"] for entry in also_entries(row["also_names"])],
+        "matched": row["name"],
+        "match": "same",
+        "exact": True,
+    }
 
 
 def similar_project_message(suggestion: dict[str, Any]) -> str:
@@ -343,36 +362,6 @@ def rescan_unresolved_for_project(connection: Any, project_id: str) -> list[str]
     return flagged
 
 
-# ---------------------------------------------------------------------- 忽略名字
-
-
-def ignore_project_name(connection: Any, name: str) -> dict[str, Any]:
-    """「不是新项目」：记下这个名字，之后 AI 再提同样的名字也不当新项目。"""
-    text = (name or "").strip()
-    key = norm_key(text)
-    if not key:
-        raise ValueError("名字不能为空")
-    connection.execute(
-        """INSERT INTO name_decisions(norm_key, name, decision, target_id, decided_at)
-           VALUES (?, ?, 'ignored', NULL, ?)
-           ON CONFLICT(norm_key) DO UPDATE SET
-               name=excluded.name, decision='ignored', target_id=NULL,
-               decided_at=excluded.decided_at""",
-        (key, text, utc_now()),
-    )
-    cleared = 0
-    for row in connection.execute(
-        """SELECT id, new_project_name FROM project_links
-            WHERE new_project_name IS NOT NULL AND new_project_name != ''"""
-    ).fetchall():
-        if norm_key(row["new_project_name"]) == key:
-            connection.execute(
-                "UPDATE project_links SET new_project_name=NULL WHERE id=?", (row["id"],)
-            )
-            cleared += 1
-    return {"name": text, "norm_key": key, "meetings_updated": cleared}
-
-
 # ---------------------------------------------------------------------- 合并与删除
 
 
@@ -488,6 +477,10 @@ def delete_empty_project(connection: Any, project_id: str) -> dict[str, Any]:
         (now, project_id),
     ).rowcount
     connection.execute("UPDATE project_links SET project_id=NULL WHERE project_id=?", (project_id,))
+    # 「建成了这个项目」的名字决定一并删掉，这个名字以后还能被提出来。
+    connection.execute(
+        "DELETE FROM name_decisions WHERE decision='project' AND target_id=?", (project_id,)
+    )
     connection.execute("DELETE FROM projects WHERE id=?", (project_id,))
     return {"tasks_unassigned": tasks, "terms_to_public": terms}
 

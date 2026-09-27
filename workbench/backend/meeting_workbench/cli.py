@@ -124,6 +124,9 @@ def _print_evaluation(result: dict) -> int:
         f"（其中模型高置信错 {counts['llm_high_wrong']}），待你选含答案 {counts['review_hit']}，"
         f"不含 {counts['review_miss']}，没认出 {counts['unresolved']}"
     )
+    hints = result.get("requirement_hints")
+    if hints:
+        print(f"有新需求提示的会 {hints['meetings']} / {hints['total']}")
     if result.get("skipped_untrusted"):
         print(f"另有 {result['skipped_untrusted']} 场人工归属没算进来（先被 AI 归、后来只是确认，或没有纪要）")
     guard = result["literal_guard"]
@@ -415,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if not project and item.get("new_project_name"):
                 project = f"像新项目：{item['new_project_name']}"
+            if item.get("new_requirement_name"):
+                project = f"{project or ''}（像新需求：{item['new_requirement_name']}）"
             print(
                 f"{(item['meeting_title'] or ''):<30}"
                 f"{(project or '（未归类）'):<20}"
