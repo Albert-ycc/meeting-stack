@@ -313,6 +313,13 @@ class HelperProcess:
                 pass
             self._stderr = None
 
+    def start(self) -> int:
+        """先把进程开起来（不发请求），返回进程号：材料转写把它记进断点行，重启后好清理。"""
+        with self._lock:
+            if self.stop is not None and self.stop.is_set():
+                raise HelperStopped("stopping")
+            return self._ensure().pid
+
     def kill(self) -> None:
         """立刻杀掉进程组（不拿锁：正在等回答的线程会看到 EOF 或停止标记）。"""
         process = self._process

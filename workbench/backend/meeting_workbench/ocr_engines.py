@@ -88,6 +88,7 @@ class Tools:
     ffmpeg: str | None = None
     ffprobe: str | None = None
     funasr_python: str | None = None
+    media_script: str | None = None
 
 
 def probe_tools(
@@ -118,7 +119,20 @@ def probe_tools(
     funasr = getattr(settings, "funasr_python", None)
     if funasr and os.path.isfile(funasr) and os.access(funasr, os.X_OK):
         tools.funasr_python = str(funasr)
+    script = getattr(settings, "material_transcriber", None)
+    if script and os.path.isfile(script):
+        tools.media_script = str(script)
     return tools
+
+
+def media_missing(tools: Tools) -> list[str]:
+    """材料录音转写缺什么（ffmpeg 或 funasr；项目页按它写怎么装）。"""
+    missing = []
+    if not (tools.ffmpeg and tools.ffprobe):
+        missing.append("ffmpeg")
+    if not (tools.funasr_python and tools.media_script):
+        missing.append("funasr")
+    return missing
 
 
 def machine_info(*, run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> dict[str, str]:
@@ -385,7 +399,7 @@ class OcrEngines:
         if layer == LAYER_IMAGE:
             return self.image_engine() is not None
         if layer == LAYER_MEDIA:
-            return bool(tools.ffmpeg and tools.ffprobe and tools.funasr_python)
+            return not media_missing(tools)
         return False
 
     def requeue_waiting(self) -> dict[str, int]:
@@ -713,6 +727,9 @@ def tools_report(settings: Any, *, build: VisionBuild | None = None) -> dict[str
         "tesseract": tesseract,
         "textutil": "能用" if tools.textutil else "没有（只有 Mac 上有）",
         "ffmpeg": "能用" if tools.ffmpeg and tools.ffprobe else "没装（brew install ffmpeg）",
-        "funasr": "能用" if tools.funasr_python else "没找到 FunASR 的 Python",
+        "funasr": (
+            "没找到 FunASR 的 Python" if not tools.funasr_python
+            else "能用" if tools.media_script else "没找到材料转写程序 transcribe/funasr_material.py"
+        ),
         **machine_info(),
     }

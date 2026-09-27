@@ -159,6 +159,10 @@ class ExtractResult:
     extractor_version: int | None = None
     what: str | None = None
     layer: str | None = None  # status=relayer 时：看开头字节后该换到的层
+    # 3d 录音：已经合好的片段（带 start_ms、end_ms，每段不超过 400 字），不再按段落切
+    spans: list[dict[str, Any]] | None = None
+    sha256: str | None = None
+    meeting_id: str | None = None
 
 
 class Extractor(Protocol):
@@ -562,14 +566,18 @@ class MaterialContent:
 
     # ------------------------------------------------------------------ 读内容
 
-    def extract_candidates(self, online: dict[int, str], limit: int = EXTRACT_BATCH) -> list[dict[str, Any]]:
-        """要读的内容：有读取器的层、state=pending、到了该试的时间，每份内容挑一个在线的副本。"""
-        # 读取器可以说「这一层这会儿先别读」（例如 Vision 程序正在编译）
-        layers = [
-            layer
-            for layer, extractor in self.extractors.items()
-            if layer != LAYER_MEDIA and getattr(extractor, "available", lambda: True)()
-        ]
+    def extract_candidates(
+        self, online: dict[int, str], limit: int = EXTRACT_BATCH, *, layers: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """要读的内容：有读取器的层、state=pending、到了该试的时间，每份内容挑一个在线的副本。
+        录音和视频由自己的循环来挑（layers=[media]），顺序一样。"""
+        if layers is None:
+            # 读取器可以说「这一层这会儿先别读」（例如 Vision 程序正在编译）
+            layers = [
+                layer
+                for layer, extractor in self.extractors.items()
+                if layer != LAYER_MEDIA and getattr(extractor, "available", lambda: True)()
+            ]
         if not layers or not online:
             return []
         marks = ", ".join("?" for _ in online)
@@ -665,6 +673,17 @@ class MaterialContent:
         except HelperStopped as stopped:
             # 服务在关、或者会议开始转写：这份下一轮从头读，什么都不写
             raise _EndRound(stopped.reason or "stopping") from stopped
+        return self.finish_extract(row, root_path, path, expected, result)
+
+    def finish_extract(
+        self,
+        row: dict[str, Any],
+        root_path: str,
+        path: Path,
+        expected: tuple[int | None, int | None],
+        result: ExtractResult,
+    ) -> bool:
+        """读完一份（3d 的录音转写也走这里）：再 stat 一次，没变才写；读不了的先查盘。"""
         if result.status == "io_error":
             self._on_os_error(row, root_path, OSError("io_error"), keep_key=True)
             return False
@@ -888,23 +907,32 @@ def store_result(
     """把一份内容的读取结果写进去（在 extract_one 的短事务里）：片段和状态同一个事务。"""
     stamp = utc_now()
     if result.status == "ok":
-        chunks, cut = chunk_blocks(result.blocks)
+        if result.spans is not None:
+            rows, cut = _cap_spans(result.spans)
+        else:
+            chunks, cut = chunk_blocks(result.blocks)
+            rows = [{"loc": loc, "start_ms": None, "end_ms": None, "text": text} for loc, text in chunks]
         truncated = result.truncated or cut
         note = "truncated" if truncated else result.note
         connection.execute("DELETE FROM material_chunks WHERE content_key = ?", (content_key,))
         connection.executemany(
             """INSERT INTO material_chunks(content_key, ordinal, loc, start_ms, end_ms, text)
-               VALUES (?, ?, ?, NULL, NULL, ?)""",
-            [(content_key, ordinal, loc, text) for ordinal, (loc, text) in enumerate(chunks)],
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                (content_key, ordinal, row.get("loc"), row.get("start_ms"), row.get("end_ms"), row["text"])
+                for ordinal, row in enumerate(rows)
+            ],
         )
         connection.execute(
             """UPDATE material_contents SET state = 'done', reason = NULL, note = ?, extractor = ?,
                    extractor_version = ?, chars = ?, chunks = ?, pages = ?, duration_ms = ?, attempts = 0,
-                   next_try_at = NULL, updated_at = ?
+                   next_try_at = NULL, sha256 = COALESCE(?, sha256), meeting_id = ?, updated_at = ?
              WHERE content_key = ?""",
-            (note, result.extractor, result.extractor_version, sum(len(text) for _loc, text in chunks),
-             len(chunks), result.pages, result.duration_ms, stamp, content_key),
+            (note, result.extractor, result.extractor_version, sum(len(row["text"]) for row in rows),
+             len(rows), result.pages, result.duration_ms, result.sha256, result.meeting_id, stamp, content_key),
         )
+        # 录音转完：断点行和片段同一个事务删掉，不留两份文字
+        connection.execute("DELETE FROM material_media_jobs WHERE content_key = ?", (content_key,))
     elif result.status == "relayer" and result.layer in CONTENT_LAYERS:
         # 扩展名骗人（.doc 其实是 PDF）：换层，照旧等着读
         connection.execute(
@@ -934,6 +962,23 @@ def store_result(
              WHERE content_key = ?""",
             (reason, attempts + 1, result.extractor, result.extractor_version, stamp, content_key),
         )
+        connection.execute("DELETE FROM material_media_jobs WHERE content_key = ?", (content_key,))
+
+
+def _cap_spans(spans: list[dict[str, Any]], *, max_chars: int = MAX_CONTENT_CHARS) -> tuple[list[dict[str, Any]], bool]:
+    """录音片段已经合好，只管每份内容最多 20 万字。"""
+    rows: list[dict[str, Any]] = []
+    total = 0
+    for span in spans:
+        text = str(span.get("text") or "").replace("\x00", "").strip()
+        if not text:
+            continue
+        if total + len(text) > max_chars:
+            return rows, True
+        total += len(text)
+        rows.append({"loc": span.get("loc"), "start_ms": span.get("start_ms"), "end_ms": span.get("end_ms"),
+                     "text": text})
+    return rows, False
 
 
 def follow_content(connection: sqlite3.Connection, content_key: str) -> int:

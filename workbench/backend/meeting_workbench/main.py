@@ -62,6 +62,8 @@ from . import overview as overview_module
 from . import file_mentions
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from . import material_content as material_content_module
+from . import material_media as material_media_module
+from .material_media import MaterialMedia
 from .extract_worker import TextExtractor
 from .material_rules import LAYER_IMAGE, LAYER_PDF, LAYER_TEXT
 from .ocr_engines import ImageExtractor, OcrEngines, PdfExtractor
@@ -723,6 +725,9 @@ def create_app(
         },
         before_round=ocr.refresh,
     )
+    material_media = MaterialMedia(
+        db, settings, material_content, tools=ocr.tools, busy_check=busy, stop=material_stop
+    )
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
@@ -1145,6 +1150,23 @@ def create_app(
                 else material_content_module.IDLE_LOOP_SECONDS
             )
 
+    async def material_media_loop() -> None:
+        """材料录音和视频（3d）：一次一个文件；第一轮前等 5 秒，没活时每 60 秒看一次。不进健康检查。"""
+        await asyncio.sleep(material_media_module.FIRST_DELAY_SECONDS)
+        while not material_stop.is_set():
+            stats: dict[str, Any] = {}
+            try:
+                stats = await asyncio.to_thread(material_media.run_once)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("材料录音转写这一轮失败")
+            await asyncio.sleep(
+                material_media_module.WORK_LOOP_SECONDS
+                if stats.get("work")
+                else material_media_module.IDLE_LOOP_SECONDS
+            )
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         application.state.lifespan_active = True
@@ -1207,6 +1229,7 @@ def create_app(
         roots_worker = asyncio.create_task(roots_loop(), name="meeting-workbench-graph-roots")
         index_worker = asyncio.create_task(material_index_loop(), name="meeting-workbench-material-index")
         content_worker: asyncio.Task[None] | None = None
+        media_worker: asyncio.Task[None] | None = None
         if settings.material_content_enabled:
             material_stop.clear()
             # 重启清理放在材料循环启动之前：上次留下的转写进程、临时文件
@@ -1217,6 +1240,9 @@ def create_app(
             content_worker = asyncio.create_task(
                 material_content_loop(), name="meeting-workbench-material-content"
             )
+            media_worker = asyncio.create_task(
+                material_media_loop(), name="meeting-workbench-material-media"
+            )
         try:
             yield
         finally:
@@ -1226,8 +1252,14 @@ def create_app(
                 content_worker.cancel()
                 with suppress(asyncio.CancelledError):
                     await content_worker
+                if media_worker is not None:
+                    media_worker.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await media_worker
                 await asyncio.to_thread(material_content.wait_idle, 10.0)
+                await asyncio.to_thread(material_media.wait_idle, 10.0)
                 material_content.close()
+                material_media.close()
                 ocr.close()
             scanner.cancel()
             relay_probe.cancel()
@@ -1256,6 +1288,7 @@ def create_app(
     app.state.busy = busy
     app.state.material_content = material_content
     app.state.ocr = ocr
+    app.state.material_media = material_media
     app.state.material_stop = material_stop
     app.state.waveforms = waveforms
     app.state.relay = relay

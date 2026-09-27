@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     # 材料录音转写用的 FunASR Python：本变量优先，没有时跟中转一样取
     # MEETING_RELAY_FUNASR_PYTHON，再没有用 ~/.venvs/funasr/bin/python。
     funasr_python: Path | None = None
+    # 材料录音转写程序（和会议转写的程序放在一起，不改会议转写）
+    material_transcriber: Path = Field(
+        default_factory=lambda: REPO_ROOT / "transcribe/funasr_material.py"
+    )
     # 一张图认字的超时；一份 PDF 多久没有新的一页算超时；每段录音的转写超时（实际取
     # 「音频长度 × 3」和它的较大者）。手工验收量过以后再定。
     material_image_timeout_s: float = 60.0
@@ -146,6 +150,7 @@ class Settings(BaseSettings):
                 Path(relay_python) if relay_python else Path.home() / ".venvs/funasr/bin/python"
             )
         self.funasr_python = self.funasr_python.expanduser()
+        self.material_transcriber = self.material_transcriber.expanduser()
         for name in (
             "material_image_timeout_s",
             "material_pdf_idle_timeout_s",
