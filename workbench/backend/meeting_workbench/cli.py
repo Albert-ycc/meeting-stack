@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 import os
 import shutil
@@ -443,6 +443,10 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
         related_partial = connection.execute(
             "SELECT COUNT(*) FROM meeting_related_scan WHERE partial = 1"
         ).fetchone()[0]
+        # 4e：可能过时（H2）到期的会
+        from . import affects
+
+        waiting["affects"] = affects.due_count(connection, datetime.now(UTC))
         failed = {
             "mentions": connection.execute(
                 "SELECT COUNT(*) FROM mention_extractions WHERE state = 'failed'"
@@ -508,7 +512,10 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
         f"（没做成 {failed['mentions']} 场），决议对比 {waiting['pairs']} 场（没对比成 {failed['pairs']} 场）"
     )
     print(f"相关：{waiting['related']} 场会到期，{related_partial} 场材料太多、没比全")
-    print(f"在问你：产出 {opened['produced']} 条，可能过时 {opened['affects']} 条")
+    print(
+        f"在问你：产出 {opened['produced']} 条，可能过时 {opened['affects']} 条"
+        f"（可能过时还有 {waiting['affects']} 场会到期没配）"
+    )
     print(f"上次清理：{result['housekeeping_at'] or '还没清理过'}")
     print(f"AI（{result['llm_host']}）：{LINKS_LLM_LABELS.get(llm_state, llm_state)}")
     print(

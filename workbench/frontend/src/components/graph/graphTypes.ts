@@ -1,7 +1,7 @@
 // 关系图（1g、1h）接口的数据形状，和后端 graph.py 一一对应。
 
 import type { MaterialDeliverable, MaterialFileState, MeetingAttribution, MeetingCard, RelatedMeeting } from "../../types";
-import type { DecisionLinkRef, LinksState } from "../../api";
+import type { DecisionLinkRef, LinksState, RelationQuestion } from "../../api";
 
 export type GraphWindow = "7d" | "28d" | "90d" | "all";
 export type Ring = "inner" | "middle" | "outer";
@@ -325,6 +325,23 @@ export interface FocusDecision {
   /** 4c：这条后来改成了哪条、这条改了哪条；现读兜底和旧后台时为空或没有 */
   later?: DecisionLinkRef[];
   earlier?: DecisionLinkRef[];
+  /** 4e：决议之后没改过、在问「可能过时」的文件；现读兜底和旧后台时没有 */
+  stale?: FocusStale[];
+}
+
+/** 4e：展开一场会时决议卡上的「1 个文件可能过时」 */
+export interface FocusStale {
+  relation_id: number;
+  file_id: number;
+  name: string;
+}
+
+/** 4e：任务在问的产出（交付物小签先显示它） */
+export interface FocusAsk {
+  relation_id: number;
+  file_id: number;
+  name: string;
+  ext: string;
 }
 
 export interface FocusTask {
@@ -338,6 +355,8 @@ export interface FocusTask {
   requirement_id: string | null;
   requirement_title: string | null;
   deliverables: FocusDeliverable[];
+  /** 4e：在问的产出，最多 2 个；旧后台没有 */
+  asks?: FocusAsk[];
 }
 
 /** 展开一场会时任务的交付物；file 类带 file_id、name、gone（3g，旧后端没有） */
@@ -513,6 +532,8 @@ export interface GraphFileDetail {
   active_meetings: number;
   /** 4d：「内容相关的会」最多 5 条；旧后台没有 */
   related_meetings?: RelatedMeeting[];
+  /** 4e：在问的可能过时和产出（影响在前）；旧后台没有 */
+  questions?: RelationQuestion[];
 }
 
 /** ［不是这份文件］［撤销］［换成这份］的结果 */

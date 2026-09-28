@@ -369,6 +369,7 @@ export function RequirementDetailPage({
         apiClient={apiClient}
         canWrite={canWrite}
         onOpenMeeting={onOpenMeeting}
+        onOpenPreview={onOpenPreview}
         // 关联、移除会议以后跟着重读
         reloadKey={`${reloadKey}|${detail.meetings.map((meeting) => meeting.id).join(",")}`}
         requirementId={requirementId}

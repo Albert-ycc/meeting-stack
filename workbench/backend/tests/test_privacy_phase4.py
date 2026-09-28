@@ -17,6 +17,9 @@
 - 4d：相关（H3）真的跑出片段和相关行：只在材料文字里的哨兵不进 meeting_window_passages.words、relations 的
   quote 和 evidence_json；两边都有的词（文件词干「接口文档」）进了 words，但不进词条、候选词、项目线索、
   segments_fts、minutes_fts（行数不变）和任何提示词；相关的计算不发 AI。
+- 4e：产出（L4）和可能过时（H2、L3）真的写出行：材料文字哨兵和文件名哨兵不出现在它们的 quote、
+  evidence_json 里（影响的 quote 是决议原文，材料一端只存段号）；4e 不调 AI，单独再跑一遍 L3、L4、H2，
+  记下的请求一条都不多。
 - 4g：问答是唯一的例外。prepare 不调 AI；with_materials=false 的提示词里两个哨兵都没有；with_materials=true
   的提示词里材料文字哨兵正好一次、文件名哨兵零次；之后跑项目归属、任务抽取、两个循环、快照和线索，都没有这两个
   哨兵；假 AI 回答里的「回答专用标记乙」整库一处都没有；问答日志里没有问题、原文和回答。
@@ -27,10 +30,12 @@ import json
 import logging
 import sqlite3
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from meeting_workbench import affects, produced
 from meeting_workbench.cards import CardWriter
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database, utc_now
@@ -424,6 +429,71 @@ def test_related_keeps_material_text_out_and_shared_words_local(tmp_path, fake_a
     for text in fake_ai:
         assert SHARED_STEM not in text and MATERIAL_SENTINEL not in text
         assert TOPIC_A[1] not in text
+
+
+def test_produced_and_affects_keep_material_text_out(tmp_path, fake_ai):
+    """4e：L4 和 H2 在 run_everything 里真的写出产出和影响；哨兵不进它们的 quote、evidence_json；
+    单独再跑 L3、L4、H2 不发任何 AI 请求。"""
+    db, settings, root = build_world(tmp_path)
+    project_id = db.query_one("SELECT id FROM projects WHERE name = '云图AI'")["id"]
+    root_id = db.query_one("SELECT id FROM project_material_roots")["id"]
+    now = datetime.now(UTC)
+    # 产出：一条一小时前确认的任务，之后新出现的一份名字对得上的文件（算不出内容标识的格式）
+    db.execute(
+        """INSERT INTO tasks(id, title, status, origin, project_id, status_changed_at, created_at, updated_at)
+           VALUES ('t-4e', '整理报价单明细', 'confirmed', 'ai', ?, 'x', 'x', 'x')""",
+        (project_id,),
+    )
+    db.execute(
+        "INSERT INTO task_events(task_id, kind, body, created_at) VALUES ('t-4e', 'confirmed', '任务已确认', ?)",
+        ((now - timedelta(hours=1)).isoformat(),),
+    )
+    db.execute(
+        """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns, zone, seen_at)
+           VALUES (?, '报价/报价单明细.key', '报价', '报价单明细.key', '报价单明细', '报价单明细', 'key', 10, 1, 'normal', 'x')""",
+        (root_id,),
+    )
+    # 影响：一场定了「总价下调 5%」的会；一份上个月的文件还写着下调 3%，同一段里有材料文字哨兵
+    seed_meeting(
+        db, "vm-20260926-170000", "定价会", "# 定价会\n\n## 决议\n\n- 总价下调 5% [00:01:00]\n",
+        project_id=project_id, origin="manual",
+    )
+    price_key = "q2:" + "9" * 32
+    db.execute(
+        """INSERT INTO material_contents(content_key, layer, state, chars, chunks, created_at, updated_at)
+           VALUES (?, 'text', 'done', 40, 1, 'x', 'x')""",
+        (price_key,),
+    )
+    db.execute(
+        "INSERT INTO material_chunks(content_key, ordinal, text) VALUES (?, 0, ?)",
+        (price_key, f"报价说明：总价下调 3%，{MATERIAL_SENTINEL}"),
+    )
+    old_ns = int((now - timedelta(days=30)).timestamp() * 1_000_000_000)
+    db.execute(
+        """UPDATE material_files SET content_key = ?, content_size = size, mtime_ns = ?, content_mtime_ns = ?
+            WHERE name = '报价单 v3.xlsx'""",
+        (price_key, old_ns, old_ns),
+    )
+
+    run_everything(db, settings)
+
+    rows = db.query_all("SELECT kind, quote, evidence_json FROM relations WHERE kind IN ('produced', 'affects')")
+    assert {row["kind"] for row in rows} == {"produced", "affects"}, "4e 一行都没写，这个测试什么都没验证"
+    for row in rows:
+        for sentinel in (MATERIAL_SENTINEL, NAME_SENTINEL, "报价说明"):
+            assert sentinel not in row["quote"] + row["evidence_json"], sentinel
+    assert db.query_one("SELECT quote FROM relations WHERE kind = 'affects'")["quote"] == "总价下调 5%"
+    for text in fake_ai:
+        assert MATERIAL_SENTINEL not in text and "报价说明" not in text
+    # 4e 不调 AI：单独再跑一遍 L3、L4、H2，记下的请求一条都不多
+    before = len(fake_ai)
+    later = datetime.now(UTC) + timedelta(minutes=1)
+    stamp = later.isoformat()
+    affects.auto_clear(db, later, stamp)
+    produced.watch(db, later, 5.0, since=stamp)
+    db.execute("UPDATE decision_scan SET affects_hash = NULL")
+    assert affects.match_due(db, lambda: False, 5.0, now=later, since=stamp)["tried"] >= 1
+    assert len(fake_ai) == before
 
 
 def test_ask_sends_material_text_only_after_confirm(tmp_path, fake_ai, caplog):

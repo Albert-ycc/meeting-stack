@@ -328,3 +328,56 @@ describe("useRelationAnswer 的撤销期", () => {
     expect(screen.queryByText("已标为更新过")).not.toBeInTheDocument();
   });
 });
+
+describe("RelationQuestion 在 4e 宿主里的样子", () => {
+  it("产出：第一行是问法、第二行是证据；任务抽屉换成「是这条任务的交付物吗？」，文件名能点", async () => {
+    const onOpenFile = vi.fn();
+    render(
+      <Providers>
+        <RelationQuestion
+          apiClient={makeClient()}
+          ask="是这条任务的交付物吗？"
+          canWrite
+          onNotice={vi.fn()}
+          onOpenFile={onOpenFile}
+          questions={[PRODUCED]}
+          scope={{ taskId: "t-19" }}
+        />
+      </Providers>,
+    );
+    const block = screen.getByRole("group", { name: PRODUCED.text });
+    const lines = block.querySelectorAll("p");
+    expect(lines[0]).toHaveTextContent("是这条任务的交付物吗？");
+    expect(lines[1]).toHaveTextContent("能耗看板方案.key · 会后 3 天新增在『能耗看板/』");
+    await userEvent.click(within(block).getByRole("button", { name: "能耗看板方案.key" }));
+    expect(onOpenFile).toHaveBeenCalledWith(930);
+  });
+
+  it("需求卡：只画一行（不列片段），那一句点了打开文件；共用的回答状态只接自己这条决议的行", async () => {
+    const onOpenFile = vi.fn();
+    const store = createRecentAnswerStore();
+    store.put({
+      relationId: 99, kind: "affects", text: "已标为更新过", until: later(600_000), fileId: 1, taskId: null,
+      decisionId: "dec-other",
+    });
+    render(
+      <Providers store={store}>
+        <RelationQuestion
+          apiClient={makeClient()}
+          canWrite
+          compact
+          onNotice={vi.fn()}
+          onOpenFile={onOpenFile}
+          questions={[{ ...AFFECTS, text: "报价单 v3 之后没改过，可能过时" }]}
+          scope={{ decisionIds: ["dec-3f2a9c0b1d4e5f60"] }}
+        />
+      </Providers>,
+    );
+    const block = screen.getByRole("group", { name: "报价单 v3 之后没改过，可能过时" });
+    expect(within(block).queryByText(/第 2 页/)).toBeNull();
+    await userEvent.click(within(block).getByRole("button", { name: "报价单 v3 之后没改过，可能过时" }));
+    expect(onOpenFile).toHaveBeenCalledWith(812);
+    // 别的决议收成的那一行不画在这里
+    expect(screen.queryByText("已标为更新过")).toBeNull();
+  });
+});

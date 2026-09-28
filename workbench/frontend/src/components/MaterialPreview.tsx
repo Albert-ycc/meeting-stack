@@ -8,6 +8,7 @@ import { AsyncState } from "./AsyncState";
 import { looseId, looseSaid } from "./links/looseMention";
 import { RelatedMeetings } from "./links/RelatedMeetings";
 import { highlightWords } from "./links/RelatedMaterials";
+import { RelationQuestion } from "./links/RelationQuestion";
 import { useRelationAnswer, type RelationAnswering } from "./links/useRelationAnswer";
 import type { MiniPlayerHandle, PlayOptions } from "./graph/MiniPlayer";
 import type { NoticeFn } from "./graph/panelParts";
@@ -486,6 +487,16 @@ export function MaterialPreviewDrawer({
                 {data.file.modified_at && <span>修改于 {formatDate(data.file.modified_at)}</span>}
                 {data.file.size !== null && <span>{formatBytes(data.file.size)}</span>}
               </p>
+              {/* 4e：在问的可能过时和产出，放在位置那一行之后，不用往下翻就看得到 */}
+              <RelationQuestion
+                answering={answering}
+                apiClient={apiClient}
+                canWrite={canWrite}
+                onNotice={drawerNotice}
+                onPlay={(url, atMs, label) => play(url, atMs, label, { clip: true })}
+                questions={data.questions}
+                scope={{ fileId }}
+              />
               {passage && (
                 <PassageBlock
                   data={data}

@@ -1154,9 +1154,10 @@ _LOG_MEETINGS = """
 def requirement_log(
     connection: Any, requirement_id: str, *, worker: Any = None, settings: Any = None
 ) -> dict[str, Any]:
-    """需求页「决议」卡（GET /api/requirements/{id}/decisions），最多 5 条语句（4e 加 stale_files 后 6 条）：
+    """需求页「决议」卡（GET /api/requirements/{id}/decisions），最多 6 条语句：
     1. 需求和它的项目；2. 这些会（关联这个需求的，和有决议放到这个需求的）带台账、录音，台账落后时
-    带纪要原文；3. 这些会还在的决议；4. 这些会关联的需求名；5. 项目里 shown、rejected 的对比行。
+    带纪要原文；3. 这些会还在的决议；4. 这些会关联的需求名；5. 项目里 shown、rejected 的对比行；
+    6. 这些决议在问的可能过时（4e，relation_read.decision_questions，文件这一边的说法）。
     台账落后或 links_enabled 关着时这场会按纪要现读，id 为 null，没有标记和按钮。"""
     from .relation_read import AUDIO_ID_SQL
 
@@ -1249,7 +1250,7 @@ def requirement_log(
                 "earlier": mark.get("earlier", []),
                 "restated": mark.get("restated", []),
                 "dismissed": mark.get("dismissed", []),
-                # 4e 用 relation_read.decision_questions 填
+                # 4e：下面按决议 id 一条语句填
                 "stale_files": [],
             }
             if chosen == requirement_id:
@@ -1278,6 +1279,14 @@ def requirement_log(
     groups.sort(key=lambda group: group["_order"], reverse=True)
     for group in groups:
         group.pop("_order")
+    # 4e：在问的可能过时，「报价单 v3 之后没改过，可能过时」，一条语句
+    entries = [entry for group in groups for entry in (*group["decisions"], *group["unplaced"]) if entry["id"]]
+    if live and entries:
+        from .relation_read import decision_questions
+
+        stale = decision_questions(connection, [entry["id"] for entry in entries])
+        for entry in entries:
+            entry["stale_files"] = stale.get(entry["id"], [])
     return {
         "requirement": {"id": requirement["id"], "title": requirement["title"]},
         "counts": counts,

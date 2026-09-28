@@ -1,6 +1,7 @@
 /* 关系图面板里第二期的几类：会上提到的文件（2d）、「像是新需求」和等补建的文件夹（2c）；
    第三期文件面板加预览、交付物、［标为交付物 ▾］（3g）；
-   第四期 4b：放宽的提到（会上换了叫法的文件）的小字、回答和会议面板的状态句 */
+   第四期 4b：放宽的提到（会上换了叫法的文件）的小字、回答和会议面板的状态句；
+   4e：文件面板的问题块（可能过时在前、产出在后），放在预览之后、「在 N 场会上被提到」之前 */
 import { useEffect, useId, useState } from "react";
 
 import { formatMonthDayClock, formatTime } from "../../format";
@@ -24,6 +25,7 @@ import {
   type GraphNoticeUndo,
 } from "./panelParts";
 import { RelatedMeetings } from "../links/RelatedMeetings";
+import { RelationQuestion } from "../links/RelationQuestion";
 
 /** ［标为交付物 ▾］最多列这么多个任务 */
 export const DELIVERABLE_TASKS_MAX = 30;
@@ -389,6 +391,16 @@ export function FilePanelBody({
   return (
     <>
       <FilePreview fileId={fileId} props={props} />
+      {/* 4e：在问的可能过时和产出；回答以后面板重取，［是］登记的交付物出现在下面「交付物」一节 */}
+      <RelationQuestion
+        apiClient={props.apiClient}
+        canWrite
+        onChanged={props.onChanged}
+        onNotice={props.onNotice}
+        onPlay={(url, atMs, label) => props.player.play(url, atMs, label, { clip: true })}
+        questions={payload.questions}
+        scope={{ fileId }}
+      />
       <dl className="graph-panel__facts">
         <div>
           <dt>所在文件夹</dt>

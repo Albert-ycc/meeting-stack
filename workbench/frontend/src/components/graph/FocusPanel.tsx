@@ -92,11 +92,32 @@ function FocusDecisionMarks({ props, decision }: { props: FocusPanelProps; decis
   );
 }
 
+/** 4e：「1 个文件可能过时」：点了打开第一份文件的预览抽屉；旧后台（没有 stale、没有 linksFlags）不画 */
+export function staleTagText(count: number): string {
+  return `${count} 个文件可能过时`;
+}
+
+function StaleTag({ props, decision }: { props: FocusPanelProps; decision: FocusDecision }) {
+  const flags = useLinksFlags();
+  const stale = decision.stale;
+  if (!flags || !Array.isArray(stale) || !stale.length) return null;
+  const text = staleTagText(stale.length);
+  if (!props.onOpenPreview) return <p className="focus-panel__stale">{text}</p>;
+  return (
+    <p className="focus-panel__stale">
+      <button className="text-button" onClick={() => props.onOpenPreview?.(stale[0].file_id)} title={stale[0].name} type="button">
+        {text}
+      </button>
+    </p>
+  );
+}
+
 function DecisionBody({ props, decision }: { props: FocusPanelProps; decision: FocusDecision }) {
   return (
     <>
       <Section title="全文">
         <p className="focus-panel__full">{decision.detail || decision.text}</p>
+        <StaleTag decision={decision} props={props} />
         <FocusDecisionMarks decision={decision} props={props} />
       </Section>
       <Section title="来源">

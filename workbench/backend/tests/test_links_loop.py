@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from meeting_workbench import cli, deep_links, relations
+from meeting_workbench import affects, cli, deep_links, file_events, produced, relations
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database, utc_now
 from meeting_workbench.deep_links import LinksWorker
@@ -178,6 +178,38 @@ def idle_world(tmp_path):
            VALUES ('m3', ?, 'sha', 'done', 1, 1, ?, ?, ?)""",
         (version, json.dumps(phrases, ensure_ascii=False), at(-3600), at(-3600)),
     )
+    # 4e：根目录收完过一轮；一条昨天确认的任务和它确认以后新增的一份名字对得上的文件（L4 写产出）；
+    # 一场定了「总价下调 5%」的会和一份月初就有、还写着下调 3% 的文件（H2 写影响）
+    from .test_file_events import swept
+
+    db.execute("UPDATE app_state SET value = ? WHERE key = 'links_since'", (at(-30 * 86400),))
+    swept(db, root_id)
+    add_task(db, "t-new", meeting_id=None, project_id="p", status="confirmed")
+    db.execute("UPDATE tasks SET title = '整理报价单明细' WHERE id = 't-new'")
+    db.execute(
+        "INSERT INTO task_events(task_id, kind, body, created_at) VALUES ('t-new', 'confirmed', '任务已确认', ?)",
+        (at(-86400),),
+    )
+    detail_id = add_file(db, root_id, "报价单明细 v2.xlsx")
+    db.execute(
+        "UPDATE material_file_events SET at = ?, day = ? WHERE file_id = ?",
+        (file_events.at_text(NOW - timedelta(hours=1)), (NOW - timedelta(hours=1)).astimezone().date().isoformat(),
+         detail_id),
+    )
+    add_meeting(db, "m5", ago=1, project_id="p", minutes="# 周会\n\n## 决议\n\n- 总价下调 5% [00:01:00]\n")
+    price_key = "q2:" + "c" * 32
+    db.execute(
+        """INSERT INTO material_contents(content_key, layer, state, chars, chunks, created_at, updated_at)
+           VALUES (?, 'text', 'done', 20, 1, 'x', 'x')""",
+        (price_key,),
+    )
+    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES (?, 0, '报价说明：总价下调 3%')", (price_key,))
+    price_id = add_file(db, root_id, "报价/总价说明.docx")
+    db.execute(
+        """UPDATE material_files SET content_key = ?, content_size = size, content_mtime_ns = mtime_ns WHERE id = ?""",
+        (price_key, price_id),
+    )
+    db.execute("DELETE FROM material_file_events WHERE file_id != ?", (detail_id,))
     return db
 
 
@@ -222,7 +254,7 @@ def test_idle_round_leaves_revisions_alone(tmp_path):
     add_pair_rows(db)
     w.run_round()
     stable = fingerprint(db)
-    assert len(stable["decisions"]) == 4  # 样本真的入库了
+    assert len(stable["decisions"]) == 5  # 样本真的入库了（4e 加了一场定了总价的会）
     # 4c：规则版「后来又提到」和 AI 的「后来改了」都在
     assert db.query_one("SELECT origin, status FROM relations WHERE kind = 'restated'") == {
         "origin": "rule", "status": "shown"
@@ -238,6 +270,14 @@ def test_idle_round_leaves_revisions_alone(tmp_path):
         "status": "shown", "origin": "vector"
     }
     assert first["phases"]["decisions"] == "done"
+    # 4e：L4 写出了产出，H2 写出了影响（第三轮下面不能再写）
+    assert db.query_one("SELECT status, origin FROM relations WHERE kind = 'produced' AND task_id = 't-new'") == {
+        "status": "suggested", "origin": "rule"
+    }
+    assert db.query_one("SELECT status, quote FROM relations WHERE kind = 'affects'") == {
+        "status": "suggested", "quote": "总价下调 5%"
+    }
+    assert w.snapshot()["open"] == {"produced": 2, "affects": 1} and w.snapshot()["waiting"]["affects"] == 0
 
     w.moment["value"] = NOW + timedelta(hours=3)  # 同一天
     third = w.run_round()
@@ -335,6 +375,100 @@ def test_stop_flag_ends_the_round(tmp_path):
     w.l1_decisions = recorder([], "l1", effect=lambda ctx: stop.set())
     phases = w.run_round()["phases"]
     assert phases["resolve"] == "stopping" and phases["terms"] == "stopping"
+
+
+# ---------------------------------------------------------------------- 4e：L3、L4、H2
+
+
+def _e4_world(tmp_path):
+    from .test_affects import material, meeting
+    from .test_affects import world as affects_world
+    from .test_produced import put_file, task
+
+    w = affects_world(tmp_path)
+    w.material, w.meeting, w.put_file, w.task = material, meeting, put_file, task
+    return w
+
+
+def _e4_settings():
+    return loop_settings(links_backfill_days=180)
+
+
+def test_l3_and_l4_run_while_transcribing(tmp_path):
+    w = _e4_world(tmp_path)
+    w.task(w.db, "t", "整理报价单明细")
+    w.put_file(w.db, w.root, "报价/报价单明细 v2.xlsx", NOW - timedelta(days=1))
+    w.db.execute(
+        """INSERT INTO relations(kind, project_id, ident, status, origin, created_at, updated_at)
+           VALUES ('affects', 'p', 'dec-gone|k', 'suggested', 'rule', ?, ?)""",
+        (at(-3600), at(-3600)),
+    )
+    calls: list[str] = []
+    busy = worker(w.db, clock=Clock(), busy=lambda: True, settings=_e4_settings())
+    fake_heavy(busy, calls)
+    result = busy.run_round()
+    assert calls == []
+    assert (result["phases"]["stale"], result["phases"]["produced"]) == ("done", "done")
+    assert w.db.query_one("SELECT status FROM relations WHERE ident = 'dec-gone|k'")["status"] == "cleared"
+    assert w.db.query_one("SELECT status FROM relations WHERE kind = 'produced'")["status"] == "suggested"
+
+
+def test_l3_and_l4_per_round_limits(tmp_path, monkeypatch):
+    w = _e4_world(tmp_path)
+    monkeypatch.setattr(produced, "ROUND_TASKS", 1)
+    monkeypatch.setattr(affects, "L3_ROWS", 1)
+    w.db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p2', '第二个', 'x')")
+    w.db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p2', '/材料/第二个', 'x')")
+    second_root = int(w.db.query_one("SELECT id FROM project_material_roots WHERE project_id = 'p2'")["id"])
+    from .test_file_events import swept
+
+    swept(w.db, second_root)
+    w.task(w.db, "t1", "整理报价单明细")
+    w.task(w.db, "t2", "整理排期总表", project_id="p2")
+    w.put_file(w.db, w.root, "报价/报价单明细 v2.xlsx", NOW - timedelta(days=1))
+    w.put_file(w.db, second_root, "排期/排期总表 v2.xlsx", NOW - timedelta(days=1))
+    # 两行决议已经没了的影响（文件还在，L2 不动它们）
+    file = w.material(w.db, w.root, "报价/报价单.xlsx", "总价下调 3%")
+    w.db.execute("DELETE FROM material_file_events WHERE file_id = ?", (file["id"],))
+    for index in range(2):
+        w.db.execute(
+            """INSERT INTO relations(kind, project_id, ident, status, origin, file_id, content_key, root_id, rel_path,
+                   created_at, updated_at)
+               VALUES ('affects', 'p', ?, 'suggested', 'rule', ?, ?, ?, ?, ?, ?)""",
+            (f"dec-gone|{index}", file["id"], file["content_key"], file["root_id"], file["rel_path"], at(-3600),
+             at(-3600)),
+        )
+    runner = worker(w.db, clock=Clock(), settings=_e4_settings())
+    fake_heavy(runner, [])
+    first = runner.run_round()["phases"]
+    # 每轮一条任务（按项目整批）、一行影响
+    assert first["produced"] == "budget"
+    assert w.db.query_one("SELECT COUNT(*) AS n FROM relations WHERE kind = 'produced'")["n"] == 1
+    assert w.db.query_one("SELECT COUNT(*) AS n FROM relations WHERE status = 'cleared'")["n"] == 1
+    runner.moment["value"] = NOW + timedelta(minutes=1)
+    second = runner.run_round()["phases"]
+    assert second["produced"] == "done"
+    assert w.db.query_one("SELECT COUNT(*) AS n FROM relations WHERE kind = 'produced'")["n"] == 2
+    assert w.db.query_one("SELECT COUNT(*) AS n FROM relations WHERE status = 'cleared'")["n"] == 2
+
+
+def test_h2_stops_within_a_batch_once_transcribing_starts(tmp_path):
+    w = _e4_world(tmp_path)
+    w.meeting(w.db, "m1", "总价下调 5%", day=NOW - timedelta(days=1))
+    w.meeting(w.db, "m2", "驻场改成 2 人", day=NOW - timedelta(days=2))
+    w.material(w.db, w.root, "报价/报价单.xlsx", "总价下调 3%")
+    w.material(w.db, w.root, "驻场/排班.xlsx", "驻场 3 人")
+
+    def busy():
+        # 第一场会配完（台账写上）以后开始转写
+        return w.db.query_one("SELECT COUNT(*) AS n FROM decision_scan WHERE affects_hash IS NOT NULL")["n"] >= 1
+
+    runner = worker(w.db, clock=Clock(), busy=busy, settings=_e4_settings())
+    phases = runner.run_round()["phases"]
+    assert phases["affects"] == "busy"
+    rows = w.db.query_all("SELECT meeting_id FROM relations WHERE kind = 'affects'")
+    assert rows == [{"meeting_id": "m1"}]
+    assert w.db.query_one("SELECT affects_hash FROM decision_scan WHERE meeting_id = 'm2'")["affects_hash"] is None
 
 
 # ---------------------------------------------------------------------- 节奏和打开过的会

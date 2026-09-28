@@ -71,6 +71,8 @@ from . import relations as relations_module
 from . import related as related_module
 from . import related_read
 from . import asks as asks_module
+from . import affects as affects_module
+from . import relation_read
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from . import material_content as material_content_module
 from . import material_media as material_media_module
@@ -3965,6 +3967,10 @@ def create_app(
                     connection, row, engines=ocr, paused=material_paused()
                 )
                 result["deliverables"] = material_status.file_deliverables(connection, row)
+            # 4e：在问的可能过时和产出（影响在前）；有在问的影响时 stat 一次这个文件，变了就先不给
+            result["questions"] = affects_module.guarded_questions(
+                relation_read.file_questions(connection, file_id), row, materials.volume_state
+            )
             return result
 
     def _mention_action(action: Any, *args: Any) -> dict[str, Any]:

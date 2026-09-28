@@ -335,10 +335,11 @@ def _requirement_world(tmp_path, count):
 
 
 @pytest.mark.parametrize("count", [10, 200])
-def test_requirement_log_is_at_most_five_statements(tmp_path, count):
+def test_requirement_log_is_at_most_six_statements(tmp_path, count):
+    # 4e 起多一条：这些决议在问的可能过时（stale_files）
     db = _requirement_world(tmp_path, count)
     reads = count_reads(db, lambda connection: decisions.requirement_log(connection, "r1", settings=LIVE))
-    assert reads <= 5
+    assert reads <= 6
     assert log(db)["counts"]["decisions"] > 0
 
 

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, type ApiClient, type RequirementDecisionLog } from "../api";
+import { ApiError, type ApiClient, type RelationQuestion, type RequirementDecisionLog } from "../api";
 import { LinksFlagsContext } from "./links/LinksFlagsContext";
 import type { RequirementDetail } from "../types";
 import { RequirementDetailPage } from "./RequirementDetailPage";
@@ -286,7 +286,7 @@ function decisionLog(overrides: Partial<RequirementDecisionLog> = {}): Requireme
   };
 }
 
-function renderWithLog(api: Record<string, unknown>) {
+function renderWithLog(api: Record<string, unknown>, onOpenPreview?: (fileId: number) => void) {
   const requirement = vi.fn().mockResolvedValue(baseDetail());
   const onOpenMeeting = vi.fn();
   render(
@@ -297,6 +297,7 @@ function renderWithLog(api: Record<string, unknown>) {
         canWrite
         onBack={vi.fn()}
         onOpenMeeting={onOpenMeeting}
+        onOpenPreview={onOpenPreview}
         onOpenProject={vi.fn()}
         onOpenTask={vi.fn()}
         projects={[]}
@@ -536,5 +537,51 @@ describe("RequirementDetailPage 材料文件夹的小签（4d）", () => {
     expect(within(diskRow as HTMLElement).queryByText(/场会提到/)).not.toBeInTheDocument();
     await userEvent.click(badge);
     expect(onOpenPreview).toHaveBeenCalledWith(812);
+  });
+});
+
+describe("RequirementDetailPage 决议卡的「可能过时」（4e）", () => {
+  const STALE: RelationQuestion = {
+    relation_id: 57,
+    kind: "affects",
+    text: "报价单 v3 之后没改过，可能过时",
+    decision: {
+      id: "dec-a", text: "阈值先按 0.8 执行", date: "2026-09-20", meeting_id: "vm-1", meeting_title: "周会",
+      start_ms: 754_000, audio_url: "/api/media/412",
+    },
+    passage: { loc: "第 2 页", text: "…阈值 0.9…" },
+    file: { id: 812, name: "报价单 v3.xlsx" },
+    answers: ["updated", "no"],
+  };
+
+  function withStale(stale: RelationQuestion[]): RequirementDecisionLog {
+    const log = decisionLog();
+    const [late, early, ...rest] = log.meetings;
+    return {
+      ...log,
+      meetings: [late, { ...early, decisions: [{ ...early.decisions[0], stale_files: stale }] }, ...rest],
+    };
+  }
+
+  it("每个文件一行［已更新］［不相关］，文件名打开预览抽屉；回答以后提示和收成的一行都带［撤销］", async () => {
+    const requirementDecisions = vi.fn().mockResolvedValueOnce(withStale([STALE])).mockResolvedValue(withStale([]));
+    const answerRelation = vi.fn().mockResolvedValue({ relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString() });
+    const undoRelation = vi.fn().mockResolvedValue({ relation: {}, removed_deliverable_id: null });
+    const onOpenPreview = vi.fn();
+    renderWithLog({ requirementDecisions, answerRelation, undoRelation }, onOpenPreview);
+
+    const card = await screen.findByRole("region", { name: "决议" });
+    const row = await within(card).findByRole("group", { name: STALE.text });
+    // 决议本身就是那一行：不再列片段
+    expect(within(row).queryByText(/第 2 页/)).toBeNull();
+    await userEvent.click(within(row).getByRole("button", { name: STALE.text }));
+    expect(onOpenPreview).toHaveBeenCalledWith(812);
+
+    await userEvent.click(within(row).getByRole("button", { name: "已更新" }));
+    expect(answerRelation).toHaveBeenCalledWith(57, { answer: "updated" });
+    await waitFor(() => expect(requirementDecisions).toHaveBeenCalledTimes(2));
+    expect((await within(card).findAllByText("已标为更新过")).length).toBeGreaterThan(0);
+    await userEvent.click(within(card).getAllByRole("button", { name: "撤销" })[0]);
+    await waitFor(() => expect(undoRelation).toHaveBeenCalledWith(57));
   });
 });

@@ -75,6 +75,8 @@ WRONG_ANSWER = "这类关联不能这样回答"
 # 和第二期 file_mentions.pick_mention_file 同一句，同一个按钮不出两种说法
 WRONG_PICK = "只能换成这个项目文件夹里同名的另一份文件"
 FILE_GONE = "这份文件已经不在了"
+# 4e：产出［是］时任务已经取消或过期（L4 还没来得及收回）
+TASK_CANCELLED = "这条任务已经取消了，先恢复任务再登记"
 # 4d：相关材料栏［不相关］的错误
 MEETING_GONE = "会议不存在"
 NOT_INDEXED = "这份文件不在索引里了"
@@ -400,6 +402,9 @@ def answer(connection: Any, relation_id: int, body: dict[str, Any], now: str) ->
         # 换文件时连原来的文件一起记，撤销时整个换回来
         remember = ("origin", "file_id", "content_key", "root_id", "rel_path")
     elif choice == "yes":
+        task = connection.execute("SELECT status FROM tasks WHERE id = ?", (row["task_id"],)).fetchone()
+        if task is not None and task["status"] in ("cancelled", "expired"):
+            raise RelationError(409, TASK_CANCELLED)
         live = live_file(connection, row)
         if live is None:
             raise RelationError(422, FILE_GONE)

@@ -59,8 +59,10 @@ export interface FocusTag {
   ext: string;
   /** 截短后的文件名 */
   label: string;
-  /** 另外还有几个文件交付物 */
+  /** 另外还有几个文件交付物（已登记的） */
   more: number;
+  /** 4e：这是在问的产出（「是这条任务的交付物吗？」）：引线琥珀色虚线、不带箭头，文件名前加「?」 */
+  ask?: boolean;
   box: Box;
 }
 
@@ -124,11 +126,19 @@ function extOf(name: string) {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
-/** 任务的交付物里能打开的文件（有 file_id、没找不到）：画最近标的那一个，其余记个数 */
+/**
+ * 任务的交付物里能打开的文件（有 file_id、没找不到）：画最近标的那一个，其余记个数。
+ * 4e：有在问的产出（asks）时先显示在问的那一份（ask 为真），「+N」数已登记的。
+ */
 export function deliverableTag(task: FocusTask): Omit<FocusTag, "box" | "label"> | undefined {
   const files = (task.deliverables ?? []).filter(
     (item) => item.kind === "file" && typeof item.file_id === "number" && !item.gone,
   );
+  const asking = (task.asks ?? [])[0];
+  if (asking) {
+    const name = asking.name || "文件";
+    return { fileId: asking.file_id, name, ext: asking.ext || extOf(name), more: files.length, ask: true };
+  }
   const last = files[files.length - 1];
   if (!last || typeof last.file_id !== "number") return undefined;
   const name = last.name || last.url.split("/").pop() || last.title || "文件";
@@ -138,7 +148,7 @@ export function deliverableTag(task: FocusTask): Omit<FocusTag, "box" | "label">
 /** 小签的字和宽度：图标、截短的文件名、「+N」，合起来不超过 80 像素 */
 function tagMetrics(tag: Omit<FocusTag, "box" | "label">) {
   const moreW = tag.more > 0 ? textWidth(`+${tag.more}`, TAG_FONT) + 4 : 0;
-  const label = fitText(tag.name, Math.max(12, TAG_MAX_W - TAG_ICON_W - 8 - moreW), TAG_FONT);
+  const label = fitText(tag.ask ? `?${tag.name}` : tag.name, Math.max(12, TAG_MAX_W - TAG_ICON_W - 8 - moreW), TAG_FONT);
   const w = Math.min(TAG_MAX_W, TAG_ICON_W + 8 + textWidth(label, TAG_FONT) + moreW);
   return { label, w };
 }

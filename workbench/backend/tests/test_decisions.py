@@ -406,6 +406,8 @@ def test_brief_and_focus_parse_live_until_the_ledger_catches_up(tmp_path):
     assert focus["decisions"][0] == {
         "id": ids[0], "text": "上线改到 10 月", "start_ms": 1_200_000, "end_ms": 1_510_000,
         "detail": "前提是测试环境 9/30 前到位 市场部同步 补充说明一行", "later": [], "earlier": [],
+        # 4e：台账里的决议带在问的可能过时
+        "stale": [],
     }
     assert [item["id"] for item in focus["decisions"]] == ids
 

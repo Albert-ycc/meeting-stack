@@ -1,3 +1,5 @@
+import type { RelationQuestion } from "./api";
+
 export type HealthLevel = "healthy" | "degraded" | "failed" | "unknown";
 
 export interface BootstrapPayload {
@@ -1035,6 +1037,8 @@ export interface TaskDetail extends Task {
   deliverables: Deliverable[];
   /** 3g：POST 交付物时回刚登记的那一条，［撤销］用 */
   deliverable_id?: number;
+  /** 4e：在问的产出（「是这条任务的交付物吗？」）；旧后台没有 */
+  suggestions?: RelationQuestion[];
 }
 
 export interface TaskFilters {
@@ -1386,6 +1390,8 @@ export interface MaterialFilePreview {
   passage?: MaterialPassage | null;
   /** 4d：「内容相关的会」最多 5 条 */
   related_meetings?: RelatedMeeting[];
+  /** 4e：在问的可能过时和产出（影响在前）；parts=preview 和旧后台没有 */
+  questions?: RelationQuestion[];
 }
 
 /** 4d：预览定位到的那一段；stale 是文件后来改过、这是改之前读到的那段 */

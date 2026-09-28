@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../api";
+import type { ApiClient, RelationQuestion } from "../api";
 import type { MaterialFilePreview, MaterialPreviewContent } from "../types";
 import type { MiniPlayerHandle } from "./graph/MiniPlayer";
 import { MaterialPreviewDrawer, PICTURE_FALLBACK, PreviewBlock, UNPLAYABLE_TEXT } from "./MaterialPreview";
@@ -480,5 +480,76 @@ describe("MaterialPreviewDrawer 的定位和「内容相关的会」（4d）", (
     open(previewData({}, { related_meetings: related }), { canWrite: false });
     expect(await screen.findByText("内容相关的会")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "不相关" })).not.toBeInTheDocument();
+  });
+});
+
+describe("MaterialPreviewDrawer 的问题块（4e）", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  const AFFECTS: RelationQuestion = {
+    relation_id: 57,
+    kind: "affects",
+    text: "可能过时：9/21 决议『总价下调 5%』",
+    decision: {
+      id: "dec-3f2a9c0b1d4e5f60",
+      text: "总价下调 5%",
+      date: "2026-09-21",
+      meeting_id: "m-81",
+      meeting_title: "报价沟通",
+      start_ms: 754_000,
+      audio_url: "/api/media/412",
+    },
+    passage: { loc: "第 2 页", text: "…总价在原基础上下调 3%，含税…" },
+    file: { id: 7, name: "报价单.xlsx" },
+    answers: ["updated", "no"],
+  };
+
+  function open(data: MaterialFilePreview, canWrite = true) {
+    const apiClient = {
+      getMaterialPreview: vi.fn().mockResolvedValue(data),
+      revealMaterial: vi.fn(),
+      answerRelation: vi.fn().mockResolvedValue({ relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString() }),
+      undoRelation: vi.fn().mockResolvedValue({ relation: {}, removed_deliverable_id: null }),
+    } as unknown as ApiClient & Record<string, ReturnType<typeof vi.fn>>;
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: true, llmConfigured: true }}>
+        <MaterialPreviewDrawer
+          apiClient={apiClient}
+          canReveal
+          canWrite={canWrite}
+          fileId={7}
+          isMobile={false}
+          onClose={vi.fn()}
+          onOpenMeeting={vi.fn()}
+        />
+      </LinksFlagsContext.Provider>,
+    );
+    return apiClient;
+  }
+
+  it("问题在位置那一行之后、预览之前；［已更新］以后提示带［撤销］，点了调 undoRelation", async () => {
+    const apiClient = open(previewData({ kind: "text", lines: ["表格第一行"] }, { questions: [AFFECTS] }));
+    const block = await screen.findByRole("group", { name: AFFECTS.text });
+    const where = screen.getByText(/修改于/).closest("p")!;
+    const previewLine = screen.getByText("表格第一行");
+    expect(where.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(block.compareDocumentPosition(previewLine) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(block).getByText("第 2 页：『…总价在原基础上下调 3%，含税…』")).toBeInTheDocument();
+
+    await userEvent.click(within(block).getByRole("button", { name: "已更新" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(57, { answer: "updated" });
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("已标为更新过");
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(57);
+  });
+
+  it("canWrite 为假（手机）只显示问题，不给按钮", async () => {
+    open(previewData({}, { questions: [AFFECTS] }), false);
+    const block = await screen.findByRole("group", { name: AFFECTS.text });
+    expect(within(block).queryByRole("button", { name: "已更新" })).toBeNull();
+    expect(within(block).queryByRole("button", { name: "不相关" })).toBeNull();
   });
 });

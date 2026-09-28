@@ -1824,7 +1824,8 @@ _FOCUS_TASKS = 60
 
 
 def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
-    """展开一场会：录音长度、全部决议和任务（带时间点和全文）、关联的需求、同项目的前后场。
+    """展开一场会：录音长度、全部决议和任务（带时间点和全文）、关联的需求、同项目的前后场。4e：决议带
+    stale（在问的可能过时），任务带 asks（在问的产出，最多 2 个），多 1 条 SELECT。
 
     决议和任务按时间点对齐到录音条上，画几个由前端定（决议 4 个、任务 6 个，其余「+N」）；
     这里给全量，面板里的「+N」直接列出来，不再请求。
@@ -1897,11 +1898,18 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
     # 3g：file 类交付物带上 file_id、name、gone
     for items in deliverables.values():
         decorate_deliverables(connection, items)
+    # 4e：决议在问的可能过时（stale）和任务在问的产出（asks，最多 2 个），一条 SELECT
+    stale, asks = _focus_questions(connection, meeting_id)
+    for entry in outline["decisions"]:
+        # 现读兜底（id 为 null）的决议没有关联，形状不变
+        if entry.get("id"):
+            entry["stale"] = stale.get(entry["id"], [])
     for task in tasks:
         task["title"] = _truncate(task["title"] or "", 200)
         task["detail"] = _truncate(task["detail"] or "", 600)
         task["anchor_quote"] = _truncate(task["anchor_quote"] or "", 240)
         task["deliverables"] = deliverables.get(task["id"], [])
+        task["asks"] = asks.get(task["id"], [])[:_FOCUS_ASKS]
 
     requirements = [
         dict(row)
@@ -1959,6 +1967,39 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
         "previous": previous,
         "next": following,
     }
+
+
+_FOCUS_ASKS = 2
+
+
+def _focus_questions(
+    connection: Any, meeting_id: str
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    """4e：展开一场会时，这场会的决议在问的可能过时 {决议 id: [{relation_id, file_id, name}]} 和任务在问的
+    产出 {任务 id: [{relation_id, file_id, name, ext}]}（新的在前），一条语句，活文件按来历规则找。"""
+    from .relation_read import LIVE_ID_SQL
+
+    stale: dict[str, list[dict[str, Any]]] = {}
+    asks: dict[str, list[dict[str, Any]]] = {}
+    for row in connection.execute(
+        f"""SELECT r.id, r.kind, r.decision_id, r.task_id, f.id AS file_id, f.name, f.ext
+              FROM relations r
+              JOIN material_files f ON f.id = {LIVE_ID_SQL} AND f.gone_at IS NULL
+             WHERE r.status = 'suggested'
+               AND ((r.kind = 'affects' AND r.decision_id IN (SELECT id FROM decisions WHERE meeting_id = :mid))
+                    OR (r.kind = 'produced' AND r.task_id IN (SELECT id FROM tasks WHERE meeting_id = :mid)))
+             ORDER BY r.created_at DESC, r.id DESC""",
+        {"mid": meeting_id},
+    ).fetchall():
+        if row["kind"] == "affects":
+            stale.setdefault(str(row["decision_id"]), []).append(
+                {"relation_id": row["id"], "file_id": row["file_id"], "name": row["name"]}
+            )
+        else:
+            asks.setdefault(str(row["task_id"]), []).append(
+                {"relation_id": row["id"], "file_id": row["file_id"], "name": row["name"], "ext": row["ext"]}
+            )
+    return stale, asks
 
 
 def _segments_at(connection: Any, meeting_id: str, starts: list[int]) -> dict[int, str]:

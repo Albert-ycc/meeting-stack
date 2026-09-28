@@ -138,3 +138,38 @@ describe("交付物小签（3g）", () => {
     expect(one.bounds.x + one.bounds.w).toBeGreaterThanOrEqual(right);
   });
 });
+
+describe("交付物小签的在问的产出（4e）", () => {
+  const file = (id: number, name: string) => ({
+    id,
+    kind: "file",
+    url: `/材料/云图AI/交付/${name}`,
+    title: "",
+    file_id: id,
+    name,
+    gone: false,
+  });
+
+  it("有 asks 的任务先显示在问的那一份：tag.ask 为真，文件名前加「?」，+N 数已登记的", () => {
+    const tasks = [
+      task("t1", 100_000, {
+        deliverables: [file(1, "旧稿.pdf"), file(2, "定稿.pdf")],
+        asks: [{ relation_id: 61, file_id: 930, name: "方案.key", ext: "key" }],
+      }),
+      task("t2", 300_000, { asks: [{ relation_id: 62, file_id: 931, name: "排期.xlsx", ext: "xlsx" }] }),
+    ];
+    const layout = layoutMeetingFocus(focusPayload({ tasks }));
+    const first = layout.items.find((item) => item.id === "task:t1")!;
+    expect(first.tag).toMatchObject({ fileId: 930, name: "方案.key", ext: "key", more: 2, ask: true });
+    expect(first.tag!.label.startsWith("?")).toBe(true);
+    const second = layout.items.find((item) => item.id === "task:t2")!;
+    expect(second.tag).toMatchObject({ fileId: 931, more: 0, ask: true });
+  });
+
+  it("没有 asks（旧后台、样本）时小签不变", () => {
+    const tasks = [task("t1", 100_000, { deliverables: [file(1, "定稿.pdf")] })];
+    const tag = layoutMeetingFocus(focusPayload({ tasks })).items.find((item) => item.id === "task:t1")!.tag!;
+    expect(tag.ask).toBeUndefined();
+    expect(tag.label.startsWith("?")).toBe(false);
+  });
+});

@@ -39,6 +39,8 @@ PHASE_FOUR_MODULES = (
     "related_read.py",
     "ask_retrieval.py",
     "asks.py",
+    "produced.py",
+    "affects.py",
 )
 
 # 4a：relation_read.links_state 的状态句（第 3 节「状态和提示」，每种一句话、最多一个按钮）
@@ -289,6 +291,36 @@ COPY_4G = (
     "想要一句话的回答？到『云图AI』里问",
     "回答引用的这段",
 )
+# 4e：产出的证据（六种）、两处问题的问法、可能过时的两种说法和小签、按钮、回答以后的提示和两处新错误
+COPY_4E = (
+    "会后 3 天新增在『能耗看板/』",
+    "会后 3 天新增，文件名里也有『能耗看板』",
+    "会后 3 天改过，文件名里也有『报价单』",
+    "任务确认后 3 天新增在『能耗看板/』",
+    "会后当天新增在『能耗看板/』",
+    "确认当天新增在『能耗看板/』",
+    "是任务『写一版方案』的交付物吗？",
+    "是这条任务的交付物吗？",
+    "可能过时：9/21 决议『总价下调 5%』",
+    "可能过时：2025/9/21 决议『总价下调 5%』",
+    "第 2 页：『…总价在原基础上下调 3%，含税…』",
+    "报价单 v3 之后没改过，可能过时",
+    "1 个文件可能过时",
+    "是",
+    "不是",
+    "已更新",
+    "不相关",
+    "撤销",
+    "已登记为『写一版方案』的交付物",
+    "已记下：不是这条任务的交付物",
+    "已标为更新过",
+    "已记下：和这条决议不相关",
+    "已撤销",
+    "这条任务已经取消了，先恢复任务再登记",
+    "这份文件已经不在了",
+    "这条已经处理过了",
+    "还没有登记交付物",
+)
 COPY_TABLES = {
     "4a 状态句": STATE_SENTENCES_4A,
     "4a 回答和撤销": ANSWER_COPY_4A,
@@ -296,6 +328,7 @@ COPY_TABLES = {
     "4c 决议卡和时间线": COPY_4C,
     "4d 相关材料栏": COPY_4D,
     "4g 问答": COPY_4G,
+    "4e 产出和可能过时": COPY_4E,
 }
 
 
@@ -369,8 +402,9 @@ def test_quoted_speech_is_not_checked():
 def test_phase_four_copy_tables(table):
     for text in COPY_TABLES[table]:
         assert problems(text) == [], text
-        # 不出现路径
-        assert "/" not in text and "~" not in text, text
+        # 不出现路径（『』里引用的原话和「9/21」这种日期不算，4e 的文件夹写在『能耗看板/』里）
+        plain = re.sub(r"\d+(?:/\d+)+", "", unquote(text))
+        assert "/" not in plain and "~" not in plain, text
 
 
 def test_state_sentences_are_one_sentence_each():
@@ -510,4 +544,40 @@ def test_phase_four_payloads_4g(tmp_path):
         payloads.append(bad.json())
     found = [text for payload in payloads for text in collect_copy(payload)]
     assert found, "样本什么字都没有，这个测试什么都没验证"
+    assert [text for text in found if problems(text)] == []
+
+
+def test_phase_four_payloads_4e(tmp_path):
+    """4e 的样本库打一遍文件面板、预览、任务、需求卡、展开一场会和回答：text、ask、title 这些键里没有不许
+    出现的词。"""
+    from types import SimpleNamespace
+
+    from meeting_workbench import decisions
+
+    from .test_relation_questions import world
+    from .test_tasks_api import write_headers
+
+    w = world(tmp_path)
+    live = SimpleNamespace(links_enabled=True, links_llm_enabled=True, links_llm_daily_calls=200)
+    payloads = [
+        w.client.get(f"/api/graph/files/{w.quote_id}").json(),
+        w.client.get(f"/api/graph/files/{w.plan_id}").json()["questions"],
+        w.client.get(f"/api/materials/files/{w.quote_id}/preview").json()["questions"],
+        w.client.get("/api/tasks/t").json()["suggestions"],
+        w.client.get("/api/graph/meetings/m").json()["decisions"],
+    ]
+    with w.db.autocommit() as connection:
+        payloads.append(decisions.requirement_log(connection, "r", settings=live))
+    found = [text for payload in payloads for text in collect_copy(payload)]
+    assert "报价单 v3 之后没改过，可能过时" in found and "会后 3 天新增在『能耗看板/』" in found
+    headers = write_headers(w.client)
+    produced_id = w.db.query_one("SELECT id FROM relations WHERE kind = 'produced'")["id"]
+    w.db.execute("UPDATE tasks SET status = 'cancelled' WHERE id = 't'")
+    refused = w.client.post(f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers).json()
+    found += collect_copy(refused)
+    assert refused["detail"] in COPY_4E
+    # 决议原文（decision.text、决议卡的 text）和现读的材料片段（passage.text）在页面上放在『』里照原样显示，
+    # 不受用词规则管
+    quoted = {"总价下调 5%", "报价说明：总价在原基础上下调 3%，含税"}
+    found = [text for text in found if text not in quoted]
     assert [text for text in found if problems(text)] == []

@@ -90,7 +90,8 @@ export function answerNotice(question: RelationQuestion, answer: RelationAnswer)
   return "已记下";
 }
 
-function inScope(entry: RecentAnswer, scope: RelationScope) {
+/** 收成的这一行归不归这个宿主（按文件 id、任务 id、决议 id） */
+export function inScope(entry: RecentAnswer, scope: RelationScope) {
   if (scope.fileId !== undefined && scope.fileId !== null && entry.fileId === scope.fileId) return true;
   if (scope.taskId && entry.taskId === scope.taskId) return true;
   return Boolean(entry.decisionId && scope.decisionIds?.includes(entry.decisionId));

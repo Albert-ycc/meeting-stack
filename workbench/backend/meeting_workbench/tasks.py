@@ -536,9 +536,14 @@ class TaskService:
             ).fetchall()
             # 3g：file 类交付物带上 file_id、name、gone
             deliverable_items = decorate_deliverables(connection, [dict(row) for row in deliverables])
+            # 4e：在问的产出（「是这条任务的交付物吗？」），一条 SELECT
+            from .relation_read import task_questions
+
+            suggestions = task_questions(connection, task_id)
         summary = self.task_summary(task)
         summary["events"] = [dict(row) for row in events]
         summary["deliverables"] = deliverable_items
+        summary["suggestions"] = suggestions
         return summary
 
     def create_task(

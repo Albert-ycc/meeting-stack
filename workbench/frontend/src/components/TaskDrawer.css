@@ -271,6 +271,11 @@ button.task-drawer__requirement-link:hover {
   border-color: var(--signal-line);
 }
 
+/* 4e：在问的产出放在交付物列表上面 */
+.task-drawer__section .relation-questions {
+  margin-bottom: 10px;
+}
+
 .task-drawer__deliverables {
   margin: 0;
   padding: 0;

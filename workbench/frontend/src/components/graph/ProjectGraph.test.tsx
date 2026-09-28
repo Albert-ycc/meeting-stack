@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, type ApiClient, type LinksState } from "../../api";
+import { ApiError, type ApiClient, type LinksState, type RelationQuestion } from "../../api";
 import { LinksFlagsContext } from "../links/LinksFlagsContext";
 import type { Project } from "../../types";
 import type { MaterialFilePreview, Task } from "../../types";
@@ -17,34 +17,9 @@ import type {
   MeetingBrief,
   RecentFile,
 } from "./graphTypes";
-import type { GraphNoticeUndo } from "./panelParts";
 import { forgetAskStore, hasDraft, setDraft as setAskDraft } from "../ask/askStore";
 import { ProjectGraph, forgetGraphCache, shortHash } from "./ProjectGraph";
 import { day, focusPayload, focusTask, meeting, payload, requirement } from "./testFixtures";
-
-// 4a 里还没有页面会回答关联（问题块在 4e 放进文件面板）：给面板旁边挂一个按钮，
-// 按下时照回答以后的样子推一条 relation 撤销，测画布的撤销栈。probe 为空时什么都不加。
-const relationProbe = vi.hoisted(() => ({ undo: null as GraphNoticeUndo | null }));
-vi.mock("./GraphPanel", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./GraphPanel")>();
-  const { createElement, Fragment } = await import("react");
-  const GraphPanel = (props: Parameters<typeof actual.GraphPanel>[0]) => {
-    const undo = relationProbe.undo;
-    return createElement(
-      Fragment,
-      null,
-      undo
-        ? createElement(
-            "button",
-            { onClick: () => props.onNotice(undo.kind === "relation" ? undo.label : "", undo), type: "button" },
-            "假装回答了一条关联",
-          )
-        : null,
-      createElement(actual.GraphPanel, props),
-    );
-  };
-  return { ...actual, GraphPanel };
-});
 
 const PROJECTS: Project[] = [
   { id: "p", name: "云图AI", color: "#2c8d83" },
@@ -188,7 +163,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
-  relationProbe.undo = null;
 });
 
 describe("ProjectGraph", () => {
@@ -670,48 +644,6 @@ const ONLINE_ROOTS: GraphRootsPayload = {
   checking: false,
   can_reveal: true,
 };
-
-describe("ProjectGraph 关联的撤销（4a）", () => {
-  const relationUndo = (): GraphNoticeUndo => ({
-    kind: "relation",
-    relationId: 57,
-    label: "已标为更新过",
-    until: new Date(Date.now() + 10 * 60_000).toISOString(),
-  });
-
-  it("回答以后的提示带［撤销］，撤销调 undoRelation；⌘Z 走同一个撤销栈", async () => {
-    relationProbe.undo = relationUndo();
-    const apiClient = makeClient(payload(), { undoRelation: vi.fn(async () => ({ relation: {}, removed_deliverable_id: null })) });
-    render(<Harness apiClient={apiClient} initial="m:a" />);
-    await userEvent.click(await screen.findByRole("button", { name: "假装回答了一条关联" }));
-    const notice = await screen.findByRole("status");
-    expect(notice).toHaveTextContent("已标为更新过");
-
-    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
-    expect(apiClient.undoRelation).toHaveBeenCalledWith(57);
-    expect(await screen.findByText("已撤销")).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "假装回答了一条关联" }));
-    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
-    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledTimes(2));
-  });
-
-  it("undoRelation 回 409 时原样显示服务端那句，横幅是 role=status，不是 alert", async () => {
-    relationProbe.undo = relationUndo();
-    const apiClient = makeClient(payload(), {
-      undoRelation: vi.fn(async () => {
-        throw new ApiError("已超过撤销时间，请直接改回", 409, { detail: "已超过撤销时间，请直接改回" });
-      }),
-    });
-    render(<Harness apiClient={apiClient} initial="m:a" />);
-    await userEvent.click(await screen.findByRole("button", { name: "假装回答了一条关联" }));
-    await userEvent.click(within(await screen.findByRole("status")).getByRole("button", { name: "撤销" }));
-
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已超过撤销时间，请直接改回"));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(apiClient.undoRelation).toHaveBeenCalledWith(57);
-  });
-});
 
 describe("ProjectGraph 完整面板和在图上找", () => {
   it("项目面板：会、需求、任务、卡片的数，材料文件夹的盘状态，词典入口", async () => {
@@ -2022,5 +1954,164 @@ describe("ProjectGraph 问这个项目（4g）", () => {
     render(<Harness apiClient={makeClient()} />);
     await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ });
     expect(screen.queryByRole("button", { name: "问这个项目" })).toBeNull();
+  });
+});
+
+describe("ProjectGraph 文件面板的问题块（4e）", () => {
+  const AFFECTS_Q: RelationQuestion = {
+    relation_id: 57,
+    kind: "affects",
+    text: "可能过时：9/21 决议『总价下调 5%』",
+    decision: {
+      id: "dec-3f2a9c0b1d4e5f60",
+      text: "总价下调 5%",
+      date: "2026-09-21",
+      meeting_id: "a",
+      meeting_title: "报价沟通",
+      start_ms: 754_000,
+      audio_url: "/api/media/412",
+    },
+    passage: { loc: "第 2 页", text: "…总价在原基础上下调 3%，含税…" },
+    file: { id: 7, name: "报价单v2.xlsx", folder: "商务/" },
+    answers: ["updated", "no"],
+  };
+  const PRODUCED_Q: RelationQuestion = {
+    relation_id: 61,
+    kind: "produced",
+    text: "会后 3 天新增在『商务/』",
+    ask: "是任务『写一版方案』的交付物吗？",
+    task: { id: "t-new", title: "写一版方案", status: "in_progress" },
+    file: { id: 7, name: "报价单v2.xlsx", folder: "商务/" },
+    words: [],
+    answers: ["yes", "no"],
+  };
+
+  function questionClient(overrides: Record<string, unknown> = {}) {
+    return materialClient(withFiles(), {
+      getGraphFile: vi.fn(async () => fileDetail({ deliverables: [], questions: [PRODUCED_Q, AFFECTS_Q].reverse() })),
+      answerRelation: vi.fn(async () => ({ relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString(), deliverable_id: null })),
+      undoRelation: vi.fn(async () => ({ relation: {}, removed_deliverable_id: null })),
+      ...overrides,
+    });
+  }
+
+  async function openFilePanel() {
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    await within(panel).findByText("报价单第一行：初审规则服务费");
+    return panel;
+  }
+
+  it("问题在预览之后、「在 N 场会上被提到」之前，可能过时在前", async () => {
+    render(
+      <WithFlags>
+        <Harness apiClient={questionClient()} />
+      </WithFlags>,
+    );
+    const panel = await openFilePanel();
+    const affects = await within(panel).findByRole("group", { name: AFFECTS_Q.text });
+    const produced = within(panel).getByRole("group", { name: PRODUCED_Q.text });
+    const preview = within(panel).getByText("报价单第一行：初审规则服务费");
+    const mentioned = within(panel).getByRole("heading", { name: "在 2 场会上被提到" });
+    expect(preview.compareDocumentPosition(affects) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(affects.compareDocumentPosition(produced) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(produced.compareDocumentPosition(mentioned) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(affects).getByText("第 2 页：『…总价在原基础上下调 3%，含税…』")).toBeInTheDocument();
+    expect(within(produced).getByText("是任务『写一版方案』的交付物吗？")).toBeInTheDocument();
+    expect(within(produced).getByText("会后 3 天新增在『商务/』")).toBeInTheDocument();
+  });
+
+  it("［已更新］发请求并出带［撤销］的提示；⌘Z 走画布的撤销栈调 undoRelation", async () => {
+    const apiClient = questionClient();
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    const panel = await openFilePanel();
+    const affects = await within(panel).findByRole("group", { name: AFFECTS_Q.text });
+    await userEvent.click(within(affects).getByRole("button", { name: "已更新" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(57, { answer: "updated" });
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("已标为更新过");
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(57);
+    expect(await screen.findByText("已撤销")).toBeInTheDocument();
+
+    const produced = await within(screen.getByRole("complementary", { name: "详情面板" })).findByRole("group", {
+      name: PRODUCED_Q.text,
+    });
+    await userEvent.click(within(produced).getByRole("button", { name: "是" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(61, { answer: "yes" });
+    expect(await screen.findByRole("status")).toHaveTextContent("已登记为『写一版方案』的交付物");
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledWith(61));
+  });
+
+  it("undoRelation 回 409 时原样显示服务端那句，横幅是 role=status，不是 alert", async () => {
+    const apiClient = questionClient({
+      undoRelation: vi.fn(async () => {
+        throw new ApiError("已超过撤销时间，请直接改回", 409, { detail: "已超过撤销时间，请直接改回" });
+      }),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    const panel = await openFilePanel();
+    await userEvent.click(within(await within(panel).findByRole("group", { name: AFFECTS_Q.text })).getByRole("button", { name: "不相关" }));
+    await userEvent.click(within(await screen.findByRole("status")).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已超过撤销时间，请直接改回"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(57);
+  });
+
+  it("旧后台：没有 linksFlags、没有 answerRelation 或数据里没有 questions 时不画", async () => {
+    const plain = render(<Harness apiClient={questionClient()} />);
+    let panel = await openFilePanel();
+    expect(within(panel).queryByRole("group", { name: AFFECTS_Q.text })).toBeNull();
+    plain.unmount();
+
+    forgetGraphCache();
+    const noAnswer = render(
+      <WithFlags>
+        <Harness apiClient={questionClient({ answerRelation: undefined })} />
+      </WithFlags>,
+    );
+    panel = await openFilePanel();
+    expect(within(panel).queryByRole("group", { name: AFFECTS_Q.text })).toBeNull();
+    noAnswer.unmount();
+
+    forgetGraphCache();
+    render(
+      <WithFlags>
+        <Harness apiClient={questionClient({ getGraphFile: vi.fn(async () => fileDetail({ deliverables: [] })) })} />
+      </WithFlags>,
+    );
+    panel = await openFilePanel();
+    expect(within(panel).queryByRole("group", { name: AFFECTS_Q.text })).toBeNull();
+    expect(within(panel).queryByRole("group", { name: PRODUCED_Q.text })).toBeNull();
+  });
+
+  it("展开一场会：有 stale 的决议卡加小签「1 个文件可能过时」，点了打开第一份文件的预览抽屉", async () => {
+    const onOpenPreview = vi.fn();
+    const withStale = focusPayload({
+      decisions: [
+        { id: "dec-3f2a9c0b1d4e5f60", text: "初审规则按新口径执行", start_ms: 60_000, detail: "初审规则按新口径执行",
+          later: [], earlier: [], stale: [{ relation_id: 57, file_id: 812, name: "报价单 v3.xlsx" }] },
+      ],
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={focusClient({ graphMeetingFocus: vi.fn(async () => withStale) })} handlers={{ onOpenPreview }} />
+      </WithFlags>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    const view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    await userEvent.click(await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" }));
+    const detail = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(within(detail).getByRole("button", { name: "1 个文件可能过时" }));
+    expect(onOpenPreview).toHaveBeenCalledWith(812);
   });
 });

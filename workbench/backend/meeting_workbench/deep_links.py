@@ -11,8 +11,8 @@
 - 清理每 24 小时一次（links_housekeeping_at），每个事务最多 5,000 行，会议转写时照跑。
 - 各步上一轮怎么结束的记在内存快照里（done、budget、busy、stopping、locked、off、waiting），健康检查
   从快照拼 details.links，请求时不查库。GET 接口从不写库。
-- 4a 里 L1、L2 和清理是实的，4b 填了 L5，4d 填了 H3（related.RelatedPass）；L3（4e）、L4（4e）、H2（4e）、
-  H4（4h）是空位。
+- 4a 里 L1、L2 和清理是实的，4b 填了 L5，4d 填了 H3（related.RelatedPass），4e 填了 L3、L4（produced）和
+  H2（affects）；H4（4h）是空位。
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from . import decisions, file_events, loose_mentions, related
+from . import affects, decisions, file_events, loose_mentions, produced, related
 from .db import Database
 from .material_fts import REBUILD_KEY
 from .relation_read import live_file
@@ -135,6 +135,9 @@ class LinksWorker:
         self._wake = threading.Event()
         self._priorities: OrderedDict[str, None] = OrderedDict()
         self._resolve_cursor = 0
+        # 4e：L3 按关联行 id、L4 按项目 id 往后看，看到底从头再来
+        self._stale_cursor = 0
+        self._produced_cursor = ""
         # 4d：H3 的状态（检查过的词、背景样本、上次看到的矩阵）跨轮留在内存里
         self.related = related.RelatedPass()
         self._state: dict[str, Any] = {
@@ -401,14 +404,29 @@ class LinksWorker:
         return "done"
 
     def l3_stale_affects(self, ctx: RoundContext) -> str:
-        """L3 影响自动收回（4e 填）：待回答的影响，决议之后文件有了新的内容标识、决议没了或后来改了
-        的改 cleared。每轮 500 行。"""
-        return "off"
+        """L3 影响自动收回（4e）：在问的影响，文件断了线、决议之后改过、决议没了或后来改了的改 cleared。
+        每轮 500 行（按 id 从内存游标往后，到底从头再来），会议转写时照跑。"""
+        counts = affects.auto_clear(ctx.db, ctx.now, ctx.since, after=self._stale_cursor)
+        self._stale_cursor = counts["after"]
+        if counts["cleared"]:
+            ctx.work += 1
+        return "done"
 
     def l4_produced(self, ctx: RoundContext) -> str:
-        """L4 产出建议（4e 填）：符合条件的任务在窗口里真正新增的文件（file_events.recent_added），
-        30 天没回答的收回。每轮 200 条任务或 1 秒。"""
-        return "off"
+        """L4 产出建议（4e，produced.watch）：先收回不再符合的，再看符合条件的任务在窗口里真正新增的
+        文件。每轮 200 条任务或 1 秒（和这一段剩下的时间取小的），会议转写时照跑。"""
+        counts = produced.watch(
+            ctx.db,
+            ctx.now,
+            max(0.0, min(produced.ROUND_SECONDS, ctx.remaining())),
+            since=ctx.since,
+            clock=ctx.clock,
+            after=self._produced_cursor,
+        )
+        self._produced_cursor = counts["after"]
+        if counts["written"] or counts["cleared"]:
+            ctx.work += 1
+        return "budget" if counts["after"] else "done"
 
     def l5_loose_mentions(self, ctx: RoundContext) -> str:
         """L5 放宽的提到（4b）：在本机把 AI 挑出的说法对到文件，写 mention 行和 hints_json
@@ -434,9 +452,22 @@ class LinksWorker:
         return self.related.opened(ctx, self.done_priority)
 
     def h2_affects(self, ctx: RoundContext) -> str:
-        """H2 影响匹配（4e 填）：只用全文索引或 instr 找共同的数字、日期、词；不用向量、不拿快照、不拿
-        编码锁。20 条决议或 5 秒，每条决议之前看剩下的预算。材料全文表还没补完时框架整段跳过。"""
-        return "off"
+        """H2 影响匹配（4e，affects.match_due）：只用全文索引或 instr 找共同的数字、日期、词；不用向量、
+        不拿快照、不拿编码锁。20 条决议或 5 秒（和这一段剩下的时间取小的），每条决议之前看剩下的预算和
+        忙信号。材料全文表还没补完时框架整段跳过。"""
+        counts = affects.match_due(
+            ctx.db,
+            ctx.busy_now,
+            max(0.0, min(affects.ROUND_SECONDS, ctx.remaining())),
+            now=ctx.now,
+            since=ctx.since,
+            clock=ctx.clock,
+        )
+        if counts["written"] or counts["cleared"] or counts["tried"]:
+            ctx.work += 1
+        if counts["stopped"] == "busy":
+            return "busy"
+        return "budget" if counts["stopped"] else "done"
 
     def h3_related_rest(self, ctx: RoundContext) -> str:
         """H3 后两段（4d 填）：材料一侧的增量（新片段 4,096 段），再按会议新的在前（3 场会或 8 秒）。
@@ -524,7 +555,7 @@ class LinksWorker:
     def _counts(
         self, ctx: RoundContext
     ) -> tuple[dict[str, int] | None, dict[str, int] | None, dict[str, int] | None]:
-        """每轮末尾数一次，健康检查和状态句从快照读。related、affects、terms 由 4d、4e、4h 接上。
+        """每轮末尾数一次，健康检查和状态句从快照读。related、affects 由 4d、4e 接上，terms 由 4h 接上。
 
         failed：AI 那两步试满 3 次仍没做成的会，只计数、不报警（不改 status，也不进状态句）。"""
         try:
@@ -540,6 +571,8 @@ class LinksWorker:
                 # 4d：到期的会数（partial 的会只在 links status 里计数）
                 if related.enabled(ctx.settings):
                     waiting["related"] = related.due_count(connection, ctx.settings)
+                # 4e：H2 到期的会数
+                waiting["affects"] = affects.due_count(connection, ctx.now)
                 opened = {
                     kind: connection.execute(
                         "SELECT COUNT(*) FROM relations WHERE kind = ? AND status = 'suggested'", (kind,)

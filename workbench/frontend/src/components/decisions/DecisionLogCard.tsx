@@ -14,6 +14,7 @@ import { useMiniPlayer } from "../graph/MiniPlayer";
 import type { NoticeFn } from "../graph/panelParts";
 import { useLinksFlags } from "../links/LinksFlagsContext";
 import { LinksStateLine } from "../links/LinksStateLine";
+import { RelationQuestion } from "../links/RelationQuestion";
 import { OLD_BACKEND_TEXT, useRelationAnswer } from "../links/useRelationAnswer";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice } from "../Notice";
 import { DecisionRow } from "./DecisionRow";
@@ -35,6 +36,8 @@ interface DecisionLogCardProps {
   requirementId: string;
   canWrite: boolean;
   onOpenMeeting: (meetingId: string, seekMs?: number) => void;
+  /** 4e：「报价单 v3 之后没改过，可能过时」的文件名点了打开预览抽屉 */
+  onOpenPreview?: (fileId: number) => void;
   reloadKey?: number | string;
 }
 
@@ -65,7 +68,14 @@ function emptyText(log: RequirementDecisionLog): string | null {
  * 每条能回听原话，标出后来改了、后来又提到；没归到具体需求的折叠成一行。自己调一次 useMiniPlayer。
  * 旧后台（没有 requirementDecisions，或接口回 FastAPI 的 404）时整张卡不画。
  */
-export function DecisionLogCard({ apiClient, requirementId, canWrite, onOpenMeeting, reloadKey = 0 }: DecisionLogCardProps) {
+export function DecisionLogCard({
+  apiClient,
+  requirementId,
+  canWrite,
+  onOpenMeeting,
+  onOpenPreview,
+  reloadKey = 0,
+}: DecisionLogCardProps) {
   const supported = typeof apiClient.requirementDecisions === "function";
   const flags = useLinksFlags();
   const player = useMiniPlayer();
@@ -233,6 +243,22 @@ export function DecisionLogCard({ apiClient, requirementId, canWrite, onOpenMeet
       onRestore={(item) => void restore(item)}
       player={player}
       actionsShown={action === "picked" ? "always" : "hover"}
+      questions={
+        // 4e：决议之后没改过的文件每个一行，［已更新］［不相关］，提示用这张卡的 NoticeBanner（带［撤销］）
+        // 问题没了（回答以后重读）也挂着：收成的那一行留到撤销期结束
+        entry.id && Array.isArray(entry.stale_files) ? (
+          <RelationQuestion
+            answering={answering}
+            apiClient={apiClient}
+            canWrite={canWrite}
+            compact
+            onNotice={onNotice}
+            onOpenFile={onOpenPreview}
+            questions={entry.stale_files}
+            scope={{ decisionIds: [entry.id] }}
+          />
+        ) : undefined
+      }
       actions={
         canPlace && entry.id ? (
           <button className="text-button" disabled={busy} onClick={() => void place(entry, group.meeting, action)} type="button">

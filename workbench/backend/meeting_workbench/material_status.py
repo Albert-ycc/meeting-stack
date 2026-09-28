@@ -557,7 +557,8 @@ def file_preview(
     passage_ordinal: int | None = None,
 ) -> dict[str, Any] | None:
     """GET /api/materials/files/{id}/preview。文件不在索引里回 None。4d：给了 passage_ordinal 时加 passage
-    （parts=preview 时也加；不给时键不变）；完整结果另加 related_meetings 和 file.can_open。"""
+    （parts=preview 时也加；不给时键不变）；完整结果另加 related_meetings 和 file.can_open。4e：完整结果
+    另加 questions（在问的可能过时和产出），parts=preview 时不给。"""
     from . import related_read
 
     row = file_row(connection, file_id)
@@ -597,6 +598,10 @@ def file_preview(
     # 先数再取：列表最多 40 场，场数不受它限制（抽屉标题用它）
     result["mentioned_meetings"] = relation_read.file_mention_counts(connection, [file_id]).get(file_id, 0)
     result["deliverables"] = file_deliverables(connection, row)
+    # 4e：在问的可能过时和产出，放在交付物后面；有在问的影响时 stat 一次，文件变了就先不给影响的问题
+    from .affects import guarded_questions
+
+    result["questions"] = guarded_questions(relation_read.file_questions(connection, file_id), row, state_of)
     result["can_reveal"] = can_reveal
     return result
 
