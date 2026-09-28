@@ -8,6 +8,9 @@ export interface BootstrapPayload {
   pending_confirm_count: number;
   /** 本机打开声档时才有［在访达中显示］［打开文件夹］（3e） */
   can_reveal?: boolean;
+  /** 第四期（4a）：不是布尔值就是旧后台，第四期的控件一律不画 */
+  links_enabled?: boolean;
+  llm_configured?: boolean;
 }
 
 export interface HealthPayload {
@@ -1366,6 +1369,8 @@ export interface MaterialFilePreview {
   state: MaterialFileState;
   preview: MaterialPreviewContent;
   mentions?: MaterialMention[];
+  /** 在几场会上被提到（先数再取，不受 mentions 最多 40 条限制）；旧后台没有 */
+  mentioned_meetings?: number;
   deliverables?: MaterialDeliverable[];
   can_reveal?: boolean;
 }

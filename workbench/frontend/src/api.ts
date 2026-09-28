@@ -133,6 +133,94 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 第四期的新接口在旧后台上不存在：FastAPI 的 404 "Not Found" 或 405。
+ * 404 的 detail 是中文（「这条关联已经不在了」）时是正式回答，不算旧后台。
+ */
+export function isOldBackend(e: unknown): boolean {
+  return (
+    e instanceof ApiError &&
+    (e.status === 405 || (e.status === 404 && (e.data as { detail?: unknown } | null)?.detail === "Not Found"))
+  );
+}
+
+// ---------------------------------------------------------------- 深度关联（4a）
+
+/** 关联的类：提到、相关、产出、影响、后来改了、后来又提到 */
+export type RelationKind = "mention" | "related" | "produced" | "affects" | "later_changed" | "restated";
+
+/** 回答：pick 要带 file_id；restore 只对 rejected、resolved */
+export type RelationAnswer = "yes" | "no" | "updated" | "pick" | "restore";
+
+/** 关联行（服务端白名单输出，不带分数和原样的证据） */
+export interface Relation {
+  id: number;
+  kind: RelationKind;
+  status: string;
+  by_you: boolean;
+  meeting_id: string | null;
+  at_ms: number | null;
+  task_id: string | null;
+  decision_id: string | null;
+  to_decision_id: string | null;
+  file: { id: number; name: string } | null;
+  quote: string | null;
+  evidence: unknown;
+  decided_at: string | null;
+}
+
+/** 一个待回答的问题：文件面板、预览抽屉、任务抽屉、需求卡共用 */
+export interface RelationQuestion {
+  relation_id: number;
+  kind: RelationKind;
+  text: string;
+  ask?: string | null;
+  decision?: {
+    id: string;
+    text: string;
+    date: string;
+    meeting_id: string;
+    meeting_title: string;
+    start_ms: number | null;
+    audio_url: string | null;
+  } | null;
+  task?: { id: string; title: string; status: string } | null;
+  file: { id: number; name: string; folder?: string | null };
+  /** 材料位置加现取的片段，最多 60 字；片段被回收时为 null */
+  passage?: { loc: string; text: string } | null;
+  words?: string[];
+  answers: RelationAnswer[];
+}
+
+/** 各页面的一句话状态；action 为 retry 时就是［现在重试］（POST /api/links/retry） */
+export interface LinksState {
+  kind: "ok" | "waiting" | "stopped";
+  text: string;
+  action: { kind: string; label: string } | null;
+}
+
+export interface RelationAnswerResult {
+  relation: Relation;
+  /** 撤销期以它为准（回答时间加 600 秒） */
+  undo_until: string;
+  deliverable_id?: number | null;
+}
+
+export interface RelationUndoResult {
+  relation: Relation;
+  removed_deliverable_id: number | null;
+}
+
+/** null 表示回到自动；ai 只用于撤销时把原值原样发回 */
+export type DecisionPlacement = "none" | "picked" | "ai" | null;
+
+export interface DecisionPlacementResult {
+  decision: { id: string; placement: DecisionPlacement; requirement_id: string | null } & Record<string, unknown>;
+  /** 撤销时原样发回 */
+  undo: { placement: DecisionPlacement; requirement_id: string | null };
+  undo_until: string;
+}
+
 /** 新建、改词条撞上已有词条时，从 409 里取出那条词条；别的错误返回 null。 */
 export function termConflictFrom(error: unknown): GlossaryTermConflict | null {
   if (!(error instanceof ApiError) || error.status !== 409) return null;
@@ -936,7 +1024,25 @@ export const api = {
       "POST",
       {},
     ),
-
+  // ---------------------------------------------------------------- 深度关联（4a）
+  /** 回答一条关联；file_id 只在 pick 时给。409、422 的 detail 原样显示 */
+  answerRelation: (relationId: number, body: { answer: RelationAnswer; file_id?: number }) =>
+    write<RelationAnswerResult>(`/api/relations/${relationId}/answer`, "POST", body),
+  /** 撤销上一次回答：600 秒内一次，第二次 409 */
+  undoRelation: (relationId: number) =>
+    write<RelationUndoResult>(`/api/relations/${relationId}/undo`, "POST", {}),
+  /** ［现在重试］：失败的放回排队，清掉 AI 循环的暂停 */
+  retryLinks: () => write<{ requeued: number }>("/api/links/retry", "POST", {}),
+  /** 决议归需求；撤销时把返回的 undo 原样发回 */
+  placeDecision: (
+    decisionId: string,
+    body: { placement: DecisionPlacement; requirement_id: string | null },
+  ) =>
+    write<DecisionPlacementResult>(
+      `/api/decisions/${encodeURIComponent(decisionId)}/placement`,
+      "POST",
+      body,
+    ),
 };
 
 export type ApiClient = typeof api;

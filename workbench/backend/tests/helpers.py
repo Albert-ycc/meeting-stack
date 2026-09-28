@@ -1,7 +1,26 @@
 import hashlib
+import sqlite3
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from meeting_workbench.db import Database, utc_now
+
+
+def count_reads(db: Database, fn: Callable[[sqlite3.Connection], Any]) -> int:
+    """在一条新连接上跑 fn，数它执行的读语句：SELECT 和 WITH 开头的都算（一条 WITH … UNION ALL
+    也是一条）。图接口的语句数上限都用它数。"""
+    statements: list[str] = []
+
+    def trace(sql: str) -> None:
+        if sql.lstrip().upper().startswith(("SELECT", "WITH")):
+            statements.append(sql)
+
+    with db.autocommit() as connection:
+        connection.set_trace_callback(trace)
+        fn(connection)
+        connection.set_trace_callback(None)
+    return len(statements)
 
 
 def seed_editable_meeting(db: Database, root: Path, meeting_id: str = "vm-20260102-101500"):

@@ -4,6 +4,7 @@ import json
 from meeting_workbench import graph, overview
 from meeting_workbench.db import utc_now
 
+from .helpers import count_reads
 from .test_graph import (
     TODAY,
     add_link,
@@ -204,13 +205,7 @@ def test_project_graph_sql_count_unchanged_with_hints(tmp_path):
     add_project(db, "p", "云图AI")
 
     def count():
-        statements = []
-        with db.autocommit() as connection:
-            connection.set_trace_callback(
-                lambda sql: statements.append(sql) if sql.lstrip().upper().startswith("SELECT") else None
-            )
-            graph.project_graph(connection, "p", today=TODAY)
-        return len(statements)
+        return count_reads(db, lambda connection: graph.project_graph(connection, "p", today=TODAY))
 
     before = count()
     for index in range(5):

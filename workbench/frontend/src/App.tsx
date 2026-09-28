@@ -35,6 +35,8 @@ import { SearchPage } from "./components/SearchPage";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { MaterialPreviewDrawer } from "./components/MaterialPreview";
 import { TasksPage } from "./components/TasksPage";
+import { LinksFlagsContext, linksFlagsFrom, type LinksFlags } from "./components/links/LinksFlagsContext";
+import { RecentAnswersContext, createRecentAnswerStore } from "./components/links/useRelationAnswer";
 import { uploadRecordingInChunks } from "./upload";
 
 interface AppProps {
@@ -149,6 +151,10 @@ export default function App({ apiClient = api }: AppProps) {
   const [pendingCount, setPendingCount] = useState(0);
   const [glossaryPending, setGlossaryPending] = useState(0);
   const [mobileTaskWrite, setMobileTaskWrite] = useState(true);
+  // 第四期的开关（bootstrap 里 links_enabled 是布尔值才有）；为 null 是旧后台，第四期的控件一律不画
+  const [linksFlags, setLinksFlags] = useState<LinksFlags | null>(null);
+  // 回答以后收成的那一行［撤销］：只在内存里，宿主关掉再打开，撤销期内还在
+  const [recentAnswers] = useState(createRecentAnswerStore);
   const [boardVersion, setBoardVersion] = useState(0);
   const [filters, setFilters] = useState<MeetingFilters>({});
   const [libraryState, setLibraryState] = useState<LoadState>("loading");
@@ -404,6 +410,7 @@ export default function App({ apiClient = api }: AppProps) {
         setTags(tagPayload);
         setMobileTaskWrite(boot.mobile_task_write);
         setCanReveal(Boolean(boot.can_reveal));
+        setLinksFlags(linksFlagsFrom(boot));
         setPendingCount(boot.pending_confirm_count);
         // 空锚点就是默认的工作台；启动期间用户可能已经点了别的视图，不能再拉回来。
         if (window.location.hash) applyHash();
@@ -1109,56 +1116,60 @@ export default function App({ apiClient = api }: AppProps) {
   }
 
   return (
-    <AppShell
-      activeView={view}
-      glossaryBadge={glossaryPending}
-      health={healthLevel}
-      isMobile={isMobile}
-      navigationLocked={detailNavigationLocked}
-      onNavigate={navigate}
-      searchSlot={searchSlot}
-      taskBadge={pendingCount}
-    >
-      <FadeContent transitionKey={view}>{content}</FadeContent>
-      {taskDrawerId && (
-        <TaskDrawer
-          apiClient={apiClient}
-          canWrite={!isMobile || mobileTaskWrite}
-          onChanged={() => {
-            void loadPendingCount();
-            void refreshProjects();
-            setBoardVersion((version) => version + 1); // 任务状态变了，刷新看板 KPI 与任务卡
-          }}
-          onClose={() => setTaskDrawerId(null)}
-          onOpenMeeting={openMeeting}
-          onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
-          onOpenRequirement={openRequirementDetail}
-          taskId={taskDrawerId}
-        />
-      )}
-      {previewTarget && (
-        <MaterialPreviewDrawer
-          apiClient={apiClient}
-          canReveal={canReveal}
-          fileId={previewTarget.fileId}
+    <LinksFlagsContext.Provider value={linksFlags}>
+      <RecentAnswersContext.Provider value={recentAnswers}>
+        <AppShell
+          activeView={view}
+          glossaryBadge={glossaryPending}
+          health={healthLevel}
           isMobile={isMobile}
-          key={`${previewTarget.fileId}:${previewTarget.startMs ?? ""}`}
-          onClose={() => setPreviewTarget(null)}
-          onOpenInGraph={(projectId, fileId) => {
-            setPreviewTarget(null);
-            openProjectGraph(projectId, `file:${fileId}`);
-          }}
-          onOpenMeeting={(meetingId, seekMs) => {
-            setPreviewTarget(null);
-            openMeeting(meetingId, seekMs ?? 0);
-          }}
-          onOpenTask={(taskId) => {
-            setPreviewTarget(null);
-            setTaskDrawerId(taskId);
-          }}
-          startMs={previewTarget.startMs}
-        />
-      )}
-    </AppShell>
+          navigationLocked={detailNavigationLocked}
+          onNavigate={navigate}
+          searchSlot={searchSlot}
+          taskBadge={pendingCount}
+        >
+          <FadeContent transitionKey={view}>{content}</FadeContent>
+          {taskDrawerId && (
+            <TaskDrawer
+              apiClient={apiClient}
+              canWrite={!isMobile || mobileTaskWrite}
+              onChanged={() => {
+                void loadPendingCount();
+                void refreshProjects();
+                setBoardVersion((version) => version + 1); // 任务状态变了，刷新看板 KPI 与任务卡
+              }}
+              onClose={() => setTaskDrawerId(null)}
+              onOpenMeeting={openMeeting}
+              onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
+              onOpenRequirement={openRequirementDetail}
+              taskId={taskDrawerId}
+            />
+          )}
+          {previewTarget && (
+            <MaterialPreviewDrawer
+              apiClient={apiClient}
+              canReveal={canReveal}
+              fileId={previewTarget.fileId}
+              isMobile={isMobile}
+              key={`${previewTarget.fileId}:${previewTarget.startMs ?? ""}`}
+              onClose={() => setPreviewTarget(null)}
+              onOpenInGraph={(projectId, fileId) => {
+                setPreviewTarget(null);
+                openProjectGraph(projectId, `file:${fileId}`);
+              }}
+              onOpenMeeting={(meetingId, seekMs) => {
+                setPreviewTarget(null);
+                openMeeting(meetingId, seekMs ?? 0);
+              }}
+              onOpenTask={(taskId) => {
+                setPreviewTarget(null);
+                setTaskDrawerId(taskId);
+              }}
+              startMs={previewTarget.startMs}
+            />
+          )}
+        </AppShell>
+      </RecentAnswersContext.Provider>
+    </LinksFlagsContext.Provider>
   );
 }

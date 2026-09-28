@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../../api";
+import { ApiError, type ApiClient } from "../../api";
 import type { Project } from "../../types";
 import type { MaterialFilePreview, Task } from "../../types";
 import type {
@@ -16,8 +16,33 @@ import type {
   MeetingBrief,
   RecentFile,
 } from "./graphTypes";
+import type { GraphNoticeUndo } from "./panelParts";
 import { ProjectGraph, forgetGraphCache, shortHash } from "./ProjectGraph";
 import { day, focusPayload, focusTask, meeting, payload, requirement } from "./testFixtures";
+
+// 4a 里还没有页面会回答关联（问题块在 4e 放进文件面板）：给面板旁边挂一个按钮，
+// 按下时照回答以后的样子推一条 relation 撤销，测画布的撤销栈。probe 为空时什么都不加。
+const relationProbe = vi.hoisted(() => ({ undo: null as GraphNoticeUndo | null }));
+vi.mock("./GraphPanel", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./GraphPanel")>();
+  const { createElement, Fragment } = await import("react");
+  const GraphPanel = (props: Parameters<typeof actual.GraphPanel>[0]) => {
+    const undo = relationProbe.undo;
+    return createElement(
+      Fragment,
+      null,
+      undo
+        ? createElement(
+            "button",
+            { onClick: () => props.onNotice(undo.kind === "relation" ? undo.label : "", undo), type: "button" },
+            "假装回答了一条关联",
+          )
+        : null,
+      createElement(actual.GraphPanel, props),
+    );
+  };
+  return { ...actual, GraphPanel };
+});
 
 const PROJECTS: Project[] = [
   { id: "p", name: "云图AI", color: "#2c8d83" },
@@ -161,6 +186,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  relationProbe.undo = null;
 });
 
 describe("ProjectGraph", () => {
@@ -503,6 +529,20 @@ describe("ProjectGraph 展开一场会", () => {
     expect(within(detail).getByText("王工：")).toBeInTheDocument();
   });
 
+  it("决议带台账 id（4a）时按 id 选中：面板里还是那一条", async () => {
+    const withIds = focusPayload({
+      decisions: [
+        { id: "dec-00aa11bb22cc33dd", text: "没写时间的决议", start_ms: null },
+        { id: "dec-3f2a9c0b1d4e5f60", text: "初审规则按新口径执行", start_ms: 60_000, detail: "初审规则按新口径执行，旧口径下月停用" },
+      ],
+    });
+    const apiClient = focusClient({ graphMeetingFocus: vi.fn(async () => withIds) });
+    const view = await expandMeetingA(apiClient);
+    await userEvent.click(await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" }));
+    const detail = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(detail).getByText("初审规则按新口径执行，旧口径下月停用")).toBeInTheDocument();
+  });
+
   it("任务：确认、编辑后 ⌘Z 改回原样、不要；「+N」列出全部", async () => {
     const tasks = [
       focusTask("t1", 300_000, { status: "pending_confirm" }),
@@ -576,6 +616,48 @@ const ONLINE_ROOTS: GraphRootsPayload = {
   checking: false,
   can_reveal: true,
 };
+
+describe("ProjectGraph 关联的撤销（4a）", () => {
+  const relationUndo = (): GraphNoticeUndo => ({
+    kind: "relation",
+    relationId: 57,
+    label: "已标为更新过",
+    until: new Date(Date.now() + 10 * 60_000).toISOString(),
+  });
+
+  it("回答以后的提示带［撤销］，撤销调 undoRelation；⌘Z 走同一个撤销栈", async () => {
+    relationProbe.undo = relationUndo();
+    const apiClient = makeClient(payload(), { undoRelation: vi.fn(async () => ({ relation: {}, removed_deliverable_id: null })) });
+    render(<Harness apiClient={apiClient} initial="m:a" />);
+    await userEvent.click(await screen.findByRole("button", { name: "假装回答了一条关联" }));
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("已标为更新过");
+
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(57);
+    expect(await screen.findByText("已撤销")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "假装回答了一条关联" }));
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledTimes(2));
+  });
+
+  it("undoRelation 回 409 时原样显示服务端那句，横幅是 role=status，不是 alert", async () => {
+    relationProbe.undo = relationUndo();
+    const apiClient = makeClient(payload(), {
+      undoRelation: vi.fn(async () => {
+        throw new ApiError("已超过撤销时间，请直接改回", 409, { detail: "已超过撤销时间，请直接改回" });
+      }),
+    });
+    render(<Harness apiClient={apiClient} initial="m:a" />);
+    await userEvent.click(await screen.findByRole("button", { name: "假装回答了一条关联" }));
+    await userEvent.click(within(await screen.findByRole("status")).getByRole("button", { name: "撤销" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已超过撤销时间，请直接改回"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(57);
+  });
+});
 
 describe("ProjectGraph 完整面板和在图上找", () => {
   it("项目面板：会、需求、任务、卡片的数，材料文件夹的盘状态，词典入口", async () => {

@@ -519,7 +519,13 @@ def test_backup_without_the_fts_table_gets_no_mark(tmp_path):
     with sqlite3.connect(result.local_path) as copy:
         assert copy.execute("SELECT 1 FROM app_state WHERE key = ?", (REBUILD_KEY,)).fetchone() is None
     receipt = json.loads((settings.backup_dir / "last-backup.json").read_text())
-    assert receipt["derived_tables"] == ["embeddings", "material_chunk_vectors"]
+    assert receipt["derived_tables"] == [
+        "embeddings",
+        "material_chunk_vectors",
+        "meeting_windows",
+        "meeting_window_passages",
+        "meeting_related_scan",
+    ]
 
 
 def test_backup_is_smaller_than_one_that_keeps_the_fts_table(tmp_path):

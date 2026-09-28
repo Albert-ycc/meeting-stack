@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import type { ApiClient } from "../../api";
 import { formatTime } from "../../format";
+import { decisionNodeId } from "./focusLayout";
 import type { FocusDecision, FocusTask, MeetingFocus, QuotesPayload } from "./graphTypes";
 import { PlayButton, Section, TASK_STATUS, localUndoUntil, type GraphNoticeUndo, type NoticeFn } from "./panelParts";
 import type { MiniPlayerHandle } from "./MiniPlayer";
@@ -268,7 +269,7 @@ function AllDecisions({ props }: { props: FocusPanelProps }) {
       {focus.decisions.map((item, index) => (
         <li key={`${index}-${item.text}`}>
           <PlayButton atMs={item.start_ms} audioUrl={focus.meeting.audio_url} label={focus.meeting.title} player={player} />
-          <button className="text-button" onClick={() => props.onSelect(`dec:${index}`)} type="button">
+          <button className="text-button" onClick={() => props.onSelect(decisionNodeId(item, index))} type="button">
             {item.text}
           </button>
         </li>
@@ -302,7 +303,7 @@ export function FocusPanel(props: FocusPanelProps) {
   let heading = "";
   let body: ReactNode = null;
   if (selectedId.startsWith("dec:")) {
-    const decision = focus.decisions[Number(selectedId.slice(4))];
+    const decision = focus.decisions.find((item, index) => decisionNodeId(item, index) === selectedId);
     if (decision) {
       kind = "决议";
       heading = decision.text;

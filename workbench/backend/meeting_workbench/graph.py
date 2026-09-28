@@ -28,8 +28,10 @@ from urllib.parse import urlsplit
 from .attribution import ATTRIBUTION_STATE_SQL, LATEST_LINK_JOIN
 from .cards import BLOCKED, MISSING, STOP_REASONS, SYNCED, USER_EDITED
 from .db import GRAPH_REV_KEY
+from . import decisions as decisions_module
 from . import file_mentions
 from . import folder_scan
+from . import relation_read
 from .materials import (
     CARDS_DIR_NAME,
     ROOT_MISSING,
@@ -44,11 +46,7 @@ from .project_linking import DRAFT_TASK_STATUSES
 from .project_profile import light_key
 from .notify import (
     _ANCHOR,
-    _DECISION_SECTION,
-    _LIST_ITEM,
-    _SUBHEADING,
     _SUMMARY_SECTION,
-    _clean_item,
     _section_body,
     _truncate,
 )
@@ -552,20 +550,9 @@ def project_graph(
         ).fetchall()
     }
 
-    # ⑫ 会上提到的文件（不按窗口过滤：通用词干要按本项目全部的会算）
-    mention_rows = [
-        dict(row)
-        for row in connection.execute(
-            """SELECT fm.meeting_id, fm.stem_key, fm.needle, fm.count, fm.first_ms, fm.anchors_json,
-                      fm.minutes_count, fm.source,
-                      f.id AS file_id, f.name, f.ext, f.rel_path, f.root_id
-                 FROM meeting_file_mentions fm
-                 JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
-                 JOIN material_files f ON f.id = fm.file_id AND f.gone_at IS NULL
-                WHERE fm.project_id = ? AND fm.status = 'active'""",
-            (project_id,),
-        ).fetchall()
-    ]
+    # ⑫ 会上提到的文件（不按窗口过滤：通用词干要按本项目全部的会算）。v16：字面和放宽的提到一条
+    # WITH … UNION ALL 语句（relation_read.project_edges），仍算 1 条
+    mention_rows = relation_read.project_edges(connection, project_id)
 
     return _assemble(
         project=project,
@@ -1590,18 +1577,33 @@ _BRIEF_TASKS = 20
 _BRIEF_DECISIONS = 8
 _BRIEF_QUOTES = 3
 _QUOTE_CHARS = 120
-_HHMMSS = re.compile(r"\[(\d{2}):(\d{2})(?::(\d{2}))?")
+_DETAIL_CHARS = 600
 
 
 def _anchor_ms(raw: str) -> int | None:
-    match = _HHMMSS.search(raw)
-    if match is None:
-        return None
-    hours, minutes, seconds = match.group(1), match.group(2), match.group(3)
-    if seconds is None:
-        # [MM:SS]
-        return (int(hours) * 60 + int(minutes)) * 1000
-    return ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000
+    return decisions_module.parse_anchor(raw)[0]
+
+
+def _decision_entry(item: Any, *, chars: int, detail: bool) -> dict[str, Any]:
+    """简报每条 {id, text, start_ms, later}；展开一场会每条再带 end_ms、detail、earlier（4c 填）。
+
+    id 在台账跟上时是 dec-…，当场解析的为 null。存的时候不截断，显示时再截。
+    """
+    entry: dict[str, Any] = {
+        "id": item["id"],
+        "text": _truncate(item["text"], chars),
+        "start_ms": item["start_ms"],
+    }
+    if not detail:
+        entry["later"] = None
+        return entry
+    entry.update(
+        end_ms=item["end_ms"],
+        detail=_truncate(item["detail"] or "", _DETAIL_CHARS),
+        later=[],
+        earlier=[],
+    )
+    return entry
 
 
 def minutes_outline(
@@ -1609,7 +1611,8 @@ def minutes_outline(
 ) -> dict[str, Any]:
     """「一分钟摘要」和「定了什么」（带时间点）。老纪要没有决议段时明写，不说「没有决议」。
 
-    detail=True 时每条决议另带 detail：老六段式「### 决议 1 · …」下面的正文（展开一场会的面板用）。
+    决议由 decisions.parse_decisions 当场解析（id 为 null）；detail=True 时每条另带 detail 和
+    end_ms（展开一场会的面板用）。
     """
     text = markdown or ""
     summary = ""
@@ -1624,39 +1627,31 @@ def minutes_outline(
             "",
         )
         summary = _truncate(_ANCHOR.sub("", paragraph).replace("**", "").strip(), 240)
-    header = _DECISION_SECTION.search(text)
-    decision_body = _section_body(text, header)
-    items: list[dict[str, Any]] = []
-    raw_items: list[str] = []
-    if decision_body:
-        sub = list(_SUBHEADING.finditer(decision_body))
-        if sub:
-            # 老六段式：「### 决议 1 · xxx」，时间点可能写在下面的正文里
-            for index, match in enumerate(sub):
-                end = sub[index + 1].start() if index + 1 < len(sub) else len(decision_body)
-                raw_items.append(match.group(1) + " " + decision_body[match.end():end])
-        else:
-            raw_items = _LIST_ITEM.findall(decision_body)
-    for raw in raw_items:
-        lines = raw.strip().split("\n")
-        item = _clean_item(lines[0])
-        if not item or any(existing["text"] == _truncate(item, chars) for existing in items):
-            continue
-        entry: dict[str, Any] = {"text": _truncate(item, chars), "start_ms": _anchor_ms(raw)}
-        if detail:
-            rest = " ".join(
-                cleaned
-                for cleaned in (_clean_item(line) for line in lines[1:])
-                if cleaned and not cleaned.startswith(("#", ">"))
-            )
-            entry["detail"] = _truncate(rest, 600)
-        items.append(entry)
-    note = None
-    if header is None:
-        note = "这场纪要没有决议段"
-    elif not items:
-        note = "决议段是空的"
-    return {"summary": summary, "decisions": items[:limit], "decisions_note": note}
+    parsed = decisions_module.parse_safely(text)
+    items = [
+        _decision_entry({"id": None, **vars(item)}, chars=chars, detail=detail)
+        for item in parsed.items[:limit]
+    ]
+    return {
+        "summary": summary,
+        "decisions": items,
+        "decisions_note": decisions_module.NOTE_TEXT.get(parsed.note or ""),
+    }
+
+
+def _ledger_outline(
+    connection: Any, meeting: dict[str, Any], outline: dict[str, Any], *, limit: int, chars: int, detail: bool
+) -> dict[str, Any]:
+    """4a：台账跟上当前纪要版本时决议从 decisions 表读（带 id）；落后或 links 关着时用当场解析的。"""
+    ledger = decisions_module.ledger_decisions(connection, meeting["id"], meeting["minutes_version_id"])
+    if ledger is None:
+        return outline
+    rows, note = ledger
+    return {
+        **outline,
+        "decisions": [_decision_entry(row, chars=chars, detail=detail) for row in rows[:limit]],
+        "decisions_note": decisions_module.NOTE_TEXT.get(note or ""),
+    }
 
 
 def meeting_brief(
@@ -1670,6 +1665,7 @@ def meeting_brief(
     meeting = connection.execute(
         """SELECT m.id, m.title, m.recording_date, m.created_at, m.duration_ms, m.project_id,
                   p.name AS project_name, p.color AS project_color,
+                  m.current_minutes_version_id AS minutes_version_id,
                   mv.markdown AS minutes_markdown,
                   (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
                     ORDER BY CASE a.source_root
@@ -1685,10 +1681,15 @@ def meeting_brief(
         raise GraphNotFound("会议不存在")
     meeting = dict(meeting)
     day = local_day(meeting["recording_date"], meeting["created_at"])
-    outline = (
+    outline = _ledger_outline(
+        connection,
+        meeting,
         minutes_outline(meeting["minutes_markdown"])
         if meeting["minutes_markdown"]
-        else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"}
+        else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"},
+        limit=_BRIEF_DECISIONS,
+        chars=90,
+        detail=False,
     )
 
     evidence_quotes: list[dict[str, Any]] = []
@@ -1784,6 +1785,7 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
         """SELECT m.id, m.title, m.recording_date, m.created_at, m.duration_ms, m.project_id,
                   m.current_transcript_version_id AS transcript_version_id,
                   p.name AS project_name, p.color AS project_color,
+                  m.current_minutes_version_id AS minutes_version_id,
                   mv.markdown AS minutes_markdown,
                   (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
                     ORDER BY CASE a.source_root
@@ -1799,12 +1801,17 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
         raise GraphNotFound("会议不存在")
     meeting = dict(meeting)
     day = local_day(meeting["recording_date"], meeting["created_at"])
-    outline = (
+    outline = _ledger_outline(
+        connection,
+        meeting,
         minutes_outline(
             meeting["minutes_markdown"], limit=_FOCUS_DECISIONS, chars=400, detail=True
         )
         if meeting["minutes_markdown"]
-        else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"}
+        else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"},
+        limit=_FOCUS_DECISIONS,
+        chars=400,
+        detail=True,
     )
 
     duration = meeting["duration_ms"]

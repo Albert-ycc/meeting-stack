@@ -280,6 +280,12 @@ describe("MaterialPreviewDrawer", () => {
     expect(within(dialog).getByRole("button", { name: "复制路径" })).toBeInTheDocument();
   });
 
+  it("被提到的场数取 mentioned_meetings（列表最多 40 条），旧后台没有时用列表长度", async () => {
+    renderDrawer({ apiClient: apiClient({ ...drawerData, mentioned_meetings: 41 }) });
+    const dialog = await screen.findByRole("dialog", { name: "材料预览" });
+    expect(await within(dialog).findByText("在 41 场会上被提到")).toBeInTheDocument();
+  });
+
   it("不在本机时没有［在访达中显示］，手机上没有［在关系图里看］", async () => {
     renderDrawer({ canReveal: false, isMobile: true });
     expect(await screen.findByRole("heading", { name: "报价单.xlsx" })).toBeInTheDocument();

@@ -388,7 +388,7 @@ export function MaterialPreviewDrawer({
               <PreviewBlock data={data} onOpenMeeting={(id) => onOpenMeeting(id)} player={player.handle} />
               {mentions.length > 0 && (
                 <section className="material-drawer__section">
-                  <h3>在 {mentions.length} 场会上被提到</h3>
+                  <h3>在 {data.mentioned_meetings ?? mentions.length} 场会上被提到</h3>
                   <ul className="material-drawer__mentions">
                     {mentions.map((item) => (
                       <li key={item.meeting_id}>

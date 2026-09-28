@@ -236,7 +236,14 @@ def test_backup_excludes_embeddings_and_keeps_business_data(tmp_path):
     assert result.local_path.stat().st_size < settings.database_path.stat().st_size
     receipt = json.loads((settings.backup_dir / "last-backup.json").read_text())
     assert receipt["derived_stripped"] is True
-    assert receipt["derived_tables"] == ["embeddings", "material_chunks_fts", "material_chunk_vectors"]
+    assert receipt["derived_tables"] == [
+        "embeddings",
+        "material_chunks_fts",
+        "material_chunk_vectors",
+        "meeting_windows",
+        "meeting_window_passages",
+        "meeting_related_scan",
+    ]
 
 
 def test_backup_survives_when_derived_table_is_absent(tmp_path):
@@ -253,6 +260,9 @@ def test_backup_survives_when_derived_table_is_absent(tmp_path):
     db.execute("DROP TABLE embeddings")
     db.execute("DROP TABLE material_chunk_vectors")
     db.execute("DROP TABLE material_chunks_fts")
+    db.execute("DROP TABLE meeting_windows")
+    db.execute("DROP TABLE meeting_window_passages")
+    db.execute("DROP TABLE meeting_related_scan")
 
     result = BackupManager(db, settings).create()
 
@@ -266,3 +276,76 @@ def test_backup_survives_when_derived_table_is_absent(tmp_path):
     receipt = json.loads((settings.backup_dir / "last-backup.json").read_text())
     assert receipt["derived_stripped"] is False
     assert receipt["derived_tables"] == []
+
+
+def test_backup_strips_related_windows_and_their_mark(tmp_path):
+    """第四期：相关的窗口向量、候选段落和台账不进备份，related_chunk_mark 同一个事务里删掉；
+    你的回答、决议、文件流水、挖出的词都留着。"""
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        archive_root=archive,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', 'x')")
+    db.execute("INSERT INTO meetings(id, title, project_id) VALUES ('m', '周会', 'p')")
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/x/云图AI', 'x')"
+    )
+    db.execute(
+        """INSERT INTO material_contents(content_key, layer, created_at, updated_at)
+           VALUES ('q2:a', 'text', 'x', 'x')"""
+    )
+    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 0, '报价单')")
+    db.execute(
+        """INSERT INTO meeting_windows(meeting_id, model, start_ms, end_ms, text_sha, chars, bar, vector)
+           VALUES ('m', 'bge', 0, 90000, 's', 10, 0.6, ?)""",
+        (b"\x00" * 1024,),
+    )
+    db.execute(
+        """INSERT INTO meeting_window_passages(meeting_id, start_ms, rank, chunk_id, content_key,
+                                               ordinal, score, seg_ms)
+           VALUES ('m', 0, 0, 1, 'q2:a', 0, 0.7, 0)"""
+    )
+    db.execute("INSERT INTO meeting_related_scan(meeting_id, dirty) VALUES ('m', 0)")
+    db.execute(
+        """INSERT INTO app_state(key, value, updated_at)
+           VALUES ('related_chunk_mark', '{"model": "bge", "id": 1}', 'x')"""
+    )
+    db.execute(
+        """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id, content_key,
+                                 created_at, updated_at)
+           VALUES ('related', 'p', 'm|q2:a', 'rejected', 'vector', 'm', 'q2:a', 'x', 'x')"""
+    )
+    db.execute(
+        """INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, day, at)
+           VALUES (1, 7, '报价单.xlsx', '', 'added', '2026-09-27', '2026-09-27T01:00:00.000Z')"""
+    )
+    db.execute(
+        """INSERT INTO glossary_mining_seeds(content_key, miner, source_sig, terms_json, mined_at)
+           VALUES ('q2:a', 1, 's', '[]', 'x')"""
+    )
+
+    result = BackupManager(db, settings).create()
+
+    assert {"meeting_windows", "meeting_window_passages", "meeting_related_scan"} <= set(
+        result.derived_tables
+    )
+    with sqlite3.connect(result.local_path) as connection:
+        for table in ("meeting_windows", "meeting_window_passages", "meeting_related_scan"):
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT 1 FROM app_state WHERE key='related_chunk_mark'").fetchone()
+            is None
+        )
+        for table in (
+            "relations", "material_file_events", "glossary_mining_seeds", "material_chunks"
+        ):
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    # 主库不动
+    assert db.query_one("SELECT COUNT(*) AS n FROM meeting_windows") == {"n": 1}
+    assert db.query_one("SELECT value FROM app_state WHERE key='related_chunk_mark'") is not None

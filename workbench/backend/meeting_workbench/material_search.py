@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
+from . import relation_read
 from .db import Database
 from .material_rules import PLAYABLE_TYPES, REASON_LABELS
 from .material_status import FILE_ERRORS, _iso_ns
@@ -261,18 +262,8 @@ class _Assembler:
         return None
 
     def _mentions(self, file_ids: list[int]) -> dict[int, int]:
-        counts: dict[int, int] = {}
-        for part in _batches(file_ids):
-            for row in self.connection.execute(
-                f"""SELECT fm.file_id, COUNT(DISTINCT fm.meeting_id) AS n
-                      FROM meeting_file_mentions fm
-                      JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
-                     WHERE fm.file_id IN ({_marks(part)}) AND fm.status = 'active'
-                     GROUP BY fm.file_id""",
-                list(part),
-            ).fetchall():
-                counts[int(row["file_id"])] = int(row["n"])
-        return counts
+        # v16：字面和放宽的提到一起数（relation_read）
+        return relation_read.file_mention_counts(self.connection, file_ids)
 
 
 def material_search(

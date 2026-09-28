@@ -538,9 +538,93 @@ V15_FILE_COLUMNS = (
 )
 
 
+# v16 / 4a：第四期。11 张新表，11 个手写触发器，三张表进关系图版本号（生成 9 个触发器），
+# 24 个索引（新表上 22 个，meetings、requirement_meetings 上各 1 个），6 个 app_state 键。
+V16_TABLES = (
+    "relations",
+    "decisions",
+    "decision_scan",
+    "mention_extractions",
+    "meeting_related_scan",
+    "meeting_windows",
+    "meeting_window_passages",
+    "material_file_events",
+    "glossary_candidates",
+    "glossary_mining_scan",
+    "glossary_mining_seeds",
+)
+V16_TRIGGERS = (
+    "relations_leave_project",
+    "graph_rev_relations_insert",
+    "graph_rev_relations_update",
+    "graph_rev_relations_delete",
+    "related_rev_relations_insert",
+    "related_rev_relations_update",
+    "related_rev_relations_delete",
+    "material_file_events_insert",
+    "material_file_events_update",
+    "meeting_related_scan_dirty_meeting",
+    "meeting_related_scan_dirty_edit",
+)
+V16_GRAPH_REV_TABLES = ("decisions", "deliverables", "deliverable_files")
+V16_OLD_TABLE_INDEXES = ("idx_meetings_project", "idx_requirement_meetings_meeting")
+V16_INDEXES = (
+    "idx_decisions_meeting",
+    "idx_decisions_requirement",
+    "idx_decisions_text_key",
+    "idx_decision_scan_pair",
+    "idx_relations_project",
+    "idx_relations_meeting",
+    "idx_relations_task",
+    "idx_relations_decision",
+    "idx_relations_to_decision",
+    "idx_relations_file",
+    "idx_relations_content",
+    "idx_relations_deliverable",
+    "idx_mention_extractions_state",
+    "idx_meeting_related_scan_dirty",
+    "idx_meeting_window_passages_chunk",
+    "idx_meeting_window_passages_content",
+    "idx_material_file_events_root",
+    "idx_material_file_events_file",
+    "idx_material_file_events_day",
+    "idx_material_file_events_sig",
+    "idx_material_file_events_changed_day",
+    "idx_glossary_candidates_status",
+    *V16_OLD_TABLE_INDEXES,
+)
+V16_KEYS = (
+    "links_since",
+    "related_rev",
+    "links_llm_usage",
+    "links_housekeeping_at",
+    "related_chunk_mark",
+    "card_index_paths",
+)
+
+
+def _downgrade_to_v15(connection: sqlite3.Connection) -> None:
+    """把刚建好的 v16 库退回 v15 的形状：先删新触发器（文件流水的触发器会挡住删 content_key 列），
+    再删新表，再删老表上的两个新索引和六个键。"""
+    for trigger in V16_TRIGGERS:
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    for table in V16_GRAPH_REV_TABLES:
+        for action in ("insert", "update", "delete"):
+            connection.execute(f"DROP TRIGGER IF EXISTS graph_rev_{table}_{action}")
+    for table in V16_TABLES:
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
+    for index in V16_OLD_TABLE_INDEXES:
+        connection.execute(f"DROP INDEX IF EXISTS {index}")
+    connection.execute(
+        f"DELETE FROM app_state WHERE key IN ({', '.join('?' for _ in V16_KEYS)})", V16_KEYS
+    )
+    connection.execute("PRAGMA user_version=15")
+
+
 def _downgrade_to_v14(connection: sqlite3.Connection) -> None:
     """把刚建好的 v15 库退回 v14 的形状：先删新触发器，再删新表，再删两个新索引，最后删新列
     （material_files 上六个、material_dirs 上一个）。"""
+    _downgrade_to_v15(connection)
     for trigger in V15_TRIGGERS:
         connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for table in V15_TABLES:
@@ -769,7 +853,7 @@ def test_version_fourteen_migration_adds_tables_and_keeps_data(tmp_path):
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [13]
-    assert db.user_version() == SCHEMA_VERSION == 15
+    assert db.user_version() == SCHEMA_VERSION == 16
     assert set(V14_TABLES) <= _tables(db)
     assert db.query_one("SELECT name FROM projects WHERE id='p-a'") == {"name": "云图AI"}
     assert db.query_one("SELECT decision FROM name_decisions") == {"decision": "ignored"}
@@ -785,7 +869,7 @@ def test_version_fourteen_migration_adds_tables_and_keeps_data(tmp_path):
     # 再跑一遍什么都不变
     db.initialize()
     db.initialize()
-    assert db.user_version() == 15
+    assert db.user_version() == 16
     assert db.query_one("SELECT COUNT(*) AS n FROM project_material_roots") == {"n": 1}
 
 
@@ -810,7 +894,7 @@ def test_version_fifteen_migration_adds_material_content_and_keeps_data(tmp_path
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [14]
-    assert db.user_version() == SCHEMA_VERSION == 15
+    assert db.user_version() == SCHEMA_VERSION == 16
     assert set(V15_TABLES) | set(V15_TRIGGERS) <= _tables(db)
     columns = {row["name"] for row in db.query_all("PRAGMA table_info(material_files)")}
     assert set(V15_FILE_COLUMNS) <= columns
@@ -824,7 +908,7 @@ def test_version_fifteen_migration_adds_material_content_and_keeps_data(tmp_path
     assert db.query_one("SELECT value FROM app_state WHERE key='ocr_engine'") == {"value": "auto"}
     db.initialize()
     db.initialize()
-    assert db.user_version() == 15
+    assert db.user_version() == 16
     assert db.query_one("SELECT COUNT(*) AS n FROM material_files") == {"n": 1}
 
 
@@ -943,3 +1027,277 @@ def test_mounting_a_folder_drops_the_pending_folder(tmp_path):
     db.execute("DELETE FROM projects WHERE id='p'")
     assert db.query_one("SELECT COUNT(*) AS n FROM pending_project_folders") == {"n": 0}
     assert db.query_one("SELECT COUNT(*) AS n FROM root_fingerprints") == {"n": 0}
+
+
+def _schema_objects(db: Database) -> dict[str, set[str]]:
+    objects: dict[str, set[str]] = {"table": set(), "trigger": set(), "index": set()}
+    for row in db.query_all(
+        "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'trigger', 'index')"
+    ):
+        objects[row["type"]].add(row["name"])
+    return objects
+
+
+def _v16_generated_triggers() -> set[str]:
+    return {
+        f"graph_rev_{table}_{action}"
+        for table in V16_GRAPH_REV_TABLES
+        for action in ("insert", "update", "delete")
+    }
+
+
+def test_version_sixteen_migration_adds_tables_and_keeps_data(tmp_path):
+    database_path = tmp_path / "workbench.sqlite3"
+    db = Database(database_path)
+    db.initialize()
+    with sqlite3.connect(database_path) as connection:
+        _downgrade_to_v15(connection)
+        connection.executescript(
+            """
+            INSERT INTO projects(id, name, created_at) VALUES ('p-a', '云图AI', '2026-09-01');
+            INSERT INTO meetings(id, title, status, project_id, created_at, updated_at)
+            VALUES ('m-1', '周会', 'published', 'p-a', '2026-09-01', '2026-09-01');
+            INSERT INTO project_material_roots(project_id, path, created_at)
+            VALUES ('p-a', '/Volumes/资料盘/项目/云图AI', '2026-09-01');
+            INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, size, mtime_ns, seen_at)
+            VALUES (1, '报价单.xlsx', '', '报价单.xlsx', '报价单', '报价单', 10, 20, '2026-09-01');
+            """
+        )
+    objects = _schema_objects(db)
+    assert not set(V16_TABLES) & objects["table"]
+    assert not (set(V16_TRIGGERS) | _v16_generated_triggers()) & objects["trigger"]
+    assert not set(V16_INDEXES) & objects["index"]
+    backups: list[int] = []
+
+    db.initialize(before_migrate=lambda: backups.append(db.user_version()))
+
+    assert backups == [15]
+    assert db.user_version() == SCHEMA_VERSION == 16
+    objects = _schema_objects(db)
+    assert set(V16_TABLES) <= objects["table"]
+    assert len(V16_TABLES) == 11
+    assert set(V16_TRIGGERS) <= objects["trigger"] and len(V16_TRIGGERS) == 11
+    assert _v16_generated_triggers() <= objects["trigger"] and len(_v16_generated_triggers()) == 9
+    assert set(V16_INDEXES) <= objects["index"] and len(V16_INDEXES) == 24
+    keys = {
+        row["key"]: row["value"]
+        for row in db.query_all("SELECT key, value FROM app_state WHERE key IN ('links_since', 'related_rev')")
+    }
+    assert keys["related_rev"] == "0" and keys["links_since"]
+    # 不回填：老数据原样，新表都是空的
+    assert db.query_one("SELECT project_id FROM meetings WHERE id='m-1'") == {"project_id": "p-a"}
+    assert db.query_one("SELECT name FROM material_files") == {"name": "报价单.xlsx"}
+    for table in V16_TABLES:
+        assert db.query_one(f"SELECT COUNT(*) AS n FROM {table}") == {"n": 0}
+    # 再跑两遍什么都不变，links_since 写一次、之后不改
+    snapshot = db.query_all("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+    db.initialize()
+    db.initialize()
+    assert db.user_version() == 16
+    assert db.query_all("SELECT type, name, sql FROM sqlite_master ORDER BY type, name") == snapshot
+    assert db.query_one("SELECT value FROM app_state WHERE key='links_since'") == {
+        "value": keys["links_since"]
+    }
+
+
+def test_version_sixteen_rollback_marker_keeps_objects(tmp_path):
+    """回滚是改 user_version=15（不删新表、新触发器和新索引）；回到 v16 时对象和行都在，
+    迁移前备份再做一次。"""
+    database_path = tmp_path / "workbench.sqlite3"
+    db = Database(database_path)
+    db.initialize()
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', 'x')")
+    db.execute("INSERT INTO meetings(id, title, project_id) VALUES ('m', '周会', 'p')")
+    db.execute(
+        """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id, stem_key,
+                                 created_at, updated_at)
+           VALUES ('mention', 'p', 'm|报价单', 'rejected', 'llm', 'm', '报价单', 'x', 'x')"""
+    )
+    db.execute(
+        """INSERT INTO decisions(id, meeting_id, ordinal, text, text_key, created_at, updated_at)
+           VALUES ('dec-0123456789abcdef', 'm', 0, '阈值先按 0.8 执行', '阈值先按08执行', 'x', 'x')"""
+    )
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/x/云图AI', 'x')"
+    )
+    db.execute(
+        """INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, day, at)
+           VALUES (1, 7, '报价单.xlsx', '', 'added', '2026-09-27', '2026-09-27T01:00:00.000Z')"""
+    )
+    before = db.query_all("SELECT type, name FROM sqlite_master ORDER BY type, name")
+    since = db.query_one("SELECT value FROM app_state WHERE key='links_since'")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA user_version=15")
+    backups: list[int] = []
+
+    db.initialize(before_migrate=lambda: backups.append(db.user_version()))
+
+    assert backups == [15]
+    assert db.user_version() == 16
+    assert db.query_all("SELECT type, name FROM sqlite_master ORDER BY type, name") == before
+    assert db.query_one("SELECT status FROM relations") == {"status": "rejected"}
+    assert db.query_one("SELECT text FROM decisions") == {"text": "阈值先按 0.8 执行"}
+    assert db.query_one("SELECT COUNT(*) AS n FROM material_file_events") == {"n": 1}
+    assert db.query_one("SELECT value FROM app_state WHERE key='links_since'") == since
+    # 比代码新的库照旧拒绝打开
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA user_version=17")
+    try:
+        db.initialize()
+    except sqlite3.DatabaseError as error:
+        assert "database version 17 is newer than supported 16" in str(error)
+    else:
+        raise AssertionError("v17 的库不该被打开")
+
+
+def test_version_sixteen_graph_rev_policy(tmp_path):
+    db = Database(tmp_path / "workbench.sqlite3")
+    db.initialize()
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', 'x')")
+    db.execute("INSERT INTO meetings(id, title, project_id) VALUES ('m', '周会', 'p')")
+    db.execute(
+        """INSERT INTO tasks(id, title, status, meeting_id, project_id, status_changed_at,
+                             created_at, updated_at)
+           VALUES ('t', '整理报价单', 'confirmed', 'm', 'p', 'x', 'x', 'x')"""
+    )
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/x/云图AI', 'x')"
+    )
+    db.execute(
+        """INSERT INTO material_contents(content_key, layer, created_at, updated_at)
+           VALUES ('q2:a', 'text', 'x', 'x')"""
+    )
+    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 0, '片段')")
+
+    def revs() -> tuple[int, int]:
+        rows = {
+            row["key"]: int(row["value"])
+            for row in db.query_all(
+                "SELECT key, value FROM app_state WHERE key IN ('graph_rev', 'related_rev')"
+            )
+        }
+        return rows.get("graph_rev", 0), rows.get("related_rev", 0)
+
+    def relation(kind: str, ident: str, status: str = "shown") -> None:
+        db.execute(
+            """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id,
+                                     content_key, score, created_at, updated_at)
+               VALUES (?, 'p', ?, ?, 'rule', 'm', 'q2:a', 0.5, 'x', 'x')""",
+            (kind, ident, status),
+        )
+
+    graph, related = revs()
+    # 关联表：非相关的行给 graph_rev 加一，相关的行只给 related_rev 加一
+    relation("produced", "t|q2:a", "suggested")
+    assert revs() == (graph + 1, related)
+    db.execute("UPDATE relations SET status='confirmed' WHERE kind='produced'")
+    db.execute("DELETE FROM relations WHERE kind='produced'")
+    assert revs() == (graph + 3, related)
+    relation("related", "m|q2:a")
+    db.execute("UPDATE relations SET score=0.61 WHERE kind='related'")
+    db.execute("DELETE FROM relations WHERE kind='related'")
+    assert revs() == (graph + 3, related + 3)
+    # 决议、交付物、交付物文件进关系图版本号
+    graph, related = revs()
+    db.execute(
+        """INSERT INTO decisions(id, meeting_id, ordinal, text, text_key, created_at, updated_at)
+           VALUES ('dec-0000000000000001', 'm', 0, '先做报价', '先做报价', 'x', 'x')"""
+    )
+    db.execute(
+        "INSERT INTO deliverables(task_id, kind, url, created_at) VALUES ('t', 'file', 'file:///x', 'x')"
+    )
+    db.execute(
+        """INSERT INTO deliverable_files(deliverable_id, content_key, root_id, rel_path)
+           VALUES (1, 'q2:a', 1, '报价单.xlsx')"""
+    )
+    assert revs() == (graph + 3, related)
+    # 生成的触发器在 UPDATE 什么都没改时也会触发，所以写入都要带 IS NOT 条件
+    db.execute("UPDATE decisions SET text = text")
+    assert revs() == (graph + 4, related)
+    # 台账、派生表、文件流水、待确认的词都不加
+    graph, related = revs()
+    db.execute(
+        "INSERT INTO decision_scan(meeting_id, updated_at) VALUES ('m', 'x')"
+    )
+    db.execute("UPDATE decision_scan SET pair_state='pending'")
+    db.execute(
+        """INSERT INTO mention_extractions(meeting_id, version_id, text_sha, created_at, updated_at)
+           VALUES ('m', 'v', 's', 'x', 'x')"""
+    )
+    db.execute("INSERT INTO meeting_related_scan(meeting_id) VALUES ('m')")
+    db.execute("INSERT INTO glossary_mining_scan(project_id, sig, mined_at) VALUES ('p', 's', 'x')")
+    db.execute(
+        """INSERT INTO meeting_windows(meeting_id, model, start_ms, end_ms, text_sha, chars, bar, vector)
+           VALUES ('m', 'bge', 0, 90000, 's', 10, 0.6, x'00')"""
+    )
+    db.execute(
+        """INSERT INTO meeting_window_passages(meeting_id, start_ms, rank, chunk_id, content_key,
+                                               ordinal, score, seg_ms)
+           VALUES ('m', 0, 0, 1, 'q2:a', 0, 0.7, 0)"""
+    )
+    db.execute(
+        """INSERT INTO glossary_mining_seeds(content_key, miner, source_sig, terms_json, mined_at)
+           VALUES ('q2:a', 1, 's', '[]', 'x')"""
+    )
+    db.execute(
+        """INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, day, at)
+           VALUES (1, 7, '报价单.xlsx', '', 'added', '2026-09-27', '2026-09-27T01:00:00.000Z')"""
+    )
+    db.execute(
+        """INSERT INTO glossary_candidates(project_id, term, term_key, created_at, updated_at)
+           VALUES ('p', '海藻酸', '海藻酸', 'x', 'x')"""
+    )
+    db.execute("UPDATE glossary_candidates SET status='accepted'")
+    assert revs() == (graph, related)
+
+
+def test_version_sixteen_triggers_follow_meetings(tmp_path):
+    """会议离开项目只删系统行（连同决议两端的标记），你的回答和手动换过的行留着；换项目、换逐字稿、
+    原地改逐字稿都给相关记一笔要重算。"""
+    db = Database(tmp_path / "workbench.sqlite3")
+    db.initialize()
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', 'x')")
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', 'x')")
+    db.execute("INSERT INTO meetings(id, title, project_id) VALUES ('m', '周会', 'p')")
+    db.execute("INSERT INTO meetings(id, title, project_id) VALUES ('n', '复盘', 'p')")
+    for decision_id, meeting_id in (("dec-000000000000000a", "m"), ("dec-000000000000000b", "n")):
+        db.execute(
+            """INSERT INTO decisions(id, meeting_id, ordinal, text, text_key, created_at, updated_at)
+               VALUES (?, ?, 0, '先做报价', '先做报价', 'x', 'x')""",
+            (decision_id, meeting_id),
+        )
+    rows = (
+        ("mention", "m|a", "shown", "llm", "m", None, None),
+        ("mention", "m|b", "shown", "manual", "m", None, None),
+        ("mention", "m|c", "rejected", "llm", "m", None, None),
+        ("related", "m|q2:a", "cleared", "vector", "m", None, None),
+        ("later_changed", "dec-000000000000000b|dec-000000000000000a", "shown", "llm", "m",
+         "dec-000000000000000b", "dec-000000000000000a"),
+        ("restated", "dec-000000000000000a|dec-000000000000000b", "shown", "llm", "n",
+         "dec-000000000000000a", "dec-000000000000000b"),
+        ("mention", "n|a", "shown", "llm", "n", None, None),
+    )
+    for kind, ident, status, origin, meeting_id, decision_id, to_decision_id in rows:
+        db.execute(
+            """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id,
+                                     decision_id, to_decision_id, created_at, updated_at)
+               VALUES (?, 'p', ?, ?, ?, ?, ?, ?, 'x', 'x')""",
+            (kind, ident, status, origin, meeting_id, decision_id, to_decision_id),
+        )
+    db.execute("DELETE FROM meeting_related_scan")
+
+    db.execute("UPDATE meetings SET project_id='q' WHERE id='m'")
+
+    assert {row["ident"] for row in db.query_all("SELECT ident FROM relations")} == {
+        "m|b",
+        "m|c",
+        "n|a",
+    }
+    assert db.query_one("SELECT dirty FROM meeting_related_scan WHERE meeting_id='m'") == {"dirty": 1}
+    db.execute("UPDATE meetings SET current_transcript_version_id='tv-2' WHERE id='m'")
+    db.add_event("segment_split", meeting_id="m")
+    db.add_event("minutes_saved", meeting_id="m")
+    assert db.query_one("SELECT dirty FROM meeting_related_scan WHERE meeting_id='m'") == {"dirty": 3}
+    # 启动时改 conflict 不算
+    db.execute("UPDATE meetings SET conflict=0")
+    assert db.query_one("SELECT dirty FROM meeting_related_scan WHERE meeting_id='m'") == {"dirty": 3}

@@ -59,7 +59,9 @@ from . import search as search_module
 from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
 from . import overview as overview_module
+from . import decisions as decisions_module
 from . import file_mentions
+from . import relations as relations_module
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from . import material_content as material_content_module
 from . import material_media as material_media_module
@@ -469,6 +471,25 @@ class FileMentionPickInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_id: int = Field(ge=1)
+
+
+class RelationAnswerInput(BaseModel):
+    """answer 是 yes、no、updated、pick、restore 之一（和这类关联对不上时 relations.answer 回 422）；
+    file_id 只在 pick 时给。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = Field(max_length=16)
+    file_id: int | None = Field(default=None, ge=1)
+
+
+class DecisionPlacementInput(BaseModel):
+    """placement 是 none、picked、ai（只用于撤销时原样发回）或 null（回到自动）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    placement: Literal["none", "picked", "ai"] | None
+    requirement_id: str | None = Field(default=None, max_length=200)
 
 
 class TaskStatusInput(BaseModel):
@@ -3670,6 +3691,21 @@ def create_app(
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
 
+    @app.post("/api/decisions/{decision_id}/placement")
+    def place_decision(decision_id: str, body: DecisionPlacementInput):
+        # 4a：只改这条决议放在哪个需求下，不把会挂到需求上；返回 undo 原样发回就是撤销
+        with db.transaction() as connection:
+            try:
+                return decisions_module.place(
+                    connection, decision_id, body.placement, body.requirement_id
+                )
+            except decisions_module.DecisionNotFound as error:
+                raise HTTPException(404, str(error)) from error
+            except decisions_module.DecisionGone as error:
+                raise HTTPException(409, str(error)) from error
+            except decisions_module.PlacementRejected as error:
+                raise HTTPException(422, str(error)) from error
+
     @app.get("/api/meetings/{meeting_id}/brief")
     def meeting_brief_endpoint(meeting_id: str):
         with db.autocommit() as connection:
@@ -3722,6 +3758,23 @@ def create_app(
     @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/pick")
     def pick_file_mention(meeting_id: str, stem_key: str, body: FileMentionPickInput):
         return _mention_action(file_mentions.pick_mention_file, meeting_id, stem_key, body.file_id)
+
+    # v16 / 4a：回答一条关联和 600 秒内撤销；关联行的状态和交付物在同一个事务里，要么都写上、要么都不写
+    @app.post("/api/relations/{relation_id}/answer")
+    def answer_relation(relation_id: int, body: RelationAnswerInput):
+        try:
+            with db.transaction() as connection:
+                return relations_module.answer(connection, relation_id, body.model_dump(), utc_now())
+        except relations_module.RelationError as error:
+            raise HTTPException(error.status, str(error)) from error
+
+    @app.post("/api/relations/{relation_id}/undo")
+    def undo_relation(relation_id: int):
+        try:
+            with db.transaction() as connection:
+                return relations_module.undo(connection, relation_id, utc_now())
+        except relations_module.RelationError as error:
+            raise HTTPException(error.status, str(error)) from error
 
     @app.get("/api/materials/index-status")
     def material_index_status(project_id: str | None = Query(default=None, max_length=200)):

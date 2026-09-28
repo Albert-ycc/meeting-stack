@@ -37,7 +37,7 @@ const TAG_FONT = 11;
 export type FocusSide = -1 | 1;
 
 export interface FocusItem {
-  /** dec:<在 decisions 里的下标> 或 task:<任务 id> */
+  /** dec:<决议 id>（台账落后时是 dec:<在 decisions 里的下标>）或 task:<任务 id> */
   id: string;
   kind: "decision" | "task";
   side: FocusSide;
@@ -244,10 +244,15 @@ function placeOuter(
   }
 }
 
+/** 决议节点的 id：有台账 id 时用它，改稿调顺序也选得回同一条；没有时用下标 */
+export function decisionNodeId(decision: { id?: string | null }, index: number): string {
+  return `dec:${decision.id ?? index}`;
+}
+
 /** 决议挑时间最早的 4 个（有时间点的在前）；任务先挑没做完的，再挑有时间点的，最多 6 个 */
 export function layoutMeetingFocus(focus: MeetingFocus, barW = BAR_W): FocusLayout {
   const decisions: Pending[] = focus.decisions.map((item, index) => ({
-    id: `dec:${index}`,
+    id: decisionNodeId(item, index),
     kind: "decision",
     text: item.text,
     atMs: item.start_ms,

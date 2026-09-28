@@ -22,6 +22,7 @@ from collections import Counter
 from datetime import datetime, time as day_time
 from typing import Any, Callable
 
+from . import relation_read
 from .db import Database, utc_now
 from .file_stems import STEM_NO, STEM_TWICE, STEM_YES, stem_usability
 from .material_content import key_file_now
@@ -538,15 +539,8 @@ def meeting_files(connection: Any, meeting_id: str, project_id: str | None) -> d
     if not project_id:
         return {"files": [], "files_state": state}
     generic = generic_keys(connection, project_id)
-    rows = connection.execute(
-        f"""SELECT fm.stem_key, fm.needle, fm.count, fm.first_ms, fm.minutes_count, fm.source, fm.picked,
-                   f.id AS file_id, f.name, f.rel_path, f.root_id
-              FROM meeting_file_mentions fm
-              JOIN material_files f ON f.id = fm.file_id AND f.gone_at IS NULL
-             WHERE fm.meeting_id = ? AND fm.project_id = ? AND fm.status = 'active'
-               AND f.zone IN ({_ZONES_SQL})""",
-        (meeting_id, project_id),
-    ).fetchall()
+    # v16：字面和放宽的提到一起读（relation_read 管两处互相遮盖）
+    rows = relation_read.meeting_mentions(connection, meeting_id, project_id)
     files = [
         {
             "file_id": row["file_id"],
@@ -599,17 +593,11 @@ def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[in
             (row["project_id"], row["stem_key"], file_id),
         ).fetchall()
     ]
-    mention_rows = connection.execute(
-        """SELECT fm.meeting_id, fm.stem_key, fm.needle, fm.count, fm.first_ms, fm.anchors_json,
-                  fm.minutes_count, fm.source, fm.status, fm.picked,
-                  m.title, m.recording_date, m.created_at
-             FROM meeting_file_mentions fm
-             JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
-            WHERE fm.file_id = ?
-            ORDER BY COALESCE(m.recording_date, m.created_at) DESC, m.id
-            LIMIT 40""",
-        (file_id,),
-    ).fetchall()
+    # v16：先数再取。有效的提到（字面和放宽的）列新的 40 场，你标过「不是这份文件」的另列；
+    # 「在 N 场会上被提到」的 N 另数，不受列表长度限制
+    mention_rows = [
+        {**item, "status": "active"} for item in relation_read.file_mention_meetings(connection, file_id)
+    ] + [{**item, "status": "rejected"} for item in relation_read.rejected_file_mentions(connection, file_id)]
     meetings = []
     for item in mention_rows:
         first_ms = item["first_ms"]
@@ -620,7 +608,7 @@ def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[in
             {
                 "meeting_id": item["meeting_id"],
                 "title": item["title"],
-                "date": str(item["recording_date"] or item["created_at"] or "")[:10],
+                "date": item["date"],
                 "stem_key": item["stem_key"],
                 "needle": item["needle"],
                 "count": int(item["count"]),
@@ -654,7 +642,7 @@ def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[in
         },
         "siblings": siblings,
         "meetings": meetings,
-        "active_meetings": sum(1 for item in meetings if item["status"] == "active"),
+        "active_meetings": relation_read.file_mention_counts(connection, [file_id]).get(file_id, 0),
     }
 
 

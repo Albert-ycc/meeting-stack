@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
-import type { ApiClient } from "../../api";
+import { ApiError, type ApiClient } from "../../api";
 import { reassignNote } from "../../cardCopy";
 import type { Project } from "../../types";
 import { NoticeBanner, useNotice, type NoticeAction, type NoticeTone } from "../Notice";
+import { RecentAnswersContext } from "../links/useRelationAnswer";
 import { GraphCanvas, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
 import { FocusPanel } from "./FocusPanel";
 import { GraphPanel, clearBriefCache } from "./GraphPanel";
@@ -176,6 +177,7 @@ function sameUndo(a: GraphNoticeUndo, b: GraphNoticeUndo) {
   if (a.kind === "task" && b.kind === "task") return a.taskId === b.taskId;
   if (a.kind === "mention" && b.kind === "mention") return a.meetingId === b.meetingId && a.stemKey === b.stemKey;
   if (a.kind === "deliverable" && b.kind === "deliverable") return a.deliverableId === b.deliverableId;
+  if (a.kind === "relation" && b.kind === "relation") return a.relationId === b.relationId;
   return false;
 }
 
@@ -341,12 +343,14 @@ export function ProjectGraph({
   const [clock, setClock] = useState(() => Date.now());
   const [ownExpanded, setOwnExpanded] = useState<string | null>(null);
   const expanded = onExpandChange ? expandedProp : ownExpanded;
-  // 展开时面板里选中的决议（dec:<下标>）、任务（task:<id>）或「+N」；不进地址栏
+  // 展开时面板里选中的决议（dec:<决议 id>，没有 id 时 dec:<下标>）、任务（task:<id>）或「+N」；不进地址栏
   const [focusSel, setFocusSel] = useState<string | null>(null);
   const [focusData, setFocusData] = useState<MeetingFocus | null>(null);
   const [focusError, setFocusError] = useState("");
   const [focusTick, setFocusTick] = useState(0);
   const { notice, setNotice, dismissNotice } = useNotice();
+  // 回答以后收成的那一行（App 一层）；⌘Z 撤销了就一起收掉
+  const recentAnswers = useContext(RecentAnswersContext);
   const player = useMiniPlayer();
   const requestRef = useRef(0);
   const missingRef = useRef<string | null>(null);
@@ -682,7 +686,11 @@ export function ProjectGraph({
         showNotice(`已撤销：「${entry.name}」不再是「${entry.taskTitle}」的交付物`);
         // 展开的会马上重读，交付物小签跟着消失
         setFocusTick((tick) => tick + 1);
-      } else {
+      } else if (entry.kind === "relation") {
+        await apiClient.undoRelation(entry.relationId);
+        recentAnswers?.drop(entry.relationId);
+        showNotice("已撤销");
+      } else if (entry.kind === "task") {
         await apiClient.updateTask(entry.taskId, entry.before);
         clearBriefCache();
         showNotice(
@@ -693,7 +701,12 @@ export function ProjectGraph({
       }
       await changed();
     } catch (reason) {
-      showNotice(errorText(reason, "撤销失败"), undefined, "error");
+      // 关联的撤销过期、已撤销过：原样显示服务端那句，用 warning（role="status"）
+      const status = reason instanceof ApiError ? reason.status : 0;
+      const told = entry.kind === "relation" && (status === 409 || status === 422);
+      // 过了撤销期、已经撤销过：收成的那一行也撤不了了
+      if (entry.kind === "relation" && status === 409) recentAnswers?.drop(entry.relationId);
+      showNotice(errorText(reason, "撤销失败"), undefined, told ? "warning" : "error");
     } finally {
       setBusy(false);
     }

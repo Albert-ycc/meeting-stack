@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from meeting_workbench import graph
 from meeting_workbench.db import Database, utc_now
 
+from .helpers import count_reads
 from .test_tasks_api import make_client, write_headers
 
 TODAY = date(2026, 9, 26)
@@ -318,13 +319,7 @@ def test_sql_statement_count_does_not_grow_with_meetings(tmp_path):
     add_project(db, "q", "数据中台")
 
     def count_statements():
-        statements = []
-        with db.autocommit() as connection:
-            connection.set_trace_callback(
-                lambda sql: statements.append(sql) if sql.lstrip().upper().startswith("SELECT") else None
-            )
-            graph.project_graph(connection, "p", today=TODAY)
-        return len(statements)
+        return count_reads(db, lambda connection: graph.project_graph(connection, "p", today=TODAY))
 
     for index in range(10):
         add_meeting(db, f"m-{index}", ago=index, project_id="p", origin="ai")
@@ -462,9 +457,10 @@ def test_meeting_brief_is_small_and_carries_decisions_with_times(tmp_path):
 
     assert len(response.content) < 20_000
     assert body["summary"] == "这次定了初审阈值先按 0.8 执行，月总牵头对接数理学会。"
+    # 测试里 links 循环关着，决议当场解析：id 为 null，later 到 4c 才有
     assert body["decisions"] == [
-        {"text": "阈值先按 0.8 执行", "start_ms": 754_000},
-        {"text": "驻场排班下周起改成两班", "start_ms": 1_200_000},
+        {"id": None, "text": "阈值先按 0.8 执行", "start_ms": 754_000, "later": None},
+        {"id": None, "text": "驻场排班下周起改成两班", "start_ms": 1_200_000, "later": None},
     ]
     assert body["decisions_note"] is None
     assert [task["id"] for task in body["tasks"]] == ["t-2", "t-1"]  # 待确认的排前面

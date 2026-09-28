@@ -32,6 +32,7 @@ from .material_rules import (
     truncated_text,
     unreadable_text,
 )
+from . import relation_read
 from .materials import ROOT_ONLINE, volume_state
 
 UNREADABLE_PAGE = 100
@@ -476,20 +477,9 @@ def file_preview_block(
 def file_mentions_for_preview(
     connection: Any, file_id: int, *, quotes: Callable[[str, list[int]], dict[int, str]] | None = None
 ) -> list[dict[str, Any]]:
-    """在哪几场会上被提到（沿用 2d 文件面板的查法，只要有效的），带那场会的录音地址。"""
-    rows = connection.execute(
-        """SELECT fm.meeting_id, fm.count, fm.first_ms, fm.source, m.title, m.recording_date, m.created_at,
-                  (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
-                    ORDER BY CASE a.source_root
-                      WHEN 'archive' THEN 0 WHEN 'draft' THEN 1 WHEN 'staging' THEN 2 ELSE 3 END,
-                      a.role DESC, a.path LIMIT 1) AS audio_id
-             FROM meeting_file_mentions fm
-             JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
-            WHERE fm.file_id = ? AND fm.status = 'active'
-            ORDER BY COALESCE(m.recording_date, m.created_at) DESC, m.id
-            LIMIT 40""",
-        (file_id,),
-    ).fetchall()
+    """在哪几场会上被提到（有效的字面和放宽的提到，relation_read 读），新的 40 场，带那场会的录音地址。
+    场数另用 relation_read.file_mention_counts 数（预览的 mentioned_meetings）。"""
+    rows = relation_read.file_mention_meetings(connection, file_id, audio=True)
     result = []
     for row in rows:
         first_ms = row["first_ms"]
@@ -500,7 +490,7 @@ def file_mentions_for_preview(
             {
                 "meeting_id": row["meeting_id"],
                 "title": row["title"],
-                "date": str(row["recording_date"] or row["created_at"] or "")[:10],
+                "date": row["date"],
                 "count": int(row["count"]),
                 "first_ms": first_ms,
                 "quote": quote,
@@ -590,6 +580,8 @@ def file_preview(
     if parts == "preview":
         return result
     result["mentions"] = file_mentions_for_preview(connection, file_id, quotes=quotes)
+    # 先数再取：列表最多 40 场，场数不受它限制（抽屉标题用它）
+    result["mentioned_meetings"] = relation_read.file_mention_counts(connection, [file_id]).get(file_id, 0)
     result["deliverables"] = file_deliverables(connection, row)
     result["can_reveal"] = can_reveal
     return result

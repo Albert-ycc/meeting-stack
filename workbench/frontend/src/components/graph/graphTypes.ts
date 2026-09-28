@@ -315,8 +315,11 @@ export interface FulltextPayload {
 }
 
 export interface FocusDecision {
+  /** 决议台账里的 id（4a）；台账落后或旧后台时为 null 或没有 */
+  id?: string | null;
   text: string;
   start_ms: number | null;
+  end_ms?: number | null;
   detail?: string;
 }
 
@@ -402,7 +405,8 @@ export interface MeetingBrief {
     quotes: Array<{ start_ms: number; text: string }>;
   }>;
   summary: string;
-  decisions: Array<{ text: string; start_ms: number | null }>;
+  /** id：决议台账里的 id（4a），台账落后时为 null */
+  decisions: Array<{ id?: string | null; text: string; start_ms: number | null }>;
   decisions_note: string | null;
   tasks: BriefTask[];
   tasks_more: number;

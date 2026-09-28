@@ -416,3 +416,44 @@ def test_file_endpoints(tmp_path):
     assert brief["files"] == []
     assert client.post(f"{base}/restore", json={}, headers=headers).json()["status"] == "active"
     assert client.post("/api/meetings/m/file-mentions/没有/reject", json={}, headers=headers).status_code == 404
+
+
+# ---------------------------------------------------------------------- 先数再取（4a）
+
+
+def mentioned_by(db, file_id, meetings):
+    for index in range(meetings):
+        meeting_id = f"m-{index:02d}"
+        add_meeting(db, meeting_id, ago=index + 1, project_id="p")
+        db.execute(
+            """INSERT INTO meeting_file_mentions(meeting_id, project_id, stem_key, file_id, needle, count,
+                   first_ms, anchors_json, minutes_count, source, status, picked, updated_at)
+               VALUES (?, 'p', '报价单', ?, '报价单', 1, 0, '[0]', 0, 'transcript', 'active', 0, ?)""",
+            (meeting_id, file_id, utc_now()),
+        )
+
+
+def test_file_panel_counts_more_than_forty_meetings(tmp_path):
+    db, root_id = setup(tmp_path)
+    file_id = add_file(db, root_id, "报价单.xlsx")
+    mentioned_by(db, file_id, 43)
+
+    with db.autocommit() as connection:
+        body = file_mentions.file_detail(connection, file_id, quotes=lambda meeting_id, starts: {})
+
+    assert body["active_meetings"] == 43
+    assert len(body["meetings"]) == 40 and body["meetings"][0]["meeting_id"] == "m-00"
+
+
+def test_preview_counts_more_than_forty_meetings(tmp_path):
+    from meeting_workbench import material_status
+
+    db, root_id = setup(tmp_path)
+    file_id = add_file(db, root_id, "报价单.xlsx")
+    mentioned_by(db, file_id, 41)
+
+    with db.autocommit() as connection:
+        body = material_status.file_preview(connection, file_id, state_of=lambda _path: "offline")
+
+    assert body["mentioned_meetings"] == 41
+    assert len(body["mentions"]) == 40

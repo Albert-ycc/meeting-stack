@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { BAR_W, FOCUS_DECISIONS_MAX, FOCUS_TASKS_MAX, layoutMeetingFocus } from "./focusLayout";
+import { BAR_W, FOCUS_DECISIONS_MAX, FOCUS_TASKS_MAX, decisionNodeId, layoutMeetingFocus } from "./focusLayout";
 import { overlaps } from "./layout";
 import { focusPayload, focusTask as task } from "./testFixtures";
 
@@ -26,6 +26,27 @@ describe("layoutMeetingFocus", () => {
     expect(untimedDecision.y).toBeLessThan(layout.items.find((item) => item.id === "dec:0")!.y);
     expect(untimedTask.y).toBeGreaterThan(layout.items.find((item) => item.id === "task:t1")!.y);
     expect(layout.untimedLabels.map((label) => label.side).sort()).toEqual([-1, 1]);
+  });
+
+  it("决议带台账 id（4a）时节点 id 是 dec:<决议 id>，调了顺序也不变；台账落后时 id 为 null，退回下标", () => {
+    const decisions = [
+      { id: "dec-3f2a9c0b1d4e5f60", text: "初审规则按新口径执行", start_ms: 60_000, end_ms: 95_000 },
+      { id: null, text: "台账还没轮到的决议", start_ms: 120_000 },
+      { id: "dec-00aa11bb22cc33dd", text: "没写时间的决议", start_ms: null },
+    ];
+    const layout = layoutMeetingFocus(focusPayload({ decisions }));
+    expect(layout.items.filter((item) => item.kind === "decision").map((item) => item.id).sort()).toEqual([
+      "dec:1",
+      "dec:dec-00aa11bb22cc33dd",
+      "dec:dec-3f2a9c0b1d4e5f60",
+    ]);
+    const anchored = layout.items.find((item) => item.id === "dec:dec-3f2a9c0b1d4e5f60")!;
+    expect(anchored.anchorX).toBe(BAR_W * 0.1);
+
+    // 改稿调了顺序：同一条决议的节点 id 不变
+    const reordered = layoutMeetingFocus(focusPayload({ decisions: [decisions[2], decisions[0], decisions[1]] }));
+    expect(reordered.items.find((item) => item.id === "dec:dec-3f2a9c0b1d4e5f60")?.text).toBe("初审规则按新口径执行");
+    expect(decisionNodeId({ id: undefined }, 3)).toBe("dec:3");
   });
 
   it("决议最多 4 个、任务最多 6 个，其余进「+N」；任务先挑没做完的", () => {

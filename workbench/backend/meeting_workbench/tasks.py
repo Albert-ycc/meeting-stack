@@ -295,6 +295,66 @@ def resolve_requirement_and_project(
     return current_requirement_id, resolved_project_id, None
 
 
+def _insert_deliverable(
+    connection: Any,
+    task_id: str,
+    *,
+    name: str,
+    content_key: str | None,
+    root_id: int | None,
+    rel_path: str | None,
+    now: str,
+    kind: str = "file",
+    url: str | None = None,
+    note: str = "",
+) -> int:
+    """登记一个交付物（调用方负责开事务），返回新行 id。写 deliverables、deliverable_files（有 root_id
+    时）和 deliverable_added 事件；文件交付物没给 url 时按 root_id 查根目录拼出完整路径。
+    add_deliverable 和产出的［是］（relations.answer，同一个事务里）共用，写出的行一样。"""
+    if url is None:
+        root = connection.execute(
+            "SELECT path FROM project_material_roots WHERE id = ?", (root_id,)
+        ).fetchone()
+        if root is None:
+            raise NotFoundError("文件不在索引里（可能已经挪走或删掉了）")
+        url = f"{str(root['path']).rstrip('/')}/{rel_path}"
+    cursor = connection.execute(
+        """INSERT INTO deliverables(task_id, kind, url, title, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (task_id, kind, url, name.strip(), note.strip(), now),
+    )
+    deliverable_id = int(cursor.lastrowid)
+    if root_id is not None:
+        connection.execute(
+            "INSERT INTO deliverable_files(deliverable_id, content_key, root_id, rel_path) VALUES (?, ?, ?, ?)",
+            (deliverable_id, content_key, root_id, rel_path),
+        )
+    connection.execute(
+        "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_added', ?, ?)",
+        (task_id, f"登记交付物：{kind} {url}", now),
+    )
+    return deliverable_id
+
+
+def _delete_deliverable(connection: Any, task_id: str, deliverable_id: int, now: str) -> None:
+    """删一个交付物（调用方负责开事务）：删 deliverable_files、deliverables，记 deliverable_removed，
+    更新任务的 updated_at。不属于这个任务的抛 NotFoundError。remove_deliverable 和产出［是］的撤销
+    （relations.undo，同一个事务里）共用。"""
+    row = connection.execute(
+        "SELECT kind, url FROM deliverables WHERE id = ? AND task_id = ?",
+        (deliverable_id, task_id),
+    ).fetchone()
+    if row is None:
+        raise NotFoundError("交付物不存在")
+    connection.execute("DELETE FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,))
+    connection.execute("DELETE FROM deliverables WHERE id = ?", (deliverable_id,))
+    connection.execute(
+        "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_removed', ?, ?)",
+        (task_id, f"撤下交付物：{row['kind']} {row['url']}", now),
+    )
+    connection.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, task_id))
+
+
 class TaskService:
     def __init__(
         self,
@@ -936,20 +996,17 @@ class TaskService:
             raise ValueError("交付物链接不能为空")
         with self.db.transaction() as connection:
             self._row(connection, task_id)
-            cursor = connection.execute(
-                """INSERT INTO deliverables(task_id, kind, url, title, note, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (task_id, kind, url, title.strip(), note.strip(), utc_now()),
-            )
-            deliverable_id = int(cursor.lastrowid)
-            if link is not None:
-                connection.execute(
-                    "INSERT INTO deliverable_files(deliverable_id, content_key, root_id, rel_path) VALUES (?, ?, ?, ?)",
-                    (deliverable_id, link["content_key"], link["root_id"], link["rel_path"]),
-                )
-            connection.execute(
-                "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_added', ?, ?)",
-                (task_id, f"登记交付物：{kind} {url}", utc_now()),
+            deliverable_id = _insert_deliverable(
+                connection,
+                task_id,
+                name=title,
+                content_key=link["content_key"] if link else None,
+                root_id=link["root_id"] if link else None,
+                rel_path=link["rel_path"] if link else None,
+                now=utc_now(),
+                kind=kind,
+                url=url,
+                note=note,
             )
             if mark_done:
                 task = self._row(connection, task_id)
@@ -1000,20 +1057,7 @@ class TaskService:
         """删一个交付物（［撤销］用），记一条 deliverable_removed。不属于这个任务的回 404。"""
         with self.db.transaction() as connection:
             self._row(connection, task_id)
-            row = connection.execute(
-                "SELECT kind, url FROM deliverables WHERE id = ? AND task_id = ?",
-                (deliverable_id, task_id),
-            ).fetchone()
-            if row is None:
-                raise NotFoundError("交付物不存在")
-            connection.execute("DELETE FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,))
-            connection.execute("DELETE FROM deliverables WHERE id = ?", (deliverable_id,))
-            now = utc_now()
-            connection.execute(
-                "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_removed', ?, ?)",
-                (task_id, f"撤下交付物：{row['kind']} {row['url']}", now),
-            )
-            connection.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, task_id))
+            _delete_deliverable(connection, task_id, deliverable_id, utc_now())
         return self.get_task(task_id)
 
     # ------------------------------------------------------------------ 项目聚合与看板

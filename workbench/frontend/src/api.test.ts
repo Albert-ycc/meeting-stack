@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api, setCsrfToken } from "./api";
+import { ApiError, api, isOldBackend, setCsrfToken } from "./api";
 
 describe("API write protection", () => {
   afterEach(() => {
@@ -464,6 +464,71 @@ describe("API write protection", () => {
       expect.objectContaining({ body: JSON.stringify({ event_id: 34 }) }),
     ]);
     expect(JSON.parse(String(calls[7][1].body))).toMatchObject({ source_name: "云图数据看板", meeting_ids: ["vm-1"] });
+  });
+
+  it("深度关联（4a）：回答、撤销、重试、决议归需求都走带 CSRF 的 JSON 写接口", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("links-token");
+
+    await api.answerRelation(57, { answer: "updated" });
+    await api.answerRelation(61, { answer: "pick", file_id: 812 });
+    await api.undoRelation(57);
+    await api.retryLinks();
+    await api.placeDecision("dec-3f2a9c0b1d4e5f60", { placement: "picked", requirement_id: "r1" });
+    await api.placeDecision("dec-3f2a9c0b1d4e5f60", { placement: null, requirement_id: null });
+
+    const calls = fetchMock.mock.calls as [string, RequestInit][];
+    expect(calls.map(([url]) => url)).toEqual([
+      "/api/relations/57/answer",
+      "/api/relations/61/answer",
+      "/api/relations/57/undo",
+      "/api/links/retry",
+      "/api/decisions/dec-3f2a9c0b1d4e5f60/placement",
+      "/api/decisions/dec-3f2a9c0b1d4e5f60/placement",
+    ]);
+    for (const [, init] of calls) {
+      expect(init).toMatchObject({
+        method: "POST",
+        headers: expect.objectContaining({ "Content-Type": "application/json", "X-CSRF-Token": "links-token" }),
+      });
+    }
+    expect(calls.map(([, init]) => init.body)).toEqual([
+      JSON.stringify({ answer: "updated" }),
+      JSON.stringify({ answer: "pick", file_id: 812 }),
+      "{}",
+      "{}",
+      JSON.stringify({ placement: "picked", requirement_id: "r1" }),
+      JSON.stringify({ placement: null, requirement_id: null }),
+    ]);
+  });
+
+  it("isOldBackend：FastAPI 的 404 \"Not Found\" 和 405 算旧后台，中文 detail 的 404 是正式回答", async () => {
+    const respond = (status: number, detail: string) =>
+      new Response(JSON.stringify({ detail }), { status, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respond(404, "这条关联已经不在了"))
+        .mockResolvedValueOnce(respond(404, "Not Found"))
+        .mockResolvedValueOnce(respond(405, "Method Not Allowed")),
+    );
+
+    const answered = await api.answerRelation(57, { answer: "no" }).catch((reason: unknown) => reason);
+    const missing = await api.answerRelation(57, { answer: "no" }).catch((reason: unknown) => reason);
+    const notAllowed = await api.undoRelation(57).catch((reason: unknown) => reason);
+
+    expect(answered).toBeInstanceOf(ApiError);
+    expect((answered as ApiError).message).toBe("这条关联已经不在了");
+    expect(isOldBackend(answered)).toBe(false);
+    expect(isOldBackend(missing)).toBe(true);
+    expect(isOldBackend(notAllowed)).toBe(true);
+    // 别的错误都不算
+    expect(isOldBackend(new ApiError("这条已经处理过了", 409, { detail: "这条已经处理过了" }))).toBe(false);
+    expect(isOldBackend(new Error("Not Found"))).toBe(false);
   });
 });
 

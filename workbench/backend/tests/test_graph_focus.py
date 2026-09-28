@@ -76,8 +76,10 @@ def test_meeting_focus_has_timeline_items_and_neighbours(tmp_path):
     # 没记录音长度时按逐字稿最后一段的结束时间
     assert body["meeting"]["duration_ms"] == 1_504_000
     assert body["decisions"] == [
-        {"text": "阈值先按 0.8 执行", "start_ms": 754_000, "detail": "理由是上周误报太多。 下周复盘一次。"},
-        {"text": "驻场排班改两班", "start_ms": None, "detail": ""},
+        {"id": None, "text": "阈值先按 0.8 执行", "start_ms": 754_000, "end_ms": None,
+         "detail": "理由是上周误报太多。 下周复盘一次。", "later": [], "earlier": []},
+        {"id": None, "text": "驻场排班改两班", "start_ms": None, "end_ms": None, "detail": "",
+         "later": [], "earlier": []},
     ]
     # 按时间点排，没时间点的排最后；已取消的不画
     assert [task["id"] for task in body["tasks"]] == ["t-early", "t-late", "t-none"]
