@@ -371,3 +371,45 @@ def test_rejected_loose_rows_join_the_rejected_list(tmp_path):
     assert (row["status"], row["relation_id"], row["phrase"], row["title"]) == (
         "rejected", relation_id, "能耗看板那个PPT", "会 m"
     )
+
+
+def test_same_content_copies_count_once_and_rejected_rows_do_not_count(tmp_path):
+    """4d：「在 N 场会上被提到」算上本项目同内容的活副本，每场会只算一次；rejected 不算、也不占前 40 行。"""
+    db, root_id = setup(tmp_path)
+    first = add_file(db, root_id, "报价单.xlsx")
+    copy = add_file(db, root_id, "备份/报价单.xlsx")
+    gone = add_file(db, root_id, "旧/报价单.xlsx", gone=True)
+    for file_id in (first, copy, gone):
+        keyed(db, file_id, "k-quote")
+    for index in range(41):
+        add_meeting(db, f"c-{index:02d}", ago=index + 2, project_id="p")
+        literal(db, f"c-{index:02d}", "报价单", first if index % 2 else copy)
+    # 同一场会两份副本都被提到：只算一次
+    literal(db, "m", "报价单", first)
+    db.execute("UPDATE meeting_file_mentions SET file_id = ? WHERE meeting_id = 'c-00'", (copy,))
+    db.execute(
+        """INSERT INTO meeting_file_mentions(meeting_id, project_id, stem_key, file_id, needle, count, first_ms,
+               anchors_json, minutes_count, source, status, picked, updated_at)
+           VALUES ('c-00', 'p', '报价', ?, '报价', 1, 0, '[0]', 0, 'transcript', 'active', 0, ?)""",
+        (first, utc_now()),
+    )
+    # 只在已经不见的副本上被提到、以及标过「不是这份文件」的，都不算
+    add_meeting(db, "gone-only", ago=60, project_id="p")
+    literal(db, "gone-only", "报价单", gone)
+    for index in range(3):
+        add_meeting(db, f"r-{index}", ago=0, project_id="p")
+        literal(db, f"r-{index}", "报价单", first, status="rejected")
+    counts = read(db, relation_read.file_mention_counts, [first, copy])
+    assert counts == {first: 42, copy: 42}
+    listed = read(db, relation_read.file_mention_meetings, first)
+    assert len(listed) == 22 and not any(row["meeting_id"].startswith("r-") for row in listed)
+    detail = read(db, file_detail_of, first)
+    assert detail["active_meetings"] == 42
+    assert [row["status"] for row in detail["meetings"]].count("rejected") == 3
+    assert len(detail["meetings"]) == 22 + 3
+
+
+def file_detail_of(connection, file_id):
+    from meeting_workbench.file_mentions import file_detail
+
+    return file_detail(connection, file_id, quotes=lambda meeting_id, starts: {})

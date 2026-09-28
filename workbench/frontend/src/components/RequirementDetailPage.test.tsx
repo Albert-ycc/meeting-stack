@@ -498,3 +498,43 @@ describe("RequirementDetailPage 的「决议」卡（4c）", () => {
     expect(await screen.findByText("还没有关联会议，关联以后这里列出每场会定了什么")).toBeInTheDocument();
   });
 });
+
+describe("RequirementDetailPage 材料文件夹的小签（4d）", () => {
+  afterEach(async () => {
+    const { clearMentionedCounts } = await import("./files/useMentionedCounts");
+    clearMentionedCounts();
+  });
+
+  it("带 file_id 的文件行有「3 场会提到」，没有 file_id 的不带；点小签调 onOpenPreview(812)", async () => {
+    const detail = baseDetail();
+    detail.folders[0].preview_files = [
+      { relative_path: "README.md", size_bytes: 2500, modified_at: "2026-09-14T00:00:00Z", file_id: 812 },
+      { relative_path: "readme-disk.md", size_bytes: 10, modified_at: "2026-09-14T00:00:00Z" },
+    ];
+    const requirement = vi.fn().mockResolvedValue(detail);
+    const mentionedCounts = vi.fn().mockResolvedValue({ counts: { "812": 3 } });
+    const onOpenPreview = vi.fn();
+    render(
+      <RequirementDetailPage
+        apiClient={{ requirement, mentionedCounts } as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        onBack={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenPreview={onOpenPreview}
+        onOpenProject={vi.fn()}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId="req-1"
+      />,
+    );
+    const badge = await screen.findByRole("button", { name: "3 场会提到" });
+    expect(badge).toHaveAttribute("title", "在 3 场会上被提到");
+    expect(mentionedCounts).toHaveBeenCalledTimes(1);
+    expect(mentionedCounts).toHaveBeenCalledWith([812]);
+    const diskRow = screen.getByText("readme-disk.md").closest(".requirement-detail__folder-row")!;
+    expect(within(diskRow as HTMLElement).queryByText(/场会提到/)).not.toBeInTheDocument();
+    await userEvent.click(badge);
+    expect(onOpenPreview).toHaveBeenCalledWith(812);
+  });
+});

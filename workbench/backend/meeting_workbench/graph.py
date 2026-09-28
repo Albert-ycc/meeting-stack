@@ -2676,6 +2676,17 @@ def reveal_command(path: Path) -> list[str] | None:
     return [opener, str(path if path.is_dir() else path.parent)]
 
 
+def open_command(path: str) -> list[str] | None:
+    """4d：用本机应用打开这个文件（调用方已经查过白名单和 realpath）。macOS 用 open，别的系统用 xdg-open，
+    都没有回 None。"""
+    if sys.platform == "darwin":
+        return ["open", str(path)]
+    opener = shutil.which("xdg-open")
+    if opener is None:
+        return None
+    return [opener, str(path)]
+
+
 def reveal(path: Path, *, run: Any = None) -> None:
     command = reveal_command(path)
     if command is None:

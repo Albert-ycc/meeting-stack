@@ -553,8 +553,13 @@ def file_preview(
     quotes: Callable[[str, list[int]], dict[int, str]] | None = None,
     parts: str | None = None,
     can_reveal: bool = False,
+    passage_key: str | None = None,
+    passage_ordinal: int | None = None,
 ) -> dict[str, Any] | None:
-    """GET /api/materials/files/{id}/preview。文件不在索引里回 None。"""
+    """GET /api/materials/files/{id}/preview。文件不在索引里回 None。4d：给了 passage_ordinal 时加 passage
+    （parts=preview 时也加；不给时键不变）；完整结果另加 related_meetings 和 file.can_open。"""
+    from . import related_read
+
     row = file_row(connection, file_id)
     if row is None:
         return None
@@ -581,14 +586,22 @@ def file_preview(
         "state": file_state(connection, row, content, online=online, paused=paused, engines=engines),
         "preview": file_preview_block(connection, row, content, online=online),
     }
+    if passage_ordinal is not None:
+        result["passage"] = related_read.passage(connection, row, passage_key, passage_ordinal)
     if parts == "preview":
         return result
+    # 4d：［用本机应用打开］只在本机、白名单里的扩展名、文件没有不见时出现（前端只看这个字段）
+    result["file"]["can_open"] = related_read.can_open(row["ext"], local=can_reveal, gone=row["gone_at"] is not None)
+    result["related_meetings"] = related_read.related_meetings(connection, file_id)
     result["mentions"] = file_mentions_for_preview(connection, file_id, quotes=quotes)
     # 先数再取：列表最多 40 场，场数不受它限制（抽屉标题用它）
     result["mentioned_meetings"] = relation_read.file_mention_counts(connection, [file_id]).get(file_id, 0)
     result["deliverables"] = file_deliverables(connection, row)
     result["can_reveal"] = can_reveal
     return result
+
+
+PACKAGE_DIR_EXTS = frozenset({"key", "pages", "numbers"})
 
 
 def resolve_file(connection: Any, file_id: int, *, state_of: Callable[[str], str] = volume_state) -> tuple[str, Any]:
@@ -603,7 +616,8 @@ def resolve_file(connection: Any, file_id: int, *, state_of: Callable[[str], str
     target = os.path.realpath(os.path.join(str(row["root_path"]), *str(row["rel_path"]).split("/")))
     if os.path.commonpath([root_real, target]) != root_real:
         return "outside", row
-    if not os.path.isfile(target):
+    # 4d：key、pages、numbers 可能是目录形式的包
+    if not (os.path.isfile(target) or (str(row["ext"] or "").lower() in PACKAGE_DIR_EXTS and os.path.isdir(target))):
         return "missing", row
     row["real_path"] = target
     return "ok", row

@@ -17,6 +17,12 @@ const SOURCES = import.meta.glob(
     "!./components/decisions/*.test.{ts,tsx}",
     "./components/graph/quotes.tsx",
     "./components/graph/FocusPanel.tsx",
+    // 4d：相关材料栏、「内容相关的会」、预览抽屉的定位块（上面 links/* 已含）、小签、会议页和搜索页的新字
+    "./components/files/*.{ts,tsx}",
+    "!./components/files/*.test.{ts,tsx}",
+    "./components/MeetingDetailPage.tsx",
+    "./components/SearchMaterials.tsx",
+    "./components/TranscriptPanel.tsx",
   ],
   {
     query: "?raw",
@@ -108,6 +114,44 @@ describe("第四期界面的用词", () => {
     expect(copy.flatMap(violations)).toEqual([]);
     const files = Object.keys(SOURCES);
     for (const name of ["DecisionRow.tsx", "DecisionLogCard.tsx", "ProjectTimeline.tsx", "decisionText.ts"]) {
+      expect(files.some((file) => file.endsWith(name))).toBe(true);
+    }
+  });
+
+  it("4d 的相关材料栏、抽屉、小签和提示", () => {
+    const copy = [
+      "这场会没找到相关材料",
+      "这个项目材料太多，较早的一部分没有比对",
+      "正在找相关材料",
+      "这场会还在转写，转完再找相关材料",
+      "会议在转写，转完再找相关材料",
+      "这个项目还有 3 份材料没读完，读完的先列在这里",
+      "这个项目的材料还没读完，读完会接着找",
+      "这场会没归项目，相关材料只在项目文件夹里找",
+      "这个项目还没挂材料文件夹",
+      "还没有逐字稿",
+      "本地语义模型没装好，找不了相关材料",
+      "语义索引关着，找不了相关材料",
+      "材料正文读取关着，找不了相关材料",
+      "关联整理关着，找不了相关材料",
+      "相关材料没取到",
+      "相关材料（12:00 前后）2 份",
+      "共同词：字段命名、驻场",
+      "这场会的另一份记录：纪要-0921.docx",
+      "这一段没找到相关材料",
+      "别的时间有：",
+      "有 1 份材料标过不相关",
+      "已记下：『接口文档.docx』和这场会不相关",
+      "已改回相关：『接口文档.docx』",
+      "和会上相关的这段",
+      "文件后来改过，这是改之前读到的那段",
+      "这段在文件里找不到了（文件可能改过）",
+      "3 场会提到",
+      "在 3 场会上被提到",
+    ];
+    expect(copy.flatMap(violations)).toEqual([]);
+    const files = Object.keys(SOURCES);
+    for (const name of ["RelatedMaterials.tsx", "RelatedMeetings.tsx", "relatedWindows.ts", "MentionedBadge.tsx"]) {
       expect(files.some((file) => file.endsWith(name))).toBe(true);
     }
   });

@@ -23,6 +23,7 @@ import {
   playMeetingAt,
   type GraphNoticeUndo,
 } from "./panelParts";
+import { RelatedMeetings } from "../links/RelatedMeetings";
 
 /** ［标为交付物 ▾］最多列这么多个任务 */
 export const DELIVERABLE_TASKS_MAX = 30;
@@ -452,6 +453,18 @@ export function FilePanelBody({
           </ul>
         )}
       </Section>
+      {/* 4d：「内容相关的会」最多 5 条，不算进上面的 N */}
+      <RelatedMeetings
+        apiClient={props.apiClient}
+        canWrite
+        fileId={fileId}
+        fileName={file.name}
+        onChanged={props.onChanged}
+        onNotice={props.onNotice}
+        onOpenMeeting={(meetingId) => openMeeting(meetingId)}
+        onPlay={(url, atMs, label) => props.player.play(url, atMs, label, { clip: true })}
+        rows={payload.related_meetings}
+      />
       {payload.siblings.length > 0 && (
         <Section title={`同名的还有 ${payload.siblings.map((item) => item.name).join("、")}`}>
           <ul className="graph-panel__list">

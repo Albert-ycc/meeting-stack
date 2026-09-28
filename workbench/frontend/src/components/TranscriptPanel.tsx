@@ -1,7 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { formatSpeakerLabel, formatTime } from "../format";
 import type { Segment } from "../types";
+
+/** 行的开始时间和它在滚动框里的上沿（像素，从滚动内容顶部算） */
+export interface RowTop {
+  startMs: number;
+  top: number;
+}
+
+/** 阅读线（滚动框高度 ⅓ 处）下那一行的开始时间：上沿不超过阅读线的最后一行；都在线下时取第一行。 */
+export function rowAtLine(rows: RowTop[], scrollTop: number, height: number): number | null {
+  if (!rows.length) return null;
+  const line = scrollTop + height / 3;
+  let found = rows[0].startMs;
+  for (const row of rows) {
+    if (row.top <= line) found = row.startMs;
+    else break;
+  }
+  return found;
+}
+
+// 翻页键、方向键也算用户自己滚
+const SCROLL_KEYS = new Set(["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "]);
+const MANUAL_SCROLL_MS = 4000;
 
 interface TranscriptPanelProps {
   currentTimeMs: number;
@@ -12,6 +34,8 @@ interface TranscriptPanelProps {
   onSeek: (milliseconds: number) => void;
   onSplit?: (segmentId: string, characterIndex: number) => void;
   segments: Segment[];
+  /** 4d：用户自己滚动时上报阅读线下那一行的开始时间；自动跟随滚到播放行时上报 null */
+  onReadingTimeChange?: (milliseconds: number | null) => void;
 }
 
 export function TranscriptPanel({
@@ -23,6 +47,7 @@ export function TranscriptPanel({
   onSeek,
   onSplit,
   segments,
+  onReadingTimeChange,
 }: TranscriptPanelProps) {
   const [term, setTerm] = useState("");
   const [cursorById, setCursorById] = useState<Record<string, number>>({});
@@ -30,6 +55,10 @@ export function TranscriptPanel({
   const panelRef = useRef<HTMLElement | null>(null);
   // 用户自己滚动过之后暂停跟随几秒，免得播放推进时把视线从正在看的地方拽走。
   const manualScrollAtRef = useRef(0);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const reportRef = useRef(onReadingTimeChange);
+  reportRef.current = onReadingTimeChange;
   const activeId = useMemo(
     () => segments.find((segment) => currentTimeMs >= segment.start_ms && currentTimeMs < segment.end_ms)?.id,
     [currentTimeMs, segments],
@@ -44,11 +73,46 @@ export function TranscriptPanel({
     if (typeof activeRef.current?.scrollIntoView === "function") {
       activeRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
+    reportRef.current?.(null);
   }, [activeId, editable]);
 
   const noteManualScroll = () => {
     manualScrollAtRef.current = Date.now();
   };
+
+  const noteScrollKey = (event: KeyboardEvent<HTMLElement>) => {
+    if (SCROLL_KEYS.has(event.key)) noteManualScroll();
+  };
+
+  // 只在用户自己滚动之后 4 秒内的 scroll 事件里上报，rAF 节流
+  const handleScroll = useCallback(() => {
+    if (!reportRef.current || Date.now() - manualScrollAtRef.current >= MANUAL_SCROLL_MS) return;
+    if (frameRef.current !== null) return;
+    let ran = false;
+    const frame = window.requestAnimationFrame(() => {
+      ran = true;
+      frameRef.current = null;
+      const box = scrollRef.current;
+      if (!box) return;
+      const boxTop = box.getBoundingClientRect().top;
+      const rows = Array.from(box.querySelectorAll<HTMLElement>("[data-start-ms]")).map((node) => ({
+        startMs: Number(node.dataset.startMs),
+        top: node.getBoundingClientRect().top - boxTop + box.scrollTop,
+      }));
+      reportRef.current?.(rowAtLine(rows, box.scrollTop, box.clientHeight));
+    });
+    if (!ran) frameRef.current = frame;
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
+    },
+    [],
+  );
+
+  // 渲染时按 id 找原来的下标（以前每行 findIndex 一遍）
+  const indexById = useMemo(() => new Map(segments.map((segment, index) => [segment.id, index])), [segments]);
 
   const visible = useMemo(() => {
     const normalized = term.trim().toLocaleLowerCase();
@@ -65,7 +129,13 @@ export function TranscriptPanel({
   };
 
   return (
-    <section className="transcript-panel" onTouchMove={noteManualScroll} onWheel={noteManualScroll} ref={panelRef}>
+    <section
+      className="transcript-panel"
+      onKeyDown={noteScrollKey}
+      onTouchMove={noteManualScroll}
+      onWheel={noteManualScroll}
+      ref={panelRef}
+    >
       <div className="transcript-tools">
         <label className="inline-search">
           <span aria-hidden="true">⌕</span>
@@ -80,15 +150,16 @@ export function TranscriptPanel({
         <span className="segment-count">{visible.length} 段</span>
       </div>
 
-      <div className="transcript-scroll">
+      <div className="transcript-scroll" onScroll={handleScroll} ref={scrollRef}>
         {visible.map((segment) => {
-          const sourceIndex = segments.findIndex((item) => item.id === segment.id);
+          const sourceIndex = indexById.get(segment.id) ?? -1;
           const isActive = segment.id === activeId;
           const cursor = cursorById[segment.id] ?? 0;
           return (
             <article
               aria-current={isActive ? "true" : undefined}
               className={`transcript-row ${isActive ? "is-current" : ""}`}
+              data-start-ms={segment.start_ms}
               data-testid={`segment-${segment.id}`}
               key={segment.id}
               ref={isActive ? (node) => { activeRef.current = node; } : undefined}

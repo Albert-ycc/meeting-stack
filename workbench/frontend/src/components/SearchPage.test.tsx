@@ -252,3 +252,26 @@ describe("SearchPage 材料（3f）", () => {
     expect(screen.getByText(/没搜到/)).toBeInTheDocument();
   });
 });
+
+describe("SearchPage 材料的［预览］定位（4d）", () => {
+  it("［预览］带上命中的段号，抽屉打开在「搜到的这段」", () => {
+    const { onOpenMaterial } = renderPage({
+      mode: "hybrid",
+      items: [hit()],
+      materials: [
+        material({
+          content_key: "q2:3f6c0000000000000000",
+          hits: [{ kind: "pdf", loc: "第 3 页", start_ms: null, text: "成立数理协会的方案", matched: "数理协会", ordinal: 14 }],
+        }),
+      ],
+      material_state: EMPTY_STATE,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    expect(onOpenMaterial).toHaveBeenLastCalledWith(7, undefined, {
+      contentKey: "q2:3f6c0000000000000000",
+      ordinal: 14,
+      from: "search",
+      words: ["数理协会"],
+    });
+  });
+});

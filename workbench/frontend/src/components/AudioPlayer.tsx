@@ -22,10 +22,12 @@ interface AudioPlayerProps {
   mediaUrl: string | null;
   peaksUrl?: string | null;
   onTimeChange: (milliseconds: number) => void;
+  /** 4d：在 <audio> 的 play、pause、ended 上报在不在放（相关材料栏在放时跟播放位置） */
+  onPlayingChange?: (playing: boolean) => void;
 }
 
 export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(function AudioPlayer(
-  { durationMs, initialSeekMs = 0, mediaUrl, peaksUrl, onTimeChange },
+  { durationMs, initialSeekMs = 0, mediaUrl, peaksUrl, onTimeChange, onPlayingChange },
   ref,
 ) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -260,7 +262,12 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(funct
             <audio
               aria-label="录音播放器"
               controls
-              onPlay={(event) => claimSound(event.currentTarget)}
+              onEnded={() => onPlayingChange?.(false)}
+              onPause={() => onPlayingChange?.(false)}
+              onPlay={(event) => {
+                claimSound(event.currentTarget);
+                onPlayingChange?.(true);
+              }}
               preload="metadata"
               ref={audioRef}
               src={mediaUrl}

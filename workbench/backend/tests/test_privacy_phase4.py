@@ -14,6 +14,9 @@
   材料文字哨兵不出现在它的 quote、evidence_json 里。
 - 4c：决议对比只发决议原文、会名和需求名（<this>、<others>、<reqs> 三个标签），材料文字、文件名、逐字稿和
   纪要其余部分的哨兵都不在里面。
+- 4d：相关（H3）真的跑出片段和相关行：只在材料文字里的哨兵不进 meeting_window_passages.words、relations 的
+  quote 和 evidence_json；两边都有的词（文件词干「接口文档」）进了 words，但不进词条、候选词、项目线索、
+  segments_fts、minutes_fts（行数不变）和任何提示词；相关的计算不发 AI。
 """
 from __future__ import annotations
 
@@ -34,12 +37,14 @@ from meeting_workbench.links_llm import LinksLLMWorker, ordered
 from meeting_workbench.loose_mentions import TASK_BACKFILL, TASK_RECENT, LooseMentionTask
 from meeting_workbench.glossary import SNAPSHOT_FILENAME, rewrite_snapshot
 from meeting_workbench.material_index import MaterialIndexer
+from meeting_workbench.material_vectors import MaterialVectors
 from meeting_workbench.project_linking import ProjectLinker
 from meeting_workbench.project_profile import build_cue_table
 from meeting_workbench.tasks import TaskService
 
 from .test_material_index import run_until_done
 from .test_project_linking import make_project, seed_meeting
+from .test_related import MODEL, TOPIC_A, FakeSemantic, embed_all, segments_for
 
 MATERIAL_SENTINEL = "蓝鲸七号材料原文"
 NAME_SENTINEL = "绝密文件名甲"
@@ -54,6 +59,10 @@ PAIRS_MEETING = "vm-20260925-100000"
 MINUTES_SENTINEL = "纪要摘要哨兵丙"
 TRANSCRIPT_SENTINEL = "逐字稿哨兵戊"
 CONTENT_KEY = "q2:" + "7" * 32
+# 4d：一份和会上说的是一回事的材料（里面也有材料文字哨兵），文件名的词干「接口文档」两边都有
+RELATED_KEY = "q2:" + "8" * 32
+RELATED_MEETING = "vm-20260926-090000"
+SHARED_STEM = "接口文档"
 
 # 材料文字哨兵本来就在的表，和三处白名单
 MATERIAL_TEXT_TABLES = ("material_chunks", "material_files")
@@ -122,6 +131,8 @@ def build_world(tmp_path: Path) -> tuple[Database, Settings, Path]:
     (secret / f"{NAME_SENTINEL}.docx").write_text("正文", encoding="utf-8")
     (root / "报价").mkdir()
     (root / "报价" / "报价单 v3.xlsx").write_text("表格", encoding="utf-8")
+    (root / "需求").mkdir()
+    (root / "需求" / f"{SHARED_STEM}.docx").write_text("正文", encoding="utf-8")
     key = tmp_path / "api-key"
     key.write_text("sk-test", encoding="utf-8")
     settings = Settings(
@@ -156,6 +167,26 @@ def build_world(tmp_path: Path) -> tuple[Database, Settings, Path]:
         """UPDATE material_files SET content_key = ?, content_size = size, content_mtime_ns = mtime_ns
             WHERE name = ?""",
         (CONTENT_KEY, f"{NAME_SENTINEL}.docx"),
+    )
+    # 4d：材料一侧（带向量，假编码器按文字给）
+    db.execute(
+        """INSERT INTO material_contents(content_key, layer, state, chars, chunks, created_at, updated_at)
+           VALUES (?, 'text', 'done', 200, 1, ?, ?)""",
+        (RELATED_KEY, now, now),
+    )
+    db.execute(
+        "INSERT INTO material_chunks(content_key, ordinal, text) VALUES (?, 0, ?)",
+        (RELATED_KEY, "。".join(TOPIC_A) + f"。{MATERIAL_SENTINEL}"),
+    )
+    db.execute(
+        """UPDATE material_files SET content_key = ?, content_size = size, content_mtime_ns = mtime_ns
+            WHERE name = ?""",
+        (RELATED_KEY, f"{SHARED_STEM}.docx"),
+    )
+    embed_all(db)
+    seed_meeting(
+        db, RELATED_MEETING, "驻场沟通", "# 摘要\n\n排期。", segments=segments_for(TOPIC_A),
+        project_id=project_id, origin="manual",
     )
     segments = [(0, "大家好，开始吧"), (754_000, "报价单按第三版发出"), (900_000, "排期表下周定稿")]
     seed_meeting(
@@ -193,7 +224,19 @@ def run_everything(db: Database, settings: Settings) -> None:
     （glossary_mining_enabled 开着）。"""
     ProjectLinker(db, settings).link_pending()
     TaskService(db, settings).extract_pending()
-    links_settings = settings.model_copy(update={"links_enabled": True, "glossary_mining_enabled": True})
+    links_settings = settings.model_copy(
+        update={
+            "links_enabled": True,
+            "glossary_mining_enabled": True,
+            # 4d：相关要语义索引和材料正文读取都开着（假编码器，材料向量已经写好）
+            "semantic_enabled": True,
+            "material_content_enabled": True,
+            "semantic_model": MODEL,
+        }
+    )
+    semantic = FakeSemantic()
+    vectors = MaterialVectors(db, links_settings, semantic)
+    vectors.refresh()
     llm_worker = LinksLLMWorker(
         db,
         links_settings,
@@ -205,7 +248,7 @@ def run_everything(db: Database, settings: Settings) -> None:
             ]
         ),
     )
-    links = LinksWorker(db, links_settings, llm=llm_worker)
+    links = LinksWorker(db, links_settings, llm=llm_worker, semantic=semantic, vectors=vectors)
     links.run_round()
     # AI 循环跑到没活（4b 一段一次、4c 一场会一次），再跑一轮本机循环让 L5 把说法对到文件
     for _ in range(20):
@@ -275,7 +318,7 @@ def test_material_text_stays_in_the_material_tables(tmp_path, fake_ai):
         # 哨兵确实在库里，扫描才有意义
         assert connection.execute(
             "SELECT COUNT(*) FROM material_chunks WHERE instr(text, ?) > 0", (MATERIAL_SENTINEL,)
-        ).fetchone()[0] == 1
+        ).fetchone()[0] == 2  # 4a 的一段、4d 的一段
         assert database_leaks(connection, MATERIAL_SENTINEL) == []
 
 
@@ -334,3 +377,40 @@ def test_decision_pairs_send_only_decision_text(tmp_path, fake_ai):
             assert sentinel not in text, sentinel
         # 发的是决议原文和会名
         assert "报价单按第二版发出" in text and "报价单按第三版发出" in text and "报价沟通" in text
+
+
+def test_related_keeps_material_text_out_and_shared_words_local(tmp_path, fake_ai):
+    db, settings, root = build_world(tmp_path)
+    with db.autocommit() as connection:
+        fts_before = [
+            connection.execute(f"SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?", (f'"{SHARED_STEM}"',)).fetchone()[0]
+            for table in ("segments_fts", "minutes_fts")
+        ]
+
+    run_everything(db, settings)
+
+    # H3 真的跑出了片段和相关行（下面的断言才有意义）
+    rows = db.query_all("SELECT words FROM meeting_window_passages WHERE meeting_id = ?", (RELATED_MEETING,))
+    assert rows and all(SHARED_STEM in json.loads(row["words"]) for row in rows)
+    links = db.query_all("SELECT quote, evidence_json FROM relations WHERE kind = 'related'")
+    assert links
+    for row in links:
+        assert MATERIAL_SENTINEL not in row["quote"] + row["evidence_json"]
+        assert NAME_SENTINEL not in row["quote"] + row["evidence_json"]
+    for row in db.query_all("SELECT words FROM meeting_window_passages"):
+        assert MATERIAL_SENTINEL not in row["words"]
+    # 共同词不进词条、候选词、项目线索；两张会议全文表的行数不变
+    with db.autocommit() as connection:
+        assert SHARED_STEM not in repr(build_cue_table(connection))
+        places = database_leaks(connection, SHARED_STEM)
+        assert "meeting_window_passages.words" in places
+        assert not [place for place in places if place.startswith(("glossary_", "project_"))], places
+        fts_after = [
+            connection.execute(f"SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?", (f'"{SHARED_STEM}"',)).fetchone()[0]
+            for table in ("segments_fts", "minutes_fts")
+        ]
+    assert fts_after == fts_before
+    # 文件词干和材料文字不在任何提示词里；这场会的逐字稿本身也没有发出去（相关的计算不发 AI）
+    for text in fake_ai:
+        assert SHARED_STEM not in text and MATERIAL_SENTINEL not in text
+        assert TOPIC_A[1] not in text

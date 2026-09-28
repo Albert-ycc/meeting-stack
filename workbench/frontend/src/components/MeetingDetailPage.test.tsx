@@ -1628,3 +1628,69 @@ describe("MeetingDetailPage 归属条", () => {
   });
 });
 
+
+describe("MeetingDetailPage 相关材料栏（4d）", () => {
+  it("新后台时右栏最上面一节是相关材料，点条目打开预览并定位；旧后台（没有 linksFlags）不画", async () => {
+    const { LinksFlagsContext } = await import("./links/LinksFlagsContext");
+    const relatedMaterials = vi.fn().mockResolvedValue({
+      state: { kind: "ok", text: null, action: null },
+      files: {
+        "q2:3f6c0000000000000000": {
+          file_id: 812, name: "接口文档.docx", ext: "docx", root_online: true, playable: false, can_open: false, state_text: "",
+        },
+      },
+      copies: [],
+      windows: [
+        {
+          start_ms: 0,
+          end_ms: 90_000,
+          items: [
+            {
+              content_key: "q2:3f6c0000000000000000", ordinal: 14, loc: "第三节", start_ms: null,
+              text: "字段命名统一用小驼峰", words: ["字段命名"], at_ms: 2_000,
+            },
+          ],
+        },
+      ],
+      rejected: 0,
+    });
+    const onOpenPreview = vi.fn();
+    const apiClient = {
+      relatedMaterials,
+      asrGoldSamples: vi.fn().mockResolvedValue({ items: [] }),
+    } as unknown as ApiClient;
+    const page = (
+      <MeetingDetailPage
+        apiClient={apiClient}
+        canWriteTasks
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={meeting(false)}
+        onBack={vi.fn()}
+        onOpenPreview={onOpenPreview}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[]}
+        tags={[]}
+      />
+    );
+    const { unmount } = render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: true, llmConfigured: false }}>
+        {page}
+      </LinksFlagsContext.Provider>,
+    );
+    const inspector = document.querySelector("aside.edit-inspector") as HTMLElement;
+    const section = await within(inspector).findByText("接口文档.docx");
+    expect(inspector.firstElementChild?.contains(section)).toBe(true);
+    expect(relatedMaterials).toHaveBeenCalledWith("vm-1");
+    await userEvent.click(screen.getByRole("button", { name: "预览 接口文档.docx 第三节" }));
+    expect(onOpenPreview).toHaveBeenCalledWith({
+      fileId: 812,
+      passage: { contentKey: "q2:3f6c0000000000000000", ordinal: 14, from: "related", words: ["字段命名"] },
+    });
+    unmount();
+    relatedMaterials.mockClear();
+    render(page);
+    expect(screen.queryByText("相关材料")).not.toBeInTheDocument();
+    expect(relatedMaterials).not.toHaveBeenCalled();
+  });
+});

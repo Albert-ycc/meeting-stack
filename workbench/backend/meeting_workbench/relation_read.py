@@ -192,19 +192,39 @@ def project_edges(connection: Any, project_id: str) -> list[dict[str, Any]]:
 
 
 def file_mention_counts(connection: Any, file_ids: Iterable[int]) -> dict[int, int]:
-    """每份文件在几场会上被提到（字面和放宽的有效行，按会去重）。先数，不受列表长度限制。"""
+    """每份文件在几场会上被提到：这份文件，或它在本项目里同内容的活副本，有有效提到（字面和放宽的，
+    rejected 不算）的不同会议数（4d 起算上副本）。先数，不受列表长度限制；没有提到的不返回。
+    文件面板、预览、搜索和批量接口共用。"""
     ids = sorted({int(file_id) for file_id in file_ids})
-    counts: dict[int, int] = {}
+    # 每份文件的组：自己，加上同项目里同内容的活副本
+    members: dict[int, set[int]] = {file_id: {file_id} for file_id in ids}
     for part in _batches(ids):
+        for row in connection.execute(
+            f"""SELECT f.id AS asked, g.id AS member FROM material_files f
+                  JOIN project_material_roots r ON r.id = f.root_id
+                  JOIN material_files g ON g.content_key = f.content_key AND g.gone_at IS NULL AND g.id != f.id
+                  JOIN project_material_roots rg ON rg.id = g.root_id AND rg.project_id = r.project_id
+                 WHERE f.id IN ({_marks(part)}) AND f.content_key IS NOT NULL""",
+            list(part),
+        ).fetchall():
+            members[int(row["asked"])].add(int(row["member"]))
+    everyone = sorted({member for group in members.values() for member in group})
+    meetings_of: dict[int, set[str]] = {}
+    for part in _batches(everyone):
         marks = _marks(part)
         for row in connection.execute(
             f"""WITH u AS ({_file_union(marks)})
-                SELECT u.file_id, COUNT(DISTINCT u.meeting_id) AS n FROM u
-                 WHERE u.file_id IN ({marks})
-                 GROUP BY u.file_id""",
+                SELECT DISTINCT u.file_id, u.meeting_id FROM u WHERE u.file_id IN ({marks})""",
             [*part, *part, *part],
         ).fetchall():
-            counts[int(row["file_id"])] = int(row["n"])
+            meetings_of.setdefault(int(row["file_id"]), set()).add(str(row["meeting_id"]))
+    counts: dict[int, int] = {}
+    for file_id, group in members.items():
+        seen: set[str] = set()
+        for member in group:
+            seen |= meetings_of.get(member, set())
+        if seen:
+            counts[file_id] = len(seen)
     return counts
 
 

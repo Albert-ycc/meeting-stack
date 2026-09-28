@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import secrets
+import sqlite3
 import threading
 import time
 from dataclasses import asdict
@@ -67,6 +68,8 @@ from . import links_llm as links_llm_module
 from . import file_mentions
 from . import loose_mentions
 from . import relations as relations_module
+from . import related as related_module
+from . import related_read
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from . import material_content as material_content_module
 from . import material_media as material_media_module
@@ -476,6 +479,21 @@ class FileMentionPickInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_id: int = Field(ge=1)
+
+
+# 4d：相关材料栏的［不相关］：身份是（会，文件内容）
+CONTENT_KEY_PATTERN = r"^[a-z0-9]{1,8}:[0-9a-f]{16,64}$"
+
+
+class RelatedRejectInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content_key: str = Field(pattern=CONTENT_KEY_PATTERN, max_length=80)
+    file_id: int = Field(ge=1)
+
+
+class EmptyInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class RelationAnswerInput(BaseModel):
@@ -1940,6 +1958,18 @@ def create_app(
             )
         return {"items": rows, "limit": limit, "offset": offset, "total": total}
 
+    def prioritize_related(meeting_id: str) -> None:
+        """4d：会议页打开时，这场会的相关到期就在内存里排到 H3 最前面并唤醒循环；GET 不写库。"""
+        if not related_module.enabled(settings):
+            return
+        try:
+            with db.autocommit() as connection:
+                due = related_module.is_due(connection, settings, meeting_id)
+        except sqlite3.OperationalError:
+            return
+        if due:
+            links_worker.prioritize(meeting_id)
+
     @app.get("/api/meetings/{meeting_id}")
     def get_meeting(meeting_id: str):
         detail = _meeting_detail(
@@ -1947,7 +1977,38 @@ def create_app(
         )
         if not detail:
             raise HTTPException(404, "会议不存在")
+        prioritize_related(meeting_id)
         return detail
+
+    # 4d：会议页右侧的「相关材料」栏；GET 不写库，到期时顺手在内存里 prioritize
+    @app.get("/api/meetings/{meeting_id}/related-materials")
+    def related_materials(meeting_id: str, request: Request):
+        with db.autocommit() as connection:
+            payload = related_read.panel(
+                connection, meeting_id, worker=links_worker, settings=settings, local=local_request(request)
+            )
+        if payload is None:
+            raise HTTPException(404, "会议不存在")
+        prioritize_related(meeting_id)
+        return payload
+
+    @app.get("/api/meetings/{meeting_id}/related-materials/rejected")
+    def related_materials_rejected(meeting_id: str):
+        with db.autocommit() as connection:
+            payload = related_read.rejected_items(connection, meeting_id)
+        if payload is None:
+            raise HTTPException(404, "会议不存在")
+        return payload
+
+    @app.post("/api/meetings/{meeting_id}/related-materials/reject")
+    def reject_related_material(meeting_id: str, body: RelatedRejectInput):
+        try:
+            with db.transaction() as connection:
+                return relations_module.reject_related(
+                    connection, meeting_id, content_key=body.content_key, file_id=body.file_id, now=utc_now()
+                )
+        except relations_module.RelationError as error:
+            raise HTTPException(error.status, str(error)) from error
 
     @app.get("/api/meetings/{meeting_id}/minutes-evidence")
     def minutes_evidence(meeting_id: str):
@@ -3625,6 +3686,24 @@ def create_app(
                 raise HTTPException(404, str(error)) from error
         return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
+    # 4d：关系图「相关」线的数据（4f 画）；自己的 ETag（related_rev），不和 graph_rev 混
+    @app.get("/api/graph/projects/{project_id}/related")
+    def project_graph_related(
+        project_id: str,
+        request: Request,
+        window: Literal["7d", "28d", "90d", "all"] = "28d",
+    ):
+        today = datetime.now().astimezone().date()
+        with db.autocommit() as connection:
+            etag = related_read.related_etag(connection, window, today)
+            if request.headers.get("if-none-match") == etag:
+                return Response(status_code=304, headers={"ETag": etag})
+            try:
+                payload = related_read.project_related(connection, project_id, window=window, today=today)
+            except related_read.ProjectNotFound as error:
+                raise HTTPException(404, str(error)) from error
+        return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
     @app.get("/api/graph/overview")
     def graph_overview_endpoint(
         request: Request, window: Literal["7d", "28d", "90d", "all"] = "28d"
@@ -3908,7 +3987,14 @@ def create_app(
             )
 
     @app.get("/api/materials/files/{file_id}/preview")
-    def material_file_preview(file_id: int, request: Request, parts: Literal["preview"] | None = None):
+    def material_file_preview(
+        file_id: int,
+        request: Request,
+        parts: Literal["preview"] | None = None,
+        # 4d：定位到那一段（相关材料、搜索、问答的出处）
+        passage_key: str | None = Query(default=None, pattern=CONTENT_KEY_PATTERN, max_length=80),
+        passage_ordinal: int | None = Query(default=None, ge=0),
+    ):
         with db.autocommit() as connection:
             result = material_status.file_preview(
                 connection,
@@ -3918,10 +4004,32 @@ def create_app(
                 quotes=lambda meeting_id, starts: graph_module._segments_at(connection, meeting_id, starts),
                 parts=parts,
                 can_reveal=local_request(request),
+                passage_key=passage_key,
+                passage_ordinal=passage_ordinal,
             )
         if result is None:
             raise HTTPException(404, "文件不在索引里（可能已经挪走或删掉了）")
         return result
+
+    # 4d：列表里的小签「3 场会提到」：一个列表一次请求
+    @app.get("/api/materials/mentioned-counts")
+    def material_mentioned_counts(file_ids: str = Query(default="", max_length=4000)):
+        try:
+            ids = related_read.parse_file_ids(file_ids)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        with db.autocommit() as connection:
+            return {"counts": related_read.mentioned_counts(connection, ids)}
+
+    # 4d：［用本机应用打开］只在这台电脑上；扩展名白名单；传给打开程序的是 realpath
+    @app.post("/api/materials/files/{file_id}/open")
+    def open_material_file(file_id: int, body: EmptyInput, request: Request):
+        try:
+            with db.autocommit() as connection:
+                related_read.open_material(connection, file_id, local=local_request(request))
+        except related_read.RelatedError as error:
+            raise HTTPException(error.status, str(error)) from error
+        return {"ok": True}
 
     def checked_material_file(file_id: int) -> dict[str, Any]:
         """读盘的三个接口：按 file_id 找，realpath 必须还在根目录里；盘不在回 503。"""

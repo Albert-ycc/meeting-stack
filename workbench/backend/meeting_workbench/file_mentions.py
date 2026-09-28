@@ -849,6 +849,8 @@ def meeting_files(connection: Any, meeting_id: str, project_id: str | None) -> d
 
 def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[int]], dict[int, str]]) -> dict[str, Any]:
     """GET /api/graph/files/{id}：文件信息、同名的其他文件、在哪几场会上被提到。只查库。"""
+    from . import related_read  # related_read 引 graph，graph 引本模块
+
     row = connection.execute(
         """SELECT f.*, r.path AS root_path, r.project_id, p.name AS project_name
              FROM material_files f
@@ -934,6 +936,8 @@ def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[in
         "siblings": siblings,
         "meetings": meetings,
         "active_meetings": relation_read.file_mention_counts(connection, [file_id]).get(file_id, 0),
+        # 4d：「内容相关的会」最多 5 条（不算进上面的 N）
+        "related_meetings": related_read.related_meetings(connection, file_id),
     }
 
 

@@ -14,6 +14,8 @@
 - 回答和撤销（POST /api/relations/{id}/answer、/undo）：prev_json 只记这次改了的列，600 秒内按它
   改回再清空；产出的［是］和它的撤销在同一个事务里登记、删掉交付物。
 - 合并项目：repoint_project 在 UPDATE meetings 之前把关联、字面提到和候选词搬到目标项目。
+- 4d：相关材料栏里还没连成线的一条点［不相关］时新建 origin manual 的 rejected 行（reject_related）；
+  这种行撤销、改回相关时整行删掉，回到「没说过」；vector 行改回 shown。
 """
 from __future__ import annotations
 
@@ -73,6 +75,11 @@ WRONG_ANSWER = "这类关联不能这样回答"
 # 和第二期 file_mentions.pick_mention_file 同一句，同一个按钮不出两种说法
 WRONG_PICK = "只能换成这个项目文件夹里同名的另一份文件"
 FILE_GONE = "这份文件已经不在了"
+# 4d：相关材料栏［不相关］的错误
+MEETING_GONE = "会议不存在"
+NOT_INDEXED = "这份文件不在索引里了"
+NO_PROJECT = "这场会没归项目"
+OTHER_PROJECT = "这份文件不在这个项目的资料盘里"
 
 
 class RelationError(ValueError):
@@ -369,6 +376,9 @@ def answer(connection: Any, relation_id: int, body: dict[str, Any], now: str) ->
     if choice == "restore":
         if row["status"] not in RESTORABLE:
             raise RelationError(409, HANDLED)
+        if _manual_related(row):
+            # 4d：相关材料栏里你手动建的「不相关」行，改回相关时整行删掉，回到「没说过」
+            return _drop_manual(connection, row, now)
     elif row["status"] != FIRST_STATUS[kind]:
         raise RelationError(409, HANDLED)
 
@@ -441,6 +451,9 @@ def undo(connection: Any, relation_id: int, now: str) -> dict[str, Any]:
         raise RelationError(409, UNDONE)
     if row["decided_at"] and _parse(now) > _parse(row["decided_at"]) + timedelta(seconds=UNDO_WINDOW_SECONDS):
         raise RelationError(409, UNDO_EXPIRED)
+    if _manual_related(row):
+        # 4d：你手动建的「不相关」行（栏里那一条还没连成线），撤销时整行删掉
+        return {**_drop_manual(connection, row, now), "removed_deliverable_id": None}
     prev = json.loads(row["prev_json"])
     created = bool(prev.pop("created_deliverable", False))
     removed: int | None = None
@@ -455,6 +468,73 @@ def undo(connection: Any, relation_id: int, now: str) -> dict[str, Any]:
     )
     fresh = _row(connection, relation_id)
     return {"relation": serialize(fresh, _file_of(connection, fresh)), "removed_deliverable_id": removed}
+
+
+def _manual_related(row: dict[str, Any]) -> bool:
+    return row["kind"] == "related" and row["origin"] == "manual"
+
+
+def _drop_manual(connection: Any, row: dict[str, Any], now: str) -> dict[str, Any]:
+    """删掉你手动建的相关行（撤销、改回相关都这样），返回它删之前的样子，状态写成 shown（回到栏里）。"""
+    file = _file_of(connection, row)
+    connection.execute("DELETE FROM relations WHERE id = ?", (row["id"],))
+    gone = {**row, "status": "shown", "decided_at": None, "updated_at": now}
+    return {"relation": serialize(gone, file), "undo_until": None, "deliverable_id": None, "deleted": True}
+
+
+def reject_related(
+    connection: Any, meeting_id: str, *, content_key: str, file_id: int, now: str
+) -> dict[str, Any]:
+    """相关材料栏的［不相关］（POST /api/meetings/{id}/related-materials/reject）：身份是（会，文件内容）。
+    已经有行就按 answer(no) 办；没有行（这一条只在窗里，没连成线）就新建一行 origin manual、status
+    rejected，同时记 root_id、rel_path（原地改过也挡）。"""
+    meeting = connection.execute("SELECT id, project_id FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+    if meeting is None:
+        raise RelationError(404, MEETING_GONE)
+    if not meeting["project_id"]:
+        raise RelationError(409, NO_PROJECT)
+    file = connection.execute(
+        """SELECT f.*, r.project_id FROM material_files f JOIN project_material_roots r ON r.id = f.root_id
+            WHERE f.id = ?""",
+        (int(file_id),),
+    ).fetchone()
+    if file is None:
+        raise RelationError(404, NOT_INDEXED)
+    if file["project_id"] != meeting["project_id"]:
+        raise RelationError(422, OTHER_PROJECT)
+    project_id = str(meeting["project_id"])
+    ident = f"{meeting_id}|{content_key}"
+    existing = connection.execute(
+        "SELECT * FROM relations WHERE kind = 'related' AND project_id = ? AND ident = ?", (project_id, ident)
+    ).fetchone()
+    if existing is not None:
+        row = dict(existing)
+        if row["status"] == "shown":
+            return answer(connection, int(row["id"]), {"answer": "no"}, now)
+        if row["status"] != "cleared":
+            raise RelationError(409, HANDLED)
+        # 收回过的系统行：改成 rejected，撤销时回到 cleared
+        prev = {"status": "cleared", "decided_at": row["decided_at"]}
+        connection.execute(
+            """UPDATE relations SET status = 'rejected', decided_at = ?, prev_json = ?, updated_at = ?,
+                   root_id = COALESCE(root_id, ?), rel_path = COALESCE(rel_path, ?) WHERE id = ?""",
+            (now, canonical(prev), now, file["root_id"], file["rel_path"], row["id"]),
+        )
+        fresh = _row(connection, int(row["id"]))
+        return {"relation": serialize(fresh, _file_of(connection, fresh)), "undo_until": undo_until(now),
+                "deliverable_id": None}
+    cursor = connection.execute(
+        """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id, content_key, root_id, rel_path,
+               file_id, quote, evidence_json, prev_json, decided_at, created_at, updated_at)
+           VALUES ('related', ?, ?, 'rejected', 'manual', ?, ?, ?, ?, ?, '', '{}', ?, ?, ?, ?)""",
+        (
+            project_id, ident, meeting_id, content_key, file["root_id"], file["rel_path"], file["id"],
+            canonical({"created": True}), now, now, now,
+        ),
+    )
+    fresh = _row(connection, int(cursor.lastrowid))
+    return {"relation": serialize(fresh, _file_of(connection, fresh)), "undo_until": undo_until(now),
+            "deliverable_id": None}
 
 
 # ---------------------------------------------------------------------- 合并项目

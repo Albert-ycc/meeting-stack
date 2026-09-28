@@ -17,6 +17,7 @@ import type {
   MeetingCard,
   MeetingDetail,
   MinutesEvidence,
+  PreviewTarget,
   Project,
   RequirementRef,
   Segment,
@@ -36,6 +37,8 @@ import { MinutesCorrectionsBar } from "./MinutesCorrectionsBar";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeAction, type NoticeTone } from "./Notice";
+import { useLinksFlags } from "./links/LinksFlagsContext";
+import { RelatedMaterials } from "./links/RelatedMaterials";
 
 interface MeetingDetailPageProps {
   apiClient: ApiClient;
@@ -66,6 +69,8 @@ interface MeetingDetailPageProps {
   onOpenInGraph?: (projectId: string, meetingId: string) => void;
   /** 「像是新项目」提示里同名的另一场会的 ▶：打开那场会，从说到这个名字的地方开始 */
   onOpenMeeting?: (meetingId: string, seekMs: number) => void;
+  /** 4d：相关材料栏里点条目打开预览抽屉并定位到那一段 */
+  onOpenPreview?: (target: PreviewTarget) => void;
 }
 
 type DetailTab = "transcript" | "minutes" | "tasks";
@@ -260,9 +265,32 @@ export function MeetingDetailPage({
   onOpenInGraph,
   onGlossaryChanged,
   onOpenMeeting,
+  onOpenPreview,
 }: MeetingDetailPageProps) {
   const playerRef = useRef<AudioPlayerHandle>(null);
   const [currentMs, setCurrentMs] = useState(initialSeekMs);
+  // 4d：相关材料栏的位置 = viewMs ?? currentMs。viewMs 是用户自己滚逐字稿时读到的那一行；在放时手动滚动后
+  // 4 秒回到播放位置，暂停时停在滚到的地方，点行跳转时清空
+  const [viewMs, setViewMs] = useState<number | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const viewAtRef = useRef(0);
+  const linksFlags = useLinksFlags();
+  const showRelated = linksFlags !== null && typeof apiClient.relatedMaterials === "function";
+  const noteReadingTime = useCallback((milliseconds: number | null) => {
+    viewAtRef.current = Date.now();
+    setViewMs(milliseconds);
+  }, []);
+  const seekFromTranscript = useCallback((milliseconds: number) => {
+    setViewMs(null);
+    playerRef.current?.seekTo(milliseconds);
+  }, []);
+  // 在放时，手动滚动后 4 秒回到播放位置；暂停时停在滚到的地方
+  useEffect(() => {
+    if (!playing || viewMs === null) return;
+    const wait = Math.max(0, 4000 - (Date.now() - viewAtRef.current));
+    const timer = window.setTimeout(() => setViewMs(null), wait);
+    return () => window.clearTimeout(timer);
+  }, [playing, viewMs]);
   const [tab, setTab] = useState<DetailTab>(initialTab);
   const [engine, setEngine] = useState<"funasr" | "whisper" | "qwen">("funasr");
   const [candidateSegments, setCandidateSegments] = useState<Segment[]>([]);
@@ -1111,6 +1139,7 @@ export function MeetingDetailPage({
         initialSeekMs={initialSeekMs}
         mediaUrl={mediaUrl}
         peaksUrl={audio ? `/api/media/${audio.id}/peaks` : null}
+        onPlayingChange={setPlaying}
         onTimeChange={setCurrentMs}
         ref={playerRef}
       />
@@ -1169,6 +1198,23 @@ export function MeetingDetailPage({
           <button aria-selected={tab === "tasks"} disabled={isSaving || goldDirty} onClick={() => setTab("tasks")} role="tab" type="button">本场任务{pendingTaskCount > 0 && <span>{pendingTaskCount}</span>}</button>
         )}
       </div>
+
+      {isMobile && tab === "transcript" && showRelated && (
+        <RelatedMaterials
+          apiClient={apiClient}
+          canWrite={canWriteTasks}
+          currentMs={currentMs}
+          isMobile
+          meetingId={meeting.id}
+          onNotice={(message, tone, actions) =>
+            setNotice(message, tone, actions?.length ? UNDO_NOTICE_MS : undefined, actions)
+          }
+          onOpenPreview={onOpenPreview}
+          onOpenProject={onOpenProject}
+          onSeek={seekFromTranscript}
+          viewMs={null}
+        />
+      )}
 
       {tab === "transcript" ? (
         <div className="detail-workspace">
@@ -1231,7 +1277,8 @@ export function MeetingDetailPage({
                 editable={!isMobile && editingTranscript}
                 onChange={changeSegments}
                 onMerge={merge}
-                onSeek={(milliseconds) => playerRef.current?.seekTo(milliseconds)}
+                onReadingTimeChange={noteReadingTime}
+                onSeek={seekFromTranscript}
                 onSplit={split}
                 segments={segments}
               />
@@ -1273,6 +1320,22 @@ export function MeetingDetailPage({
 
           {!isMobile && (
             <aside className="edit-inspector desktop-only">
+              {showRelated && (
+                <RelatedMaterials
+                  apiClient={apiClient}
+                  canWrite={canWriteTasks}
+                  currentMs={currentMs}
+                  isMobile={false}
+                  meetingId={meeting.id}
+                  onNotice={(message, tone, actions) =>
+                    setNotice(message, tone, actions?.length ? UNDO_NOTICE_MS : undefined, actions)
+                  }
+                  onOpenPreview={onOpenPreview}
+                  onOpenProject={onOpenProject}
+                  onSeek={seekFromTranscript}
+                  viewMs={engine === "funasr" ? viewMs : null}
+                />
+              )}
               <div className="inspector-section classification-inspector">
                 <span className="eyebrow">CLASSIFICATION</span>
                 <h2>归档归属</h2>

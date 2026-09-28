@@ -23,6 +23,8 @@ import "./RequirementDetailPage.css";
 import { copyText } from "../clipboard";
 import { NoticeBanner, useNotice } from "./Notice";
 import { DecisionLogCard } from "./decisions/DecisionLogCard";
+import { MentionedBadge } from "./files/MentionedBadge";
+import { useMentionedCounts } from "./files/useMentionedCounts";
 
 interface RequirementDetailPageProps {
   apiClient: ApiClient;
@@ -40,6 +42,8 @@ interface RequirementDetailPageProps {
   backLabel?: string;
   /** 「在关系图里看」：打开所属项目的关系图并选中这个需求；关系图只画进行中的需求 */
   onOpenInGraph?: (projectId: string, requirementId: string) => void;
+  /** 4d：材料文件夹的小签打开预览抽屉；没传时小签不可点 */
+  onOpenPreview?: (fileId: number) => void;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -119,6 +123,7 @@ export function RequirementDetailPage({
   reloadKey = 0,
   backLabel = "需求池",
   onOpenInGraph,
+  onOpenPreview,
 }: RequirementDetailPageProps) {
   const { toastNode, showToast } = useToast();
   // 成功用轻提示一闪而过；失败用不会自己消失的红色提示条，原因看得清。
@@ -133,6 +138,14 @@ export function RequirementDetailPage({
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [expandedFiles, setExpandedFiles] = useState<Map<number, { items: RequirementFile[]; capped: boolean }>>(new Map());
   const [expandLoading, setExpandLoading] = useState<Set<number>>(new Set());
+  // 4d：材料文件夹文件行的小签「3 场会提到」，一个列表一次请求
+  const mentioned = useMentionedCounts(
+    apiClient,
+    (detail?.folders ?? []).flatMap((folder) =>
+      (expandedFiles.get(folder.id)?.items ?? folder.preview_files).map((file) => file.file_id),
+    ),
+    String(reloadKey),
+  );
 
   // 已经有这条需求的数据时静默刷新：留着页面只换数据，不整页闪成「正在读取」。
   const loadedIdRef = useRef<string | null>(null);
@@ -413,7 +426,15 @@ export function RequirementDetailPage({
                         {file.relative_path}
                       </span>
                       <span>{formatBytes(file.size_bytes)}</span>
-                      <span>{formatMonthDay(file.modified_at)}</span>
+                      <span>
+                        {formatMonthDay(file.modified_at)}
+                        {mentioned && file.file_id !== undefined && (
+                          <MentionedBadge
+                            count={mentioned.get(file.file_id)}
+                            onClick={onOpenPreview ? () => onOpenPreview(file.file_id!) : undefined}
+                          />
+                        )}
+                      </span>
                       <span />
                     </div>
                   ))}

@@ -7,6 +7,7 @@ import type { MaterialFilePreview, MaterialPreviewContent } from "../types";
 import type { MiniPlayerHandle } from "./graph/MiniPlayer";
 import { MaterialPreviewDrawer, PICTURE_FALLBACK, PreviewBlock, UNPLAYABLE_TEXT } from "./MaterialPreview";
 import { claimSound } from "./soundFocus";
+import { LinksFlagsContext } from "./links/LinksFlagsContext";
 
 const EMPTY_PREVIEW: MaterialPreviewContent = {
   kind: "none",
@@ -373,5 +374,111 @@ describe("MaterialPreviewDrawer", () => {
     await user.click(await screen.findByRole("button", { name: "重试" }));
     expect(await screen.findByRole("heading", { name: "报价单.xlsx" })).toBeInTheDocument();
     expect(client.getMaterialPreview).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("MaterialPreviewDrawer 的定位和「内容相关的会」（4d）", () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const related = [
+    {
+      meeting_id: "m-3",
+      title: "周会",
+      date: "2026-09-21",
+      at_ms: 754_000,
+      quote: "驻场那部分报价单里要单列",
+      words: ["报价单", "驻场"],
+      audio_url: "/api/media/a-3",
+      relation_id: 41,
+    },
+  ];
+
+  function client(data: MaterialFilePreview) {
+    return {
+      getMaterialPreview: vi.fn().mockResolvedValue(data),
+      revealMaterial: vi.fn(),
+      answerRelation: vi.fn().mockResolvedValue({ relation: { id: 41 }, undo_until: "2099-01-01T00:00:00Z" }),
+      undoRelation: vi.fn().mockResolvedValue({ relation: { id: 41 }, removed_deliverable_id: null }),
+      openMaterialFile: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as ApiClient & Record<string, ReturnType<typeof vi.fn>>;
+  }
+
+  function open(data: MaterialFilePreview, overrides: Partial<Parameters<typeof MaterialPreviewDrawer>[0]> = {}) {
+    const props = {
+      apiClient: client(data),
+      fileId: 7,
+      canReveal: true,
+      canWrite: true,
+      isMobile: false,
+      onClose: vi.fn(),
+      onOpenMeeting: vi.fn(),
+      ...overrides,
+    };
+    const view = render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: true, llmConfigured: true }}>
+        <MaterialPreviewDrawer {...props} />
+      </LinksFlagsContext.Provider>,
+    );
+    return { props, view };
+  }
+
+  const passageTarget = { contentKey: "q2:3f6c0000000000000000", ordinal: 14, from: "related" as const, words: ["驻场"] };
+
+  it("定位块三种情况：新的、改过的、找不到的（旧后台没有 passage 字段也按找不到）", async () => {
+    const fresh = previewData({ kind: "text", lines: ["一行字"] }, { passage: { loc: "第 3 节", start_ms: null, text: "驻场那部分单列", stale: false } });
+    const { props, view } = open(fresh, { passage: passageTarget });
+    expect(await screen.findByText("和会上相关的这段")).toBeInTheDocument();
+    expect(screen.getByText("驻场").tagName).toBe("MARK");
+    expect(props.apiClient.getMaterialPreview).toHaveBeenCalledWith(7, undefined, { contentKey: passageTarget.contentKey, ordinal: 14 });
+    view.unmount();
+
+    const stale = previewData({}, { passage: { loc: null, start_ms: null, text: "旧的那段", stale: true } });
+    const second = open(stale, { passage: { ...passageTarget, from: "search" } });
+    expect(await screen.findByText("搜到的这段")).toBeInTheDocument();
+    expect(screen.getByText("文件后来改过，这是改之前读到的那段")).toBeInTheDocument();
+    second.view.unmount();
+
+    open(previewData(), { passage: { ...passageTarget, from: "answer" } });
+    expect(await screen.findByText("回答引用的这段")).toBeInTheDocument();
+    expect(screen.getByText("这段在文件里找不到了（文件可能改过）")).toBeInTheDocument();
+  });
+
+  it("没有定位时不请求段落；［用本机应用打开］只在 can_open 时出现", async () => {
+    const data = previewData({}, {});
+    const { props, view } = open({ ...data, file: { ...data.file, can_open: true } });
+    await userEvent.click(await screen.findByRole("button", { name: "用本机应用打开" }));
+    expect(props.apiClient.openMaterialFile).toHaveBeenCalledWith(7);
+    expect(props.apiClient.getMaterialPreview).toHaveBeenCalledWith(7);
+    view.unmount();
+    open(data);
+    await screen.findByRole("heading", { name: "报价单.xlsx" });
+    expect(screen.queryByRole("button", { name: "用本机应用打开" })).not.toBeInTheDocument();
+  });
+
+  it("「内容相关的会」：［不相关］以后收成带［撤销］的一行，点了调 undoRelation", async () => {
+    const { props } = open(previewData({}, { related_meetings: related }));
+    expect(await screen.findByText("内容相关的会")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "周会 · 9月21日" })).toBeInTheDocument();
+    expect(screen.getByText("共同词：报价单、驻场")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "不相关" }));
+    expect(props.apiClient.answerRelation).toHaveBeenCalledWith(41, { answer: "no" });
+    const line = await screen.findByText("已记下：『报价单.xlsx』和这场会不相关", { selector: ".relation-recent span" });
+    await userEvent.click(within(line.closest("p")!).getByRole("button", { name: "撤销" }));
+    expect(props.apiClient.undoRelation).toHaveBeenCalledWith(41);
+  });
+
+  it("canWrite 为假时没有［不相关］", async () => {
+    open(previewData({}, { related_meetings: related }), { canWrite: false });
+    expect(await screen.findByText("内容相关的会")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "不相关" })).not.toBeInTheDocument();
   });
 });

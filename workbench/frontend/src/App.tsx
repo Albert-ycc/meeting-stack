@@ -10,6 +10,7 @@ import type {
   MeetingDetail,
   MeetingFilters,
   MeetingSummary,
+  PreviewTarget,
   Project,
   SearchPayload,
   Tag,
@@ -145,7 +146,7 @@ export default function App({ apiClient = api }: AppProps) {
   const [glossaryProjectId, setGlossaryProjectId] = useState<string | null>(null);
   const [taskDrawerId, setTaskDrawerId] = useState<string | null>(null);
   // 材料预览抽屉（3e）：和任务抽屉一样挂在根部，换视图时一起关
-  const [previewTarget, setPreviewTarget] = useState<{ fileId: number; startMs?: number } | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   // 在本机打开页面才有「在访达中显示」
   const [canReveal, setCanReveal] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
@@ -852,6 +853,7 @@ export default function App({ apiClient = api }: AppProps) {
           openProjectGraph(projectId, `m:${meetingId}`);
         }}
         onOpenMeeting={(meetingId, seekMs) => openMeeting(meetingId, seekMs)}
+        onOpenPreview={setPreviewTarget}
         onOpenRequirement={openRequirementDetail}
         onOpenTasks={() => navigate("tasks")}
         onGlossaryChanged={() => void loadGlossaryPending()}
@@ -872,7 +874,7 @@ export default function App({ apiClient = api }: AppProps) {
       <SearchPage
         error={searchError}
         onOpen={(meetingId, startMs, tab) => openMeeting(meetingId, startMs, false, tab)}
-        onOpenMaterial={(fileId, startMs) => setPreviewTarget({ fileId, startMs })}
+        onOpenMaterial={(fileId, startMs, passage) => setPreviewTarget({ fileId, startMs, passage })}
         onScopeChange={(scope) => void submitSearch({ word: searchedQuery, scope })}
         onSearchWord={(word) => void submitSearch({ word })}
         projects={projects}
@@ -979,6 +981,7 @@ export default function App({ apiClient = api }: AppProps) {
         onBack={leaveRequirement}
         onOpenInGraph={isMobile ? undefined : (projectId, requirementId) => openProjectGraph(projectId, `r:${requirementId}`)}
         onOpenMeeting={openMeeting}
+        onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
         onOpenProject={openProjectDetail}
         onOpenTask={setTaskDrawerId}
         onProjectsChanged={refreshProjects}
@@ -1150,9 +1153,12 @@ export default function App({ apiClient = api }: AppProps) {
             <MaterialPreviewDrawer
               apiClient={apiClient}
               canReveal={canReveal}
+              canWrite={!isMobile || mobileTaskWrite}
               fileId={previewTarget.fileId}
               isMobile={isMobile}
-              key={`${previewTarget.fileId}:${previewTarget.startMs ?? ""}`}
+              key={`${previewTarget.fileId}:${previewTarget.startMs ?? ""}:${
+                previewTarget.passage ? `${previewTarget.passage.contentKey}:${previewTarget.passage.ordinal}` : ""
+              }`}
               onClose={() => setPreviewTarget(null)}
               onOpenInGraph={(projectId, fileId) => {
                 setPreviewTarget(null);
@@ -1166,6 +1172,7 @@ export default function App({ apiClient = api }: AppProps) {
                 setPreviewTarget(null);
                 setTaskDrawerId(taskId);
               }}
+              passage={previewTarget.passage}
               startMs={previewTarget.startMs}
             />
           )}

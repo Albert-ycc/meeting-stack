@@ -199,6 +199,62 @@ export interface LinksState {
   action: { kind: string; label: string } | null;
 }
 
+// ---------------------------------------------------------------- 相关材料栏（4d）
+
+/** 栏的状态：一句话、最多一个按钮；text 为 null 表示不写 */
+export interface RelatedState {
+  kind: "ok" | "waiting" | "stopped";
+  text: string | null;
+  action: { kind: "open_project"; label: string; project_id: string } | null;
+}
+
+/** 栏里用到的文件，按内容标识 */
+export interface RelatedFile {
+  file_id: number;
+  name: string;
+  ext: string;
+  root_online: boolean;
+  /** 音视频材料 */
+  playable: boolean;
+  /** ［用本机应用打开］出不出，前端只看它 */
+  can_open: boolean;
+  state_text: string;
+}
+
+/** 一条相关的材料片段（不带分数、名次和关联 id） */
+export interface RelatedItem {
+  content_key: string;
+  ordinal: number;
+  loc: string | null;
+  /** 音视频材料的时间点 */
+  start_ms: number | null;
+  /** 以第一个共同词为中心，最多 120 字 */
+  text: string;
+  words: string[];
+  /** ▶ 从会上这里放 */
+  at_ms: number;
+}
+
+export interface RelatedWindow {
+  start_ms: number;
+  end_ms: number;
+  items: RelatedItem[];
+}
+
+export interface RelatedMaterials {
+  state: RelatedState;
+  files: Record<string, RelatedFile>;
+  /** 这场会自己的另一份记录（逐字稿导出到资料盘） */
+  copies: Array<{ file_id: number; name: string }>;
+  windows: RelatedWindow[];
+  /** 标过不相关的份数 */
+  rejected: number;
+}
+
+export interface RelatedRejected {
+  items: Array<{ relation_id: number; name: string; decided_at: string }>;
+}
+
 export interface RelationAnswerResult {
   relation: Relation;
   /** 撤销期以它为准（回答时间加 600 秒） */
@@ -618,9 +674,40 @@ export const api = {
     read<MaterialUnreadablePage>(
       `/api/materials/unreadable${queryString({ project_id: projectId, root_id: rootId, offset })}`,
     ),
-  /** 预览抽屉的数据；parts=preview 只要状态和预览（关系图文件面板用） */
-  getMaterialPreview: (fileId: number, parts?: "preview") =>
-    read<MaterialFilePreview>(`/api/materials/files/${fileId}/preview${parts ? `?parts=${parts}` : ""}`),
+  /** 预览抽屉的数据；parts=preview 只要状态和预览（关系图文件面板用）；passage 定位到那一段（4d） */
+  getMaterialPreview: (
+    fileId: number,
+    parts?: "preview",
+    passage?: { contentKey: string; ordinal: number } | null,
+  ) =>
+    read<MaterialFilePreview>(
+      `/api/materials/files/${fileId}/preview${queryString({
+        parts,
+        passage_key: passage?.contentKey,
+        passage_ordinal: passage?.ordinal,
+      })}`,
+    ),
+  // ---------------------------------------------------------------- 相关材料栏（4d）
+  /** 会议页的相关材料栏；打开时服务端顺手把这场会排到前面（只在内存里） */
+  relatedMaterials: (meetingId: string) =>
+    read<RelatedMaterials>(`/api/meetings/${encodeURIComponent(meetingId)}/related-materials`),
+  /** 标过不相关的；［改回相关］用 answerRelation(id, {answer: "restore"}) */
+  relatedRejected: (meetingId: string) =>
+    read<RelatedRejected>(`/api/meetings/${encodeURIComponent(meetingId)}/related-materials/rejected`),
+  /** 栏里的［不相关］：没连成线的也能标（服务端建一行） */
+  rejectRelatedMaterial: (meetingId: string, body: { content_key: string; file_id: number }) =>
+    write<RelationAnswerResult>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/related-materials/reject`,
+      "POST",
+      body,
+    ),
+  /** 列表里的小签「3 场会提到」：一个列表一次请求，最多 200 个 */
+  mentionedCounts: (fileIds: number[]) =>
+    read<{ counts: Record<string, number> }>(
+      `/api/materials/mentioned-counts${queryString({ file_ids: fileIds.join(",") })}`,
+    ),
+  /** ［用本机应用打开］：只在这台 Mac 上 */
+  openMaterialFile: (fileId: number) => write<{ ok: boolean }>(`/api/materials/files/${fileId}/open`, "POST", {}),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>

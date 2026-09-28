@@ -11,7 +11,8 @@
 - 清理每 24 小时一次（links_housekeeping_at），每个事务最多 5,000 行，会议转写时照跑。
 - 各步上一轮怎么结束的记在内存快照里（done、budget、busy、stopping、locked、off、waiting），健康检查
   从快照拼 details.links，请求时不查库。GET 接口从不写库。
-- 4a 里 L1、L2 和清理是实的，4b 填了 L5；L3（4e）、L4（4e）、H2（4e）、H3（4d）、H4（4h）是空位。
+- 4a 里 L1、L2 和清理是实的，4b 填了 L5，4d 填了 H3（related.RelatedPass）；L3（4e）、L4（4e）、H2（4e）、
+  H4（4h）是空位。
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from . import decisions, file_events, loose_mentions
+from . import decisions, file_events, loose_mentions, related
 from .db import Database
 from .material_fts import REBUILD_KEY
 from .relation_read import live_file
@@ -132,6 +133,8 @@ class LinksWorker:
         self._wake = threading.Event()
         self._priorities: OrderedDict[str, None] = OrderedDict()
         self._resolve_cursor = 0
+        # 4d：H3 的状态（检查过的词、背景样本、上次看到的矩阵）跨轮留在内存里
+        self.related = related.RelatedPass()
         self._state: dict[str, Any] = {
             "paused": None,
             "last_round_at": None,
@@ -419,7 +422,7 @@ class LinksWorker:
         """H3 前一段（4d 填）：打开过、到期的会（ctx.priorities，新的在前），一场最多 15 秒；算完调
         done_priority。材料向量矩阵还没建过（vectors.snapshot() 为 None）时回 waiting。
         材料全文表还没补完时框架整段跳过。"""
-        return "off"
+        return self.related.opened(ctx, self.done_priority)
 
     def h2_affects(self, ctx: RoundContext) -> str:
         """H2 影响匹配（4e 填）：只用全文索引或 instr 找共同的数字、日期、词；不用向量、不拿快照、不拿
@@ -429,7 +432,7 @@ class LinksWorker:
     def h3_related_rest(self, ctx: RoundContext) -> str:
         """H3 后两段（4d 填）：材料一侧的增量（新片段 4,096 段），再按会议新的在前（3 场会或 8 秒）。
         材料全文表还没补完时框架整段跳过。"""
-        return "off"
+        return self.related.rest(ctx)
 
     def h4_terms(self, ctx: RoundContext) -> str:
         """H4 挖词（4h 填）：先按每份内容挖种子（H4a，只看前 6 万字），再按项目汇总（H4b）。5 秒，内存
@@ -521,6 +524,9 @@ class LinksWorker:
                 waiting["pairs"] = connection.execute(
                     "SELECT COUNT(*) FROM decision_scan WHERE pair_state IN ('pending', 'running')"
                 ).fetchone()[0]
+                # 4d：到期的会数（partial 的会只在 links status 里计数）
+                if related.enabled(ctx.settings):
+                    waiting["related"] = related.due_count(connection, ctx.settings)
                 opened = {
                     kind: connection.execute(
                         "SELECT COUNT(*) FROM relations WHERE kind = ? AND status = 'suggested'", (kind,)

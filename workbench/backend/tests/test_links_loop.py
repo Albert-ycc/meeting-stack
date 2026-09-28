@@ -68,9 +68,9 @@ def loop_settings(**overrides):
     return SimpleNamespace(**values)
 
 
-def worker(db, *, now=NOW, **kwargs):
+def worker(db, *, now=NOW, settings=None, **kwargs):
     moment = {"value": now}
-    built = LinksWorker(db, loop_settings(), now=lambda: moment["value"], **kwargs)
+    built = LinksWorker(db, settings or loop_settings(), now=lambda: moment["value"], **kwargs)
     built.moment = moment
     return built
 
@@ -164,6 +164,13 @@ def idle_world(tmp_path):
         {"at_ms": 60_000, "quote": "上周那版报价单再看一下", "phrase": "上周那版报价单", "core": "报价单", "aka": [],
          "kind": "表格", "when": {"rel": "last_week", "version": None}},
     ]
+    # 4d：一份读完、算好向量的材料（假编码器按文字哈希给向量）和一场会上说到它的会，H3 前两轮算出相关行
+    from .test_related import TOPIC_A, add_content, segments_for
+
+    add_content(db, "q2:" + "a" * 32, ["。".join(TOPIC_A)])
+    doc_id = add_file(db, root_id, "接口文档.docx")
+    db.execute("UPDATE material_files SET content_key = ? WHERE id = ?", ("q2:" + "a" * 32, doc_id))
+    add_meeting(db, "m4", ago=1, project_id="p", segments=segments_for(TOPIC_A))
     version = db.query_one("SELECT current_transcript_version_id AS v FROM meetings WHERE id = 'm3'")["v"]
     db.execute(
         """INSERT INTO mention_extractions(meeting_id, version_id, text_sha, state, parts, parts_done, phrases_json,
@@ -197,12 +204,20 @@ def fingerprint(db):
         "decisions": db.query_all("SELECT id, text, updated_at FROM decisions ORDER BY id"),
         "candidates": db.query_all("SELECT id, status, updated_at FROM glossary_candidates ORDER BY id"),
         "extractions": db.query_all("SELECT meeting_id, hints_json, resolved_sig, updated_at FROM mention_extractions"),
+        "related": db.query_all("SELECT * FROM meeting_window_passages ORDER BY meeting_id, start_ms, rank"),
+        "related_scan": db.query_all("SELECT * FROM meeting_related_scan ORDER BY meeting_id"),
     }
 
 
 def test_idle_round_leaves_revisions_alone(tmp_path):
+    from .test_related import FakeSemantic
+
     db = idle_world(tmp_path)
-    w = worker(db, clock=Clock())
+    config = loop_settings(semantic_enabled=True, material_content_enabled=True)
+    semantic = FakeSemantic()
+    vectors = MaterialVectors(db, config, semantic, clock=lambda: 0.0)
+    vectors.refresh()
+    w = worker(db, clock=Clock(), settings=config, semantic=semantic, vectors=vectors)
     first = w.run_round()
     add_pair_rows(db)
     w.run_round()
@@ -218,6 +233,10 @@ def test_idle_round_leaves_revisions_alone(tmp_path):
         "status": "shown", "origin": "llm"
     }
     assert stable["extractions"][0]["resolved_sig"]
+    # 4d：相关真的算出来了（H3）
+    assert db.query_one("SELECT status, origin FROM relations WHERE ident = ?", ("m4|q2:" + "a" * 32,)) == {
+        "status": "shown", "origin": "vector"
+    }
     assert first["phases"]["decisions"] == "done"
 
     w.moment["value"] = NOW + timedelta(hours=3)  # 同一天

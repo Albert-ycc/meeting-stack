@@ -1,6 +1,6 @@
 // 关系图（1g、1h）接口的数据形状，和后端 graph.py 一一对应。
 
-import type { MaterialDeliverable, MaterialFileState, MeetingAttribution, MeetingCard } from "../../types";
+import type { MaterialDeliverable, MaterialFileState, MeetingAttribution, MeetingCard, RelatedMeeting } from "../../types";
 import type { DecisionLinkRef, LinksState } from "../../api";
 
 export type GraphWindow = "7d" | "28d" | "90d" | "all";
@@ -511,6 +511,8 @@ export interface GraphFileDetail {
     quote: string;
   } & LooseFields>;
   active_meetings: number;
+  /** 4d：「内容相关的会」最多 5 条；旧后台没有 */
+  related_meetings?: RelatedMeeting[];
 }
 
 /** ［不是这份文件］［撤销］［换成这份］的结果 */

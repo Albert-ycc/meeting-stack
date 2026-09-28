@@ -728,3 +728,34 @@ def test_patch_meeting_requirement_ids_dedupes_and_rejects_all_on_missing_id(tmp
     assert missing.status_code == 404
     detail = client.get("/api/meetings/vm-20260102-101500").json()
     assert [r["id"] for r in detail["requirements"]] == [requirement_id]
+
+
+def test_folder_preview_files_carry_file_ids_once_the_root_is_indexed(tmp_path):
+    """4d：「材料文件夹」卡的前 6 个文件：根目录在线、文件名收完时查库，行里带 file_id（小签用）；没收完时
+    照旧读盘，这些行没有 file_id。"""
+    from meeting_workbench.material_index import MaterialIndexer
+
+    from .test_material_index import run_until_done
+
+    client, settings, browse_root = make_requirement_client(tmp_path)
+    headers = write_headers(client)
+    project_id, root = make_project_with_root(client, headers, browse_root)
+    folder = root / "报价"
+    folder.mkdir()
+    for name in ("g.md", "b.md", "a.md", "c.md", "d.md", "e.md", "f.md"):
+        (folder / name).write_text("x", encoding="utf-8")
+    requirement = client.post(
+        "/api/requirements",
+        json={"project_id": project_id, "title": "报价需求", "priority": "P1", "folder_paths": [str(folder)]},
+        headers=headers,
+    ).json()
+    before = requirement["folders"][0]["preview_files"]
+    assert before and all("file_id" not in item for item in before)
+
+    db = Database(settings.database_path)
+    run_until_done(MaterialIndexer(db, settings, clock=lambda: 0.0))
+    detail = client.get(f"/api/requirements/{requirement['id']}").json()
+    files = detail["folders"][0]["preview_files"]
+    assert [item["relative_path"] for item in files] == ["a.md", "b.md", "c.md", "d.md", "e.md", "f.md"]
+    ids = {row["name"]: row["id"] for row in db.query_all("SELECT id, name FROM material_files")}
+    assert [item["file_id"] for item in files] == [ids[item["relative_path"]] for item in files]

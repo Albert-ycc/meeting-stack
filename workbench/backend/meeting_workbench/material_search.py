@@ -237,6 +237,8 @@ class _Assembler:
                         {
                             "kind": layer or "text",
                             "loc": hit.get("loc"),
+                            # 4d：段号，［预览］能定位到那一段
+                            "ordinal": hit.get("ordinal"),
                             "start_ms": hit.get("start_ms"),
                             "text": _snippet(hit["text"], hit.get("matched") or ""),
                             "matched": hit.get("matched") or "",

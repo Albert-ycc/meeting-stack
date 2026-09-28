@@ -35,6 +35,8 @@ PHASE_FOUR_MODULES = (
     "loose_mentions.py",
     "decision_pairs.py",
     "timeline.py",
+    "related.py",
+    "related_read.py",
 )
 
 # 4a：relation_read.links_state 的状态句（第 3 节「状态和提示」，每种一句话、最多一个按钮）
@@ -162,11 +164,75 @@ COPY_4C = (
     "挂上文件夹",
     "· 9月28日后来改了",
 )
+# 4d：相关材料栏的状态句（十五种里服务端给的十四种，「相关材料没取到」前端自己画）、栏和抽屉的字、小签、提示
+STATE_SENTENCES_4D = (
+    "这场会没找到相关材料",
+    "这个项目材料太多，较早的一部分没有比对",
+    "正在找相关材料",
+    "这场会还在转写，转完再找相关材料",
+    "会议在转写，转完再找相关材料",
+    "这个项目还有 3 份材料没读完，读完的先列在这里",
+    "这个项目的材料还没读完，读完会接着找",
+    "这场会没归项目，相关材料只在项目文件夹里找",
+    "这个项目还没挂材料文件夹",
+    "还没有逐字稿",
+    "本地语义模型没装好，找不了相关材料",
+    "语义索引关着，找不了相关材料",
+    "材料正文读取关着，找不了相关材料",
+    "关联整理关着，找不了相关材料",
+)
+COPY_4D = (
+    *STATE_SENTENCES_4D,
+    "相关材料没取到",
+    "重试",
+    "去项目页",
+    "相关材料",
+    "12:00 前后",
+    "相关材料（12:00 前后）2 份",
+    "相关材料（12:00 前后）这一段没有",
+    "收起",
+    "展开",
+    "共同词：字段命名、驻场",
+    "从 12:14 播放会上这段",
+    "预览 接口文档.docx 第 3 节",
+    "录音 05:12",
+    "不相关",
+    "用本机应用打开",
+    "这场会的另一份记录：纪要-0921.docx",
+    "预览",
+    "这一段没找到相关材料",
+    "别的时间有：",
+    "有 1 份材料标过不相关",
+    "看看",
+    "改回相关",
+    "已记下：『接口文档.docx』和这场会不相关",
+    "已撤销",
+    "已改回相关：『接口文档.docx』",
+    "和会上相关的这段",
+    "搜到的这段",
+    "回答引用的这段",
+    "文件后来改过，这是改之前读到的那段",
+    "这段在文件里找不到了（文件可能改过）",
+    "内容相关的会",
+    "周会 · 9月21日",
+    "3 场会提到",
+    "在 3 场会上被提到",
+    "会议不存在",
+    "这份文件不在索引里了",
+    "这场会没归项目",
+    "这份文件不在这个项目的资料盘里",
+    "只能在声档所在的这台电脑上打开文件",
+    "这种文件不在声档里直接打开，可以在访达中显示",
+    "资料盘未连接",
+    "找不到这个文件了",
+    "这台电脑上找不到能打开文件的程序",
+)
 COPY_TABLES = {
     "4a 状态句": STATE_SENTENCES_4A,
     "4a 回答和撤销": ANSWER_COPY_4A,
     "4b 状态句和提到": COPY_4B,
     "4c 决议卡和时间线": COPY_4C,
+    "4d 相关材料栏": COPY_4D,
 }
 
 
@@ -317,3 +383,32 @@ def test_collect_copy_walks_nested_payloads():
     assert sorted(collect_copy(payload)) == sorted(
         ["是这条任务的交付物吗？", "看一下", "还有 2 场会在整理关联", "这条关联已经不在了"]
     )
+
+
+def test_related_panel_sentences_match_the_module():
+    from meeting_workbench import related_read
+
+    assert set(related_read.PANEL_SENTENCES) | {related_read.reading_text(3)} == set(STATE_SENTENCES_4D)
+
+
+def test_phase_four_get_payloads_4d(tmp_path):
+    """4d 的样本库打一遍栏（每种状态）、标过不相关的和关系图的相关线：text、label 这些键里没有不许出现的词。"""
+    from datetime import date
+
+    from meeting_workbench import related_read
+
+    from .test_related import build, settings, worker_for
+
+    w = build(tmp_path)
+    payloads = []
+    with w.db.autocommit() as connection:
+        for config in (settings(), settings(links_enabled=False), settings(semantic_enabled=False)):
+            payloads.append(related_read.panel(connection, "m", worker=None, settings=config, local=True))
+    worker_for(w).run_round()
+    with w.db.autocommit() as connection:
+        payloads.append(related_read.panel(connection, "m", worker=None, settings=w.settings, local=True))
+        payloads.append(related_read.rejected_items(connection, "m"))
+        payloads.append(related_read.project_related(connection, "p", window="all", today=date(2026, 9, 28)))
+    found = [text for payload in payloads for text in collect_copy(payload)]
+    assert found, "样本什么字都没有，这个测试什么都没验证"
+    assert [text for text in found if problems(text)] == []

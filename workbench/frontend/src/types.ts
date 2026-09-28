@@ -850,6 +850,8 @@ export interface MaterialHit {
   start_ms: number | null;
   text: string;
   matched: string;
+  /** 4d：段号，［预览］定位到那一段；旧后台没有 */
+  ordinal?: number | null;
 }
 
 export interface MaterialSearchItem {
@@ -1344,6 +1346,8 @@ export interface MaterialFileInfo {
   project_name: string;
   root_online: boolean;
   gone: boolean;
+  /** 4d：［用本机应用打开］出不出（只在这台 Mac 上、只开文档图片音视频）；旧后台没有 */
+  can_open?: boolean;
 }
 
 export interface MaterialMention {
@@ -1378,6 +1382,30 @@ export interface MaterialFilePreview {
   mentioned_meetings?: number;
   deliverables?: MaterialDeliverable[];
   can_reveal?: boolean;
+  /** 4d：定位的那一段（只在请求时给了段号时有；null 是找不到了） */
+  passage?: MaterialPassage | null;
+  /** 4d：「内容相关的会」最多 5 条 */
+  related_meetings?: RelatedMeeting[];
+}
+
+/** 4d：预览定位到的那一段；stale 是文件后来改过、这是改之前读到的那段 */
+export interface MaterialPassage {
+  loc: string | null;
+  start_ms: number | null;
+  text: string;
+  stale: boolean;
+}
+
+/** 4d：「内容相关的会」的一行（这里的行有 relation_id，［不相关］走 answerRelation） */
+export interface RelatedMeeting {
+  meeting_id: string;
+  title: string;
+  date: string;
+  at_ms: number | null;
+  quote: string;
+  words: string[];
+  audio_url: string | null;
+  relation_id: number;
 }
 
 /** 冷启动：还没挂文件夹的项目找到的同名（默认勾选）或相近（默认不勾）文件夹 */
@@ -1544,4 +1572,19 @@ export interface ProjectMeetingRow {
   duration_ms: number | null;
   canonical_dir: string | null;
   requirements: RequirementRef[];
+}
+
+/** 4d：预览抽屉打开哪份文件；passage 定位到那一段（from 只决定那一块的标题，默认 related） */
+export interface PreviewPassage {
+  contentKey: string;
+  ordinal: number;
+  from?: "related" | "search" | "answer";
+  /** 加亮的词（共同词、搜的词） */
+  words?: string[];
+}
+
+export interface PreviewTarget {
+  fileId: number;
+  startMs?: number;
+  passage?: PreviewPassage;
 }

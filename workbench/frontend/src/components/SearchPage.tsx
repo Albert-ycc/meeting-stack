@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import type { LoadState, Project, SearchPayload } from "../types";
+import type { LoadState, PreviewPassage, Project, SearchPayload } from "../types";
 import { AsyncState } from "./AsyncState";
 import { SearchMaterials } from "./SearchMaterials";
 import { SearchResults } from "./SearchResults";
@@ -34,7 +34,7 @@ interface SearchPageProps {
   /** 点「也可以搜」里的写法：换成这个词再搜一次 */
   onSearchWord: (word: string) => void;
   /** 材料的［预览］和 ▶：打开预览抽屉，▶ 从那个时间开始放 */
-  onOpenMaterial?: (fileId: number, startMs?: number) => void;
+  onOpenMaterial?: (fileId: number, startMs?: number, passage?: PreviewPassage) => void;
 }
 
 export function SearchPage({

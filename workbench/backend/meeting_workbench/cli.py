@@ -119,6 +119,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     links_decisions.add_argument("--meeting", required=True, help="会议 id")
     links_decisions.add_argument("--json", action="store_true", help="输出 JSON")
+    # 4d：相关的校准输出（开发工具，唯一印分数的地方）
+    links_related = links_sub.add_parser(
+        "related", help="看一场会每段找到的相关材料：分数、门槛、共同词、被刷掉的原因"
+    )
+    links_related.add_argument("--meeting", help="会议 id")
+    links_related.add_argument("--project", help="项目 id（和 --stats 或 --rebuild 一起用）")
+    links_related.add_argument("--at", help="只看这个时刻所在的窗，比如 12:30 或 1:02:30")
+    links_related.add_argument("--floor", type=float, help="临时换一个最低门槛（不改设置）")
+    links_related.add_argument("--margin", type=float, help="临时换一个门槛余量（不改设置）")
+    links_related.add_argument("--encode", action="store_true", help="重新编码窗（不写库）；默认用存下的窗")
+    links_related.add_argument("--stats", action="store_true", help="这个项目的相关统计")
+    links_related.add_argument("--rebuild", action="store_true", help="标记重算：只把 dirty 加一，不当场算")
+    links_related.add_argument("--json", action="store_true", help="输出 JSON")
     return parser
 
 
@@ -418,6 +431,13 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
                 "SELECT COUNT(*) FROM decision_scan WHERE pair_state IN ('pending', 'running')"
             ).fetchone()[0],
         }
+        # 4d：到期的会，另数材料太多、没比全的会（只在这里计数）
+        from . import related
+
+        waiting["related"] = related.due_count(connection, settings)
+        related_partial = connection.execute(
+            "SELECT COUNT(*) FROM meeting_related_scan WHERE partial = 1"
+        ).fetchone()[0]
         failed = {
             "mentions": connection.execute(
                 "SELECT COUNT(*) FROM mention_extractions WHERE state = 'failed'"
@@ -459,6 +479,7 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
         "paused": (live or {}).get("paused"),
         "phases": (live or {}).get("phases") or {},
         "waiting": waiting,
+        "related_partial": related_partial,
         "failed": failed,
         "open": opened,
         "housekeeping_at": housekeeping["value"] if housekeeping else None,
@@ -481,6 +502,7 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
         f"在等：决议入库 {waiting['decisions']} 场，放宽的提到 {waiting['mentions']} 场"
         f"（没做成 {failed['mentions']} 场），决议对比 {waiting['pairs']} 场（没对比成 {failed['pairs']} 场）"
     )
+    print(f"相关：{waiting['related']} 场会到期，{related_partial} 场材料太多、没比全")
     print(f"在问你：产出 {opened['produced']} 条，可能过时 {opened['affects']} 条")
     print(f"上次清理：{result['housekeeping_at'] or '还没清理过'}")
     print(f"AI（{result['llm_host']}）：{LINKS_LLM_LABELS.get(llm_state, llm_state)}")
@@ -588,11 +610,82 @@ def _links_decisions(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def _links_related(args: argparse.Namespace, settings: Settings) -> int:
+    """links related：--meeting 印每个窗的 bar、前 6 个的得分、共同词和刷掉的原因（用存下的窗，片段向量从
+    库里流式读，不用内存矩阵）；--project --stats 印项目的统计；--rebuild 只把 dirty 加一。"""
+    from . import related
+
+    if args.rebuild:
+        if not (args.meeting or args.project):
+            raise SystemExit("--rebuild 要配 --meeting 或 --project")
+        db = _database(settings)
+        with db.transaction() as connection:
+            count = related.mark_dirty(connection, meeting_id=args.meeting, project_id=args.project)
+        print(f"已标记 {count} 场会重算（服务开着时下一轮 H3 接着算，会议在转写时照样让路）")
+        return 0
+    connection = _read_only(settings)
+    try:
+        if args.stats:
+            if not args.project:
+                raise SystemExit("--stats 要配 --project")
+            stats = related.project_stats(connection, settings, args.project)
+            if args.json:
+                print(json.dumps(stats, ensure_ascii=False, indent=2))
+                return 0
+            print(f"窗 {stats['windows']} 个，每窗 {stats['passages_per_window']} 段")
+            print("相关线：" + ("、".join(f"{k} {v}" for k, v in stats["links"].items()) or "没有"))
+            print("到处都相关：" + ("、".join(stats["hubs"]) or "没有"))
+            print("副本：" + ("、".join(stats["copies"]) or "没有"))
+            print(f"材料太多、没比全的会：{stats['partial_meetings']} 场")
+            bar = stats["bar"]
+            print(f"bar：p10 {bar['p10']}，p50 {bar['p50']}，p90 {bar['p90']}")
+            return 0
+        if not args.meeting:
+            raise SystemExit("要给 --meeting（或 --project --stats、--rebuild）")
+        encode = None
+        if args.encode:
+            from .semantic import SemanticIndex
+
+            index = SemanticIndex(None, settings, busy_check=lambda: False)  # type: ignore[arg-type]
+            encode = lambda texts: index.encode_texts(texts, background=False)  # noqa: E731
+        try:
+            result = related.explain_meeting(
+                connection, settings, args.meeting, at=args.at, floor=args.floor, margin=args.margin, encode=encode
+            )
+        except LookupError:
+            raise SystemExit(f"没有这场会：{args.meeting}") from None
+    except sqlite3.OperationalError as error:
+        raise SystemExit(f"数据库还没升到 v16（先启动一次服务）：{error}") from None
+    finally:
+        connection.close()
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    print(f"{result['title'] or result['meeting_id']}（{result['meeting_id']}）")
+    if result.get("note"):
+        print(f"note：{result['note']}")
+    if result.get("copies"):
+        print("这场会的副本：" + "、".join(result["copies"]))
+    if result.get("hubs"):
+        print("到处都相关：" + "、".join(result["hubs"]))
+    if not result["windows"]:
+        print("没有存下的窗（还没算过，或加 --encode 当场编码）")
+    for window in result["windows"]:
+        print(f"[{_hhmmss(window['start_ms'])}] bar {window['bar']:.3f}  {window['text']}")
+        for item in window["candidates"]:
+            words = "、".join(item.get("words") or []) or "-"
+            reason = item.get("reason") or "留下"
+            print(f"    {item['score']:.3f}  {item.get('content_key', '?')}#{item.get('ordinal', '?')}  {words}  {reason}")
+    return 0
+
+
 def _links(args: argparse.Namespace, settings: Settings) -> int:
     if args.links_command == "status":
         return _links_status(args, settings)
     if args.links_command == "retry":
         return _links_retry(settings)
+    if args.links_command == "related":
+        return _links_related(args, settings)
     return _links_decisions(args, settings)
 
 
