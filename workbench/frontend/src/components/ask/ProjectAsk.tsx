@@ -145,7 +145,7 @@ function AskInner({
         const status = error instanceof ApiError ? error.status : 0;
         if (status === 409) patch(id, { phase: "failed", error: { text: "上一个问题还在回答", retry: false } });
         else if (status === 404) patch(id, { phase: "failed", error: { text: "这次找到的原话过期了", retry: true } });
-        else patch(id, { phase: "failed", error: { text: (error as Error).message, retry: false } });
+        else patch(id, { phase: "failed", error: sendFailure(error) });
       }
     },
     [apiClient, patch, projectId],
@@ -244,7 +244,7 @@ function AskInner({
       if (error instanceof ApiError && error.status === 404) await prepare(turn.id, turn.question);
       else if (error instanceof ApiError && error.status === 409)
         patch(turn.id, { phase: "failed", error: { text: "上一个问题还在回答", retry: false } });
-      else patch(turn.id, { phase: "failed", error: { text: (error as Error).message, retry: false } });
+      else patch(turn.id, { phase: "failed", error: sendFailure(error) });
     }
   };
 
@@ -334,6 +334,12 @@ function AskInner({
       )}
     </Root>
   );
+}
+
+/** ask 回 429（到上限）、503（没配置、关着、没起来）：那句话说「先列出找到的原话」，计划留着照样列出 */
+function sendFailure(error: unknown): { text: string; retry: boolean; list: boolean } {
+  const status = error instanceof ApiError ? error.status : 0;
+  return { text: (error as Error).message, retry: false, list: status === 429 || status === 503 };
 }
 
 function historyText(turn: AskTurn): string {
@@ -432,10 +438,15 @@ function TurnView({
     }
     case "failed":
       return (
-        <p className="ask-status">
-          {turn.error?.text}
-          {turn.error?.retry && retryButton}
-        </p>
+        <>
+          <p className="ask-status">
+            {turn.error?.text}
+            {turn.error?.retry && retryButton}
+          </p>
+          {turn.error?.list && plan && plan.sources.length > 0 && (
+            <SourceList handlers={handlers} sources={plan.sources} />
+          )}
+        </>
       );
     case "done": {
       const job = turn.job?.state === "done" ? turn.job : null;

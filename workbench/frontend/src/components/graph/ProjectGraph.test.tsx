@@ -18,7 +18,7 @@ import type {
   RecentFile,
 } from "./graphTypes";
 import type { GraphNoticeUndo } from "./panelParts";
-import { forgetAskStore } from "../ask/askStore";
+import { forgetAskStore, hasDraft, setDraft as setAskDraft } from "../ask/askStore";
 import { ProjectGraph, forgetGraphCache, shortHash } from "./ProjectGraph";
 import { day, focusPayload, focusTask, meeting, payload, requirement } from "./testFixtures";
 
@@ -1998,6 +1998,24 @@ describe("ProjectGraph 问这个项目（4g）", () => {
     expect(screen.queryByRole("textbox", { name: "问题" })).toBeNull();
     expect(screen.getByTestId("selection")).toHaveTextContent("m:a");
     expect(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ })).not.toHaveClass("is-dim");
+  });
+
+  it("搜索页交过来的问题：打开关系图时问答面板展开、输入框填好，不自动发", async () => {
+    const apiClient = askClient();
+    setAskDraft("p", "报价定了多少？");
+    render(<Harness apiClient={apiClient} />);
+    await screen.findByRole("textbox", { name: "问题" });
+    // 草稿在 ProjectAsk 的 effect 里填进去
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "问题" })).toHaveValue("报价定了多少？"));
+    expect(screen.getByRole("button", { name: "问这个项目" })).toHaveAttribute("aria-pressed", "true");
+    expect(apiClient.askPrepare).not.toHaveBeenCalled();
+    expect(hasDraft("p")).toBe(false);
+  });
+
+  it("没有草稿时问答面板不展开", async () => {
+    render(<Harness apiClient={askClient()} />);
+    await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ });
+    expect(screen.queryByRole("textbox", { name: "问题" })).toBeNull();
   });
 
   it("没有 askPrepare 的客户端不出按钮", async () => {

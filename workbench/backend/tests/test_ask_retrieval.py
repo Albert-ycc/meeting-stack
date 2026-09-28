@@ -168,6 +168,22 @@ def test_short_needles_and_alnum(tmp_path):
     assert "GLP-1" in terms.highlight and len(terms.highlight) <= 6
 
 
+def test_alnum_keeps_its_place_after_words_are_blanked(tmp_path):
+    """去掉的词换成等长空格：按剩下的位置回原问题取的字母数字短语不错位。"""
+    db = world(tmp_path)
+    terms = terms_of(db, "项目里GLP-1的剂量")
+    assert "GLP-1" in terms.phrases and "GLP-1" in terms.highlight
+    assert not any("里" in phrase for phrase in terms.phrases)
+    assert terms_of(db, "我们的 UI 怎么改").needles == ["UI"]
+    # 项目名「云图AI」去掉以后 GLP-1 仍取对
+    terms = terms_of(db, "云图AI里GLP-1剂量")
+    assert "GLP-1" in terms.phrases
+    assert not any("AI" in phrase or "里" in phrase for phrase in terms.phrases)
+    terms = terms_of(db, "关于 GLP-1 和 UI 的安排")
+    assert "GLP-1" in terms.phrases and "UI" in terms.needles
+    assert all(value == value.strip() for value in [*terms.phrases, *terms.needles])
+
+
 def test_vocab_drops_missing_and_common_slices(tmp_path):
     db = world(tmp_path)
     # 「周报表」在超过 5% 的逐字稿段里；「甲乙丙」哪边都查不到；「部分报」少见
@@ -491,6 +507,31 @@ def test_materials_pending_note(tmp_path):
     assert "materials_pending" in plan_of(db, "驻场服务").notes
 
 
+def test_snapshot_missing_content_is_materials_pending(tmp_path):
+    """快照里缺了该有的内容（切好片段、还没算向量）：也写「有些材料还没读完」。"""
+    db = world(tmp_path)
+    vectors = FakeVectors(db)
+    assert "materials_pending" not in plan_of(
+        db, "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=vectors
+    ).notes
+    root = db.query_one("SELECT id FROM project_material_roots WHERE project_id='p' ORDER BY id")["id"]
+    add_content(db, "q2:" + "8" * 32, ["刚读完、还没算向量的一段"])
+    add_file(db, root, "新/刚读完.docx", key="q2:" + "8" * 32, mtime=9)
+    plan = plan_of(db, "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=vectors)
+    assert "materials_pending" in plan.notes
+
+    class NoSnapshot(FakeVectors):
+        def snapshot(self):
+            self.calls += 1
+            return None
+
+    plan = plan_of(db, "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=NoSnapshot(db))
+    assert "materials_pending" in plan.notes
+    # 不走向量时（语义关着）不看快照，也就不因它加说明
+    plain = world(tmp_path / "plain")
+    assert "materials_pending" not in plan_of(plain, "驻场服务的报价单").notes
+
+
 # ---------------------------------------------------------------------- 预算和语句数
 
 
@@ -517,6 +558,56 @@ def test_operational_error_message_is_not_logged(tmp_path, caplog):
         plan = ar.retrieve(Broken(connection), "p", "驻场服务的报价单", settings=SETTINGS, state_of=online)
     assert plan.partial
     assert "驻场" not in caplog.text
+
+
+def test_past_the_hard_cap_skips_the_vector_steps(tmp_path, monkeypatch):
+    """取完词以后时钟就过了 2.5 秒：不编码问题、不取向量快照、不跑后面的 SQL，结果标 partial。"""
+    db = world(tmp_path)
+    ticks = {"now": 0.0}
+    semantic, vectors = FakeSemantic(), FakeVectors(db)
+    statements: list[str] = []
+    original = ar.question_terms
+
+    def terms_then_late(*args, **kwargs):
+        terms = original(*args, **kwargs)
+        ticks["now"] = 10.0
+        statements.clear()
+        return terms
+
+    monkeypatch.setattr(ar, "question_terms", terms_then_late)
+    with db.autocommit() as connection:
+        connection.set_trace_callback(statements.append)
+        plan = ar.retrieve(
+            connection, "p", "驻场服务的报价单", settings=SETTINGS, semantic=semantic, vectors=vectors,
+            state_of=online, clock=lambda: ticks["now"],
+        )
+    assert semantic.encoded == [] and vectors.calls == 0 and semantic.fallback == []
+    assert plan.partial and "partial" in plan.notes
+    assert plan.sources == []
+    assert not [sql for sql in statements if sql.lstrip().upper().startswith(("SELECT", "WITH"))]
+
+
+def test_segment_texts_read_by_version_without_scanning_meetings(tmp_path):
+    """T 的文字先取这几场会的当前版本，再按 version_id 读：查询计划里不 SCAN 会议表或逐字稿段表。"""
+    db = world(tmp_path)
+    _meetings(db, 30)
+    picked = [
+        {"meeting_id": "m-14", "anchor": 310_000, "window": None},
+        {"meeting_id": "m-21", "anchor": None, "window": (740_000, 830_000)},
+    ]
+    statements: list[str] = []
+    with db.autocommit() as connection:
+        connection.set_trace_callback(statements.append)
+        items = ar._segment_texts(connection, picked, ["驻场服务"])
+        connection.set_trace_callback(None)
+        assert len(statements) == 2
+        for sql in statements:
+            details = [str(row[3]) for row in connection.execute("EXPLAIN QUERY PLAN " + sql).fetchall()]
+            assert not [detail for detail in details if detail.startswith("SCAN")], details
+            assert any("USING" in detail for detail in details)
+    assert [item["meeting_id"] for item in items] == ["m-14", "m-21"]
+    assert items[0]["start_ms"] == 310_000 and "单列" in items[0]["text"]
+    assert items[1]["title"] == "初审规则沟通" and "下调五个点" in items[1]["text"]
 
 
 def _meetings(db, count):

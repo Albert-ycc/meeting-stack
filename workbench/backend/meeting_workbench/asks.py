@@ -79,6 +79,8 @@ _REASONS = {
     "no_key": "auth",
     "bad_request": "bad_request",
 }
+# 这几种代码虽然对到有［再问一次］的原因，再问也没用：不给按钮（余额不足，充值之前再问还是一样）
+_NO_RETRY_CODES = frozenset({"balance"})
 
 
 class AskError(Exception):
@@ -110,6 +112,16 @@ class _Job:
     finished: float | None = None
     holds_slot: bool = False
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _JobView:
+    """任务在某一刻的样子（锁里复制出来的）。"""
+
+    state: str
+    payload: dict[str, Any]
+    plan: Plan
+    with_materials: bool
 
 
 def _spawn_daemon(fn: Callable[[], None]) -> None:
@@ -189,8 +201,9 @@ class AskRegistry:
     def _finish_locked(self, job: _Job, state: str, payload: dict[str, Any]) -> bool:
         if job.state != "waiting":
             return False
-        job.state = state
+        # 先写 payload 再写 state：锁外看到 state 变了时 payload 一定已经在了
         job.payload = payload
+        job.state = state
         job.finished = self.clock()
         if job.holds_slot:
             job.holds_slot = False
@@ -243,6 +256,19 @@ class AskRegistry:
                 return None
             self._jobs.move_to_end(job_id)
             return job
+
+    def view_job(self, job_id: str) -> _JobView | None:
+        """轮询用：在锁里复制 (state, payload, plan, with_materials)，锁外组装返回时不会拿到半截。"""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            self._expire_locked(job)
+            if job.finished is not None and self.clock() - job.finished > self.job_ttl:
+                del self._jobs[job_id]
+                return None
+            self._jobs.move_to_end(job_id)
+            return _JobView(job.state, dict(job.payload), job.plan.plan, job.with_materials)
 
     def acquire_slot(self, job: _Job) -> bool:
         """最多等 slot_wait 秒拿位置；拿到后记下调用开始的时间。任务已经停了（超时、关闭）时放回。"""
@@ -376,7 +402,8 @@ class AskService:
     # ------------------------------------------------------------------ ask
 
     def ask(self, project_id: str, plan_id: str, with_materials: bool) -> dict[str, Any]:
-        """以下都在计数之前：404 计划、503 没 key、503 关着、409 在答、422 没有可发的，最后 429（charge）。"""
+        """以下都在计数之前：404 计划、503 没 key、503 关着、404 带材料却没确认过、409 在答、422 没有可发的，
+        最后 429（charge）。charge 之后起线程失败时退回这一次、放开项目锁，回 503。"""
         entry = self.registry.get_plan(project_id, plan_id)
         if entry is None:
             raise AskError(404, PLAN_EXPIRED)
@@ -384,6 +411,9 @@ class AskService:
             raise AskError(503, NO_KEY)
         if int(self.settings.qa_daily_questions) <= 0:
             raise AskError(503, QA_OFF)
+        if with_materials and entry.llm != "ok":
+            # prepare 时 AI 不能用，页面上没写「将发送 N 段材料原文给 …」那一行：不带着材料发，让它重新找一遍
+            raise AskError(404, PLAN_EXPIRED)
         if self.registry.project_busy(project_id):
             raise AskError(409, PROJECT_BUSY)
         chosen = [source for source in entry.plan.sources if with_materials or source["kind"] != "material"]
@@ -396,7 +426,13 @@ class AskService:
             # 刚好同一个项目的另一问抢先开始：这一次不算
             self._refund()
             raise AskError(409, PROJECT_BUSY)
-        self.registry.spawn(lambda: self._run(job))
+        try:
+            self.registry.spawn(lambda: self._run(job))
+        except Exception as error:  # noqa: BLE001  线程起不来：退回这一次、结束任务、放开项目锁和名额
+            logger.warning("问答没起来：项目 %s，%s", job.project_id, type(error).__name__)
+            self._refund()
+            self.registry.finish(job, "stopped", {"reason": "error"})
+            raise AskError(503, STOP_TEXTS["error"][0]) from None
         return {"job_id": job.id, "state": "waiting", "text": WAITING_TEXT}
 
     def _run(self, job: _Job) -> None:
@@ -443,6 +479,8 @@ class AskService:
         except llm.LLMError as error:
             code = _REASONS.get(error.code, "error")
             payload = {"reason": code}
+            if error.code in _NO_RETRY_CODES:
+                payload["retry"] = False
             if not error.sent:
                 self._refund()
         except Exception as error:  # noqa: BLE001  任何意外都停下，只记类型名
@@ -469,12 +507,12 @@ class AskService:
     # ------------------------------------------------------------------ 轮询
 
     def job(self, job_id: str) -> dict[str, Any]:
-        job = self.registry.get_job(job_id)
+        job = self.registry.view_job(job_id)
         if job is None:
             raise AskError(404, JOB_EXPIRED)
         if job.state == "waiting":
             return {"state": "waiting", "text": WAITING_TEXT}
-        plan = job.plan.plan
+        plan = job.plan
         sources = [
             {**source, "sent": job.with_materials or source["kind"] != "material"} for source in plan.sources
         ]
@@ -492,7 +530,7 @@ class AskService:
             "state": "stopped",
             "reason": reason,
             "text": text.format(seconds=_seconds(self.settings.qa_timeout_seconds)),
-            "retry": retry,
+            "retry": retry and job.payload.get("retry", True) is not False,
             "sources": sources,
         }
 

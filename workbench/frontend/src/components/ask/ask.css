@@ -108,6 +108,13 @@
   cursor: pointer;
 }
 
+/* 长英文文件名在手机上折行，不撑出横向滚动 */
+.ask-chip__open {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .ask-chip.is-offline .ask-chip__open {
   color: var(--faint);
   cursor: default;

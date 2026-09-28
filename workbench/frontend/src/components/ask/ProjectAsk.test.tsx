@@ -398,6 +398,27 @@ describe("ProjectAsk AI 不能用、停了和出错", () => {
     await waitFor(() => expect(apiClient.askPrepare).toHaveBeenCalledTimes(2));
   });
 
+  it("ask 回 429、503：那一句加找到的原话列表（计划留着），没有按钮", async () => {
+    const apiClient = client();
+    apiClient.ask
+      .mockRejectedValueOnce(new ApiError("今天问答的次数到上限了，明天再问", 429, {}))
+      .mockRejectedValueOnce(new ApiError("没配置 AI，先列出找到的原话", 503, {}));
+    renderAsk(apiClient);
+    await askQuestion();
+    await userEvent.click(await screen.findByRole("button", { name: "发送" }));
+    const capped = await screen.findByText("今天问答的次数到上限了，明天再问");
+    expect(within(capped).queryByRole("button")).toBeNull();
+    expect(screen.getByText("驻场那部分报价单里要单列")).toBeInTheDocument();
+    expect(screen.getByText("预算表里的总价")).toBeInTheDocument();
+    expect(readTurns("p1")[0].plan?.plan_id).toBe("plan-1");
+
+    await askQuestion("再问一个");
+    await userEvent.click(await screen.findByRole("button", { name: "发送" }));
+    const noKey = await screen.findByText("没配置 AI，先列出找到的原话");
+    expect(within(noKey).queryByRole("button")).toBeNull();
+    expect(screen.getByText("驻场那部分报价单里要单列")).toBeInTheDocument();
+  });
+
   it("ask 回 409：「上一个问题还在回答」，没有按钮", async () => {
     const apiClient = client();
     apiClient.ask.mockRejectedValueOnce(new ApiError("这个项目上一个问题还在回答", 409, {}));

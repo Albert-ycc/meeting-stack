@@ -179,9 +179,15 @@ class _Steps:
         self.hard = clock() + HARD_SECONDS
         self.partial = False
 
-    def run(self, name: str, fn: Callable[[], Any], default: Any) -> Any:
+    def out_of_time(self) -> bool:
+        """到了硬上限：记 partial，调用方跳过这一步（编码问题、向量打分这类不走 SQL 的也先看它）。"""
         if self.clock() >= self.hard:
             self.partial = True
+            return True
+        return False
+
+    def run(self, name: str, fn: Callable[[], Any], default: Any) -> Any:
+        if self.out_of_time():
             return default
         budget = _Budget(BUDGETS.get(name, HARD_SECONDS), self.clock, self.hard)
         self.connection.set_progress_handler(budget, PROGRESS_OPS)
@@ -246,7 +252,8 @@ def _is_han(text: str) -> bool:
 
 
 def _blank(text: str, piece: str) -> str:
-    return text.replace(piece, " ") if piece else text
+    """去掉的部分换成等长的空格：后面按 rest 的位置回原问题里取字母数字的原样大小写，长度不能变。"""
+    return text.replace(piece, " " * len(piece)) if piece else text
 
 
 def _roots_sql() -> str:
@@ -255,9 +262,15 @@ def _roots_sql() -> str:
 
 
 def question_terms(
-    connection: sqlite3.Connection, project_id: str, question: str, *, clock: Callable[[], float] = time.monotonic
+    connection: sqlite3.Connection,
+    project_id: str,
+    question: str,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    steps: _Steps | None = None,
 ) -> Terms:
-    """从问题里取词（语句：项目 1、词条 1、文件名词干 1、少见切片 1）。项目不存在抛 ProjectMissing。"""
+    """从问题里取词（语句：项目 1、词条 1、文件名词干 1、少见切片 1）。项目不存在抛 ProjectMissing。
+    steps 给了时文件名词干那一步也归它管（到了硬上限就跳过）。"""
     project = connection.execute("SELECT name, also_names FROM projects WHERE id = ?", (project_id,)).fetchone()
     if project is None:
         raise ProjectMissing(project_id)
@@ -288,11 +301,15 @@ def question_terms(
     # 文件名词干：项目活文件里能用的、出现在问题里的，最多 5 个，长的先
     compact = "".join(char for char in folded if not char.isspace())
     stems: list[str] = []
-    for row in connection.execute(
-        f"""SELECT DISTINCT f.stem_key FROM material_files f
-             WHERE {material_search._LIVE} AND f.root_id IN ({_roots_sql()})""",
-        (project_id,),
-    ).fetchall():
+
+    def stem_rows() -> list[Any]:
+        return connection.execute(
+            f"""SELECT DISTINCT f.stem_key FROM material_files f
+                 WHERE {material_search._LIVE} AND f.root_id IN ({_roots_sql()})""",
+            (project_id,),
+        ).fetchall()
+
+    for row in steps.run("stems", stem_rows, []) if steps is not None else stem_rows():
         key = str(row[0] or "")
         if len(key) >= 3 and key in compact and stem_usability(key) == "yes":
             stems.append(key)
@@ -540,59 +557,73 @@ def retrieve(
 ) -> Plan:
     """在项目范围里找原文（只读，不调 AI）。question 是 clean_question 过的。"""
     steps = _Steps(connection, clock)
-    terms = question_terms(connection, project_id, question, clock=clock)
+    terms = question_terms(connection, project_id, question, clock=clock, steps=steps)
     words = terms.words
     notes: list[str] = []
 
-    roots = [
-        dict(row)
-        for row in connection.execute(
-            f"""SELECT r.id, r.path, r.project_id, p.name AS project_name, p.color AS project_color
-                  FROM project_material_roots r JOIN projects p ON p.id = r.project_id
-                 WHERE r.id IN ({_roots_sql()}) ORDER BY r.id""",
-            (project_id,),
-        ).fetchall()
-    ]
+    # 每一步都归 steps 管：到了 2.5 秒硬上限就跳过、记 partial
+    roots = steps.run(
+        "roots",
+        lambda: [
+            dict(row)
+            for row in connection.execute(
+                f"""SELECT r.id, r.path, r.project_id, p.name AS project_name, p.color AS project_color
+                      FROM project_material_roots r JOIN projects p ON p.id = r.project_id
+                     WHERE r.id IN ({_roots_sql()}) ORDER BY r.id""",
+                (project_id,),
+            ).fetchall()
+        ],
+        [],
+    )
     root_ids = [int(root["id"]) for root in roots]
     rebuilding = False
     chunk_total = 0
     if root_ids:
-        meta = connection.execute(
-            f"""SELECT (SELECT 1 FROM app_state WHERE key = ?) AS rebuilding,
-                       (SELECT COUNT(*) FROM material_files f LEFT JOIN material_contents c ON c.content_key = f.content_key
-                         WHERE f.gone_at IS NULL AND f.zone != 'cards' AND f.ext IN ({_KEYED_EXTS_SQL})
-                           AND f.content_error IS NULL
-                           AND (f.content_key IS NULL OR c.state = 'pending' OR c.content_key IS NULL)
-                           AND f.root_id IN ({_marks(root_ids)})) AS pending,
-                       (SELECT COUNT(*) FROM material_chunks WHERE content_key IN (
-                           SELECT f.content_key FROM material_files f
-                            WHERE {material_search._LIVE} AND f.content_key IS NOT NULL
-                              AND f.root_id IN ({_marks(root_ids)}))) AS chunks""",
-            [REBUILD_KEY, *root_ids, *root_ids],
-        ).fetchone()
-        rebuilding = bool(meta["rebuilding"])
-        chunk_total = int(meta["chunks"] or 0)
-        if rebuilding:
-            notes.append("fts_rebuilding")
-        if int(meta["pending"] or 0) > 0:
-            notes.append("materials_pending")
+        meta = steps.run(
+            "meta",
+            lambda: connection.execute(
+                f"""SELECT (SELECT 1 FROM app_state WHERE key = ?) AS rebuilding,
+                           (SELECT COUNT(*) FROM material_files f LEFT JOIN material_contents c ON c.content_key = f.content_key
+                             WHERE f.gone_at IS NULL AND f.zone != 'cards' AND f.ext IN ({_KEYED_EXTS_SQL})
+                               AND f.content_error IS NULL
+                               AND (f.content_key IS NULL OR c.state = 'pending' OR c.content_key IS NULL)
+                               AND f.root_id IN ({_marks(root_ids)})) AS pending,
+                           (SELECT COUNT(*) FROM material_chunks WHERE content_key IN (
+                               SELECT f.content_key FROM material_files f
+                                WHERE {material_search._LIVE} AND f.content_key IS NOT NULL
+                                  AND f.root_id IN ({_marks(root_ids)}))) AS chunks""",
+                [REBUILD_KEY, *root_ids, *root_ids],
+            ).fetchone(),
+            None,
+        )
+        if meta is not None:
+            rebuilding = bool(meta["rebuilding"])
+            chunk_total = int(meta["chunks"] or 0)
+            if rebuilding:
+                notes.append("fts_rebuilding")
+            if int(meta["pending"] or 0) > 0:
+                notes.append("materials_pending")
 
-    # 问题的向量：会议在转写时不编码、不走任何向量
+    # 问题的向量：会议在转写时不编码、不走任何向量；到了硬上限也不编码
     query_vector = None
     if busy():
         notes.insert(0, "busy")
-    elif semantic is not None and getattr(settings, "semantic_enabled", False):
+    elif semantic is not None and getattr(settings, "semantic_enabled", False) and not steps.out_of_time():
         try:
             query_vector = semantic.encode_query(question)
         except Exception as error:  # noqa: BLE001  模型没装好、暂停：只按原词找
             logger.info("问答没编码问题：%s", type(error).__name__)
             query_vector = None
 
-    decisions = _decisions(connection, project_id, words)
+    decisions = steps.run("decisions", lambda: _decisions(connection, project_id, words), {"all": []})
     minutes = steps.run("minutes", lambda: _minutes(connection, project_id, terms), [])
     lines = _minutes_lines(minutes, words, decisions["all"])
     literal_t = steps.run("transcript", lambda: _segment_hits(connection, project_id, terms), [])
-    semantic_t = _semantic_segments(connection, project_id, query_vector, settings, semantic)
+    semantic_t: list[dict[str, Any]] = []
+    if query_vector is not None:
+        semantic_t = steps.run(
+            "windows", lambda: _semantic_segments(connection, project_id, query_vector, settings, semantic), []
+        )
     picked_t = _pick_segments(literal_t, semantic_t)
 
     literal_m: list[dict[str, Any]] = []
@@ -604,26 +635,26 @@ def retrieve(
             [],
         )
         if query_vector is not None and vectors is not None:
-            keys = [
-                str(row[0])
-                for row in connection.execute(
-                    f"""SELECT DISTINCT f.content_key FROM material_files f
-                         WHERE {material_search._LIVE} AND f.content_key IS NOT NULL
-                           AND f.root_id IN ({_marks(root_ids)})""",
-                    root_ids,
-                ).fetchall()
-            ]
-            semantic_m = score_snapshot(vectors.snapshot(), query_vector, keys, k=M_VECTOR_K)
+            semantic_m, lacking = steps.run(
+                "material_vectors", lambda: _material_vectors(connection, root_ids, vectors, query_vector), ([], False)
+            )
+            if lacking:
+                notes.append("materials_pending")
 
     d_items, n_items = _pick_dn(decisions, lines, recent=terms.recent)
-    m_ranked = _rank_chunks(connection, literal_m, semantic_m, words)
+    m_ranked = steps.run("rank_chunks", lambda: _rank_chunks(connection, literal_m, semantic_m, words), None)
+    if m_ranked is None:
+        # 查回按意思找到的片段文字那一步没跑：只排按原词的（不再查库）
+        m_ranked = _rank_chunks(connection, literal_m, [], words)
     if len(d_items) + len(n_items) + len(picked_t) + len(m_ranked) < MIN_SOURCES:
         d_items, n_items = _pick_dn(decisions, lines, recent=True)
 
-    t_items = _segment_texts(connection, picked_t, words)
+    t_items = steps.run("transcript_text", lambda: _segment_texts(connection, picked_t, words), [])
     meeting_ids = {item["meeting_id"] for item in (*d_items, *n_items, *t_items)}
-    copies = _copies(connection, project_id, meeting_ids)
-    m_items = _material_items(connection, roots, m_ranked, copies, words, state_of)
+    copies = steps.run("copies", lambda: _copies(connection, project_id, meeting_ids), set())
+    m_items = steps.run(
+        "material_items", lambda: _material_items(connection, roots, m_ranked, copies, words, state_of), []
+    )
 
     # 合计不超过 7,500 字，超了先去掉排在最后的 T
     def total() -> int:
@@ -954,7 +985,8 @@ def _pick_segments(literal: list[dict[str, Any]], semantic_hits: list[dict[str, 
 def _segment_texts(
     connection: sqlite3.Connection, picked: list[dict[str, Any]], words: Sequence[str]
 ) -> list[dict[str, Any]]:
-    """取每段的文字（1 条语句）：命中那句前 15 秒到后 45 秒；同一场会重叠的、合并后仍不超过 360 字的合并。"""
+    """取每段的文字（2 条语句）：先取这几场会的当前逐字稿版本，再按 version_id 读（走索引，不扫会议表）；
+    命中那句前 15 秒到后 45 秒；同一场会重叠的、合并后仍不超过 360 字的合并。"""
     if not picked:
         return []
     ranges: list[tuple[str, int, int]] = []
@@ -964,18 +996,43 @@ def _segment_texts(
         else:
             start = item["window"][0]
             ranges.append((item["meeting_id"], start, start + T_BEFORE_MS + T_AFTER_MS))
-    clause = " OR ".join("(s.meeting_id = ? AND s.start_ms BETWEEN ? AND ?)" for _ in ranges)
+    meeting_ids = sorted({meeting_id for meeting_id, _low, _high in ranges})
+    meetings = {
+        str(row["id"]): dict(row)
+        for row in connection.execute(
+            f"""SELECT m.id, m.current_transcript_version_id AS version_id, m.title, m.recording_date, m.created_at,
+                       {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id
+                  FROM meetings m WHERE m.id IN ({_marks(meeting_ids)})""",
+            meeting_ids,
+        ).fetchall()
+        if row["version_id"] is not None
+    }
+    wanted = [(meetings[mid]["version_id"], low, high) for mid, low, high in ranges if mid in meetings]
+    if not wanted:
+        return []
+    versions = sorted({version for version, _low, _high in wanted})
+    meeting_of = {info["version_id"]: mid for mid, info in meetings.items()}
+    clause = " OR ".join("(s.version_id = ? AND s.start_ms BETWEEN ? AND ?)" for _ in wanted)
     rows = connection.execute(
-        f"""SELECT s.meeting_id, s.start_ms, s.end_ms, s.text, s.speaker_name, m.title, m.recording_date,
-                   m.created_at, {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id
-              FROM segments s JOIN meetings m ON m.current_transcript_version_id = s.version_id
-             WHERE {clause}
-             ORDER BY s.meeting_id, s.start_ms""",
-        [value for triple in ranges for value in triple],
+        f"""SELECT s.version_id, s.start_ms, s.end_ms, s.text, s.speaker_name FROM segments s
+             WHERE s.version_id IN ({_marks(versions)}) AND ({clause})
+             ORDER BY s.version_id, s.start_ms""",
+        [*versions, *[value for triple in wanted for value in triple]],
     ).fetchall()
     by_meeting: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        by_meeting.setdefault(str(row["meeting_id"]), []).append(dict(row))
+        meeting_id = meeting_of[row["version_id"]]
+        info = meetings[meeting_id]
+        by_meeting.setdefault(meeting_id, []).append(
+            {
+                **dict(row),
+                "meeting_id": meeting_id,
+                "title": info["title"],
+                "recording_date": info["recording_date"],
+                "created_at": info["created_at"],
+                "audio_id": info["audio_id"],
+            }
+        )
     passages: list[dict[str, Any]] = []
     for item, (meeting_id, low, high) in zip(picked, ranges, strict=True):
         segments = [row for row in by_meeting.get(meeting_id, []) if low <= int(row["start_ms"] or 0) <= high]
@@ -1075,6 +1132,30 @@ def _chunk_hits(
             ).fetchall()
         ]
     return rows
+
+
+def _material_vectors(
+    connection: sqlite3.Connection, root_ids: list[int], vectors: Any, query_vector: Any
+) -> tuple[list[tuple[int, float]], bool]:
+    """范围里活文件的内容标识和材料向量快照打分（1 条语句）。第二个值：快照里缺了该有的内容——已经切好
+    片段的内容不在快照里（还没算向量，或快照还没建过），这时加「有些材料还没读完」。"""
+    keys: list[str] = []
+    chunked: list[str] = []
+    for row in connection.execute(
+        f"""SELECT DISTINCT f.content_key,
+                   EXISTS (SELECT 1 FROM material_chunks c WHERE c.content_key = f.content_key) AS chunked
+              FROM material_files f
+             WHERE {material_search._LIVE} AND f.content_key IS NOT NULL
+               AND f.root_id IN ({_marks(root_ids)})""",
+        root_ids,
+    ).fetchall():
+        keys.append(str(row[0]))
+        if row[1]:
+            chunked.append(str(row[0]))
+    snapshot = vectors.snapshot()
+    known = snapshot.code_of if snapshot is not None else {}
+    lacking = any(key not in known for key in chunked)
+    return score_snapshot(snapshot, query_vector, keys, k=M_VECTOR_K), lacking
 
 
 def score_snapshot(snapshot: Any, query_vector: Any, content_keys: Iterable[str], *, k: int = M_VECTOR_K) -> list[tuple[int, float]]:

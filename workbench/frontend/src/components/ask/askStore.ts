@@ -28,8 +28,8 @@ export interface AskTurn {
   job?: AskJob;
   /** 发的时候带没带材料（［再问一次］照这个重发） */
   withMaterials?: boolean;
-  /** failed 时的一句话；retry 为 plan 时［再问一次］重新找一遍 */
-  error?: { text: string; retry: boolean };
+  /** failed 时的一句话；retry 为 plan 时［再问一次］重新找一遍；list 为真时照样列出找到的原话（429、503） */
+  error?: { text: string; retry: boolean; list?: boolean };
 }
 
 const turns = new Map<string, AskTurn[]>();
@@ -52,6 +52,11 @@ export function newTurnId(): number {
 /** 搜索页交过来的问题：打开项目时填进输入框，不自动发 */
 export function setDraft(projectId: string, question: string): void {
   drafts.set(projectId, question);
+}
+
+/** 只看不取：关系图据此在打开时展开问答面板，由 ProjectAsk 的 takeDraft 填进输入框 */
+export function hasDraft(projectId: string): boolean {
+  return Boolean(drafts.get(projectId));
 }
 
 export function takeDraft(projectId: string): string | undefined {

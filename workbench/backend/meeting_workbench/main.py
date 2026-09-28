@@ -498,11 +498,12 @@ class EmptyInput(BaseModel):
 
 
 class AskPrepareInput(BaseModel):
-    """4g：问题只在请求体里（不进网址）；2 到 300 个字由 asks 自己查，好回中文的说法。"""
+    """4g：问题只在请求体里（不进网址）；长短不在这里限（pydantic 的 422 会把整个问题带回去），
+    2 到 300 个字由 asks 自己查，回中文的一句话、不回显问题。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    question: str = Field(max_length=4000)
+    question: str
 
 
 class AskInput(BaseModel):

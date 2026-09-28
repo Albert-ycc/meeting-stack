@@ -4,6 +4,7 @@ import { ApiError, type ApiClient } from "../../api";
 import { reassignNote } from "../../cardCopy";
 import type { PreviewTarget, Project } from "../../types";
 import { ProjectAsk } from "../ask/ProjectAsk";
+import { hasDraft } from "../ask/askStore";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeAction, type NoticeTone } from "../Notice";
 import { RecentAnswersContext } from "../links/useRelationAnswer";
 import { GraphCanvas, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
@@ -593,9 +594,14 @@ export function ProjectGraph({
   ]);
 
 
-  // 4g：问答面板开在右侧面板的位置，本地状态，不占 sel=；点节点或 Esc 关掉
-  const [askOpen, setAskOpen] = useState(false);
+  // 4g：问答面板开在右侧面板的位置，本地状态，不占 sel=；点节点或 Esc 关掉。
+  // 搜索页交过来的问题（草稿）在时一打开就展开，由 ProjectAsk 的 takeDraft 填进输入框（不自动发）
   const canAsk = typeof apiClient.askPrepare === "function";
+  const [askOpen, setAskOpen] = useState(() => canAsk && hasDraft(projectId));
+  useEffect(() => {
+    // 不重新挂载、换了项目时也看一次
+    if (canAsk && hasDraft(projectId)) setAskOpen(true);
+  }, [canAsk, projectId]);
 
   const select = useCallback(
     (id: string | null) => {

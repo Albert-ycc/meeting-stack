@@ -177,6 +177,15 @@ def test_prepare_validation(tmp_path):
     assert extra.status_code == 422
 
 
+def test_overlong_question_gets_the_spec_422_without_echoing_it(tmp_path):
+    client, _app, headers, _ = make(tmp_path)
+    question = "绝密问题原文丙" * 1000
+    response = prepare(client, headers, question)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "问题最少 2 个字，最多 300 个字"}
+    assert "绝密问题原文丙" not in response.text
+
+
 # ---------------------------------------------------------------------- ask
 
 
@@ -267,7 +276,62 @@ def test_ask_cap_and_503s(tmp_path):
     assert "MEETING_WORKBENCH_" not in response.text and usage(app) == 0
 
 
+def test_materials_need_the_confirm_line(tmp_path):
+    """prepare 时 AI 不能用（页面没写「将发送」那一行）的计划，带材料发回 404，不调 AI、不计数；只用会议可以。"""
+    client, app, headers, _ = make(tmp_path, qa_daily_questions=1)
+    worker = app.state.links_llm_worker
+    assert worker.charge("qa")
+    plan = prepare(client, headers).json()
+    assert plan["llm"] == "capped" and plan["confirm"] is None and plan["counts"]["materials"] > 0
+    worker.refund("qa")
+    response = ask(client, headers, plan["plan_id"], with_materials=True)
+    assert response.status_code == 404 and response.json()["detail"] == "这次找到的原话过期了，请再问一次"
+    assert app.state.asks.chat.calls == [] and usage(app) == 0
+    assert ask(client, headers, plan["plan_id"], with_materials=False).status_code == 202
+    (call,) = app.state.asks.chat.calls
+    assert 'kind="材料"' not in call["user"]
+
+
+def test_spawn_failure_refunds_and_releases(tmp_path):
+    client, app, headers, _ = make(tmp_path)
+
+    def broken(_fn):
+        raise RuntimeError("can't start new thread")
+
+    registry = app.state.asks.registry
+    registry.spawn = broken
+    plan = prepare(client, headers).json()
+    response = ask(client, headers, plan["plan_id"])
+    assert response.status_code == 503 and response.json()["detail"] == "出了点问题，先列出找到的原话"
+    assert usage(app) == 0
+    assert not registry.project_busy("p") and registry._running == {}
+    # 名额都还在
+    for _ in range(2):
+        assert registry._slots.acquire(timeout=0)
+    for _ in range(2):
+        registry._slots.release()
+    registry.spawn = lambda fn: fn()
+    assert ask(client, headers, plan["plan_id"]).status_code == 202 and usage(app) == 1
+
+
 # ---------------------------------------------------------------------- 任务
+
+
+def test_job_view_is_copied_under_the_lock(tmp_path):
+    """轮询在锁里复制 (state, payload, …)：拿到的一份不会一半是 done、一半没有回答。"""
+    client, app, headers, pending = make(tmp_path, spawn="later")
+    plan = prepare(client, headers).json()
+    job_id = ask(client, headers, plan["plan_id"]).json()["job_id"]
+    registry = app.state.asks.registry
+    before = registry.view_job(job_id)
+    assert before.state == "waiting" and before.payload == {}
+    pending.pop()()
+    assert before.state == "waiting" and before.payload == {}
+    after = registry.view_job(job_id)
+    assert after.state == "done" and "answer" in after.payload and after.with_materials is True
+    body = client.get(f"/api/ask/{job_id}").json()
+    assert body["state"] == "done" and body["answer"]["text"] == ANSWER
+
 
 
 def test_job_waiting_then_done_then_expired(tmp_path):
@@ -313,7 +377,8 @@ def test_job_times_out_and_releases_the_project(tmp_path):
         ("server", "server", "AI 那边出错了，先列出找到的原话", True),
         ("auth", "auth", "AI 的 key 不对，先列出找到的原话", False),
         ("bad_request", "bad_request", "AI 不接受这次的请求，先列出找到的原话", False),
-        ("balance", "server", "AI 那边出错了，先列出找到的原话", True),
+        # 余额不足：再问也一样，不给［再问一次］
+        ("balance", "server", "AI 那边出错了，先列出找到的原话", False),
     ],
 )
 def test_llm_errors_become_stopped_reasons(tmp_path, code, reason, text, retry):
