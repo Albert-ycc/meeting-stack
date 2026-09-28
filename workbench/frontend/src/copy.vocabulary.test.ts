@@ -47,6 +47,8 @@ const SOURCES = import.meta.glob(
     "./components/ProjectGlossary.tsx",
     "./components/GlossaryPage.tsx",
     "./components/MeetingGlossaryPanel.tsx",
+    // 4h：需求页的［复制给 Claude Code］和它的提示
+    "./components/RequirementDetailPage.tsx",
   ],
   {
     query: "?raw",

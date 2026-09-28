@@ -99,11 +99,10 @@ describe("RequirementDetailPage", () => {
     expect(screen.getByText("停滞 7 天")).toBeInTheDocument();
   });
 
-  it("copies the consolidated material list (meeting folders + material folders)", async () => {
-    const requirement = vi.fn().mockResolvedValue(baseDetail());
+  function renderCopyPage(apiClient: Record<string, unknown>) {
     render(
       <RequirementDetailPage
-        apiClient={{ requirement } as unknown as ApiClient}
+        apiClient={apiClient as unknown as ApiClient}
         canPickFolders
         canWrite
         onBack={vi.fn()}
@@ -114,9 +113,49 @@ describe("RequirementDetailPage", () => {
         requirementId="req-1"
       />,
     );
+  }
+
+  const CONTEXT_MARKDOWN = "# 北辰仓快递配送（云图科研用药 · 需求 · P0 · 进行中）\n\n> 声档生成的背景。\n";
+
+  it("4h：［复制给 Claude Code］复制预取的背景，点击之后不再发请求", async () => {
+    const requirement = vi.fn().mockResolvedValue(baseDetail());
+    const requirementContext = vi.fn().mockResolvedValue({ markdown: CONTEXT_MARKDOWN, paths: [], cards_missing: 0 });
+    renderCopyPage({ requirement, requirementContext });
 
     await screen.findByRole("heading", { name: "北辰仓快递配送" });
-    await userEvent.click(screen.getByRole("button", { name: "复制材料清单" }));
+    const button = await screen.findByRole("button", { name: "复制给 Claude Code" });
+    expect(requirementContext).toHaveBeenCalledTimes(1);
+    await userEvent.click(button);
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(CONTEXT_MARKDOWN);
+    expect(await screen.findByText("已复制，粘给 Claude Code 就行")).toBeInTheDocument();
+    expect(requirementContext).toHaveBeenCalledTimes(1);
+    expect(requirement).toHaveBeenCalledTimes(1);
+  });
+
+  it("4h：有会的纪要不在项目文件夹里时换一句提示", async () => {
+    const requirement = vi.fn().mockResolvedValue(baseDetail());
+    const requirementContext = vi.fn().mockResolvedValue({ markdown: CONTEXT_MARKDOWN, paths: [], cards_missing: 1 });
+    renderCopyPage({ requirement, requirementContext });
+    await userEvent.click(await screen.findByRole("button", { name: "复制给 Claude Code" }));
+    expect(await screen.findByText("已复制；有 1 场会的纪要不在项目文件夹里，带的是归档文件夹")).toBeInTheDocument();
+  });
+
+  it("4h：背景还没取到时按钮写「正在准备…」并置灰", async () => {
+    const requirement = vi.fn().mockResolvedValue(baseDetail());
+    const requirementContext = vi.fn(() => new Promise(() => undefined));
+    renderCopyPage({ requirement, requirementContext });
+    await screen.findByRole("heading", { name: "北辰仓快递配送" });
+    expect(screen.getByRole("button", { name: "正在准备…" })).toBeDisabled();
+  });
+
+  it("4h：旧后台（背景接口 404 Not Found）退回复制旧的材料清单", async () => {
+    const requirement = vi.fn().mockResolvedValue(baseDetail());
+    const requirementContext = vi.fn().mockRejectedValue(new ApiError("Not Found", 404, { detail: "Not Found" }));
+    renderCopyPage({ requirement, requirementContext });
+
+    await screen.findByRole("heading", { name: "北辰仓快递配送" });
+    await userEvent.click(await screen.findByRole("button", { name: "复制给 Claude Code" }));
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       [
@@ -127,27 +166,19 @@ describe("RequirementDetailPage", () => {
     expect(await screen.findByText("已复制 2 条路径")).toBeInTheDocument();
   });
 
-  it("D23：一条可复制的路径都没有时，「复制材料清单」置灰", async () => {
+  it("D23（4h 改）：一条路径都没有时按钮照样能点，复制出的背景带需求标题", async () => {
     const requirement = vi.fn().mockResolvedValue(baseDetail({ meetings: [], folders: [] }));
-    render(
-      <RequirementDetailPage
-        apiClient={{ requirement } as unknown as ApiClient}
-        canPickFolders
-        canWrite
-        onBack={vi.fn()}
-        onOpenMeeting={vi.fn()}
-        onOpenProject={vi.fn()}
-        onOpenTask={vi.fn()}
-        projects={[]}
-        requirementId="req-1"
-      />,
-    );
+    const requirementContext = vi.fn().mockResolvedValue({ markdown: CONTEXT_MARKDOWN, paths: [], cards_missing: 0 });
+    renderCopyPage({ requirement, requirementContext });
 
     await screen.findByRole("heading", { name: "北辰仓快递配送" });
-    expect(screen.getByRole("button", { name: "复制材料清单" })).toBeDisabled();
+    const button = await screen.findByRole("button", { name: "复制给 Claude Code" });
+    expect(button).toBeEnabled();
+    await userEvent.click(button);
+    expect(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]).toContain("# 北辰仓快递配送");
   });
 
-  it("D23：关联会议没有 canonical_dir 时也算没有可复制路径", async () => {
+  it("D23（4h 改）：旧后台、关联会议没有 canonical_dir 又没有文件夹时说「这个需求还没有可复制的路径」", async () => {
     const requirement = vi.fn().mockResolvedValue(
       baseDetail({
         meetings: [
@@ -156,22 +187,14 @@ describe("RequirementDetailPage", () => {
         folders: [],
       }),
     );
-    render(
-      <RequirementDetailPage
-        apiClient={{ requirement } as unknown as ApiClient}
-        canPickFolders
-        canWrite
-        onBack={vi.fn()}
-        onOpenMeeting={vi.fn()}
-        onOpenProject={vi.fn()}
-        onOpenTask={vi.fn()}
-        projects={[]}
-        requirementId="req-1"
-      />,
-    );
+    renderCopyPage({ requirement });
 
     await screen.findByRole("heading", { name: "北辰仓快递配送" });
-    expect(screen.getByRole("button", { name: "复制材料清单" })).toBeDisabled();
+    const button = screen.getByRole("button", { name: "复制给 Claude Code" });
+    expect(button).toBeEnabled();
+    await userEvent.click(button);
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(await screen.findByText("这个需求还没有可复制的路径")).toBeInTheDocument();
   });
 
   it("expands a folder's full file list on 查看全部, capped at 2000", async () => {

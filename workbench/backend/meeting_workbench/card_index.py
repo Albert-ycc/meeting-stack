@@ -68,8 +68,10 @@ DECIDED_LABEL = "- 定了什么："
 MORE_DECISIONS = "  - 另有 {n} 条，见各场会的纪要"
 ACTIONS_LABEL = "- 行动项：{items}"
 PRODUCED_LABEL = "- 产出：{items}"
-CHANGED_SUFFIX = " · 这次改了 {date} 定的『{text}』"
-RESTATED_SUFFIX = " · {dates} 后来又提到"
+CHANGED_PHRASE = "这次改了 {date} 定的『{text}』"
+RESTATED_PHRASE = "{dates} 后来又提到"
+CHANGED_SUFFIX = " · " + CHANGED_PHRASE
+RESTATED_SUFFIX = " · " + RESTATED_PHRASE
 DELIVERABLE_OF = "「{task}」的产出"
 MENTIONED_IN = "在 {n} 场会上被提到"
 SUMMARY_LINE = "  - 摘要：{text}"
@@ -250,42 +252,8 @@ def load_index_data(connection: Any, project_id: str, root: str) -> IndexData:
     # 决议日期倒序；同一天按会议 id、纪要里的顺序
     shown.sort(key=lambda item: (-_day_number(item["day"]), item["meeting_id"], item["order"]))
     data.decisions = shown
-    # 7. 登记的交付物（只在这个项目自己的根目录里找：先认记下的位置，再按内容标识取 id 最小的一份）
-    data.deliverables = [
-        dict(row)
-        for row in connection.execute(
-            f"""SELECT x.deliverable_id, x.task_title, x.requirement_id, f.id AS file_id,
-                       f.root_id, f.rel_path
-                  FROM (SELECT d.id AS deliverable_id, t.title AS task_title, t.requirement_id,
-                               t.created_at AS task_created,
-                               COALESCE(
-                                 (SELECT f1.id FROM material_files f1
-                                    JOIN project_material_roots r1 ON r1.id = f1.root_id
-                                   WHERE f1.root_id = df.root_id AND f1.rel_path = df.rel_path
-                                     AND f1.gone_at IS NULL AND r1.project_id = :pid),
-                                 (SELECT MIN(f2.id) FROM material_files f2
-                                    JOIN project_material_roots r2 ON r2.id = f2.root_id
-                                   WHERE r2.project_id = :pid AND f2.content_key = df.content_key
-                                     AND f2.gone_at IS NULL AND f2.zone != 'cards'),
-                                 (SELECT f3.id FROM project_material_roots r3
-                                    JOIN material_files f3 ON f3.root_id = r3.id
-                                   WHERE df.deliverable_id IS NULL AND r3.project_id = :pid
-                                     AND substr(d.url, 1, length(r3.path) + 1) = r3.path || '/'
-                                     AND f3.rel_path = substr(d.url, length(r3.path) + 2)
-                                     AND f3.gone_at IS NULL
-                                   ORDER BY r3.created_at, r3.id LIMIT 1)) AS fid
-                          FROM deliverables d
-                          JOIN tasks t ON t.id = d.task_id
-                          LEFT JOIN deliverable_files df ON df.deliverable_id = d.id
-                         WHERE t.project_id = :pid AND d.kind = 'file'
-                           AND t.status IN {_SETTLED_TASKS}) x
-                  JOIN material_files f ON f.id = x.fid
-                 WHERE f.zone != 'cards'
-                 ORDER BY x.task_created, x.deliverable_id""",
-            {"pid": project_id},
-        ).fetchall()
-        if row["rel_path"] and PurePosixPath(row["rel_path"]).name not in APP_FILE_NAMES
-    ]
+    # 7. 登记的交付物
+    data.deliverables = deliverable_rows(connection, project_id)
     # 8. 在这个根目录的会里至少 2 场被提到的文件：字面和放宽的一条 UNION ALL，按会去重；
     #    同一内容多份时算到本项目根目录里 id 最小的那份
     union = mention_union(
@@ -334,6 +302,50 @@ def load_index_data(connection: Any, project_id: str, root: str) -> IndexData:
             if summary:
                 data.summaries[row["id"]] = summary
     return data
+
+
+def deliverable_rows(connection: Any, project_id: str, requirement_id: str | None = None) -> list[dict[str, Any]]:
+    """登记的交付物现在指的活文件（一条语句）。只在这个项目自己的根目录里找，顺序固定：先认记下的位置，
+    再按内容标识取 id 最小的一份（不像 material_graph._live_by_content 那样跨项目、按修改时间挑）；
+    没有 deliverable_files 的老交付物按 url 对根目录前缀。只算定下来的任务（确认、进行中、已完成）的，
+    不列卡片区的和声档自己写的文件。每行带 deliverable_id、task_title、requirement_id、file_id、root_id、
+    rel_path，按任务 created_at、交付物 id 排。requirement_id 给了时只取这个需求的任务的。"""
+    only = "AND t.requirement_id = :rid" if requirement_id else ""
+    return [
+        dict(row)
+        for row in connection.execute(
+            f"""SELECT x.deliverable_id, x.task_title, x.requirement_id, f.id AS file_id,
+                       f.root_id, f.rel_path
+                  FROM (SELECT d.id AS deliverable_id, t.title AS task_title, t.requirement_id,
+                               t.created_at AS task_created,
+                               COALESCE(
+                                 (SELECT f1.id FROM material_files f1
+                                    JOIN project_material_roots r1 ON r1.id = f1.root_id
+                                   WHERE f1.root_id = df.root_id AND f1.rel_path = df.rel_path
+                                     AND f1.gone_at IS NULL AND r1.project_id = :pid),
+                                 (SELECT MIN(f2.id) FROM material_files f2
+                                    JOIN project_material_roots r2 ON r2.id = f2.root_id
+                                   WHERE r2.project_id = :pid AND f2.content_key = df.content_key
+                                     AND f2.gone_at IS NULL AND f2.zone != 'cards'),
+                                 (SELECT f3.id FROM project_material_roots r3
+                                    JOIN material_files f3 ON f3.root_id = r3.id
+                                   WHERE df.deliverable_id IS NULL AND r3.project_id = :pid
+                                     AND substr(d.url, 1, length(r3.path) + 1) = r3.path || '/'
+                                     AND f3.rel_path = substr(d.url, length(r3.path) + 2)
+                                     AND f3.gone_at IS NULL
+                                   ORDER BY r3.created_at, r3.id LIMIT 1)) AS fid
+                          FROM deliverables d
+                          JOIN tasks t ON t.id = d.task_id
+                          LEFT JOIN deliverable_files df ON df.deliverable_id = d.id
+                         WHERE t.project_id = :pid AND d.kind = 'file' {only}
+                           AND t.status IN {_SETTLED_TASKS}) x
+                  JOIN material_files f ON f.id = x.fid
+                 WHERE f.zone != 'cards'
+                 ORDER BY x.task_created, x.deliverable_id""",
+            {"pid": project_id, "rid": requirement_id},
+        ).fetchall()
+        if row["rel_path"] and PurePosixPath(row["rel_path"]).name not in APP_FILE_NAMES
+    ]
 
 
 def _priority_rank(priority: str) -> int:
@@ -512,3 +524,164 @@ def render_sections(data: IndexData) -> list[str]:
 
 def render(data: IndexData) -> str:
     return "\n\n".join(render_sections(data)) + "\n"
+
+
+# ---------------------------------------------------------------------- 需求背景（［复制给 Claude Code］）
+
+CONTEXT_QUOTE = "> 声档生成的背景。纪要是完整的，先读纪要；原话在「逐字稿」里，时间戳是录音时间。这里不摘材料的内容，文件请直接打开看。"
+CONTEXT_TITLE = "# {title}（{project} · 需求 · {priority} · {status}）"
+CONTEXT_FOLDERS = "## 文件夹"
+CONTEXT_MEETINGS = "## 会议"
+CONTEXT_DECIDED = "## 定了什么"
+CONTEXT_ACTIONS = "## 行动项"
+CONTEXT_PRODUCED = "## 产出"
+CONTEXT_ARCHIVED = "（归档文件夹，纪要不在项目文件夹里）"
+REQUIREMENT_MISSING = "需求不存在"
+
+
+class RequirementMissing(LookupError):
+    """接口层转成 404「需求不存在」。"""
+
+
+def _context_decision(item: dict[str, Any], meetings: dict[str, dict[str, Any]]) -> str:
+    """「2026-09-26 上线改到 10 月（初审规则沟通 00:31:02；这次改了 2026-09-20 定的『上线定在 9 月』）」"""
+    meeting = meetings.get(item["meeting_id"]) or {}
+    where = _one_line(meeting.get("title") or "")
+    if item["start_ms"] is not None:
+        where = f"{where} {format_clock(item['start_ms'])}".strip()
+    notes = [where] if where else []
+    notes += [CHANGED_PHRASE.format(date=ref["date"], text=_one_line(ref["text"])) for ref in item["earlier"]]
+    dates = sorted({ref["date"] for ref in item["restated"]})
+    if dates:
+        notes.append(RESTATED_PHRASE.format(dates="、".join(dates)))
+    tail = f"（{'；'.join(notes)}）" if notes else ""
+    return f"- {item['day']} {_one_line(item['text'])}{tail}"
+
+
+def requirement_context(conn: Any, requirement_id: str) -> dict[str, Any]:
+    """一个需求交给 Claude Code 的背景：{markdown, paths, cards_missing}。最多 8 条语句，什么都不写盘。
+
+    - markdown 一律绝对路径（不知道你粘到哪个目录）；空的节不写，标题和引用那一行总在。
+    - 规矩和索引一样：只写定下来的，不摘材料原文，没有分数。只有一处不同：这个需求所有关联会的决议都写上，
+      不管卡片在不在项目文件夹里（复制是你当场点的，「先不要」管的是往你的盘上写文件）。
+    - paths：旧按钮复制的全部（各场会的 canonical_dir 加需求文件夹），再加卡片和交付物的路径。
+    - cards_missing：关联的会里，纪要卡片不在项目文件夹里的场数。
+    """
+    # 1. 需求、项目名和全部文件夹
+    row = conn.execute(
+        """SELECT q.id, q.project_id, q.title, q.priority, q.status, p.name AS project_name,
+                  (SELECT json_group_array(path) FROM (SELECT f.path FROM requirement_folders f
+                    WHERE f.requirement_id = q.id ORDER BY f.id)) AS folders_json,
+                  (SELECT json_group_array(json_array(r.id, r.path))
+                     FROM project_material_roots r WHERE r.project_id = q.project_id) AS roots_json
+             FROM requirements q LEFT JOIN projects p ON p.id = q.project_id WHERE q.id = ?""",
+        (requirement_id,),
+    ).fetchone()
+    if row is None:
+        raise RequirementMissing(REQUIREMENT_MISSING)
+    project_id = row["project_id"]
+    folders = [str(path) for path in json.loads(row["folders_json"] or "[]")]
+    roots = {int(root_id): str(path) for root_id, path in json.loads(row["roots_json"] or "[]")}
+    # 2. 关联的会，和有决议放到这个需求的会（带卡片位置）
+    meetings: dict[str, dict[str, Any]] = {}
+    for item in conn.execute(
+        """SELECT m.id, m.title, m.recording_date, m.created_at, m.canonical_dir,
+                  EXISTS (SELECT 1 FROM requirement_meetings rm
+                           WHERE rm.requirement_id = :rid AND rm.meeting_id = m.id) AS linked,
+                  c.root_path, c.rel_path, c.state
+             FROM meetings m LEFT JOIN meeting_cards c ON c.meeting_id = m.id
+            WHERE m.id IN (SELECT meeting_id FROM requirement_meetings WHERE requirement_id = :rid
+                           UNION SELECT meeting_id FROM decisions WHERE requirement_id = :rid AND gone_at IS NULL)""",
+        {"rid": requirement_id},
+    ).fetchall():
+        entry = dict(item)
+        entry["start"] = meeting_start(entry)
+        entry["day"] = entry["start"].date().isoformat()
+        located = entry["rel_path"] and entry["root_path"] and entry["state"] in ("synced", "user_edited")
+        entry["card"] = f"{str(entry['root_path']).rstrip('/')}/{entry['rel_path']}" if located else None
+        meetings[entry["id"]] = entry
+    linked = sorted(
+        (entry for entry in meetings.values() if entry["linked"]),
+        key=lambda entry: (entry["start"], entry["id"]),
+        reverse=True,
+    )
+    # 3、4. 这个需求的决议（所有关联会的，还在的；「后来又提到」一组折成一行）
+    decided: list[dict[str, Any]] = []
+    if project_id:
+        every = decisions_module.project_decisions(conn, project_id, include_superseded=True)
+        for index, item in enumerate(every):
+            if item["superseded"] or item["requirement_id"] != requirement_id:
+                continue
+            meeting = meetings.get(item["meeting_id"])
+            if meeting is None:
+                continue
+            decided.append({**item, "day": meeting["day"], "order": index})
+        folded = {ref.get("decision_id") for item in decided for ref in item["restated"]}
+        decided = [item for item in decided if item["id"] not in folded]
+        decided.sort(key=lambda item: (-_day_number(item["day"]), item["meeting_id"], item["order"]))
+    # 5. 行动项（已确认、进行中）
+    tasks = conn.execute(
+        """SELECT title, status, assignee FROM tasks
+            WHERE requirement_id = ? AND status IN ('confirmed', 'in_progress')
+            ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, created_at, id""",
+        (requirement_id,),
+    ).fetchall()
+    # 6. 产出（登记的交付物）
+    produced = deliverable_rows(conn, project_id, requirement_id) if project_id else []
+    status = REQUIREMENT_STATUS.get(row["status"], row["status"])
+    lines = [
+        CONTEXT_TITLE.format(
+            title=_one_line(row["title"]),
+            project=_one_line(row["project_name"] or ""),
+            priority=row["priority"],
+            status=status,
+        ),
+        "",
+        CONTEXT_QUOTE,
+    ]
+
+    def section(heading: str, body: list[str]) -> None:
+        if body:
+            lines.extend(["", heading, *body])
+
+    section(CONTEXT_FOLDERS, [f"- {path}" for path in folders])
+    meeting_lines = []
+    for entry in linked:
+        head = f"- {entry['start']:%Y-%m-%d %H:%M} {_one_line(entry['title'])}"
+        if entry["card"]:
+            meeting_lines.append(f"{head}：{entry['card']}")
+        elif entry["canonical_dir"]:
+            meeting_lines.append(f"{head}：{entry['canonical_dir']}{CONTEXT_ARCHIVED}")
+        else:
+            meeting_lines.append(head)
+    section(CONTEXT_MEETINGS, meeting_lines)
+    section(CONTEXT_DECIDED, [_context_decision(item, meetings) for item in decided])
+    section(
+        CONTEXT_ACTIONS,
+        [
+            " · ".join(
+                [
+                    f"- {_one_line(task['title'])}",
+                    ASSIGNEE_LABELS.get(task["assignee"] or "", "我"),
+                    TASK_STATUS_LABELS.get(task["status"], task["status"]),
+                ]
+            )
+            for task in tasks
+        ],
+    )
+    produced_paths = [f"{roots.get(int(item['root_id']), '').rstrip('/')}/{item['rel_path']}" for item in produced]
+    section(
+        CONTEXT_PRODUCED,
+        [
+            f"- {path}（{DELIVERABLE_OF.format(task=_one_line(item['task_title']))}）"
+            for path, item in zip(produced_paths, produced, strict=True)
+        ],
+    )
+    legacy = [entry["canonical_dir"] for entry in linked if entry["canonical_dir"]] + folders
+    cards = [entry["card"] for entry in linked if entry["card"]]
+    paths = list(dict.fromkeys([*legacy, *cards, *produced_paths]))
+    return {
+        "markdown": "\n".join(lines) + "\n",
+        "paths": paths,
+        "cards_missing": sum(1 for entry in linked if not entry["card"]),
+    }

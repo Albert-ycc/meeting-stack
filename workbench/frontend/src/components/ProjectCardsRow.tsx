@@ -19,7 +19,8 @@ interface ProjectCardsRowProps {
 }
 
 /** 给 Claude Code 的一句话：在项目文件夹里打开 Claude Code 时，先读这个 */
-export const CLAUDE_CODE_HINT = "会议记录在 ./声档会议记录/，先读 00 索引.md；原话在 逐字稿/ 里，时间戳是录音时间。";
+export const CLAUDE_CODE_HINT =
+  "会议记录在 ./声档会议记录/，先读 00 索引.md，需求、定了什么、行动项和关键文件的位置都在里面；原话在 逐字稿/ 里，时间戳是录音时间。";
 
 /** 撤下补写的卡片之后的提示（撤的是所有项目的补写卡片） */
 export function retiredBackfillMessage(result: { retired: number; kept: unknown[]; skipped?: number }) {

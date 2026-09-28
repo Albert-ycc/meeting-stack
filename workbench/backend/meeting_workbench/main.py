@@ -3968,6 +3968,17 @@ def create_app(
                 raise HTTPException(422, str(error)) from error
 
     # 4c：需求页「决议」卡。台账落后或 links_enabled 关着时这场会按纪要现读，没有标记和按钮
+    # 4h：需求页［复制给 Claude Code］的背景（只读，不写盘）
+    @app.get("/api/requirements/{requirement_id}/context")
+    def requirement_context_endpoint(requirement_id: str):
+        from . import card_index
+
+        with db.autocommit() as connection:
+            try:
+                return card_index.requirement_context(connection, requirement_id)
+            except card_index.RequirementMissing as error:
+                raise HTTPException(404, str(error)) from error
+
     @app.get("/api/requirements/{requirement_id}/decisions")
     def requirement_decisions(requirement_id: str):
         with db.autocommit() as connection:

@@ -1604,6 +1604,15 @@ export interface RequirementMeeting {
   canonical_dir: string | null;
 }
 
+/** 4h：需求页［复制给 Claude Code］复制的背景（Markdown 一律绝对路径，只进剪贴板，不在界面上显示） */
+export interface RequirementContext {
+  markdown: string;
+  /** 旧［复制材料清单］的全部路径，加上卡片和交付物的路径 */
+  paths: string[];
+  /** 关联的会里，纪要卡片不在项目文件夹里的场数 */
+  cards_missing: number;
+}
+
 export interface RequirementDetail extends RequirementSummary {
   folders: RequirementFolder[];
   /** 按 recording_date 倒序 */

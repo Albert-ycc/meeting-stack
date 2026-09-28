@@ -427,6 +427,8 @@ COPY_4H_INDEX = (
     "  - 另有 {n} 条，见各场会的纪要",
     "- 行动项：{items}",
     "- 产出：{items}",
+    "这次改了 {date} 定的『{text}』",
+    "{dates} 后来又提到",
     " · 这次改了 {date} 定的『{text}』",
     " · {dates} 后来又提到",
     "「{task}」的产出",
@@ -437,6 +439,19 @@ COPY_4H_INDEX = (
     "进行中",
     "已完成",
     "搁置",
+)
+
+# 4h：需求背景（［复制给 Claude Code］复制到剪贴板的 Markdown）的模板
+COPY_4H_CONTEXT = (
+    "> 声档生成的背景。纪要是完整的，先读纪要；原话在「逐字稿」里，时间戳是录音时间。这里不摘材料的内容，文件请直接打开看。",
+    "# {title}（{project} · 需求 · {priority} · {status}）",
+    "## 文件夹",
+    "## 会议",
+    "## 定了什么",
+    "## 行动项",
+    "## 产出",
+    "（归档文件夹，纪要不在项目文件夹里）",
+    "需求不存在",
 )
 
 # 4h：从材料里找到的词，接口的 text 和错误的说法（前端的文案在 copy.vocabulary.test.ts）
@@ -468,6 +483,7 @@ COPY_TABLES = {
     "4f 关系图的线、局部图和来龙去脉": COPY_4F,
     "4h 00 索引.md": COPY_4H_INDEX,
     "4h 从材料里找到的词": COPY_4H_WORDS,
+    "4h 需求背景": COPY_4H_CONTEXT,
 }
 
 
@@ -783,7 +799,7 @@ def test_index_copy_matches_the_module():
         if name.isupper() and isinstance(value, str) and HAN.search(value)
     ]
     module += list(card_index.REQUIREMENT_STATUS.values())
-    assert sorted(module) == sorted(COPY_4H_INDEX)
+    assert sorted(module) == sorted(COPY_4H_INDEX + COPY_4H_CONTEXT)
 
 
 def test_candidate_texts_match_the_module():
@@ -823,3 +839,16 @@ def test_phase_four_payloads_4h(tmp_path):
     found = [text for payload in payloads for text in collect_copy(payload)]
     assert any("以后不再提" in text for text in found) and any("已记入" in text for text in found)
     assert [text for text in found if problems(text)] == []
+
+
+def test_requirement_context_payload_4h(tmp_path):
+    """4h：需求背景的 Markdown（剪贴板上的文字）里没有不许出现的词。"""
+    from meeting_workbench import card_index
+
+    from .test_requirement_context import world
+
+    db = world(tmp_path)[0]
+    with db.autocommit() as connection:
+        text = card_index.requirement_context(connection, "r-1")["markdown"]
+    assert "## 定了什么" in text
+    assert problems(text) == []

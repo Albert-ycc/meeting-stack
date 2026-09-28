@@ -56,6 +56,7 @@ import type {
   MaterialWordRejectResult,
   MaterialWordUndoResult,
   MaterialWordsList,
+  RequirementContext,
   MeetingCardEffect,
   ProjectCardsSummary,
   ProjectParentStatus,
@@ -1286,6 +1287,9 @@ export const api = {
       "POST",
       {},
     ),
+  /** 4h：需求页［复制给 Claude Code］的背景；和需求详情一起取 */
+  requirementContext: (requirementId: string) =>
+    read<RequirementContext>(`/api/requirements/${encodeURIComponent(requirementId)}/context`),
   // ---------------------------------------------------------------- 4h 从材料里找到的词
   /** 词典页：这个项目全部待认的词（最多 30 项） */
   glossaryCandidates: (projectId: string) =>

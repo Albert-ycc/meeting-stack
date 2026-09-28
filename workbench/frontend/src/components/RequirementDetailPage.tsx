@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ApiClient } from "../api";
+import { isOldBackend, type ApiClient } from "../api";
 import { formatBytes, formatDurationText, formatMonthDay, formatMonthDayClock } from "../format";
 import type {
   MaterialFolderStat,
   Project,
+  RequirementContext,
   RequirementDetail,
   RequirementFile,
   RequirementFolder,
@@ -147,11 +148,38 @@ export function RequirementDetailPage({
     String(reloadKey),
   );
 
+  // 4h：［复制给 Claude Code］的背景和详情一起取。点击时同步复制已经拿到的 Markdown（WebKit 只许在用户手势里
+  // 同步写剪贴板），还没拿到时按钮写「正在准备…」；旧后台（old）和取失败（failed）时退回旧的路径清单。
+  const [context, setContext] = useState<
+    { state: "loading" } | { state: "ready"; data: RequirementContext } | { state: "old" } | { state: "failed" }
+  >({ state: "loading" });
+  const contextSeqRef = useRef(0);
+  const loadContext = useCallback(
+    async (silent: boolean) => {
+      const seq = ++contextSeqRef.current;
+      if (typeof apiClient.requirementContext !== "function") {
+        setContext({ state: "old" });
+        return;
+      }
+      if (!silent) setContext({ state: "loading" });
+      try {
+        const data = await apiClient.requirementContext(requirementId);
+        if (seq !== contextSeqRef.current) return;
+        setContext(typeof data?.markdown === "string" ? { state: "ready", data } : { state: "failed" });
+      } catch (error) {
+        if (seq !== contextSeqRef.current) return;
+        setContext({ state: isOldBackend(error) ? "old" : "failed" });
+      }
+    },
+    [apiClient, requirementId],
+  );
+
   // 已经有这条需求的数据时静默刷新：留着页面只换数据，不整页闪成「正在读取」。
   const loadedIdRef = useRef<string | null>(null);
   const load = useCallback(async () => {
     const silent = loadedIdRef.current === requirementId;
     if (!silent) setState("loading");
+    void loadContext(silent);
     try {
       const payload = await apiClient.requirement(requirementId);
       loadedIdRef.current = requirementId;
@@ -163,7 +191,7 @@ export function RequirementDetailPage({
     }
     // showToast 每次渲染都是新函数，放进依赖会让 load 反复变化、页面循环刷新。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiClient, requirementId]);
+  }, [apiClient, requirementId, loadContext]);
 
   useEffect(() => {
     void load();
@@ -200,9 +228,24 @@ export function RequirementDetailPage({
     ...loaded.folders.map((folder) => folder.path),
   ];
 
-  const copyAllMaterials = () => {
+  const copyForClaudeCode = () => {
     if (!detail) return;
+    if (context.state === "ready") {
+      const missing = context.data.cards_missing;
+      void copyPath(
+        context.data.markdown,
+        missing > 0
+          ? `已复制；有 ${missing} 场会的纪要不在项目文件夹里，带的是归档文件夹`
+          : "已复制，粘给 Claude Code 就行",
+      );
+      return;
+    }
+    // 旧后台或背景没取到：退回旧的路径清单
     const paths = materialPaths(detail);
+    if (paths.length === 0) {
+      setNotice("这个需求还没有可复制的路径", "warning");
+      return;
+    }
     void copyPath(paths.join("\n"), `已复制 ${paths.length} 条路径`);
   };
 
@@ -287,12 +330,12 @@ export function RequirementDetailPage({
           <div className="requirement-detail__actions">
             <button
               className="requirement-detail__copy"
-              disabled={materialPaths(detail).length === 0}
-              onClick={copyAllMaterials}
+              disabled={context.state === "loading"}
+              onClick={copyForClaudeCode}
               type="button"
             >
               <CopyIcon />
-              复制材料清单
+              {context.state === "loading" ? "正在准备…" : "复制给 Claude Code"}
             </button>
             {canWrite && (
               <button className="requirement-detail__edit" onClick={() => setEditing(true)} type="button">编辑需求</button>

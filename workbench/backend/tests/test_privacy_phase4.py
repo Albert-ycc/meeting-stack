@@ -670,3 +670,37 @@ def test_mined_words_stay_local_until_accepted(tmp_path, fake_ai):
         assert MINED_SENTINEL not in repr(build_cue_table(connection))
     index = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("00 索引.md"))
     assert MINED_SENTINEL not in index and PAIR_SENTINEL not in index
+
+
+def test_requirement_context_keeps_material_text_out(tmp_path, fake_ai):
+    """4h：需求背景（剪贴板上的 Markdown）只有会议、决议、任务和路径；材料文字哨兵、挖出的词都不在，
+    也不调 AI。需求文件夹就是放着哨兵片段的那份文件所在的子文件夹。"""
+    from meeting_workbench import card_index
+
+    db, settings, root = build_world(tmp_path)
+    project_id = db.query_one("SELECT id FROM projects WHERE name = '云图AI'")["id"]
+    seed_mined_words(db, project_id, root)
+    now = utc_now()
+    db.execute(
+        """INSERT INTO requirements(id, project_id, title, priority, status, created_at, updated_at)
+           VALUES ('r-p', ?, '报价规则', 'P1', 'active', ?, ?)""",
+        (project_id, now, now),
+    )
+    db.execute(
+        "INSERT INTO requirement_folders(requirement_id, path, created_at) VALUES ('r-p', ?, ?)",
+        (str(root / "报价"), now),
+    )
+    for meeting_id in ("vm-20260926-143000", PAIRS_MEETING):
+        db.execute(
+            "INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES ('r-p', ?, ?)",
+            (meeting_id, now),
+        )
+    run_everything(db, settings)
+    before = len(fake_ai)
+    with db.autocommit() as connection:
+        result = card_index.requirement_context(connection, "r-p")
+    assert len(fake_ai) == before
+    text = result["markdown"] + "\n".join(result["paths"])
+    assert "## 定了什么" in text and "报价单按第三版发出" in text, "背景里没有决议，这个测试什么都没验证"
+    for sentinel in (MATERIAL_SENTINEL, NAME_SENTINEL, MINED_SENTINEL, PAIR_SENTINEL, CANDIDATE_SENTINEL, TRANSCRIPT_SENTINEL):
+        assert sentinel not in text, sentinel
