@@ -35,7 +35,7 @@ import { MeetingTasksPanel } from "./MeetingTasksPanel";
 import { MinutesCorrectionsBar } from "./MinutesCorrectionsBar";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
 import { TranscriptPanel } from "./TranscriptPanel";
-import { NoticeBanner, useNotice, type NoticeAction, type NoticeTone } from "./Notice";
+import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeAction, type NoticeTone } from "./Notice";
 
 interface MeetingDetailPageProps {
   apiClient: ApiClient;
@@ -73,7 +73,6 @@ type DetailTab = "transcript" | "minutes" | "tasks";
 // 检查器主项目下拉里的特殊取值：「不归项目」（没项目的会上显式标一下）和「交给 AI 判断」。
 const MARK_NO_PROJECT = "__none__";
 // 带［撤销］的操作提示停 10 秒，比普通成功提示长一些
-const UNDO_NOTICE_MS = 10_000;
 const RETURN_TO_AI = "__ai__";
 
 // 没归项目的会在主项目下拉里怎么说：和资料库项目列同一套（等 AI 判断 / AI 没认出 / 不归项目（你标的），

@@ -51,6 +51,7 @@ import {
   type GraphNoticeUndo,
   type NoticeFn,
 } from "./panelParts";
+import { laterTail } from "../decisions/decisionText";
 import "./GraphPanel.css";
 
 const EDGE_KIND: Record<GraphEdge["kind"], string> = {
@@ -219,6 +220,8 @@ function MeetingPanelBody({
               <li key={item.text}>
                 <PlayButton atMs={item.start_ms} audioUrl={audio} label={title} player={player} />
                 {item.text}
+                {/* 4c：有后来改了的决议后面接「· 9月28日后来改了」；旧后台没有 later 时照今天的样子 */}
+                {item.later && <small className="graph-panel__muted"> {laterTail(item.later.date)}</small>}
               </li>
             ))}
           </ol>

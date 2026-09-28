@@ -33,6 +33,8 @@ PHASE_FOUR_MODULES = (
     "links_llm.py",
     "llm.py",
     "loose_mentions.py",
+    "decision_pairs.py",
+    "timeline.py",
 )
 
 # 4a：relation_read.links_state 的状态句（第 3 节「状态和提示」，每种一句话、最多一个按钮）
@@ -90,10 +92,81 @@ COPY_4B = (
     "换成这份",
     "撤销",
 )
+# 4c：需求卡和时间线［决议］的九句状态句（decisions.PAIR_SENTENCES）、时间线的三句、卡和时间线上的字、提示
+STATE_SENTENCES_4C = (
+    "还在对比前后几场会的决议，对完会标出后来改了的",
+    "没配置 AI，不标哪些决议后来改了",
+    "AI 的 key 不对，不标哪些决议后来改了",
+    "今天的 AI 用量到上限了，明天接着对比",
+    "AI 账户余额不足，不标哪些决议后来改了",
+    "AI 连不上，过一会儿自动再对比",
+    "这场会的决议没对比成",
+    "后台 AI 整理关着，不标哪些决议后来改了",
+    "关联整理关着，决议按纪要现读，不标后来改了",
+)
+TIMELINE_SENTENCES_4C = (
+    "这个项目还没挂材料文件夹，时间线里只有会议和任务",
+    "资料盘未连接，插上后接着记文件的变化",
+    "正在第一次收文件名，收完后开始记文件的新增和修改",
+)
+COPY_4C = (
+    *STATE_SENTENCES_4C,
+    *TIMELINE_SENTENCES_4C,
+    "决议",
+    "12 条 · 3 条后来改了",
+    "9月24日 周三 · 周会",
+    "9月10日 · 需求评审　这场纪要没有决议段",
+    "后来改了：9月28日 周会『阈值改成 0.7』",
+    "这次改了 9月20日 周会定的『阈值先按 0.8 执行』",
+    "后来又提到：9月30日 周会",
+    "不是一回事",
+    "你标过和 9月28日 周会那条不是一回事",
+    "这场会还有 2 条决议没归到具体需求",
+    "放到这个需求",
+    "不属于这个需求",
+    "放到需求 ▾",
+    "已去掉这条『后来改了』",
+    "已分开，两条各列各的",
+    "已从这个需求里拿掉，项目时间线的『决议』里还能看到",
+    "已放到这个需求",
+    "已放到『初审规则 V2』",
+    "没读到决议，稍后再试",
+    "还没有关联会议，关联以后这里列出每场会定了什么",
+    "关联的会还没写好纪要",
+    "关联的 3 场会，纪要里没有列出决议",
+    "时间线",
+    "全部",
+    "任务",
+    "文件",
+    "今天",
+    "昨天",
+    "2025年12月30日 周二",
+    "14:30 会议『初审规则沟通』· 48 分钟",
+    "定了：阈值先按 0.8 执行 · 9月28日后来改了",
+    "还有 5 条",
+    "确认了任务：写一版方案",
+    "确认了 3 条任务：写一版方案、…",
+    "完成了 3 条任务：…",
+    "『整理报价单』的产出：报价单_v3.xlsx",
+    "『能耗看板』里新增 5 个、改了 2 个：报价单_v3.xlsx、排期表.xlsx 等",
+    "项目文件夹里新增 2 个：…",
+    "另有 4 个文件夹有变化",
+    "『能耗看板』里 3 个文件最后一次修改在这天：…",
+    "没归到具体需求",
+    "更早",
+    "文件从 9月27日 起记录",
+    "这个项目还没有会议、任务和文件的变化",
+    "这个项目的会还没有列出决议",
+    "还没有确认或完成的任务",
+    "还没有记到文件的新增和修改",
+    "挂上文件夹",
+    "· 9月28日后来改了",
+)
 COPY_TABLES = {
     "4a 状态句": STATE_SENTENCES_4A,
     "4a 回答和撤销": ANSWER_COPY_4A,
     "4b 状态句和提到": COPY_4B,
+    "4c 决议卡和时间线": COPY_4C,
 }
 
 
@@ -173,7 +246,7 @@ def test_phase_four_copy_tables(table):
 
 def test_state_sentences_are_one_sentence_each():
     assert len(STATE_SENTENCES_4A) == 16
-    for text in (*STATE_SENTENCES_4A, *STATE_SENTENCES_4B):
+    for text in (*STATE_SENTENCES_4A, *STATE_SENTENCES_4B, *STATE_SENTENCES_4C, *TIMELINE_SENTENCES_4C):
         assert not re.search(r"[。！？!?]", text.rstrip("。")), text
 
 
@@ -181,6 +254,33 @@ def test_loose_state_sentences_match_the_module():
     from meeting_workbench.loose_mentions import LOOSE_SENTENCES
 
     assert LOOSE_SENTENCES == STATE_SENTENCES_4B
+
+
+def test_decision_state_sentences_match_the_modules():
+    from meeting_workbench.decisions import PAIR_SENTENCES
+    from meeting_workbench.timeline import TIMELINE_SENTENCES
+
+    assert PAIR_SENTENCES == STATE_SENTENCES_4C
+    assert TIMELINE_SENTENCES == TIMELINE_SENTENCES_4C
+
+
+def test_phase_four_get_payloads_4c(tmp_path):
+    """4c 的样本库打一遍决议卡和时间线的 GET：text、label、title 这些键里没有不许出现的词。"""
+    from datetime import date
+
+    from meeting_workbench import decisions, timeline
+
+    from .test_decisions_log import LIVE, changed_row, world
+
+    db = world(tmp_path)
+    changed_row(db, "old", "new")
+    with db.autocommit() as connection:
+        payloads = [decisions.requirement_log(connection, "r1", settings=LIVE)]
+        for kind in timeline.KINDS:
+            payloads.append(timeline.project_timeline(connection, "p", kind=kind, before=date(2026, 9, 28)))
+    found = [text for payload in payloads for text in collect_copy(payload)]
+    assert found, "样本什么字都没有，这个测试什么都没验证"
+    assert [text for text in found if problems(text)] == []
 
 
 @pytest.mark.parametrize("module", PHASE_FOUR_MODULES)

@@ -9,7 +9,7 @@ import secrets
 import threading
 import time
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -60,6 +60,8 @@ from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
 from . import overview as overview_module
 from . import decisions as decisions_module
+from . import decision_pairs
+from . import timeline as timeline_module
 from . import deep_links
 from . import links_llm as links_llm_module
 from . import file_mentions
@@ -773,7 +775,7 @@ def create_app(
     # 第四期（4a）：两个循环各有自己的停止标记；worker 常在（问答的用量计数、健康检查的快照都用它们），
     # 循环只在 links_enabled 开着时启动。
     links_stop = StopFlag()
-    # 4b：放宽的提到放进 AI 循环（最近 7 天的会、回补两种顺序），4c 的对比按 TASK_ORDER 排在中间
+    # 4b：放宽的提到放进 AI 循环（最近 7 天的会、回补两种顺序）；4c 的决议对比按 TASK_ORDER 排在中间
     links_llm_worker = links_llm_module.LinksLLMWorker(
         db,
         settings,
@@ -781,6 +783,7 @@ def create_app(
         tasks=links_llm_module.ordered(
             [
                 loose_mentions.LooseMentionTask(settings, loose_mentions.TASK_RECENT),
+                decision_pairs.DecisionPairTask(settings),
                 loose_mentions.LooseMentionTask(settings, loose_mentions.TASK_BACKFILL),
             ]
         ),
@@ -3761,6 +3764,39 @@ def create_app(
                 raise HTTPException(409, str(error)) from error
             except decisions_module.PlacementRejected as error:
                 raise HTTPException(422, str(error)) from error
+
+    # 4c：需求页「决议」卡。台账落后或 links_enabled 关着时这场会按纪要现读，没有标记和按钮
+    @app.get("/api/requirements/{requirement_id}/decisions")
+    def requirement_decisions(requirement_id: str):
+        with db.autocommit() as connection:
+            try:
+                return decisions_module.requirement_log(
+                    connection, requirement_id, worker=links_worker, settings=settings
+                )
+            except decisions_module.RequirementNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    # 4c：项目时间线，按有动静的天翻页；days 夹在 1 到 31 之间（超出不报错）
+    @app.get("/api/projects/{project_id}/timeline")
+    def project_timeline(
+        project_id: str,
+        before: date | None = None,
+        days: int = timeline_module.DAYS_DEFAULT,
+        kind: Literal["all", "decisions", "tasks", "files"] = "all",
+    ):
+        with db.autocommit() as connection:
+            try:
+                return timeline_module.project_timeline(
+                    connection,
+                    project_id,
+                    before=before,
+                    days=days,
+                    kind=kind,
+                    worker=links_worker,
+                    settings=settings,
+                )
+            except timeline_module.TimelineNotFound as error:
+                raise HTTPException(404, str(error)) from error
 
     @app.get("/api/meetings/{meeting_id}/brief")
     def meeting_brief_endpoint(meeting_id: str):

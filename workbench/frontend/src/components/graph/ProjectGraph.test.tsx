@@ -544,6 +544,58 @@ describe("ProjectGraph 展开一场会", () => {
     expect(within(detail).getByText("初审规则按新口径执行，旧口径下月停用")).toBeInTheDocument();
   });
 
+  it("4c：决议下面画标记行，［不是一回事］进画布的撤销栈", async () => {
+    const later = {
+      relation_id: 17, decision_id: "dec-b", meeting: { id: "b", title: "周会", date: "2026-09-28" },
+      text: "初审规则改回旧口径", start_ms: 30_000, quote: "改回旧口径", audio_url: "/api/media/9",
+    };
+    const withMarks = focusPayload({
+      decisions: [
+        { id: "dec-3f2a9c0b1d4e5f60", text: "初审规则按新口径执行", start_ms: 60_000, detail: "初审规则按新口径执行",
+          later: [later], earlier: [] },
+      ],
+    });
+    const apiClient = focusClient({
+      graphMeetingFocus: vi.fn(async () => withMarks),
+      answerRelation: vi.fn(async () => ({ relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString() })),
+      undoRelation: vi.fn(async () => ({ relation: {}, removed_deliverable_id: null })),
+    });
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: true, llmConfigured: true }}>
+        <Harness apiClient={apiClient} />
+      </LinksFlagsContext.Provider>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    const view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    await userEvent.click(await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" }));
+    const detail = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(detail).getByText("后来改了：9月28日 周会『初审规则改回旧口径』")).toBeInTheDocument();
+    await userEvent.click(within(detail).getByRole("button", { name: "从 00:30 听这条" }));
+
+    await userEvent.click(within(detail).getByRole("button", { name: "不是一回事" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(17, { answer: "no" });
+    expect(await screen.findByText("已去掉这条『后来改了』")).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledWith(17));
+  });
+
+  it("4c：简报「定了什么」有后来改了时接「· 9月28日后来改了」", async () => {
+    const apiClient = makeClient(payload(), {
+      meetingBrief: vi.fn(async (meetingId: string) => ({
+        ...brief(meetingId),
+        decisions: [
+          { id: "dec-1", text: "初审规则按新口径执行", start_ms: 60_000,
+            later: { date: "2026-09-28", meeting_title: "周会", text: "改回旧口径" } },
+          { id: "dec-2", text: "没有后来的决议", start_ms: null, later: null },
+        ],
+      })),
+    });
+    render(<Harness apiClient={apiClient} initial="m:a" />);
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(await within(panel).findByText("· 9月28日后来改了")).toBeInTheDocument();
+    expect(within(panel).getAllByText(/后来改了/)).toHaveLength(1);
+  });
+
   it("任务：确认、编辑后 ⌘Z 改回原样、不要；「+N」列出全部", async () => {
     const tasks = [
       focusTask("t1", 300_000, { status: "pending_confirm" }),

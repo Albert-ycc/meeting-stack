@@ -51,6 +51,7 @@ def world(tmp_path):
     other = add_material_root(db, "q", tmp_path / "别的")
     return SimpleNamespace(db=db, root=root, other=other, tmp=tmp_path)
 MINUTES = "# 周会\n\n## 决议\n\n- 报价单按第三版发出 [00:12:34]\n- 排期表下周定稿\n"
+MINUTES_EARLIER = "# 周会\n\n## 决议\n\n- 报价单按第四版发出 [00:05:00]\n- 排期表下周定稿\n"
 
 
 class Clock:
@@ -110,7 +111,8 @@ def idle_world(tmp_path):
     db.execute("UPDATE material_files SET content_key = 'k-quote' WHERE id = ?", (quote_id,))
     db.execute("UPDATE material_files SET content_key = 'k-plan' WHERE id = ?", (plan_id,))
     add_meeting(db, "m", ago=1, project_id="p", minutes=MINUTES)
-    add_meeting(db, "m2", ago=2, project_id="p")
+    # 4c：前一场会定了第四版、排期表同一句话（规则版「后来又提到」），对比行在第一轮以后写
+    add_meeting(db, "m2", ago=2, project_id="p", minutes=MINUTES_EARLIER)
     add_task(db, "t", meeting_id="m", project_id="p", status="confirmed")
     with db.transaction() as connection:
         _insert_deliverable(
@@ -172,6 +174,21 @@ def idle_world(tmp_path):
     return db
 
 
+def add_pair_rows(db):
+    """4c：一条 AI 写的「后来改了」（前一场「第四版」到这一场「第三版」）。"""
+    early = db.query_one("SELECT id FROM decisions WHERE meeting_id = 'm2' AND ordinal = 0")["id"]
+    late = db.query_one("SELECT id FROM decisions WHERE meeting_id = 'm' AND ordinal = 0")["id"]
+    with db.transaction() as connection:
+        relations.upsert_system(
+            connection,
+            [{"kind": "later_changed", "project_id": "p", "ident": f"{early}|{late}", "status": "shown",
+              "origin": "llm", "meeting_id": "m", "at_ms": 754_000, "decision_id": early, "to_decision_id": late,
+              "quote": "按第三版", "evidence": {"why_earlier": "按第四版", "why_later": "按第三版"}}],
+            at(-3600),
+            since=at(-3600),
+        )
+
+
 def fingerprint(db):
     return {
         "graph_rev": rev(db),
@@ -187,9 +204,15 @@ def test_idle_round_leaves_revisions_alone(tmp_path):
     db = idle_world(tmp_path)
     w = worker(db, clock=Clock())
     first = w.run_round()
+    add_pair_rows(db)
     w.run_round()
     stable = fingerprint(db)
-    assert len(stable["decisions"]) == 2  # 样本真的入库了
+    assert len(stable["decisions"]) == 4  # 样本真的入库了
+    # 4c：规则版「后来又提到」和 AI 的「后来改了」都在
+    assert db.query_one("SELECT origin, status FROM relations WHERE kind = 'restated'") == {
+        "origin": "rule", "status": "shown"
+    }
+    assert db.query_one("SELECT status FROM relations WHERE kind = 'later_changed'") == {"status": "shown"}
     # 放宽的提到真的写出来了（L5）
     assert db.query_one("SELECT status, origin FROM relations WHERE ident = 'm3|报价单'") == {
         "status": "shown", "origin": "llm"
@@ -765,6 +788,11 @@ def test_cli_links_decisions_and_retry(tmp_path, monkeypatch, capsys):
     assert cli.main(["links", "decisions", "--meeting", "m", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["source"] == "table" and [item["id"][:4] for item in payload["decisions"]] == ["dec-", "dec-"]
+    # 4c：对比时会发的提示词，只打印，不发送（测试护栏拦着真的 AI 请求）
+    assert payload["prompt"]["user"].startswith("<this>\nn1 [") and "报价单按第三版发出" in payload["prompt"]["user"]
+    assert cli.main(["links", "decisions", "--meeting", "m"]) == 0
+    out = capsys.readouterr().out
+    assert "---- system ----" in out and "<others>" in out and "不发送" in out
     assert cli.main(["links", "decisions", "--meeting", "m2"]) == 0
     assert "no_minutes" in capsys.readouterr().out
     with pytest.raises(SystemExit):

@@ -1046,7 +1046,8 @@ export default function App({ apiClient = api }: AppProps) {
           canWrite={!isMobile || mobileTaskWrite}
           onBack={() => navigate("projects")}
           onOpenGlossary={openGlossaryForProject}
-          onOpenMeeting={openMeeting}
+          // 4c：openMeeting 的第三个参数是 fromHistory，时间线给的是 (id, 毫秒, 标签页)
+          onOpenMeeting={(meetingId, seekMs, tab) => openMeeting(meetingId, seekMs, false, tab)}
           onOpenRequirement={openRequirementDetail}
           onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
           onOpenTask={setTaskDrawerId}

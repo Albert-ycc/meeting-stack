@@ -434,7 +434,8 @@ def test_ledger_read_is_one_extra_select(tmp_path):
 
     lagging = reads()
     ingest(db)
-    assert reads() == lagging
+    # 4c：台账跟上时多一条语句（决议连 relations 再连另一头的决议和会，填 later、earlier）
+    assert reads() == lagging + 1
 
 
 # ---------------------------------------------------------------------- 归需求

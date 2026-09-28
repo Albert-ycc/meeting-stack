@@ -1653,11 +1653,53 @@ def _ledger_outline(
     if ledger is None:
         return outline
     rows, note = ledger
+    entries = [_decision_entry(row, chars=chars, detail=detail) for row in rows[:limit]]
+    if entries:
+        _fill_later(connection, meeting["id"], entries, detail=detail)
     return {
         **outline,
-        "decisions": [_decision_entry(row, chars=chars, detail=detail) for row in rows[:limit]],
+        "decisions": entries,
         "decisions_note": decisions_module.NOTE_TEXT.get(note or ""),
     }
+
+
+_LATER_CHARS = 40
+
+
+def _fill_later(connection: Any, meeting_id: str, entries: list[dict[str, Any]], *, detail: bool) -> None:
+    """4c：简报每条决议填 later（最新一条 shown 的「后来改了」{date, meeting_title, text ≤ 40 字}）；展开一场会
+    填 later、earlier 的 LinkRef（带 audio_url）。多一条语句：决议连 relations 再连另一头的决议和会。"""
+    mine = "SELECT id FROM decisions WHERE meeting_id = :mid"
+    rows = connection.execute(
+        decisions_module._pair_rows_sql(
+            f"r.kind = 'later_changed' AND r.status = 'shown' "
+            f"AND (r.decision_id IN ({mine}) OR r.to_decision_id IN ({mine}))"
+        ),
+        {"mid": meeting_id},
+    ).fetchall()
+    by_id = {entry["id"]: entry for entry in entries if entry.get("id")}
+    for row in rows:
+        early = by_id.get(row["decision_id"])
+        late = by_id.get(row["to_decision_id"])
+        if detail:
+            if early is not None:
+                early["later"].append(decisions_module.link_ref(row, "b"))
+            if late is not None:
+                late["earlier"].append(decisions_module.link_ref(row, "a"))
+            continue
+        if early is None:
+            continue
+        end = decisions_module._end(row, "b")
+        current = early.get("_later_order")
+        if current is None or end["order"] > current:
+            early["_later_order"] = end["order"]
+            early["later"] = {
+                "date": end["meeting"]["date"],
+                "meeting_title": end["meeting"]["title"],
+                "text": _truncate(end["text"] or "", _LATER_CHARS),
+            }
+    for entry in entries:
+        entry.pop("_later_order", None)
 
 
 def meeting_brief(

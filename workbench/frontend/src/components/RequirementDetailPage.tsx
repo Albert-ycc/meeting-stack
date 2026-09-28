@@ -22,6 +22,7 @@ import { useToast } from "./Toast";
 import "./RequirementDetailPage.css";
 import { copyText } from "../clipboard";
 import { NoticeBanner, useNotice } from "./Notice";
+import { DecisionLogCard } from "./decisions/DecisionLogCard";
 
 interface RequirementDetailPageProps {
   apiClient: ApiClient;
@@ -349,6 +350,16 @@ export function RequirementDetailPage({
           </div>
         )}
       </section>
+
+      {/* 4c：「决议」卡在「关联会议」和「材料文件夹」之间；旧后台时不画 */}
+      <DecisionLogCard
+        apiClient={apiClient}
+        canWrite={canWrite}
+        onOpenMeeting={onOpenMeeting}
+        // 关联、移除会议以后跟着重读
+        reloadKey={`${reloadKey}|${detail.meetings.map((meeting) => meeting.id).join(",")}`}
+        requirementId={requirementId}
+      />
 
       <section className="requirement-detail__card">
         <header className="requirement-detail__card-head">

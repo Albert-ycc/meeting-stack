@@ -39,6 +39,7 @@ import { copyText } from "../clipboard";
 import { NoticeBanner, useNotice } from "./Notice";
 import { ProjectGlossary } from "./ProjectGlossary";
 import { usePersistentState } from "../viewState";
+import { ProjectTimeline } from "./decisions/ProjectTimeline";
 
 interface ProjectDetailPageProps {
   apiClient: ApiClient;
@@ -46,7 +47,8 @@ interface ProjectDetailPageProps {
   canWrite: boolean;
   onBack: () => void;
   onOpenGlossary: (projectId: string) => void;
-  onOpenMeeting: (meetingId: string) => void;
+  /** 4c：时间线里点决议从那里放、「还有 N 条」打开纪要，所以放宽成 (meetingId, seekMs?, tab?) */
+  onOpenMeeting: (meetingId: string, seekMs?: number, tab?: "transcript" | "minutes") => void;
   onOpenTask: (taskId: string) => void;
   /** 读不了的列表里点［预览］打开 App 根部的材料预览抽屉（3e） */
   onOpenPreview?: (fileId: number) => void;
@@ -638,6 +640,16 @@ export function ProjectDetailPage({
               )}
             </div>
           )}
+
+          {/* 4c：时间线在「AI 自动建的项目」提示之后、「材料根目录」卡之前；4g 的问答卡以后放在它上面 */}
+          <ProjectTimeline
+            apiClient={apiClient}
+            canWrite={canWrite}
+            onAttachRoot={canManageFolders ? openAddRoot : undefined}
+            onOpenMeeting={onOpenMeeting}
+            projectId={projectId}
+            reloadKey={reloadKey}
+          />
 
           <section className="detail-card">
             <header className="detail-card__head">

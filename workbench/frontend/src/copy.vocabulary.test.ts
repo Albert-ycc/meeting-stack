@@ -12,6 +12,11 @@ const SOURCES = import.meta.glob(
     // 4b：会议面板、文件面板里放宽的提到和状态句；预览抽屉的小字
     "./components/graph/FilePanels.tsx",
     "./components/MaterialPreview.tsx",
+    // 4c：决议卡、时间线、决议行和它们的字；原话挪出来的 quotes.tsx；简报、展开一场会的标记
+    "./components/decisions/*.{ts,tsx}",
+    "!./components/decisions/*.test.{ts,tsx}",
+    "./components/graph/quotes.tsx",
+    "./components/graph/FocusPanel.tsx",
   ],
   {
     query: "?raw",
@@ -76,6 +81,35 @@ describe("第四期界面的用词", () => {
     ];
     expect(copy.flatMap(violations)).toEqual([]);
     expect(Object.keys(SOURCES).some((file) => file.endsWith("looseMention.ts"))).toBe(true);
+  });
+
+  it("4c 的决议卡、时间线、状态句和提示", () => {
+    const copy = [
+      "还在对比前后几场会的决议，对完会标出后来改了的",
+      "没配置 AI，不标哪些决议后来改了",
+      "AI 的 key 不对，不标哪些决议后来改了",
+      "今天的 AI 用量到上限了，明天接着对比",
+      "AI 账户余额不足，不标哪些决议后来改了",
+      "AI 连不上，过一会儿自动再对比",
+      "这场会的决议没对比成",
+      "后台 AI 整理关着，不标哪些决议后来改了",
+      "关联整理关着，决议按纪要现读，不标后来改了",
+      "这个项目还没挂材料文件夹，时间线里只有会议和任务",
+      "资料盘未连接，插上后接着记文件的变化",
+      "正在第一次收文件名，收完后开始记文件的新增和修改",
+      "后来改了：9月28日 周会『阈值改成 0.7』",
+      "这次改了 9月20日 周会定的『阈值先按 0.8 执行』",
+      "后来又提到：9月30日 周会",
+      "你标过和 9月28日 周会那条不是一回事",
+      "已从这个需求里拿掉，项目时间线的『决议』里还能看到",
+      "『能耗看板』里新增 5 个、改了 2 个：报价单_v3.xlsx、排期表.xlsx 等",
+      "『能耗看板』里 3 个文件最后一次修改在这天：…",
+    ];
+    expect(copy.flatMap(violations)).toEqual([]);
+    const files = Object.keys(SOURCES);
+    for (const name of ["DecisionRow.tsx", "DecisionLogCard.tsx", "ProjectTimeline.tsx", "decisionText.ts"]) {
+      expect(files.some((file) => file.endsWith(name))).toBe(true);
+    }
   });
 
   it("第四期新组件的源码里没有不许出现的词", () => {

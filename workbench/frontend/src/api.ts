@@ -221,6 +221,147 @@ export interface DecisionPlacementResult {
   undo_until: string;
 }
 
+// ---------------------------------------------------------------- 决议日志和时间线（4c）
+
+/** 另一条决议（后来改了、这次改了的那一头）：需求卡和展开一场会同一个样子 */
+export interface DecisionLinkRef {
+  relation_id: number;
+  decision_id: string;
+  meeting: { id: string; title: string; date: string };
+  text: string;
+  start_ms: number | null;
+  quote: string;
+  /** 那场会的录音；没有录音时为 null，这时不出 ▶ */
+  audio_url: string | null;
+}
+
+/** 后来又提到：挂在一组里最早那条下面，每个后来的会一行 */
+export interface DecisionRestatedRef {
+  relation_id: number | null;
+  decision_id: string;
+  meeting: { id: string; title: string; date: string };
+  start_ms: number | null;
+  audio_url: string | null;
+}
+
+/** 你标过［不是一回事］的：过了 600 秒也能从这里改回（restore） */
+export interface DecisionDismissed {
+  relation_id: number;
+  kind: "later_changed" | "restated";
+  other: { date: string; meeting_title: string; text: string };
+  decided_at: string | null;
+}
+
+/** only 只关联一个需求；title 需求名对上；ai AI 放的；picked 你放的；unplaced 没归到具体需求 */
+export type DecisionPlacementHow = "only" | "title" | "ai" | "picked" | "unplaced";
+
+export interface DecisionLogEntry {
+  /** 台账落后或关联整理关着时为 null：按纪要现读，没有标记和按钮 */
+  id: string | null;
+  text: string;
+  detail: string;
+  start_ms: number | null;
+  end_ms: number | null;
+  placement: { how: DecisionPlacementHow; requirement_id: string | null };
+  later: DecisionLinkRef[];
+  earlier: DecisionLinkRef[];
+  restated: DecisionRestatedRef[];
+  dismissed: DecisionDismissed[];
+  /** 4e 起有内容 */
+  stale_files?: RelationQuestion[];
+}
+
+export interface DecisionLogMeeting {
+  meeting: { id: string; title: string; date: string; audio_url: string | null };
+  /** 「这场纪要没有决议段」这类说法，有决议时为 null */
+  note: string | null;
+  decisions: DecisionLogEntry[];
+  unplaced: DecisionLogEntry[];
+}
+
+export interface RequirementDecisionLog {
+  requirement: { id: string; title: string };
+  counts: { decisions: number; later_changed: number; unplaced: number };
+  state: LinksState | { kind: "ok"; text: null; action: null };
+  meetings: DecisionLogMeeting[];
+}
+
+export type TimelineKind = "all" | "decisions" | "tasks" | "files";
+
+export interface TimelineDecision {
+  id: string;
+  text: string;
+  start_ms: number | null;
+  end_ms?: number | null;
+  detail?: string;
+  later: { date: string; text: string } | null;
+}
+
+export type TimelineItem =
+  | {
+      type: "meeting";
+      at: string | null;
+      time: string | null;
+      meeting: { id: string; title: string; duration_sec: number | null; audio_url: string | null };
+      decisions: TimelineDecision[];
+      decisions_more: number;
+    }
+  | {
+      type: "tasks";
+      event: "confirmed" | "done";
+      at: string | null;
+      time: string | null;
+      tasks: Array<{ id: string; title: string }>;
+      more: number;
+    }
+  | {
+      type: "deliverable";
+      at: string | null;
+      time: string | null;
+      task: { id: string; title: string };
+      deliverable: { id: number; name: string };
+    }
+  | {
+      type: "files";
+      at: string | null;
+      time: string | null;
+      root_id: number;
+      /** 文件夹只给最后一段；根目录本身为空 */
+      folder: string;
+      added: number;
+      changed: number;
+      /** 记录开始前按修改时间归到这天的文件个数 */
+      count?: number;
+      names: string[];
+      prelog: boolean;
+    }
+  | {
+      type: "decision";
+      at: string | null;
+      time: string | null;
+      decision: TimelineDecision;
+      meeting: { id: string; title: string; audio_url: string | null };
+      requirement: { id: string; title: string; how: DecisionPlacementHow } | null;
+      how: DecisionPlacementHow | "project" | "none";
+      linked_requirement_ids: string[];
+    };
+
+export interface TimelineDay {
+  day: string;
+  label: string;
+  items: TimelineItem[];
+  more_dirs: number;
+}
+
+export interface ProjectTimelinePayload {
+  kind: TimelineKind;
+  days: TimelineDay[];
+  requirements: Array<{ id: string; title: string }>;
+  next_before: string | null;
+  file_log_since: string | null;
+  state: { kind: "ok" | "waiting" | "stopped"; reason: string | null; text: string | null; action: { kind: string; label: string } | null };
+}
+
 /** 新建、改词条撞上已有词条时，从 409 里取出那条词条；别的错误返回 null。 */
 export function termConflictFrom(error: unknown): GlossaryTermConflict | null {
   if (!(error instanceof ApiError) || error.status !== 409) return null;
@@ -1042,6 +1183,22 @@ export const api = {
       `/api/decisions/${encodeURIComponent(decisionId)}/placement`,
       "POST",
       body,
+    ),
+  // ---------------------------------------------------------------- 决议日志和时间线（4c）
+  /** 需求页「决议」卡；404「需求不存在」，旧后台是 FastAPI 的 404 Not Found */
+  requirementDecisions: (requirementId: string) =>
+    read<RequirementDecisionLog>(`/api/requirements/${encodeURIComponent(requirementId)}/decisions`),
+  /** 项目时间线：按有动静的天翻页，before 是上一页给的 next_before */
+  projectTimeline: (
+    projectId: string,
+    options: { before?: string | null; days?: number; kind?: TimelineKind } = {},
+  ) =>
+    read<ProjectTimelinePayload>(
+      `/api/projects/${encodeURIComponent(projectId)}/timeline${queryString({
+        before: options.before ?? undefined,
+        days: options.days,
+        kind: options.kind,
+      })}`,
     ),
 };
 

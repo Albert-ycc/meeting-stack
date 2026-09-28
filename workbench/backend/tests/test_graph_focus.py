@@ -362,3 +362,37 @@ def test_drag_preview_counts_match_what_the_move_does(tmp_path):
     assert (node["tasks_follow"], node["tasks_stay"]) == (3, 1)
     assert moved["effects"]["tasks_moved"] == node["tasks_follow"]
     assert len(moved["effects"]["tasks_left"]) == node["tasks_stay"]
+
+
+def test_meeting_focus_link_refs_carry_audio_urls(tmp_path):
+    """4c：循环开着、有后来改了时，LinkRef 带那一头的 audio_url；没有录音时为 null（这时不出 ▶）。"""
+    from meeting_workbench import decisions
+
+    client, _settings, db = make_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    add_meeting(db, "m-old", ago=9, project_id="p", origin="manual", title="上一场", minutes=FOCUS_MINUTES)
+    add_meeting(db, "m-new", ago=2, project_id="p", origin="manual", title="下一场",
+                minutes="# 周会\n\n## 决议\n1. 阈值改成 0.7 执行 [00:00:30]\n")
+    db.execute(
+        """INSERT INTO artifacts(meeting_id, kind, source_root, path, created_at)
+           VALUES ('m-new', 'audio', 'archive', '/归档/m-new.m4a', ?)""",
+        (utc_now(),),
+    )
+    decisions.ingest_pending(db)
+    early = db.query_one("SELECT id FROM decisions WHERE meeting_id = 'm-old' AND ordinal = 0")["id"]
+    late = db.query_one("SELECT id FROM decisions WHERE meeting_id = 'm-new'")["id"]
+    db.execute(
+        """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id, at_ms, decision_id,
+                                 to_decision_id, quote, evidence_json, created_at, updated_at)
+           VALUES ('later_changed', 'p', ?, 'shown', 'llm', 'm-new', 30000, ?, ?, '改成 0.7', '{}', ?, ?)""",
+        (f"{early}|{late}", early, late, utc_now(), utc_now()),
+    )
+    audio_id = db.query_one("SELECT id FROM artifacts WHERE meeting_id = 'm-new'")["id"]
+
+    old = client.get("/api/graph/meetings/m-old").json()
+    (ref,) = old["decisions"][0]["later"]
+    assert ref["audio_url"] == f"/api/media/{audio_id}" and ref["decision_id"] == late
+    assert ref["meeting"]["title"] == "下一场" and ref["start_ms"] == 30_000 and ref["quote"] == "改成 0.7"
+    new = client.get("/api/graph/meetings/m-new").json()
+    (back,) = new["decisions"][0]["earlier"]
+    assert back["decision_id"] == early and back["audio_url"] is None

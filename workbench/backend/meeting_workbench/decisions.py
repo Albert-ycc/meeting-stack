@@ -7,6 +7,14 @@ minutes-evidence.json（改过一次稿就验证不了）。
 - ingest_pending：links_loop 的 L1，每轮最多 100 场会或 1.0 秒，会议转写时照跑；
 - ledger_decisions：简报和聚焦视图读表，台账落后时返回 None，调用方当场解析（id 为 null）；
 - place：POST /api/decisions/{id}/placement，只改 placement，不把会挂到需求上。
+
+4c：
+- link_pairs：L1 写事务里的两步，只写 relations——同项目两场会 text_key 相同（至少 4 个字）的决议写
+  规则版「后来又提到」（origin rule）；实质变化时 llm 写的 shown 对比行原话对不上的立刻 cleared；
+- effective_requirement、title_match：决议放在哪个需求下，读的时候算；
+- requirement_log：需求页「决议」卡（最多 5 条语句）；pair_state_line：卡和时间线［决议］的状态句；
+- superseded_sql、project_decisions：给 4e、4h。
+对比行读的时候两条决议都还在（gone_at IS NULL）才算数。
 """
 from __future__ import annotations
 
@@ -19,7 +27,7 @@ import secrets
 import sqlite3
 import time
 import unicodedata
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -496,6 +504,9 @@ def ingest_meeting(
             )
         if (material or moved) and project_id is not None:
             _queue_pair(connection, meeting_id, current, now=now, cutoff=cutoff, stamp=stamp)
+        if project_id is not None:
+            # 4c 加的两步，只写 relations：规则版「后来又提到」，实质变化时原话对不上的对比行收回
+            link_pairs(connection, meeting_id, project_id, current, material=material, stamp=stamp)
     return "written"
 
 
@@ -657,3 +668,696 @@ def place(
         "undo_until": _z(moment + timedelta(seconds=UNDO_WINDOW_SECONDS)),
     }
 
+
+
+# ---------------------------------------------------------------------- 4c：L1 里的两步（只写 relations）
+
+PAIR_KINDS = ("later_changed", "restated")
+# 规则版「后来又提到」：text_key 至少这么多个字
+RESTATED_MIN_CHARS = 4
+_PAIR_KINDS_SQL = "'later_changed', 'restated'"
+_IN_BATCH = 400
+
+
+def pair_ident(early_id: str, late_id: str) -> str:
+    """later_changed、restated 的 ident：早的决议 id 加晚的决议 id，中间用竖线（第 2 节）。"""
+    return f"{early_id}|{late_id}"
+
+
+def decision_order(recording_date: str | None, created_at: str | None, start_ms: int | None, meeting_id: str) -> tuple:
+    """两条决议谁在前：会议时间，同一时间按 start_ms，再按会议 id。"""
+    ns = _meeting_ns(recording_date, created_at)
+    return (ns if ns is not None else 0, int(start_ms or 0), str(meeting_id))
+
+
+def squash(text: str | None) -> str:
+    """比原话用：先照发给 AI 时的处理（llm.neutralise），再去掉所有空白。"""
+    from .llm import neutralise
+
+    return "".join(neutralise(text or "", 1_000_000).split())
+
+
+def _rejected_idents(connection: Any, project_id: str, idents: Sequence[str]) -> set[str]:
+    """你标过［不是一回事］的对（两类里任一类 rejected）：规则和 AI 都不再写这一对。"""
+    found: set[str] = set()
+    for start in range(0, len(idents), _IN_BATCH):
+        part = list(idents[start : start + _IN_BATCH])
+        found.update(
+            row["ident"]
+            for row in connection.execute(
+                f"""SELECT ident FROM relations
+                     WHERE project_id = ? AND kind IN ({_PAIR_KINDS_SQL}) AND status = 'rejected'
+                       AND ident IN ({", ".join("?" for _ in part)})""",
+                [project_id, *part],
+            ).fetchall()
+        )
+    return found
+
+
+def _clear_ids(connection: Any, ids: Sequence[int], stamp: str) -> int:
+    cleared = 0
+    for start in range(0, len(ids), _IN_BATCH):
+        part = list(ids[start : start + _IN_BATCH])
+        cleared += connection.execute(
+            f"""UPDATE relations SET status = 'cleared', updated_at = ?
+                 WHERE id IN ({", ".join("?" for _ in part)}) AND status = 'shown' AND origin != 'manual'""",
+            [stamp, *part],
+        ).rowcount
+    return cleared
+
+
+def link_pairs(
+    connection: Any, meeting_id: str, project_id: str, meeting: Mapping[str, Any], *, material: bool, stamp: str
+) -> None:
+    """L1 写事务里 4c 的两步（ingest_meeting 在真写了决议或换了项目时调；快路径不调）。
+
+    1. 这场会没了的决议上挂着的系统标记收回（任一条决议没了变 cleared）；
+    2. 规则版「后来又提到」：同项目另一场会有 text_key 完全相同、至少 4 个字的还在的决议，写
+       kind='restated'、origin='rule'，早的在前；这场会的规则行对不上了的收回；
+    3. 实质变化时：origin='llm'、status='shown' 的对比行，这场会这一头存的原话不再是新文字的一部分的，
+       立刻 cleared。你标过［不是一回事］的 rejected 行不动（这几步都只动系统行）。
+    """
+    from . import relations  # relations 引用 tasks，tasks 在 decisions 之前载入，这里晚一点再引
+
+    mine_sql = "SELECT id FROM decisions WHERE meeting_id = ?"
+    gone = [
+        int(row["id"])
+        for row in connection.execute(
+            f"""SELECT id FROM relations
+                 WHERE kind IN ({_PAIR_KINDS_SQL}) AND status = 'shown' AND origin != 'manual'
+                   AND (decision_id IN ({mine_sql} AND gone_at IS NOT NULL)
+                        OR to_decision_id IN ({mine_sql} AND gone_at IS NOT NULL))""",
+            (meeting_id, meeting_id),
+        ).fetchall()
+    ]
+    _clear_ids(connection, gone, stamp)
+
+    mine = [
+        dict(row)
+        for row in connection.execute(
+            "SELECT id, text, text_key, start_ms FROM decisions WHERE meeting_id = ? AND gone_at IS NULL",
+            (meeting_id,),
+        ).fetchall()
+    ]
+    keys = sorted({row["text_key"] for row in mine if len(row["text_key"] or "") >= RESTATED_MIN_CHARS})
+    matches: list[dict[str, Any]] = []
+    for start in range(0, len(keys), _IN_BATCH):
+        part = keys[start : start + _IN_BATCH]
+        matches.extend(
+            dict(row)
+            for row in connection.execute(
+                f"""SELECT d.id, d.text, d.text_key, d.start_ms, m.id AS meeting_id, m.recording_date, m.created_at
+                      FROM decisions d JOIN meetings m ON m.id = d.meeting_id
+                     WHERE d.text_key IN ({", ".join("?" for _ in part)}) AND d.gone_at IS NULL
+                       AND m.project_id = ? AND m.id != ?""",
+                [*part, project_id, meeting_id],
+            ).fetchall()
+        )
+    candidates: dict[str, dict[str, Any]] = {}
+    for own in mine:
+        own_order = decision_order(meeting["recording_date"], meeting["created_at"], own["start_ms"], meeting_id)
+        for other in matches:
+            if other["text_key"] != own["text_key"]:
+                continue
+            other_order = decision_order(other["recording_date"], other["created_at"], other["start_ms"], other["meeting_id"])
+            if own_order <= other_order:
+                early, late, late_meeting = own, other, other["meeting_id"]
+            else:
+                early, late, late_meeting = other, own, meeting_id
+            ident = pair_ident(early["id"], late["id"])
+            candidates[ident] = {
+                "kind": "restated",
+                "project_id": project_id,
+                "ident": ident,
+                "status": "shown",
+                "origin": "rule",
+                "meeting_id": late_meeting,
+                "at_ms": late["start_ms"],
+                "decision_id": early["id"],
+                "to_decision_id": late["id"],
+                "quote": late["text"],
+                "evidence": {"rule": "same_text"},
+            }
+    rejected = _rejected_idents(connection, project_id, sorted(candidates))
+    keep = [ident for ident in sorted(candidates) if ident not in rejected]
+    relations.upsert_system(connection, [candidates[ident] for ident in keep], stamp, since=stamp)
+    stale = [
+        int(row["id"])
+        for row in connection.execute(
+            f"""SELECT id, ident, kind, origin FROM relations
+                 WHERE project_id = ? AND kind IN ({_PAIR_KINDS_SQL}) AND status = 'shown' AND origin != 'manual'
+                   AND (decision_id IN ({mine_sql}) OR to_decision_id IN ({mine_sql}))""",
+            (project_id, meeting_id, meeting_id),
+        ).fetchall()
+        # 规则行对不上了收回；一对只留一种：规则写了「后来又提到」的，同一对的「后来改了」收回
+        if (row["kind"] == "restated" and row["origin"] == "rule" and row["ident"] not in keep)
+        or (row["kind"] == "later_changed" and row["ident"] in keep)
+    ]
+    _clear_ids(connection, stale, stamp)
+
+    if not material:
+        return
+    texts = {row["id"]: row["text"] for row in mine}
+    mismatched: list[int] = []
+    for row in connection.execute(
+        f"""SELECT id, decision_id, to_decision_id, evidence_json FROM relations
+             WHERE kind IN ({_PAIR_KINDS_SQL}) AND status = 'shown' AND origin = 'llm'
+               AND (decision_id IN ({mine_sql}) OR to_decision_id IN ({mine_sql}))""",
+        (meeting_id, meeting_id),
+    ).fetchall():
+        try:
+            evidence = json.loads(row["evidence_json"] or "{}")
+        except ValueError:
+            evidence = {}
+        for column, key in (("decision_id", "why_earlier"), ("to_decision_id", "why_later")):
+            text = texts.get(row[column])
+            if text is None:
+                continue
+            quote = squash(str(evidence.get(key) or "")) if isinstance(evidence, dict) else ""
+            if not quote or quote not in squash(text):
+                mismatched.append(int(row["id"]))
+                break
+    _clear_ids(connection, mismatched, stamp)
+
+
+# ---------------------------------------------------------------------- 4c：决议放在哪个需求下（读的时候算）
+
+# 名字对上时不算数的片段（规格第 5 节「决议放在哪个需求下」）
+PLACE_STOPWORDS = ("需求", "项目", "功能", "优化", "一期", "二期", "三期")
+_HAN_RUN = re.compile(r"[一-鿿]+")
+_ALNUM_RUN = re.compile(r"[0-9a-z]+")
+
+
+def _fold(text: str | None) -> str:
+    return unicodedata.normalize("NFKC", text or "").casefold()
+
+
+def title_fragments(title: str, excluded: Sequence[str] = ()) -> set[str]:
+    """需求名里拿来和决议比的片段：3 个汉字或 4 个字母数字；去掉停用词，落在项目名、也叫里的不算。"""
+    folded = _fold(title)
+    for word in PLACE_STOPWORDS:
+        folded = folded.replace(word, " ")
+    found: set[str] = set()
+    for run in _HAN_RUN.findall(folded):
+        found.update(run[index : index + 3] for index in range(len(run) - 2))
+    for run in _ALNUM_RUN.findall(folded):
+        found.update(run[index : index + 4] for index in range(len(run) - 3))
+    names = [_fold(name) for name in excluded if name]
+    return {piece for piece in found if not any(piece in name for name in names)}
+
+
+def title_match(text: str, requirements: Sequence[Mapping[str, Any]], excluded: Sequence[str] = ()) -> str | None:
+    """恰好一个需求名和决议（text 加 detail）有共同片段时返回它的 id，否则 None。"""
+    body = _fold(text)
+    hits = [
+        requirement["id"]
+        for requirement in requirements
+        if any(piece in body for piece in title_fragments(requirement["title"], excluded))
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
+def effective_requirement(
+    decision: Mapping[str, Any],
+    linked: Sequence[Mapping[str, Any]],
+    project_id: str | None,
+    excluded: Sequence[str] = (),
+) -> tuple[str | None, str]:
+    """(需求 id 或 None, how)。decision 要有 placement、requirement_id、requirement_project（picked 那个需求
+    所在的项目）、text、detail；linked 是这场会关联的需求 [{id, title}]。how：
+    picked、ai、only、title 放进那个需求；none 你说不属于具体需求；project 这场会没关联需求（项目层）；
+    unplaced 关联了两个以上、名字对不上（没归到具体需求）。"""
+    placement = decision.get("placement")
+    chosen = decision.get("requirement_id")
+    if placement == "picked" and chosen and project_id and decision.get("requirement_project") == project_id:
+        return chosen, "picked"
+    if placement == "ai" and chosen and any(item["id"] == chosen for item in linked):
+        return chosen, "ai"
+    if placement == "none":
+        return None, "none"
+    if not linked:
+        return None, "project"
+    if len(linked) == 1:
+        return linked[0]["id"], "only"
+    matched = title_match(f"{decision.get('text') or ''} {decision.get('detail') or ''}", linked, excluded)
+    return (matched, "title") if matched else (None, "unplaced")
+
+
+def project_names(name: str | None, also_names: str | None) -> list[str]:
+    """项目名加也叫（projects.also_names 是 JSON 列表）。"""
+    names = [name] if name else []
+    try:
+        extra = json.loads(also_names or "[]")
+    except ValueError:
+        extra = []
+    if isinstance(extra, list):
+        names.extend(str(item) for item in extra if item)
+    return names
+
+
+# ---------------------------------------------------------------------- 4c：状态句（需求卡、时间线［决议］共用）
+
+PAIR_WAITING = "还在对比前后几场会的决议，对完会标出后来改了的"
+PAIR_NO_KEY = "没配置 AI，不标哪些决议后来改了"
+PAIR_BAD_KEY = "AI 的 key 不对，不标哪些决议后来改了"
+PAIR_CAPPED = "今天的 AI 用量到上限了，明天接着对比"
+PAIR_BALANCE = "AI 账户余额不足，不标哪些决议后来改了"
+PAIR_UNREACHABLE = "AI 连不上，过一会儿自动再对比"
+PAIR_FAILED = "这场会的决议没对比成"
+PAIR_LLM_OFF = "后台 AI 整理关着，不标哪些决议后来改了"
+PAIR_LINKS_OFF = "关联整理关着，决议按纪要现读，不标后来改了"
+PAIR_SENTENCES = (
+    PAIR_WAITING, PAIR_NO_KEY, PAIR_BAD_KEY, PAIR_CAPPED, PAIR_BALANCE, PAIR_UNREACHABLE, PAIR_FAILED,
+    PAIR_LLM_OFF, PAIR_LINKS_OFF,
+)
+_PAIR_LLM_TEXTS = {
+    "no_key": PAIR_NO_KEY,
+    "auth": PAIR_BAD_KEY,
+    "capped": PAIR_CAPPED,
+    "balance": PAIR_BALANCE,
+    "failing": PAIR_UNREACHABLE,
+    "backoff": PAIR_UNREACHABLE,
+    "network": PAIR_UNREACHABLE,
+}
+RETRY_ACTION = {"kind": "retry", "label": "现在重试"}
+
+
+def _line(kind: str, text: str | None = None, action: Mapping[str, str] | None = None) -> dict[str, Any]:
+    return {"kind": kind, "text": text, "action": dict(action) if action else None}
+
+
+def pair_state_line(worker: Any, settings: Any, states: Iterable[str | None]) -> dict[str, Any]:
+    """一句话，最多一个按钮。states 是这些会的 pair_state。都对比完（或没有要对比的）时不写。
+    规则版「后来又提到」不用 AI，这里说的停下只关「后来改了」。worker 是 deep_links 的快照（不查库）。"""
+    from .relation_read import _snapshot
+
+    snap = _snapshot(worker)
+    if not getattr(settings, "links_enabled", True) or snap.get("enabled") is False:
+        return _line("stopped", PAIR_LINKS_OFF)
+    seen = set(states)
+    pending = bool(seen & {"pending", "running"})
+    if not pending and "failed" not in seen:
+        return _line("ok")
+    llm_off = (
+        not getattr(settings, "links_llm_enabled", True)
+        or int(getattr(settings, "links_llm_daily_calls", 200)) <= 0
+        or snap.get("llm") == "off"
+    )
+    if llm_off:
+        return _line("stopped", PAIR_LLM_OFF)
+    if "failed" in seen:
+        return _line("stopped", PAIR_FAILED, RETRY_ACTION)
+    llm_state = str(snap.get("llm") or "")
+    if llm_state in _PAIR_LLM_TEXTS:
+        return _line("stopped", _PAIR_LLM_TEXTS[llm_state])
+    return _line("waiting", PAIR_WAITING)
+
+
+# ---------------------------------------------------------------------- 4c：需求页「决议」卡
+
+
+class RequirementNotFound(LookupError):
+    pass
+
+
+def _audio_url(audio_id: Any) -> str | None:
+    return f"/api/media/{audio_id}" if audio_id else None
+
+
+def _day(recording_date: str | None, created_at: str | None) -> str:
+    from .graph import local_day  # graph 引用本模块，这里晚一点再引
+
+    return local_day(recording_date, created_at).isoformat()
+
+
+def _pair_rows_sql(where: str) -> str:
+    """对比行连两头的决议和会（两头都还在才算数），带另一头要显示的字和录音。一条语句。"""
+    from .relation_read import AUDIO_ID_SQL
+
+    return f"""
+SELECT r.id AS relation_id, r.kind, r.status, r.quote, r.decided_at, r.decision_id, r.to_decision_id,
+       a.text AS a_text, a.start_ms AS a_start, a.meeting_id AS a_meeting,
+       am.title AS a_title, am.recording_date AS a_rec, am.created_at AS a_created,
+       {AUDIO_ID_SQL.format(meeting='am.id')} AS a_audio,
+       b.text AS b_text, b.start_ms AS b_start, b.meeting_id AS b_meeting,
+       bm.title AS b_title, bm.recording_date AS b_rec, bm.created_at AS b_created,
+       {AUDIO_ID_SQL.format(meeting='bm.id')} AS b_audio
+  FROM relations r
+  JOIN decisions a ON a.id = r.decision_id AND a.gone_at IS NULL
+  JOIN decisions b ON b.id = r.to_decision_id AND b.gone_at IS NULL
+  JOIN meetings am ON am.id = a.meeting_id
+  JOIN meetings bm ON bm.id = b.meeting_id
+ WHERE r.kind IN ({_PAIR_KINDS_SQL}) AND {where}
+ ORDER BY r.id"""
+
+
+def _end(row: Mapping[str, Any], side: str) -> dict[str, Any]:
+    """对比行的一头（a 早、b 晚）。"""
+    return {
+        "decision_id": row["decision_id"] if side == "a" else row["to_decision_id"],
+        "text": row[f"{side}_text"],
+        "start_ms": row[f"{side}_start"],
+        "meeting": {
+            "id": row[f"{side}_meeting"],
+            "title": row[f"{side}_title"],
+            "date": _day(row[f"{side}_rec"], row[f"{side}_created"]),
+        },
+        "audio_url": _audio_url(row[f"{side}_audio"]),
+        "order": decision_order(row[f"{side}_rec"], row[f"{side}_created"], row[f"{side}_start"], row[f"{side}_meeting"]),
+    }
+
+
+def link_ref(row: Mapping[str, Any], side: str) -> dict[str, Any]:
+    """LinkRef：{relation_id, decision_id, meeting{id, title, date}, text, start_ms, quote, audio_url}，
+    side 是另一头（a 早、b 晚）。需求卡和展开一场会同一个样子。"""
+    end = _end(row, side)
+    return {
+        "relation_id": row["relation_id"],
+        "decision_id": end["decision_id"],
+        "meeting": end["meeting"],
+        "text": end["text"],
+        "start_ms": end["start_ms"],
+        "quote": row["quote"] or "",
+        "audio_url": end["audio_url"],
+    }
+
+
+class _Groups:
+    """「后来又提到」用 union-find 连成组。"""
+
+    def __init__(self) -> None:
+        self.parent: dict[str, str] = {}
+
+    def find(self, item: str) -> str:
+        self.parent.setdefault(item, item)
+        while self.parent[item] != item:
+            self.parent[item] = self.parent[self.parent[item]]
+            item = self.parent[item]
+        return item
+
+    def union(self, left: str, right: str) -> None:
+        a, b = self.find(left), self.find(right)
+        if a != b:
+            self.parent[b] = a
+
+
+def pair_marks(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """按决议 id 分好的标记：later、earlier、restated、dismissed。rows 是 _pair_rows_sql 读出的行。
+
+    - restated：shown 的「后来又提到」连成一组，挂在组里最早的那条下面，每个后来的会一行；
+    - later：组里任一条有指向组外的 shown 的「后来改了」，整组都算后来改了；
+    - earlier：这条改了的之前的决议（shown 的「后来改了」的另一头）；
+    - dismissed：你标过［不是一回事］的（rejected），过了 600 秒也能在这里改回。
+    """
+    groups = _Groups()
+    orders: dict[str, tuple] = {}
+    ends: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        for side in ("a", "b"):
+            end = _end(row, side)
+            orders[end["decision_id"]] = end["order"]
+            ends[end["decision_id"]] = end
+        if row["kind"] == "restated" and row["status"] == "shown":
+            groups.union(row["decision_id"], row["to_decision_id"])
+    members: dict[str, list[str]] = {}
+    for decision_id in orders:
+        members.setdefault(groups.find(decision_id), []).append(decision_id)
+    marks: dict[str, dict[str, list[dict[str, Any]]]] = {}
+
+    def slot(decision_id: str) -> dict[str, list[dict[str, Any]]]:
+        return marks.setdefault(decision_id, {"later": [], "earlier": [], "restated": [], "dismissed": []})
+
+    edge_of: dict[str, int] = {}
+    group_later: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if row["status"] == "rejected":
+            for own, other in (("a", "b"), ("b", "a")):
+                end = _end(row, other)
+                slot(row["decision_id"] if own == "a" else row["to_decision_id"])["dismissed"].append(
+                    {
+                        "relation_id": row["relation_id"],
+                        "kind": row["kind"],
+                        "other": {"date": end["meeting"]["date"], "meeting_title": end["meeting"]["title"], "text": end["text"]},
+                        "decided_at": row["decided_at"],
+                    }
+                )
+            continue
+        if row["kind"] == "restated":
+            for decision_id in (row["decision_id"], row["to_decision_id"]):
+                edge_of.setdefault(decision_id, row["relation_id"])
+            continue
+        # later_changed
+        slot(row["to_decision_id"])["earlier"].append(link_ref(row, "a"))
+        root = groups.find(row["decision_id"])
+        if groups.find(row["to_decision_id"]) != root:
+            group_later.setdefault(root, []).append(link_ref(row, "b"))
+    for root, ids in members.items():
+        later = group_later.get(root, [])
+        seen: set[str] = set()
+        unique = [ref for ref in later if not (ref["decision_id"] in seen or seen.add(ref["decision_id"]))]
+        for decision_id in ids:
+            if unique:
+                slot(decision_id)["later"] = list(unique)
+        if len(ids) < 2:
+            continue
+        ordered_ids = sorted(ids, key=lambda item: orders[item])
+        first = ordered_ids[0]
+        first_meeting = ends[first]["meeting"]["id"]
+        seen_meetings = {first_meeting}
+        for decision_id in ordered_ids[1:]:
+            end = ends[decision_id]
+            if end["meeting"]["id"] in seen_meetings:
+                continue
+            seen_meetings.add(end["meeting"]["id"])
+            slot(first)["restated"].append(
+                {
+                    "relation_id": edge_of.get(decision_id),
+                    "decision_id": decision_id,
+                    "meeting": end["meeting"],
+                    "start_ms": end["start_ms"],
+                    "audio_url": end["audio_url"],
+                }
+            )
+    return marks
+
+
+_LOG_MEETINGS = """
+    SELECT meeting_id FROM requirement_meetings WHERE requirement_id = :rid
+    UNION SELECT meeting_id FROM decisions WHERE requirement_id = :rid AND gone_at IS NULL"""
+
+
+def requirement_log(
+    connection: Any, requirement_id: str, *, worker: Any = None, settings: Any = None
+) -> dict[str, Any]:
+    """需求页「决议」卡（GET /api/requirements/{id}/decisions），最多 5 条语句（4e 加 stale_files 后 6 条）：
+    1. 需求和它的项目；2. 这些会（关联这个需求的，和有决议放到这个需求的）带台账、录音，台账落后时
+    带纪要原文；3. 这些会还在的决议；4. 这些会关联的需求名；5. 项目里 shown、rejected 的对比行。
+    台账落后或 links_enabled 关着时这场会按纪要现读，id 为 null，没有标记和按钮。"""
+    from .relation_read import AUDIO_ID_SQL
+
+    live = bool(getattr(settings, "links_enabled", True)) if settings is not None else True
+    requirement = connection.execute(
+        """SELECT r.id, r.title, r.project_id, p.name AS project_name, p.also_names
+             FROM requirements r LEFT JOIN projects p ON p.id = r.project_id WHERE r.id = ?""",
+        (requirement_id,),
+    ).fetchone()
+    if requirement is None:
+        raise RequirementNotFound("需求不存在")
+    project_id = requirement["project_id"]
+    excluded = project_names(requirement["project_name"], requirement["also_names"])
+    params = {"rid": requirement_id, "live": 1 if live else 0, "parser": PARSER_VERSION}
+    meetings = [
+        dict(row)
+        for row in connection.execute(
+            f"""SELECT m.id, m.title, m.recording_date, m.created_at, m.project_id,
+                       m.id IN (SELECT meeting_id FROM requirement_meetings WHERE requirement_id = :rid) AS linked,
+                       s.note, s.pair_state,
+                       (:live = 0 OR s.meeting_id IS NULL OR s.minutes_version_id IS NOT m.current_minutes_version_id
+                        OR s.parser != :parser) AS behind,
+                       CASE WHEN :live = 0 OR s.meeting_id IS NULL
+                                 OR s.minutes_version_id IS NOT m.current_minutes_version_id OR s.parser != :parser
+                            THEN mv.markdown END AS markdown,
+                       {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id
+                  FROM ({_LOG_MEETINGS}) ms
+                  JOIN meetings m ON m.id = ms.meeting_id
+                  LEFT JOIN decision_scan s ON s.meeting_id = m.id
+                  LEFT JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id""",
+            params,
+        ).fetchall()
+    ]
+    decisions_by_meeting: dict[str, list[dict[str, Any]]] = {}
+    for row in connection.execute(
+        f"""SELECT d.id, d.meeting_id, d.ordinal, d.text, d.detail, d.start_ms, d.end_ms, d.placement,
+                   d.requirement_id, rq.project_id AS requirement_project
+              FROM decisions d LEFT JOIN requirements rq ON rq.id = d.requirement_id
+             WHERE d.meeting_id IN ({_LOG_MEETINGS}) AND d.gone_at IS NULL
+             ORDER BY d.meeting_id, d.ordinal, d.id""",
+        params,
+    ).fetchall():
+        decisions_by_meeting.setdefault(row["meeting_id"], []).append(dict(row))
+    linked_by_meeting: dict[str, list[dict[str, Any]]] = {}
+    for row in connection.execute(
+        f"""SELECT rm.meeting_id, r.id, r.title FROM requirement_meetings rm
+              JOIN requirements r ON r.id = rm.requirement_id
+             WHERE rm.meeting_id IN ({_LOG_MEETINGS})
+             ORDER BY r.created_at, r.id""",
+        params,
+    ).fetchall():
+        linked_by_meeting.setdefault(row["meeting_id"], []).append({"id": row["id"], "title": row["title"]})
+    marks: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    if live and project_id and any(not meeting["behind"] for meeting in meetings):
+        rows = connection.execute(
+            _pair_rows_sql("r.project_id = :pid AND r.status IN ('shown', 'rejected')"), {"pid": project_id}
+        ).fetchall()
+        marks = pair_marks([dict(row) for row in rows])
+
+    groups: list[dict[str, Any]] = []
+    counts = {"decisions": 0, "later_changed": 0, "unplaced": 0}
+    states: list[str | None] = []
+    for meeting in meetings:
+        linked = linked_by_meeting.get(meeting["id"], [])
+        if meeting["behind"]:
+            parsed = parse_safely(meeting["markdown"])
+            note = parsed.note
+            items: list[dict[str, Any]] = [
+                {"id": None, "text": item.text, "detail": item.detail, "start_ms": item.start_ms,
+                 "end_ms": item.end_ms, "placement": None, "requirement_id": None, "requirement_project": None}
+                for item in parsed.items
+            ]
+        else:
+            note = meeting["note"]
+            items = decisions_by_meeting.get(meeting["id"], [])
+            states.append(meeting["pair_state"])
+        placed: list[dict[str, Any]] = []
+        unplaced: list[dict[str, Any]] = []
+        for item in items:
+            chosen, how = effective_requirement(item, linked, meeting["project_id"], excluded)
+            mark = marks.get(item["id"] or "", {}) if item["id"] else {}
+            entry = {
+                "id": item["id"],
+                "text": item["text"],
+                "detail": item["detail"] or "",
+                "start_ms": item["start_ms"],
+                "end_ms": item["end_ms"],
+                "placement": {"how": how if chosen == requirement_id else "unplaced", "requirement_id": chosen},
+                "later": mark.get("later", []),
+                "earlier": mark.get("earlier", []),
+                "restated": mark.get("restated", []),
+                "dismissed": mark.get("dismissed", []),
+                # 4e 用 relation_read.decision_questions 填
+                "stale_files": [],
+            }
+            if chosen == requirement_id:
+                placed.append(entry)
+            elif how == "unplaced" and meeting["linked"]:
+                unplaced.append(entry)
+        if not meeting["linked"] and not placed:
+            continue
+        counts["decisions"] += len(placed)
+        counts["later_changed"] += sum(1 for entry in placed if entry["later"])
+        counts["unplaced"] += len(unplaced)
+        groups.append(
+            {
+                "meeting": {
+                    "id": meeting["id"],
+                    "title": meeting["title"],
+                    "date": _day(meeting["recording_date"], meeting["created_at"]),
+                    "audio_url": _audio_url(meeting["audio_id"]),
+                },
+                "note": NOTE_TEXT.get(note or ""),
+                "decisions": placed,
+                "unplaced": unplaced,
+                "_order": decision_order(meeting["recording_date"], meeting["created_at"], 0, meeting["id"]),
+            }
+        )
+    groups.sort(key=lambda group: group["_order"], reverse=True)
+    for group in groups:
+        group.pop("_order")
+    return {
+        "requirement": {"id": requirement["id"], "title": requirement["title"]},
+        "counts": counts,
+        "state": pair_state_line(worker, settings, states),
+        "meetings": groups,
+    }
+
+
+# ---------------------------------------------------------------------- 4c：给 4e、4h 的读法
+
+
+def superseded_sql(alias: str) -> str:
+    """一条 SQL 条件：决议 {alias} 有指向还在的决议的 shown 的「后来改了」（4e 用它清掉被改过的决议的
+    「可能过时」）。"""
+    return f"""EXISTS (SELECT 1 FROM relations sr JOIN decisions sd ON sd.id = sr.to_decision_id
+                 WHERE sr.decision_id = {alias}.id AND sr.kind = 'later_changed' AND sr.status = 'shown'
+                   AND sd.gone_at IS NULL)"""
+
+
+def project_decisions(
+    connection: Any, project_id: str, *, include_superseded: bool = False
+) -> list[dict[str, Any]]:
+    """项目里还在的决议（只读，最多 2 条语句），按（决议日期，会议 id，序号）排。每条带 id、meeting_id、
+    text、start_ms、按放需求的规则算出的 requirement_id（没归到的为空）、placement（how）、
+    earlier[{decision_id, date, text}]、restated[{meeting_id, date, start_ms}]（挂在最早那条上）。
+    默认不含被后来改掉的决议。4h 写 00 索引.md 用。"""
+    rows = [
+        dict(row)
+        for row in connection.execute(
+            """SELECT d.id, d.meeting_id, d.ordinal, d.text, d.detail, d.start_ms, d.placement, d.requirement_id,
+                      rq.project_id AS requirement_project, m.recording_date, m.created_at, m.project_id,
+                      p.name AS project_name, p.also_names,
+                      (SELECT json_group_array(json_object('id', r.id, 'title', r.title))
+                         FROM (SELECT r.id, r.title FROM requirement_meetings rm
+                                 JOIN requirements r ON r.id = rm.requirement_id
+                                WHERE rm.meeting_id = m.id ORDER BY r.created_at, r.id) r) AS linked_json
+                 FROM meetings m
+                 JOIN decisions d ON d.meeting_id = m.id AND d.gone_at IS NULL
+                 LEFT JOIN requirements rq ON rq.id = d.requirement_id
+                 LEFT JOIN projects p ON p.id = m.project_id
+                WHERE m.project_id = ?""",
+            (project_id,),
+        ).fetchall()
+    ]
+    pairs = [
+        dict(row)
+        for row in connection.execute(
+            _pair_rows_sql("r.project_id = :pid AND r.status = 'shown'"), {"pid": project_id}
+        ).fetchall()
+    ]
+    marks = pair_marks(pairs)
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        mark = marks.get(row["id"], {})
+        if mark.get("later") and not include_superseded:
+            continue
+        try:
+            linked = json.loads(row["linked_json"] or "[]")
+        except ValueError:
+            linked = []
+        chosen, how = effective_requirement(
+            row, linked, row["project_id"], project_names(row["project_name"], row["also_names"])
+        )
+        day = _day(row["recording_date"], row["created_at"])
+        result.append(
+            {
+                "id": row["id"],
+                "meeting_id": row["meeting_id"],
+                "text": row["text"],
+                "start_ms": row["start_ms"],
+                "requirement_id": chosen,
+                "placement": how,
+                "earlier": [
+                    {"decision_id": ref["decision_id"], "date": ref["meeting"]["date"], "text": ref["text"]}
+                    for ref in mark.get("earlier", [])
+                ],
+                "restated": [
+                    {"meeting_id": ref["meeting"]["id"], "date": ref["meeting"]["date"], "start_ms": ref["start_ms"]}
+                    for ref in mark.get("restated", [])
+                ],
+                "superseded": bool(mark.get("later")),
+                "_sort": (day, row["meeting_id"], row["ordinal"]),
+            }
+        )
+    result.sort(key=lambda item: item["_sort"])
+    for item in result:
+        item.pop("_sort")
+    return result

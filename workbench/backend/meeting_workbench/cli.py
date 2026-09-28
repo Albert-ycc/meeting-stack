@@ -115,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
         "retry", help="把没做成的 AI 整理和决议对比放回队列、次数清零，清掉 AI 循环的暂停（和页面上的［现在重试］一样）"
     )
     links_decisions = links_sub.add_parser(
-        "decisions", help="打印一场会解析出的决议：id、原文、时间点、note（只读）"
+        "decisions", help="打印一场会解析出的决议：id、原文、时间点、note，和对比时会发的提示词（只读，不发送）"
     )
     links_decisions.add_argument("--meeting", required=True, help="会议 id")
     links_decisions.add_argument("--json", action="store_true", help="输出 JSON")
@@ -547,11 +547,20 @@ def _links_decisions(args: argparse.Namespace, settings: Settings) -> int:
             ]
             note = parsed.note
             source = "parsed"
+        # 4c：对比时会发的提示词（只读、只打印，从不发送）；台账落后或库还是旧版本时没有
+        prompt = None
+        if source == "table":
+            from .decision_pairs import prompt_preview
+
+            try:
+                prompt = prompt_preview(connection, meeting["id"])
+            except sqlite3.OperationalError:
+                prompt = None
     finally:
         connection.close()
     if args.json:
-        print(json.dumps({"meeting_id": meeting["id"], "source": source, "note": note, "decisions": items},
-                         ensure_ascii=False, indent=2))
+        print(json.dumps({"meeting_id": meeting["id"], "source": source, "note": note, "decisions": items,
+                          "prompt": prompt}, ensure_ascii=False, indent=2))
         return 0
     print(f"{meeting['title'] or meeting['id']}（{meeting['id']}）")
     if source == "parsed":
@@ -566,6 +575,16 @@ def _links_decisions(args: argparse.Namespace, settings: Settings) -> int:
         if item.get("detail"):
             for line in str(item["detail"]).splitlines():
                 print(f"    {line}")
+    if prompt is not None:
+        print()
+        if prompt["needs_call"]:
+            print(f"对比时会发的提示词（这一场 {prompt['this']} 条、之前的 {prompt['others']} 条；只打印，不发送）：")
+        else:
+            print("初筛后没有要对比的决议，也没有要放的决议：这场会不用调用 AI。下面是按现在的数据拼出的提示词（不发送）：")
+        print("---- system ----")
+        print(prompt["system"])
+        print("---- user ----")
+        print(prompt["user"])
     return 0
 
 

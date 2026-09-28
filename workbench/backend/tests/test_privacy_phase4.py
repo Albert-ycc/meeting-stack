@@ -12,6 +12,8 @@
 - 4b：候选词（glossary_candidates.term）里的「候选词哨兵丁」不出现在任何提示词里；会名里的「会名哨兵乙」
   不出现在 4b 发出的请求里（4c、4g 和项目归属本来就发会名）；假 AI 给 4b 回一条说法，L5 真的写出放宽行，
   材料文字哨兵不出现在它的 quote、evidence_json 里。
+- 4c：决议对比只发决议原文、会名和需求名（<this>、<others>、<reqs> 三个标签），材料文字、文件名、逐字稿和
+  纪要其余部分的哨兵都不在里面。
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ import pytest
 from meeting_workbench.cards import CardWriter
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database, utc_now
+from meeting_workbench.decision_pairs import DecisionPairTask
 from meeting_workbench.deep_links import LinksWorker
 from meeting_workbench.links_llm import LinksLLMWorker, ordered
 from meeting_workbench.loose_mentions import TASK_BACKFILL, TASK_RECENT, LooseMentionTask
@@ -45,6 +48,11 @@ CANDIDATE_SENTINEL = "候选词哨兵丁"
 LOOSE_MEETING = "vm-20260926-160000"
 # 4b 的请求：user 消息里有 <transcript> 标签
 LOOSE_MARK = "<transcript>"
+# 4c 的请求：user 消息里有 <others> 标签
+PAIRS_MARK = "<others>"
+PAIRS_MEETING = "vm-20260925-100000"
+MINUTES_SENTINEL = "纪要摘要哨兵丙"
+TRANSCRIPT_SENTINEL = "逐字稿哨兵戊"
 CONTENT_KEY = "q2:" + "7" * 32
 
 # 材料文字哨兵本来就在的表，和三处白名单
@@ -155,6 +163,13 @@ def build_world(tmp_path: Path) -> tuple[Database, Settings, Path]:
         project_id=project_id, origin="ai",
     )
     seed_meeting(db, "vm-20260927-100000", "周会", "# 摘要\n\n讨论报价单。", segments=segments)
+    # 4c：同项目另一场会也定了报价单的事，初筛能留下，对比真的发出去
+    seed_meeting(
+        db, PAIRS_MEETING, "报价沟通",
+        f"# 报价沟通\n\n## 一分钟摘要\n\n{MINUTES_SENTINEL}\n\n## 决议\n\n- 报价单按第二版发出 [00:03:00]\n",
+        segments=[(0, TRANSCRIPT_SENTINEL), (180_000, "报价单按第二版发出")],
+        project_id=project_id, origin="manual",
+    )
     # 4b：一场逐字稿够长的会（会名里有哨兵），会上说了「上周那版报价单」
     long_talk = [(0, "开始吧")] + [
         (60_000, "上周那版报价单再看一下"),
@@ -185,14 +200,15 @@ def run_everything(db: Database, settings: Settings) -> None:
         tasks=ordered(
             [
                 LooseMentionTask(links_settings, TASK_RECENT),
+                DecisionPairTask(links_settings),
                 LooseMentionTask(links_settings, TASK_BACKFILL),
             ]
         ),
     )
     links = LinksWorker(db, links_settings, llm=llm_worker)
     links.run_round()
-    # AI 循环跑到没活（4b 一段一次），再跑一轮本机循环让 L5 把说法对到文件
-    for _ in range(10):
+    # AI 循环跑到没活（4b 一段一次、4c 一场会一次），再跑一轮本机循环让 L5 把说法对到文件
+    for _ in range(20):
         if not llm_worker.tick()["called"]:
             break
     links.run_round()
@@ -303,3 +319,18 @@ def test_loose_mentions_send_only_the_transcript(tmp_path, fake_ai):
     for row in rows:
         assert MATERIAL_SENTINEL not in row["quote"] + row["evidence_json"]
         assert NAME_SENTINEL not in row["quote"] + row["evidence_json"]
+
+
+def test_decision_pairs_send_only_decision_text(tmp_path, fake_ai):
+    db, settings, root = build_world(tmp_path)
+
+    run_everything(db, settings)
+
+    pair_requests = [text for text in fake_ai if PAIRS_MARK in text]
+    assert pair_requests, "4c 一次都没发，这个测试什么都没验证"
+    for text in pair_requests:
+        for sentinel in (MATERIAL_SENTINEL, NAME_SENTINEL, CANDIDATE_SENTINEL, MINUTES_SENTINEL, TRANSCRIPT_SENTINEL,
+                         "报价单 v3.xlsx", str(root)):
+            assert sentinel not in text, sentinel
+        # 发的是决议原文和会名
+        assert "报价单按第二版发出" in text and "报价单按第三版发出" in text and "报价沟通" in text

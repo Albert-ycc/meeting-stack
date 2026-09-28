@@ -505,6 +505,29 @@ describe("API write protection", () => {
     ]);
   });
 
+  it("决议日志和时间线（4c）：读接口的地址和查询串", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.requirementDecisions("req 1");
+    await api.projectTimeline("project-1");
+    await api.projectTimeline("project-1", { kind: "decisions", days: 7 });
+    await api.projectTimeline("project-1", { kind: "all", days: 7, before: "2026-09-20" });
+    await api.projectTimeline("project-1", { before: null });
+
+    const calls = fetchMock.mock.calls as [string, RequestInit | undefined][];
+    expect(calls.map(([url]) => url)).toEqual([
+      "/api/requirements/req%201/decisions",
+      "/api/projects/project-1/timeline",
+      "/api/projects/project-1/timeline?days=7&kind=decisions",
+      "/api/projects/project-1/timeline?before=2026-09-20&days=7&kind=all",
+      "/api/projects/project-1/timeline",
+    ]);
+    for (const [, init] of calls) expect(init?.method ?? "GET").toBe("GET");
+  });
+
   it("isOldBackend：FastAPI 的 404 \"Not Found\" 和 405 算旧后台，中文 detail 的 404 是正式回答", async () => {
     const respond = (status: number, detail: string) =>
       new Response(JSON.stringify({ detail }), { status, headers: { "Content-Type": "application/json" } });

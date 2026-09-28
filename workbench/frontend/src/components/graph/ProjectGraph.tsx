@@ -3,7 +3,7 @@ import { useCallback, useContext, useEffect, useMemo, useRef, useState, type Key
 import { ApiError, type ApiClient } from "../../api";
 import { reassignNote } from "../../cardCopy";
 import type { Project } from "../../types";
-import { NoticeBanner, useNotice, type NoticeAction, type NoticeTone } from "../Notice";
+import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeAction, type NoticeTone } from "../Notice";
 import { RecentAnswersContext } from "../links/useRelationAnswer";
 import { GraphCanvas, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
 import { FocusPanel } from "./FocusPanel";
@@ -28,8 +28,6 @@ import { useMiniPlayer } from "./MiniPlayer";
 import { forgetViewportViews } from "./useGraphViewport";
 import "./ProjectGraph.css";
 
-/** 带［撤销］的提示多停一会儿，和会议页一致 */
-export const UNDO_NOTICE_MS = 10_000;
 /** 画布开着时每 30 秒对一次数据；没变化时服务器回 304，几乎不花钱 */
 const REFRESH_MS = 30_000;
 const TRAIL_MAX = 5;

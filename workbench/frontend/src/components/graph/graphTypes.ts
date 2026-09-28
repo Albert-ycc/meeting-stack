@@ -1,7 +1,7 @@
 // 关系图（1g、1h）接口的数据形状，和后端 graph.py 一一对应。
 
 import type { MaterialDeliverable, MaterialFileState, MeetingAttribution, MeetingCard } from "../../types";
-import type { LinksState } from "../../api";
+import type { DecisionLinkRef, LinksState } from "../../api";
 
 export type GraphWindow = "7d" | "28d" | "90d" | "all";
 export type Ring = "inner" | "middle" | "outer";
@@ -322,6 +322,9 @@ export interface FocusDecision {
   start_ms: number | null;
   end_ms?: number | null;
   detail?: string;
+  /** 4c：这条后来改成了哪条、这条改了哪条；现读兜底和旧后台时为空或没有 */
+  later?: DecisionLinkRef[];
+  earlier?: DecisionLinkRef[];
 }
 
 export interface FocusTask {
@@ -406,8 +409,13 @@ export interface MeetingBrief {
     quotes: Array<{ start_ms: number; text: string }>;
   }>;
   summary: string;
-  /** id：决议台账里的 id（4a），台账落后时为 null */
-  decisions: Array<{ id?: string | null; text: string; start_ms: number | null }>;
+  /** id：决议台账里的 id（4a），台账落后时为 null；later：最新一条「后来改了」（4c），没有或旧后台时为 null 或没有 */
+  decisions: Array<{
+    id?: string | null;
+    text: string;
+    start_ms: number | null;
+    later?: { date: string; meeting_title: string; text: string } | null;
+  }>;
   decisions_note: string | null;
   tasks: BriefTask[];
   tasks_more: number;
