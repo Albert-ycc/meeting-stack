@@ -42,6 +42,11 @@ const SOURCES = import.meta.glob(
     "./components/graph/drawnEdges.ts",
     "./components/graph/graphFiles.ts",
     "./components/graph/layout.ts",
+    // 4h：从材料里找到的词（三种样子）和挂它的词典块、词典页、会议页词典小节
+    "./components/MaterialWords.tsx",
+    "./components/ProjectGlossary.tsx",
+    "./components/GlossaryPage.tsx",
+    "./components/MeetingGlossaryPanel.tsx",
   ],
   {
     query: "?raw",

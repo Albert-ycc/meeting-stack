@@ -692,6 +692,8 @@ export interface MeetingGlossary {
   corrected: MeetingGlossaryHit[];
   missed: MeetingGlossaryHit[];
   applied: { by: "auto" | "user"; count: number; at: string; can_undo: boolean } | null;
+  /** 4h：这场会听错的、材料里有正确写法的词，最多 2 个（旧后台没有这个字段，不出那两行） */
+  material_pairs?: MaterialPair[];
 }
 
 export interface MeetingDetail extends MeetingSummary {
@@ -1110,6 +1112,74 @@ export interface ProjectBoard extends Project {
   public_glossary_count?: number;
   profile?: ProjectRecognitionProfile;
   cards?: ProjectCardsSummary;
+  /** 4h：从材料里找到的词，前 6 项（旧后台没有这个字段，块不出） */
+  glossary_candidates?: MaterialWord[];
+  glossary_candidate_total?: number;
+}
+
+// ---------------------------------------------------------------------------
+// 4h：从材料里找到的词（等你认；没有分数）
+// ---------------------------------------------------------------------------
+
+export interface MaterialWordHeard {
+  meeting: { id: string; title: string; date: string };
+  start_ms: number;
+  /** 会上的原话（逐字稿里那一段的前后几个字） */
+  quote: string;
+  audio_url: string | null;
+}
+
+export interface MaterialWord {
+  /** 按 (项目, key) 回答 */
+  key: string;
+  term: string;
+  /** 原词是已有词条时：［记到『…』］只给那条加错写 */
+  existing_term: { id: string; term: string } | null;
+  /** 会上可能听成的写法，最多 3 个 */
+  wrongs: { text: string; meetings: number }[];
+  /** 正文里出现的文件数 */
+  files: number;
+  /** 会上说过几次 */
+  spoken: number;
+  heard: MaterialWordHeard[];
+  file_names: { file_id: number; name: string }[];
+  /** 只在会上没说过时给：词前后共 40 字 */
+  file_quote: { file_id: number; quote: string } | null;
+}
+
+export interface MaterialWordsList {
+  items: MaterialWord[];
+  total: number;
+}
+
+/** 会议页词典小节：这场会听错的、待认的写法 */
+export interface MaterialPair {
+  key: string;
+  term: string;
+  wrong: string;
+  start_ms: number;
+  quote: string;
+  project: { id: string; name: string };
+}
+
+export interface MaterialWordAcceptResult {
+  term: { id: string; term: string; aliases: string[]; is_cue: boolean };
+  created: boolean;
+  added_aliases: string[];
+  skipped_aliases: string[];
+  already: boolean;
+  text: string;
+  undo_until: string;
+}
+
+export interface MaterialWordRejectResult {
+  text: string;
+  undo_until: string;
+}
+
+export interface MaterialWordUndoResult {
+  status: "pending";
+  text: string;
 }
 
 // ---------------------------------------------------------------------------

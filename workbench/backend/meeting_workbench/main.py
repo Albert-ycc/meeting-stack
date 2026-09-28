@@ -64,6 +64,7 @@ from . import decisions as decisions_module
 from . import decision_pairs
 from . import timeline as timeline_module
 from . import deep_links
+from . import glossary_mining
 from . import links_llm as links_llm_module
 from . import file_mentions
 from . import loose_mentions
@@ -518,6 +519,20 @@ class AskInput(BaseModel):
     with_materials: bool
 
 
+class CandidateKeyInput(BaseModel):
+    """4h：候选词按（项目，term_key）折成一项来回答。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=80)
+
+
+class CandidateAcceptInput(CandidateKeyInput):
+    """not_wrong：你在记入前去掉的听错写法（chip 上的 ×），这几行记 rejected。"""
+
+    not_wrong: list[str] = Field(default_factory=list, max_length=10)
+
+
 class RelationAnswerInput(BaseModel):
     """answer 是 yes、no、updated、pick、restore 之一（和这类关联对不上时 relations.answer 回 422）；
     file_id 只在 pick 时给。"""
@@ -650,6 +665,7 @@ def _meeting_detail(
     *,
     ai_configured: bool = False,
     cards: CardWriter | None = None,
+    material_pairs: bool = False,
 ) -> dict[str, Any] | None:
     meeting = db.query_one(
         """SELECT m.*, p.name AS project_name, p.color AS project_color
@@ -738,7 +754,7 @@ def _meeting_detail(
         )
         if cards is not None:
             meeting["card"] = cards.meeting_card(connection, meeting_id)
-    meeting["glossary"] = glossary_checkup.meeting_glossary(db, meeting_id)
+    meeting["glossary"] = glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=material_pairs)
     return meeting
 
 
@@ -789,6 +805,10 @@ def create_app(
     )
     project_linker = ProjectLinker(db, settings)
     card_writer = CardWriter(db, settings)
+
+    def mining_on() -> bool:
+        """4h：links_enabled 和 glossary_mining_enabled 都开时才挖词、才显示待认词。"""
+        return glossary_mining.enabled(settings)
     roots_cache = graph_module.RootsCache(db, settings=settings)
     material_indexer = MaterialIndexer(db, settings, busy_check=busy)
     material_stop = StopFlag()
@@ -2004,7 +2024,8 @@ def create_app(
     @app.get("/api/meetings/{meeting_id}")
     def get_meeting(meeting_id: str):
         detail = _meeting_detail(
-            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer,
+            material_pairs=mining_on(),
         )
         if not detail:
             raise HTTPException(404, "会议不存在")
@@ -2698,7 +2719,7 @@ def create_app(
 
     @app.get("/api/meetings/{meeting_id}/glossary")
     def meeting_glossary(meeting_id: str):
-        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=mining_on())}
 
     @app.post("/api/meetings/{meeting_id}/glossary/check")
     def check_meeting_glossary(meeting_id: str, body: GlossaryCheckInput):
@@ -2713,7 +2734,7 @@ def create_app(
         else:
             # 不带 project_id：纪要改过以后重查一遍，沿用上次按哪个项目查的。
             glossary_checkup.check_meeting(db, meeting_id)
-        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=mining_on())}
 
     @app.post("/api/meetings/{meeting_id}/glossary/apply")
     def apply_meeting_glossary(meeting_id: str, body: GlossaryApplyInput):
@@ -2721,13 +2742,13 @@ def create_app(
             db, service, meeting_id, expected_version_id=body.base_version_id
         )
         notify_relay_draft_modified(meeting_id)
-        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=mining_on())}
 
     @app.post("/api/meetings/{meeting_id}/glossary/undo")
     def undo_meeting_glossary(meeting_id: str, _body: dict[str, Any] | None = None):
         result = glossary_checkup.undo_applied(db, service, meeting_id)
         notify_relay_draft_modified(meeting_id)
-        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=mining_on())}
 
     def preferred_audio_path(meeting_id: str) -> Path | None:
         artifact = db.query_one(
@@ -3316,7 +3337,8 @@ def create_app(
             payload={"action": action, "conflict_id": conflict_id},
         )
         detail = _meeting_detail(
-            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer,
+            material_pairs=mining_on(),
         )
         assert detail is not None
         return detail
@@ -3407,7 +3429,8 @@ def create_app(
         )
         card_effect = sync_card(meeting_id) if "project_id" in changed_fields else None
         detail = _meeting_detail(
-            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer,
+            material_pairs=mining_on(),
         )
         if effects is not None and detail is not None:
             detail["effects"] = {
@@ -3446,7 +3469,8 @@ def create_app(
             result = undo_reassign(connection, meeting_id)
         card_effect = sync_card(meeting_id)
         detail = _meeting_detail(
-            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer,
+            material_pairs=mining_on(),
         )
         if detail is not None:
             detail["effects"] = {"tasks_restored": result["tasks_restored"]}
@@ -3693,7 +3717,55 @@ def create_app(
         with db.autocommit() as connection:
             board["profile"] = recognition_profile(connection, project_id)
             board["cards"] = card_writer.project_cards(connection, project_id)
+            # 4h：从材料里找到的词，前 6 项和总数（关着时是空的）
+            words = (
+                glossary_mining.list_candidates(connection, project_id, limit=glossary_mining.SHOWN_ON_BOARD)
+                if mining_on()
+                else {"items": [], "total": 0}
+            )
+        board["glossary_candidates"] = words["items"]
+        board["glossary_candidate_total"] = words["total"]
         return board
+
+    # ---------------------------------------------------------------- 4h 从材料里找到的词
+    def candidate_call(fn: Any) -> Any:
+        try:
+            return fn()
+        except glossary_mining.CandidateError as error:
+            raise HTTPException(error.status, error.text) from None
+
+    def require_project(project_id: str) -> None:
+        if db.query_one("SELECT 1 FROM projects WHERE id = ?", (project_id,)) is None:
+            raise HTTPException(404, glossary_mining.PROJECT_MISSING)
+
+    @app.get("/api/projects/{project_id}/glossary-candidates")
+    def glossary_candidates(project_id: str):
+        require_project(project_id)
+        if not mining_on():
+            return {"items": [], "total": 0}
+        with db.autocommit() as connection:
+            return glossary_mining.list_candidates(connection, project_id)
+
+    @app.post("/api/projects/{project_id}/glossary-candidates/accept")
+    def accept_glossary_candidate(project_id: str, body: CandidateAcceptInput):
+        return candidate_call(
+            lambda: glossary_mining.accept(
+                db, project_id, body.key, body.not_wrong,
+                snapshot_path=settings.data_dir / "glossary-snapshot.json",
+            )
+        )
+
+    @app.post("/api/projects/{project_id}/glossary-candidates/reject")
+    def reject_glossary_candidate(project_id: str, body: CandidateKeyInput):
+        return candidate_call(lambda: glossary_mining.reject(db, project_id, body.key))
+
+    @app.post("/api/projects/{project_id}/glossary-candidates/undo")
+    def undo_glossary_candidate(project_id: str, body: CandidateKeyInput):
+        return candidate_call(
+            lambda: glossary_mining.undo(
+                db, project_id, body.key, snapshot_path=settings.data_dir / "glossary-snapshot.json"
+            )
+        )
 
     # ------------------------------------------------------------ 关系图（1g）
 

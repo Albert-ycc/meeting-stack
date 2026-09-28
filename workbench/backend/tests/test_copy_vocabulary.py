@@ -43,6 +43,7 @@ PHASE_FOUR_MODULES = (
     "affects.py",
     "graph_local.py",
     "card_index.py",
+    "glossary_mining.py",
 )
 
 # 4a：relation_read.links_state 的状态句（第 3 节「状态和提示」，每种一句话、最多一个按钮）
@@ -438,6 +439,24 @@ COPY_4H_INDEX = (
     "搁置",
 )
 
+# 4h：从材料里找到的词，接口的 text 和错误的说法（前端的文案在 copy.vocabulary.test.ts）
+COPY_4H_WORDS = (
+    "项目不存在",
+    "这个词已经不在了",
+    "这个词已经处理过了",
+    "已超过撤销时间，请直接改回",
+    "已经撤销过了",
+    "这个词后来改过了，请在词典里直接改",
+    "这个词不能记入词典",
+    "已记入『{term}』",
+    "已记入『{term}』，错写：{wrongs}",
+    "已把『{wrongs}』记成『{term}』的错写",
+    "『{term}』已经在词典里了",
+    "已记入『{term}』；『{skipped}』已经用在别的词条上，没加成错写",
+    "以后不再提『{term}』",
+    "已撤销，『{term}』回到这里",
+)
+
 COPY_TABLES = {
     "4a 状态句": STATE_SENTENCES_4A,
     "4a 回答和撤销": ANSWER_COPY_4A,
@@ -448,6 +467,7 @@ COPY_TABLES = {
     "4e 产出和可能过时": COPY_4E,
     "4f 关系图的线、局部图和来龙去脉": COPY_4F,
     "4h 00 索引.md": COPY_4H_INDEX,
+    "4h 从材料里找到的词": COPY_4H_WORDS,
 }
 
 
@@ -764,3 +784,42 @@ def test_index_copy_matches_the_module():
     ]
     module += list(card_index.REQUIREMENT_STATUS.values())
     assert sorted(module) == sorted(COPY_4H_INDEX)
+
+
+def test_candidate_texts_match_the_module():
+    from meeting_workbench import glossary_mining as gm
+
+    module = {
+        gm.PROJECT_MISSING, gm.TERM_GONE, gm.ALREADY_DONE, gm.UNDO_EXPIRED, gm.UNDO_TWICE, gm.TERM_CHANGED,
+        gm.TERM_INVALID, gm.ACCEPTED_TEXT, gm.ACCEPTED_WRONGS_TEXT, gm.APPENDED_TEXT, gm.ALREADY_TEXT,
+        gm.SKIPPED_TEXT, gm.REJECTED_TEXT, gm.UNDONE_TEXT,
+    }
+    assert module == set(COPY_4H_WORDS)
+
+
+def test_phase_four_payloads_4h(tmp_path):
+    """4h：候选词的 GET、看板和三个写接口的 text、detail 里没有不许出现的词（词本身在『』里）。"""
+    from meeting_workbench.db import Database
+
+    from .gm_world import mine, world
+    from .test_tasks_api import make_client, write_headers
+
+    client, settings = make_client(tmp_path)
+    settings.links_enabled = True
+    db = Database(settings.database_path)
+    world(tmp_path, db)
+    mine(db)
+    headers = write_headers(client)
+    payloads = [
+        client.get("/api/projects/p/glossary-candidates").json(),
+        client.get("/api/projects/p/board").json().get("glossary_candidates"),
+        client.post("/api/projects/p/glossary-candidates/accept", json={"key": "司美格鲁肽"}, headers=headers).json(),
+        client.post("/api/projects/p/glossary-candidates/accept", json={"key": "司美格鲁肽"}, headers=headers).json(),
+        client.post("/api/projects/p/glossary-candidates/undo", json={"key": "司美格鲁肽"}, headers=headers).json(),
+        client.post("/api/projects/p/glossary-candidates/reject", json={"key": "驻场服务"}, headers=headers).json(),
+        client.post("/api/projects/p/glossary-candidates/reject", json={"key": "没有"}, headers=headers).json(),
+        client.get("/api/projects/nope/glossary-candidates").json(),
+    ]
+    found = [text for payload in payloads for text in collect_copy(payload)]
+    assert any("以后不再提" in text for text in found) and any("已记入" in text for text in found)
+    assert [text for text in found if problems(text)] == []

@@ -2,7 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { GlossaryPage } from "./GlossaryPage";
-import type { ApiClient } from "../api";
+import { ApiError, type ApiClient } from "../api";
+import { LinksFlagsContext } from "./links/LinksFlagsContext";
 import type { GlossarySuggestion, GlossaryTerm, MeetingSummary, Project } from "../types";
 
 const meetings: MeetingSummary[] = [
@@ -165,6 +166,63 @@ describe("GlossaryPage", () => {
 
     await waitFor(() => expect(screen.getByText("生长激素")).toBeTruthy());
     expect(screen.queryByText("儿童生长发育")).toBeNull();
+  });
+
+  it("4h：选中项目 chip 时取这个项目的待认词，放在词条列表上面；切换 chip 时旧请求不串进来", async () => {
+    const word = {
+      key: "驻场服务", term: "驻场服务", existing_term: null, wrongs: [], files: 15, spoken: 3,
+      heard: [], file_names: [], file_quote: null,
+    };
+    let resolveFirst: (value: unknown) => void = () => undefined;
+    const glossaryCandidates = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValue({ items: [word], total: 1 });
+    const apiClient = client({
+      glossaryTerms: vi.fn().mockResolvedValue([generalTerm, projectTerm]),
+      glossaryCandidates,
+      acceptGlossaryCandidate: vi.fn(),
+      rejectGlossaryCandidate: vi.fn(),
+      undoGlossaryCandidate: vi.fn(),
+    } as unknown as Partial<ApiClient>);
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: false, llmConfigured: false }}>
+        <GlossaryPage apiClient={apiClient} canWrite meetings={meetings} projects={projects} />
+      </LinksFlagsContext.Provider>,
+    );
+    expect(await screen.findByText("儿童生长发育")).toBeTruthy();
+    expect(glossaryCandidates).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("tab", { name: /云图 0830 迭代/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /^全部/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /云图 0830 迭代/ }));
+
+    expect(await screen.findByText("从云图 0830 迭代的材料里找到的词")).toBeTruthy();
+    expect(glossaryCandidates).toHaveBeenCalledWith("project-1");
+    resolveFirst({ items: [{ ...word, key: "旧的", term: "旧请求的词" }], total: 1 });
+    await waitFor(() => expect(screen.queryByText("旧请求的词")).toBeNull());
+    const block = screen.getByRole("region", { name: "从云图 0830 迭代的材料里找到的词" });
+    const term = screen.getByText("生长激素");
+    expect(block.compareDocumentPosition(term) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("4h：候选词接口是旧后台（404 Not Found）时整块静默不出", async () => {
+    const apiClient = client({
+      glossaryTerms: vi.fn().mockResolvedValue([generalTerm, projectTerm]),
+      glossaryCandidates: vi.fn().mockRejectedValue(new ApiError("Not Found", 404, { detail: "Not Found" })),
+      acceptGlossaryCandidate: vi.fn(),
+      rejectGlossaryCandidate: vi.fn(),
+      undoGlossaryCandidate: vi.fn(),
+    } as unknown as Partial<ApiClient>);
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: false, llmConfigured: false }}>
+        <GlossaryPage apiClient={apiClient} canWrite initialProjectId="project-1" meetings={meetings} projects={projects} />
+      </LinksFlagsContext.Provider>,
+    );
+    await waitFor(() => expect(screen.getByText("生长激素")).toBeTruthy());
+    await waitFor(() => expect(apiClient.glossaryCandidates).toHaveBeenCalled());
+    expect(screen.queryByText(/的材料里找到的词/)).toBeNull();
+    expect(screen.queryByText(/后台还是旧版本/)).toBeNull();
   });
 
   it("切换待确认页签：显示 wrong→correct 与来源会议", async () => {

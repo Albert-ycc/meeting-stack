@@ -23,6 +23,11 @@
 - 4g：问答是唯一的例外。prepare 不调 AI；with_materials=false 的提示词里两个哨兵都没有；with_materials=true
   的提示词里材料文字哨兵正好一次、文件名哨兵零次；之后跑项目归属、任务抽取、两个循环、快照和线索，都没有这两个
   哨兵；假 AI 回答里的「回答专用标记乙」整库一处都没有；问答日志里没有问题、原文和回答。
+- 4h：项目的 3 个文字文件里各放两次「蓝鲸七号原料」（会上从没说过），材料里放「鲸湾海藻酸」、逐字稿里听成
+  「鲸湾海藻算」两次。run_everything 的本机循环跑 H4（glossary_mining_enabled 开着）：两个候选词都在
+  （正向对照）；两个词不在任何 AI 请求、快照、项目线索、segments_fts、minutes_fts、卡片和 00 索引.md、
+  /api/bootstrap、去掉 glossary_candidates 的看板里。两个都记入以后：「蓝鲸七号原料」进了快照、不在线索里；
+  「鲸湾海藻酸」带着错写；两个仍然不在索引里（索引不写词典）。
 """
 from __future__ import annotations
 
@@ -589,3 +594,79 @@ def test_ask_sends_material_text_only_after_confirm(tmp_path, fake_ai, caplog):
     for secret in (question, "预算另议", MATERIAL_SENTINEL, NAME_SENTINEL, ANSWER_SENTINEL):
         assert secret not in asks_log
     assert ANSWER_SENTINEL not in caplog.text and MATERIAL_SENTINEL not in caplog.text
+
+
+MINED_SENTINEL = "蓝鲸七号原料"
+PAIR_SENTINEL = "鲸湾海藻酸"
+PAIR_WRONG = "鲸湾海藻算"
+
+
+def seed_mined_words(db: Database, project_id: str, root: Path) -> None:
+    """4h：3 份文字材料里各两次「蓝鲸七号原料」和「鲸湾海藻酸」；一场会上听成「鲸湾海藻算」两次。"""
+    now = utc_now()
+    root_id = db.query_one("SELECT id FROM project_material_roots WHERE project_id = ?", (project_id,))["id"]
+    for index in range(3):
+        key = "q2:" + "9" * 31 + str(index)
+        db.execute(
+            """INSERT INTO material_contents(content_key, layer, state, chars, chunks, created_at, updated_at)
+               VALUES (?, 'text', 'done', 60, 1, ?, ?)""",
+            (key, now, now),
+        )
+        text = f"{MINED_SENTINEL}，第{index}批入库。{PAIR_SENTINEL}，第{index + 3}批采购。" * 2
+        db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES (?, 0, ?)", (key, text))
+        db.execute(
+            """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns,
+                   zone, seen_at, content_key) VALUES (?, ?, '采购', ?, ?, ?, 'docx', 10, 1, 'normal', ?, ?)""",
+            (root_id, f"采购/清单{index}.docx", f"清单{index}.docx", f"清单{index}", f"清单{index}", now, key),
+        )
+    seed_meeting(
+        db, "vm-20260927-150000", "采购沟通", "# 摘要\n\n采购。",
+        segments=[(0, f"{PAIR_WRONG}这周到货"), (60_000, f"{PAIR_WRONG}的批号再核对")],
+        project_id=project_id, origin="manual",
+    )
+
+
+def test_mined_words_stay_local_until_accepted(tmp_path, fake_ai):
+    from fastapi.testclient import TestClient
+
+    from meeting_workbench import glossary_mining
+    from meeting_workbench.main import create_app
+
+    from .test_tasks_api import FakeRelayClient
+
+    db, settings, root = build_world(tmp_path)
+    project_id = db.query_one("SELECT id FROM projects WHERE name = '云图AI'")["id"]
+    seed_mined_words(db, project_id, root)
+
+    run_everything(db, settings)
+
+    pending = {
+        (row["term"], row["wrong"])
+        for row in db.query_all("SELECT term, wrong FROM glossary_candidates WHERE status = 'pending'")
+    }
+    assert (MINED_SENTINEL, "") in pending and (PAIR_SENTINEL, PAIR_WRONG) in pending, pending
+    assert list((root / "声档会议记录").glob("00 索引.md")), "索引没写出来，这个测试什么都没验证"
+    places = outgoing(db, settings, root, fake_ai)
+    client = TestClient(create_app(settings.model_copy(update={"links_enabled": True}), FakeRelayClient()))
+    places["bootstrap"] = json.dumps(client.get("/api/bootstrap").json(), ensure_ascii=False)
+    board = client.get(f"/api/projects/{project_id}/board").json()
+    assert {PAIR_SENTINEL, MINED_SENTINEL} <= {item["term"] for item in board["glossary_candidates"]}
+    board.pop("glossary_candidates")
+    places["看板"] = json.dumps(board, ensure_ascii=False)
+    for place, text in places.items():
+        for sentinel in (MINED_SENTINEL, PAIR_SENTINEL):  # 逐字稿里只有听错的写法
+            assert sentinel not in text, (place, sentinel)
+    for place in ("AI 请求", "卡片"):
+        assert NAME_SENTINEL not in places[place], place
+
+    snapshot = settings.data_dir / SNAPSHOT_FILENAME
+    for key in (MINED_SENTINEL, PAIR_SENTINEL):
+        glossary_mining.accept(db, project_id, key, [], snapshot_path=snapshot)
+    CardWriter(db, settings).reconcile()
+
+    terms = {entry["term"]: entry for entry in json.loads(snapshot.read_text(encoding="utf-8"))["terms"]}
+    assert MINED_SENTINEL in terms and terms[PAIR_SENTINEL]["aliases"] == [PAIR_WRONG]
+    with db.autocommit() as connection:
+        assert MINED_SENTINEL not in repr(build_cue_table(connection))
+    index = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("00 索引.md"))
+    assert MINED_SENTINEL not in index and PAIR_SENTINEL not in index

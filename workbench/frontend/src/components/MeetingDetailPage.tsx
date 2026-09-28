@@ -1464,6 +1464,7 @@ export function MeetingDetailPage({
               <MeetingGlossaryPanel
                 apiClient={apiClient}
                 canEdit={!isMobile && !minutesDirty && !isSaving && !busy}
+                canWrite={canWriteTasks}
                 editBlockedReason={minutesDirty ? "先保存或放弃正在改的纪要" : undefined}
                 glossary={meeting.glossary}
                 isMobile={isMobile}

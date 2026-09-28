@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../api";
 import type { MeetingGlossary } from "../types";
+import { LinksFlagsContext } from "./links/LinksFlagsContext";
 import { MeetingGlossaryPanel } from "./MeetingGlossaryPanel";
 
 function glossary(overrides: Partial<MeetingGlossary> = {}): MeetingGlossary {
@@ -142,5 +143,72 @@ describe("MeetingGlossaryPanel", () => {
       glossary({ basis: "public", project: null, meeting_project: null, receipt: null, corrected: [], missed: [] }),
     );
     expect(screen.getByText("这场会还没归项目，只按公共词查了一遍")).toBeTruthy();
+  });
+
+  describe("4h：这场会听错的写法", () => {
+    const PAIR = {
+      key: "司美格鲁肽",
+      term: "司美格鲁肽",
+      wrong: "司美格鲁太",
+      start_ms: 754_000,
+      quote: "这次司美格鲁太的剂量先按",
+      project: { id: "p-yt", name: "云图AI" },
+    };
+
+    function renderWithPairs(canWrite: boolean, apiClient: ApiClient) {
+      render(
+        <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: false, llmConfigured: false }}>
+          <MeetingGlossaryPanel
+            apiClient={apiClient}
+            canEdit
+            canWrite={canWrite}
+            glossary={glossary({ material_pairs: [PAIR] })}
+            isMobile={false}
+            meetingId="vm-1"
+            onMinutesChanged={vi.fn()}
+          />
+        </LinksFlagsContext.Provider>,
+      );
+    }
+
+    function pairClient(checked: MeetingGlossary) {
+      return client({
+        checkMeetingGlossary: vi.fn().mockResolvedValue({ glossary: checked }),
+        acceptGlossaryCandidate: vi.fn().mockResolvedValue({
+          term: { id: "gt-1", term: "司美格鲁肽", aliases: ["司美格鲁太"], is_cue: false },
+          created: true,
+          added_aliases: ["司美格鲁太"],
+          skipped_aliases: [],
+          already: false,
+          text: "已记入『司美格鲁肽』，错写：司美格鲁太",
+          undo_until: new Date(Date.now() + 600_000).toISOString(),
+        }),
+        rejectGlossaryCandidate: vi.fn(),
+        undoGlossaryCandidate: vi.fn(),
+      } as unknown as Partial<ApiClient>);
+    }
+
+    it("shows the row above the basis line and rechecks after 记入", async () => {
+      const rechecked = glossary({
+        material_pairs: [],
+        missed: [
+          { kind: "missed", term: "司美格鲁肽", wrong: "司美格鲁太", term_project_id: "p-yt", transcript_count: 2, minutes_count: 1 },
+        ],
+      });
+      const apiClient = pairClient(rechecked);
+      renderWithPairs(true, apiClient);
+      const row = screen.getByText("材料里写作『司美格鲁肽』，这场会听成了『司美格鲁太』");
+      const basis = screen.getByText(/出纪要时按「云图AI」的词典纠错/);
+      expect(row.compareDocumentPosition(basis) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "记入 云图AI" }));
+      await waitFor(() => expect(apiClient.checkMeetingGlossary).toHaveBeenCalledWith("vm-1"));
+      expect(await screen.findByText(/可能漏纠/)).toBeTruthy();
+      expect(screen.getByText("已记入『司美格鲁肽』，错写：司美格鲁太")).toBeTruthy();
+    });
+
+    it("is not shown when canWrite is false", () => {
+      renderWithPairs(false, pairClient(glossary()));
+      expect(screen.queryByText(/这场会听成了/)).toBeNull();
+    });
   });
 });

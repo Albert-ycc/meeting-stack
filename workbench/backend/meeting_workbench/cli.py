@@ -137,6 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
         "ask", help="问答试跑：问题从标准输入读，列出会找到的原话、要发几段、发给谁；不发送"
     )
     links_ask.add_argument("--project", required=True, help="项目 id")
+    # 4h：从材料里挖出的词（手工验收看准头用）
+    links_words = links_sub.add_parser(
+        "words", help="这个项目从材料里找到的词：排好序，每个一行，带次数和一处证据"
+    )
+    links_words.add_argument("--project", required=True, help="项目 id")
+    links_words.add_argument(
+        "--dry-run", action="store_true", help="当场给这个项目的内容挖一遍，什么都不写；不带就真做一遍项目汇总"
+    )
     return parser
 
 
@@ -746,7 +754,39 @@ def _links_ask(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def _links_words(args: argparse.Namespace, settings: Settings) -> int:
+    """links words --project：打印这个项目排好序的词。--dry-run 当场挖、只读；不带就真做一遍项目汇总。"""
+    from datetime import UTC, datetime
+
+    from . import glossary_mining
+
+    if args.dry_run:
+        connection = _read_only(settings)  # 只读打开：什么都写不进去
+        try:
+            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (args.project,)).fetchone() is None:
+                raise SystemExit(f"没有这个项目：{args.project}")
+            stats = glossary_mining.dry_run(connection, args.project)
+        finally:
+            connection.close()
+    else:
+        db = Database(settings.database_path)
+        with db.autocommit() as connection:
+            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (args.project,)).fetchone() is None:
+                raise SystemExit(f"没有这个项目：{args.project}")
+            stats = glossary_mining.project_pass(connection, args.project, datetime.now(UTC))
+    if stats.stale:
+        print("算的时候库变了，这次没写；再跑一次")
+    for rank, item in enumerate(stats.items, start=1):
+        mark = "" if rank <= glossary_mining.PENDING_CAP else "（排在 30 以后，不显示）"
+        print(f"{rank:>3}. {glossary_mining.describe(item)}{mark}")
+    if not stats.items:
+        print("这个项目还没找到词")
+    return 0
+
+
 def _links(args: argparse.Namespace, settings: Settings) -> int:
+    if args.links_command == "words":
+        return _links_words(args, settings)
     if args.links_command == "ask":
         return _links_ask(args, settings)
     if args.links_command == "status":

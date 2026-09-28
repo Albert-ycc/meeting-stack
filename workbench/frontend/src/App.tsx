@@ -1126,6 +1126,7 @@ export default function App({ apiClient = api }: AppProps) {
         canWrite={!isMobile || mobileTaskWrite}
         initialProjectId={glossaryProjectId}
         meetings={meetings}
+        onOpenMeeting={(meetingId, seekMs) => openMeeting(meetingId, seekMs)}
         onPendingChange={loadGlossaryPending}
         projects={projects}
       />

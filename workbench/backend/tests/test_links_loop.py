@@ -209,6 +209,20 @@ def idle_world(tmp_path):
         """UPDATE material_files SET content_key = ?, content_size = size, content_mtime_ns = mtime_ns WHERE id = ?""",
         (price_key, price_id),
     )
+    # 4h：三份文字材料里各说两次「驻场服务」，H4 前两轮挖出种子、汇总出一个候选词，之后签名不变就不再写
+    for index in range(3):
+        key = "q2:" + str(index) * 32
+        db.execute(
+            """INSERT INTO material_contents(content_key, layer, state, chars, chunks, created_at, updated_at)
+               VALUES (?, 'text', 'done', 30, 1, 'x', 'x')""",
+            (key,),
+        )
+        db.execute(
+            "INSERT INTO material_chunks(content_key, ordinal, text) VALUES (?, 0, ?)",
+            (key, f"驻场服务按月结算，第{index}条。驻场服务另计，第{index + 5}条。"),
+        )
+        file_id = add_file(db, root_id, f"驻场/合同{index}.docx")
+        db.execute("UPDATE material_files SET content_key = ?, ext = 'docx' WHERE id = ?", (key, file_id))
     db.execute("DELETE FROM material_file_events WHERE file_id != ?", (detail_id,))
     return db
 
@@ -235,6 +249,8 @@ def fingerprint(db):
         "relations": db.query_all("SELECT id, status, file_id, updated_at FROM relations ORDER BY id"),
         "decisions": db.query_all("SELECT id, text, updated_at FROM decisions ORDER BY id"),
         "candidates": db.query_all("SELECT id, status, updated_at FROM glossary_candidates ORDER BY id"),
+        "seeds": db.query_all("SELECT * FROM glossary_mining_seeds ORDER BY content_key"),
+        "mining_scan": db.query_all("SELECT * FROM glossary_mining_scan ORDER BY project_id"),
         "extractions": db.query_all("SELECT meeting_id, hints_json, resolved_sig, updated_at FROM mention_extractions"),
         "related": db.query_all("SELECT * FROM meeting_window_passages ORDER BY meeting_id, start_ms, rank"),
         "related_scan": db.query_all("SELECT * FROM meeting_related_scan ORDER BY meeting_id"),
@@ -245,7 +261,7 @@ def test_idle_round_leaves_revisions_alone(tmp_path):
     from .test_related import FakeSemantic
 
     db = idle_world(tmp_path)
-    config = loop_settings(semantic_enabled=True, material_content_enabled=True)
+    config = loop_settings(semantic_enabled=True, material_content_enabled=True, glossary_mining_enabled=True)
     semantic = FakeSemantic()
     vectors = MaterialVectors(db, config, semantic, clock=lambda: 0.0)
     vectors.refresh()
@@ -278,6 +294,10 @@ def test_idle_round_leaves_revisions_alone(tmp_path):
         "status": "suggested", "quote": "总价下调 5%"
     }
     assert w.snapshot()["open"] == {"produced": 2, "affects": 1} and w.snapshot()["waiting"]["affects"] == 0
+    # 4h：H4 挖出了词（手放的「能耗看板」证据没了，记 dropped）
+    words = {row["term"]: row["status"] for row in db.query_all("SELECT term, status FROM glossary_candidates")}
+    assert words["能耗看板"] == "dropped" and words["驻场服务"] == "pending"
+    assert w.snapshot()["waiting"]["terms"] == 0
 
     w.moment["value"] = NOW + timedelta(hours=3)  # 同一天
     third = w.run_round()

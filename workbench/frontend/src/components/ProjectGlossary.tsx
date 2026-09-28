@@ -2,7 +2,8 @@ import { useRef, useState } from "react";
 
 import { termConflictFrom, type ApiClient } from "../api";
 import { isComposingKeydown } from "../keyboard";
-import type { BoardGlossaryTerm, GlossaryTermConflict } from "../types";
+import type { BoardGlossaryTerm, GlossaryTermConflict, MaterialWord } from "../types";
+import { MaterialWords } from "./MaterialWords";
 import "./ProjectGlossary.css";
 
 /** 词典页「公共」分组的预选值（从项目页「另有 N 条公共词」跳过去） */
@@ -18,6 +19,12 @@ interface ProjectGlossaryProps {
   publicCount: number;
   onChanged: (message: string) => void | Promise<void>;
   onOpenGlossary: (key: string) => void;
+  /** 4h：从材料里找到的词，前 6 项（看板没有这个字段时是 undefined，块不出） */
+  candidates?: MaterialWord[] | null;
+  candidateTotal?: number;
+  onOpenMeeting?: (meetingId: string, seekMs: number) => void;
+  /** 记入、不是、撤销以后重载看板（提示由那一块自己显示） */
+  onReload?: () => void | Promise<void>;
 }
 
 /**
@@ -34,6 +41,10 @@ export function ProjectGlossary({
   publicCount,
   onChanged,
   onOpenGlossary,
+  candidates,
+  candidateTotal,
+  onOpenMeeting,
+  onReload,
 }: ProjectGlossaryProps) {
   const [draft, setDraft] = useState("");
   const [term, setTerm] = useState<string | null>(null);
@@ -220,6 +231,18 @@ export function ProjectGlossary({
       ) : (
         <p className="project-glossary__empty">项目词只在这个项目的会里用来纠错和识别项目</p>
       )}
+      <MaterialWords
+        apiClient={apiClient}
+        canWrite={canWrite}
+        items={candidates}
+        onAnswered={onReload}
+        onMore={() => onOpenGlossary(projectId)}
+        onOpenMeeting={onOpenMeeting}
+        projectId={projectId}
+        projectName={projectName}
+        total={candidateTotal}
+        variant="board"
+      />
       <div className="project-glossary__foot">
         {hidden > 0 && (
           <button className="text-button" onClick={() => onOpenGlossary(projectId)} type="button">

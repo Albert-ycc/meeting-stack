@@ -52,6 +52,10 @@ import type {
   CardsBanner,
   MeetingCard,
   MeetingGlossary,
+  MaterialWordAcceptResult,
+  MaterialWordRejectResult,
+  MaterialWordUndoResult,
+  MaterialWordsList,
   MeetingCardEffect,
   ProjectCardsSummary,
   ProjectParentStatus,
@@ -1281,6 +1285,31 @@ export const api = {
       `/api/uploads/${encodeURIComponent(uploadId)}/complete`,
       "POST",
       {},
+    ),
+  // ---------------------------------------------------------------- 4h 从材料里找到的词
+  /** 词典页：这个项目全部待认的词（最多 30 项） */
+  glossaryCandidates: (projectId: string) =>
+    read<MaterialWordsList>(`/api/projects/${encodeURIComponent(projectId)}/glossary-candidates`),
+  /** ［记入］：not_wrong 是去掉的听错写法 */
+  acceptGlossaryCandidate: (projectId: string, body: { key: string; not_wrong?: string[] }) =>
+    write<MaterialWordAcceptResult>(
+      `/api/projects/${encodeURIComponent(projectId)}/glossary-candidates/accept`,
+      "POST",
+      body,
+    ),
+  /** ［不是］：这个项目里不再提 */
+  rejectGlossaryCandidate: (projectId: string, body: { key: string }) =>
+    write<MaterialWordRejectResult>(
+      `/api/projects/${encodeURIComponent(projectId)}/glossary-candidates/reject`,
+      "POST",
+      body,
+    ),
+  /** ［撤销］：600 秒内 */
+  undoGlossaryCandidate: (projectId: string, body: { key: string }) =>
+    write<MaterialWordUndoResult>(
+      `/api/projects/${encodeURIComponent(projectId)}/glossary-candidates/undo`,
+      "POST",
+      body,
     ),
   // ---------------------------------------------------------------- 深度关联（4a）
   /** 回答一条关联；file_id 只在 pick 时给。409、422 的 detail 原样显示 */

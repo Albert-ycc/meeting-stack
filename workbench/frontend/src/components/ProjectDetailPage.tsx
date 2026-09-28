@@ -1003,6 +1003,10 @@ export function ProjectDetailPage({
             publicCount={board.public_glossary_count ?? 0}
             terms={board.glossary_terms ?? []}
             total={board.glossary_count ?? 0}
+            candidates={board.glossary_candidates}
+            candidateTotal={board.glossary_candidate_total}
+            onOpenMeeting={(meetingId, seekMs) => onOpenMeeting(meetingId, seekMs)}
+            onReload={loadBoard}
           />
         </>
       )}

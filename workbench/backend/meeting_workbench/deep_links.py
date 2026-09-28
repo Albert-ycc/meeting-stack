@@ -12,7 +12,7 @@
 - 各步上一轮怎么结束的记在内存快照里（done、budget、busy、stopping、locked、off、waiting），健康检查
   从快照拼 details.links，请求时不查库。GET 接口从不写库。
 - 4a 里 L1、L2 和清理是实的，4b 填了 L5，4d 填了 H3（related.RelatedPass），4e 填了 L3、L4（produced）和
-  H2（affects）；H4（4h）是空位。
+  H2（affects），4h 填了 H4（glossary_mining.mine_round）。
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from . import affects, decisions, file_events, loose_mentions, produced, related
+from . import affects, decisions, file_events, glossary_mining, loose_mentions, produced, related
 from .db import Database
 from .material_fts import REBUILD_KEY
 from .relation_read import live_file
@@ -476,8 +476,20 @@ class LinksWorker:
 
     def h4_terms(self, ctx: RoundContext) -> str:
         """H4 挖词（4h 填）：先按每份内容挖种子（H4a，只看前 6 万字），再按项目汇总（H4b）。5 秒，内存
-        峰值 30MB 以内。ctx.fts_rebuilding 为真时只做 H4a。"""
-        return "off"
+        峰值 30MB 以内。ctx.fts_rebuilding 为真时只做 H4a。glossary_mining_enabled 关着时不挖。"""
+        if not glossary_mining.enabled(ctx.settings):
+            return "off"
+        counts = glossary_mining.mine_round(
+            ctx.db,
+            ctx.busy_now,
+            clock=ctx.clock,
+            budget_s=max(0.0, min(glossary_mining.ROUND_SECONDS, ctx.remaining())),
+            now=ctx.now,
+            fts_rebuilding=ctx.fts_rebuilding,
+        )
+        if counts["seeded"] or counts["projects"]:
+            ctx.work += 1
+        return counts["stopped"] or "done"
 
     # ------------------------------------------------------------------ 清理
 
@@ -555,7 +567,7 @@ class LinksWorker:
     def _counts(
         self, ctx: RoundContext
     ) -> tuple[dict[str, int] | None, dict[str, int] | None, dict[str, int] | None]:
-        """每轮末尾数一次，健康检查和状态句从快照读。related、affects 由 4d、4e 接上，terms 由 4h 接上。
+        """每轮末尾数一次，健康检查和状态句从快照读。related、affects、terms 由 4d、4e、4h 接上。
 
         failed：AI 那两步试满 3 次仍没做成的会，只计数、不报警（不改 status，也不进状态句）。"""
         try:
@@ -573,6 +585,9 @@ class LinksWorker:
                     waiting["related"] = related.due_count(connection, ctx.settings)
                 # 4e：H2 到期的会数
                 waiting["affects"] = affects.due_count(connection, ctx.now)
+                # 4h：还要挖种子的内容数
+                if glossary_mining.enabled(ctx.settings):
+                    waiting["terms"] = glossary_mining.seeds_due(connection)
                 opened = {
                     kind: connection.execute(
                         "SELECT COUNT(*) FROM relations WHERE kind = ? AND status = 'suggested'", (kind,)
