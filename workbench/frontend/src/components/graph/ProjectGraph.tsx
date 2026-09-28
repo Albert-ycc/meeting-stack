@@ -436,7 +436,11 @@ export function ProjectGraph({
     contextMeeting && graph?.meetings.some((meeting) => meeting.meeting_id === contextMeeting) ? contextMeeting : null;
   const [briefFiles, setBriefFiles] = useState<{ meetingId: string; files: BriefFile[] } | null>(null);
   useEffect(() => {
-    if (!contextOnGraph) return;
+    if (!contextOnGraph) {
+      // 离开那场会：30 秒的刷新不再顺带重取它的简报
+      looseWaitingRef.current = null;
+      return;
+    }
     let active = true;
     loadBrief(apiClient, contextOnGraph)
       .then((brief) => {

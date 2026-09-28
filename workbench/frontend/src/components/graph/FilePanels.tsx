@@ -540,7 +540,8 @@ export function MentionEdgeBody({ props, edge }: { props: GraphPanelProps; edge:
       <div className="graph-panel__actions graph-panel__actions--start">
         <button
           className="ghost-button"
-          disabled={busy || !stemKey}
+          // 文件详情没读到之前分不出这条线是不是放宽的提到，先不让按（免得放宽行走了第二期的接口）
+          disabled={busy || !stemKey || !payload}
           onClick={async () => {
             setBusy(true);
             try {

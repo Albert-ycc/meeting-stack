@@ -93,6 +93,10 @@ MIN_PART_CHARS = 1_500
 MAX_TOKENS = 4_000
 TIMEOUT_SECONDS = 60
 MAX_ATTEMPTS = 3
+# mention_extractions.error：truncated 是有内容没发出去（超过 6 段，或 6 段时还被截断的那一段），一直留着；
+# truncated_output 是某一段的回答被截断、收下了能解析的条目
+TRUNCATED = "truncated"
+TRUNCATED_OUTPUT = "truncated_output"
 PER_PART = 40
 PER_MEETING = 80
 SEED_BATCH = 50
@@ -441,8 +445,8 @@ def seed(db: Database, settings: Any, now: datetime, short: set[tuple[str, str]]
             if len(folded_text(lines)) < MIN_FOLDED_CHARS:
                 short.add(key)
                 continue
-            ranges, _more = split_parts(lines)
-            todo.append((row["id"], row["version_id"], text_sha(lines), max(1, len(ranges))))
+            ranges, more = split_parts(lines)
+            todo.append((row["id"], row["version_id"], text_sha(lines), max(1, len(ranges)), more))
             if len(todo) >= SEED_BATCH:
                 break
     if not todo:
@@ -450,12 +454,13 @@ def seed(db: Database, settings: Any, now: datetime, short: set[tuple[str, str]]
     stamp = utc_now()
     created = 0
     with db.transaction() as connection:
-        for meeting_id, version_id, sha, parts in todo:
+        for meeting_id, version_id, sha, parts, more in todo:
+            # 超过 6 段的会多出来的不发，记 truncated（只在健康信息里看得到）
             created += connection.execute(
-                """INSERT INTO mention_extractions(meeting_id, version_id, text_sha, state, parts, created_at,
+                """INSERT INTO mention_extractions(meeting_id, version_id, text_sha, state, parts, error, created_at,
                           updated_at)
-                   VALUES (?, ?, ?, 'pending', ?, ?, ?) ON CONFLICT(meeting_id) DO NOTHING""",
-                (meeting_id, version_id, sha, parts, stamp, stamp),
+                   VALUES (?, ?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT(meeting_id) DO NOTHING""",
+                (meeting_id, version_id, sha, parts, TRUNCATED if more else None, stamp, stamp),
             ).rowcount
     return created
 
@@ -564,13 +569,16 @@ class LooseMentionTask:
             lines = transcript_lines(connection, row["version_id"])
             restart: dict[str, Any] | None = None
             if not lines or text_sha(lines) != row["text_sha"]:
-                # 逐字稿变了（原地改了字，或者发出去的那一版没了）：按现在这一版从头来
+                # 逐字稿变了（原地改了字，或者发出去的那一版没了）：按现在这一版从头来。已经做完的段也
+                # 清零重发——这是保守做法：改的可能只是一个字，但逐段核对哪些段没变要按行比对、还得处理
+                # 段界挪动，容易漏行；清零最多多花几次调用（最多 6 段），不会漏掉哪一句。
                 lines = transcript_lines(connection, row["current_id"])
-                ranges, _more = split_parts(lines)
+                ranges, more = split_parts(lines)
                 restart = {
                     "version_id": row["current_id"],
                     "text_sha": text_sha(lines),
                     "parts": max(1, len(ranges)),
+                    "error": TRUNCATED if more else None,
                 }
         if restart is not None:
             if not lines:
@@ -579,10 +587,11 @@ class LooseMentionTask:
             if not self._restart(job, row, restart):
                 return True
             row = {**row, **restart, "parts_done": 0}
+        more = split_parts(lines)[1]
         ranges = layout(lines, int(row["parts"]))
         index = int(row["parts_done"])
         if index >= len(ranges):
-            self._write_part(job, row, [], len(ranges), None, advance=False)
+            self._write_part(job, row, [], len(ranges), None, advance=False, more=more)
             return True
         reply = self._call(build_user(lines, ranges, index))
         start, end = ranges[index]
@@ -592,11 +601,11 @@ class LooseMentionTask:
         if truncated:
             found = validate(items or [], part)
             if found:
-                self._write_part(job, row, found, len(ranges), "truncated_output")
+                self._write_part(job, row, found, len(ranges), TRUNCATED_OUTPUT, more=more)
                 return True
             smaller = finer(lines, len(ranges))
             if smaller is None:
-                self._write_part(job, row, [], len(ranges), "truncated")  # 已经 6 段：丢掉这一段
+                self._write_part(job, row, [], len(ranges), TRUNCATED)  # 已经 6 段：丢掉这一段
             else:
                 self._split(job, row, ranges, smaller)
             return True
@@ -605,7 +614,7 @@ class LooseMentionTask:
         found = validate(items, part)
         if items and not found:
             return False
-        self._write_part(job, row, found, len(ranges), None)
+        self._write_part(job, row, found, len(ranges), None, more=more)
         return True
 
     # ------------------------------------------------------------------ 写（都核对认领）
@@ -625,9 +634,10 @@ class LooseMentionTask:
                 connection.execute(
                     f"""UPDATE mention_extractions
                            SET version_id = ?, text_sha = ?, parts = ?, parts_done = 0, phrases_json = '[]',
-                               error = NULL, updated_at = ?
+                               error = ?, updated_at = ?
                          WHERE {self._GUARD} AND text_sha = ?""",
-                    (fresh["version_id"], fresh["text_sha"], fresh["parts"], utc_now(), job["meeting_id"],
+                    (fresh["version_id"], fresh["text_sha"], fresh["parts"], fresh["error"], utc_now(),
+                     job["meeting_id"],
                      job["claimed_at"], row["text_sha"]),
                 ).rowcount
             )
@@ -641,7 +651,11 @@ class LooseMentionTask:
         error: str | None,
         *,
         advance: bool = True,
+        more: bool = False,
     ) -> None:
+        """写一段的结果。error：这一段自己的问题（truncated_output、truncated），没有是 None。
+        truncated（有内容没发出去）一直留着；这一段做成了、自己没问题时，清掉以前记的 invalid、
+        bad_request 这类失败原因（truncated_output 留着）。more 是逐字稿超过 6 段（多的没发）。"""
         stamp = utc_now()
         with job["db"].transaction() as connection:
             current = connection.execute(
@@ -655,14 +669,23 @@ class LooseMentionTask:
             connection.execute(
                 f"""UPDATE mention_extractions
                        SET phrases_json = ?, parts = ?, parts_done = ?, state = ?, claimed_at = NULL,
-                           error = COALESCE(?, error), finished_at = ?, updated_at = ?
+                           error = CASE WHEN error = ? OR ? THEN ?
+                                        WHEN ? IS NOT NULL THEN ?
+                                        WHEN error = ? THEN error
+                                        ELSE NULL END,
+                           finished_at = ?, updated_at = ?
                      WHERE {self._GUARD}""",
                 (
                     json.dumps(merge(_phrases(current["phrases_json"]), found), ensure_ascii=False),
                     total,
                     min(done, total),
                     "done" if finished else "pending",
+                    TRUNCATED,
+                    1 if more or error == TRUNCATED else 0,
+                    TRUNCATED,
                     error,
+                    error,
+                    TRUNCATED_OUTPUT,
                     stamp if finished else None,
                     stamp,
                     job["meeting_id"],
@@ -909,12 +932,19 @@ def match_phrase(context: ProjectContext, phrase: dict[str, Any]) -> Match | Non
 
 
 def _version_of(phrase: dict[str, Any], match: Match) -> int | None:
-    when = phrase.get("when") or {}
-    if isinstance(when.get("version"), int) and not isinstance(when.get("version"), bool):
-        return int(when["version"])
+    """说法里的版本号：叫法带的（「报价单v3」）、原话里明说的（「第三版」「V3版」），或 AI 给的 when.version。
+    「上一版」「这一版」「这两版」不是版本号（见 file_mentions._ORAL_VERSION）。AI 同时给了 when.rel、原话里
+    却没有明说版本号时，when.version 不算：「上一版报价单」按 rel=previous 挑，不被一个猜出来的 1 盖掉。"""
     if match.version is not None:
         return match.version
-    return spoken_version(str(phrase.get("phrase") or "")) or spoken_version(str(phrase.get("core") or ""))
+    said = spoken_version(str(phrase.get("phrase") or "")) or spoken_version(str(phrase.get("core") or ""))
+    if said is not None:
+        return said
+    when = phrase.get("when") or {}
+    number = when.get("version")
+    if isinstance(number, int) and not isinstance(number, bool) and not when.get("rel"):
+        return int(number)
+    return None
 
 
 def resolve_phrases(
@@ -1088,7 +1118,8 @@ def _relation_rows(
                 "meeting_id": meeting_id,
                 "at_ms": hits[0]["at_ms"] if hits else None,
                 "quote": hits[0]["quote"] if hits else "",
-                "evidence": {"phrase": item["phrase"], "hits": hits, "via": item["via"]},
+                # hits 最多存 3 处；count 是这个词干一共被说到几次（线上的「等 N 处」用它）
+                "evidence": {"phrase": item["phrase"], "hits": hits, "via": item["via"], "count": item["phrases"]},
                 "file_id": file["id"],
                 "content_key": file.get("content_key"),
                 "root_id": file["root_id"],
@@ -1107,6 +1138,8 @@ def resolve_meeting(
     meeting_id = item["meeting_id"]
     project_id = item["project_id"]
     recall: dict[str, Any] | None = None
+    # 新的转写生成版本判定「留着」：把 version_id、text_sha、说法（重新定位过的）换到新版
+    adopt: dict[str, Any] | None = None
     with db.autocommit() as connection:
         context = contexts.get(project_id)
         if context is None:
@@ -1125,11 +1158,19 @@ def resolve_meeting(
                 sent_lines = transcript_lines(connection, item["version_id"])
                 sent_text = folded_text(sent_lines) if sent_lines else None
                 if recall_needed(sent_text, folded_text(new_lines), len(located), len(phrases)) and new_lines:
-                    ranges, _more = split_parts(new_lines)
+                    ranges, more = split_parts(new_lines)
                     recall = {
                         "version_id": item["current_id"],
                         "text_sha": text_sha(new_lines),
                         "parts": max(1, len(ranges)),
+                        "error": TRUNCATED if more else None,
+                    }
+                elif new_lines:
+                    # 留着：以后再存草稿、改字就从这一版比，不再拿最早发出去的那一版去比而误判重抽
+                    adopt = {
+                        "version_id": item["current_id"],
+                        "text_sha": text_sha(new_lines),
+                        "phrases_json": json.dumps(located, ensure_ascii=False),
                     }
             phrases = located
         literal = {
@@ -1154,10 +1195,10 @@ def resolve_meeting(
             connection.execute(
                 """UPDATE mention_extractions
                       SET state = 'pending', version_id = ?, text_sha = ?, parts = ?, parts_done = 0, attempts = 0,
-                          phrases_json = '[]', error = NULL, resolved_sig = NULL, claimed_at = NULL,
+                          phrases_json = '[]', error = ?, resolved_sig = NULL, claimed_at = NULL,
                           finished_at = NULL, updated_at = ?
                     WHERE meeting_id = ? AND state = 'done'""",
-                (recall["version_id"], recall["text_sha"], recall["parts"], utc_now(), meeting_id),
+                (recall["version_id"], recall["text_sha"], recall["parts"], recall["error"], utc_now(), meeting_id),
             )
             return "recalled"
         written = relations.upsert_system(connection, rows, stamp, since=since)
@@ -1172,9 +1213,16 @@ def resolve_meeting(
             )
             # 2d 下一轮按提示重挑：「上周那版报价单」把已有的线挪到对的版本，不多画一条
             connection.execute("UPDATE meeting_file_scan SET dirty = dirty + 1 WHERE meeting_id = ?", (meeting_id,))
-        connection.execute(
-            "UPDATE mention_extractions SET resolved_sig = ? WHERE meeting_id = ?", (item["sig"], meeting_id)
-        )
+        sig = item["sig"]
+        if adopt is not None:
+            connection.execute(
+                """UPDATE mention_extractions SET version_id = ?, text_sha = ?, phrases_json = ?, updated_at = ?
+                    WHERE meeting_id = ? AND state = 'done'""",
+                (adopt["version_id"], adopt["text_sha"], adopt["phrases_json"], utc_now(), meeting_id),
+            )
+            # 说法换成了重新定位过的，签名跟着重算（算出来的结果就是按它们写的，不用再来一轮）
+            sig = _sig_now(connection, meeting_id) or sig
+        connection.execute("UPDATE mention_extractions SET resolved_sig = ? WHERE meeting_id = ?", (sig, meeting_id))
     return "written" if written or hints_changed else "unchanged"
 
 

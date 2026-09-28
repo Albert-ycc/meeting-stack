@@ -530,6 +530,36 @@ def test_spoken_version_and_final_pick_the_file(tmp_path):
     assert v2 < v3
 
 
+def test_this_or_last_version_is_not_a_version_number(tmp_path):
+    spoken = file_mentions.spoken_version
+    for text in ("上一版报价单", "这一版", "下一版", "这两版", "那一版", "新一版", "前一版", "两版都看过", "改了三版"):
+        assert spoken(text) is None, text
+    assert (spoken("第一版"), spoken("三版报价单"), spoken("版本二"), spoken("报价单V3版"), spoken("3.0版")) == (
+        1, 3, 2, 3, 3
+    )
+    db, root_id = setup(tmp_path)
+    v1 = add_file(db, root_id, "报价单 v1.xlsx", day="2026-09-10")
+    v2 = add_file(db, root_id, "报价单 v2.xlsx", day="2026-09-20")
+    add_meeting(db, "prev", ago=1, project_id="p", segments=said("上一版报价单先发出去"))
+    add_meeting(db, "this", ago=1, project_id="p", segments=said("这一版报价单再看看"))
+    add_meeting(db, "both", ago=1, project_id="p", segments=said("报价单这两版都看过了"))
+    run(db)
+    # 不当成第 1 版、第 2 版：按会议日期挑开会前最新的
+    assert {meeting: mentions(db, meeting)["报价单"]["file_id"] for meeting in ("prev", "this", "both")} == {
+        "prev": v2, "this": v2, "both": v2
+    }
+    # L5 留下「上一版」的提示：按提示挑第二新的一份
+    now = utc_now()
+    db.execute(
+        """INSERT INTO mention_extractions(meeting_id, version_id, text_sha, state, hints_json, created_at, updated_at)
+           VALUES ('prev', 'v', 's', 'done', '{"报价单": {"rel": "previous"}}', ?, ?)""",
+        (now, now),
+    )
+    db.execute("UPDATE meeting_file_scan SET dirty = dirty + 1 WHERE meeting_id = 'prev'")
+    run(db)
+    assert mentions(db, "prev")["报价单"]["file_id"] == v1
+
+
 def test_hints_come_before_the_date_pick(tmp_path):
     db, root_id = setup(tmp_path)
     v1 = add_file(db, root_id, "报价单 v1.xlsx", day="2026-09-10")

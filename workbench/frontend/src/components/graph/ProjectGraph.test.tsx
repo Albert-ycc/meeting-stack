@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1740,6 +1740,71 @@ describe("ProjectGraph 放宽的提到（4b）", () => {
       }
       view.unmount();
     }
+  });
+
+  it("还在整理时 30 秒的刷新重取这场会的简报；离开那场会后不再重取", async () => {
+    const intervals: Array<() => void> = [];
+    const realSetInterval = window.setInterval.bind(window);
+    const spy = vi.spyOn(window, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+      if (timeout === 30_000 && typeof handler === "function") intervals.push(handler as () => void);
+      return realSetInterval(handler, timeout);
+    }) as typeof window.setInterval);
+    try {
+      const waiting: LinksState = { kind: "waiting", text: "会上换了叫法的文件还在整理", action: null };
+      const apiClient = looseClient({
+        meetingBrief: vi.fn(async (meetingId: string) => ({ ...brief(meetingId), files: [], files_state: "done", loose_state: waiting })),
+      });
+      render(
+        <WithFlags>
+          <Harness apiClient={apiClient} />
+        </WithFlags>,
+      );
+      await userEvent.click(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+      const panel = screen.getByRole("complementary", { name: "详情面板" });
+      await within(panel).findByText("会上换了叫法的文件还在整理");
+      const tick = () => act(() => intervals.forEach((handler) => handler()));
+      const briefCalls = () => vi.mocked(apiClient.meetingBrief).mock.calls.filter(([id]) => id === "a").length;
+      expect(intervals.length).toBeGreaterThan(0);
+
+      // 选着这场会：刷新顺带重取
+      let before = briefCalls();
+      await tick();
+      await waitFor(() => expect(briefCalls()).toBeGreaterThan(before));
+
+      // 离开这场会：刷新不再重取，回来时用的是缓存
+      fireEvent.keyDown(within(panel).getByRole("button", { name: "关闭面板" }), { key: "Escape" });
+      await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(""));
+      before = briefCalls();
+      await tick();
+      await tick();
+      await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ }));
+      await within(screen.getByRole("complementary", { name: "详情面板" })).findByText("会上换了叫法的文件还在整理");
+      expect(briefCalls()).toBe(before);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("「提到」线：文件详情读到之前［不是这份文件］按不了，读到后放宽行走 answerRelation", async () => {
+    let release: (value: GraphFileDetail) => void = () => {};
+    const apiClient = looseClient({
+      getGraphFile: vi.fn(() => new Promise<GraphFileDetail>((resolve) => (release = resolve))),
+    });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "连线：会上说『上周那版报价单』等 2 处 · 00:12:34" }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    const button = within(panel).getByRole("button", { name: "不是这份文件" });
+    expect(button).toBeDisabled();
+    await userEvent.click(button);
+    expect(apiClient.rejectFileMention).not.toHaveBeenCalled();
+    expect(apiClient.answerRelation).not.toHaveBeenCalled();
+
+    await act(async () => release(looseDetail()));
+    await waitFor(() => expect(within(panel).getByRole("button", { name: "不是这份文件" })).toBeEnabled());
+    await userEvent.click(within(panel).getByRole("button", { name: "不是这份文件" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(11, { answer: "no" });
+    expect(apiClient.rejectFileMention).not.toHaveBeenCalled();
   });
 
   it("旧后台：简报没有 loose_state、行里没有 relation_id 时照第二期显示", async () => {

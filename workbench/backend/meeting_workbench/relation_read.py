@@ -59,7 +59,8 @@ UNION ALL
 SELECT r.origin, r.id, r.meeting_id, r.project_id, r.stem_key,
        {LIVE_ID_SQL},
        COALESCE(json_extract(r.evidence_json, '$.phrase'), r.stem_key),
-       MAX(1, COALESCE(json_array_length(r.evidence_json, '$.hits'), 0)), r.at_ms,
+       MAX(1, COALESCE(json_extract(r.evidence_json, '$.count'), json_array_length(r.evidence_json, '$.hits'), 0)),
+       r.at_ms,
        CASE WHEN COALESCE(json_array_length(r.evidence_json, '$.hits'), 0) > 0
             THEN (SELECT json_group_array(json_extract(h.value, '$.at_ms'))
                     FROM json_each(r.evidence_json, '$.hits') h)
@@ -255,11 +256,15 @@ def rejected_file_mentions(connection: Any, file_id: int, limit: int = REJECTED_
     ]
 
 
+def _int_or(value: Any, fallback: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else fallback
+
+
 def rejected_loose_mentions(connection: Any, file_id: int, limit: int = REJECTED_LIST_LIMIT) -> list[dict[str, Any]]:
     """你标过「不是这份文件」的放宽提到（4b）：过了撤销期，文件面板上那一行的［撤销］发 restore。"""
     rows = connection.execute(
         f"""SELECT r.id AS relation_id, r.meeting_id, r.stem_key, r.at_ms, r.quote, r.evidence_json,
-                   m.title, m.recording_date, m.created_at
+                   json_extract(r.evidence_json, '$.count') AS said_count, m.title, m.recording_date, m.created_at
               FROM relations r
               JOIN meetings m ON m.id = r.meeting_id AND m.project_id = r.project_id
              WHERE r.kind = 'mention' AND r.status = 'rejected' AND r.project_id IN ({_FILE_PROJECT})
@@ -280,7 +285,8 @@ def rejected_loose_mentions(connection: Any, file_id: int, limit: int = REJECTED
                 "needle": evidence.get("phrase") or row["stem_key"],
                 "phrase": evidence.get("phrase") or row["stem_key"],
                 "hint_via": evidence.get("via") or "stem",
-                "count": max(1, len(hits)),
+                # evidence 里的 count 是一共说到几次（hits 最多存 3 处）；旧行没有 count 时按 hits 算
+                "count": max(1, _int_or(row["said_count"], len(hits))),
                 "first_ms": row["at_ms"],
                 "anchors_json": json.dumps([hit.get("at_ms") for hit in hits if isinstance(hit, dict)]),
                 "minutes_count": 0,

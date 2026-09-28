@@ -158,6 +158,54 @@ def test_too_long_meeting_is_sent_in_six_parts_and_marked_truncated_only_in_the_
     row = extraction(db)
     assert len(chat.calls) == 6 and row["parts"] == 6 and row["parts_done"] == 6 and row["state"] == "done"
     assert chat.calls[5]["user"].startswith("转写稿（第 6/6 段）")
+    assert row["error"] == "truncated"
+
+
+def test_truncated_survives_a_restart_a_recall_and_a_failed_try(tmp_path):
+    db, _root = fm_setup(tmp_path)
+    segments = [(index * 5000, f"{FILLER}{'很长的话' * 140}{index}") for index in range(160)]
+    add_meeting(db, "m", ago=1, project_id="p", segments=segments)
+    task = LooseMentionTask(settings(tmp_path), chat=FakeChat("不是 JSON"))
+    task.seed(db, NOW)
+    assert extraction(db)["error"] == "truncated"
+    # 一次不合格记 invalid；之后这一段做成了，回到 truncated（多的那些还是没发）
+    job = task.claim(db, NOW)
+    assert task.run(job) is False
+    task.fail(db, job, "invalid")
+    assert extraction(db)["error"] == "invalid"
+    task._chat = FakeChat({"refs": []})
+    assert task.run(task.claim(db, NOW)) is True
+    assert extraction(db)["error"] == "truncated"
+    # 抽到一半原地改了字：从头来，照样记 truncated
+    db.execute("UPDATE segments SET text = text || '改' WHERE ordinal = 0")
+    assert task.run(task.claim(db, NOW)) is True
+    row = extraction(db)
+    assert row["parts_done"] == 1 and row["error"] == "truncated"
+    # 做完以后重新转写成完全不同的长稿：清零重来，也记 truncated
+    extract(db, task)
+    assert extraction(db)["state"] == "done"
+    new_version(db, "m", "generated", [(index * 5000, f"完全不同{'别的话题' * 140}{index}") for index in range(160)])
+    assert resolve(db)["recalled"] == 1
+    row = extraction(db)
+    assert (row["state"], row["error"]) == ("pending", "truncated")
+
+
+def test_a_part_done_later_clears_the_old_invalid(tmp_path):
+    db, _root = world(tmp_path, "上周那版报价单再看一下")
+    task = LooseMentionTask(settings(tmp_path), chat=FakeChat("不是 JSON"))
+    task.seed(db, NOW)
+    job = task.claim(db, NOW)
+    assert task.run(job) is False
+    task.fail(db, job, "invalid")
+    assert extraction(db)["error"] == "invalid"
+    task._chat = FakeChat({"refs": []})
+    extract(db, task)
+    row = extraction(db)
+    assert (row["state"], row["error"], row["attempts"]) == ("done", None, 1)
+    # truncated_output 是这一段自己的记号：留着
+    db.execute("UPDATE mention_extractions SET state = 'pending', parts_done = 0, error = 'truncated_output'")
+    extract(db, task)
+    assert extraction(db)["error"] == "truncated_output"
 
 
 # ---------------------------------------------------------------------- 截断
@@ -393,6 +441,92 @@ def test_drafts_never_reset_and_close_retranscription_is_kept(tmp_path):
     assert (row["state"], row["parts_done"], row["attempts"], row["phrases_json"]) == ("pending", 0, 0, "[]")
 
 
+def unique_lines(count, *, offset=0, special=None):
+    """每行字都不一样的逐字稿（4 字片段互不重叠），好算 Jaccard；special 放在第 0 行。"""
+    lines = [(index * 60_000, "".join(chr(0x4E00 + offset + index * 40 + k) for k in range(30)))
+             for index in range(count)]
+    if special:
+        lines[0] = (0, special)
+    return lines
+
+
+def test_kept_retranscription_moves_the_row_to_the_new_version(tmp_path):
+    db, root_id = fm_setup(tmp_path)
+    first = unique_lines(30, special="上周那版报价单再看一下")
+    add_meeting(db, "m", ago=1, project_id="p", segments=first)
+    add_file(db, root_id, "报价单.xlsx")
+    done_with(db, "m", [phrase(0, "上周那版报价单再看一下", "报价单", rel="last_week")])
+    resolve(db)
+    sent_id = extraction(db)["version_id"]
+
+    # 重新转写，改了两行：留着，version_id、text_sha 换到新版
+    second = list(first)
+    second[10], second[11] = unique_lines(2, offset=5000)
+    generated = new_version(db, "m", "generated", second)
+    assert resolve(db)["recalled"] == 0
+    row = extraction(db)
+    with db.autocommit() as connection:
+        sha = loose_mentions.text_sha(loose_mentions.transcript_lines(connection, generated))
+    assert (row["version_id"], row["text_sha"], row["state"]) == (generated, sha, "done") and generated != sent_id
+    assert json.loads(row["phrases_json"])[0]["at_ms"] == 0
+    # 签名跟着重算：下一轮不再重做
+    assert resolve(db)["tried"] == 0
+
+    # 再存草稿改另外两行：和新版比很近，和最早发出去那一版已经差得多，也不重抽
+    third = list(second)
+    third[20], third[21] = unique_lines(2, offset=9000)
+    fold = lambda lines: "".join(text for _ms, text in lines)  # noqa: E731
+    assert loose_mentions.jaccard(fold(first), fold(third)) < 0.85 <= loose_mentions.jaccard(fold(second), fold(third))
+    new_version(db, "m", "draft", third)
+    assert resolve(db)["recalled"] == 0 and extraction(db)["state"] == "done"
+    assert [row["status"] for row in loose_rows(db)] == ["shown"]
+
+
+def test_seven_mentions_read_as_seven_places(tmp_path):
+    from meeting_workbench import graph, relation_read
+
+    from .test_graph import TODAY
+
+    said = [f"能耗看板那个PPT再过一遍{index}" for index in range(7)]
+    db, root_id = world(tmp_path, *said)
+    plan = add_file(db, root_id, "能耗看板方案.pptx")
+    done_with(db, "m", [
+        phrase(at(index), text, "能耗看板", phrase_text="能耗看板那个PPT") for index, text in enumerate(said)
+    ])
+    resolve(db)
+    [row] = loose_rows(db)
+    evidence = json.loads(row["evidence_json"])
+    assert len(evidence["hits"]) == 3 and evidence["count"] == 7
+    with db.autocommit() as connection:
+        body = graph.project_graph(connection, "p", today=TODAY)
+    [edge] = [edge for edge in body["edges"] if edge["kind"] == "mentioned"]
+    assert edge["label"] == "会上说『能耗看板那个PPT』等 7 处 · 00:20:00"
+    db.execute("UPDATE relations SET status = 'rejected' WHERE id = ?", (row["id"],))
+    with db.autocommit() as connection:
+        [rejected] = relation_read.rejected_loose_mentions(connection, plan)
+    assert rejected["count"] == 7
+
+
+def test_this_or_last_version_is_not_version_one(tmp_path):
+    db, root_id = fm_setup(tmp_path)
+    add_file(db, root_id, "报价单 v1.xlsx", day="2026-09-10")
+    add_file(db, root_id, "报价单 v2.xlsx", day="2026-09-15")
+    add_file(db, root_id, "报价单 v3.xlsx", day="2026-09-20")
+
+    def picked(*args, **kwargs):
+        return matched(db, phrase(1, *args, **kwargs))["报价单"][0]
+
+    assert picked("上一版报价单", "报价单", rel="previous") == "报价单 v2.xlsx"
+    # AI 同时给了 rel 和一个原话里没有的版本号：按 rel
+    assert picked("上一版报价单", "报价单", rel="previous", version=1) == "报价单 v2.xlsx"
+    assert picked("这一版报价单", "报价单") == "报价单 v3.xlsx"
+    assert picked("下一版报价单", "报价单") == "报价单 v3.xlsx"
+    assert picked("这两版报价单", "报价单") == "报价单 v3.xlsx"
+    # 明说了第几版的照认
+    assert picked("第一版报价单", "报价单") == "报价单 v1.xlsx"
+    assert picked("那个报价单", "报价单", version=2) == "报价单 v2.xlsx"
+
+
 # ---------------------------------------------------------------------- T1 到 T4、kind、在组里挑
 
 
@@ -518,6 +652,7 @@ def test_l5_writes_a_loose_row_when_there_is_no_literal_one(tmp_path):
         "phrase": "上周那版报价单",
         "via": "time_hint",
         "hits": [{"at_ms": at(0), "quote": "上周那版报价单再看一下"}, {"at_ms": at(1), "quote": "报价单还要改"}],
+        "count": 2,
     }
     assert rev(db) == graph_before + 1
 
