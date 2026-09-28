@@ -158,12 +158,29 @@ describe("交付物小签的在问的产出（4e）", () => {
       }),
       task("t2", 300_000, { asks: [{ relation_id: 62, file_id: 931, name: "排期.xlsx", ext: "xlsx" }] }),
     ];
-    const layout = layoutMeetingFocus(focusPayload({ tasks }));
+    const layout = layoutMeetingFocus(focusPayload({ tasks }), BAR_W, { asks: true });
     const first = layout.items.find((item) => item.id === "task:t1")!;
     expect(first.tag).toMatchObject({ fileId: 930, name: "方案.key", ext: "key", more: 2, ask: true });
     expect(first.tag!.label.startsWith("?")).toBe(true);
     const second = layout.items.find((item) => item.id === "task:t2")!;
     expect(second.tag).toMatchObject({ fileId: 931, more: 0, ask: true });
+  });
+
+  it("没有 linksFlags（旧后台）时不画在问的那一份，小签照旧是已登记的", () => {
+    const tasks = [
+      task("t1", 100_000, {
+        deliverables: [file(1, "旧稿.pdf"), file(2, "定稿.pdf")],
+        asks: [{ relation_id: 61, file_id: 930, name: "方案.key", ext: "key" }],
+      }),
+    ];
+    for (const layout of [
+      layoutMeetingFocus(focusPayload({ tasks })),
+      layoutMeetingFocus(focusPayload({ tasks }), BAR_W, { asks: false }),
+    ]) {
+      const tag = layout.items.find((item) => item.id === "task:t1")!.tag!;
+      expect(tag).toMatchObject({ fileId: 2, name: "定稿.pdf", more: 1 });
+      expect(tag.ask).toBeUndefined();
+    }
   });
 
   it("没有 asks（旧后台、样本）时小签不变", () => {

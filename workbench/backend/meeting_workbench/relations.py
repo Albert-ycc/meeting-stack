@@ -77,6 +77,8 @@ WRONG_PICK = "只能换成这个项目文件夹里同名的另一份文件"
 FILE_GONE = "这份文件已经不在了"
 # 4e：产出［是］时任务已经取消或过期（L4 还没来得及收回）
 TASK_CANCELLED = "这条任务已经取消了，先恢复任务再登记"
+# 4e：产出［是］时任务退回了待确认（L4 还没来得及收回）
+TASK_UNCONFIRMED = "这条任务还没确认，先确认任务再登记"
 # 4d：相关材料栏［不相关］的错误
 MEETING_GONE = "会议不存在"
 NOT_INDEXED = "这份文件不在索引里了"
@@ -405,10 +407,19 @@ def answer(connection: Any, relation_id: int, body: dict[str, Any], now: str) ->
         task = connection.execute("SELECT status FROM tasks WHERE id = ?", (row["task_id"],)).fetchone()
         if task is not None and task["status"] in ("cancelled", "expired"):
             raise RelationError(409, TASK_CANCELLED)
+        if task is not None and task["status"] == "pending_confirm":
+            raise RelationError(409, TASK_UNCONFIRMED)
         live = live_file(connection, row)
         if live is None:
             raise RelationError(422, FILE_GONE)
-        content_key = row["content_key"] or live.get("content_key")
+        # 按路径问的（p:<root_id>:<rel_path>，当时算不出新鲜的内容标识）：文件行上的旧标识不带进交付物，
+        # 除非它现在已经新鲜了
+        fresh_now = (
+            live.get("content_key")
+            and live.get("content_size") == live.get("size")
+            and live.get("content_mtime_ns") == live.get("mtime_ns")
+        )
+        content_key = row["content_key"] or (live["content_key"] if fresh_now else None)
         deliverable_id = _task_deliverable(connection, row["task_id"], live, row["content_key"])
         extra["created_deliverable"] = deliverable_id is None
         if deliverable_id is None:

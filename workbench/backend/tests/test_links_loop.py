@@ -471,6 +471,23 @@ def test_h2_stops_within_a_batch_once_transcribing_starts(tmp_path):
     assert w.db.query_one("SELECT affects_hash FROM decision_scan WHERE meeting_id = 'm2'")["affects_hash"] is None
 
 
+def test_h2_reports_budget_not_busy_when_the_round_is_full(tmp_path, monkeypatch):
+    """H2 到了每轮的条数停下时，健康信息里写 budget（不是 busy）；下一轮接着把剩下的会配完。"""
+    monkeypatch.setattr(affects, "ROUND_DECISIONS", 1)
+    w = _e4_world(tmp_path)
+    w.meeting(w.db, "m1", "总价下调 5%", day=NOW - timedelta(days=1))
+    w.meeting(w.db, "m2", "驻场改成 2 人", day=NOW - timedelta(days=2))
+    w.material(w.db, w.root, "报价/报价单.xlsx", "总价下调 3%")
+    w.material(w.db, w.root, "驻场/排班.xlsx", "驻场 3 人")
+    runner = worker(w.db, clock=Clock(), settings=_e4_settings())
+    assert runner.run_round()["phases"]["affects"] == "budget"
+    assert runner.snapshot()["phases"]["affects"] == "budget"
+    assert w.db.query_one("SELECT affects_hash FROM decision_scan WHERE meeting_id = 'm2'")["affects_hash"] is None
+    runner.moment["value"] = NOW + timedelta(minutes=1)
+    assert runner.run_round()["phases"]["affects"] == "done"
+    assert w.db.query_one("SELECT COUNT(*) AS n FROM relations WHERE kind = 'affects'")["n"] == 2
+
+
 # ---------------------------------------------------------------------- 节奏和打开过的会
 
 

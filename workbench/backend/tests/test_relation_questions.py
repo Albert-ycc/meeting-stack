@@ -220,7 +220,7 @@ def test_requirement_card_stale_files_in_six_statements(tmp_path):
     entry = body["meetings"][0]["decisions"][0]
     (stale,) = entry["stale_files"]
     # 需求卡用文件这一边的说法，决议本身就是那一行
-    assert stale["text"] == "报价单 v3 之后没改过，可能过时"
+    assert stale["text"] == "『报价单 v3』之后没改过，可能过时"
     assert stale["kind"] == "affects" and stale["file"]["id"] == w.quote_id and stale["answers"] == ["updated", "no"]
     reads = count_reads(w.db, lambda connection: decisions.requirement_log(connection, "r", settings=live))
     assert reads == 6

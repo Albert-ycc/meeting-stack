@@ -136,10 +136,14 @@ def names(db) -> list[str]:
         ("5 个点", "percent", 5, "", None, None),
         ("12万", "money", 120_000, "", None, None),
         ("3000 元", "money", 3000, "", None, None),
-        ("1.2k", "money", 1200, "", None, None),
+        ("报价 1.2k", "money", 1200, "", None, None),
+        ("¥1.2k", "money", 1200, "", None, None),
+        ("3w 块", "money", 30_000, "", None, None),
         ("两万块", "money", 20_000, "", None, None),
         ("9月30日", "date", None, "", 9, 30),
         ("9/30", "date", None, "", 9, 30),
+        ("2025/9/30", "date", None, "", 9, 30),
+        ("2025年9月30日", "date", None, "", 9, 30),
         ("9.30号", "date", None, "", 9, 30),
         ("十月底", "month", None, "", 10, None),
         ("10 月份", "month", None, "", 10, None),
@@ -159,6 +163,17 @@ def test_values(text, kind, number, unit, month, day):
 
 def test_values_skip_versions_and_single_digits():
     assert affects.values("报价单 v3 第 2 稿") == []
+    # k、w 后面跟字母、或者前后都不像说钱的，不是金额
+    assert affects.values("5 kg") == []
+    assert affects.values("3w 用户") == []
+    assert [value.kind for value in affects.values("1.2k")] == ["number"]
+    # 月后面的中文数字不是日；阿拉伯数字后面跟单位的也不是
+    assert [(value.kind, value.month, value.day) for value in affects.values("12 月两个版本")] == [
+        ("month", 12, None),
+        ("count", None, None),
+    ]
+    assert [value.kind for value in affects.values("12月3人到场")] == ["month", "count"]
+    assert [(value.kind, value.month, value.day) for value in affects.values("十月十五日上线")] == [("date", 10, 15)]
     assert affects.cn_number("三千五百") == 3500 and affects.cn_number("十五") == 15 and affects.cn_number("两万") == 20_000
 
 
@@ -170,6 +185,11 @@ def test_values_skip_versions_and_single_digits():
         ("上线时间定在 10月15日", ["上线时间"]),
         ("驻场改成 2 人", ["驻场"]),
         ("预算控制在12万以内", ["预算"]),
+        # 在「在」「按」「由」「从」处截断
+        ("总价在原基础上下调 5%", ["总价"]),
+        ("报价单总价在原基础上下调 5%，含税", ["报价单总价"]),
+        ("驻场人员由 3 人改成 2 人", ["驻场人员"]),
+        ("驻场从 3 人调到 2 人", ["驻场"]),
     ],
 )
 def test_decision_subject_probes(text, subject):
@@ -351,6 +371,139 @@ def test_busy_stops_and_fts_rebuild_skips(tmp_path):
     busy = LinksWorker(w.db, settings, now=lambda: NOW, busy=lambda: True)
     assert busy.run_round()["phases"]["affects"] == "busy"
     assert open_rows(w.db) == []
+
+
+def test_decided_values_keep_only_the_new_value():
+    assert [(value.kind, value.number) for value in affects.decided_values("驻场人员由 3 人改成 2 人")] == [("count", 2)]
+    assert [value.number for value in affects.decided_values("总价从 3% 调到 5%")] == [5]
+    # 没有「由」「从」的两个数都是决议自己的
+    assert len(affects.decided_values("甲方 3 人、乙方 2 人")) == 2
+
+
+def test_from_old_value_to_new_value_marks_the_old_file(tmp_path):
+    w = world(tmp_path)
+    meeting(w.db, "m", "驻场人员由 3 人改成 2 人")
+    material(w.db, w.root, "驻场/驻场安排.docx", "驻场人员 3 人")
+    run(w.db)
+    assert names(w.db) == ["驻场安排.docx"]
+
+
+@pytest.mark.parametrize(
+    ("decision", "passage"),
+    [
+        ("总价在原基础上下调 5%，含税", "总价在原基础上下调 3%，含税"),
+        ("甲方总价下调 5%", "甲方总价下调 3%"),
+    ],
+)
+def test_near_copy_with_the_old_value_is_still_marked(tmp_path, decision, passage):
+    """字面和决议几乎一样、只是数不同的一段不是纪要副本，正是要标的旧文件。"""
+    w = world(tmp_path)
+    meeting(w.db, "m", decision)
+    material(w.db, w.root, "报价/报价单 v3.xlsx", passage)
+    run(w.db)
+    assert names(w.db) == ["报价单 v3.xlsx"]
+
+
+def test_real_copy_with_the_decided_value_is_not_marked(tmp_path):
+    w = world(tmp_path)
+    meeting(w.db, "m", "总价在原基础上下调 5%，含税")
+    # 导出的纪要：一段就是这条决议（写着 5%），另一段是旧稿的说法
+    material(w.db, w.root, "纪要/周会纪要.docx", "决议：总价在原基础上下调 5%，含税", "旧稿里总价下调 3%")
+    run(w.db)
+    assert open_rows(w.db) == []
+
+
+def _count_statements(db, monkeypatch) -> list[str]:
+    seen: list[str] = []
+    connect = db.connect
+
+    def traced():
+        connection = connect()
+        # 全文索引自己的内部语句（-- 开头）不算
+        connection.set_trace_callback(lambda statement: None if statement.startswith("--") else seen.append(statement))
+        return connection
+
+    monkeypatch.setattr(db, "connect", traced)
+    return seen
+
+
+def _many_files(db, root_id: int, files: int, chunks: int, hit: str) -> None:
+    filler = "这是一段很长的说明文字，用来凑长度。" * 6
+    mtime = ns(at(-20))
+    with db.transaction() as connection:
+        for index in range(files):
+            key = f"q2:many{index:028d}"
+            connection.execute(
+                """INSERT INTO material_contents(content_key, layer, state, chars, chunks, created_at, updated_at)
+                   VALUES (?, 'text', 'done', 100, ?, 'x', 'x')""",
+                (key, chunks),
+            )
+            connection.executemany(
+                "INSERT INTO material_chunks(content_key, ordinal, loc, start_ms, text) VALUES (?, ?, '', NULL, ?)",
+                [(key, ordinal, hit if ordinal == chunks - 1 else f"{filler} 第{ordinal}段") for ordinal in range(chunks)],
+            )
+            connection.execute(
+                """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns,
+                       zone, seen_at, content_key, content_size, content_mtime_ns)
+                   VALUES (?, ?, '资料', ?, ?, ?, 'docx', 100, ?, 'normal', 'x', ?, 100, ?)""",
+                (root_id, f"资料/文件{index}.docx", f"文件{index}.docx", f"文件{index}", f"文件{index}", mtime, key,
+                 mtime),
+            )
+
+
+def test_record_check_reads_only_the_hit_passages(tmp_path, monkeypatch):
+    """纪要副本只看找到主语的那几段，不回表读全文：语句数和文件有多少段无关。"""
+    w = world(tmp_path)
+    meeting(w.db, "m", "项目预算控制在 12万以内")
+    _many_files(w.db, w.root, 5, 200, "项目预算 15万，其余照旧")
+    seen = _count_statements(w.db, monkeypatch)
+    run(w.db)
+    assert len(names(w.db)) == 3
+    assert not any("SELECT text FROM material_chunks" in statement for statement in seen)
+    assert len(seen) < 45
+
+
+def test_too_many_files_returns_early(tmp_path, monkeypatch):
+    """主语太泛（10 份以上）时找到第 10 份就停，不做副本判断；300 份文件每份 200 段也很快。"""
+    import time
+
+    w = world(tmp_path)
+    meeting(w.db, "m", "项目预算控制在 12万以内")
+    _many_files(w.db, w.root, 60, 100, "项目预算 15万，其余照旧")
+    seen = _count_statements(w.db, monkeypatch)
+    started = time.monotonic()
+    result = run(w.db)
+    assert time.monotonic() - started < 1.0
+    assert result["written"] == 0 and open_rows(w.db) == []
+    assert not any("SELECT text FROM material_chunks" in statement for statement in seen)
+
+
+def test_round_stops_as_budget_or_busy_and_keeps_the_ledger_whole(tmp_path):
+    w = world(tmp_path)
+    meeting(w.db, "m1", "总价下调 5%", day=at(-1))
+    meeting(w.db, "m2", "驻场改成 2 人", "排期改成 3 周", day=at(-2))
+    material(w.db, w.root, "报价/报价单.xlsx", "总价下调 3%")
+    material(w.db, w.root, "驻场/排班.xlsx", "驻场 3 人，排期 4 周")
+
+    def ledger(meeting_id):
+        return w.db.query_one("SELECT affects_hash FROM decision_scan WHERE meeting_id = ?", (meeting_id,))["affects_hash"]
+
+    # 时间：第一场会不看时间，一定配完；第二场会一开始就没时间了，什么都不写、台账不动
+    ticks = iter(range(0, 1000, 10))
+    result = affects.match_due(w.db, lambda: False, 5.0, now=NOW, since=stamp(NOW), clock=lambda: next(ticks))
+    assert result["stopped"] == "budget" and result["tried"] == 1
+    assert names(w.db) == ["报价单.xlsx"] and ledger("m1") is not None and ledger("m2") is None
+    # 条数：第二场会要配 2 条，这一轮只剩 1 条，停在它前面（不白做半场）
+    w.db.execute("UPDATE decision_scan SET affects_hash = NULL WHERE meeting_id = 'm1'")
+    result = run(w.db, max_decisions=2)
+    assert result["stopped"] == "budget" and result["tried"] == 1 and ledger("m2") is None
+    # 忙：回 busy，不是 budget
+    assert run(w.db, busy=lambda: True)["stopped"] == "busy"
+    assert ledger("m2") is None
+    # 下一轮它排第一，整场配完（第一场会不看条数），台账跟上
+    result = run(w.db, max_decisions=1)
+    assert result["stopped"] is None and result["tried"] == 2 and ledger("m2") is not None
+    assert sorted(set(names(w.db))) == sorted({"排班.xlsx", "报价单.xlsx"}) and len(open_rows(w.db)) == 3
 
 
 # ---------------------------------------------------------------------- L3

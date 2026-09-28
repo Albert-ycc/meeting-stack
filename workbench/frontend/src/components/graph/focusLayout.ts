@@ -130,11 +130,12 @@ function extOf(name: string) {
  * 任务的交付物里能打开的文件（有 file_id、没找不到）：画最近标的那一个，其余记个数。
  * 4e：有在问的产出（asks）时先显示在问的那一份（ask 为真），「+N」数已登记的。
  */
-export function deliverableTag(task: FocusTask): Omit<FocusTag, "box" | "label"> | undefined {
+export function deliverableTag(task: FocusTask, withAsks = false): Omit<FocusTag, "box" | "label"> | undefined {
   const files = (task.deliverables ?? []).filter(
     (item) => item.kind === "file" && typeof item.file_id === "number" && !item.gone,
   );
-  const asking = (task.asks ?? [])[0];
+  // 在问的那一份只在新后台画（useLinksFlags() 不为 null，和「1 个文件可能过时」一样）
+  const asking = withAsks ? (task.asks ?? [])[0] : undefined;
   if (asking) {
     const name = asking.name || "文件";
     return { fileId: asking.file_id, name, ext: asking.ext || extOf(name), more: files.length, ask: true };
@@ -260,7 +261,8 @@ export function decisionNodeId(decision: { id?: string | null }, index: number):
 }
 
 /** 决议挑时间最早的 4 个（有时间点的在前）；任务先挑没做完的，再挑有时间点的，最多 6 个 */
-export function layoutMeetingFocus(focus: MeetingFocus, barW = BAR_W): FocusLayout {
+/** options.asks：画不画在问的交付物（调用方按 useLinksFlags() 给；旧后台为假） */
+export function layoutMeetingFocus(focus: MeetingFocus, barW = BAR_W, options: { asks?: boolean } = {}): FocusLayout {
   const decisions: Pending[] = focus.decisions.map((item, index) => ({
     id: decisionNodeId(item, index),
     kind: "decision",
@@ -273,7 +275,7 @@ export function layoutMeetingFocus(focus: MeetingFocus, barW = BAR_W): FocusLayo
     text: task.title,
     atMs: task.anchor_ms,
     status: task.status,
-    tag: deliverableTag(task),
+    tag: deliverableTag(task, Boolean(options.asks)),
   }));
   const byTime = (a: Pending, b: Pending) =>
     (a.atMs === null ? 1 : 0) - (b.atMs === null ? 1 : 0) || (a.atMs ?? 0) - (b.atMs ?? 0);

@@ -1279,7 +1279,7 @@ def requirement_log(
     groups.sort(key=lambda group: group["_order"], reverse=True)
     for group in groups:
         group.pop("_order")
-    # 4e：在问的可能过时，「报价单 v3 之后没改过，可能过时」，一条语句
+    # 4e：在问的可能过时，「『报价单 v3』之后没改过，可能过时」，一条语句
     entries = [entry for group in groups for entry in (*group["decisions"], *group["unplaced"]) if entry["id"]]
     if live and entries:
         from .relation_read import decision_questions

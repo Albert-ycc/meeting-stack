@@ -13,6 +13,7 @@ import {
 } from "react";
 
 import { formatTime } from "../../format";
+import { useLinksFlags } from "../links/LinksFlagsContext";
 import { BAR_H, CARD_H, layoutMeetingFocus, msToX, xToMs, type FocusItem } from "./focusLayout";
 import type { MeetingFocus } from "./graphTypes";
 import { meetingDateLabel } from "./layout";
@@ -86,9 +87,11 @@ export function MeetingFocusView({
   // 录音条按视口宽度排，按 40px 取整，拖窗口时不每一帧重排
   const [viewWidth, setViewWidth] = useState(1000);
   const barW = Math.max(MIN_BAR_W, Math.floor((viewWidth - SIDE_PAD * 2) / 40) * 40);
+  // 4e：在问的交付物和「1 个文件可能过时」一样，只在新后台（有 linksFlags）画
+  const withAsks = useLinksFlags() !== null;
   const layout = useMemo(
-    () => (focus && focus.meeting.id === meetingId ? layoutMeetingFocus(focus, barW) : null),
-    [barW, focus, meetingId],
+    () => (focus && focus.meeting.id === meetingId ? layoutMeetingFocus(focus, barW, { asks: withAsks }) : null),
+    [barW, focus, meetingId, withAsks],
   );
   const audio = focus?.meeting.audio_url ?? null;
   const title = focus?.meeting.title ?? "";

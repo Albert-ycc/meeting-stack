@@ -1620,6 +1620,33 @@ describe("ProjectGraph 关系图里的文件（3g）", () => {
     expect(onOpenPreview).toHaveBeenCalledTimes(2);
     expect(within(panel).getByText(/找不到这个文件了/)).toBeInTheDocument();
   });
+
+  it("4e：在问的交付物小签只在新后台（有 linksFlags）画，旧后台照旧画已登记的", async () => {
+    const deliverables = [
+      { id: 1, kind: "file", url: "/材料/云图AI/交付/定稿.pdf", title: "", file_id: 71, name: "定稿.pdf", gone: false },
+    ];
+    const asks = [{ relation_id: 61, file_id: 930, name: "方案.key", ext: "key" }];
+    const focus = focusPayload({ tasks: [focusTask("t1", 300_000, { deliverables, asks })] });
+    const onOpenPreview = vi.fn();
+    const old = render(<Harness apiClient={focusClient({ graphMeetingFocus: vi.fn(async () => focus) })} handlers={{ onOpenPreview }} />);
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    let view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    expect(await within(view).findByRole("button", { name: "交付物 · 你标的：定稿.pdf，点了预览" })).toBeInTheDocument();
+    expect(within(view).queryByRole("button", { name: /^交付物？/ })).not.toBeInTheDocument();
+    old.unmount();
+
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: true, llmConfigured: true }}>
+        <Harness apiClient={focusClient({ graphMeetingFocus: vi.fn(async () => focus) })} handlers={{ onOpenPreview }} />
+      </LinksFlagsContext.Provider>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    await userEvent.click(
+      await within(view).findByRole("button", { name: "交付物？：方案.key，等你认交付物，另有 1 个已登记，点了预览" }),
+    );
+    expect(onOpenPreview).toHaveBeenCalledWith(930);
+  });
 });
 
 // ------------------------------------------------------------------ 第四期 4b：放宽的提到（会上换了叫法的文件）

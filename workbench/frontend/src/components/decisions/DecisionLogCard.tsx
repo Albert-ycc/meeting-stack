@@ -36,7 +36,7 @@ interface DecisionLogCardProps {
   requirementId: string;
   canWrite: boolean;
   onOpenMeeting: (meetingId: string, seekMs?: number) => void;
-  /** 4e：「报价单 v3 之后没改过，可能过时」的文件名点了打开预览抽屉 */
+  /** 4e：「『报价单 v3』之后没改过，可能过时」的文件名点了打开预览抽屉 */
   onOpenPreview?: (fileId: number) => void;
   reloadKey?: number | string;
 }

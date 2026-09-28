@@ -222,7 +222,7 @@ describe("第四期界面的用词", () => {
       "是这条任务的交付物吗？",
       "可能过时：9/21 决议『总价下调 5%』",
       "第 2 页：『…总价在原基础上下调 3%…』",
-      "报价单 v3 之后没改过，可能过时",
+      "『报价单 v3』之后没改过，可能过时",
       "1 个文件可能过时",
       "交付物？：能耗看板方案.key，等你认交付物",
       "是",
@@ -235,9 +235,14 @@ describe("第四期界面的用词", () => {
       "已记下：和这条决议不相关",
       "已撤销",
       "这条任务已经取消了，先恢复任务再登记",
+      "这条任务还没确认，先确认任务再登记",
       "后台还是旧版本，重启声档后再试",
     ];
     expect(copy.flatMap(violations)).toEqual([]);
+    // 『x/』里的文件夹只写最后一层，中间没有「/」
+    const folders = copy.flatMap((text) => [...text.matchAll(/『([^』]*)\/』/g)].map((match) => match[1]));
+    expect(folders.length).toBeGreaterThan(0);
+    expect(folders.filter((folder) => folder.includes("/"))).toEqual([]);
     const files = Object.keys(SOURCES);
     for (const name of ["TaskDrawer.tsx", "MeetingFocusView.tsx", "focusLayout.ts", "RelationQuestion.tsx", "FocusPanel.tsx"]) {
       expect(files.some((file) => file.endsWith(name))).toBe(true);

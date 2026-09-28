@@ -5,18 +5,21 @@
 relations.quote 是决议原文。
 
 - 纯函数：values(text) 认六种数值（百分数、金额、日期、月份、数量、普通数，中文数字到「千」）；
-  decision_subject(text) 取主语（紧挨着第一个数值前面的那段，加上决议里出现的已确认词条，最多 3 个）；
-  cancel_objects(text) 取「取消 X」「X 换成…」里的 X。项目名、它的也叫和根目录名永远不当主语。
+  decided_values(text) 是决议自己定下的值（「由 A 改成 B」只留 B）；decision_subject(text) 取主语
+  （紧挨着第一个数值前面的那段，在「在」「按」「由」「从」处截断，加上决议里出现的已确认词条，最多
+  3 个）；cancel_objects(text) 取「取消 X」「X 换成…」里的 X。项目名、它的也叫和根目录名永远不当主语。
 - 找片段：3 个字以上用 material_chunks_fts MATCH；2 个字的只在本项目片段不超过 10 万段时用 instr，
   一场会的 2 字主语合成一条语句一起查。
 - 两条规则：数值规则（片段里有主语，主语前后 40 个字以内有同类、值不同的数；决议自己的值已经在
   里面就跳过）；取消规则（片段里原样有 X）。
 - 文件：活的、normal 区、内容标识新鲜、不是录音和会议材料、修改时间早于决议且在一年以内、不是这条
-  决议的记录（没有哪一段包含决议 60% 以上的 4 字片段）。
+  决议的记录（找到主语或 X 的那几段里，没有哪一段包含决议 60% 以上的 4 字片段；数值规则还要那一段
+  写着决议自己的值）。
 - 上限：每条决议最多 3 份，10 份以上一个都不写；每个项目同时最多 12 个在问，不挤掉已有的，多出来的等
   空位（台账里记 capped:，项目里在问的少于 12 个时再整场重配）。
 - 排程：决议段变了（affects_hash 不等于 section_hash）整场重配，再 clear_missing；只有新片段时只配
-  新片段、只加不收。一场会配完在同一个事务里写 affects_hash 和 affects_chunk_mark。
+  新片段、只加不收。一场会配完在同一个事务里写 affects_hash 和 affects_chunk_mark；没配完（忙、到了
+  条数或时间）的会什么都不写，下一轮整场再来。
 - L3：在问的影响，文件断了线、决议之后改过、决议没了或后来改了的改 cleared。
 - stat_guard：文件面板和预览在有在问的影响时 stat 一次文件，变了就先不给这几个问题（不写库）。
 """
@@ -130,15 +133,25 @@ def _number(text: str) -> float | None:
 
 
 _MONEY_SCALE = {"万": 10_000, "千": 1_000, "k": 1_000, "w": 10_000}
+# k、w 后面紧跟字母的（kg、km、kw、web）不是金额；没有「元」「块」时要前面有 ¥、￥ 或说钱的词才算
+_MONEY_CONTEXT = re.compile(r"[¥￥$]|价|预算|费|金额|成本|款|报价|合同额|工资|薪|收入|营收")
+_MONEY_CONTEXT_CHARS = 8
+# 日期前面可以带年份：2025/9/30、2025年9月30日
+_YEAR = r"(?:\d{4}\s*[/年]\s*)?"
+# 「12 月 3 人」「12 月 5%」里月后面的数不是日
+_NOT_DAY = rf"(?!\s*(?:[.\x25]|{_UNITS}|万|千|元|块|k|w))"
 
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (KIND_PERCENT, re.compile(rf"百分之\s*([{_CN}\d.]+)")),
     (KIND_PERCENT, re.compile(rf"({_NUM}|[{_CN}]+)\s*(?:\x25|个点)")),
-    (KIND_DATE, re.compile(rf"(\d{{1,2}}|[{_CN}]{{1,3}})\s*月\s*(\d{{1,2}}|[{_CN}]{{1,3}})\s*[日号]?")),
-    (KIND_DATE, re.compile(r"(?<![\d./])(\d{1,2})/(\d{1,2})(?![\d/])")),
+    # 月后面是阿拉伯数字的日可以不写「日」「号」；是中文数字的日要写（「12 月两个版本」不是 12/2）
+    (KIND_DATE, re.compile(rf"(?<![\d.]){_YEAR}(\d{{1,2}}|[{_CN}]{{1,3}})\s*月\s*(\d{{1,2}})(?!\d)(?:\s*[日号]|{_NOT_DAY})")),
+    (KIND_DATE, re.compile(rf"(?<![\d.]){_YEAR}(\d{{1,2}}|[{_CN}]{{1,3}})\s*月\s*([{_CN}]{{1,3}})\s*[日号]")),
+    (KIND_DATE, re.compile(r"(?<![\d./])(?:\d{4}/)?(\d{1,2})/(\d{1,2})(?![\d/])")),
     (KIND_DATE, re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})\s*[日号]")),
-    (KIND_MONTH, re.compile(rf"(\d{{1,2}}|[{_CN}]{{1,3}})\s*月(?:份|底|初|中旬|上旬|下旬|中|末)?")),
-    (KIND_MONEY, re.compile(rf"({_NUM}|[{_CN}]+)\s*(万|千|k|w)\s*{_MONEY_SUFFIX}?", re.IGNORECASE)),
+    (KIND_MONTH, re.compile(rf"(?<![\d.]){_YEAR}(\d{{1,2}}|[{_CN}]{{1,3}})\s*月(?:份|底|初|中旬|上旬|下旬|中|末)?")),
+    (KIND_MONEY, re.compile(rf"({_NUM}|[{_CN}]+)\s*(万|千)\s*{_MONEY_SUFFIX}?")),
+    (KIND_MONEY, re.compile(rf"({_NUM})\s*(k|w)(?![A-Za-z])\s*({_MONEY_SUFFIX})?", re.IGNORECASE)),
     (KIND_MONEY, re.compile(rf"({_NUM}|[{_CN}]+)\s*{_MONEY_SUFFIX}")),
     (KIND_COUNT, re.compile(rf"({_NUM}|[{_CN}]+)\s*({_UNITS})")),
     (KIND_NUMBER, re.compile(r"(?<![A-Za-z0-9_.])(\d+\.\d+|\d{2,})(?![\d.]?\d)")),
@@ -192,6 +205,10 @@ def _value(kind: str, match: re.Match[str], start: int, end: int) -> Value | Non
         return Value(kind, number, start, end)
     if kind == KIND_MONEY:
         scale = match.group(2).lower() if match.lastindex and match.lastindex >= 2 and match.group(2) else ""
+        if scale in ("k", "w") and not match.group(3):
+            # 1.2k、3w 只在前面有 ¥、￥ 或说钱的词时算金额（「3w 用户」不是）
+            if not _MONEY_CONTEXT.search(match.string[max(0, start - _MONEY_CONTEXT_CHARS) : start]):
+                return None
         return Value(kind, number * _MONEY_SCALE.get(scale, 1), start, end)
     if kind == KIND_COUNT:
         return Value(kind, number, start, end, unit=match.group(2))
@@ -227,6 +244,21 @@ _TRAILING_VERBS = tuple(
             "降到", "降至", "降为", "提到", "提高到", "提高", "降低", "增加到", "增加", "减少到", "减少", "减到",
             "设为", "设置为", "设成", "大约", "约为", "暂定", "暂时", "统一", "先", "暂", "按", "为", "是", "到",
             "在", "约", "共", "再", "都", "也", "就", "还", "仍", "需", "要", "需要", "应", "应该", "必须", "只", "最多", "最少", "至少", "上限", "下限",
+            "由", "从",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+# 主语在这几个字处截断：「总价在原基础上下调 5%」的主语是「总价」
+_CUT_WORDS = ("在", "按", "由", "从")
+# 「由 A 改成 B」「从 A 调到 B」：A 是原来的值，只有 B 是决议定下的
+_FROM_WORDS = ("由", "从")
+_CHANGE_VERBS = tuple(
+    sorted(
+        (
+            "改成", "改为", "改到", "调到", "调为", "调成", "调整为", "调整到", "调整成", "降到", "降至", "降为",
+            "降低到", "升到", "升至", "升为", "提到", "提高到", "提升到", "增加到", "减少到", "减到",
         ),
         key=len,
         reverse=True,
@@ -276,6 +308,28 @@ def _strip_trailing(word: str) -> str:
     return word
 
 
+def _cut(word: str) -> str:
+    """在「在」「按」「由」「从」处截断，留前面那一截（前面不到 2 个字时不截）。"""
+    for index, char in enumerate(word):
+        if index >= 2 and char in _CUT_WORDS:
+            return word[:index]
+    return word
+
+
+def decided_values(text: str) -> list[Value]:
+    """决议自己定下的值：「由 A 改成 B」「从 A 调到 B」里只留 B，A 是原来的值。"""
+    body = _normal(text)
+    found = values(body)
+    kept: list[Value] = []
+    for index, value in enumerate(found):
+        before = body[: value.start].rstrip()
+        after = body[value.end :].lstrip()
+        if index + 1 < len(found) and before.endswith(_FROM_WORDS) and after.startswith(_CHANGE_VERBS):
+            continue
+        kept.append(value)
+    return kept
+
+
 def _strip_leading(word: str) -> str:
     changed = True
     while changed and word:
@@ -299,15 +353,15 @@ def decision_subject(
     terms: Sequence[tuple[str, Sequence[str]]] = (),
     excluded: Sequence[str] = (),
 ) -> list[str]:
-    """主语，最多 3 个：1. 紧挨着第一个数值前面的那段汉字或字母数字，去掉结尾的动词、副词和开头的虚字
-    （有「的」时取它后面那一截），留最后 6 个字以内；2. 决议里出现的已确认词条（terms 是 [(本名, [本名, 别名, 也叫…])]），按本名记，
+    """主语，最多 3 个：1. 紧挨着第一个数值前面的那段汉字或字母数字，去掉结尾的动词、副词（包括「由」
+    「从」），在「在」「按」「由」「从」处截断，去掉开头的虚字（有「的」时取它后面那一截），留最后 6 个字以内；2. 决议里出现的已确认词条（terms 是 [(本名, [本名, 别名, 也叫…])]），按本名记，
     最多 2 个。项目名、它的也叫和根目录名（excluded）永远不当主语。"""
     body = _normal(text)
     subjects: list[str] = []
     found = values(body)
     if found:
         # 「看板系统的总价」取「的」后面那一截
-        word = _strip_trailing(_run_before(body, found[0].start)).rpartition("的")[2]
+        word = _strip_trailing(_cut(_strip_trailing(_run_before(body, found[0].start)))).rpartition("的")[2]
         word = _strip_leading(word)[-SUBJECT_CHARS:]
         word = _strip_leading(word)
         if len(word) >= 2 and not _banned(word, excluded):
@@ -396,16 +450,25 @@ def _shingles(text: str) -> set[str]:
     return {key[index : index + 4] for index in range(len(key) - 3)}
 
 
-def is_record(decision_text: str, chunk_texts: Iterable[str]) -> bool:
-    """这份文件是不是这条决议的记录（导出的纪要副本）：有一段包含决议 60% 以上的 4 字片段。"""
+def is_record(decision_text: str, chunk_texts: Iterable[str], decided: Sequence[Value] = ()) -> bool:
+    """这份文件是不是这条决议的记录（导出的纪要副本）：有一段包含决议 60% 以上的 4 字片段。decided 不为
+    空时（数值规则）这一段还要写着决议自己的值才算：『总价在原基础上下调 3%，含税』对决议『总价在原基础
+    上下调 5%，含税』字面几乎一样，却正是要标的旧文件。"""
     mine = _shingles(decision_text)
     if not mine:
         return False
     for text in chunk_texts:
         theirs = _shingles(text)
-        if len(mine & theirs) >= RECORD_RATIO * len(mine):
+        if len(mine & theirs) < RECORD_RATIO * len(mine):
+            continue
+        if not decided or _has_value(text, decided):
             return True
     return False
+
+
+def _has_value(text: str, decided: Sequence[Value]) -> bool:
+    found = values(text)
+    return any(compatible(mine, theirs) and same(mine, theirs) for mine in decided for theirs in found)
 
 
 # ---------------------------------------------------------------------- H2 的排程
@@ -616,10 +679,13 @@ def match_decision(
     short_cache: Mapping[str, list[dict[str, Any]]] | None = None,
 ) -> list[_Hit] | None:
     """一条决议的候选文件（每份内容一段最好的），按顺序；10 份以上时回 None（主语太泛，一个都不写）。
-    after、upto 是片段 id 的范围（只配新片段时 after 是台账里的记号）。"""
+    after、upto 是片段 id 的范围（只配新片段时 after 是台账里的记号）。
+
+    纪要副本只看这份文件里找到主语或 X 的那几段（找片段时已经拿到了文字，不回表读全文）：副本里那一段
+    就是这条决议，一定写着主语或 X。候选一到 10 份就回 None，不再往下找，也不做副本判断。"""
     text = str(decision["text"] or "")
     excluded = context["excluded"]
-    decided = values(text)
+    decided = decided_values(text)
     subjects = decision_subject(text, terms=context["terms"], excluded=excluded) if decided else []
     cancels = cancel_objects(text, excluded=excluded)
     needles: list[tuple[str, str]] = [(RULE_CANCEL, word) for word in cancels] + [
@@ -631,6 +697,8 @@ def match_decision(
     floor_ns = _ns(moment - YEAR)
     folded_text = _normal(text).casefold()
     best: dict[str, _Hit] = {}
+    # 每份内容找到主语或 X 的那几段（按片段 id 去重），纪要副本只在这几段里看
+    found: dict[str, dict[int, str]] = {}
     shorts = 0
     for rule, needle in needles:
         if len(needle) >= 3:
@@ -645,6 +713,8 @@ def match_decision(
             mtime = int(chunk["mtime_ns"] or 0)
             if not (floor_ns <= mtime < moment_ns):
                 continue
+            content_key = str(chunk["content_key"])
+            found.setdefault(content_key, {})[int(chunk["chunk_id"])] = str(chunk["text"] or "")
             if rule == RULE_CANCEL:
                 if not cancel_hit(chunk["text"], needle):
                     continue
@@ -652,18 +722,15 @@ def match_decision(
                 continue
             stem = str(chunk["name"]).rpartition(".")[0] or str(chunk["name"])
             hit = _Hit(rule, needle, chunk, bool(stem) and _normal(stem).casefold() in folded_text)
-            kept = best.get(str(chunk["content_key"]))
+            kept = best.get(content_key)
             if kept is None or hit.order() < kept.order():
-                best[str(chunk["content_key"])] = hit
-    # 这条决议的记录（导出的纪要副本）不算
-    for content_key in list(best):
-        texts = [str(row[0]) for row in connection.execute(
-            "SELECT text FROM material_chunks WHERE content_key = ?", (content_key,)
-        ).fetchall()]
-        if is_record(text, texts):
+                best[content_key] = hit
+                if len(best) >= TOO_MANY_FILES:
+                    return None
+    # 这条决议的记录（导出的纪要副本）不算；数值规则要那一段还写着决议自己的值（见 is_record）
+    for content_key, hit in list(best.items()):
+        if is_record(text, found[content_key].values(), decided if hit.rule == RULE_VALUE else ()):
             best.pop(content_key)
-    if len(best) >= TOO_MANY_FILES:
-        return None
     return sorted(best.values(), key=lambda hit: hit.order())[:FILES_PER_DECISION]
 
 
@@ -690,6 +757,10 @@ def _row_for(decision: Mapping[str, Any], meeting_id: str, project_id: str, hit:
     }
 
 
+STOP_BUSY = "busy"
+STOP_BUDGET = "budget"
+
+
 def match_due(
     db: Any,
     busy: Callable[[], bool],
@@ -700,9 +771,16 @@ def match_due(
     clock: Callable[[], float] = time.monotonic,
     max_decisions: int | None = None,
 ) -> dict[str, Any]:
-    """H2 一轮：到期的会新的在前，每条决议之前看剩下的预算和忙信号；每轮最多 max_decisions 条决议或
-    budget 秒（一场会至少做完一场）。一场会配完在同一个事务里写关联行和台账。返回
-    {tried, pending, written, cleared, stopped}；stopped 是 busy、budget 或 None。"""
+    """H2 一轮：到期的会新的在前，每条决议之前看忙信号和剩下的预算；每轮最多 max_decisions 条决议或
+    budget 秒。一场会配完在同一个事务里写关联行和台账。返回 {tried, pending, written, cleared, stopped}；
+    stopped 是 busy（忙信号）、budget（到了条数或时间）或 None，健康信息里的 phases.affects 照它写。
+
+    每轮第一场会不看条数和时间，一定配完（只看忙信号）：台账按场会记（affects_hash、affects_chunk_mark），
+    没有「配到第几条」的位置，停在一场会中间只能下一轮整场重来；第一场会也守时间的话，一场配不完 5 秒的
+    会每轮都从头再来，永远到不了台账。修掉回表读全文以后，一条决议最坏约 0.3 秒（6 万段），一场会通常
+    几条决议，第一场会超出预算有限。之后的会：开始前看它要配的决议数，放不进这一轮剩下的条数就停在它
+    前面（不白做半场）；每条决议之前看时间，超了就停，这场会什么都不写、台账不动，下一轮它排第一整场
+    重配。这样增量标记只在整场配完时前进，不会漏掉没配的决议。"""
     moment = now or datetime.now(UTC)
     stamp = since or _stamp(moment)
     started = clock()
@@ -710,17 +788,28 @@ def match_due(
     with db.autocommit() as connection:
         due = due_meetings(connection, moment)
     tried = 0
+    done = 0
     written = 0
     cleared = 0
     stopped: str | None = None
+
+    def out_of_time() -> bool:
+        return clock() - started >= budget
+
     for meeting in due:
-        if tried and (tried >= most or clock() - started >= budget):
-            stopped = "budget"
+        first = done == 0
+        if not first and (tried >= most or out_of_time()):
+            stopped = STOP_BUDGET
             break
-        outcome = _match_meeting(db, meeting, moment, stamp, busy, lambda: clock() - started >= budget and tried > 0)
-        if outcome is None:
-            stopped = "busy"
+        outcome = _match_meeting(
+            db, meeting, moment, stamp, busy,
+            out_of_time=None if first else out_of_time,
+            room=None if first else most - tried,
+        )
+        if isinstance(outcome, str):
+            stopped = outcome
             break
+        done += 1
         tried += outcome["tried"]
         written += outcome["written"]
         cleared += outcome["cleared"]
@@ -733,9 +822,12 @@ def _match_meeting(
     moment: datetime,
     since: str,
     busy: Callable[[], bool],
-    out_of_time: Callable[[], bool],
-) -> dict[str, int] | None:
-    """一场会：整场重配（full）或只配新片段。忙了、没时间了回 None（这场会下一轮从头再来，不写）。"""
+    *,
+    out_of_time: Callable[[], bool] | None = None,
+    room: int | None = None,
+) -> dict[str, int] | str:
+    """一场会：整场重配（full）或只配新片段。忙了回 STOP_BUSY；要配的决议比 room 多、或配到一半
+    out_of_time 为真回 STOP_BUDGET。这两种都什么都不写、台账不动，这场会下一轮从头再来。"""
     meeting_id = str(meeting["meeting_id"])
     project_id = str(meeting["project_id"])
     full = bool(meeting["full"])
@@ -746,28 +838,34 @@ def _match_meeting(
                          WHERE d.meeting_id = ? AND d.gone_at IS NULL AND NOT {superseded_sql('d')}
                          ORDER BY d.ordinal, d.id"""
     with db.autocommit() as connection:
-        decisions = [dict(row) for row in connection.execute(decisions_sql, (meeting_id,)).fetchall()]
+        decisions: list[tuple[dict[str, Any], datetime]] = []
+        for row in connection.execute(decisions_sql, (meeting_id,)).fetchall():
+            decided_at = decision_moment(meeting, row["start_ms"])
+            if decided_at is None or decided_at < floor or decided_at < moment - YEAR:
+                continue
+            decisions.append((dict(row), decided_at))
+        if room is not None and len(decisions) > room:
+            return STOP_BUDGET
+        if busy():
+            return STOP_BUSY
         context = _project_context(connection, project_id)
         # 这场会的 2 字主语合成一条语句一起查
         shorts: list[str] = []
         if context["short_ok"]:
-            for decision in decisions:
+            for decision, _decided_at in decisions:
                 text = str(decision["text"] or "")
                 words = cancel_objects(text, excluded=context["excluded"])
-                if values(text):
+                if decided_values(text):
                     words += decision_subject(text, terms=context["terms"], excluded=context["excluded"])
                 shorts += [word for word in words if len(word) == 2 and word not in shorts]
         cache = _short_chunks(connection, project_id, shorts, after, upto) if shorts else {}
         rows: list[dict[str, Any]] = []
         tried = 0
-        for decision in decisions:
+        for decision, decided_at in decisions:
             if busy():
-                return None
-            if tried and out_of_time():
-                return None
-            decided_at = decision_moment(meeting, decision["start_ms"])
-            if decided_at is None or decided_at < floor or decided_at < moment - YEAR:
-                continue
+                return STOP_BUSY
+            if out_of_time is not None and out_of_time():
+                return STOP_BUDGET
             tried += 1
             hits = match_decision(
                 connection, decision, context, project_id=project_id, moment=decided_at, after=after, upto=upto,

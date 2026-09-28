@@ -610,7 +610,7 @@ def _question(row: Any, *, for_requirement: bool = False) -> dict[str, Any]:
     day = _month_day(row["decision_recording_date"], row["decision_created_at"])
     if for_requirement:
         stem = str(row["file_name"] or "").rpartition(".")[0] or str(row["file_name"] or "")
-        item["text"] = f"{stem} 之后没改过，可能过时"
+        item["text"] = f"『{stem}』之后没改过，可能过时"
     else:
         item["text"] = f"可能过时：{day} 决议『{_short(decision_text, QUOTE_CHARS)}』"
     item["decision"] = {

@@ -304,7 +304,7 @@ COPY_4E = (
     "可能过时：9/21 决议『总价下调 5%』",
     "可能过时：2025/9/21 决议『总价下调 5%』",
     "第 2 页：『…总价在原基础上下调 3%，含税…』",
-    "报价单 v3 之后没改过，可能过时",
+    "『报价单 v3』之后没改过，可能过时",
     "1 个文件可能过时",
     "是",
     "不是",
@@ -317,6 +317,7 @@ COPY_4E = (
     "已记下：和这条决议不相关",
     "已撤销",
     "这条任务已经取消了，先恢复任务再登记",
+    "这条任务还没确认，先确认任务再登记",
     "这份文件已经不在了",
     "这条已经处理过了",
     "还没有登记交付物",
@@ -547,6 +548,21 @@ def test_phase_four_payloads_4g(tmp_path):
     assert [text for text in found if problems(text)] == []
 
 
+# 『x/』里的文件夹只写最后一层，不写路径
+_QUOTED_FOLDER = re.compile(r"『([^』]*)/』")
+
+
+def one_level_folders(texts) -> list[str]:
+    """『x/』里 x 中间还有「/」的句子（应该是空的）。"""
+    return [text for text in texts for match in _QUOTED_FOLDER.finditer(text) if "/" in match.group(1)]
+
+
+def test_4e_folders_are_one_level():
+    assert any(_QUOTED_FOLDER.search(text) for text in COPY_4E)
+    assert one_level_folders(COPY_4E) == []
+    assert one_level_folders(["会后 3 天新增在『交付/能耗看板/』"]) == ["会后 3 天新增在『交付/能耗看板/』"]
+
+
 def test_phase_four_payloads_4e(tmp_path):
     """4e 的样本库打一遍文件面板、预览、任务、需求卡、展开一场会和回答：text、ask、title 这些键里没有不许
     出现的词。"""
@@ -569,13 +585,18 @@ def test_phase_four_payloads_4e(tmp_path):
     with w.db.autocommit() as connection:
         payloads.append(decisions.requirement_log(connection, "r", settings=live))
     found = [text for payload in payloads for text in collect_copy(payload)]
-    assert "报价单 v3 之后没改过，可能过时" in found and "会后 3 天新增在『能耗看板/』" in found
+    assert "『报价单 v3』之后没改过，可能过时" in found and "会后 3 天新增在『能耗看板/』" in found
     headers = write_headers(w.client)
     produced_id = w.db.query_one("SELECT id FROM relations WHERE kind = 'produced'")["id"]
     w.db.execute("UPDATE tasks SET status = 'cancelled' WHERE id = 't'")
     refused = w.client.post(f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers).json()
     found += collect_copy(refused)
     assert refused["detail"] in COPY_4E
+    w.db.execute("UPDATE tasks SET status = 'pending_confirm' WHERE id = 't'")
+    unconfirmed = w.client.post(f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers).json()
+    found += collect_copy(unconfirmed)
+    assert unconfirmed["detail"] in COPY_4E
+    assert one_level_folders(found) == []
     # 决议原文（decision.text、决议卡的 text）和现读的材料片段（passage.text）在页面上放在『』里照原样显示，
     # 不受用词规则管
     quoted = {"总价下调 5%", "报价说明：总价在原基础上下调 3%，含税"}

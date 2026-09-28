@@ -255,7 +255,7 @@ def test_questions_read_in_one_statement(tmp_path):
         assert "score" not in repr(item) and "root_id" not in repr(item)
     assert [item["relation_id"] for item in read(db, relation_read.task_questions, "t")] == [produced["relation_id"]]
     grouped = read(db, relation_read.decision_questions, ["dec-a", "dec-z"])
-    assert grouped["dec-z"] == [] and grouped["dec-a"][0]["text"] == "能耗看板方案 之后没改过，可能过时"
+    assert grouped["dec-z"] == [] and grouped["dec-a"][0]["text"] == "『能耗看板方案』之后没改过，可能过时"
     assert count_reads(db, lambda connection: relation_read.file_questions(connection, plan)) == 1
 
 

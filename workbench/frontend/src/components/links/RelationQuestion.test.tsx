@@ -142,6 +142,23 @@ describe("RelationQuestion", () => {
     expect(screen.getByRole("group", { name: PRODUCED.text })).toBeInTheDocument();
   });
 
+  it("产出［是］时任务退回了待确认：409 原样提示那句（warning），块留着", async () => {
+    const apiClient = makeClient({
+      answerRelation: vi.fn(async () => {
+        throw new ApiError("这条任务还没确认，先确认任务再登记", 409, { detail: "这条任务还没确认，先确认任务再登记" });
+      }),
+    });
+    const onNotice = vi.fn();
+    render(
+      <Providers>
+        <RelationQuestion apiClient={apiClient} canWrite onNotice={onNotice} questions={[PRODUCED]} scope={{ taskId: "t-19" }} />
+      </Providers>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "是" }));
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith("这条任务还没确认，先确认任务再登记", undefined, "warning"));
+    expect(screen.getByRole("group", { name: PRODUCED.text })).toBeInTheDocument();
+  });
+
   it("422 原样提示、块留着；canWrite 为假时只显示，没有按钮", async () => {
     const apiClient = makeClient({
       answerRelation: vi.fn(async () => {
@@ -368,14 +385,14 @@ describe("RelationQuestion 在 4e 宿主里的样子", () => {
           compact
           onNotice={vi.fn()}
           onOpenFile={onOpenFile}
-          questions={[{ ...AFFECTS, text: "报价单 v3 之后没改过，可能过时" }]}
+          questions={[{ ...AFFECTS, text: "『报价单 v3』之后没改过，可能过时" }]}
           scope={{ decisionIds: ["dec-3f2a9c0b1d4e5f60"] }}
         />
       </Providers>,
     );
-    const block = screen.getByRole("group", { name: "报价单 v3 之后没改过，可能过时" });
+    const block = screen.getByRole("group", { name: "『报价单 v3』之后没改过，可能过时" });
     expect(within(block).queryByText(/第 2 页/)).toBeNull();
-    await userEvent.click(within(block).getByRole("button", { name: "报价单 v3 之后没改过，可能过时" }));
+    await userEvent.click(within(block).getByRole("button", { name: "『报价单 v3』之后没改过，可能过时" }));
     expect(onOpenFile).toHaveBeenCalledWith(812);
     // 别的决议收成的那一行不画在这里
     expect(screen.queryByText("已标为更新过")).toBeNull();

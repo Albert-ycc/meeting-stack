@@ -544,7 +544,7 @@ describe("RequirementDetailPage 决议卡的「可能过时」（4e）", () => {
   const STALE: RelationQuestion = {
     relation_id: 57,
     kind: "affects",
-    text: "报价单 v3 之后没改过，可能过时",
+    text: "『报价单 v3』之后没改过，可能过时",
     decision: {
       id: "dec-a", text: "阈值先按 0.8 执行", date: "2026-09-20", meeting_id: "vm-1", meeting_title: "周会",
       start_ms: 754_000, audio_url: "/api/media/412",

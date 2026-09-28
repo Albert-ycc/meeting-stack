@@ -513,6 +513,64 @@ def test_round_limit_by_task_count(tmp_path):
     assert second["tried"] == 1 and second["after"] == ""
 
 
+def test_round_stops_inside_a_project_and_the_cursor_resumes_it(tmp_path):
+    """项目里面也看时间：超了就放下这个项目（什么都不写），游标停在它前面，下一轮从它开始。每轮第一个
+    项目不看时间，一定做完。"""
+    w = world(tmp_path)
+    w.db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p2', '第二个', 'x')")
+    w.db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p2', '/材料/第二个', 'x')")
+    second_root = int(w.db.query_one("SELECT id FROM project_material_roots WHERE project_id = 'p2'")["id"])
+    swept(w.db, second_root)
+    task(w.db, "t1", "整理报价单明细")
+    task(w.db, "t2", "整理排期总表", project_id="p2")
+    put_file(w.db, w.root, "报价/报价单明细 v2.xlsx", at(-1))
+    put_file(w.db, second_root, "排期/排期总表 v2.xlsx", at(-1))
+    ticks = iter([0.0] * 2 + [10.0] * 1000)
+    # 第一个项目：时间早就超了也做完；第二个项目开始前还有时间，配到第一条流水时超了
+    first = produced.watch(w.db, NOW, 5.0, since=stamp(NOW), clock=lambda: next(ticks))
+    assert first["after"] == "p" and first["written"] == 1
+    assert [row["task_id"] for row in asked(w.db)] == ["t1"]
+    second = watch(w.db, now=at(0, minutes=1), after=first["after"])
+    assert second["after"] == "" and second["written"] == 1
+    assert sorted(row["task_id"] for row in asked(w.db)) == ["t1", "t2"]
+
+
+def test_shared_words_are_worked_out_once_per_text(tmp_path, monkeypatch):
+    """闲着的一轮：10 条任务、几千条流水，每段文字只切一次段，先按 3 字片段粗筛。"""
+    import time
+
+    w = world(tmp_path)
+    for index in range(10):
+        task(w.db, f"t{index}", f"整理第{index}份报价单明细")
+    with w.db.transaction() as connection:
+        for index in range(1500):
+            rel = f"素材{index % 30}/图片{index}.jpg"
+            connection.execute(
+                """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns,
+                       zone, seen_at, content_key, content_size, content_mtime_ns)
+                   VALUES (?, ?, ?, ?, ?, ?, 'jpg', 10, ?, 'normal', 'x', ?, 10, ?)""",
+                (w.root, rel, rel.rpartition("/")[0], rel.rpartition("/")[2], f"图片{index}", f"图片{index}",
+                 1000 + index, f"q2:{index:032d}", 1000 + index),
+            )
+        when = at(-2)
+        connection.execute("UPDATE material_file_events SET at = ?, day = ?", (at_text(when), when.astimezone().date().isoformat()))
+        connection.execute(
+            """INSERT INTO material_file_events(root_id, file_id, kind, rel_path, dir_rel, size, mtime_ns, content_key, at, day)
+               SELECT root_id, file_id, 'changed', rel_path, dir_rel, size, mtime_ns, content_key, at, day
+                 FROM material_file_events"""
+        )
+    runs = produced._runs
+    calls = []
+    monkeypatch.setattr(produced, "_runs", lambda text: calls.append(text) or runs(text))
+    started = time.monotonic()
+    result = watch(w.db)
+    elapsed = time.monotonic() - started
+    assert result["written"] == 0 and result["tried"] == 10
+    # 10 条任务 + 1500 个文件名 + 30 个文件夹名，每段只切一次
+    assert len(calls) <= 10 + 1500 + 30
+    assert elapsed < 0.5
+
+
 # ---------------------------------------------------------------------- 回答
 
 
@@ -591,6 +649,31 @@ def test_yes_on_a_cancelled_task_or_a_gone_file(tmp_path):
         answer(w.db, relation_id, "yes")
     assert (gone.value.status, str(gone.value)) == (422, "这份文件已经不在了")
     assert w.db.query_one("SELECT COUNT(*) AS n FROM deliverables")["n"] == 0
+
+
+def test_yes_on_a_task_back_in_pending_confirm(tmp_path):
+    w, _file_id, relation_id = answer_setup(tmp_path)
+    w.db.execute("UPDATE tasks SET status = 'pending_confirm' WHERE id = 't'")
+    with pytest.raises(RelationError) as unconfirmed:
+        answer(w.db, relation_id, "yes")
+    assert (unconfirmed.value.status, str(unconfirmed.value)) == (409, "这条任务还没确认，先确认任务再登记")
+    assert w.db.query_one("SELECT COUNT(*) AS n FROM deliverables")["n"] == 0
+    assert w.db.query_one("SELECT status FROM relations WHERE id = ?", (relation_id,))["status"] == "suggested"
+
+
+def test_yes_on_a_path_ident_does_not_carry_the_old_content_key(tmp_path):
+    """按路径问的文件（内容标识不新鲜）：登记的交付物不带文件行上那个旧标识。"""
+    w = world(tmp_path)
+    task(w.db, "t", "整理报价单明细")
+    file_id = put_file(w.db, w.root, "报价/报价单明细.xlsx", at(-1), content_key="q2:" + "7" * 32)
+    w.db.execute("UPDATE material_files SET content_size = content_size + 1 WHERE id = ?", (file_id,))
+    watch(w.db)
+    (row,) = asked(w.db)
+    assert row["ident"] == f"t|p:{w.root}:报价/报价单明细.xlsx" and row["content_key"] is None
+    deliverable_id = answer(w.db, int(row["id"]), "yes")["deliverable_id"]
+    written = w.db.query_one("SELECT content_key, root_id, rel_path FROM deliverable_files WHERE deliverable_id = ?",
+                             (deliverable_id,))
+    assert written == {"content_key": None, "root_id": w.root, "rel_path": "报价/报价单明细.xlsx"}
 
 
 def test_no_is_never_asked_again(tmp_path):

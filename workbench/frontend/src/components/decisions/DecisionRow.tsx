@@ -48,7 +48,7 @@ export interface DecisionRowProps {
   hideOpenMeeting?: boolean;
   /** 不画「原话」（展开一场会的面板里另有一节） */
   hideQuotes?: boolean;
-  /** 4e：标记行下面的问题块（需求卡的「报价单 v3 之后没改过，可能过时」） */
+  /** 4e：标记行下面的问题块（需求卡的「『报价单 v3』之后没改过，可能过时」） */
   questions?: ReactNode;
 }
 

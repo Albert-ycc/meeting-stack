@@ -131,15 +131,14 @@ def _maximal(run: str, task_runs: Sequence[str]) -> list[str]:
     return found
 
 
-def shared_word(task_text: str, file_text: str, excluded: Sequence[str] = ()) -> str | None:
-    """两边按 search.fold 折叠后的最长公共子串，够长、又不是泛词、项目名、也叫和根目录名时返回它。
-    task_text 是任务标题加需求标题；file_text 是去掉扩展名的文件名，或 dir_rel 的一段。公共子串只取
-    不能再长的那几个：泛词拼成的词被排除以后，不退回去拿它的一截。"""
-    task_runs = _runs(task_text)
-    if not task_runs:
-        return None
+def _grams(runs: Sequence[str]) -> frozenset[str]:
+    """各段里的 3 字片段。共同词至少 3 个字，两边没有共同的 3 字片段就不会有共同词。"""
+    return frozenset(run[index : index + 3] for run in runs for index in range(len(run) - 2))
+
+
+def _shared(task_runs: Sequence[str], file_runs: Sequence[str], excluded: Sequence[str]) -> str | None:
     best: str | None = None
-    for run in _runs(file_text):
+    for run in file_runs:
         for word in _maximal(run, task_runs):
             if best is not None and len(word) <= len(best):
                 continue
@@ -148,9 +147,79 @@ def shared_word(task_text: str, file_text: str, excluded: Sequence[str] = ()) ->
     return best
 
 
+def shared_word(task_text: str, file_text: str, excluded: Sequence[str] = ()) -> str | None:
+    """两边按 search.fold 折叠后的最长公共子串，够长、又不是泛词、项目名、也叫和根目录名时返回它。
+    task_text 是任务标题加需求标题；file_text 是去掉扩展名的文件名，或 dir_rel 的一段。公共子串只取
+    不能再长的那几个：泛词拼成的词被排除以后，不退回去拿它的一截。"""
+    return _Words(excluded).shared(task_text, file_text)
+
+
 def _stem(name: str) -> str:
     stem, dot, ext = str(name).rpartition(".")
     return stem if dot and stem and ext and len(ext) <= 8 and ext.isascii() and ext.isalnum() else str(name)
+
+
+class _Words:
+    """一个项目一轮里的共同词：每段文字（任务一边、文件名、文件夹名）只切一次段、算一次 3 字片段，先按
+    3 字片段粗筛；file_word 按 (任务文字, 文件名, dir_rel, below) 记下结果。只在内存里，这一轮用完就丢。"""
+
+    def __init__(self, excluded: Sequence[str]) -> None:
+        self.excluded = excluded
+        self._sides: dict[str, tuple[list[str], frozenset[str]]] = {}
+        self._found: dict[tuple[str, str, str, str], tuple[str, str | None] | None] = {}
+        self._grams_of: dict[tuple[str, str], frozenset[str]] = {}
+        self._last_file: Mapping[str, Any] | None = None
+        self._last_grams: frozenset[str] | None = None
+
+    def _side(self, text: str) -> tuple[list[str], frozenset[str]]:
+        side = self._sides.get(text)
+        if side is None:
+            runs = _runs(text)
+            side = self._sides[text] = (runs, _grams(runs))
+        return side
+
+    def shared(self, task_text: str, file_text: str) -> str | None:
+        task_runs, task_grams = self._side(task_text)
+        file_runs, file_grams = self._side(file_text)
+        if not task_runs or task_grams.isdisjoint(file_grams):
+            return None
+        return _shared(task_runs, file_runs, self.excluded)
+
+    def task_grams(self, task_text: str) -> frozenset[str]:
+        return self._side(task_text)[1]
+
+    def file_grams(self, file: Mapping[str, Any]) -> frozenset[str]:
+        """文件名和各层文件夹名合起来的 3 字片段（按文件名和 dir_rel 记）。一条流水要和每条任务比，
+        同一份文件连着问好几次，先看是不是上一次那份。"""
+        if file is self._last_file and self._last_grams is not None:
+            return self._last_grams
+        key = (str(file["name"]), str(file.get("dir_rel") or ""))
+        grams = self._grams_of.get(key)
+        if grams is None:
+            texts = [_stem(key[0]), *(part for part in key[1].split("/") if part)]
+            grams = self._grams_of[key] = frozenset().union(*(self._side(text)[1] for text in texts))
+        self._last_file, self._last_grams = file, grams
+        return grams
+
+    def file_word(self, task_text: str, file: Mapping[str, Any], below: str = "") -> tuple[str, str | None] | None:
+        if self._side(task_text)[1].isdisjoint(self.file_grams(file)):
+            return None
+        key = (task_text, str(file["name"]), str(file.get("dir_rel") or ""), below)
+        if key in self._found:
+            return self._found[key]
+        best: tuple[str, str | None] | None = None
+        word = self.shared(task_text, _stem(file["name"]))
+        if word:
+            best = (word, None)
+        segments = [part for part in key[2].split("/") if part]
+        if below:
+            segments = segments[len([part for part in below.split("/") if part]) :]
+        for segment in reversed(segments):
+            word = self.shared(task_text, segment)
+            if word and (best is None or len(word) > len(best[0])):
+                best = (word, f"{segment}/")
+        self._found[key] = best
+        return best
 
 
 def file_word(
@@ -159,18 +228,7 @@ def file_word(
     """文件名或它所在的文件夹名和任务的共同词：(词, 写有这个词的那一层文件夹「x/」或 None)。一样长时
     文件名里的优先，文件夹里的靠里的优先。below 是范围 A 的需求文件夹前缀：只看它下面的几层（需求文件夹
     自己的名字常常就是需求标题，不能拿它当共同词）。"""
-    best: tuple[str, str | None] | None = None
-    word = shared_word(task_text, _stem(file["name"]), excluded)
-    if word:
-        best = (word, None)
-    segments = [part for part in str(file.get("dir_rel") or "").split("/") if part]
-    if below:
-        segments = segments[len([part for part in below.split("/") if part]) :]
-    for segment in reversed(segments):
-        word = shared_word(task_text, segment, excluded)
-        if word and (best is None or len(word) > len(best[0])):
-            best = (word, f"{segment}/")
-    return best
+    return _Words(excluded).file_word(task_text, file, below)
 
 
 # ---------------------------------------------------------------------- 候选任务
@@ -228,6 +286,7 @@ class _Task:
     end: datetime
     text: str
     folders: list[tuple[int, str, str]] = field(default_factory=list)  # (root_id, 前缀, 「x/」)
+    grams: frozenset[str] = frozenset()  # 任务一边的 3 字片段（粗筛共同词）
 
     @property
     def id(self) -> str:
@@ -295,9 +354,13 @@ def watch(
     max_tasks: int | None = None,
     after: str = "",
 ) -> dict[str, Any]:
-    """L4 一轮：先收回，再按项目看候选任务（after 之后的项目），每轮最多 max_tasks 条任务或 budget 秒，
-    按项目整批做完才停。返回 {tried, pending, written, cleared, after}：after 是下一轮从哪个项目之后接着
-    看（到底了回 ""）。"""
+    """L4 一轮：先收回，再按项目看候选任务（after 之后的项目），每轮最多 max_tasks 条任务或 budget 秒。
+    返回 {tried, pending, written, cleared, after}：after 是下一轮从哪个项目之后接着看（到底了回 ""）。
+
+    一个项目的任务要一起配（一份文件只给匹配最强的那条任务，上限按项目数），不能拆到两轮。所以：项目
+    之间看条数和时间；项目里面每条流水之前也看时间，超了就放下这个项目（什么都不写），游标停在它前面，
+    下一轮从它开始，不丢不重。每轮第一个项目不看时间，一定做完，不然一个配不完 1 秒的项目每轮都从头
+    再来；共同词按段缓存、先用 3 字片段粗筛以后，一个项目 10 条任务 6000 条流水不到 0.2 秒。"""
     started = clock()
     stamp = since or _stamp(now)
     limit = ROUND_TASKS if max_tasks is None else max_tasks
@@ -311,12 +374,23 @@ def watch(
     tried = 0
     written = 0
     next_after = ""
+
+    def out_of_time() -> bool:
+        return clock() - started >= budget
+
+    done = 0
     for project_id, tasks in by_project.items():
-        if tried and (tried + len(tasks) > limit or clock() - started >= budget):
+        first = done == 0
+        if not first and (tried + len(tasks) > limit or out_of_time()):
             next_after = _previous(by_project, project_id)
             break
         with db.transaction() as connection:
-            written += _watch_project(connection, project_id, tasks, now, stamp)
+            count = _watch_project(connection, project_id, tasks, now, stamp, None if first else out_of_time)
+        if count is None:
+            next_after = _previous(by_project, project_id)
+            break
+        done += 1
+        written += count
         tried += len(tasks)
     return {"tried": tried, "pending": len(rows), "written": written, "cleared": cleared, "after": next_after}
 
@@ -385,7 +459,7 @@ def _bursts(events: Iterable[Mapping[str, Any]]) -> set[int]:
     return burst
 
 
-def _match(task: _Task, event: Mapping[str, Any], file: Mapping[str, Any], excluded: Sequence[str], burst: bool) -> tuple[str, str | None, str | None] | None:
+def _match(task: _Task, event: Mapping[str, Any], file: Mapping[str, Any], words: _Words, burst: bool) -> tuple[str, str | None, str | None] | None:
     """(scope, folder, word) 或 None。added：范围 A 不要共同词（成批出现的要），范围 B 要；changed：都要。"""
     folder_label: str | None = None
     below = ""
@@ -393,7 +467,7 @@ def _match(task: _Task, event: Mapping[str, Any], file: Mapping[str, Any], exclu
         if int(file["root_id"]) == root_id and str(file["rel_path"]).startswith(prefix + "/"):
             folder_label, below = label, prefix
             break
-    found = file_word(task.text, file, excluded, below)
+    found = words.file_word(task.text, file, below)
     need_word = event["kind"] == file_events.CHANGED or burst or folder_label is None
     if need_word and found is None:
         return None
@@ -423,8 +497,16 @@ def _evidence(pick: _Pick) -> dict[str, Any]:
     }
 
 
-def _watch_project(connection: Any, project_id: str, rows: list[dict[str, Any]], now: datetime, since: str) -> int:
-    """一个项目：算窗口、读窗口里的文件流水、配任务、按上限写新行。返回写了几行。"""
+def _watch_project(
+    connection: Any,
+    project_id: str,
+    rows: list[dict[str, Any]],
+    now: datetime,
+    since: str,
+    out_of_time: Callable[[], bool] | None = None,
+) -> int | None:
+    """一个项目：算窗口、读窗口里的文件流水、配任务、按上限写新行。返回写了几行；配到一半 out_of_time
+    为真时回 None，什么都没写（新行都在最后一起写）。"""
     tasks: list[_Task] = []
     for row in rows:
         start = window_start(row)
@@ -445,6 +527,7 @@ def _watch_project(connection: Any, project_id: str, rows: list[dict[str, Any]],
         *(project_names(project["name"], project["also_names"]) if project is not None else []),
         *(str(root["path"]).rstrip("/").rpartition("/")[2] for root in roots),
     ]
+    words = _Words(excluded)
     requirement_ids = sorted({str(task.row["requirement_id"]) for task in tasks if task.row.get("requirement_id")})
     folders: dict[str, list[tuple[int, str, str]]] = {}
     if requirement_ids:
@@ -460,6 +543,7 @@ def _watch_project(connection: Any, project_id: str, rows: list[dict[str, Any]],
                     folders.setdefault(str(folder["requirement_id"]), []).append((int(root["id"]), prefix, label))
     for task in tasks:
         task.folders = folders.get(str(task.row.get("requirement_id") or ""), [])
+        task.grams = words.task_grams(task.text)
 
     first = min(task.start for task in tasks)
     added = file_events.recent_added(connection, root_ids, first, None, now=now)
@@ -535,6 +619,8 @@ def _watch_project(connection: Any, project_id: str, rows: list[dict[str, Any]],
     # 每份文件挑最强的那一对（任务，事件）
     best: dict[tuple[Any, ...], _Pick] = {}
     for event in events:
+        if out_of_time is not None and out_of_time():
+            return None
         file = files.get(int(event["file_id"]))
         if file is None or not _eligible(file):
             continue
@@ -548,10 +634,14 @@ def _watch_project(connection: Any, project_id: str, rows: list[dict[str, Any]],
         if moment is None:
             continue
         target = (ident_part,)
+        grams = words.file_grams(file)
         for task in tasks:
             if not (task.start <= moment < task.end):
                 continue
-            matched = _match(task, event, file, excluded, int(event["id"]) in burst)
+            # 不在任务的需求文件夹里（要共同词）、又没有共同的 3 字片段：配不上，不用往下算
+            if not task.folders and task.grams.isdisjoint(grams):
+                continue
+            matched = _match(task, event, file, words, int(event["id"]) in burst)
             if matched is None:
                 continue
             scope, folder, word = matched
