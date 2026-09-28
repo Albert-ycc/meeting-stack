@@ -1305,3 +1305,25 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
     await waitFor(() => expect(screen.queryByRole("region", { name: "时间线" })).not.toBeInTheDocument());
   });
 });
+
+describe("ProjectDetailPage 的问答卡（4g）", () => {
+  it("有 askPrepare 时「问这个项目」卡在时间线上面；材料出处交给 onOpenPreviewTarget", async () => {
+    const projectTimeline = vi.fn().mockResolvedValue(timelinePayload());
+    const askPrepare = vi.fn();
+    renderTimeline({ projectTimeline, askPrepare, ask: vi.fn(), askJob: vi.fn() } as Partial<ApiClient>, {
+      onOpenPreviewTarget: vi.fn(),
+      isMobile: true,
+    });
+    const timeline = await screen.findByRole("region", { name: "时间线" });
+    const card = screen.getByRole("region", { name: "问这个项目" });
+    expect(card.compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(card).getByText("只在『云图科研用药』的会和材料里找；要把材料原文发出去时会先告诉你")).toBeInTheDocument();
+    expect(askPrepare).not.toHaveBeenCalled();
+  });
+
+  it("没有 askPrepare（旧后台）时不画问答卡", async () => {
+    renderTimeline({ projectTimeline: vi.fn().mockResolvedValue(timelinePayload()) } as Partial<ApiClient>);
+    await screen.findByRole("region", { name: "时间线" });
+    expect(screen.queryByRole("region", { name: "问这个项目" })).toBeNull();
+  });
+});

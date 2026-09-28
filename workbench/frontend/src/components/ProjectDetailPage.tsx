@@ -10,6 +10,7 @@ import type {
   MaterialRoot,
   MaterialUnreadableItem,
   MaterialRootRepoint,
+  PreviewTarget,
   Project,
   ProjectBoard,
   ProjectMeetingRow,
@@ -40,6 +41,7 @@ import { NoticeBanner, useNotice } from "./Notice";
 import { ProjectGlossary } from "./ProjectGlossary";
 import { usePersistentState } from "../viewState";
 import { ProjectTimeline } from "./decisions/ProjectTimeline";
+import { ProjectAsk } from "./ask/ProjectAsk";
 
 interface ProjectDetailPageProps {
   apiClient: ApiClient;
@@ -66,6 +68,10 @@ interface ProjectDetailPageProps {
   onOpenProject?: (projectId: string) => void;
   /** 标题行右侧的［关系图｜清单］（手机端没有关系图，不传） */
   modeToggle?: ReactNode;
+  /** 4g：问答出处里的材料打开预览抽屉到「回答引用的这段」；不传时退回 onOpenPreview(文件 id) */
+  onOpenPreviewTarget?: (target: PreviewTarget) => void;
+  /** 4g：手机上问答卡占满宽度 */
+  isMobile?: boolean;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -290,6 +296,8 @@ export function ProjectDetailPage({
   onProjectsChanged,
   onOpenProject,
   modeToggle,
+  onOpenPreviewTarget,
+  isMobile = false,
 }: ProjectDetailPageProps) {
   const [board, setBoard] = useState<ProjectBoard | null>(null);
   const [boardState, setBoardState] = useState<LoadState>("loading");
@@ -641,7 +649,20 @@ export function ProjectDetailPage({
             </div>
           )}
 
-          {/* 4c：时间线在「AI 自动建的项目」提示之后、「材料根目录」卡之前；4g 的问答卡以后放在它上面 */}
+          {/* 4g：「问这个项目」卡在「AI 自动建的项目」提示之后、时间线之上（手机上也有）；没有 askPrepare 时不画 */}
+          <ProjectAsk
+            apiClient={apiClient}
+            isMobile={isMobile}
+            onOpenMeeting={onOpenMeeting}
+            onOpenPreview={(target) =>
+              onOpenPreviewTarget ? onOpenPreviewTarget(target) : onOpenPreview?.(target.fileId)
+            }
+            projectId={projectId}
+            projectName={board.name}
+            variant="card"
+          />
+
+          {/* 4c：时间线在「AI 自动建的项目」提示之后、「材料根目录」卡之前 */}
           <ProjectTimeline
             apiClient={apiClient}
             canWrite={canWrite}

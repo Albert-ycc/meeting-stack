@@ -2,7 +2,8 @@ import { useCallback, useContext, useEffect, useMemo, useRef, useState, type Key
 
 import { ApiError, type ApiClient } from "../../api";
 import { reassignNote } from "../../cardCopy";
-import type { Project } from "../../types";
+import type { PreviewTarget, Project } from "../../types";
+import { ProjectAsk } from "../ask/ProjectAsk";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeAction, type NoticeTone } from "../Notice";
 import { RecentAnswersContext } from "../links/useRelationAnswer";
 import { GraphCanvas, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
@@ -299,6 +300,10 @@ export interface ProjectGraphProps {
   onProjectsChanged?: () => void | Promise<void>;
   /** 3g：打开预览抽屉（图上放不下的文件、展开一场会里的交付物小签） */
   onOpenPreview?: (fileId: number, startMs?: number) => void;
+  /** 4g：问答出处打开会议（带时间和标签页）；不传时退回 onOpenMeeting(id) */
+  onOpenMeetingAt?: (meetingId: string, seekMs?: number, tab?: "transcript" | "minutes") => void;
+  /** 4g：问答出处里的材料打开预览抽屉到「回答引用的这段」 */
+  onOpenPreviewTarget?: (target: PreviewTarget) => void;
 }
 
 export function ProjectGraph({
@@ -319,6 +324,8 @@ export function ProjectGraph({
   onOpenAttributionReview,
   onProjectsChanged,
   onOpenPreview,
+  onOpenMeetingAt,
+  onOpenPreviewTarget,
 }: ProjectGraphProps) {
   const [windowChoice, setWindowChoice] = useState<GraphWindow | null>(() => readGraphWindow(projectId));
   // 用户一旦自己选了时间窗，深链目标就不再撑大窗口
@@ -586,8 +593,13 @@ export function ProjectGraph({
   ]);
 
 
+  // 4g：问答面板开在右侧面板的位置，本地状态，不占 sel=；点节点或 Esc 关掉
+  const [askOpen, setAskOpen] = useState(false);
+  const canAsk = typeof apiClient.askPrepare === "function";
+
   const select = useCallback(
     (id: string | null) => {
+      if (id !== null) setAskOpen(false);
       if (id === null) {
         setTrail([]);
         setHighlight(null);
@@ -822,6 +834,24 @@ export function ProjectGraph({
     select(null);
   };
 
+  const openAsk = () => {
+    select(null);
+    setAskOpen(true);
+  };
+  // 问答显示期间出处里的会和文件点亮（key: "ask"），关掉时只清自己的
+  const askHighlight = useCallback((ids: string[] | null) => {
+    setHighlight((current) => {
+      if (ids) return { key: "ask", ids: new Set(ids) };
+      return current?.key === "ask" ? null : current;
+    });
+  }, []);
+  const onAskKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+    // 焦点在输入框里时 Esc 不关
+    if ((event.target as HTMLElement).closest("select, input, textarea")) return;
+    setAskOpen(false);
+  };
+
   // 画得下的会在原槽位留残影；太旧、窗口外的放在顶上一行
   const movedOut = (liveGraph?.moved_out ?? []).filter((item) => !layout?.byId.has(`g:${item.meeting_id}`));
   const dropProjects = useMemo(
@@ -907,13 +937,34 @@ export function ProjectGraph({
           onOpenRequirement={onOpenRequirement}
           onSelect={select}
           onUndoGhost={(meetingId) => void undoChange(meetingId)}
-          panelOpen={Boolean(resolved)}
+          panelOpen={Boolean(resolved) || askOpen}
           previousPositions={previousPositions}
           roots={roots}
           selectedId={resolved}
           viewKey={projectId}
         />
-        {resolved && (
+        {askOpen && (
+          <div className="project-graph__panel" onKeyDown={onAskKeyDown}>
+            <div className="graph-panel project-graph__ask-panel">
+              <ProjectAsk
+                apiClient={apiClient}
+                onClose={() => setAskOpen(false)}
+                onHighlight={askHighlight}
+                onOpenMeeting={(meetingId, seekMs, tab) =>
+                  onOpenMeetingAt ? onOpenMeetingAt(meetingId, seekMs, tab) : onOpenMeeting(meetingId)
+                }
+                onOpenPreview={(target) =>
+                  onOpenPreviewTarget ? onOpenPreviewTarget(target) : onOpenPreview?.(target.fileId, target.startMs)
+                }
+                player={player}
+                projectId={projectId}
+                projectName={graph.project.name}
+                variant="panel"
+              />
+            </div>
+          </div>
+        )}
+        {resolved && !askOpen && (
           <div className="project-graph__panel" onKeyDown={onPanelKeyDown}>
             <GraphPanel
               apiClient={apiClient}
@@ -972,7 +1023,21 @@ export function ProjectGraph({
             status={graph.status}
           />
         )}
-        {modeToggle && <span className="project-graph__mode">{modeToggle}</span>}
+        {(modeToggle || (canAsk && !expanded)) && (
+          <span className="project-graph__mode">
+            {canAsk && !expanded && (
+              <button
+                aria-pressed={askOpen}
+                className="ghost-button project-graph__ask"
+                onClick={() => (askOpen ? setAskOpen(false) : openAsk())}
+                type="button"
+              >
+                问这个项目
+              </button>
+            )}
+            {modeToggle}
+          </span>
+        )}
       </header>
       {movedOut.length > 0 && (
         <ul aria-label="刚移走的会" className="project-graph__moved">
@@ -994,7 +1059,7 @@ export function ProjectGraph({
           </button>
         )}
       </NoticeBanner>
-      <div className={`project-graph__stage${(expanded ? focusSel : resolved) ? " has-panel" : ""}`}>{stage}</div>
+      <div className={`project-graph__stage${(expanded ? focusSel : resolved || askOpen) ? " has-panel" : ""}`}>{stage}</div>
       {expanded ? (
         <footer className="project-graph__bottom">
           <span className="project-graph__legend">

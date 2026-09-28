@@ -70,6 +70,7 @@ from . import loose_mentions
 from . import relations as relations_module
 from . import related as related_module
 from . import related_read
+from . import asks as asks_module
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from . import material_content as material_content_module
 from . import material_media as material_media_module
@@ -496,6 +497,23 @@ class EmptyInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AskPrepareInput(BaseModel):
+    """4g：问题只在请求体里（不进网址）；2 到 300 个字由 asks 自己查，好回中文的说法。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(max_length=4000)
+
+
+class AskInput(BaseModel):
+    """4g：问题只在计划里，不再传一次；with_materials 必须明说（不给默认值）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str = Field(min_length=1, max_length=64)
+    with_materials: bool
+
+
 class RelationAnswerInput(BaseModel):
     """answer 是 yes、no、updated、pick、restore 之一（和这类关联对不上时 relations.answer 回 422）；
     file_id 只在 pick 时给。"""
@@ -814,6 +832,10 @@ def create_app(
         vectors=material_vectors,
         stop=links_stop,
         llm=links_llm_worker,
+    )
+    # 4g：项目内问答的计划和任务（只在内存里），用量走 links_llm_worker 的 charge("qa")
+    asks_service = asks_module.AskService(
+        db, settings, worker=links_llm_worker, semantic=semantic, vectors=material_vectors, busy=busy
     )
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
@@ -1387,6 +1409,8 @@ def create_app(
             # 先置停止标记（同时杀掉读取、认字、转写进程），再取消循环、等线程返回
             material_stop.set()
             links_stop.set()
+            # 4g：在跑的问答线程让它自己结束，结果丢掉
+            asks_service.close()
             # 正在进行的 AI 调用不等（在守护线程里，它的认领下次回收）；本机这一轮最多等 5 秒
             for worker in (links_task, links_llm_task):
                 if worker is not None:
@@ -1445,6 +1469,7 @@ def create_app(
     app.state.material_stop = material_stop
     app.state.links_worker = links_worker
     app.state.links_llm_worker = links_llm_worker
+    app.state.asks = asks_service
     app.state.waveforms = waveforms
     app.state.relay = relay
     app.state.uploads = uploads
@@ -1593,6 +1618,8 @@ def create_app(
                 # 第四期（4a）：前端存进 linksFlags；links_enabled 不是布尔值时当旧后台
                 "llm_configured": llm_ready(settings),
                 "links_enabled": bool(settings.links_enabled),
+                # 4g：问答关着时页面不用先问一次就知道
+                "ask_enabled": int(settings.qa_daily_questions) > 0,
             }
         )
         response.set_cookie(
@@ -3685,6 +3712,26 @@ def create_app(
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
         return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
+    # ---------------------------------------------------------------- 4g 项目内问答
+    def ask_call(fn: Any) -> Any:
+        try:
+            return fn()
+        except asks_module.AskError as error:
+            raise HTTPException(error.status, error.text) from None
+
+    @app.post("/api/projects/{project_id}/ask/prepare")
+    def ask_prepare(project_id: str, body: AskPrepareInput):
+        """在本机找原文，从不调 AI；问题在请求体里，不进网址。"""
+        return ask_call(lambda: asks_service.prepare(project_id, body.question))
+
+    @app.post("/api/projects/{project_id}/ask", status_code=202)
+    def ask_send(project_id: str, body: AskInput):
+        return ask_call(lambda: asks_service.ask(project_id, body.plan_id, body.with_materials))
+
+    @app.get("/api/ask/{job_id}")
+    def ask_job(job_id: str):
+        return ask_call(lambda: asks_service.job(job_id))
 
     # 4d：关系图「相关」线的数据（4f 画）；自己的 ETag（related_rev），不和 graph_rev 混
     @app.get("/api/graph/projects/{project_id}/related")

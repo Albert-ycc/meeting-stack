@@ -1588,3 +1588,74 @@ export interface PreviewTarget {
   startMs?: number;
   passage?: PreviewPassage;
 }
+
+// ---------------------------------------------------------------- 4g 项目内问答（都没有分数字段）
+
+/** 说明：busy、fts_rebuilding、materials_pending、partial、local_model，页面最多显示 2 条 */
+export interface AskNote {
+  kind: string;
+  text: string;
+}
+
+/** 一段原文。D 决议、N 纪要里的一行、T 会上原话、M 材料段落；name、loc 只给页面，不发给 AI */
+export interface AskSource {
+  id: string;
+  kind: "decision" | "minutes" | "meeting" | "material";
+  text: string;
+  quote: string;
+  start_ms: number | null;
+  meeting_id?: string;
+  decision_id?: string;
+  title?: string | null;
+  date?: string;
+  end_ms?: number;
+  audio_url?: string | null;
+  speaker?: string | null;
+  later_changed?: { date: string; decision_id: string } | null;
+  file_id?: number;
+  name?: string;
+  content_key?: string;
+  ordinal?: number;
+  loc?: string | null;
+  playable?: boolean;
+  root_online?: boolean;
+  /** 任务返回时才有：这段发出去了没有 */
+  sent?: boolean;
+}
+
+export type AskLlmState = "ok" | "no_key" | "off" | "capped";
+
+/** prepare 的返回：这一步什么都不发；confirm 不为空时［发送］正上方写它 */
+export interface AskPlan {
+  plan_id: string;
+  expires_in: number;
+  question: string;
+  counts: { meetings: number; materials: number };
+  confirm: { text: string; host: string } | null;
+  local_model: boolean;
+  llm: AskLlmState;
+  highlight: string[];
+  sources: AskSource[];
+  notes: AskNote[];
+  unattributed_meetings: number;
+}
+
+export interface AskAnswer {
+  text: string;
+  cited: string[];
+  found: boolean;
+  no_evidence: boolean;
+  truncated: boolean;
+}
+
+export type AskJob =
+  | { state: "waiting"; text: string }
+  | {
+      state: "done";
+      answer: AskAnswer;
+      sent: { meetings: number; materials: number };
+      sources: AskSource[];
+      notes: AskNote[];
+      local_model: boolean;
+    }
+  | { state: "stopped"; reason: string; text: string; retry: boolean; sources: AskSource[] };

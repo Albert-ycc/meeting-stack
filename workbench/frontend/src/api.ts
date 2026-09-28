@@ -66,6 +66,8 @@ import type {
   MaterialFilePreview,
   MaterialIndexStatus,
   MaterialUnreadablePage,
+  AskJob,
+  AskPlan,
 } from "./types";
 import type {
   CardsFilesPayload,
@@ -1287,6 +1289,19 @@ export const api = {
         kind: options.kind,
       })}`,
     ),
+  // ---------------------------------------------------------------- 项目内问答（4g）
+  /** 在本机找原文，从不调 AI；问题只在请求体里，从不进网址 */
+  askPrepare: (projectId: string, question: string) =>
+    write<AskPlan>(`/api/projects/${encodeURIComponent(projectId)}/ask/prepare`, "POST", { question }),
+  /** 按计划号把这几段发出去；withMaterials 为假时不发任何材料原文。回 202 和任务号 */
+  ask: (projectId: string, planId: string, withMaterials: boolean) =>
+    write<{ job_id: string; state: "waiting"; text: string }>(
+      `/api/projects/${encodeURIComponent(projectId)}/ask`,
+      "POST",
+      { plan_id: planId, with_materials: withMaterials },
+    ),
+  /** 轮询任务：网址里只有随机的任务号 */
+  askJob: (jobId: string) => read<AskJob>(`/api/ask/${encodeURIComponent(jobId)}`),
 };
 
 export type ApiClient = typeof api;

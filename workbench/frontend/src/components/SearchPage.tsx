@@ -21,6 +21,13 @@ export function materialNotes(result: SearchPayload | null, query: string, scope
   return notes;
 }
 
+/** 4g：搜的话像一个问题（以问号结尾，或含「吗」「呢」「什么」「多少」「哪」「怎么」「为什么」） */
+export function looksLikeQuestion(query: string): boolean {
+  const text = query.trim();
+  if (!text) return false;
+  return /[？?]$/.test(text) || ["吗", "呢", "什么", "多少", "哪", "怎么", "为什么"].some((word) => text.includes(word));
+}
+
 interface SearchPageProps {
   result: SearchPayload | null;
   onOpen: (meetingId: string, startMs: number, tab?: "minutes") => void;
@@ -35,6 +42,8 @@ interface SearchPageProps {
   onSearchWord: (word: string) => void;
   /** 材料的［预览］和 ▶：打开预览抽屉，▶ 从那个时间开始放 */
   onOpenMaterial?: (fileId: number, startMs?: number, passage?: PreviewPassage) => void;
+  /** 4g：范围是某个项目、搜的话像问题时，把问题交给这个项目的问答（不自动发）；旧后台不传 */
+  onAskProject?: (projectId: string, question: string) => void;
 }
 
 export function SearchPage({
@@ -42,6 +51,7 @@ export function SearchPage({
   result,
   onOpen,
   onOpenMaterial,
+  onAskProject,
   onScopeChange,
   onSearchWord,
   projects,
@@ -67,6 +77,10 @@ export function SearchPage({
     materials.length === 0 &&
     materialSimilar.length === 0;
   const meetingCount = `会议 ${COUNT.format(items.length)} 条`;
+  const askProject =
+    onAskProject && scope && scope !== "none" && looksLikeQuestion(query)
+      ? projects.find((project) => project.id === scope)
+      : undefined;
 
   return (
     <section className="search-page page-content">
@@ -75,6 +89,15 @@ export function SearchPage({
           <span className="eyebrow">SEARCH</span>
           <h1>“{query}”</h1>
           <p>包含这个词的在前，意思相近的列在后面。纪要、标题和材料也一起搜。</p>
+          {askProject && (
+            <button
+              className="text-button search-ask"
+              onClick={() => onAskProject?.(askProject.id, query.trim())}
+              type="button"
+            >
+              想要一句话的回答？到『{askProject.name}』里问
+            </button>
+          )}
         </div>
         <div className="record-count record-count--text">
           <span>{materials.length > 0 ? `${meetingCount} · 材料 ${COUNT.format(materials.length)} 份` : meetingCount}</span>

@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { MaterialSearchItem, Project, SearchItem, SearchPayload } from "../types";
-import { SearchPage } from "./SearchPage";
+import { SearchPage, looksLikeQuestion } from "./SearchPage";
 
 function hit(overrides: Partial<SearchItem> = {}): SearchItem {
   return {
@@ -25,7 +25,12 @@ const projects = [
 
 function renderPage(
   result: SearchPayload | null,
-  props: { scope?: string; state?: "ready" | "loading"; query?: string } = {},
+  props: {
+    scope?: string;
+    state?: "ready" | "loading";
+    query?: string;
+    onAskProject?: (projectId: string, question: string) => void;
+  } = {},
 ) {
   const onScopeChange = vi.fn();
   const onSearchWord = vi.fn();
@@ -34,6 +39,7 @@ function renderPage(
   render(
     <SearchPage
       onOpen={onOpen}
+      onAskProject={props.onAskProject}
       onOpenMaterial={onOpenMaterial}
       onScopeChange={onScopeChange}
       onSearchWord={onSearchWord}
@@ -273,5 +279,32 @@ describe("SearchPage 材料的［预览］定位（4d）", () => {
       from: "search",
       words: ["数理协会"],
     });
+  });
+});
+
+describe("SearchPage 像问题时去项目里问（4g）", () => {
+  const empty: SearchPayload = { mode: "hybrid", items: [], similar: [] } as unknown as SearchPayload;
+
+  it("项目范围下「报价最后定了多少？」出提示，点了交给项目的问答；「报价单」和「全部」范围不出", () => {
+    const onAskProject = vi.fn();
+    const view = renderPage(empty, { scope: "p-yt", query: "报价最后定了多少？", onAskProject });
+    fireEvent.click(screen.getByRole("button", { name: "想要一句话的回答？到『云图AI』里问" }));
+    expect(onAskProject).toHaveBeenCalledWith("p-yt", "报价最后定了多少？");
+    cleanup();
+    renderPage(empty, { scope: "p-yt", query: "报价单", onAskProject });
+    expect(screen.queryByText(/想要一句话的回答/)).toBeNull();
+    cleanup();
+    renderPage(empty, { scope: "", query: "报价最后定了多少？", onAskProject });
+    expect(screen.queryByText(/想要一句话的回答/)).toBeNull();
+    cleanup();
+    // 旧后台（没传 onAskProject）不出
+    renderPage(empty, { scope: "p-yt", query: "报价最后定了多少？" });
+    expect(screen.queryByText(/想要一句话的回答/)).toBeNull();
+    expect(view).toBeTruthy();
+  });
+
+  it("像问题：问号结尾，或含吗、呢、什么、多少、哪、怎么、为什么", () => {
+    for (const query of ["报价定了?", "报价定了吗", "驻场怎么安排", "上线在哪天"]) expect(looksLikeQuestion(query)).toBe(true);
+    for (const query of ["报价单", "驻场排期", ""]) expect(looksLikeQuestion(query)).toBe(false);
   });
 });

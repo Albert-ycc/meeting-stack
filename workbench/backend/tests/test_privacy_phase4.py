@@ -17,6 +17,9 @@
 - 4d：相关（H3）真的跑出片段和相关行：只在材料文字里的哨兵不进 meeting_window_passages.words、relations 的
   quote 和 evidence_json；两边都有的词（文件词干「接口文档」）进了 words，但不进词条、候选词、项目线索、
   segments_fts、minutes_fts（行数不变）和任何提示词；相关的计算不发 AI。
+- 4g：问答是唯一的例外。prepare 不调 AI；with_materials=false 的提示词里两个哨兵都没有；with_materials=true
+  的提示词里材料文字哨兵正好一次、文件名哨兵零次；之后跑项目归属、任务抽取、两个循环、快照和线索，都没有这两个
+  哨兵；假 AI 回答里的「回答专用标记乙」整库一处都没有；问答日志里没有问题、原文和回答。
 """
 from __future__ import annotations
 
@@ -50,6 +53,10 @@ MATERIAL_SENTINEL = "蓝鲸七号材料原文"
 NAME_SENTINEL = "绝密文件名甲"
 TITLE_SENTINEL = "会名哨兵乙"
 CANDIDATE_SENTINEL = "候选词哨兵丁"
+# 4g：假 AI 给问答的回答里带它，整库一处都不许有
+ANSWER_SENTINEL = "回答专用标记乙"
+# 4g 的请求：user 消息里有 <sources> 标签
+QA_MARK = "<sources>"
 LOOSE_MEETING = "vm-20260926-160000"
 # 4b 的请求：user 消息里有 <transcript> 标签
 LOOSE_MARK = "<transcript>"
@@ -117,6 +124,9 @@ def fake_ai(monkeypatch) -> list[str]:
                            "core": "报价单", "aka": [], "kind": "表格", "when": {"rel": "last_week", "version": None}}]},
                 ensure_ascii=False,
             )
+        elif QA_MARK in body:
+            # 4g：问答的回答（纯文本，带出处）
+            content = f"{ANSWER_SENTINEL}：预算另议[M1][T1]。"
         return _Reply({"choices": [{"message": {"content": content}, "finish_reason": "stop"}]})
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
@@ -414,3 +424,66 @@ def test_related_keeps_material_text_out_and_shared_words_local(tmp_path, fake_a
     for text in fake_ai:
         assert SHARED_STEM not in text and MATERIAL_SENTINEL not in text
         assert TOPIC_A[1] not in text
+
+
+def test_ask_sends_material_text_only_after_confirm(tmp_path, fake_ai, caplog):
+    """4g：材料原文只在 with_materials=true 的那一次请求里、只有段落文字；回答不落库；日志里什么都没有。"""
+    from meeting_workbench import asks
+    from meeting_workbench.materials import ROOT_ONLINE
+
+    caplog.set_level(logging.DEBUG)
+    db, settings, root = build_world(tmp_path)
+    project_id = db.query_one("SELECT id FROM projects WHERE name = '云图AI'")["id"]
+    service = asks.AskService(
+        db,
+        settings,
+        worker=LinksLLMWorker(db, settings),
+        registry=asks.AskRegistry(spawn=lambda fn: fn()),
+        state_of=lambda _path: ROOT_ONLINE,
+    )
+    question = "排期表和预算另议"
+    plan = service.prepare(project_id, question)
+    assert fake_ai == [], "prepare 不调 AI"
+    assert plan["counts"]["materials"] == 1 and plan["counts"]["meetings"] >= 1
+    assert plan["confirm"] is not None
+    # 出处小块的名字是本机拼的，只给页面
+    assert any(NAME_SENTINEL in (source.get("name") or "") for source in plan["sources"])
+
+    service.ask(project_id, plan["plan_id"], False)
+    service.ask(project_id, plan["plan_id"], True)
+    assert len(fake_ai) == 2
+    meetings_only, with_materials = fake_ai
+    assert QA_MARK in meetings_only and QA_MARK in with_materials
+    assert MATERIAL_SENTINEL not in meetings_only and NAME_SENTINEL not in meetings_only
+    assert with_materials.count(MATERIAL_SENTINEL) == 1
+    assert NAME_SENTINEL not in with_materials
+    assert str(root) not in with_materials and "报价单 v3.xlsx" not in with_materials
+
+    run_everything(db, settings)
+
+    later = fake_ai[2:]
+    assert later, "之后的循环一次都没调 AI，这个测试什么都没验证"
+    for text in later:
+        assert MATERIAL_SENTINEL not in text and NAME_SENTINEL not in text and ANSWER_SENTINEL not in text
+    places = outgoing(db, settings, root, later)
+    for place, text in places.items():
+        assert MATERIAL_SENTINEL not in text, place
+        assert NAME_SENTINEL not in text, place
+        assert ANSWER_SENTINEL not in text, place
+    with db.autocommit() as connection:
+        assert database_leaks(connection, MATERIAL_SENTINEL) == []
+        # 回答哨兵：整库每张表的文本列（连材料表一起）都找不到
+        tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        for table in tables:
+            for row in connection.execute(f'SELECT * FROM "{table}"'):
+                for value in row:
+                    if isinstance(value, bytes):
+                        value = value.decode("utf-8", "ignore")
+                    assert not (isinstance(value, str) and ANSWER_SENTINEL in value), table
+    asks_log = "\n".join(
+        record.getMessage() for record in caplog.records if record.name == "meeting_workbench.asks"
+    )
+    assert "问答回来" in asks_log
+    for secret in (question, "预算另议", MATERIAL_SENTINEL, NAME_SENTINEL, ANSWER_SENTINEL):
+        assert secret not in asks_log
+    assert ANSWER_SENTINEL not in caplog.text and MATERIAL_SENTINEL not in caplog.text

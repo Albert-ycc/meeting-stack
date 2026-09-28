@@ -555,3 +555,35 @@ describe("API write protection", () => {
   });
 });
 
+
+describe("项目内问答的三个接口（4g）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setCsrfToken("");
+  });
+
+  it("问题只在请求体里：askPrepare、ask 是 POST，网址里没有「?」也没有问题；askJob GET 任务号", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("t");
+
+    await api.askPrepare("p1", "报价最后定了多少？");
+    await api.ask("p1", "plan-1", false);
+    await api.askJob("job-1");
+
+    const [prepareUrl, prepareInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(prepareUrl).toBe("/api/projects/p1/ask/prepare");
+    expect(prepareUrl).not.toContain("?");
+    expect(decodeURIComponent(prepareUrl)).not.toContain("报价");
+    expect(prepareInit.method).toBe("POST");
+    expect(JSON.parse(prepareInit.body as string)).toEqual({ question: "报价最后定了多少？" });
+    const [askUrl, askInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(askUrl).toBe("/api/projects/p1/ask");
+    expect(JSON.parse(askInit.body as string)).toEqual({ plan_id: "plan-1", with_materials: false });
+    const [jobUrl, jobInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(jobUrl).toBe("/api/ask/job-1");
+    expect(jobInit.method ?? "GET").toBe("GET");
+  });
+});

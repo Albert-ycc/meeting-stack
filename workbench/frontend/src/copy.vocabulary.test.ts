@@ -23,6 +23,10 @@ const SOURCES = import.meta.glob(
     "./components/MeetingDetailPage.tsx",
     "./components/SearchMaterials.tsx",
     "./components/TranscriptPanel.tsx",
+    // 4g：问答卡和面板、出处小块、原文列表；搜索页的「想要一句话的回答？」
+    "./components/ask/*.{ts,tsx}",
+    "!./components/ask/*.test.{ts,tsx}",
+    "./components/SearchPage.tsx",
   ],
   {
     query: "?raw",
@@ -152,6 +156,52 @@ describe("第四期界面的用词", () => {
     expect(copy.flatMap(violations)).toEqual([]);
     const files = Object.keys(SOURCES);
     for (const name of ["RelatedMaterials.tsx", "RelatedMeetings.tsx", "relatedWindows.ts", "MentionedBadge.tsx"]) {
+      expect(files.some((file) => file.endsWith(name))).toBe(true);
+    }
+  });
+
+  it("4g 的问答卡、出处和提示", () => {
+    const copy = [
+      "问这个项目",
+      "比如：报价最后定的是多少？",
+      "只在『云图AI』的会和材料里找；要把材料原文发出去时会先告诉你",
+      "正在找相关的原话…",
+      "找到会议里的 5 段、材料里的 3 段",
+      "将发送 3 段材料原文给 api.deepseek.com",
+      "将发送 3 段材料原文给 127.0.0.1",
+      "只用会议回答",
+      "看看是哪几段",
+      "在等 AI 回答",
+      "会议和材料里都没找到和这个问题有关的原话",
+      "换个说法，或者用文件名、词典里的词问",
+      "没配置 AI，先列出找到的原话",
+      "问答的 AI 回答已关闭，先列出找到的原话",
+      "今天问答的次数到上限了，先列出找到的原话",
+      "只看了最相关的 3 段材料、5 段会议里的原话",
+      "另有 2 场没归项目的会也说到这些词，这次没用上",
+      "用本机模型回答",
+      "回答太长，后面截掉了",
+      "会议和材料里没找到能回答这个问题的原话",
+      "AI 的回答没指到原文，没列出来；下面是找到的原话",
+      "AI 没回（等了 90 秒），先列出找到的原话",
+      "上一个问题还在回答",
+      "这次找到的原话过期了",
+      "后台还是旧版本，重启声档后再试",
+      "之前问过",
+      "引用",
+      "复制回答",
+      "已复制",
+      "再问一次",
+      "资料盘未连接",
+      "后来改了 9/28",
+      "出处：9/21 初审规则沟通 12:34",
+      "出处：报价单 v3.xlsx 表『预算』",
+      "回答引用的这段",
+      "想要一句话的回答？到『云图AI』里问",
+    ];
+    expect(copy.flatMap(violations)).toEqual([]);
+    const files = Object.keys(SOURCES);
+    for (const name of ["ProjectAsk.tsx", "AnswerText.tsx", "CitationChip.tsx", "SourceList.tsx", "askStore.ts"]) {
       expect(files.some((file) => file.endsWith(name))).toBe(true);
     }
   });

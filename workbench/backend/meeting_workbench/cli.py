@@ -132,6 +132,11 @@ def build_parser() -> argparse.ArgumentParser:
     links_related.add_argument("--stats", action="store_true", help="这个项目的相关统计")
     links_related.add_argument("--rebuild", action="store_true", help="标记重算：只把 dirty 加一，不当场算")
     links_related.add_argument("--json", action="store_true", help="输出 JSON")
+    # 4g：问答试跑。问题从标准输入读，不放进命令行参数（免得出现在 ps 和 shell 历史里）；从不调 AI
+    links_ask = links_sub.add_parser(
+        "ask", help="问答试跑：问题从标准输入读，列出会找到的原话、要发几段、发给谁；不发送"
+    )
+    links_ask.add_argument("--project", required=True, help="项目 id")
     return parser
 
 
@@ -679,7 +684,64 @@ def _links_related(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def _links_ask(args: argparse.Namespace, settings: Settings) -> int:
+    """links ask --project：问题从标准输入读，跑一遍 retrieve，每个来源打印类、会名或文件名、时间或位置和前
+    60 个字；只读，从不调 AI。"""
+    from . import ask_retrieval, llm
+    from .asks import NOTE_TEXTS
+
+    question = sys.stdin.read()
+    try:
+        text = ask_retrieval.clean_question(question)
+    except ask_retrieval.QuestionError as error:
+        print(error.text, file=sys.stderr)
+        return 2
+    semantic = vectors = None
+    if settings.semantic_enabled:
+        try:
+            from .material_vectors import MaterialVectors
+            from .semantic import SemanticIndex
+
+            db = Database(settings.database_path)
+            semantic = SemanticIndex(db, settings)
+            vectors = MaterialVectors(db, settings, semantic)
+            vectors.refresh()
+        except Exception as error:  # noqa: BLE001  模型没装好时只按原词找
+            print(f"这次只按原词找（{type(error).__name__}）")
+            semantic = vectors = None
+    connection = _read_only(settings)
+    try:
+        plan = ask_retrieval.retrieve(
+            connection, args.project, text, settings=settings, semantic=semantic, vectors=vectors
+        )
+    except ask_retrieval.ProjectMissing:
+        raise SystemExit(f"没有这个项目：{args.project}") from None
+    finally:
+        connection.close()
+    counts = plan.counts
+    print(f"取的词：{'、'.join(plan.terms.phrases + plan.terms.needles) or '（没有）'}")
+    print(f"找到会议里的 {counts['meetings']} 段、材料里的 {counts['materials']} 段")
+    if counts["materials"]:
+        print(f"发送时会写：将发送 {counts['materials']} 段材料原文给 {llm.destination(settings).host}")
+    for kind in plan.notes:
+        print(NOTE_TEXTS.get(kind, kind))
+    if plan.unattributed:
+        print(f"另有 {plan.unattributed} 场没归项目的会也说到这些词，这次没用上")
+    for source in plan.sources:
+        if source["kind"] == "material":
+            name, where = source["name"], source.get("loc") or ""
+        else:
+            name = f"{source.get('date', '')} {source.get('title') or ''}".strip()
+            where = ask_retrieval.clock_text(source.get("start_ms"))
+        label = ask_retrieval.KIND_NAMES[source["id"][0]]
+        print(f"[{source['id']}] {label} · {name}{' · ' + where if where else ''}")
+        print(f"    {source['text'][:60]}")
+    return 0
+
+
 def _links(args: argparse.Namespace, settings: Settings) -> int:
+    if args.links_command == "ask":
+        return _links_ask(args, settings)
     if args.links_command == "status":
         return _links_status(args, settings)
     if args.links_command == "retry":

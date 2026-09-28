@@ -37,6 +37,8 @@ PHASE_FOUR_MODULES = (
     "timeline.py",
     "related.py",
     "related_read.py",
+    "ask_retrieval.py",
+    "asks.py",
 )
 
 # 4a：relation_read.links_state 的状态句（第 3 节「状态和提示」，每种一句话、最多一个按钮）
@@ -227,12 +229,73 @@ COPY_4D = (
     "找不到这个文件了",
     "这台电脑上找不到能打开文件的程序",
 )
+# 4g：问答的说明、错误、停了的八句和页面上的字（第 9 节、第 12 节）
+COPY_4G = (
+    "正在转写，这次只按原词找",
+    "材料全文索引在重建，结果可能不全",
+    "有些材料还没读完，可能找不全",
+    "时间到了，只找了一部分",
+    "用本机模型回答",
+    "项目不存在",
+    "问题最少 2 个字，最多 300 个字",
+    "问题里有不能用的控制字符",
+    "这次找到的原话过期了，请再问一次",
+    "这个项目上一个问题还在回答",
+    "这次没有可以发送的原话",
+    "今天问答的次数到上限了，明天再问",
+    "没配置 AI，先列出找到的原话",
+    "问答的 AI 回答已关闭，先列出找到的原话",
+    "在等 AI 回答",
+    "这次的回答过期了，请再问一次",
+    "AI 没回（等了 90 秒），先列出找到的原话",
+    "连不上 AI，先列出找到的原话",
+    "AI 那边太忙，过一会儿再问",
+    "AI 那边出错了，先列出找到的原话",
+    "AI 的 key 不对，先列出找到的原话",
+    "AI 不接受这次的请求，先列出找到的原话",
+    "AI 正在回答别的问题，过一会儿再问",
+    "出了点问题，先列出找到的原话",
+    "问这个项目",
+    "比如：报价最后定的是多少？",
+    "只在『云图AI』的会和材料里找；要把材料原文发出去时会先告诉你",
+    "正在找相关的原话…",
+    "找到会议里的 5 段、材料里的 3 段",
+    "将发送 3 段材料原文给 api.deepseek.com",
+    "将发送 3 段材料原文给 127.0.0.1",
+    "发送",
+    "只用会议回答",
+    "看看是哪几段",
+    "会议和材料里都没找到和这个问题有关的原话",
+    "换个说法，或者用文件名、词典里的词问",
+    "今天问答的次数到上限了，先列出找到的原话",
+    "只看了最相关的 3 段材料、5 段会议里的原话",
+    "另有 2 场没归项目的会也说到这些词，这次没用上",
+    "回答太长，后面截掉了",
+    "会议和材料里没找到能回答这个问题的原话",
+    "看看找到的原话",
+    "AI 的回答没指到原文，没列出来；下面是找到的原话",
+    "引用",
+    "复制回答",
+    "已复制",
+    "再问一次",
+    "上一个问题还在回答",
+    "这次找到的原话过期了",
+    "之前问过",
+    # 日期写「9/21」，这张表不许有斜杠，所以样例里去掉日期
+    "初审规则沟通 · 纪要",
+    "后来改了",
+    "出处：初审规则沟通 12:34",
+    "出处：报价单 v3.xlsx 表『预算』",
+    "想要一句话的回答？到『云图AI』里问",
+    "回答引用的这段",
+)
 COPY_TABLES = {
     "4a 状态句": STATE_SENTENCES_4A,
     "4a 回答和撤销": ANSWER_COPY_4A,
     "4b 状态句和提到": COPY_4B,
     "4c 决议卡和时间线": COPY_4C,
     "4d 相关材料栏": COPY_4D,
+    "4g 问答": COPY_4G,
 }
 
 
@@ -409,6 +472,42 @@ def test_phase_four_get_payloads_4d(tmp_path):
         payloads.append(related_read.panel(connection, "m", worker=None, settings=w.settings, local=True))
         payloads.append(related_read.rejected_items(connection, "m"))
         payloads.append(related_read.project_related(connection, "p", window="all", today=date(2026, 9, 28)))
+    found = [text for payload in payloads for text in collect_copy(payload)]
+    assert found, "样本什么字都没有，这个测试什么都没验证"
+    assert [text for text in found if problems(text)] == []
+
+
+def test_ask_texts_match_the_modules():
+    from meeting_workbench import ask_retrieval, asks
+
+    texts = [
+        *ask_retrieval.NOTE_TEXTS.values(),
+        ask_retrieval.TOO_SHORT_OR_LONG,
+        ask_retrieval.BAD_CONTROL,
+        *(text.format(seconds=90) for text, _retry in asks.STOP_TEXTS.values()),
+        asks.WAITING_TEXT, asks.PROJECT_MISSING, asks.PLAN_EXPIRED, asks.JOB_EXPIRED, asks.PROJECT_BUSY,
+        asks.NOTHING_TO_SEND, asks.CAPPED, asks.NO_KEY, asks.QA_OFF,
+    ]
+    assert set(texts) <= set(COPY_4G)
+    assert len(asks.STOP_TEXTS) == 8
+
+
+def test_phase_four_payloads_4g(tmp_path):
+    """4g 的样本库打一遍 prepare、ask 和任务（好了、停了、在等）：text、title 这些键里没有不许出现的词。"""
+    from .test_ask_api import FakeChat, ask, make, prepare
+
+    client, app, headers, pending = make(tmp_path)
+    payloads = [prepare(client, headers).json(), prepare(client, headers, "单列").json()]
+    plan_id = payloads[0]["plan_id"]
+    started = ask(client, headers, plan_id).json()
+    payloads += [started, client.get(f"/api/ask/{started['job_id']}").json()]
+    from meeting_workbench.llm import LLMError
+
+    app.state.asks.chat = FakeChat(error=LLMError("timeout"))
+    stopped = ask(client, headers, plan_id).json()
+    payloads.append(client.get(f"/api/ask/{stopped['job_id']}").json())
+    for bad in (ask(client, headers, "nope"), prepare(client, headers, "报")):
+        payloads.append(bad.json())
     found = [text for payload in payloads for text in collect_copy(payload)]
     assert found, "样本什么字都没有，这个测试什么都没验证"
     assert [text for text in found if problems(text)] == []

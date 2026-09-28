@@ -298,3 +298,14 @@
 .project-graph__sync.is-error {
   color: var(--danger);
 }
+
+/* 4g：［问这个项目］在模式切换旁边；问答面板占右侧面板的位置 */
+.project-graph__mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.project-graph__ask-panel {
+  overflow-y: auto;
+}

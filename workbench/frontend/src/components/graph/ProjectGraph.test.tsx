@@ -18,6 +18,7 @@ import type {
   RecentFile,
 } from "./graphTypes";
 import type { GraphNoticeUndo } from "./panelParts";
+import { forgetAskStore } from "../ask/askStore";
 import { ProjectGraph, forgetGraphCache, shortHash } from "./ProjectGraph";
 import { day, focusPayload, focusTask, meeting, payload, requirement } from "./testFixtures";
 
@@ -1920,5 +1921,88 @@ describe("ProjectGraph 放宽的提到（4b）", () => {
     const panel = await openFileFromMeeting();
     await userEvent.click(within(panel).getByRole("button", { name: "不是这份文件" }));
     expect(await screen.findByText("后台还是旧版本，重启声档后再试")).toBeInTheDocument();
+  });
+});
+
+// ------------------------------------------------------------------ 第四期 4g：问这个项目
+
+describe("ProjectGraph 问这个项目（4g）", () => {
+  const askSource = {
+    id: "T1",
+    kind: "meeting" as const,
+    meeting_id: "b",
+    title: "初审规则沟通 b",
+    date: "2026-09-24",
+    start_ms: 60_000,
+    audio_url: null,
+    text: "原话",
+    quote: "原话",
+  };
+
+  function askClient() {
+    return makeClient(payload(), {
+      askPrepare: vi.fn(async () => ({
+        plan_id: "plan-1",
+        expires_in: 600,
+        question: "定了什么？",
+        counts: { meetings: 1, materials: 0 },
+        confirm: null,
+        local_model: false,
+        llm: "ok",
+        highlight: [],
+        sources: [askSource],
+        notes: [],
+        unattributed_meetings: 0,
+      })),
+      ask: vi.fn(async () => ({ job_id: "job-1", state: "waiting", text: "在等 AI 回答" })),
+      askJob: vi.fn(async () => ({
+        state: "done",
+        answer: { text: "定了新口径[T1]。", cited: ["T1"], found: true, no_evidence: false, truncated: false },
+        sent: { meetings: 1, materials: 0 },
+        sources: [{ ...askSource, sent: true }],
+        notes: [],
+        local_model: false,
+      })),
+    });
+  }
+
+  beforeEach(() => {
+    forgetAskStore();
+  });
+
+  it("［问这个项目］在右侧面板的位置打开，Esc 关掉（焦点在输入框里时不关），不占 sel=", async () => {
+    render(<Harness apiClient={askClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "问这个项目" }));
+    const input = screen.getByRole("textbox", { name: "问题" });
+    expect(screen.getByTestId("selection")).toHaveTextContent("");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.getByRole("textbox", { name: "问题" })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("heading", { name: "问这个项目" }), { key: "Escape" });
+    expect(screen.queryByRole("textbox", { name: "问题" })).toBeNull();
+    expect(screen.queryByText("要看的节点不在当前的图上，换个时间窗试试")).toBeNull();
+  });
+
+  it("回答显示期间出处里的会点亮、其余变暗；点节点换成那个节点的面板", async () => {
+    const apiClient = askClient();
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "问这个项目" }));
+    const input = screen.getByRole("textbox", { name: "问题" });
+    fireEvent.change(input, { target: { value: "定了什么？" } });
+    fireEvent.submit(input.closest("form")!);
+    await screen.findByText("定了新口径", { exact: false }, { timeout: 3_000 });
+    expect(apiClient.ask).toHaveBeenCalledWith("p", "plan-1", false);
+    expect(screen.getByRole("button", { name: /^会议：初审规则沟通 b/ })).toHaveClass("is-lit");
+    expect(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ })).toHaveClass("is-dim");
+    await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    expect(await screen.findByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "问题" })).toBeNull();
+    expect(screen.getByTestId("selection")).toHaveTextContent("m:a");
+    expect(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ })).not.toHaveClass("is-dim");
+  });
+
+  it("没有 askPrepare 的客户端不出按钮", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ });
+    expect(screen.queryByRole("button", { name: "问这个项目" })).toBeNull();
   });
 });

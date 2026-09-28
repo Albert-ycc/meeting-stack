@@ -33,6 +33,7 @@ import { ProjectsPage } from "./components/ProjectsPage";
 import { RequirementDetailPage } from "./components/RequirementDetailPage";
 import { RequirementsPage } from "./components/RequirementsPage";
 import { SearchPage } from "./components/SearchPage";
+import { setDraft as setAskDraft } from "./components/ask/askStore";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { MaterialPreviewDrawer } from "./components/MaterialPreview";
 import { TasksPage } from "./components/TasksPage";
@@ -875,6 +876,15 @@ export default function App({ apiClient = api }: AppProps) {
         error={searchError}
         onOpen={(meetingId, startMs, tab) => openMeeting(meetingId, startMs, false, tab)}
         onOpenMaterial={(fileId, startMs, passage) => setPreviewTarget({ fileId, startMs, passage })}
+        // 4g：把问题交给项目的问答，打开项目（按存的模式），不自动发
+        onAskProject={
+          typeof apiClient.askPrepare === "function"
+            ? (projectId, question) => {
+                setAskDraft(projectId, question);
+                openProjectDetail(projectId);
+              }
+            : undefined
+        }
         onScopeChange={(scope) => void submitSearch({ word: searchedQuery, scope })}
         onSearchWord={(word) => void submitSearch({ word })}
         projects={projects}
@@ -1031,6 +1041,9 @@ export default function App({ apiClient = api }: AppProps) {
           onOpenGlossary={openGlossaryForProject}
           onOpenMeeting={openMeeting}
           onOpenPreview={(fileId, startMs) => setPreviewTarget({ fileId, startMs })}
+          // 4g：问答出处带时间和标签页打开会议；材料出处打开预览抽屉到那一段
+          onOpenMeetingAt={(meetingId, seekMs, tab) => openMeeting(meetingId, seekMs ?? 0, false, tab)}
+          onOpenPreviewTarget={setPreviewTarget}
           onOpenProject={openProjectDetail}
           onOpenRequirement={openRequirementFromGraph}
           onProjectsChanged={refreshProjects}
@@ -1053,6 +1066,8 @@ export default function App({ apiClient = api }: AppProps) {
           onOpenMeeting={(meetingId, seekMs, tab) => openMeeting(meetingId, seekMs, false, tab)}
           onOpenRequirement={openRequirementDetail}
           onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
+          onOpenPreviewTarget={setPreviewTarget}
+          isMobile={isMobile}
           onOpenTask={setTaskDrawerId}
           onProjectUpdated={refreshProjects}
           onOpenProject={openProjectDetail}
