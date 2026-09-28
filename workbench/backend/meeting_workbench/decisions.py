@@ -1311,7 +1311,7 @@ def project_decisions(
 ) -> list[dict[str, Any]]:
     """项目里还在的决议（只读，最多 2 条语句），按（决议日期，会议 id，序号）排。每条带 id、meeting_id、
     text、start_ms、按放需求的规则算出的 requirement_id（没归到的为空）、placement（how）、
-    earlier[{decision_id, date, text}]、restated[{meeting_id, date, start_ms}]（挂在最早那条上）。
+    earlier[{decision_id, date, text}]、restated[{decision_id, meeting_id, date, start_ms}]（挂在最早那条上）。
     默认不含被后来改掉的决议。4h 写 00 索引.md 用。"""
     rows = [
         dict(row)
@@ -1364,7 +1364,12 @@ def project_decisions(
                     for ref in mark.get("earlier", [])
                 ],
                 "restated": [
-                    {"meeting_id": ref["meeting"]["id"], "date": ref["meeting"]["date"], "start_ms": ref["start_ms"]}
+                    {
+                        "decision_id": ref["decision_id"],
+                        "meeting_id": ref["meeting"]["id"],
+                        "date": ref["meeting"]["date"],
+                        "start_ms": ref["start_ms"],
+                    }
                     for ref in mark.get("restated", [])
                 ],
                 "superseded": bool(mark.get("later")),

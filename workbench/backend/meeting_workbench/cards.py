@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 
 TRANSCRIPTS_DIR_NAME = "逐字稿"
 INDEX_NAME = "00 索引.md"
+# 声档自己在项目文件夹里写的文件名：4e 的 L4 不把它们当新文件，4h 的关键文件不列它们
+APP_FILE_NAMES = frozenset({INDEX_NAME})
 NOTES_HEADING = "## 我的笔记（这一行以下不会被自动覆盖）"
 _NOTES_PREFIX = "## 我的笔记"
 GENERATED_BY = "shengdang"
@@ -102,6 +104,8 @@ INDEX_PATHS_KEY = "card_index_paths"
 INDEX_OURS = "ours"
 INDEX_THEIRS = "theirs"
 INDEX_SKIPPED = "skipped"
+# 签名没变时索引不重渲；每一对（项目，根目录）最多隔这么久强制渲染一次兜底（写盘照旧先比内容）
+INDEX_FORCE_S = 600.0
 
 TASK_STATUS_LABELS = {
     "pending_confirm": "待确认",
@@ -530,11 +534,12 @@ class _Snapshot:
 
 
 class CardWriter:
-    def __init__(self, db: Database, settings: Settings):
+    def __init__(self, db: Database, settings: Settings, *, clock: Any = time.monotonic):
         self.db = db
         self.settings = settings
-        # 00 索引.md 最近一次写入的内容指纹，避免每轮都读文件比对
-        self._index_fps: dict[str, str] = {}
+        self.clock = clock
+        # 00 索引.md：（项目，根目录）→（签名，渲染时刻，结果）。签名没变、没过 10 分钟就不渲染。
+        self._index_sigs: dict[tuple[str, str], tuple[str, float, str]] = {}
 
     # ------------------------------------------------------------ 入口
 
@@ -1480,7 +1485,8 @@ class CardWriter:
             return False
         if state != ROOT_ONLINE:
             return True  # 盘在、文件夹没了：文件也就不在了
-        self._index_fps.pop(str(path), None)
+        for key in [key for key in self._index_sigs if key[1] == str(root)]:
+            self._index_sigs.pop(key, None)
         try:
             if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
                 return True
@@ -1493,96 +1499,44 @@ class CardWriter:
         return True
 
     def _write_index(self, project_id: str, root: Path, round_: _Round) -> str:
-        """写一份索引；返回 ours（盘上是声档写的这一份）、theirs（你接手了，不碰）、skipped（这次写不了）。"""
+        """写一份索引；返回 ours（盘上是声档写的这一份）、theirs（你接手了，不碰）、skipped（这次写不了）。
+
+        先比签名（card_index.index_signature）：没变、离上次渲染不到 10 分钟就照上次的结果，不渲染；
+        渲染了也先和盘上比，一样就不写。
+        """
+        from . import card_index  # card_index 引用本模块，这里晚一点再引
+
         cards_dir = root / CARDS_DIR_NAME
         if self._root_state(str(root), round_) != ROOT_ONLINE or not cards_dir.is_dir():
             return INDEX_SKIPPED
+        key = (project_id, str(root))
+        with self.db.autocommit() as connection:
+            sig = card_index.index_signature(connection, project_id, str(root))
+        now = self.clock()
+        cached = self._index_sigs.get(key)
+        if cached is not None and cached[0] == sig and now - cached[1] < INDEX_FORCE_S:
+            return cached[2]
         text = self.render_index(project_id, str(root))
-        fp = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        key = str(cards_dir / INDEX_NAME)
         target = cards_dir / INDEX_NAME
-        if self._index_fps.get(key) == fp and target.is_file():
-            return INDEX_OURS
+        outcome = INDEX_OURS
+        current = None
         if target.is_file():
             current = target.read_text(encoding="utf-8", errors="replace")
-            if current == text:
-                self._index_fps[key] = fp
-                return INDEX_OURS
             front, _body = split_frontmatter(current)
             if not any(line.strip() == f"generated_by: {GENERATED_BY}" for line in front or []):
-                return INDEX_THEIRS  # 不是声档写的，不碰
-        self._atomic_write(root, cards_dir, INDEX_NAME, text)
-        self._index_fps[key] = fp
-        return INDEX_OURS
+                outcome = INDEX_THEIRS  # 不是声档写的，不碰
+        if outcome == INDEX_OURS and current != text:
+            self._atomic_write(root, cards_dir, INDEX_NAME, text)
+        self._index_sigs[key] = (sig, now, outcome)
+        return outcome
 
     def render_index(self, project_id: str, root: str) -> str:
+        """00 索引.md 的全文（v2，card_index.py）。"""
+        from . import card_index
+
         with self.db.autocommit() as connection:
-            project = connection.execute("SELECT name FROM projects WHERE id=?", (project_id,)).fetchone()
-            cards = [
-                dict(row)
-                for row in connection.execute(
-                    """SELECT c.meeting_id, c.rel_path, c.state, m.title, m.recording_date,
-                              m.created_at, m.project_origin
-                         FROM meeting_cards c JOIN meetings m ON m.id = c.meeting_id
-                        WHERE c.project_id=? AND c.root_path=? AND c.rel_path IS NOT NULL
-                          AND c.state IN ('synced', 'user_edited')""",
-                    (project_id, root),
-                ).fetchall()
-            ]
-            tasks = [
-                dict(row)
-                for row in connection.execute(
-                    """SELECT title, status, assignee, meeting_id FROM tasks
-                        WHERE project_id=? AND status IN ('confirmed', 'in_progress')
-                        ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, created_at, id""",
-                    (project_id,),
-                ).fetchall()
-            ]
-        name = str(project["name"]) if project else ""
-        by_meeting = {card["meeting_id"]: card for card in cards}
-        cards.sort(key=lambda card: (_local_start(card | {"id": card["meeting_id"]}), card["meeting_id"]), reverse=True)
-
-        def link(card: dict[str, Any]) -> str:
-            file_name = Path(card["rel_path"]).name
-            title = _one_line(card["title"]) or Path(file_name).stem
-            return f"[{title}](<{file_name}>)"
-
-        lines = [
-            "---",
-            f"project: {_yaml(name)}",
-            f"generated_by: {GENERATED_BY}",
-            "---",
-            "",
-            "> 本文件由声档自动维护，请勿手改。把这个项目文件夹交给 Claude Code 时，先让它读这一份。",
-            "",
-            f"# {_one_line(name)} · 会议记录索引",
-            "",
-            "## 进行中的行动项",
-            "",
-        ]
-        if tasks:
-            for task in tasks:
-                parts = [
-                    _one_line(task["title"]),
-                    ASSIGNEE_LABELS.get(task.get("assignee") or "", "我"),
-                    TASK_STATUS_LABELS.get(task["status"], task["status"]),
-                ]
-                source = by_meeting.get(task.get("meeting_id") or "")
-                if source:
-                    parts.append(f"来自 {link(source)}")
-                lines.append("- " + " · ".join(parts))
-        else:
-            lines.append("暂无进行中的行动项。")
-        lines += ["", "## 会议（按时间倒序）", ""]
-        if cards:
-            for card in cards:
-                start = _local_start(card | {"id": card["meeting_id"]})
-                extra = " · AI 自动归属" if card.get("project_origin") == "ai" else ""
-                edited = " · 你改过这张卡" if card["state"] == USER_EDITED else ""
-                lines.append(f"- {start:%Y-%m-%d %H:%M} · {link(card)}{extra}{edited}")
-        else:
-            lines.append("这个项目还没有会议卡片。")
-        return "\n".join(lines) + "\n"
+            data = card_index.load_index_data(connection, project_id, root)
+        return card_index.render(data)
 
     # ------------------------------------------------------------ 查询
 

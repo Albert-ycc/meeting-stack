@@ -26,6 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from . import file_events
+from .cards import APP_FILE_NAMES
 from .decisions import project_names
 from .file_stems import COMMON_TWO_CHAR, STOPWORDS
 from .material_graph import rel_under
@@ -415,7 +416,7 @@ def _meeting_day(row: Mapping[str, Any]) -> date | None:
 
 def _eligible(file: Mapping[str, Any]) -> bool:
     """活文件；normal 区，或 key、pages、numbers 包；不是系统影子文件和锁文件；不是下载一半的临时文件；
-    大小不为 0（包的 size 是空的）。"""
+    不是声档自己写的文件（cards.APP_FILE_NAMES）；大小不为 0（包的 size 是空的）。"""
     if file.get("gone_at") is not None:
         return False
     ext = str(file.get("ext") or "").lower()
@@ -424,6 +425,8 @@ def _eligible(file: Mapping[str, Any]) -> bool:
         return False
     if silent_skip(str(file.get("name") or "")) or ext in SKIP_EXTS:
         return False
+    if str(file.get("name") or "") in APP_FILE_NAMES:
+        return False  # 声档自己写的（00 索引.md 在卡片区，按区已经挡住；按名字再挡一道）
     return bool(file.get("size")) or zone == "package"
 
 

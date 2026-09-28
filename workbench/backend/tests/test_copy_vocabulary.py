@@ -42,6 +42,7 @@ PHASE_FOUR_MODULES = (
     "produced.py",
     "affects.py",
     "graph_local.py",
+    "card_index.py",
 )
 
 # 4a：relation_read.links_state 的状态句（第 3 节「状态和提示」，每种一句话、最多一个按钮）
@@ -402,6 +403,41 @@ COPY_4F = (
     "3 场会提到",
     "在 3 场会上被提到",
 )
+# 4h：00 索引.md v2 的固定字句（card_index.py；这是写进项目文件夹、给 Claude Code 读的文件，
+# 模板里的 {…} 是填进去的日期、次数和标题）
+COPY_4H_INDEX = (
+    "> 本文件由声档自动维护，请勿手改。把这个项目文件夹交给 Claude Code 时，先让它读这一份。",
+    "> 这里只有会上说过的话、任务和文件位置，不摘材料的内容；文件内容请直接打开文件看。",
+    " · 会议记录索引",
+    "## 进行中的行动项",
+    "暂无进行中的行动项。",
+    "## 需求",
+    "### 已完成或搁置",
+    "## 其他决议（不属于哪个需求）",
+    "## 关键文件",
+    "## 会议（按时间倒序）",
+    "这个项目还没有会议卡片。",
+    "- 优先级：{priority}",
+    "- 文件夹：{path}",
+    "- 会议：{links}",
+    "（另有 {n} 场会的纪要不在这个文件夹）",
+    "另有 {n} 场会的纪要不在这个文件夹",
+    "- 定了什么：",
+    "  - 另有 {n} 条，见各场会的纪要",
+    "- 行动项：{items}",
+    "- 产出：{items}",
+    " · 这次改了 {date} 定的『{text}』",
+    " · {dates} 后来又提到",
+    "「{task}」的产出",
+    "在 {n} 场会上被提到",
+    "  - 摘要：{text}",
+    " · AI 自动归属",
+    " · 你改过这张卡",
+    "进行中",
+    "已完成",
+    "搁置",
+)
+
 COPY_TABLES = {
     "4a 状态句": STATE_SENTENCES_4A,
     "4a 回答和撤销": ANSWER_COPY_4A,
@@ -411,6 +447,7 @@ COPY_TABLES = {
     "4g 问答": COPY_4G,
     "4e 产出和可能过时": COPY_4E,
     "4f 关系图的线、局部图和来龙去脉": COPY_4F,
+    "4h 00 索引.md": COPY_4H_INDEX,
 }
 
 
@@ -714,3 +751,16 @@ def test_phase_four_payloads_4f(tmp_path):
     quoted = {"总价下调 5%", "写一版方案"}
     found = [text for text in found if text not in quoted]
     assert [text for text in found if problems(text)] == []
+
+
+def test_index_copy_matches_the_module():
+    """4h：索引里的固定字句都在字表里（字表进上面的用词检查）。"""
+    from meeting_workbench import card_index
+
+    module = [
+        value
+        for name, value in vars(card_index).items()
+        if name.isupper() and isinstance(value, str) and HAN.search(value)
+    ]
+    module += list(card_index.REQUIREMENT_STATUS.values())
+    assert sorted(module) == sorted(COPY_4H_INDEX)
