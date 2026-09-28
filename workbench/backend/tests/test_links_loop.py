@@ -374,6 +374,26 @@ def test_database_is_locked_ends_the_round(tmp_path):
     assert w.snapshot()["phases"]["resolve"] == "locked"
 
 
+def test_one_broken_step_does_not_stop_the_rest(tmp_path, caplog):
+    db, _ = make(tmp_path)
+    w = worker(db, clock=Clock())
+    calls: list[str] = []
+
+    def broken(ctx):
+        raise ValueError("坏数据")
+
+    fake_heavy(w, calls, h2_affects=broken)
+    with caplog.at_level("ERROR", logger="meeting_workbench.deep_links"):
+        result = w.run_round()
+
+    assert result["phases"]["affects"] == "error"
+    assert "h4_terms" in calls
+    assert db.query_one("SELECT 1 AS x FROM app_state WHERE key = 'links_housekeeping_at'") is not None
+    snap = w.snapshot()
+    assert snap["phases"]["affects"] == "error" and snap["last_round_at"] is not None
+    assert "affects" in caplog.text
+
+
 def test_material_fts_rebuild_skips_h2_and_h3(tmp_path):
     db, _ = make(tmp_path)
     db.execute("INSERT INTO app_state(key, value, updated_at) VALUES ('material_fts_rebuild', '{}', ?)", (utc_now(),))

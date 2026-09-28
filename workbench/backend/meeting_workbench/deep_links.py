@@ -61,7 +61,7 @@ PHASE_AFFECTS = "affects"  # H2 影响匹配
 PHASE_RELATED = "related"  # H3 相关
 PHASE_TERMS = "terms"  # H4 挖词
 PHASE_HOUSEKEEPING = "housekeeping"
-PHASE_STATES = ("done", "budget", "busy", "stopping", "locked", "off", "waiting")
+PHASE_STATES = ("done", "budget", "busy", "stopping", "locked", "off", "waiting", "error")
 # 要查材料全文表的重活：material_fts_rebuild 在时整段跳过
 FTS_PHASES = frozenset({PHASE_AFFECTS, PHASE_RELATED})
 WAITING_KEYS = ("decisions", "mentions", "pairs", "related", "affects", "terms")
@@ -316,7 +316,15 @@ class LinksWorker:
         except sqlite3.OperationalError as error:
             if _locked(error):
                 raise RoundLocked(name) from error
+            logger.exception("关联整理的 %s 一步出错，这一轮跳过它", name)
+            return "error"
+        except RoundLocked:
             raise
+        except Exception:
+            # 一步出错（比如某条数据触发的问题）只记日志、记成 error，后面的步骤和计数照跑，
+            # 不然同一条坏数据每轮都复现，后面的活就永远不做了
+            logger.exception("关联整理的 %s 一步出错，这一轮跳过它", name)
+            return "error"
 
     def _fts_rebuilding(self) -> bool:
         try:
