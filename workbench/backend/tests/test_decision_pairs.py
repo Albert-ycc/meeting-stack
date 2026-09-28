@@ -134,6 +134,50 @@ def test_claim_closes_at_most_five_meetings_without_a_call(tmp_path):
     assert states.count("done") == 5
 
 
+def test_seed_and_claim_close_at_most_five_per_tick_and_seed_looks_at_ten(tmp_path, monkeypatch):
+    db = make(tmp_path)
+    texts = ["驻场排班改成双岗", "导出按筛选范围全量", "报价单交给销售", "接口文档交由架构组评审",
+             "登录页换新配色", "日志保留期延长", "客服话术重新整理", "测试环境迁到新机房",
+             "周报改到周四发", "验收单模板换新版", "培训排到下个月", "预算表再细化一版"]
+    for index, text in enumerate(texts):
+        meeting(db, f"m{index}", text, ago=index + 1)
+    ingest(db)
+    task = DecisionPairTask(settings(tmp_path), chat=FakeChat(changed()))
+    plans = []
+    original = task._plan
+
+    def counting(db_, row, now):
+        plans.append(row["meeting_id"])
+        return original(db_, row, now)
+
+    task._plan = counting
+
+    def done():
+        return [scan(db, f"m{index}")["pair_state"] for index in range(len(texts))].count("done")
+
+    # 一次 tick：seed 结掉 5 场，同一个 now 的认领不再多结
+    task.seed(db, NOW)
+    assert done() == 5
+    assert task.claim(db, NOW) is None
+    assert done() == 5
+
+    # seed 只看排在最前的 10 场：前面都要调用时，它最多算 10 次对比范围
+    plans.clear()
+    db.execute("UPDATE decision_scan SET pair_state = 'pending'")
+    with monkeypatch.context() as patch:
+        patch.setattr(decision_pairs.Plan, "needs_call", property(lambda self: True))
+        task.seed(db, NOW + timedelta(minutes=1))
+    assert len(plans) == decision_pairs.CLOSE_LIMIT * 2 and done() == 0
+
+    # 下一次 tick（新的 now）认领照常结掉 5 场
+    task.seed(db, NOW + timedelta(minutes=2))
+    assert done() == 5
+    assert task.claim(db, NOW + timedelta(minutes=2)) is None
+    assert done() == 5
+    assert task.claim(db, NOW + timedelta(minutes=3)) is None
+    assert done() == 10
+
+
 # ---------------------------------------------------------------------- 提示词
 
 

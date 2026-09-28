@@ -818,13 +818,18 @@ def link_pairs(
     if not material:
         return
     texts = {row["id"]: row["text"] for row in mine}
+    # 规则这一步刚写过的「后来又提到」不再按 AI 的原话查：AI 原来写的那一行被规则接手以后 origin 仍是
+    # llm、evidence 已换成规则的，按原话查会把它收回，这一对以后就再也立不起来
+    ruled = set(keep)
     mismatched: list[int] = []
     for row in connection.execute(
-        f"""SELECT id, decision_id, to_decision_id, evidence_json FROM relations
+        f"""SELECT id, kind, ident, decision_id, to_decision_id, evidence_json FROM relations
              WHERE kind IN ({_PAIR_KINDS_SQL}) AND status = 'shown' AND origin = 'llm'
                AND (decision_id IN ({mine_sql}) OR to_decision_id IN ({mine_sql}))""",
         (meeting_id, meeting_id),
     ).fetchall():
+        if row["kind"] == "restated" and row["ident"] in ruled:
+            continue
         try:
             evidence = json.loads(row["evidence_json"] or "{}")
         except ValueError:

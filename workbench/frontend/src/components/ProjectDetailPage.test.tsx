@@ -1159,6 +1159,132 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
     expect(onOpenMeeting).toHaveBeenCalledWith("m1", 754_000);
   });
 
+  it("在等时 15 秒静默重取只换第一页那几天，［更早］翻出来的天和翻页起点留着", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const waiting = { kind: "waiting" as const, reason: "offline" as const, text: "资料盘未连接，插上后接着记文件的变化", action: null };
+      const older = timelinePayload({
+        state: waiting,
+        days: [{ day: "2026-09-20", label: "9月20日 周日", more_dirs: 0, items: [
+          { type: "tasks", event: "confirmed", at: null, time: "09:00", tasks: [{ id: "t9", title: "旧任务" }], more: 0 },
+        ] }],
+        next_before: "2026-09-13",
+      });
+      const refreshed = timelinePayload({
+        state: waiting,
+        days: [{ day: "2026-09-27", label: "今天", more_dirs: 0, items: [
+          { type: "tasks", event: "confirmed", at: null, time: "19:00", tasks: [{ id: "t8", title: "新任务" }], more: 0 },
+        ] }],
+      });
+      const projectTimeline = vi
+        .fn()
+        .mockResolvedValueOnce(timelinePayload({ state: waiting }))
+        .mockResolvedValueOnce(older)
+        .mockResolvedValue(refreshed);
+      renderTimeline({ projectTimeline } as Partial<ApiClient>);
+      const card = await screen.findByRole("region", { name: "时间线" });
+      await within(card).findByText("今天");
+      fireEvent.click(within(card).getByRole("button", { name: "更早" }));
+      expect(await within(card).findByText("09:00 确认了任务：旧任务")).toBeInTheDocument();
+
+      await act(async () => {
+        vi.advanceTimersByTime(15_100);
+      });
+      expect(await within(card).findByText("19:00 确认了任务：新任务")).toBeInTheDocument();
+      // 第一页那天换成了新的，更早那天还在
+      expect(within(card).queryByText("15:02 确认了任务：写一版方案")).not.toBeInTheDocument();
+      expect(within(card).getByText("09:00 确认了任务：旧任务")).toBeInTheDocument();
+      // 翻页起点还是翻出来那一页给的
+      fireEvent.click(within(card).getByRole("button", { name: "更早" }));
+      await waitFor(() =>
+        expect(projectTimeline).toHaveBeenLastCalledWith("project-1", { kind: "all", days: 7, before: "2026-09-13" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("一页的天全被滤掉时自动往前取，不写「还没有…」", async () => {
+    const empty = timelinePayload({ days: [], next_before: "2026-09-20" });
+    const projectTimeline = vi
+      .fn()
+      .mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce(timelinePayload({
+        days: [{ day: "2026-09-18", label: "9月18日 周五", more_dirs: 0, items: [
+          { type: "tasks", event: "done", at: null, time: "10:00", tasks: [{ id: "t1", title: "写一版方案" }], more: 0 },
+        ] }],
+        next_before: null,
+      }));
+    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    const card = await screen.findByRole("region", { name: "时间线" });
+    expect(await within(card).findByText("10:00 完成了任务：写一版方案")).toBeInTheDocument();
+    expect(projectTimeline).toHaveBeenLastCalledWith("project-1", { kind: "all", days: 7, before: "2026-09-20" });
+    expect(within(card).queryByText("这个项目还没有会议、任务和文件的变化")).not.toBeInTheDocument();
+  });
+
+  it("往前取了几页仍是空的：只留［更早］，不写「还没有…」", async () => {
+    const projectTimeline = vi.fn().mockResolvedValue(timelinePayload({ days: [], next_before: "2026-09-01" }));
+    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    const card = await screen.findByRole("region", { name: "时间线" });
+    expect(await within(card).findByRole("button", { name: "更早" })).toBeInTheDocument();
+    expect(projectTimeline).toHaveBeenCalledTimes(4);
+    expect(within(card).queryByText("这个项目还没有会议、任务和文件的变化")).not.toBeInTheDocument();
+  });
+
+  it("［更早］还在路上时换了筛选：回来的旧页丢掉", async () => {
+    let resolveMore: (payload: ProjectTimelinePayload) => void = () => undefined;
+    const pending = new Promise<ProjectTimelinePayload>((resolve) => {
+      resolveMore = resolve;
+    });
+    const projectTimeline = vi
+      .fn()
+      .mockResolvedValueOnce(timelinePayload())
+      .mockReturnValueOnce(pending)
+      .mockResolvedValue(timelinePayload({ kind: "tasks", days: [], next_before: null }));
+    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    const card = await screen.findByRole("region", { name: "时间线" });
+    await within(card).findByText("今天");
+    await userEvent.click(within(card).getByRole("button", { name: "更早" }));
+    await userEvent.click(within(card).getByRole("button", { name: "任务" }));
+    expect(await within(card).findByText("还没有确认或完成的任务")).toBeInTheDocument();
+    await act(async () => {
+      resolveMore(timelinePayload({
+        days: [{ day: "2026-09-20", label: "9月20日 周日", more_dirs: 0, items: [
+          { type: "tasks", event: "confirmed", at: null, time: "09:00", tasks: [{ id: "t9", title: "旧筛选的" }], more: 0 },
+        ] }],
+        next_before: "2026-09-13",
+      }));
+    });
+    expect(within(card).queryByText(/旧筛选的/)).not.toBeInTheDocument();
+    expect(within(card).getByText("还没有确认或完成的任务")).toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: "更早" })).not.toBeInTheDocument();
+  });
+
+  it("［决议］：你说不属于需求的（none）和会没关联需求的（project）都写「没归到具体需求」", async () => {
+    const decisionItem = (id: string, how: "none" | "project") => ({
+      type: "decision" as const, at: null, time: "14:30",
+      decision: { id, text: `决议${id}`, start_ms: null, later: null },
+      meeting: { id: "m1", title: "初审规则沟通", audio_url: null },
+      requirement: null, how, linked_requirement_ids: [],
+    });
+    const projectTimeline = vi.fn().mockResolvedValueOnce(timelinePayload()).mockResolvedValue(timelinePayload({
+      kind: "decisions",
+      requirements: [{ id: "r1", title: "初审规则 V2" }],
+      days: [{ day: "2026-09-27", label: "今天", more_dirs: 0, items: [decisionItem("dec-n", "none"), decisionItem("dec-p", "project")] }],
+    }));
+    renderTimeline({ projectTimeline, placeDecision: vi.fn() } as Partial<ApiClient>);
+    const card = await screen.findByRole("region", { name: "时间线" });
+    await within(card).findByText("今天");
+    await userEvent.click(within(card).getByRole("button", { name: "决议" }));
+    await within(card).findByText("决议dec-n");
+    for (const text of ["决议dec-n", "决议dec-p"]) {
+      const row = within(card).getByText(text).closest(".decision-row") as HTMLElement;
+      expect(within(row).getByText(/没归到具体需求/)).toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: "放到需求 ▾" })).toBeInTheDocument();
+    }
+    expect(within(card).queryByText("初审规则 V2")).not.toBeInTheDocument();
+  });
+
   it("「还有 N 条」打开纪要；旧后台没有方法时不画时间线", async () => {
     const onOpenMeeting = vi.fn();
     renderTimeline({ projectTimeline: vi.fn().mockResolvedValue(timelinePayload()) } as Partial<ApiClient>, { onOpenMeeting });

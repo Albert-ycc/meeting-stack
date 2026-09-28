@@ -11,7 +11,8 @@
   只作提示。
 - 本机初筛：一对决议共有一个 3 字的中文片段，或至少两个不在停用表里的 2 字片段，或至少一个数值词，才留；
   之前的决议最多留 40 条（上次被截断时减半成 20 条），按共有片段数、再按日期远近排。
-- 没留下、也没有待归的决议：直接记 done，不调用（每次认领最多顺手结掉 5 场；seed 里也结）。
+- 没留下、也没有待归的决议：直接记 done，不调用。一次 tick 里 seed 和认领合计最多顺手结掉 5 场；seed 只看
+  排在最前的 10 场。
 - 认领在短事务里（running、pair_claimed_at），事务外调 llm.chat(max_tokens=3000, timeout=60)。
   finish_reason 是 length 按内容不合格处理，下一次之前的决议减半。
 - 校验在本机：编号是发出去的、一头是这一场一头是之前的；relation 只能是 changed、restated；两段原话都是
@@ -448,12 +449,15 @@ class DecisionPairTask:
     def __init__(self, settings: Any, *, chat: Callable[..., llm.ChatReply] | None = None):
         self.settings = settings
         self._chat = chat
+        # 这次 tick 里 seed 已经结掉几场：links_llm 的一次 tick 给 seed 和 claim 传同一个 now，两边合计不超过
+        # CLOSE_LIMIT（规格：一次最多一个调用，另外最多顺手结掉 5 场）
+        self._seeded: tuple[datetime | None, int] = (None, 0)
 
     # ------------------------------------------------------------------ 挑会
 
-    def _due(self, db: Database, now: datetime) -> list[dict[str, Any]]:
+    def _due(self, db: Database, now: datetime, limit: int = SCAN_LIMIT) -> list[dict[str, Any]]:
         with db.autocommit() as connection:
-            return [dict(row) for row in connection.execute(_DUE_SQL, (claim_stamp(now), SCAN_LIMIT)).fetchall()]
+            return [dict(row) for row in connection.execute(_DUE_SQL, (claim_stamp(now), limit)).fetchall()]
 
     def _plan(self, db: Database, row: Mapping[str, Any], now: datetime) -> Plan | None:
         with db.autocommit() as connection:
@@ -475,21 +479,24 @@ class DecisionPairTask:
             )
 
     def seed(self, db: Database, now: datetime) -> int:
-        """AI 循环每次 tick 开头调：不用调用的会先结掉（最多 5 场），没配置 AI 时它们也不用干等。
-        不建行：pending 由 L1 设。"""
+        """AI 循环每次 tick 开头调：不用调用的会先结掉，没配置 AI 时它们也不用干等。只看排在最前的
+        CLOSE_LIMIT×2 场（每场要算一次对比范围），结掉的算进这次 tick 的 5 场里。不建行：pending 由 L1 设。"""
+        self._seeded = (now, 0)
         if not llm_on(self.settings):
             return 0
         closed = 0
-        for row in self._due(db, now):
+        for row in self._due(db, now, CLOSE_LIMIT * 2):
             if closed >= CLOSE_LIMIT:
                 break
             plan = self._plan(db, row, now)
             if plan is not None and not plan.needs_call and self._close(db, row, plan, now):
                 closed += 1
+        self._seeded = (now, closed)
         return 0
 
     def claim(self, db: Database, now: datetime) -> dict[str, Any] | None:
-        closed = 0
+        seeded_at, seeded = self._seeded
+        closed = seeded if seeded_at == now else 0
         stamp = claim_stamp(now)
         for row in self._due(db, now):
             plan = self._plan(db, row, now)

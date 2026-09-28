@@ -12,7 +12,7 @@ from meeting_workbench.db import Database
 from meeting_workbench.main import create_app
 
 from .helpers import count_reads
-from .test_decision_pairs import NEW_TEXT, NOW, OLD_TEXT, decision_id, ingest, make, meeting, minutes, scan
+from .test_decision_pairs import NEW_TEXT, NOW, OLD_TEXT, decision_id, ingest, make, meeting, minutes, pair_rows, scan
 from .test_decisions import set_minutes
 from .test_graph import add_project, add_requirement
 from .test_tasks_api import FakeRelayClient
@@ -129,6 +129,42 @@ def test_gone_decision_clears_its_marks(tmp_path):
     set_minutes(db, "new", "mv-new-2", minutes(SAME), kind="generated")
     ingest(db, now=NOW + timedelta(minutes=1))
     assert db.query_one("SELECT status FROM relations WHERE id = ?", (shown["id"],)) == {"status": "cleared"}
+
+
+def test_ai_restated_row_that_becomes_the_same_text_stays_shown(tmp_path):
+    """AI 写的「后来又提到」，后来那条改成和前一条一字不差：规则接手这一行，仍显示后来又提到。"""
+    db = make(tmp_path)
+    add_requirement(db, "r1", "p", "初审规则 V2")
+    meeting(db, "a", "阈值先按 0.8 执行 [00:12:34]", ago=10, title="周会甲")
+    meeting(db, "b", "阈值还是按 0.8 执行 [00:00:30]", ago=2, title="周会乙")
+    link(db, "r1", "a")
+    link(db, "r1", "b")
+    ingest(db)
+    early_id, late_id = decision_id(db, "a"), decision_id(db, "b")
+    with db.transaction() as connection:
+        relations.upsert_system(
+            connection,
+            [{
+                "kind": "restated", "project_id": "p", "ident": f"{early_id}|{late_id}", "status": "shown",
+                "origin": "llm", "meeting_id": "b", "at_ms": 30_000, "decision_id": early_id,
+                "to_decision_id": late_id, "quote": "还是按 0.8",
+                "evidence": {"why_earlier": "先按 0.8", "why_later": "还是按 0.8"},
+            }],
+            NOW.isoformat(),
+            since=NOW.isoformat(),
+        )
+
+    set_minutes(db, "b", "mv-b-2", minutes("阈值先按 0.8 执行 [00:00:30]"), kind="generated")
+    ingest(db, now=NOW + timedelta(minutes=1))
+    assert decision_id(db, "b") == late_id
+    (row,) = pair_rows(db, "restated")
+    assert row["status"] == "shown"
+
+    # 再跑几轮也不会被收回
+    ingest(db, now=NOW + timedelta(minutes=2))
+    assert pair_rows(db, "restated")[0]["status"] == "shown"
+    (group,) = log(db)["meetings"][-1]["decisions"]
+    assert [item["meeting"]["id"] for item in group["restated"]] == ["b"]
 
 
 # ---------------------------------------------------------------------- 放在哪个需求下

@@ -38,10 +38,12 @@ interface DecisionLogCardProps {
   reloadKey?: number | string;
 }
 
-/** 放决议以后原地留的一行灰字，留到 undo_until */
+/** 放决议以后原地留的一行灰字，留到 undo_until。记着那场会：拿掉的是这场会在卡里唯一的一条时，重读回来
+ * 这场会已不在卡里，灰字行照样按这场会画到 undo_until */
 interface PlacedLine {
   decisionId: string;
   meetingId: string;
+  meeting: DecisionLogMeeting["meeting"];
   text: string;
   undo: DecisionPlacementResult["undo"];
   until: string;
@@ -168,7 +170,7 @@ export function DecisionLogCard({ apiClient, requirementId, canWrite, onOpenMeet
     }
   };
 
-  const place = async (entry: DecisionLogEntry, meetingId: string, placement: "none" | "picked") => {
+  const place = async (entry: DecisionLogEntry, meeting: DecisionLogMeeting["meeting"], placement: "none" | "picked") => {
     if (busy || !entry.id || typeof apiClient.placeDecision !== "function") return;
     setBusy(true);
     try {
@@ -177,7 +179,14 @@ export function DecisionLogCard({ apiClient, requirementId, canWrite, onOpenMeet
         requirement_id: placement === "picked" ? requirementId : null,
       });
       const text = placement === "picked" ? PLACED_HERE_NOTICE : PLACED_NONE_NOTICE;
-      const line: PlacedLine = { decisionId: entry.id, meetingId, text, undo: result.undo, until: result.undo_until };
+      const line: PlacedLine = {
+        decisionId: entry.id,
+        meetingId: meeting.id,
+        meeting,
+        text,
+        undo: result.undo,
+        until: result.undo_until,
+      };
       setPlaced((current) => [...current.filter((item) => item.decisionId !== line.decisionId), line]);
       setNow(Date.now());
       setNotice(text, "success", UNDO_NOTICE_MS, [{ label: "撤销", onClick: () => void undoPlace(line) }]);
@@ -223,9 +232,10 @@ export function DecisionLogCard({ apiClient, requirementId, canWrite, onOpenMeet
       onOpenMeeting={onOpenMeeting}
       onRestore={(item) => void restore(item)}
       player={player}
+      actionsShown={action === "picked" ? "always" : "hover"}
       actions={
         canPlace && entry.id ? (
-          <button className="text-button" disabled={busy} onClick={() => void place(entry, group.meeting.id, action)} type="button">
+          <button className="text-button" disabled={busy} onClick={() => void place(entry, group.meeting, action)} type="button">
             {action === "none" ? "不属于这个需求" : "放到这个需求"}
           </button>
         ) : undefined
@@ -233,7 +243,22 @@ export function DecisionLogCard({ apiClient, requirementId, canWrite, onOpenMeet
     />
   );
 
-  const empty = log ? emptyText(log) : null;
+  // 刚放走的决议所在的会不在这次返回里了（拿掉的是它在卡里唯一的一条）：按那场会补一组，灰字行留到 undo_until
+  const shownMeetings = new Set((log?.meetings ?? []).map((group) => group.meeting.id));
+  const orphans: DecisionLogMeeting[] = [];
+  for (const line of livePlaced) {
+    if (shownMeetings.has(line.meetingId)) continue;
+    shownMeetings.add(line.meetingId);
+    orphans.push({ meeting: line.meeting, note: null, decisions: [], unplaced: [] });
+  }
+  // 新的会在前：补的组按日子插回去（sort 是稳定的，同一天的照服务端的先后）
+  const groups = orphans.length
+    ? [...(log?.meetings ?? []), ...orphans].sort((left, right) =>
+        (right.meeting.date ?? "").localeCompare(left.meeting.date ?? ""),
+      )
+    : log?.meetings ?? [];
+  // 还有灰字行要留着时不写空的说法
+  const empty = log && !livePlaced.length ? emptyText(log) : null;
 
   return (
     <section aria-label="决议" className="requirement-detail__card decision-log">
@@ -266,12 +291,21 @@ export function DecisionLogCard({ apiClient, requirementId, canWrite, onOpenMeet
             <p className="decision-log__empty">{empty}</p>
           ) : (
             <div className="decision-log__groups">
-              {log.meetings.map((group) => {
+              {groups.map((group) => {
                 const lines = livePlaced.filter((line) => line.meetingId === group.meeting.id);
                 if (!group.decisions.length && !group.unplaced.length) {
                   if (!group.note && !lines.length) return null;
                   return (
                     <div className="decision-log__group" key={group.meeting.id}>
+                      {!group.note && (
+                        <button
+                          className="text-button decision-log__meeting"
+                          onClick={() => onOpenMeeting(group.meeting.id)}
+                          type="button"
+                        >
+                          {dayWithWeekday(group.meeting.date)} · {group.meeting.title}
+                        </button>
+                      )}
                       {group.note && (
                         <p className="decision-log__compact">
                           <button className="text-button" onClick={() => onOpenMeeting(group.meeting.id)} type="button">

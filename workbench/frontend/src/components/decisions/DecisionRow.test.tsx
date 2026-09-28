@@ -93,6 +93,38 @@ describe("DecisionRow", () => {
     expect(screen.queryByRole("button", { name: "不是一回事" })).not.toBeInTheDocument();
   });
 
+  it("行上的按钮：默认悬停出现、手机放进「原话」展开；没有时间点时画在行尾；always 一直在行尾", async () => {
+    const action = <button type="button">不属于这个需求</button>;
+    const { unmount } = render(
+      <DecisionRow apiClient={{ meetingQuotes: vi.fn().mockResolvedValue({ quotes: [] }) }} actions={action} canWrite
+                   decision={decision()} meeting={MEETING} player={{ play: vi.fn() }} />,
+    );
+    expect(screen.getByRole("button", { name: "不属于这个需求" }).closest(".decision-row__hover-actions")).not.toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "原话" }));
+    const copies = screen.getAllByRole("button", { name: "不属于这个需求", hidden: true });
+    expect(copies.some((button) => button.closest(".decision-row__mobile-actions"))).toBe(true);
+    unmount();
+
+    // 没有时间点就没有「原话」：手机上也要点得到，画在行尾
+    const second = render(
+      <DecisionRow apiClient={{ meetingQuotes: vi.fn() }} actions={action} canWrite
+                   decision={decision({ start_ms: null })} meeting={MEETING} player={{ play: vi.fn() }} />,
+    );
+    expect(screen.queryByRole("button", { name: "原话" })).not.toBeInTheDocument();
+    const pinned = screen.getByRole("button", { name: "不属于这个需求" });
+    expect(pinned.closest(".decision-row__end-actions")).not.toBeNull();
+    expect(pinned.closest(".decision-row__hover-actions")).toBeNull();
+    second.unmount();
+
+    render(
+      <DecisionRow apiClient={{ meetingQuotes: vi.fn().mockResolvedValue({ quotes: [] }) }} actions={<button type="button">放到这个需求</button>}
+                   actionsShown="always" canWrite decision={decision()} meeting={MEETING} player={{ play: vi.fn() }} />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "原话" }));
+    expect(screen.getAllByRole("button", { name: "放到这个需求", hidden: true })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "放到这个需求" }).closest(".decision-row__end-actions")).not.toBeNull();
+  });
+
   it("canWrite 为假时标记照样显示，只是没有按钮", () => {
     setup({}, { canWrite: false });
     expect(screen.getByText("后来改了：9月28日 周会『阈值改成 0.7』")).toBeInTheDocument();

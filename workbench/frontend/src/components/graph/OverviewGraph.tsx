@@ -23,7 +23,6 @@ import "./OverviewGraph.css";
 
 /** 画布开着时每 30 秒对一次数据；没变化时服务器回 304 */
 const REFRESH_MS = 30_000;
-/** 带［撤销］的提示多停一会儿，和项目图一致 */
 /** 时间窗偏好和项目图存在一处，键是 overview */
 const PREF_KEY = "overview";
 const DEFAULT_WINDOW: GraphWindow = "28d";

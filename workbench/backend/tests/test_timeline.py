@@ -302,6 +302,36 @@ def test_decisions_filter_tags_requirements(tmp_path):
     assert page["state"]["kind"] in ("waiting", "stopped", "ok")
 
 
+def test_decisions_filter_none_and_project_level_have_no_tag(tmp_path):
+    """你说不属于具体需求的（none）、会没关联需求的（project）：都没有需求小签，界面写「没归到具体需求」。"""
+    db = make(tmp_path)
+    add_requirement(db, "r1", "p", "初审规则 V2")
+    meeting(db, "a", "2026-09-25T09:00:00")
+    set_minutes(db, "a", "mv-a", "# 周会\n\n## 决议\n1. 初审规则周五上线\n", kind="generated")
+    db.execute("INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES ('r1', 'a', ?)",
+               (NOW.isoformat(),))
+    meeting(db, "b", "2026-09-24T09:00:00")  # 没关联需求：项目层
+    set_minutes(db, "b", "mv-b", "# 周会\n\n## 决议\n1. 下周起统一口径\n", kind="generated")
+    decisions.ingest_pending(db, now=NOW)
+    db.execute("UPDATE decisions SET placement = 'none' WHERE meeting_id = 'a'")
+
+    page = build(db, kind="decisions")
+    (none,) = items(page, "2026-09-25")
+    (project,) = items(page, "2026-09-24")
+    assert (none["requirement"], none["how"]) == (None, "none")
+    assert (project["requirement"], project["how"]) == (None, "project")
+    assert project["linked_requirement_ids"] == []
+
+
+def _best_seconds(db, kind, rounds=5):
+    best = float("inf")
+    for _ in range(rounds):
+        started = time.perf_counter()
+        build(db, kind=kind, days=7)
+        best = min(best, time.perf_counter() - started)
+    return best
+
+
 # ---------------------------------------------------------------------- 语句数
 
 
@@ -327,6 +357,11 @@ def test_timeline_is_at_most_ten_statements(tmp_path, count):
             connection, "p", kind=kind, now=NOW, days=31))
         assert reads <= 10, kind
     assert build(db, days=31)["days"]
+    if count == 200:
+        # 耗时探针：规格要 p95 低于 100 毫秒，这台机器上一页约 10 毫秒。取 5 次里最快的一次、放宽到 200 毫秒，
+        # 慢机器上也稳，只拦住退化成逐场会查库那种量级的变慢
+        for kind in timeline.KINDS:
+            assert _best_seconds(db, kind) < 0.2, kind
 
 
 # ---------------------------------------------------------------------- 接口

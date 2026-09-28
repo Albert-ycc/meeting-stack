@@ -49,9 +49,7 @@ export function laterTail(date: string): string {
   return `· ${monthDay(date)}后来改了`;
 }
 
-/** 回答以后的提示（第 12 节「提示和撤销」） */
-export const DISMISS_CHANGED_NOTICE = "已去掉这条『后来改了』";
-export const DISMISS_RESTATED_NOTICE = "已分开，两条各列各的";
+/** 放决议以后的提示（第 12 节「提示和撤销」）；［不是一回事］的两句在 links/useRelationAnswer.ts */
 export const PLACED_NONE_NOTICE = "已从这个需求里拿掉，项目时间线的『决议』里还能看到";
 export const PLACED_HERE_NOTICE = "已放到这个需求";
 export const UNDONE_NOTICE = "已撤销";

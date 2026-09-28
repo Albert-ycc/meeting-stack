@@ -47,6 +47,8 @@ const EMPTY: Record<TimelineKind, string> = {
   files: "还没有记到文件的新增和修改",
 };
 const PAGE_DAYS = 7;
+/** 一页的天都被滤掉（挪过来、回来了的文件）时自动往前再取，最多这么多页，免得第一页是空的 */
+const EMPTY_PAGE_HOPS = 3;
 /** 在等什么（资料盘没插、第一次收文件名、还在对比）时 15 秒重取 */
 export const TIMELINE_WAIT_MS = 15_000;
 const SHOWN_DECISIONS = 3;
@@ -166,18 +168,47 @@ export function ProjectTimeline({ apiClient, projectId, canWrite, onOpenMeeting,
   const [loadingMore, setLoadingMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const request = useRef(0);
+  // 换筛选、换项目、完整重读时加一：还在路上的［更早］回来时作废
+  const generation = useRef(0);
+  // 翻过［更早］：静默重取只换第一页那几天，翻出来的更早的天和翻页起点留着
+  const paged = useRef(false);
+
+  /** 取一页；这一页的天全被滤掉但还有更早的时自动往前取，最多 EMPTY_PAGE_HOPS 页 */
+  const fetchPage = useCallback(
+    async (before?: string): Promise<ProjectTimelinePayload | null> => {
+      if (typeof apiClient.projectTimeline !== "function") return null;
+      let payload = await apiClient.projectTimeline(projectId, before ? { kind, days: PAGE_DAYS, before } : { kind, days: PAGE_DAYS });
+      for (let hop = 0; hop < EMPTY_PAGE_HOPS && !payload.days.length && payload.next_before; hop += 1) {
+        payload = await apiClient.projectTimeline(projectId, { kind, days: PAGE_DAYS, before: payload.next_before });
+      }
+      return payload;
+    },
+    [apiClient, kind, projectId],
+  );
 
   const load = useCallback(
     async (silent = false) => {
       if (typeof apiClient.projectTimeline !== "function") return;
       const ticket = ++request.current;
-      if (!silent) setState("loading");
+      if (!silent) {
+        generation.current += 1;
+        paged.current = false;
+        setLoadingMore(false);
+        setState("loading");
+      }
       try {
-        const payload = await apiClient.projectTimeline(projectId, { kind, days: PAGE_DAYS });
-        if (ticket !== request.current) return;
+        const payload = await fetchPage();
+        if (ticket !== request.current || !payload) return;
         setFirst(payload);
-        setDays(payload.days);
-        setNextBefore(payload.next_before);
+        const boundary = payload.next_before;
+        if (silent && paged.current && boundary) {
+          // 第一页范围（boundary 及以后）换成新的，更早翻出来的天和翻页起点不动
+          setDays((current) => [...payload.days, ...current.filter((day) => day.day < boundary)]);
+        } else {
+          paged.current = false;
+          setDays(payload.days);
+          setNextBefore(payload.next_before);
+        }
         setState("ready");
       } catch (reason) {
         if (ticket !== request.current) return;
@@ -185,7 +216,7 @@ export function ProjectTimeline({ apiClient, projectId, canWrite, onOpenMeeting,
         else if (!silent) setState("error");
       }
     },
-    [apiClient, kind, projectId],
+    [apiClient, fetchPage],
   );
 
   useEffect(() => {
@@ -204,15 +235,20 @@ export function ProjectTimeline({ apiClient, projectId, canWrite, onOpenMeeting,
 
   const more = async () => {
     if (!nextBefore || loadingMore || typeof apiClient.projectTimeline !== "function") return;
+    // 票号：加载途中换了筛选（或整页重读）时，回来的这一页是旧筛选的，丢掉
+    const ticket = generation.current;
     setLoadingMore(true);
     try {
-      const payload = await apiClient.projectTimeline(projectId, { kind, days: PAGE_DAYS, before: nextBefore });
+      const payload = await fetchPage(nextBefore);
+      if (ticket !== generation.current || !payload) return;
+      paged.current = true;
       setDays((current) => merge(current, payload.days));
       setNextBefore(payload.next_before);
     } catch (reason) {
+      if (ticket !== generation.current) return;
       setNotice(isOldBackend(reason) ? OLD_BACKEND_TEXT : reason instanceof Error ? reason.message : "没读到更早的", "warning");
     } finally {
-      setLoadingMore(false);
+      if (ticket === generation.current) setLoadingMore(false);
     }
   };
 
@@ -391,7 +427,8 @@ export function ProjectTimeline({ apiClient, projectId, canWrite, onOpenMeeting,
             state={first.state.text ? { kind: first.state.kind, text: first.state.text, action: first.state.action } : null}
           />
           {days.length === 0 ? (
-            <p className="decision-log__empty">{EMPTY[kind]}</p>
+            // 这几页的天都被滤掉了但更早还有：不说「还没有…」，只留［更早］
+            nextBefore ? null : <p className="decision-log__empty">{EMPTY[kind]}</p>
           ) : (
             <ol className="timeline__days">
               {days.map((day) => (

@@ -412,6 +412,51 @@ describe("RequirementDetailPage 的「决议」卡（4c）", () => {
     );
   });
 
+  it("［放到这个需求］在每条后面一直显示，不藏在悬停里", async () => {
+    renderWithLog({ requirementDecisions: vi.fn().mockResolvedValue(decisionLog()), placeDecision: vi.fn() });
+    const card = await screen.findByRole("region", { name: "决议" });
+    await userEvent.click(await within(card).findByRole("button", { name: "展开" }));
+    const put = within(card).getByRole("button", { name: "放到这个需求" });
+    expect(put.closest(".decision-row__end-actions")).not.toBeNull();
+    expect(put.closest(".decision-row__hover-actions")).toBeNull();
+    // 有「原话」的那条上的［不属于这个需求］照旧悬停或聚焦时出现
+    const notMine = within(card).getAllByRole("button", { name: "不属于这个需求" });
+    expect(notMine.every((button) => button.closest(".decision-row__hover-actions"))).toBe(true);
+  });
+
+  it("拿掉的是那场会在卡里唯一的一条：重读回来会不在了，灰字行和［撤销］照样留到 undo_until", async () => {
+    const picked = decisionLog();
+    const only = {
+      ...picked,
+      counts: { decisions: 1, later_changed: 0, unplaced: 0 },
+      meetings: [{ ...picked.meetings[1], unplaced: [] }],
+    };
+    only.meetings[0].decisions = [{ ...only.meetings[0].decisions[0], later: [], placement: { how: "picked", requirement_id: "req-1" } }];
+    const after = { ...only, counts: { decisions: 0, later_changed: 0, unplaced: 0 }, meetings: [] };
+    const requirementDecisions = vi.fn().mockResolvedValueOnce(only).mockResolvedValue(after);
+    const placeDecision = vi.fn().mockResolvedValue({
+      decision: {}, undo: { placement: "picked", requirement_id: "req-1" }, undo_until: "2099-01-01T00:00:00Z",
+    });
+    renderWithLog({ requirementDecisions, placeDecision });
+
+    const card = await screen.findByRole("region", { name: "决议" });
+    await userEvent.click(await within(card).findByRole("button", { name: "不属于这个需求" }));
+    await waitFor(() => expect(requirementDecisions).toHaveBeenCalledTimes(2));
+    const placedLine = await waitFor(() => {
+      const node = card.querySelector(".decision-log__placed");
+      expect(node).not.toBeNull();
+      return node as HTMLElement;
+    });
+    expect(placedLine.textContent).toContain("已从这个需求里拿掉");
+    // 那场会的标题还在，不写「还没有关联会议」
+    expect(within(card).getByRole("button", { name: "9月20日 周日 · 周会" })).toBeInTheDocument();
+    expect(within(card).queryByText("还没有关联会议，关联以后这里列出每场会定了什么")).not.toBeInTheDocument();
+    await userEvent.click(within(placedLine).getByRole("button", { name: "撤销" }));
+    await waitFor(() =>
+      expect(placeDecision).toHaveBeenLastCalledWith("dec-a", { placement: "picked", requirement_id: "req-1" }),
+    );
+  });
+
   it("没归到的折叠成一行", async () => {
     renderWithLog({ requirementDecisions: vi.fn().mockResolvedValue(decisionLog()) });
     const card = await screen.findByRole("region", { name: "决议" });

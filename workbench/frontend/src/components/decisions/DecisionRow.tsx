@@ -34,8 +34,14 @@ export interface DecisionRowProps {
   canWrite: boolean;
   /** 正在发送时按钮变灰 */
   busy?: boolean;
-  /** 行上另外的按钮（［不属于这个需求］、［放到这个需求］）：电脑上悬停或聚焦时出现，手机上放在「原话」展开里 */
+  /** 行上另外的按钮（［不属于这个需求］、［放到这个需求］），怎么出现看 actionsShown */
   actions?: ReactNode;
+  /**
+   * hover（默认，［不属于这个需求］）：电脑上悬停或聚焦时出现，手机上放在「原话」展开里；这条没有「原话」
+   * （没有时间点）时画在行尾一直显示，手机上也点得到。always（没归到的那几条后面的［放到这个需求］）：
+   * 一直画在行尾。
+   */
+  actionsShown?: "hover" | "always";
   /** 行后面的小签（时间线［决议］里的需求名） */
   tag?: ReactNode;
   /** 不画「打开会议」（展开一场会的面板里就是这场会） */
@@ -85,6 +91,7 @@ export function DecisionRow({
   canWrite,
   busy = false,
   actions,
+  actionsShown = "hover",
   tag,
   hideOpenMeeting = false,
   hideQuotes = false,
@@ -96,6 +103,9 @@ export function DecisionRow({
   const dismissed = decision.id ? decision.dismissed ?? [] : [];
   const canDismiss = canWrite && Boolean(onDismiss) && Boolean(decision.id);
   const canRestore = canWrite && Boolean(onRestore);
+  const hasQuotes = !hideQuotes && decision.start_ms !== null;
+  // 一直显示：要求常显，或没有「原话」展开可放（手机上否则就点不到）
+  const pinned = Boolean(actions) && (actionsShown === "always" || !hasQuotes);
 
   return (
     <div className={`decision-row${later.length ? " is-changed" : ""}`}>
@@ -104,7 +114,7 @@ export function DecisionRow({
         {tag}
         <span className="decision-row__tools">
           <PlayAt atMs={decision.start_ms} audioUrl={meeting.audio_url} label={meeting.title} player={player} />
-          {!hideQuotes && decision.start_ms !== null && (
+          {hasQuotes && (
             <button aria-expanded={open} className="text-button" onClick={() => setOpen((value) => !value)} type="button">
               原话
             </button>
@@ -118,7 +128,8 @@ export function DecisionRow({
               打开会议
             </button>
           )}
-          {actions && <span className="decision-row__hover-actions">{actions}</span>}
+          {actions && !pinned && <span className="decision-row__hover-actions">{actions}</span>}
+          {pinned && <span className="decision-row__end-actions">{actions}</span>}
         </span>
       </div>
       {open && (
@@ -131,7 +142,7 @@ export function DecisionRow({
             meetingId={meeting.id}
             player={player}
           />
-          {actions && <span className="decision-row__mobile-actions">{actions}</span>}
+          {actions && !pinned && <span className="decision-row__mobile-actions">{actions}</span>}
         </div>
       )}
       <DecisionMarks
