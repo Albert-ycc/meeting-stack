@@ -53,6 +53,15 @@ class FakeAI:
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
+                elif kind == "chunked_cut":
+                    # 分块响应只发了一半就断开：客户端读到的是 IncompleteRead
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    self.wfile.write(b"40\r\n{\"choices\": [")
+                    self.wfile.flush()
+                    self.close_connection = True
                 elif kind == "keepalive":
                     # DeepSeek 忙时对不流式的请求一直发空行保活；这里每 0.2 秒一个空行，最后才给回答
                     _kind, lines, payload = step
@@ -278,3 +287,28 @@ def test_neutralise_closes_no_tags():
     assert neutralise("ＡＢ\x07c‮d\n＜x＞", 100) == "AB c d\n＜x＞"
     assert neutralise("一二三四五", 3) == "一二三"
     assert neutralise("", 10) == ""
+
+
+@pytest.mark.allow_local_llm
+def test_chunked_reply_cut_off_midway_is_a_network_error(tmp_path, fake_ai):
+    settings = settings_for(tmp_path, fake_ai.base)
+    fake_ai.plan = [("chunked_cut",)]
+    with pytest.raises(LLMError) as caught:
+        ask(settings, retries=0)
+    assert caught.value.code == "network" and caught.value.sent
+
+
+def test_any_attempt_that_reached_the_server_keeps_the_charge(tmp_path, monkeypatch):
+    import meeting_workbench.llm as llm_module
+
+    settings = settings_for(tmp_path, "http://127.0.0.1:9/v1")
+    outcomes = [LLMError("timeout", sent=True), LLMError("network", sent=False)]
+
+    def fake_once(_request, _timeout, _clock):
+        raise outcomes.pop(0)
+
+    monkeypatch.setattr(llm_module, "_once", fake_once)
+    with pytest.raises(LLMError) as caught:
+        ask(settings, retries=1)
+    # 第一次超时时请求已经到了服务器（可能已计费），第二次连接被拒也不能退回用量
+    assert caught.value.code == "network" and caught.value.sent

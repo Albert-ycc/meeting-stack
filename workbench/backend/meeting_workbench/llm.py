@@ -1,6 +1,6 @@
 """第四期的 AI 调用（4a）：放宽的提到（4b）、决议对比（4c）、问答（4g）共用。
 
-- chat：一次对话请求。timeout 是整次调用的截止时间（time.monotonic）：连上以后分块读，每块之前把
+- chat：一次对话请求。timeout 是每一次尝试从发出到读完的截止时间（time.monotonic）：连上以后分块读，每块之前把
   socket 超时设成剩下的时间，每块之后看时钟，过了就关掉连接、记 timeout。只靠 urlopen 的 timeout
   不够：它只管每一次读，DeepSeek 忙时对不流式的请求一直发空行保活，最长约 30 分钟。开头的空白行照读、
   不算回答。
@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import socket
@@ -139,7 +140,8 @@ def _read_all(response: Any, deadline: float, clock: Callable[[], float]) -> byt
             block = read(READ_BLOCK)
         except (TimeoutError, socket.timeout) as error:
             raise LLMError("timeout") from error
-        except OSError as error:
+        except (OSError, http.client.HTTPException) as error:
+            # 分块响应读到一半断开（IncompleteRead）属于 HTTPException，不是 OSError
             raise LLMError("network") from error
         if not block:
             return b"".join(chunks)
@@ -176,6 +178,9 @@ def _once(request: urllib.request.Request, timeout: float, clock: Callable[[], f
         if _is_timeout(error):
             raise LLMError("timeout") from None
         raise LLMError("network", sent=not _not_sent(error)) from None
+    except http.client.HTTPException:
+        # 服务器回了不像 HTTP 的东西（BadStatusLine、LineTooLong 等）：请求已经到了
+        raise LLMError("network") from None
     try:
         body = _read_all(response, deadline, clock)
     finally:
@@ -227,15 +232,19 @@ def chat(
         method="POST",
     )
     attempts = max(0, int(retries)) + 1
+    # 只要有一次请求到过服务器（比如先超时、重试时连接被拒），这次调用就可能已经计费，不退用量
+    any_sent = False
     for attempt in range(attempts):
         started = clock()
         try:
             reply = _once(request, timeout, clock)
         except LLMError as error:
+            any_sent = any_sent or error.sent
             logger.warning(
                 "AI 调用失败：%s（HTTP %s，用时 %.1f 秒）", error.code, error.status, clock() - started
             )
             if error.code in NEVER_RETRY or attempt + 1 >= attempts:
+                error.sent = any_sent
                 raise
             sleep(RETRY_WAIT_SECONDS)
             continue

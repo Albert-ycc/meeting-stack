@@ -364,6 +364,12 @@ class LinksLLMWorker:
             else:  # bad_request：这场会加一次
                 task.fail(self.db, job, code)
             return {"called": True, "state": code}
+        except Exception:
+            # 意料之外的错误（多半是任务自己的 bug）：放回这份活并整体退避，不让它卡在认领状态、
+            # 也不在 60 秒后接着耗当天的用量；异常照样抛出，循环外层记日志
+            task.release(self.db, job)
+            self._back_off()
+            raise
         self._record(None)
         if not good:
             task.fail(self.db, job, "invalid")

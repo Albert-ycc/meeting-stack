@@ -44,7 +44,7 @@ class FakeTask:
     def run(self, job):
         self.ran.append(job)
         outcome = self.outcomes[min(len(self.ran) - 1, len(self.outcomes) - 1)]
-        if isinstance(outcome, LLMError):
+        if isinstance(outcome, Exception):
             raise outcome
         return outcome
 
@@ -346,3 +346,13 @@ def test_every_backoff_code_releases_the_job(tmp_path, code):
     w = worker(tmp_path, [task])
     assert w.tick()["state"] == code
     assert task.released == ["m1"] and task.failed == [] and w.status() == "backoff"
+
+
+def test_unexpected_error_in_a_task_releases_the_job_and_backs_off(tmp_path):
+    task = FakeTask(jobs=["m1"], outcomes=[RuntimeError("任务自己的 bug")])
+    w = worker(tmp_path, [task])
+    with pytest.raises(RuntimeError):
+        w.tick()
+    # 这份活放回去了，不会卡在认领状态；循环整体退避，不在 60 秒后接着耗当天的用量
+    assert task.released == ["m1"] and task.failed == []
+    assert w.tick() == {"called": False, "state": "backoff"}

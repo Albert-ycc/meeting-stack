@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import secrets
+import sqlite3
 import time
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
@@ -552,7 +553,14 @@ def ingest_pending(
         if clock() >= deadline:
             break
         counts["tried"] += 1
-        counts[ingest_meeting(db, row, now=moment, cutoff=cutoff)] += 1
+        try:
+            counts[ingest_meeting(db, row, now=moment, cutoff=cutoff)] += 1
+        except sqlite3.OperationalError:
+            raise
+        except Exception:  # noqa: BLE001
+            # 某场会一直出同一个意料之外的错时，不能让它每轮都结束整轮、把 L2 和清理一起卡住
+            logger.exception("决议入库跳过一场会：%s", row.get("id"))
+            counts["skipped"] += 1
     return counts
 
 

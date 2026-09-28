@@ -518,3 +518,22 @@ def test_placement_needs_a_project_for_requirements(tmp_path, placement):
 
     with db.transaction() as connection, pytest.raises(decisions.PlacementRejected):
         decisions.place(connection, decision_id, placement, "r-p")
+
+
+def test_one_broken_meeting_does_not_stall_the_round(tmp_path, monkeypatch):
+    _client, _settings, db = make_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    meeting_with_minutes(db, meeting_id="bad", ago=1)
+    meeting_with_minutes(db, meeting_id="good", ago=2)
+    real = decisions.ingest_meeting
+
+    def flaky(db_, row, **kwargs):
+        if row["id"] == "bad":
+            raise ValueError("这场会的数据有意料之外的形状")
+        return real(db_, row, **kwargs)
+
+    monkeypatch.setattr(decisions, "ingest_meeting", flaky)
+    counts = ingest(db)
+    # 出错的那场会跳过、记日志；同一轮里别的会照样入库，不让整轮（连带 L2 和清理）一直卡住
+    assert counts["skipped"] >= 1 and counts["tried"] == 2
+    assert [text for _id, text in live(db, "good")][:1] == ["司美格鲁太的对照组先按 0.8 执行"]

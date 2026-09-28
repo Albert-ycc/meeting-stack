@@ -369,6 +369,10 @@ def _server_json(settings: Settings, path: str, *, post: bool = False) -> dict[s
         )
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # 服务开着、但拒绝了这次请求：照实报，不能当成「服务没开」再去直接写库
+        error.close()
+        return {"http_error": int(error.code)} if post else None
     except (OSError, urllib.error.URLError, ValueError, KeyError):
         return None
 
@@ -493,6 +497,9 @@ def _links_retry(settings: Settings) -> int:
     from .links_llm import requeue_failed
 
     answer = _server_json(settings, "/api/links/retry", post=True)
+    if answer is not None and "http_error" in answer:
+        print(f"服务开着，但没接受这次重试（HTTP {answer['http_error']}），什么都没改")
+        return 1
     if answer is not None and "requeued" in answer:
         print(f"已放回 {answer['requeued']} 场，AI 循环的暂停和退避已清掉")
         return 0
