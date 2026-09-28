@@ -66,6 +66,8 @@ PHASE_STATES = ("done", "budget", "busy", "stopping", "locked", "off", "waiting"
 FTS_PHASES = frozenset({PHASE_AFFECTS, PHASE_RELATED})
 WAITING_KEYS = ("decisions", "mentions", "pairs", "related", "affects", "terms")
 OPEN_KEYS = ("produced", "affects")
+# 健康检查的 failed：AI 试满 3 次仍没做成的会数（4c「只计数，不报警」）
+FAILED_KEYS = ("mentions", "pairs")
 
 
 class RoundLocked(RuntimeError):
@@ -141,6 +143,7 @@ class LinksWorker:
             "phases": {},
             "waiting": {key: 0 for key in WAITING_KEYS},
             "open": {key: 0 for key in OPEN_KEYS},
+            "failed": {key: 0 for key in FAILED_KEYS},
         }
 
     # ------------------------------------------------------------------ 外面调的
@@ -182,6 +185,7 @@ class LinksWorker:
                 "phases": dict(self._state["phases"]),
                 "waiting": dict(self._state["waiting"]),
                 "open": dict(self._state["open"]),
+                "failed": dict(self._state["failed"]),
             }
         if self.llm is not None:
             state.update(self.llm.snapshot())
@@ -253,7 +257,7 @@ class LinksWorker:
         except RoundLocked as locked:
             phases[str(locked)] = "locked"
             logger.info("关联整理这一轮遇到数据库被占用，下一轮再来")
-        waiting, opened = self._counts(ctx)
+        waiting, opened, failed = self._counts(ctx)
         with self._state_lock:
             self._state["paused"] = "busy" if busy else None
             self._state["last_round_at"] = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -262,6 +266,8 @@ class LinksWorker:
                 self._state["waiting"] = waiting
             if opened is not None:
                 self._state["open"] = opened
+            if failed is not None:
+                self._state["failed"] = failed
         return {"work": ctx.work > 0, "phases": phases, "paused": "busy" if busy else None}
 
     def _run_steps(self, ctx: RoundContext, steps: Any, phases: dict[str, str]) -> None:
@@ -512,8 +518,12 @@ class LinksWorker:
 
     # ------------------------------------------------------------------ 快照里的计数
 
-    def _counts(self, ctx: RoundContext) -> tuple[dict[str, int] | None, dict[str, int] | None]:
-        """每轮末尾数一次，健康检查和状态句从快照读。related、affects、terms 由 4d、4e、4h 接上。"""
+    def _counts(
+        self, ctx: RoundContext
+    ) -> tuple[dict[str, int] | None, dict[str, int] | None, dict[str, int] | None]:
+        """每轮末尾数一次，健康检查和状态句从快照读。related、affects、terms 由 4d、4e、4h 接上。
+
+        failed：AI 那两步试满 3 次仍没做成的会，只计数、不报警（不改 status，也不进状态句）。"""
         try:
             with ctx.db.autocommit() as connection:
                 waiting = {key: 0 for key in WAITING_KEYS}
@@ -533,9 +543,21 @@ class LinksWorker:
                     ).fetchone()[0]
                     for kind in OPEN_KEYS
                 }
+                failed = {
+                    "mentions": connection.execute(
+                        "SELECT COUNT(*) FROM mention_extractions WHERE state = 'failed'"
+                    ).fetchone()[0],
+                    "pairs": connection.execute(
+                        "SELECT COUNT(*) FROM decision_scan WHERE pair_state = 'failed'"
+                    ).fetchone()[0],
+                }
         except sqlite3.OperationalError:
-            return None, None
-        return {key: int(value) for key, value in waiting.items()}, {key: int(value) for key, value in opened.items()}
+            return None, None, None
+        return (
+            {key: int(value) for key, value in waiting.items()},
+            {key: int(value) for key, value in opened.items()},
+            {key: int(value) for key, value in failed.items()},
+        )
 
 
 # ---------------------------------------------------------------------- asyncio 里的循环

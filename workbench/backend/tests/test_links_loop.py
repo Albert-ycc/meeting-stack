@@ -407,6 +407,22 @@ def test_l1_ingests_decisions_and_counts_waiting(tmp_path):
     assert w.run_round()["work"] is False
 
 
+def test_failed_ai_steps_are_counted_but_not_waiting(tmp_path):
+    db, _ = make(tmp_path)
+    for index in range(2):
+        add_meeting(db, f"m{index}", ago=index + 1, project_id="p", minutes=MINUTES)
+    w = worker(db, clock=Clock())
+    w.run_round()
+    db.execute("UPDATE decision_scan SET pair_state = 'failed' WHERE meeting_id = 'm0'")
+    w.run_round()
+    snap = w.snapshot()
+    # 对比试满 3 次仍没做成：只计数，不算「在等」，也不改健康检查的 status
+    waiting_rows = db.query_one(
+        "SELECT COUNT(*) AS n FROM decision_scan WHERE pair_state IN ('pending', 'running')"
+    )["n"]
+    assert snap["failed"]["pairs"] == 1 and snap["waiting"]["pairs"] == waiting_rows
+
+
 def test_l2_finds_a_moved_file_behind_600_rejected_rows(tmp_path):
     db, _ = make(tmp_path)
     root_id = add_root(db, tmp_path / "云图AI")
@@ -729,7 +745,10 @@ def test_health_has_links_details_without_changing_services(tmp_path):
     assert health_off["details"]["links"] == {"enabled": False}
     links = health_on["details"]["links"]
     assert links["enabled"] is True and links["phases"] == {} and links["last_round_at"] is None
-    assert set(links) == {"enabled", "paused", "last_round_at", "phases", "waiting", "open", "llm", "calls_today"}
+    assert set(links) == {
+        "enabled", "paused", "last_round_at", "phases", "waiting", "open", "failed", "llm", "calls_today",
+    }
+    assert links["failed"] == {"mentions": 0, "pairs": 0}
     assert set(links["waiting"]) == {"decisions", "mentions", "pairs", "related", "affects", "terms"}
     assert set(links["open"]) == {"produced", "affects"}
     assert links["calls_today"] == {"background": 0, "qa": 0}
