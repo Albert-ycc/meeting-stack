@@ -607,6 +607,53 @@ def test_first_seed_skips_backlog_then_extracts_new(tmp_path, monkeypatch):
     assert [task["title"] for task in items] == ["新会任务"]
 
 
+def test_draft_minutes_do_not_seed_extraction(tmp_path, monkeypatch):
+    """第四期问题 3 的默认：保存、回滚、词典「替换」生成的草稿版本不进抽取队列（只有 generated、
+    stale_generated、imported）；［重新抽取］照样能抽它。"""
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(settings.database_path)
+    seed_editable_meeting(db, settings.archive_root)
+    seed_minutes(client, settings)
+    service = TaskService(db, settings)
+    monkeypatch.setattr(TaskService, "_call_llm", lambda self, prompt: '{"tasks":[{"title":"草稿里的任务"}]}')
+    service.extract_pending()  # 台账为空：存量记成 skipped
+    meeting_id = "vm-20260102-101500"
+    for version_id, version_no, kind in (("mv-draft", 2, "draft"), ("mv-edit", 3, "published_edit")):
+        db.execute(
+            """INSERT INTO minutes_versions
+               (id, meeting_id, version_no, markdown, html, kind, published, created_at)
+               VALUES (?, ?, ?, '# 摘要\n改了一个错字。', '<p></p>', ?, 0, ?)""",
+            (version_id, meeting_id, version_no, kind, utc_now()),
+        )
+        db.execute("UPDATE meetings SET current_minutes_version_id=? WHERE id=?", (version_id, meeting_id))
+
+        stats = service.extract_pending()
+
+        assert stats["started"] == 0
+        assert db.query_one(
+            "SELECT 1 AS x FROM task_extractions WHERE minutes_version_id=?", (version_id,)
+        ) is None
+    # 重新生成的纪要照样进队列
+    db.execute(
+        """INSERT INTO minutes_versions
+           (id, meeting_id, version_no, markdown, html, kind, published, created_at)
+           VALUES ('mv-regen', ?, 4, '# 摘要\n重新生成。', '<p></p>', 'stale_generated', 1, ?)""",
+        (meeting_id, utc_now()),
+    )
+    db.execute("UPDATE meetings SET current_minutes_version_id='mv-regen' WHERE id=?", (meeting_id,))
+    assert service.extract_pending()["succeeded"] == 1
+    # 回到草稿版本，［重新抽取］对它照样能用
+    db.execute("UPDATE meetings SET current_minutes_version_id='mv-draft' WHERE id=?", (meeting_id,))
+    result = client.post(
+        f"/api/meetings/{meeting_id}/tasks/re-extract", json={"supplement": ""}, headers=headers
+    ).json()
+    assert result["status"] == "done"
+    assert db.query_one(
+        "SELECT status FROM task_extractions WHERE minutes_version_id='mv-draft'"
+    ) == {"status": "done"}
+
+
 def test_recover_uses_claim_time_not_created_time(tmp_path):
     """回归：超时回收判据必须是认领时刻；用批次创建时间会把重试批次误杀双跑。"""
     client, settings = make_client(tmp_path)

@@ -368,8 +368,9 @@ class FakeEncoder:
         self.calls = []
         self.on_encode = on_encode
 
-    def encode_texts(self, texts):
+    def encode_texts(self, texts, *, background=False):
         self.calls.append(len(texts))
+        self.background = background
         if self.on_encode is not None:
             self.on_encode()
         return np.tile(np.array([1, 0, 0, 0], dtype=np.float32), (len(texts), 1))

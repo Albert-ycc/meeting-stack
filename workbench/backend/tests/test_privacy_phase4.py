@@ -23,6 +23,8 @@ import pytest
 from meeting_workbench.cards import CardWriter
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database, utc_now
+from meeting_workbench.deep_links import LinksWorker
+from meeting_workbench.links_llm import LinksLLMWorker
 from meeting_workbench.glossary import SNAPSHOT_FILENAME, rewrite_snapshot
 from meeting_workbench.material_index import MaterialIndexer
 from meeting_workbench.project_linking import ProjectLinker
@@ -57,8 +59,13 @@ class _Reply:
     def __init__(self, payload: dict):
         self._body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, amt: int = -1) -> bytes:
+        # tasks.call_llm 一次读完；llm.chat 分块读，读到空串为止
+        body, self._body = self._body, b""
+        return body
+
+    def close(self) -> None:
+        return None
 
     def __enter__(self) -> _Reply:
         return self
@@ -134,10 +141,15 @@ def build_world(tmp_path: Path) -> tuple[Database, Settings, Path]:
 
 
 def run_everything(db: Database, settings: Settings) -> None:
-    """项目归属、任务抽取、卡片、快照。4b 起各步把 L1 到 L5、H2 到 H4、links_llm_loop、索引和需求
-    背景加在这里（开着 links_enabled、glossary_mining_enabled）。"""
+    """项目归属、任务抽取、卡片、快照，以及开着 links_enabled 跑的 links_loop 一整轮（L1 到 L5、H2 到
+    H4、清理）和 links_llm_loop 一次。4b 起各步往两个循环里填的活、索引和需求背景也就跟着跑到了
+    （glossary_mining_enabled 开着）。"""
     ProjectLinker(db, settings).link_pending()
     TaskService(db, settings).extract_pending()
+    links_settings = settings.model_copy(update={"links_enabled": True, "glossary_mining_enabled": True})
+    llm_worker = LinksLLMWorker(db, links_settings)
+    LinksWorker(db, links_settings, llm=llm_worker).run_round()
+    llm_worker.tick()
     CardWriter(db, settings).reconcile()
     rewrite_snapshot(db, settings.data_dir / SNAPSHOT_FILENAME)
 

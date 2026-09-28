@@ -102,6 +102,12 @@ Google Fonts CDN**，否则断网时字体掉回系统默认。
 # 图片和扫描页用哪套认字：auto（默认，有 Vision 用 Vision，没有用 tesseract）、vision、tesseract、off；
 # 不给参数只看现在用的是哪套；不用重启服务
 .venv/bin/meeting-workbench materials ocr-engine tesseract
+# 深度关联（第四期）：各步在等几个、上一轮的时间、AI 状态、今天调了几次和上限（直接查库，服务没开也能看）
+.venv/bin/meeting-workbench links status
+# 和页面上的［现在重试］一样：没做成的 AI 整理放回队列，清掉 AI 循环的暂停
+.venv/bin/meeting-workbench links retry
+# 打印一场会解析出的决议（id、原文、时间点、note），只读
+.venv/bin/meeting-workbench links decisions --meeting vm-20260926-143000
 ```
 
 `doctor` 多了两项，只报告、不影响退出码：`materials`（Vision 程序编译好没有、tesseract 和中文语言包、
@@ -438,13 +444,74 @@ Vision 程序第一次用时在 `~/.meeting-workbench/bin/` 下编译。
    Vision 程序第一次在后台编译，要一两分钟。
 4. 首页出现「材料 还剩 N 个」并慢慢变少。资料盘大时第一轮要读很久，期间照常用；会议转写时它自己停下。
 
+## 会议和项目材料的深度关联（260928，第四期）
+
+第四期把会议、决议、任务和材料文件之间的线连得更深：会上换了叫法的文件、意思相近的材料、任务的产出、
+决议之后改过的文件、前后几场会的决议变化。分九步做，这一节先写 4a（地基），后面几步各自补上。设计和开发清单
+在 Claude Doc「录音与项目材料智能关联方案」的第四期几页。
+
+**4a 做了什么**：v16 的表一次建好；两个后台循环的骨架；决议入库（纪要决议段里的每一条有了跨版本不变的 id）；
+文件流水（文件的新增、修改、不见，按天记）；AI 调用、用量计数和出错后的退避。合进去以后页面上看不出变化，
+只有简报和聚焦视图里的决议带上了 id。
+
+- `links_loop`（`deep_links.py`）：本机的活。第一轮前等 20 秒，有活 10 秒一轮、没活 60 秒一轮。轻活（决议入库、
+  重找文件等）每轮最多 3 秒，会议转写时照跑；重活（相关、影响、挖词，4d、4e、4h 填）每轮最多 15 秒，转写时
+  整段跳过。每 24 小时清理一次：文件流水留 400 天，收回的关联和作废的候选词留 90 天，你驳回过的永远留着。
+- `links_llm_loop`（`links_llm.py`）：后台调 AI 的活（4b、4c 填）。第一轮前等 30 秒，每次最多调一次，所有后台
+  调用共用每天 200 次的上限，问答另有每天 100 次。key 不对或账户余额不足时整个停下，换了 key 文件或点
+  ［现在重试］（`links retry`）才恢复；连不上时退避 1 分钟、5 分钟、30 分钟，之后每 30 分钟试一次。发出去的只有
+  逐字稿和决议原文，材料原文和文件名一概不发。
+- AI 调用（`llm.py`）：每次读 key 文件；整次调用有截止时间（DeepSeek 忙时会一直发空行保活）；日志只记错误代码、
+  HTTP 状态和用时，不记提示词和回答。任务抽取和项目归属照旧用原来的调用。
+- 顺手修了两处：保存、回滚纪要和词典「替换」生成的草稿版本不再重新抽任务（只抽新生成或导入的纪要，
+  ［重新抽取］照旧能用）；文件被 40 场以上的会提到时，「被提到」的场数不再封顶在 40。
+
+**第一次跑起来会怎样**：启动时先自动备份，再迁移到 schema v16（迁移里不回填数据）。20 秒后 `links_loop`
+开始把已有纪要的决议入库，2,000 场会的库要几分钟补完；文件流水从这次启动后的第一次整轮扫描之后开始记（第一次
+整轮不记，免得把所有文件都记成新增）。`links status` 能看到决议入库还剩几场。
+
+**相关设置**（环境变量，前缀 `MEETING_WORKBENCH_`；改了要重启）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `LINKS_ENABLED` | `1` | 关掉后第四期两个循环都不启动，页面上写「关联整理已关闭，在终端运行 meeting-workbench doctor 看原因」 |
+| `LINKS_LLM_ENABLED` | `1` | 关掉只跑本机的活，后台不调 AI |
+| `LINKS_BACKFILL_DAYS` | `180` | 补做多少天以内的旧会；0 表示只做新会 |
+| `LINKS_LLM_DAILY_CALLS` | `200` | 后台 AI 调用每天的上限（本地日期），0 表示后台不调 |
+| `QA_DAILY_QUESTIONS` | `100` | 问答每天的上限，0 表示问答关闭（4g） |
+| `QA_TIMEOUT_SECONDS` | `90` | 一次问答的超时（4g） |
+| `RELATED_FLOOR` | `0.60` | 相关的最低门槛，0.3 到 0.95（4d） |
+| `RELATED_MARGIN` | `0.05` | 相关比门槛多出的余量，0 到 0.3（4d） |
+| `GLOSSARY_MINING_ENABLED` | `1` | 从材料里挖词（4h） |
+
+**key 放哪**：和任务抽取同一个文件，默认 `~/.config/ds/api-key`（`LLM_API_KEY_FILE` 改位置，`LLM_API_BASE` 改地址，
+本机兼容服务写 `http://127.0.0.1:端口/v1`）。文件里只放 key 一行，`chmod 600`。页面上只写「没配置 AI」「AI 的 key 不对」，
+不写路径；路径只在这里和 `doctor` 里。
+
+**doctor**：多了 `links` 一项，只报告、不影响退出码：开没开、key 文件的路径、key 在不在、AI 的主机名、今天调了几次，
+`note` 写着没开或没 key 时该怎么办。
+
+**命令行**：`links status`、`links retry`、`links decisions --meeting <id>`（见上面「常用维护」）。4c 起
+`links decisions` 还会打印对比时会发的提示词，只打印，从不发送。
+
+**从 v16 退回 v15**：
+
+1. 停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=15` 后用 v15 的代码启动（不改的话 v15 会拒绝
+   打开这个库）。不要删 v16 的新表、触发器和索引。
+2. v15 会保留全部 v16 对象，也不读新表。v16 的触发器照样触发：文件流水照记；会议离开项目时照样删它的系统关联；
+   决议、交付物的写入照样让关系图重新取。v15 不写决议，决议停在回滚那一刻。
+3. **回滚期间不要合并项目**：v15 的合并不搬新的关联，删源项目时它的第四期回答会跟着删掉，「不是这份文件」也会照老样子丢掉。
+4. 回到 v16 时自动从 15 升到 16（再做一次迁移前备份），什么都不重建；回滚期间改过纪要的会重新入库，决议 id 接回原来的。
+
 ## 数据库迁移
 
-首次启动会自动备份并把数据库迁移到当前 schema v15（v7 曾新增 tasks / task_events /
+首次启动会自动备份并把数据库迁移到当前 schema v16（v7 曾新增 tasks / task_events /
 deliverables / task_extractions / notifications 五张表及 projects.origin 列；v8 新增
 术语词典 glossary_terms / glossary_suggestions 两张表，快照导出到
 `~/.meeting-workbench/glossary-snapshot.json` 供转写侧消费；v9 新增 `meetings.project_origin` 与
-`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`。都是只加不改）。
+`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`；v16 新增深度关联——`relations`、`decisions`、`decision_scan`、`mention_extractions`、`meeting_related_scan`、`meeting_windows`、`meeting_window_passages`、`material_file_events`、`glossary_candidates`、`glossary_mining_scan`、`glossary_mining_seeds` 十一张表，`meetings`、`requirement_meetings` 上各一个索引，以及文件流水、离开项目、版本号的触发器；`meeting_windows`、`meeting_window_passages`、`meeting_related_scan` 能重算，不进备份。都是只加不改）。
+
+**从 v16 退回 v15**：见上一节「深度关联」的回滚步骤。
 
 **从 v15 退回 v14**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=14` 后用 v14 的代码启动。
 不要删 v15 的新表和新列：v14 用不到它们，删列还得先删索引。回滚期间文件名索引照常更新；回到 v15 时大小或修改时间

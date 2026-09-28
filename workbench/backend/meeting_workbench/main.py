@@ -60,6 +60,8 @@ from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
 from . import overview as overview_module
 from . import decisions as decisions_module
+from . import deep_links
+from . import links_llm as links_llm_module
 from . import file_mentions
 from . import relations as relations_module
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
@@ -767,6 +769,19 @@ def create_app(
     material_vectors = material_vectors_module.MaterialVectors(
         db, settings, semantic, busy_check=busy, stop=material_stop
     )
+    # 第四期（4a）：两个循环各有自己的停止标记；worker 常在（问答的用量计数、健康检查的快照都用它们），
+    # 循环只在 links_enabled 开着时启动。
+    links_stop = StopFlag()
+    links_llm_worker = links_llm_module.LinksLLMWorker(db, settings, stop=links_stop)
+    links_worker = deep_links.LinksWorker(
+        db,
+        settings,
+        busy=busy,
+        semantic=semantic,
+        vectors=material_vectors,
+        stop=links_stop,
+        llm=links_llm_worker,
+    )
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
     qwen = QwenShadowService(db, settings, relay)
@@ -1208,12 +1223,12 @@ def create_app(
 
     async def material_embed_loop() -> None:
         """材料片段的向量（3f）：第一轮前等 5 秒，每 30 秒一轮、每轮最多 30 秒；语义检索关着时不跑。
-        每轮之后顺手补内存矩阵，搜索时不用现建。不改 semantic_status。"""
+        每轮之后顺手补内存矩阵，搜索时不用现建；会议在转写时不补（4a：整份重建时内存会翻倍，把内存和
+        CPU 还给转写）。不改 semantic_status。"""
         await asyncio.sleep(material_vectors_module.FIRST_DELAY_SECONDS)
         while not material_stop.is_set():
             try:
-                await asyncio.to_thread(material_vectors.embed_round)
-                await asyncio.to_thread(material_vectors.refresh)
+                await asyncio.to_thread(material_vectors.background_round)
             except asyncio.CancelledError:
                 raise
             except SemanticUnavailable:
@@ -1320,11 +1335,33 @@ def create_app(
                 embed_worker = asyncio.create_task(
                     material_embed_loop(), name="meeting-workbench-material-embed"
                 )
+        # 第四期的两个循环：在材料向量和语义索引建好之后启动；links_enabled 关着时都不启动
+        links_task: asyncio.Task[None] | None = None
+        links_llm_task: asyncio.Task[None] | None = None
+        if settings.links_enabled:
+            links_stop.clear()
+            links_task = asyncio.create_task(
+                deep_links.links_loop(links_worker, links_stop), name="meeting-workbench-links"
+            )
+            if settings.links_llm_enabled:
+                links_llm_task = asyncio.create_task(
+                    links_llm_module.links_llm_loop(links_llm_worker, links_stop),
+                    name="meeting-workbench-links-llm",
+                )
         try:
             yield
         finally:
             # 先置停止标记（同时杀掉读取、认字、转写进程），再取消循环、等线程返回
             material_stop.set()
+            links_stop.set()
+            # 正在进行的 AI 调用不等（在守护线程里，它的认领下次回收）；本机这一轮最多等 5 秒
+            for worker in (links_task, links_llm_task):
+                if worker is not None:
+                    worker.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await worker
+            if links_task is not None:
+                await asyncio.to_thread(links_worker.wait_idle, 5.0)
             for worker in (embed_worker, fts_worker):
                 if worker is not None:
                     worker.cancel()
@@ -1373,6 +1410,8 @@ def create_app(
     app.state.material_media = material_media
     app.state.material_vectors = material_vectors
     app.state.material_stop = material_stop
+    app.state.links_worker = links_worker
+    app.state.links_llm_worker = links_llm_worker
     app.state.waveforms = waveforms
     app.state.relay = relay
     app.state.uploads = uploads
@@ -1518,6 +1557,9 @@ def create_app(
                 )["total"],
                 # 「在访达中显示」「打开文件夹」只在本机打开声档时出现（和关系图 roots 接口同一个算法）
                 "can_reveal": local_request(request),
+                # 第四期（4a）：前端存进 linksFlags；links_enabled 不是布尔值时当旧后台
+                "llm_configured": llm_ready(settings),
+                "links_enabled": bool(settings.links_enabled),
             }
         )
         response.set_cookie(
@@ -1773,6 +1815,8 @@ def create_app(
                 },
                 "backup": backup_details,
                 "materials": materials_progress,
+                # 第四期（4a）：从两个循环内存里上一轮的快照拼，不查库；不进 services、不改 status
+                "links": links_worker.snapshot(),
             },
         }
 
@@ -3758,6 +3802,14 @@ def create_app(
     @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/pick")
     def pick_file_mention(meeting_id: str, stem_key: str, body: FileMentionPickInput):
         return _mention_action(file_mentions.pick_mention_file, meeting_id, stem_key, body.file_id)
+
+    # 4a：［现在重试］。failed 的放宽提到和决议对比放回 pending、次数清零，同时清掉 AI 循环的整体停下和退避
+    @app.post("/api/links/retry")
+    def retry_links():
+        with db.transaction() as connection:
+            requeued = links_llm_module.requeue_failed(connection)
+        links_llm_worker.clear_pause()
+        return {"requeued": requeued}
 
     # v16 / 4a：回答一条关联和 600 秒内撤销；关联行的状态和交付物在同一个事务里，要么都写上、要么都不写
     @app.post("/api/relations/{relation_id}/answer")

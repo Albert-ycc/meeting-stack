@@ -333,6 +333,20 @@ SELECT m.id, m.project_id, m.current_minutes_version_id AS version_id
  LIMIT ?"""
 
 
+def pending_count(connection: Any) -> int:
+    """还没入库或台账落后的会有几场（健康检查的 waiting.decisions，links_loop 每轮末尾数一次）。"""
+    return int(
+        connection.execute(
+            """SELECT COUNT(*) FROM meetings m LEFT JOIN decision_scan s ON s.meeting_id = m.id
+                WHERE s.meeting_id IS NULL
+                   OR s.minutes_version_id IS NOT m.current_minutes_version_id
+                   OR s.project_id IS NOT m.project_id
+                   OR s.parser != ?""",
+            (PARSER_VERSION,),
+        ).fetchone()[0]
+    )
+
+
 def _stamp(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat()
 
