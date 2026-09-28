@@ -209,6 +209,118 @@ describe("地址栏锚点直达", () => {
   });
 });
 
+describe("局部图和来龙去脉的地址（4f）", () => {
+  function mapFor(fileId: number) {
+    return {
+      center: { id: `file:${fileId}`, kind: "file", file_id: fileId, name: `文件${fileId}.xlsx`, at: "2026-09-18T10:00:00+08:00", gone: false, copies: [] },
+      nodes: [{ id: `file:${fileId + 1}`, kind: "file", file_id: fileId + 1, name: `文件${fileId + 1}.xlsx`, at: "2026-09-10T10:00:00+08:00" }],
+      edges: [{ id: `e:same:${fileId + 1}:${fileId}`, kind: "same_name", from: `file:${fileId + 1}`, to: `file:${fileId}`, label: "同属『文件』" }],
+      hidden: [],
+      hidden_count: 0,
+    };
+  }
+
+  function localClient(overrides: Record<string, unknown> = {}) {
+    return client({
+      bootstrap: vi.fn().mockResolvedValue({
+        csrf_token: "token",
+        mobile_read_only: true,
+        mobile_task_write: true,
+        semantic_enabled: true,
+        links_enabled: true,
+        llm_configured: true,
+        pending_confirm_count: 0,
+      }),
+      projects: vi.fn().mockResolvedValue([{ id: "p", name: "云图AI", color: "#2c8d83" }]),
+      graph: vi.fn().mockResolvedValue(
+        payload({
+          files: [{ id: "file:7", kind: "file", file_id: 7, name: "文件7.xlsx", ext: "xlsx", rel_path: "文件7.xlsx", root_id: 1, folder: "root:1" }],
+        }),
+      ),
+      graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
+      meetingBrief: vi.fn().mockRejectedValue(new Error("简报读不到")),
+      getGraphFile: vi.fn().mockRejectedValue(new Error("读不到")),
+      graphFileMap: vi.fn(async (fileId: number) => mapFor(fileId)),
+      graphTrace: vi.fn(async (node: string) => ({
+        center: { id: node, kind: "meeting", title: "初审规则沟通 a", at: "2026-09-21T10:00:00+08:00", audio_url: null },
+        nodes: [],
+        edges: [],
+        chain: [node],
+        center_index: 0,
+        cut: { back: false, forward: false },
+      })),
+      graphMeetingFocus: vi.fn().mockResolvedValue(focusPayload()),
+      ...overrides,
+    } as unknown as Partial<ApiClient>);
+  }
+
+  it("冷加载 ?file= 打开局部图，［回到关系图］替换地址去掉 file；冷加载 ?trace= 打开来龙去脉", async () => {
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#projects/p/graph?file=7");
+    const apiClient = localClient();
+    const { unmount } = render(<App apiClient={apiClient} />);
+    expect(await screen.findByRole("heading", { name: "以『文件7.xlsx』为中心" })).toBeInTheDocument();
+    expect(apiClient.graphFileMap).toHaveBeenCalledWith(7, { related: false });
+    await userEvent.click(screen.getByRole("button", { name: "回到关系图" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph"));
+    expect(await screen.findByRole("application", { name: "云图AI 关系图" })).toBeInTheDocument();
+    unmount();
+
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#projects/p/graph?trace=m:a");
+    render(<App apiClient={apiClient} />);
+    expect(await screen.findByRole("heading", { name: "『初审规则沟通 a』的来龙去脉" })).toBeInTheDocument();
+    expect(apiClient.graphTrace).toHaveBeenCalledWith("m:a");
+    expect(screen.getByText("这场会还没有带原话的来龙去脉")).toBeInTheDocument();
+  });
+
+  it("进局部图和每换一次中心各压一条历史：返回键回到上一个中心，［回到关系图］一次回到星图", async () => {
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#projects/p/graph");
+    render(<App apiClient={localClient()} />);
+    // jsdom 里前面的测试可能留下前进的历史，按 state 里记的层数看有没有压历史
+    const localDepth = () => (window.history.state as { localDepth?: number } | null)?.localDepth;
+    await userEvent.dblClick(await screen.findByRole("button", { name: "文件：文件7.xlsx" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?file=7"));
+    expect(localDepth()).toBe(1);
+    await userEvent.dblClick(await screen.findByRole("button", { name: "文件：文件8.xlsx" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?file=8"));
+    await userEvent.dblClick(await screen.findByRole("button", { name: "文件：文件9.xlsx" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?file=9"));
+    expect(localDepth()).toBe(3);
+
+    window.history.back();
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?file=8"));
+    expect(await screen.findByRole("heading", { name: "以『文件8.xlsx』为中心" })).toBeInTheDocument();
+    expect(localDepth()).toBe(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "回到关系图" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph"));
+    expect(await screen.findByRole("application", { name: "云图AI 关系图" })).toBeInTheDocument();
+    expect(localDepth()).toBeUndefined();
+  });
+
+  it("expand 和 file 同时有时留 expand；手机上 ?file= 退回项目列表", async () => {
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#projects/p/graph?expand=a&file=7");
+    const apiClient = localClient();
+    const { unmount } = render(<App apiClient={apiClient} />);
+    expect(await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?expand=a"));
+    expect(apiClient.graphFileMap).not.toHaveBeenCalled();
+    unmount();
+
+    forgetGraphCache();
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ ...desktopMatchMedia(), matches: true })));
+    window.history.replaceState(null, "", "/#projects/p/graph?file=7");
+    const mobile = localClient();
+    render(<App apiClient={mobile} />);
+    expect(await screen.findByRole("heading", { name: "项目" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#projects"));
+    expect(mobile.graphFileMap).not.toHaveBeenCalled();
+  });
+});
+
 describe("全部项目概览的地址 #graph", () => {
   function overviewClient() {
     return client({

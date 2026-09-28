@@ -27,6 +27,7 @@ import { OverviewPage } from "./components/OverviewPage";
 import { ProjectDetailPage } from "./components/ProjectDetailPage";
 import { OverviewGraph } from "./components/graph/OverviewGraph";
 import { ProjectGraph } from "./components/graph/ProjectGraph";
+import type { GraphLocal } from "./components/graph/graphTypes";
 import { ViewModeToggle } from "./components/graph/ViewModeToggle";
 import { readProjectMode, writeProjectMode, type ProjectViewMode } from "./components/graph/graphPrefs";
 import { ProjectsPage } from "./components/ProjectsPage";
@@ -89,12 +90,22 @@ const VIEW_LABELS: Record<AppView, string> = {
 
 /**
  * 项目详情的地址：清单是 #projects/<id>，关系图是 #projects/<id>/graph，选中节点时带 ?sel=m:<id>，
- * 展开一场会时带 expand=<会议 id>
+ * 展开一场会时带 expand=<会议 id>；4f：以文件为中心的局部图带 file=<文件 id>，来龙去脉带 trace=<节点>
+ * （和 expand 互斥，两个都有时留 expand）
  */
-function projectGraphPath(projectId: string, graph: boolean, selection: string | null, expanded: string | null = null) {
+function projectGraphPath(
+  projectId: string,
+  graph: boolean,
+  selection: string | null,
+  expanded: string | null = null,
+  local: GraphLocal | null = null,
+) {
   if (!graph) return `#projects/${projectId}`;
+  const shownLocal = expanded ? null : local;
   const params = [
     expanded ? `expand=${encodeURIComponent(expanded)}` : "",
+    shownLocal?.kind === "file" ? `file=${shownLocal.fileId}` : "",
+    shownLocal?.kind === "trace" ? `trace=${shownLocal.node.split(":").map(encodeURIComponent).join(":")}` : "",
     selection ? `sel=${selection.split(":").map(encodeURIComponent).join(":")}` : "",
   ].filter(Boolean);
   return `#projects/${projectId}/graph${params.length ? `?${params.join("&")}` : ""}`;
@@ -108,6 +119,23 @@ function overviewPath(selection: string | null) {
 function expandParam(hash: string) {
   const query = hash.split("?")[1];
   return query ? new URLSearchParams(query).get("expand") : null;
+}
+
+/** 4f：地址栏里的局部图、来龙去脉（file=、trace=）；有 expand 时不算 */
+function localFromQuery(params: URLSearchParams): GraphLocal | null {
+  if (params.get("expand")) return null;
+  const file = params.get("file");
+  if (file && /^\d{1,12}$/.test(file)) return { kind: "file", fileId: Number(file) };
+  const trace = params.get("trace");
+  if (trace && /^(file:\d{1,12}|m:[A-Za-z0-9_-]{1,64}|dec:[A-Za-z0-9_-]{1,64}|task:[A-Za-z0-9_-]{1,64})$/.test(trace)) {
+    return { kind: "trace", node: trace };
+  }
+  return null;
+}
+
+function localParam(hash: string): string | null {
+  const local = localFromQuery(new URLSearchParams(hash.split("?")[1] ?? ""));
+  return local ? (local.kind === "file" ? `file:${local.fileId}` : `trace:${local.node}`) : null;
 }
 
 export default function App({ apiClient = api }: AppProps) {
@@ -138,6 +166,9 @@ export default function App({ apiClient = api }: AppProps) {
   const [graphFocus, setGraphFocus] = useState<string | null>(null);
   // 关系图里展开的那场会；展开压一条历史，后退键收起
   const [graphExpanded, setGraphExpanded] = useState<string | null>(null);
+  // 4f：关系图的局部图、来龙去脉；每换一次中心压一条历史（state 里记 localDepth），返回键回到上一个中心
+  const [graphLocal, setGraphLocal] = useState<GraphLocal | null>(null);
+  const localPushRef = useRef(false);
   // 全部项目概览里选中的节点（地址栏 #graph?sel=p:<id>）
   const [overviewSelection, setOverviewSelection] = useState<string | null>(null);
   // 从关系图点进需求页时，面包屑写「关系图」，返回回到画布
@@ -359,6 +390,13 @@ export default function App({ apiClient = api }: AppProps) {
         const graphMode = sub === "graph";
         const params = new URLSearchParams(queryPart);
         const selection = graphMode ? params.get("sel") : null;
+        const local = graphMode ? localFromQuery(params) : null;
+        // 4f：手机上没有局部图和来龙去脉的舞台：照 #graph 的规矩退回项目列表
+        if (local && isMobileRef.current) {
+          setView("projects");
+          return;
+        }
+        setGraphLocal(local);
         setOpenProjectId(projectId);
         setProjectMode(graphMode ? "graph" : "list");
         setGraphSelection(selection);
@@ -619,18 +657,39 @@ export default function App({ apiClient = api }: AppProps) {
     setGraphSelection(null);
     setGraphFocus(null);
     setGraphExpanded(null);
+    setGraphLocal(null);
     performNavigate("projectDetail");
   };
 
   // 会议页、需求页的「在关系图里看」：打开项目的关系图并选中目标；目标在时间窗外时后端自动放宽。
   // 全部项目概览里双击岛进来时不选中什么
-  const openProjectGraph = (projectId: string, selection: string | null = null) => {
+  const openProjectGraph = (projectId: string, selection: string | null = null, local: GraphLocal | null = null) => {
     setOpenProjectId(projectId);
     setProjectMode("graph");
     setGraphSelection(selection);
     setGraphFocus(selection);
     setGraphExpanded(null);
+    setGraphLocal(local);
     performNavigate("projectDetail");
+  };
+
+  // 4f：进出局部图、换中心。进来和每换一次中心压一条历史；［回到关系图］一次退回星图，
+  // 冷启动深链进来的（state 里没有 localDepth）就替换地址去掉 file、trace
+  const changeGraphLocal = (next: GraphLocal | null, options: { replace?: boolean } = {}) => {
+    if (next === null) {
+      const depth = (window.history.state as { localDepth?: number } | null)?.localDepth;
+      if (depth && !options.replace) {
+        window.history.go(-depth);
+        return;
+      }
+      localPushRef.current = false;
+      setGraphLocal(null);
+      return;
+    }
+    localPushRef.current = !options.replace;
+    // 从展开一场会的决议面板进来：展开和局部图互斥，收起展开
+    setGraphExpanded(null);
+    setGraphLocal(next);
   };
 
   // 收起展开的会：展开是本应用压进来的那一条历史就后退，地址栏和视角一起回去
@@ -639,6 +698,8 @@ export default function App({ apiClient = api }: AppProps) {
       window.history.back();
       return;
     }
+    // 展开一场会和局部图互斥
+    if (meetingId !== null) setGraphLocal(null);
     setGraphExpanded(meetingId);
   };
 
@@ -649,6 +710,7 @@ export default function App({ apiClient = api }: AppProps) {
     setGraphSelection(null);
     setGraphFocus(null);
     setGraphExpanded(null);
+    setGraphLocal(null);
     performNavigate("projectDetail");
   };
 
@@ -659,6 +721,7 @@ export default function App({ apiClient = api }: AppProps) {
     setGraphSelection(null);
     setGraphFocus(null);
     setGraphExpanded(null);
+    setGraphLocal(null);
   };
 
   const openRequirementDetail = (requirementId: string) => {
@@ -703,7 +766,7 @@ export default function App({ apiClient = api }: AppProps) {
           ? `#glossary/project/${glossaryProjectId}`
           : "#glossary"
         : view === "projectDetail" && openProjectId
-          ? projectGraphPath(openProjectId, !isMobile && projectMode === "graph", graphSelection, graphExpanded)
+          ? projectGraphPath(openProjectId, !isMobile && projectMode === "graph", graphSelection, graphExpanded, graphLocal)
           : view === "graph"
             ? overviewPath(overviewSelection)
             : view === "requirementDetail" && openRequirementId
@@ -722,13 +785,21 @@ export default function App({ apiClient = api }: AppProps) {
     const sameBase = window.location.hash.split("?")[0] === path.split("?")[0];
     const wasExpanded = expandParam(window.location.hash);
     const nowExpanded = expandParam(path);
-    if (!fromHistory && sameBase && !wasExpanded && nowExpanded) {
+    // 4f：进局部图、来龙去脉和在里面每换一次中心压一条历史，记下第几层（［回到关系图］一次退回去）
+    const nowLocal = localParam(path);
+    const pushLocal = localPushRef.current;
+    localPushRef.current = false;
+    if (!fromHistory && sameBase && pushLocal && nowLocal && nowLocal !== localParam(window.location.hash)) {
+      const depth = ((window.history.state as { localDepth?: number } | null)?.localDepth ?? 0) + 1;
+      history.pushState({ app: true, graphLocal: true, localDepth: depth }, "", url);
+    } else if (!fromHistory && sameBase && !wasExpanded && nowExpanded) {
       history.pushState({ app: true, graphExpand: true }, "", url);
     } else if (fromHistory || sameBase) history.replaceState(window.history.state, "", url);
     else history.pushState({ app: true }, "", url);
   }, [
     glossaryProjectId,
     graphExpanded,
+    graphLocal,
     graphSelection,
     isMobile,
     openMeetingId,
@@ -1031,6 +1102,9 @@ export default function App({ apiClient = api }: AppProps) {
           expanded={graphExpanded}
           focus={graphFocus}
           key={openProjectId}
+          local={graphLocal}
+          onLocalChange={changeGraphLocal}
+          onOpenTask={setTaskDrawerId}
           modeToggle={<ViewModeToggle mode="graph" onChange={changeProjectMode} />}
           onBack={() => navigate("projects")}
           onExpandChange={changeGraphExpand}
@@ -1178,6 +1252,10 @@ export default function App({ apiClient = api }: AppProps) {
               onOpenInGraph={(projectId, fileId) => {
                 setPreviewTarget(null);
                 openProjectGraph(projectId, `file:${fileId}`);
+              }}
+              onOpenTrace={(projectId, node) => {
+                setPreviewTarget(null);
+                openProjectGraph(projectId, null, { kind: "trace", node });
               }}
               onOpenMeeting={(meetingId, seekMs) => {
                 setPreviewTarget(null);

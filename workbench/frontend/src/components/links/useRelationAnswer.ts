@@ -6,6 +6,7 @@ import {
   type ApiClient,
   type RelationAnswer,
   type RelationKind,
+  type RelationAnswerResult,
   type RelationQuestion,
 } from "../../api";
 import type { NoticeFn } from "../graph/panelParts";
@@ -108,13 +109,15 @@ interface UseRelationAnswerOptions {
   onNotice: NoticeFn;
   /** 回答、撤销以后宿主重取（关系图的 ETag 变了） */
   onChanged?: () => void | Promise<void>;
+  /** 4f：回答成了以后（重取之前）告诉宿主，关系图拿它把选中挪到新的交付物线或文件上 */
+  onAnswered?: (question: RelationQuestion, answer: RelationAnswer, result: RelationAnswerResult) => void;
 }
 
 /**
  * 发回答、撤销，记下收成的那一行。409、422 和中文的 404 原样显示服务器那句话（warning），
  * 旧后台写「后台还是旧版本，重启声档后再试」，这之后问题块不再画。
  */
-export function useRelationAnswer({ apiClient, scope, onNotice, onChanged }: UseRelationAnswerOptions) {
+export function useRelationAnswer({ apiClient, scope, onNotice, onChanged, onAnswered }: UseRelationAnswerOptions) {
   const shared = useContext(RecentAnswersContext);
   // 没有 App 那一层时（单独挂的测试）退回组件自己的一份
   const [ownStore] = useState(createRecentAnswerStore);
@@ -187,6 +190,7 @@ export function useRelationAnswer({ apiClient, scope, onNotice, onChanged }: Use
         });
         setNow(Date.now());
         onNotice(text, { kind: "relation", relationId: question.relation_id, label: text, until: result.undo_until });
+        onAnswered?.(question, value, result);
         await refetch();
         return true;
       } catch (reason) {
@@ -202,7 +206,7 @@ export function useRelationAnswer({ apiClient, scope, onNotice, onChanged }: Use
         setSending(null);
       }
     },
-    [apiClient, onNotice, refetch, showFailure, store],
+    [apiClient, onAnswered, onNotice, refetch, showFailure, store],
   );
 
   /** 收成的那一行上的［撤销］；关系图里的 ⌘Z 走画布自己的撤销栈 */

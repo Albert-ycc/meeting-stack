@@ -113,6 +113,12 @@ export interface GraphFile {
   pinned?: true;
   /** 3g：读到哪一步，画节点上的小标记；会上提到的文件没有 */
   state?: FileNodeState;
+  /** 4f：在问「可能过时」（琥珀色）；为假时后端不写，旧后台没有 */
+  stale?: boolean;
+  /** 4f：在问「是不是这条任务的交付物」（琥珀色） */
+  asks_deliverable?: boolean;
+  /** 4f：只因为相关线才上图的文件（前端从相关接口补的） */
+  related?: true;
 }
 
 /** 文件读到哪一步（同预览的 state.kind，不含 gone） */
@@ -181,8 +187,16 @@ export type GraphEdgeKind =
   | "cross"
   /** 会和「像是新需求」之间的虚线（2c） */
   | "suggested"
-  /** 会上提到文件（2d） */
-  | "mentioned";
+  /** 会上提到文件（2d）；4b 放宽的提到也是这一种 */
+  | "mentioned"
+  /** 4f：在问的产出（需求或会 → 文件，琥珀色虚线） */
+  | "produced"
+  /** 4f：你标的交付物（需求或会 → 文件，实线带箭头） */
+  | "deliverable"
+  /** 4f：在问的可能过时（决议所在的会 → 文件，琥珀色虚线） */
+  | "affects"
+  /** 4f：相关（会 → 文件，浅灰点线，只在前端从相关接口补） */
+  | "related";
 
 export interface GraphEdge {
   id: string;
@@ -201,7 +215,132 @@ export interface GraphEdge {
   /** mentioned：会上说的那个词、它的 stem_key（［不是这份文件］用） */
   needle?: string;
   stem_key?: string;
+  /** 4f：第四期的线带的关联行 id、端点、会上原话和时刻；都不带分数 */
+  relation_id?: number;
+  relation_ids?: number[];
+  task_id?: string;
+  decision_id?: string;
+  deliverable_id?: number;
+  file_id?: number;
+  at_ms?: number | null;
+  quote?: string;
+  /** 放宽的提到：llm 或 manual（字面行没有） */
+  origin?: "llm" | "manual";
+  /** 相关：共同词、材料一端的位置和片段（相关接口给的） */
+  words?: string[];
+  passage?: { loc?: string | null; text?: string; content_key?: string; ordinal?: number | null };
 }
+
+/** 4d 的相关线接口（GET /api/graph/projects/{id}/related），4f 画 */
+export interface RelatedEdges {
+  rev: number;
+  files: Record<string, { file_id: number; name: string; ext: string; rel_path: string; root_id: number }>;
+  edges: Array<{
+    id: string; // e:rel:<relation_id>
+    relation_id: number;
+    meeting_id: string;
+    file_id: number;
+    rank: number;
+    words: string[];
+    at_ms: number | null;
+    quote: string;
+    passage: { content_key: string; ordinal: number | null; loc?: string | null; text?: string };
+  }>;
+}
+
+/** 4f：局部图和来龙去脉的节点 */
+export type LocalNodeKind = "meeting" | "decision" | "task" | "file" | "requirement";
+
+export interface LocalNode {
+  id: string; // m:、dec:、task:、file:、r:
+  kind: LocalNodeKind;
+  title?: string;
+  text?: string;
+  name?: string;
+  ext?: string;
+  file_id?: number;
+  meeting_id?: string | null;
+  decision_id?: string;
+  task_id?: string;
+  requirement_id?: string;
+  status?: string;
+  caption?: string;
+  meeting_caption?: string | null;
+  start_ms?: number | null;
+  anchor_ms?: number | null;
+  /** 节点时间（ISO，本地时区）；需求没有 */
+  at?: string | null;
+  /** 会议、决议（和任务）节点：那场会的录音，没有录音时为 null（不出 ▶） */
+  audio_url?: string | null;
+}
+
+export type LocalEdgeKind =
+  | GraphEdgeKind
+  | "in_meeting"
+  | "task_from"
+  | "same_name"
+  | "belongs"
+  | "later_changed"
+  | "restated";
+
+export interface LocalEdge {
+  id: string;
+  kind: LocalEdgeKind;
+  from: string;
+  to: string;
+  label: string;
+  state?: string;
+  relation_id?: number;
+  task_id?: string;
+  decision_id?: string;
+  deliverable_id?: number;
+  meeting_id?: string | null;
+  at_ms?: number | null;
+  quote?: string;
+  origin?: "llm" | "manual";
+  words?: string[];
+  passage?: { loc?: string | null; content_key?: string; ordinal?: number | null };
+  /** 来龙去脉：链本身的线（实线），其余是链上节点之间的细线 */
+  on_chain?: boolean;
+  level?: number;
+}
+
+export interface LocalCenter extends LocalNode {
+  kind: "file" | "meeting" | "decision" | "task";
+  root_id?: number;
+  rel_path?: string;
+  /** 文件所在文件夹的最后一段（在根目录最上层时为空串） */
+  folder?: string;
+  project_id?: string;
+  gone?: boolean;
+  /** 挪过位置：你给的 id（center.file_id 是活的 id） */
+  moved_from?: number;
+  copies?: Array<{ file_id: number; name: string }>;
+  stale?: boolean;
+  asks_deliverable?: boolean;
+}
+
+/** GET /api/graph/files/{id}/map */
+export interface LocalGraph {
+  center: LocalCenter;
+  nodes: LocalNode[];
+  edges: LocalEdge[];
+  hidden: Array<{ edge_id: string; label: string; node_id: string; node_label: string }>;
+  hidden_count: number;
+}
+
+/** GET /api/graph/trace?node= */
+export interface TracePayload {
+  center: LocalCenter;
+  nodes: LocalNode[];
+  edges: LocalEdge[];
+  chain: string[];
+  center_index: number;
+  cut: { back: boolean; forward: boolean };
+}
+
+/** 关系图的局部舞台：以文件为中心的局部图，或某个节点的来龙去脉 */
+export type GraphLocal = { kind: "file"; fileId: number } | { kind: "trace"; node: string };
 
 export interface StatusPhrase {
   text: string;

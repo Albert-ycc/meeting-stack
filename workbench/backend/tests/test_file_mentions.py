@@ -354,7 +354,7 @@ def test_project_graph_draws_mentioned_files_with_caps(tmp_path):
     assert edge["label"] == f"会上说『{names[0]}』4 次 · 00:01:00"
     # 每场前 3 个里有几场共用的文件：节点比连线少
     assert len(shown) < len(edges)
-    assert graph.GRAPH_API_VERSION == 3
+    assert graph.GRAPH_API_VERSION == 4
 
     # 简报：全部有效提到，通用的排最后
     with db.autocommit() as connection:

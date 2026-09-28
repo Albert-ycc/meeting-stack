@@ -41,6 +41,7 @@ PHASE_FOUR_MODULES = (
     "asks.py",
     "produced.py",
     "affects.py",
+    "graph_local.py",
 )
 
 # 4a：relation_read.links_state 的状态句（第 3 节「状态和提示」，每种一句话、最多一个按钮）
@@ -322,6 +323,84 @@ COPY_4E = (
     "这条已经处理过了",
     "还没有登记交付物",
 )
+# 4f：图例、［相关］的状态、线上的字、在等你的两句、局部图和来龙去脉的标题、状态和错误
+COPY_4F = (
+    "图例",
+    "位置：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新",
+    "实线：归属、讨论",
+    "细虚线：文件夹",
+    "带箭头的实线：交付物",
+    "细线带引号：会上提到这份文件",
+    "琥珀色虚线：在等你回答的产出和可能过时",
+    "流动的琥珀色虚线：待复核的归属",
+    "浅灰点线：相关（两边有共同词），默认关着",
+    "短虚线：跨项目、像是新需求",
+    "连线",
+    "提到",
+    "相关",
+    "打开后每个节点最多 3 条",
+    "这个时间窗里还没有相关的线",
+    "相关的线没取到",
+    "重试",
+    "后台还是旧版本，重启声档后再试",
+    "会后 3 天新增在『能耗看板/』，是任务『写一版方案』的交付物吗？",
+    "9/21 定的『总价下调 5%』，报价单 v3 之后没改过",
+    "任务『整理接口清单』的交付物 · 你标的",
+    "共同词：报价单、驻场",
+    "会上说『上周那版报价单』· 00:12:34",
+    "2 个文件可能过时",
+    "1 个新文件等你认交付物",
+    "可能过时",
+    "交付物？",
+    "，可能过时",
+    "，等你认交付物",
+    "连线 · 产出",
+    "连线 · 可能过时",
+    "产出",
+    "交付物",
+    "打开任务",
+    "还有 3 条线没画出来",
+    "以它为中心看",
+    "以『报价单 v3.xlsx』为中心",
+    "回到关系图",
+    "还有 7 个没画出来",
+    "7/30 周会 · 会上说『报价单』2 次",
+    "会上提到这条任务 · 00:05:10",
+    "同属『报价单』",
+    "同属需求『能耗看板』的文件夹",
+    "这场会定的",
+    "后来改了",
+    "后来又提到",
+    "来龙去脉",
+    "『报价单 v3.xlsx』的来龙去脉",
+    "『报价沟通』的来龙去脉",
+    "在关系图上看 →",
+    "正在取这份文件的关系",
+    "还没有会提到这份文件，也没有任务或决议连到它",
+    "这份文件挪到了『2026』文件夹里",
+    "这份文件挪到了项目文件夹的最上层",
+    "这份文件已经不在资料盘里了，下面是它还在时的关系",
+    "局部图没取到",
+    "来龙去脉没取到",
+    "这份文件还没有带原话的来龙去脉",
+    "这场会还没有带原话的来龙去脉",
+    "这条决议还没有带原话的来龙去脉",
+    "这条任务还没有带原话的来龙去脉",
+    "← 回到中心",
+    "往前走到 3 步为止，更早的没展开",
+    "往后走到 3 步为止，更晚的没展开",
+    "这份文件不在索引里了",
+    "会议不存在",
+    "这条决议已经不在了",
+    "这条任务已经不在了",
+    "这份文件不在任何项目的资料盘里",
+    "这场会没归项目",
+    "之后没改过",
+    "会上提到这份文件",
+    "你标过已更新",
+    "3 场会提到",
+    "在 3 场会上被提到",
+)
 COPY_TABLES = {
     "4a 状态句": STATE_SENTENCES_4A,
     "4a 回答和撤销": ANSWER_COPY_4A,
@@ -330,6 +409,7 @@ COPY_TABLES = {
     "4d 相关材料栏": COPY_4D,
     "4g 问答": COPY_4G,
     "4e 产出和可能过时": COPY_4E,
+    "4f 关系图的线、局部图和来龙去脉": COPY_4F,
 }
 
 
@@ -600,5 +680,36 @@ def test_phase_four_payloads_4e(tmp_path):
     # 决议原文（decision.text、决议卡的 text）和现读的材料片段（passage.text）在页面上放在『』里照原样显示，
     # 不受用词规则管
     quoted = {"总价下调 5%", "报价说明：总价在原基础上下调 3%，含税"}
+    found = [text for text in found if text not in quoted]
+    assert [text for text in found if problems(text)] == []
+
+
+def test_local_graph_errors_match_the_module():
+    from meeting_workbench import graph_local
+
+    for text in (graph_local.FILE_MISSING, graph_local.FILE_NO_PROJECT, graph_local.MEETING_MISSING,
+                 graph_local.DECISION_MISSING, graph_local.TASK_MISSING, graph_local.MEETING_NO_PROJECT,
+                 graph_local.LATER_CHANGED_TEXT, graph_local.RESTATED_TEXT):
+        assert text in COPY_4F
+
+
+def test_phase_four_payloads_4f(tmp_path):
+    """4f：用 4e 的样本库打一遍星图、局部图（相关开着）和来龙去脉：text、label、title、detail 里没有不许
+    出现的词。"""
+    from .test_relation_questions import world
+
+    w = world(tmp_path)
+    payloads = [
+        w.client.get("/api/graph/projects/p").json(),
+        w.client.get(f"/api/graph/files/{w.quote_id}/map", params={"related": 1}).json(),
+        w.client.get(f"/api/graph/files/{w.plan_id}/map").json(),
+        w.client.get("/api/graph/trace", params={"node": f"file:{w.quote_id}"}).json(),
+        w.client.get("/api/graph/trace", params={"node": "m:m"}).json(),
+        w.client.get("/api/graph/trace", params={"node": "m:nope"}).json(),
+        w.client.get("/api/graph/files/999999/map").json(),
+    ]
+    found = [text for payload in payloads for text in collect_copy(payload)]
+    assert any("之后没改过" in text for text in found) and any("的交付物吗？" in text for text in found)
+    quoted = {"总价下调 5%", "写一版方案"}
     found = [text for text in found if text not in quoted]
     assert [text for text in found if problems(text)] == []

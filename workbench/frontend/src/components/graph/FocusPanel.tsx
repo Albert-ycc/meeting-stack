@@ -24,6 +24,8 @@ export interface FocusPanelProps {
   onChanged: () => void | Promise<void>;
   onNotice: NoticeFn;
   onOpenRequirement: (requirementId: string) => void;
+  /** 4f：决议面板的［来龙去脉］（dec:<id>）；旧后台、手机上不传 */
+  onTrace?: (node: string) => void;
   /** 3g：交付物里的文件点了打开预览抽屉 */
   onOpenPreview?: (fileId: number) => void;
 }
@@ -126,6 +128,13 @@ function DecisionBody({ props, decision }: { props: FocusPanelProps; decision: F
       <Section title="前后 20 秒的原话">
         <FocusQuotes atMs={decision.start_ms} props={props} />
       </Section>
+      {props.onTrace && decision.id && (
+        <div className="graph-panel__actions graph-panel__actions--start">
+          <button className="ghost-button" onClick={() => props.onTrace?.(`dec:${decision.id}`)} type="button">
+            来龙去脉
+          </button>
+        </div>
+      )}
     </>
   );
 }

@@ -130,3 +130,40 @@
 .links-state--stopped {
   color: var(--ink-2);
 }
+
+/* 4f：［来龙去脉］的列表：从早到晚，中心那一行加粗，行和行之间一行小字 */
+.trace-list__rows {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trace-list__rows li {
+  display: grid;
+  gap: 2px;
+}
+
+.trace-list__row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.trace-list__step,
+.trace-list__cut,
+.trace-list__state {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trace-list__step {
+  padding-left: 8px;
+}
+
+.trace-list__graph {
+  margin-top: 6px;
+}

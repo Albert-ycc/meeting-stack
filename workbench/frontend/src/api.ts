@@ -80,9 +80,12 @@ import type {
   GraphPayload,
   GraphRootsPayload,
   GraphWindow,
+  LocalGraph,
   MeetingBrief,
   MeetingFocus,
   QuotesPayload,
+  RelatedEdges,
+  TracePayload,
 } from "./components/graph/graphTypes";
 import type { GraphOverview, GraphOverviewFetch, OverviewFolders } from "./components/graph/overviewTypes";
 
@@ -590,6 +593,31 @@ export const api = {
     read<GraphPayload>(
       `/api/graph/projects/${encodeURIComponent(projectId)}${queryString({ window, focus })}`,
     ),
+  /**
+   * 4f：关系图的相关线（4d 的接口）。带上次的 etag 时发 If-None-Match：没变是 304，返回 related: null，
+   * 照旧用手上的那份。只在［相关］开着时取。
+   */
+  graphRelated: async (
+    projectId: string,
+    window: GraphWindow,
+    etag?: string | null,
+  ): Promise<{ related: RelatedEdges | null; etag: string | null }> => {
+    const response = await fetch(
+      `/api/graph/projects/${encodeURIComponent(projectId)}/related${queryString({ window })}`,
+      {
+        credentials: "same-origin",
+        headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
+      },
+    );
+    if (response.status === 304) return { related: null, etag: response.headers.get("etag") ?? etag ?? null };
+    const related = await parseResponse<RelatedEdges>(response);
+    return { related, etag: response.headers.get("etag") };
+  },
+  /** 4f：以一份文件为中心的局部图（只查库，不缓存）；related 只在关系图的［相关］开着时为 true */
+  graphFileMap: (fileId: number, options?: { related?: boolean }) =>
+    read<LocalGraph>(`/api/graph/files/${fileId}/map${queryString({ related: options?.related ? 1 : 0 })}`),
+  /** 4f：来龙去脉；node 是 file:、m:、dec:、task: 开头的 id */
+  graphTrace: (node: string) => read<TracePayload>(`/api/graph/trace${queryString({ node })}`),
   graphRoots: (projectId: string) =>
     read<GraphRootsPayload>(`/api/graph/projects/${encodeURIComponent(projectId)}/roots`),
   graphCollapsed: (projectId: string, group: string, window?: GraphWindow) =>

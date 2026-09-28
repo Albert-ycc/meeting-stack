@@ -309,3 +309,123 @@
 .project-graph__ask-panel {
   overflow-y: auto;
 }
+
+/* 4f：底部「连线」两个开关，样子和时间窗一样 */
+.project-graph__lines {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.project-graph__lines-label {
+  padding: 0 6px;
+  color: var(--muted-2);
+}
+
+.project-graph__lines button {
+  padding: 4px 10px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.project-graph__lines button[aria-pressed="true"] {
+  color: var(--heading);
+  background: var(--raised);
+  box-shadow: 0 0 0 1px var(--line-strong) inset;
+}
+
+/* 4f：［图例］和它点开的小窗 */
+.project-graph__legend-wrap {
+  position: relative;
+  flex: none;
+  margin-left: auto;
+}
+
+.project-graph__legend-box {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 5;
+  display: grid;
+  gap: 6px;
+  width: max-content;
+  max-width: min(420px, 80vw);
+  padding: 10px 12px;
+  color: var(--ink-2);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / calc(0.2 * var(--shadow-k)));
+}
+
+.project-graph__legend-box ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-graph__legend-box li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-sample {
+  flex: none;
+  width: 26px;
+  height: 0;
+  border-top: 1.5px solid rgb(var(--fg-rgb) / 0.45);
+}
+
+.legend-sample--none {
+  border-top-color: transparent;
+}
+
+.legend-sample--dashed {
+  border-top-style: dashed;
+  border-top-width: 1px;
+}
+
+.legend-sample--arrow {
+  position: relative;
+}
+
+.legend-sample--arrow::after {
+  position: absolute;
+  top: -5px;
+  right: -2px;
+  content: "▸";
+  color: rgb(var(--fg-rgb) / 0.45);
+  font-size: 10px;
+}
+
+.legend-sample--quote {
+  border-top-width: 1px;
+  border-top-color: rgb(var(--fg-rgb) / 0.3);
+}
+
+.legend-sample--ask,
+.legend-sample--review {
+  border-top: 1.5px dashed var(--warn);
+}
+
+.legend-sample--dotted {
+  border-top: 2px dotted rgb(var(--fg-rgb) / 0.32);
+}
+
+.legend-sample--short {
+  border-top: 1.2px dashed rgb(var(--fg-rgb) / 0.4);
+}

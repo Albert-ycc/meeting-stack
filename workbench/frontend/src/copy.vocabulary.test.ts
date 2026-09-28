@@ -31,6 +31,17 @@ const SOURCES = import.meta.glob(
     "./components/TaskDrawer.tsx",
     "./components/graph/MeetingFocusView.tsx",
     "./components/graph/focusLayout.ts",
+    // 4f：图例、连线开关、相关的状态、第四期的线和它们的面板、局部图和来龙去脉（TraceList 在 links/* 里）、小签
+    "./components/graph/ProjectGraph.tsx",
+    "./components/graph/GraphCanvas.tsx",
+    "./components/graph/GraphPanel.tsx",
+    "./components/graph/MaterialPanels.tsx",
+    "./components/graph/LocalGraphView.tsx",
+    "./components/graph/LocalGraphPanel.tsx",
+    "./components/graph/localLayout.ts",
+    "./components/graph/drawnEdges.ts",
+    "./components/graph/graphFiles.ts",
+    "./components/graph/layout.ts",
   ],
   {
     query: "?raw",
@@ -245,6 +256,72 @@ describe("第四期界面的用词", () => {
     expect(folders.filter((folder) => folder.includes("/"))).toEqual([]);
     const files = Object.keys(SOURCES);
     for (const name of ["TaskDrawer.tsx", "MeetingFocusView.tsx", "focusLayout.ts", "RelationQuestion.tsx", "FocusPanel.tsx"]) {
+      expect(files.some((file) => file.endsWith(name))).toBe(true);
+    }
+  });
+
+  it("4f 的图例、［相关］的状态、线上的字、局部图和来龙去脉的状态和错误", () => {
+    const copy = [
+      "图例",
+      "位置：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新",
+      "实线：归属、讨论",
+      "细虚线：文件夹",
+      "带箭头的实线：交付物",
+      "细线带引号：会上提到这份文件",
+      "琥珀色虚线：在等你回答的产出和可能过时",
+      "流动的琥珀色虚线：待复核的归属",
+      "浅灰点线：相关（两边有共同词），默认关着",
+      "短虚线：跨项目、像是新需求",
+      "连线",
+      "提到",
+      "相关",
+      "打开后每个节点最多 3 条",
+      "这个时间窗里还没有相关的线",
+      "相关的线没取到",
+      "会后 3 天新增在『能耗看板/』，是任务『写一版方案』的交付物吗？",
+      "9/21 定的『总价下调 5%』，报价单 v3 之后没改过",
+      "任务『整理接口清单』的交付物 · 你标的",
+      "共同词：报价单、驻场",
+      "会上：『报价单再看一下』· 00:00:01",
+      "材料：『报价单的驻场部分』 · 第 1 页",
+      "2 个文件可能过时",
+      "1 个新文件等你认交付物",
+      "可能过时",
+      "交付物？",
+      "连线 · 产出",
+      "连线 · 可能过时",
+      "还有 3 条线没画出来",
+      "打开任务",
+      "以它为中心看",
+      "以『报价单 v3.xlsx』为中心",
+      "回到关系图",
+      "还有 7 个没画出来",
+      "7/30 周会 · 会上说『报价单』2 次",
+      "会上提到这条任务 · 00:05:10",
+      "同属『报价单』",
+      "同属需求『能耗看板』的文件夹",
+      "这场会定的",
+      "来龙去脉",
+      "『报价单 v3.xlsx』的来龙去脉",
+      "在关系图上看 →",
+      "正在取这份文件的关系",
+      "还没有会提到这份文件，也没有任务或决议连到它",
+      "这份文件挪到了『2026』文件夹里",
+      "这份文件挪到了项目文件夹的最上层",
+      "这份文件已经不在资料盘里了，下面是它还在时的关系",
+      "局部图没取到",
+      "来龙去脉没取到",
+      "这份文件还没有带原话的来龙去脉",
+      "这场会还没有带原话的来龙去脉",
+      "往前走到 3 步为止，更早的没展开",
+      "往后走到 3 步为止，更晚的没展开",
+      "后台还是旧版本，重启声档后再试",
+      "3 场会提到",
+      "在 3 场会上被提到",
+    ];
+    expect(copy.flatMap(violations)).toEqual([]);
+    const files = Object.keys(SOURCES);
+    for (const name of ["LocalGraphView.tsx", "LocalGraphPanel.tsx", "TraceList.tsx", "drawnEdges.ts", "ProjectGraph.tsx"]) {
       expect(files.some((file) => file.endsWith(name))).toBe(true);
     }
   });

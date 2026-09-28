@@ -172,23 +172,103 @@ def meeting_mentions(connection: Any, meeting_id: str, project_id: str) -> list[
     return _one_per_file(items)
 
 
+DELIVERABLE_ROWS = 60
+
+# ⑫ 的另两支（4f）：在问的产出和影响（relations，status='suggested'），和没取消、没过期的任务的交付物
+# （最新 60 条）。两支都按来历规则找活文件；列和提到那一支对齐，多出的在外层连任务、需求和决议。
+_ASK_BRANCH = f"""
+SELECT r.kind, r.origin AS via, r.id AS relation_id, r.meeting_id, r.stem_key, {LIVE_ID_SQL} AS file_id,
+       NULL AS needle, 1 AS count, r.at_ms AS first_ms, NULL AS anchors_json, 0 AS minutes_count,
+       'transcript' AS source, 0 AS picked, r.quote, NULL AS phrase, NULL AS hint_via,
+       r.task_id, r.decision_id, NULL AS deliverable_id, r.evidence_json, r.created_at
+  FROM relations r
+ WHERE r.project_id = ? AND r.kind IN ('produced', 'affects') AND r.status = 'suggested'"""
+
+_DELIVERABLE_BRANCH = """
+SELECT * FROM (
+  SELECT 'deliverable' AS kind, 'user' AS via, NULL AS relation_id, t.meeting_id, NULL AS stem_key,
+         COALESCE(
+           (SELECT f2.id FROM material_files f2 JOIN project_material_roots pr ON pr.id = f2.root_id
+             WHERE pr.project_id = t.project_id AND f2.content_key = df.content_key AND f2.gone_at IS NULL
+             ORDER BY f2.mtime_ns DESC, f2.id LIMIT 1),
+           (SELECT f3.id FROM material_files f3
+             WHERE f3.root_id = df.root_id AND f3.rel_path = df.rel_path AND f3.gone_at IS NULL)) AS file_id,
+         NULL AS needle, 1 AS count, t.anchor_ms AS first_ms, NULL AS anchors_json, 0 AS minutes_count,
+         'transcript' AS source, 0 AS picked, COALESCE(t.anchor_quote, '') AS quote, NULL AS phrase,
+         NULL AS hint_via, t.id AS task_id, NULL AS decision_id, d.id AS deliverable_id,
+         NULL AS evidence_json, d.created_at
+    FROM deliverables d
+    JOIN deliverable_files df ON df.deliverable_id = d.id
+    JOIN tasks t ON t.id = d.task_id
+   WHERE t.project_id = ? AND t.status NOT IN ('cancelled', 'expired')
+   ORDER BY d.created_at DESC, d.id DESC LIMIT ?)"""
+
+
 def project_edges(connection: Any, project_id: str) -> list[dict[str, Any]]:
-    """关系图查询 ⑫：本项目会上提到的文件，一条语句（以 WITH 开头）。4a 只有提到的两支，放宽的画成
-    现有的 mentioned 线；4f 把在问的产出、影响和交付物加进同一条 UNION ALL，project_graph 始终 12 条。
-    相关（kind='related'）永远不进来。"""
+    """关系图查询 ⑫：一条以 WITH 开头、三支 UNION ALL 的语句（project_graph 始终 12 条）。
+    1. 提到：MENTION_UNION_SQL（字面和放宽的两半，互相遮盖）；
+    2. 在问的产出和影响（4e 的数据）；
+    3. 交付物：本项目没取消、没过期的任务的，最新 60 条。
+    三支都按来历规则找活文件，外层只留还活着的。相关（kind='related'）永远不进来。
+    返回的每行带 kind：mention 的行是 4a 的样子（同一 (会议, 活文件) 只留一行，字面的胜过放宽的），
+    其余三类另带任务、需求和决议的几列。"""
     rows = connection.execute(
-        f"""WITH e AS ({MENTION_UNION_SQL})
-            SELECT e.*, f.id AS live_id, f.name, f.ext, f.rel_path, f.root_id
-              FROM e JOIN material_files f ON f.id = e.file_id AND f.gone_at IS NULL
-             WHERE e.project_id = ?""",
-        (project_id,),
+        f"""WITH e AS (
+              SELECT 'mention' AS kind, u.via, u.relation_id, u.meeting_id, u.stem_key, u.file_id, u.needle,
+                     u.count, u.first_ms, u.anchors_json, u.minutes_count, u.source, u.picked, u.quote,
+                     u.phrase, u.hint_via, NULL AS task_id, NULL AS decision_id, NULL AS deliverable_id,
+                     NULL AS evidence_json, NULL AS created_at
+                FROM ({mention_union(literal="fm.project_id = ?", loose="r.project_id = ?")}) u
+              UNION ALL {_ASK_BRANCH}
+              UNION ALL {_DELIVERABLE_BRANCH}
+            )
+            SELECT e.*, f.id AS live_id, f.name, f.ext, f.rel_path, f.root_id, f.mtime_ns,
+                   t.title AS task_title, t.status AS task_status, t.requirement_id,
+                   rq.project_id AS requirement_project_id, t.meeting_id AS task_meeting_id,
+                   t.anchor_ms AS task_anchor_ms, t.anchor_quote AS task_quote,
+                   dc.text AS decision_text, dc.meeting_id AS decision_meeting_id, dc.start_ms AS decision_ms
+              FROM e
+              JOIN material_files f ON f.id = e.file_id AND f.gone_at IS NULL
+              LEFT JOIN tasks t ON t.id = e.task_id
+              LEFT JOIN requirements rq ON rq.id = t.requirement_id
+              LEFT JOIN decisions dc ON dc.id = e.decision_id AND dc.gone_at IS NULL""",
+        (project_id, project_id, project_id, project_id, DELIVERABLE_ROWS),
     ).fetchall()
-    items = [
-        {**_mention_item(row), "file_id": row["live_id"], "name": row["name"], "ext": row["ext"],
-         "rel_path": row["rel_path"], "root_id": row["root_id"]}
-        for row in rows
-    ]
-    return _one_per_file(items)
+    mentions: list[dict[str, Any]] = []
+    others: list[dict[str, Any]] = []
+    for row in rows:
+        base = {"file_id": row["live_id"], "name": row["name"], "ext": row["ext"], "rel_path": row["rel_path"],
+                "root_id": row["root_id"], "mtime_ns": row["mtime_ns"]}
+        if row["kind"] == "mention":
+            mentions.append({**_mention_item(row), **base, "kind": "mention"})
+            continue
+        others.append(
+            {
+                **base,
+                "kind": row["kind"],
+                "via": row["via"],
+                "relation_id": row["relation_id"],
+                "deliverable_id": row["deliverable_id"],
+                "meeting_id": row["meeting_id"],
+                "at_ms": row["first_ms"],
+                "quote": row["quote"] or "",
+                "evidence_json": row["evidence_json"],
+                "created_at": row["created_at"] or "",
+                "task_id": row["task_id"],
+                "task_title": row["task_title"],
+                "task_status": row["task_status"],
+                "requirement_id": row["requirement_id"],
+                "requirement_project_id": row["requirement_project_id"],
+                "task_meeting_id": row["task_meeting_id"],
+                "task_anchor_ms": row["task_anchor_ms"],
+                "task_quote": row["task_quote"] or "",
+                "decision_id": row["decision_id"],
+                "decision_text": row["decision_text"],
+                "decision_meeting_id": row["decision_meeting_id"],
+                "decision_ms": row["decision_ms"],
+            }
+        )
+    return _one_per_file(mentions) + others
 
 
 def file_mention_counts(connection: Any, file_ids: Iterable[int]) -> dict[int, int]:
@@ -386,16 +466,17 @@ def edges_of(connection: Any, node: str, kinds: Iterable[str]) -> list[dict[str,
             f"{LIVE_ID_SQL} = ? AND r.project_id IN ({_FILE_PROJECT})" if prefix == "file" else "r.decision_id = ?"
         )
         parts.append(
-            f"""SELECT 'affects_resolved', r.origin, r.id, r.meeting_id, r.decision_id, NULL,
-                       {LIVE_ID_SQL}, r.at_ms, r.quote, NULL
+            f"""SELECT 'affects_resolved' AS kind, r.origin AS via, r.id AS relation_id, r.meeting_id,
+                       r.decision_id, NULL AS to_decision_id, {LIVE_ID_SQL} AS file_id, r.at_ms, r.quote,
+                       NULL AS needle
                   FROM relations r WHERE r.kind = 'affects' AND r.status = 'resolved' AND {where}"""
         )
         params += [file_id, file_id] if prefix == "file" else [value]
     pair_kinds = [kind for kind in ("later_changed", "restated") if kind in wanted]
     if pair_kinds and prefix == "dec":
         parts.append(
-            f"""SELECT r.kind, r.origin, r.id, r.meeting_id, r.decision_id, r.to_decision_id, NULL, r.at_ms,
-                       r.quote, NULL
+            f"""SELECT r.kind, r.origin AS via, r.id AS relation_id, r.meeting_id, r.decision_id,
+                       r.to_decision_id, NULL AS file_id, r.at_ms, r.quote, NULL AS needle
                   FROM relations r
                  WHERE r.kind IN ({_marks(pair_kinds)}) AND r.status = 'shown'
                    AND (r.decision_id = ? OR r.to_decision_id = ?)"""

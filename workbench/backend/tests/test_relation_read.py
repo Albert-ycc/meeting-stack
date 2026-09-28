@@ -336,7 +336,7 @@ def test_loose_edges_reuse_the_mentioned_line_and_its_labels(tmp_path):
     assert edges[f"file:{quote}"]["label"] == "会上说『上周那版报价单』· 00:12:34"
     assert edges[f"file:{plan}"]["label"] == "会上说『能耗看板那个PPT』等 2 处 · 00:01:00"
     assert edges[f"file:{plan}"]["anchors_ms"] == [60_000, 90_000]
-    assert graph.GRAPH_API_VERSION == 3
+    assert graph.GRAPH_API_VERSION == 4
     # 简报、文件面板多出的三项：放宽行才有
     with db.autocommit() as connection:
         from meeting_workbench import file_mentions

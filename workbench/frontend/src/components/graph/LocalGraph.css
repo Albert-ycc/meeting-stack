@@ -1,0 +1,130 @@
+/* 4f：以文件为中心的局部图和来龙去脉的舞台（LocalGraphView.tsx）。节点框的尺寸和 localLayout.ts 一致。 */
+
+.local-stage {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.local-stage__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.local-stage__head h2 {
+  margin: 0;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.local-stage__note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.local-viewport {
+  flex: 1;
+  min-height: 320px;
+}
+
+.local-node {
+  position: absolute;
+  display: grid;
+  align-content: center;
+  gap: 1px;
+  padding: 3px 8px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.25;
+  text-align: left;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.local-node small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.local-node__text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.local-node__text--two {
+  display: -webkit-box;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.local-node--meeting {
+  border-left: 3px solid var(--signal);
+}
+
+.local-node--decision {
+  background: var(--stage);
+}
+
+.local-node--requirement {
+  border-style: dashed;
+}
+
+.local-node.is-center {
+  font-weight: 600;
+  border-color: var(--ink-2);
+  box-shadow: 0 0 0 2px rgb(var(--fg-rgb) / 0.08);
+}
+
+.local-node.is-selected {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal) 30%, transparent);
+}
+
+.local-edge .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.35);
+  stroke-width: 1.3;
+  fill: none;
+}
+
+.local-edge--ask .graph-edge__line {
+  stroke: var(--warn);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+}
+
+.local-edge--related .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.32);
+  stroke-dasharray: 1 5;
+  stroke-linecap: round;
+}
+
+.local-edge--same_name .graph-edge__line,
+.local-edge--belongs .graph-edge__line {
+  stroke-dasharray: 4 4;
+}
+
+/* 来龙去脉：链本身的线实线，链上节点之间其余的线细 */
+.local-edge--chain .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.55);
+  stroke-width: 1.8;
+  stroke-dasharray: none;
+}
+
+.local-edge--thin .graph-edge__line {
+  stroke-width: 0.8;
+}
+
+.local-edge.is-lit .graph-edge__line {
+  stroke-width: 2.2;
+}

@@ -431,10 +431,9 @@ def test_related_keeps_material_text_out_and_shared_words_local(tmp_path, fake_a
         assert TOPIC_A[1] not in text
 
 
-def test_produced_and_affects_keep_material_text_out(tmp_path, fake_ai):
-    """4e：L4 和 H2 在 run_everything 里真的写出产出和影响；哨兵不进它们的 quote、evidence_json；
-    单独再跑 L3、L4、H2 不发任何 AI 请求。"""
-    db, settings, root = build_world(tmp_path)
+def seed_produced_and_affects(db: Database) -> None:
+    """4e 的样本：一条确认过的任务和之后新出现的文件（产出），一场定了「总价下调 5%」的会和一份上个月的
+    报价单（影响，材料里同一段有材料文字哨兵）。4f 的图接口测试也用它。"""
     project_id = db.query_one("SELECT id FROM projects WHERE name = '云图AI'")["id"]
     root_id = db.query_one("SELECT id FROM project_material_roots")["id"]
     now = datetime.now(UTC)
@@ -475,6 +474,14 @@ def test_produced_and_affects_keep_material_text_out(tmp_path, fake_ai):
         (price_key, old_ns, old_ns),
     )
 
+
+
+def test_produced_and_affects_keep_material_text_out(tmp_path, fake_ai):
+    """4e：L4 和 H2 在 run_everything 里真的写出产出和影响；哨兵不进它们的 quote、evidence_json；
+    单独再跑 L3、L4、H2 不发任何 AI 请求。"""
+    db, settings, root = build_world(tmp_path)
+    seed_produced_and_affects(db)
+
     run_everything(db, settings)
 
     rows = db.query_all("SELECT kind, quote, evidence_json FROM relations WHERE kind IN ('produced', 'affects')")
@@ -494,6 +501,31 @@ def test_produced_and_affects_keep_material_text_out(tmp_path, fake_ai):
     db.execute("UPDATE decision_scan SET affects_hash = NULL")
     assert affects.match_due(db, lambda: False, 5.0, now=later, since=stamp)["tried"] >= 1
     assert len(fake_ai) == before
+
+
+def test_graph_payloads_keep_material_text_out(tmp_path, fake_ai):
+    """4f：星图、局部图（相关开着）和来龙去脉的回应里没有材料文字哨兵。4f 没有自己的循环，
+    数据由 run_everything 里 4b 到 4e 的循环写出。"""
+    from meeting_workbench import graph, graph_local
+
+    db, settings, _root = build_world(tmp_path)
+    seed_produced_and_affects(db)
+    run_everything(db, settings)
+    project_id = db.query_one("SELECT id FROM projects WHERE name = '云图AI'")["id"]
+    kinds = {row["kind"] for row in db.query_all("SELECT DISTINCT kind FROM relations")}
+    assert {"produced", "affects", "related"} <= kinds, kinds
+    payloads = []
+    with db.autocommit() as connection:
+        payloads.append(graph.project_graph(connection, project_id))
+        for row in connection.execute("SELECT id FROM material_files WHERE gone_at IS NULL").fetchall():
+            payloads.append(graph_local.file_map(connection, int(row["id"]), related_on=True))
+            payloads.append(graph_local.trace(connection, f"file:{row['id']}"))
+        for row in connection.execute("SELECT id FROM meetings WHERE project_id IS NOT NULL").fetchall():
+            payloads.append(graph_local.trace(connection, f"m:{row['id']}"))
+    text = json.dumps(payloads, ensure_ascii=False)
+    assert "e:rel:" in text and "e:aff:" in text, "图接口没带上第四期的线，这个测试什么都没验证"
+    assert MATERIAL_SENTINEL not in text
+    assert "报价说明" not in text
 
 
 def test_ask_sends_material_text_only_after_confirm(tmp_path, fake_ai, caplog):

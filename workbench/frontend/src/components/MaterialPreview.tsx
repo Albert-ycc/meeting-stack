@@ -9,6 +9,8 @@ import { looseId, looseSaid } from "./links/looseMention";
 import { RelatedMeetings } from "./links/RelatedMeetings";
 import { highlightWords } from "./links/RelatedMaterials";
 import { RelationQuestion } from "./links/RelationQuestion";
+import { useLinksFlags } from "./links/LinksFlagsContext";
+import { TraceList } from "./links/TraceList";
 import { useRelationAnswer, type RelationAnswering } from "./links/useRelationAnswer";
 import type { MiniPlayerHandle, PlayOptions } from "./graph/MiniPlayer";
 import type { NoticeFn } from "./graph/panelParts";
@@ -344,6 +346,8 @@ interface MaterialPreviewDrawerProps {
   onOpenMeeting: (meetingId: string, seekMs?: number) => void;
   onOpenTask?: (taskId: string) => void;
   onOpenInGraph?: (projectId: string, fileId: number) => void;
+  /** 4f：来龙去脉列表底部的［在关系图上看 →］（只在电脑上） */
+  onOpenTrace?: (projectId: string, node: string) => void;
 }
 
 /** 材料预览抽屉：像任务抽屉那样挂在 App 根部。手机上也能打开，只读。 */
@@ -359,11 +363,15 @@ export function MaterialPreviewDrawer({
   onOpenMeeting,
   onOpenTask,
   onOpenInGraph,
+  onOpenTrace,
 }: MaterialPreviewDrawerProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
   useDialogFocus(drawerRef);
   const [data, setData] = useState<MaterialFilePreview | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  // 4f：按了［来龙去脉］才取；要 v16 的表（useLinksFlags 不为 null）和 graphTrace 接口
+  const [traceOpen, setTraceOpen] = useState(false);
+  const canTrace = useLinksFlags() !== null && typeof apiClient.graphTrace === "function";
   const { notice, setNotice, dismissNotice } = useNotice();
   const player = useDrawerPlayer();
   const { play } = player.handle;
@@ -507,6 +515,16 @@ export function MaterialPreviewDrawer({
                 />
               )}
               <PreviewBlock data={data} onOpenMeeting={(id) => onOpenMeeting(id)} player={player.handle} />
+              {traceOpen && canTrace && (
+                <TraceList
+                  apiClient={apiClient}
+                  node={`file:${data.file.id}`}
+                  onOpenInGraph={
+                    !isMobile && onOpenTrace ? () => onOpenTrace(data.file.project_id, `file:${data.file.id}`) : undefined
+                  }
+                  onPlay={(url, atMs, label) => play(url, atMs, label, { clip: true })}
+                />
+              )}
               {mentions.length > 0 && (
                 <section className="material-drawer__section">
                   <h3>在 {data.mentioned_meetings ?? mentions.length} 场会上被提到</h3>
@@ -584,6 +602,11 @@ export function MaterialPreviewDrawer({
             {canReveal && !data.file.gone && (
               <button onClick={() => void reveal()} type="button">
                 在访达中显示
+              </button>
+            )}
+            {canTrace && (
+              <button aria-pressed={traceOpen} onClick={() => setTraceOpen((open) => !open)} type="button">
+                来龙去脉
               </button>
             )}
             {!isMobile && onOpenInGraph && (

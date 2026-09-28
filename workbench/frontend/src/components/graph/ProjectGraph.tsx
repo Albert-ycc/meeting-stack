@@ -1,12 +1,24 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
-import { ApiError, type ApiClient } from "../../api";
+import {
+  ApiError,
+  isOldBackend,
+  type ApiClient,
+  type RelationAnswer,
+  type RelationAnswerResult,
+  type RelationQuestion,
+} from "../../api";
 import { reassignNote } from "../../cardCopy";
 import type { PreviewTarget, Project } from "../../types";
 import { ProjectAsk } from "../ask/ProjectAsk";
 import { hasDraft } from "../ask/askStore";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeAction, type NoticeTone } from "../Notice";
-import { RecentAnswersContext } from "../links/useRelationAnswer";
+import { OLD_BACKEND_TEXT, RecentAnswersContext } from "../links/useRelationAnswer";
+import { useLinksFlags } from "../links/LinksFlagsContext";
+import { drawableEdges, drawnEdges, meetingAges } from "./drawnEdges";
+import { LocalGraphPanel } from "./LocalGraphPanel";
+import { LocalGraphView, MAP_FAILED, type LocalError } from "./LocalGraphView";
+import { TRACE_FAILED } from "../links/TraceList";
 import { GraphCanvas, type DoorstepAnswer, type DropTarget } from "./GraphCanvas";
 import { FocusPanel } from "./FocusPanel";
 import { GraphPanel, clearBriefCache } from "./GraphPanel";
@@ -16,14 +28,25 @@ import type {
   BriefFile,
   GraphEdge,
   GraphFile,
+  GraphLocal,
   GraphPayload,
   GraphRootsPayload,
   GraphWindow,
+  LocalGraph,
   MeetingFocus,
+  RelatedEdges,
   StatusPhrase,
+  TracePayload,
 } from "./graphTypes";
-import { fileExt, withRecentFiles, type PinnedFile } from "./graphFiles";
-import { readGraphWindow, recordGraphOpen, writeGraphWindow } from "./graphPrefs";
+import { fileExt, withRecentFiles, withRelatedEdges, type PinnedFile } from "./graphFiles";
+import {
+  readGraphLines,
+  readGraphWindow,
+  recordGraphOpen,
+  writeGraphLines,
+  writeGraphWindow,
+  type GraphLines,
+} from "./graphPrefs";
 import { attentionOrder, layoutStarMap, mentionLabel, type StarLayout } from "./layout";
 import { MeetingFocusView } from "./MeetingFocusView";
 import { useMiniPlayer } from "./MiniPlayer";
@@ -130,9 +153,71 @@ function withMentionedFiles(graph: GraphPayload, meetingId: string | null, files
   return { ...graph, files: [...(graph.files ?? []), ...addFiles], edges: [...graph.edges, ...addEdges] };
 }
 
-/** 文件节点和「提到」线：可能是从简报补出来的 */
+/** 文件节点、「提到」线和相关线（4f）：会议到文件的线保留那场会的上下文 */
 function isFileSelection(id: string) {
-  return id.startsWith("file:") || id.startsWith("e:file:");
+  return id.startsWith("file:") || id.startsWith("e:file:") || id.startsWith("e:rel:");
+}
+
+/** 4f：图例（底部［图例］按钮点开的小窗），九行 */
+export const LEGEND_ROWS: Array<{ sample: string; text: string }> = [
+  { sample: "", text: "位置：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新" },
+  { sample: "solid", text: "实线：归属、讨论" },
+  { sample: "dashed", text: "细虚线：文件夹" },
+  { sample: "arrow", text: "带箭头的实线：交付物" },
+  { sample: "quote", text: "细线带引号：会上提到这份文件" },
+  { sample: "ask", text: "琥珀色虚线：在等你回答的产出和可能过时" },
+  { sample: "review", text: "流动的琥珀色虚线：待复核的归属" },
+  { sample: "dotted", text: "浅灰点线：相关（两边有共同词），默认关着" },
+  { sample: "short", text: "短虚线：跨项目、像是新需求" },
+];
+
+export const RELATED_EMPTY_TEXT = "这个时间窗里还没有相关的线";
+export const RELATED_FAILED_TEXT = "相关的线没取到";
+export const RELATED_OFF_TITLE = "打开后每个节点最多 3 条";
+
+function Legend() {
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const onDown = (event: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onDown);
+    };
+  }, [open]);
+  return (
+    <span className="project-graph__legend-wrap" ref={boxRef}>
+      <button aria-expanded={open} className="ghost-button" onClick={() => setOpen((value) => !value)} type="button">
+        图例
+      </button>
+      {open && (
+        <div aria-label="图例" className="project-graph__legend-box" role="dialog">
+          <strong>图例</strong>
+          <ul>
+            {LEGEND_ROWS.map((row) => (
+              <li key={row.text}>
+                <i aria-hidden="true" className={`legend-sample legend-sample--${row.sample || "none"}`} />
+                {row.text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </span>
+  );
+}
+
+/** 4f：「在等你」里在问的文件（先可能过时，后等你认交付物），N 键在需求之后走它们 */
+function askFileIdsOf(status: GraphPayload["status"] | undefined): string[] {
+  return [...new Set((status?.waiting ?? []).flatMap((phrase) => phrase.node_ids.filter((id) => id.startsWith("file:"))))];
 }
 
 /** 从哪场会点进文件面板或「提到」线：往回找上一个选中的会，中间只隔着文件或「提到」线 */
@@ -151,6 +236,8 @@ function contextMeetingOf(selection: string | null, trail: string[]): string | n
 // 按（项目，时间窗，深链目标）缓存一份：切回画布先画旧数据，再到后台对一次
 const graphCache = new Map<string, GraphPayload>();
 const rootsCache = new Map<string, GraphRootsPayload>();
+// 4f：相关线按（项目，时间窗）缓存一份，带 ETag
+const relatedCache = new Map<string, { etag: string | null; related: RelatedEdges }>();
 
 function cacheKey(projectId: string, window: GraphWindow | null, focus: string | null) {
   return `${projectId}|${window ?? "auto"}|${focus ?? ""}`;
@@ -165,6 +252,7 @@ function cachedGraph(projectId: string, window: GraphWindow | null, focus: strin
 export function forgetGraphCache() {
   graphCache.clear();
   rootsCache.clear();
+  relatedCache.clear();
   forgetViewportViews();
   clearBriefCache();
 }
@@ -305,6 +393,12 @@ export interface ProjectGraphProps {
   onOpenMeetingAt?: (meetingId: string, seekMs?: number, tab?: "transcript" | "minutes") => void;
   /** 4g：问答出处里的材料打开预览抽屉到「回答引用的这段」 */
   onOpenPreviewTarget?: (target: PreviewTarget) => void;
+  /** 4f：局部图、来龙去脉（地址栏 file=、trace=）；不传 onLocalChange 时由画布自己记 */
+  local?: GraphLocal | null;
+  /** replace：挪过位置换成新 id 时替换地址，不压历史 */
+  onLocalChange?: (local: GraphLocal | null, options?: { replace?: boolean }) => void;
+  /** 4f：交付物线、局部图任务面板的［打开任务］ */
+  onOpenTask?: (taskId: string) => void;
 }
 
 export function ProjectGraph({
@@ -327,7 +421,16 @@ export function ProjectGraph({
   onOpenPreview,
   onOpenMeetingAt,
   onOpenPreviewTarget,
+  local: localProp = null,
+  onLocalChange,
+  onOpenTask,
 }: ProjectGraphProps) {
+  const flags = useLinksFlags();
+  // 4f：局部图、来龙去脉要 v16 的表（flags 不为 null）和两个接口
+  const canLocal =
+    flags !== null && typeof apiClient.graphFileMap === "function" && typeof apiClient.graphTrace === "function";
+  const relatedAvailable = Boolean(flags?.linksEnabled && flags?.semanticEnabled) && typeof apiClient.graphRelated === "function";
+  const [lines, setLines] = useState<GraphLines>(() => readGraphLines(projectId));
   const [windowChoice, setWindowChoice] = useState<GraphWindow | null>(() => readGraphWindow(projectId));
   // 用户一旦自己选了时间窗，深链目标就不再撑大窗口
   const [focus, setFocus] = useState<string | null>(initialFocus);
@@ -349,6 +452,14 @@ export function ProjectGraph({
   const [clock, setClock] = useState(() => Date.now());
   const [ownExpanded, setOwnExpanded] = useState<string | null>(null);
   const expanded = onExpandChange ? expandedProp : ownExpanded;
+  const [ownLocal, setOwnLocal] = useState<GraphLocal | null>(null);
+  // 展开一场会和局部图互斥：两个都有时留展开
+  const local = expanded || !canLocal ? null : onLocalChange ? localProp : ownLocal;
+  const [localData, setLocalData] = useState<{ key: string; payload: LocalGraph | TracePayload } | null>(null);
+  const [localError, setLocalError] = useState<LocalError | null>(null);
+  const [localTick, setLocalTick] = useState(0);
+  const [localSel, setLocalSel] = useState<string | null>(null);
+  const [moved, setMoved] = useState<{ fileId: number; folder: string } | null>(null);
   // 展开时面板里选中的决议（dec:<决议 id>，没有 id 时 dec:<下标>）、任务（task:<id>）或「+N」；不进地址栏
   const [focusSel, setFocusSel] = useState<string | null>(null);
   const [focusData, setFocusData] = useState<MeetingFocus | null>(null);
@@ -360,6 +471,8 @@ export function ProjectGraph({
   const player = useMiniPlayer();
   const requestRef = useRef(0);
   const missingRef = useRef<string | null>(null);
+  // 4f：线上回答以后，新数据到了再把选中挪到新的交付物线（没有就挪到那份文件）
+  const afterAnswerRef = useRef<{ edgeId: string | null; fileId: number } | null>(null);
   // 3g：从面板、深链点出来要在图上补出的那一个文件；深链的文件先取名字和根目录
   const [pinned, setPinned] = useState<PinnedFile | null>(null);
   const [fileLookup, setFileLookup] = useState<{ id: string; state: "loading" | "failed" } | null>(null);
@@ -377,12 +490,20 @@ export function ProjectGraph({
       if (token !== requestRef.current) return;
       setGraph(payload);
       setLoadError("");
+      const moveTo = afterAnswerRef.current;
+      if (moveTo) {
+        afterAnswerRef.current = null;
+        const found = moveTo.edgeId !== null && payload.edges.some((edge) => edge.id === moveTo.edgeId);
+        onSelectionChange(found ? moveTo.edgeId : `file:${moveTo.fileId}`);
+      }
     } catch (reason) {
       if (token !== requestRef.current) return;
       setLoadError(errorText(reason, "关系图读取失败"));
     } finally {
       if (token === requestRef.current) setLoading(false);
     }
+    // onSelectionChange 由宿主传，通常是 setState，不跟着重挂
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiClient, focus, projectId, windowChoice]);
 
   // 换时间窗：有缓存先画缓存，没有就留着旧图等新数据
@@ -462,14 +583,98 @@ export function ProjectGraph({
   }, [apiClient, contextOnGraph, version]);
   const extraFiles = briefFiles && briefFiles.meetingId === contextOnGraph ? briefFiles.files : null;
 
+  // 4f：［相关］开着才取相关线（带 If-None-Match，相关重算只动 related_rev）
+  const relatedOn = lines.related && relatedAvailable;
+  const relatedKey = `${projectId}|${graph?.window.effective ?? windowChoice ?? "28d"}`;
+  const [related, setRelated] = useState<{ key: string; data: RelatedEdges } | null>(() => {
+    const cached = relatedCache.get(relatedKey);
+    return cached ? { key: relatedKey, data: cached.related } : null;
+  });
+  const [relatedState, setRelatedState] = useState<"idle" | "loading" | "ready" | "failed" | "old">("idle");
+  const [relatedTick, setRelatedTick] = useState(0);
+  useEffect(() => {
+    if (!relatedOn || !graph) return;
+    let active = true;
+    const cached = relatedCache.get(relatedKey);
+    if (cached) setRelated({ key: relatedKey, data: cached.related });
+    setRelatedState((current) => (cached ? "ready" : current === "ready" ? current : "loading"));
+    apiClient
+      .graphRelated(projectId, graph.window.effective, cached?.etag ?? null)
+      .then(({ related: fresh, etag }) => {
+        if (!active) return;
+        const data = fresh ?? cached?.related ?? null;
+        if (data) {
+          relatedCache.set(relatedKey, { etag, related: data });
+          setRelated({ key: relatedKey, data });
+        }
+        setRelatedState("ready");
+      })
+      .catch((reason: unknown) => active && setRelatedState(isOldBackend(reason) ? "old" : "failed"));
+    return () => {
+      active = false;
+    };
+    // graph 每 30 秒刷新一次：跟着对一次相关线（没变时 304）
+  }, [apiClient, graph, projectId, relatedKey, relatedOn, relatedTick]);
+  const relatedData = relatedOn && related?.key === relatedKey ? related.data : null;
+
+  const toggleLines = (change: Partial<GraphLines>) => {
+    setLines((current) => {
+      const next = { ...current, ...change };
+      writeGraphLines(projectId, next);
+      return next;
+    });
+  };
+
+  // 4f：局部图、来龙去脉：每换一次中心整张重取（不缓存）；回答以后也整张重取
+  const localKey = local ? (local.kind === "file" ? `file:${local.fileId}` : `trace:${local.node}`) : null;
+  useEffect(() => {
+    setLocalSel(null);
+  }, [localKey]);
+  useEffect(() => {
+    if (!local || !localKey) return;
+    let active = true;
+    setLocalError(null);
+    const request =
+      local.kind === "file"
+        ? apiClient.graphFileMap(local.fileId, { related: relatedOn })
+        : apiClient.graphTrace(local.node);
+    request
+      .then((payload: LocalGraph | TracePayload) => {
+        if (!active) return;
+        setLocalData({ key: localKey, payload });
+        // 挪过位置：地址换成新 id（替换，不压历史），那一句留着
+        const center = payload.center;
+        if (local.kind === "file" && center.moved_from !== undefined && center.file_id !== undefined) {
+          setMoved({ fileId: center.file_id, folder: center.folder ?? "" });
+          changeLocal({ kind: "file", fileId: center.file_id }, { replace: true });
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        if (isOldBackend(reason)) setLocalError({ text: OLD_BACKEND_TEXT, retry: false });
+        else if (reason instanceof ApiError && [404, 409, 422].includes(reason.status)) {
+          setLocalError({ text: reason.message, retry: false });
+        } else setLocalError({ text: local.kind === "file" ? MAP_FAILED : TRACE_FAILED, retry: true });
+      });
+    return () => {
+      active = false;
+    };
+    // local 每次渲染都是新对象，按 localKey 比
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiClient, localKey, localTick, relatedOn]);
+
   // 残影只在撤销期内画；最早的一个到期时重画一次
   const liveGraph = useMemo(() => {
     if (!graph) return null;
     const movedOut = graph.moved_out.filter((item) => Date.parse(item.undo_until) > clock);
     const base = withSubfolders(movedOut.length === graph.moved_out.length ? graph : { ...graph, moved_out: movedOut }, roots);
-    // 3g：会上提到的文件优先，再补从面板点出来的那一个、最近改过的文件
-    return withRecentFiles(withMentionedFiles(base, contextOnGraph, extraFiles), roots, pinned);
-  }, [clock, contextOnGraph, extraFiles, graph, pinned, roots]);
+    // 3g：会上提到的文件优先，再补从面板点出来的那一个、最近改过的文件；4f：相关线接在提到之后、最近之前
+    return withRecentFiles(
+      withRelatedEdges(withMentionedFiles(base, contextOnGraph, extraFiles), relatedData),
+      roots,
+      pinned,
+    );
+  }, [clock, contextOnGraph, extraFiles, graph, pinned, relatedData, roots]);
 
   useEffect(() => {
     const deadlines = [
@@ -514,9 +719,16 @@ export function ProjectGraph({
   );
 
   const layout = useMemo(() => (liveGraph ? layoutStarMap(liveGraph) : null), [liveGraph]);
-  const attention = useMemo(() => (layout ? attentionOrder(layout) : []), [layout]);
+  const askFileIds = useMemo(() => askFileIdsOf(graph?.status), [graph?.status]);
+  const attention = useMemo(() => (layout ? attentionOrder(layout, askFileIds) : []), [askFileIds, layout]);
 
   const resolved = liveGraph && layout && selection ? resolveSelection(liveGraph, layout, selection) : null;
+  // 4f：选中节点时碰到它却没画出来的线（面板里列出来，点一行选中那条线）
+  const hiddenEdges = useMemo(() => {
+    if (!liveGraph || !layout || !resolved || !layout.byId.has(resolved)) return [];
+    const drawable = drawableEdges(liveGraph.edges, (id) => layout.byId.has(id), !lines.mention);
+    return drawnEdges(drawable, resolved, null, { meetingAge: meetingAges(liveGraph.meetings) }).hidden;
+  }, [layout, lines.mention, liveGraph, resolved]);
 
   // 深链目标不在图上（需求已结束、会被折叠之外）：说一声，不留空面板
   useEffect(() => {
@@ -562,7 +774,7 @@ export function ProjectGraph({
     }
     // 会上提到的文件、像是新需求、等补建的文件夹会随着数据来去（常常是你作答以后就没了）：
     // 不是深链进来的，就悄悄收起面板，不说「不在当前的图上」
-    if (selection !== focus && /^(file:|e:file:|nr:|e:nr:|pending:)/.test(selection)) {
+    if (selection !== focus && /^(file:|e:file:|nr:|e:nr:|pending:|e:prod:|e:aff:|e:dlv:|e:rel:)/.test(selection)) {
       onSelectionChange(null);
       return;
     }
@@ -624,6 +836,93 @@ export function ProjectGraph({
       select(`file:${file.file_id}`);
     },
     [select],
+  );
+
+  /** 4f：不在图上的在问的文件（状态句、N 键走到的）：取回文件信息钉上它并选中，一次钉一个 */
+  const pinAskFile = useCallback(
+    (id: string) => {
+      const fileId = Number(id.slice("file:".length));
+      if (!Number.isFinite(fileId) || typeof apiClient.getGraphFile !== "function") return;
+      const phrase = (graph?.status.waiting ?? []).find((item) => item.node_ids.includes(id));
+      const stale = Boolean(phrase?.text.endsWith("可能过时"));
+      apiClient
+        .getGraphFile(fileId)
+        .then((detail) => {
+          setPinned({
+            file_id: detail.file.id,
+            name: detail.file.name,
+            rel_path: detail.file.rel_path,
+            root_id: detail.file.root_id,
+            folder: `root:${detail.file.root_id}`,
+            ...(stale ? { stale: true } : { asks_deliverable: true }),
+          });
+          select(id);
+        })
+        .catch(() => setNotice("这份文件读不到了", "warning"));
+    },
+    [apiClient, graph?.status.waiting, select, setNotice],
+  );
+
+  const selectOrPin = useCallback(
+    (id: string | null) => {
+      if (id && /^file:\d+$/.test(id) && layout && !layout.byId.has(id) && askFileIds.includes(id)) {
+        pinAskFile(id);
+        return;
+      }
+      select(id);
+    },
+    [askFileIds, layout, pinAskFile, select],
+  );
+
+  /** 状态句：点亮图上有的；在问的文件一个都不在图上时钉上第一个并选中它 */
+  const togglePhrase = (phrase: StatusPhrase | null) => {
+    if (!phrase) {
+      setHighlight(null);
+      return;
+    }
+    const present = phrase.node_ids.filter((id) => layout?.byId.has(id));
+    if (!present.length && phrase.node_ids[0]?.startsWith("file:")) {
+      pinAskFile(phrase.node_ids[0]);
+      return;
+    }
+    setHighlight({ key: phrase.text, ids: new Set(phrase.node_ids) });
+  };
+
+  /** 4f：在线上（文件面板）回答以后，选中挪到新的交付物线（［是］）或那份文件，文件钉住 */
+  const answered = useCallback(
+    (question: RelationQuestion, answer: RelationAnswer, result: RelationAnswerResult) => {
+      if (local) {
+        setLocalTick((tick) => tick + 1);
+        return;
+      }
+      const fileId = question.file?.id;
+      if (!fileId) return;
+      const node = liveGraph?.files.find((file) => file.file_id === fileId);
+      // 文件钉住（不再在问时它可能不该上图了），还是同一个节点
+      if (node) {
+        setPinned({ file_id: node.file_id, name: node.name, rel_path: node.rel_path, root_id: node.root_id, folder: node.folder });
+      }
+      // 宿主紧接着重取：新数据到了再挪选中（［是］挪到新的实线交付物线，其余挪到文件）
+      afterAnswerRef.current = {
+        edgeId: answer === "yes" && result.deliverable_id ? `e:dlv:${result.deliverable_id}` : null,
+        fileId,
+      };
+    },
+    [liveGraph?.files, local],
+  );
+
+  /** 进出局部图、换中心（App 压历史；没有 App 时自己记） */
+  const changeLocal = useCallback(
+    (next: GraphLocal | null, options?: { replace?: boolean }) => {
+      if (next === null) setMoved(null);
+      if (onLocalChange) onLocalChange(next, options);
+      else {
+        // 展开一场会和局部图互斥：从展开的决议面板进来时先收起（有 App 时由 App 收）
+        if (next !== null) setOwnExpanded(null);
+        setOwnLocal(next);
+      }
+    },
+    [onLocalChange],
   );
 
   const goBack = () => {
@@ -869,8 +1168,84 @@ export function ProjectGraph({
   );
 
   const shownFocus = focusData && focusData.meeting.id === expanded ? focusData : null;
+  const localPayload = localData && localData.key === localKey ? localData.payload : null;
   let stage: ReactNode;
-  if (expanded) {
+  if (local && !expanded) {
+    const panelContext = liveGraph && layout && graph
+      ? {
+          apiClient,
+          graph: liveGraph,
+          layout,
+          roots,
+          selectedId: localSel ?? "",
+          projects,
+          canGoBack: false,
+          version,
+          player,
+          playerNode: player.node,
+          onBack: () => undefined,
+          onClose: () => setLocalSel(null),
+          onSelect: (id: string) => setLocalSel(id),
+          onHighlight: () => undefined,
+          onChanged: async () => {
+            await changed();
+            setLocalTick((tick) => tick + 1);
+          },
+          onNotice: showNotice,
+          onAnswerDoorstep: () => undefined,
+          onOpenMeeting,
+          onOpenRequirement,
+          onOpenGlossary,
+          onOpenProject,
+          onOpenFile: (file: PinnedFile) => changeLocal({ kind: "file", fileId: file.file_id }),
+          onOpenLocal: (next: GraphLocal) => changeLocal(next),
+          onOpenPreviewTarget,
+          onOpenTask,
+          onRelationAnswered: answered,
+        }
+      : null;
+    stage = (
+      <>
+        <LocalGraphView
+          error={localError}
+          local={local}
+          movedFolder={moved && local.kind === "file" && moved.fileId === local.fileId ? moved.folder : null}
+          onBack={() => changeLocal(null)}
+          onRecenter={(fileId) => changeLocal({ kind: "file", fileId })}
+          onRetry={() => setLocalTick((tick) => tick + 1)}
+          onSelect={setLocalSel}
+          panelOpen={Boolean(localPayload && panelContext)}
+          payload={localPayload}
+          selectedId={localSel}
+        />
+        {localPayload && panelContext && (
+          <div
+            className="project-graph__panel"
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+              if ((event.target as HTMLElement).closest("select, input, textarea")) return;
+              setLocalSel(null);
+            }}
+          >
+            <LocalGraphPanel
+              onClose={() => setLocalSel(null)}
+              onExpandMeeting={(meetingId) => {
+                changeLocal(null, { replace: true });
+                setExpanded(meetingId);
+              }}
+              onOpenLocal={(next) => changeLocal(next)}
+              onOpenTask={onOpenTask}
+              onRecenter={(fileId) => changeLocal({ kind: "file", fileId })}
+              onSelect={setLocalSel}
+              panel={panelContext}
+              payload={localPayload}
+              selectedId={localSel}
+            />
+          </div>
+        )}
+      </>
+    );
+  } else if (expanded) {
     stage = (
       <>
         <MeetingFocusView
@@ -906,6 +1281,7 @@ export function ProjectGraph({
               onOpenPreview={onOpenPreview}
               onOpenRequirement={onOpenRequirement}
               onSelect={setFocusSel}
+              onTrace={canLocal ? (node) => changeLocal({ kind: "trace", node }) : undefined}
               player={player}
               selectedId={focusSel}
             />
@@ -932,6 +1308,8 @@ export function ProjectGraph({
         <GraphCanvas
           attention={attention}
           busy={busy}
+          hideMentions={!lines.mention}
+          onOpenFileLocal={canLocal ? (fileId) => changeLocal({ kind: "file", fileId }) : undefined}
           dropProjects={dropProjects}
           graph={liveGraph ?? graph}
           highlight={highlight?.ids ?? searchIds}
@@ -941,7 +1319,7 @@ export function ProjectGraph({
           onExpandMeeting={setExpanded}
           onNothingToDo={() => showNotice("这张图上没有要你处理的了")}
           onOpenRequirement={onOpenRequirement}
-          onSelect={select}
+          onSelect={selectOrPin}
           onUndoGhost={(meetingId) => void undoChange(meetingId)}
           panelOpen={Boolean(resolved) || askOpen}
           previousPositions={previousPositions}
@@ -991,6 +1369,11 @@ export function ProjectGraph({
               onOpenProject={onOpenProject}
               onOpenRequirement={onOpenRequirement}
               onOpenFile={openFile}
+              hiddenEdges={hiddenEdges}
+              onOpenLocal={canLocal ? (next) => changeLocal(next) : undefined}
+              onOpenPreviewTarget={onOpenPreviewTarget}
+              onOpenTask={onOpenTask}
+              onRelationAnswered={answered}
               onSelect={select}
               player={player}
               playerNode={player.node}
@@ -1025,7 +1408,7 @@ export function ProjectGraph({
         {graph && (
           <StatusLine
             active={highlight && highlight.key !== "panel" ? highlight.key : null}
-            onToggle={(phrase) => setHighlight(phrase ? { key: phrase.text, ids: new Set(phrase.node_ids) } : null)}
+            onToggle={togglePhrase}
             status={graph.status}
           />
         )}
@@ -1065,7 +1448,13 @@ export function ProjectGraph({
           </button>
         )}
       </NoticeBanner>
-      <div className={`project-graph__stage${(expanded ? focusSel : resolved || askOpen) ? " has-panel" : ""}`}>{stage}</div>
+      <div
+        className={`project-graph__stage${
+          (local && !expanded ? localPayload : expanded ? focusSel : resolved || askOpen) ? " has-panel" : ""
+        }`}
+      >
+        {stage}
+      </div>
       {expanded ? (
         <footer className="project-graph__bottom">
           <span className="project-graph__legend">
@@ -1097,9 +1486,35 @@ export function ProjectGraph({
               onSelect={select}
             />
           )}
-          <span className="project-graph__legend" title="位置按类型和时间排：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新">
-            位置按类型和时间排：左会议 · 右材料 · 上需求 · 下线索词，越靠中心越新
-          </span>
+          <div aria-label="连线" className="project-graph__lines" role="group">
+            <span className="project-graph__lines-label">连线</span>
+            <button aria-pressed={lines.mention} onClick={() => toggleLines({ mention: !lines.mention })} type="button">
+              提到
+            </button>
+            {relatedAvailable && (
+              <button
+                aria-pressed={lines.related}
+                onClick={() => toggleLines({ related: !lines.related })}
+                title={lines.related ? undefined : RELATED_OFF_TITLE}
+                type="button"
+              >
+                相关
+              </button>
+            )}
+          </div>
+          {relatedOn && relatedState === "ready" && !liveGraph?.edges.some((edge) => edge.kind === "related") && (
+            <span className="project-graph__sync">{RELATED_EMPTY_TEXT}</span>
+          )}
+          {relatedOn && relatedState === "failed" && (
+            <span className="project-graph__sync is-error">
+              {RELATED_FAILED_TEXT}
+              <button className="text-button" onClick={() => setRelatedTick((tick) => tick + 1)} type="button">
+                重试
+              </button>
+            </span>
+          )}
+          {relatedOn && relatedState === "old" && <span className="project-graph__sync is-error">{OLD_BACKEND_TEXT}</span>}
+          <Legend />
           {loading && graph && !graphCache.has(key) && <span className="project-graph__sync">正在换时间窗…</span>}
           {loadError && graph && <span className="project-graph__sync is-error">刷新失败：{loadError}</span>}
         </footer>

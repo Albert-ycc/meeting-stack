@@ -1,4 +1,4 @@
-import type { ApiClient, RelationAnswer, RelationKind, RelationQuestion as Question } from "../../api";
+import type { ApiClient, RelationAnswer, RelationAnswerResult, RelationKind, RelationQuestion as Question } from "../../api";
 import { formatTime } from "../../format";
 import type { NoticeFn } from "../graph/panelParts";
 import { useLinksFlags } from "./LinksFlagsContext";
@@ -176,6 +176,10 @@ interface RelationQuestionProps {
   onOpenFile?: (fileId: number) => void;
   /** 4e：只画第一行（需求卡） */
   compact?: boolean;
+  /** 4f：从关系图的线点进来时，那条线的问题排第一 */
+  sortFirst?: number | null;
+  /** 4f：回答成了以后（关系图挪选中用） */
+  onAnswered?: (question: Question, answer: RelationAnswer, result: RelationAnswerResult) => void;
 }
 
 /**
@@ -195,9 +199,11 @@ export function RelationQuestion({
   ask,
   onOpenFile,
   compact,
+  sortFirst = null,
+  onAnswered,
 }: RelationQuestionProps) {
   const flags = useLinksFlags();
-  const own = useRelationAnswer({ apiClient, scope, onNotice, onChanged });
+  const own = useRelationAnswer({ apiClient, scope, onNotice, onChanged, onAnswered });
   const answering = shared ?? own;
   if (!flags || typeof apiClient.answerRelation !== "function" || !Array.isArray(questions) || answering.oldBackend) {
     return null;
@@ -211,6 +217,10 @@ export function RelationQuestion({
   const listed = new Set(questions.map((question) => question.relation_id));
   const leftover = mine.filter((entry) => !listed.has(entry.relationId));
   const rows = questions.filter((question) => !answering.gone.has(question.relation_id));
+  if (sortFirst !== null) {
+    // 稳定排序：那一条挪到最前，其余照服务端的顺序（可能过时在前、产出在后）
+    rows.sort((a, b) => Number(b.relation_id === sortFirst) - Number(a.relation_id === sortFirst));
+  }
   if (!rows.length && !leftover.length) return null;
   const undoRow = (entry: RecentAnswer) => (
     <RecentAnswerLine

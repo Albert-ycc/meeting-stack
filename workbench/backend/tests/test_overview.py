@@ -197,7 +197,7 @@ def test_project_graph_shows_suggested_requirements_and_pending_folder(tmp_path)
     # 只有待补建的文件夹时，不画卡片和散放文件（那些只看真正的根目录）
     assert not any(folder["kind"] in ("cards", "root") for folder in body["folders"])
     assert body["loose"] is None
-    assert graph.GRAPH_API_VERSION == 3
+    assert graph.GRAPH_API_VERSION == 4
 
 
 def test_project_graph_sql_count_unchanged_with_hints(tmp_path):

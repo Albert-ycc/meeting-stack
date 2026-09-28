@@ -77,3 +77,29 @@ export function readHintSeen(name: string): boolean {
 export function writeHintSeen(name: string) {
   write(`hint.${name}`, "1");
 }
+
+/** 4f：关系图底部「连线」的两个开关，按项目记：［提到］默认开，［相关］默认关 */
+export interface GraphLines {
+  mention: boolean;
+  related: boolean;
+}
+
+export const DEFAULT_LINES: GraphLines = { mention: true, related: false };
+
+export function readGraphLines(projectId: string): GraphLines {
+  const raw = read(`lines.${projectId}`);
+  if (!raw) return { ...DEFAULT_LINES };
+  try {
+    const value = JSON.parse(raw) as Partial<GraphLines>;
+    return {
+      mention: typeof value.mention === "boolean" ? value.mention : DEFAULT_LINES.mention,
+      related: typeof value.related === "boolean" ? value.related : DEFAULT_LINES.related,
+    };
+  } catch {
+    return { ...DEFAULT_LINES };
+  }
+}
+
+export function writeGraphLines(projectId: string, lines: GraphLines) {
+  write(`lines.${projectId}`, JSON.stringify(lines));
+}

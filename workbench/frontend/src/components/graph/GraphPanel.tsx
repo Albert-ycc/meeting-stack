@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
-import type { ApiClient } from "../../api";
+import type { ApiClient, RelationAnswer, RelationAnswerResult, RelationQuestion } from "../../api";
 import { formatTime } from "../../format";
-import type { MeetingCard, Project, RequirementFilesPayload } from "../../types";
+import type { MeetingCard, PreviewTarget, Project, RequirementFilesPayload } from "../../types";
 import { AttributionBar } from "../AttributionBar";
 import { MeetingCardStatus } from "../MeetingCardStatus";
 import type {
@@ -12,6 +12,7 @@ import type {
   GraphCue,
   GraphDoorstep,
   GraphEdge,
+  GraphLocal,
   GraphPayload,
   GraphRootsPayload,
   MeetingBrief,
@@ -54,7 +55,7 @@ import {
 import { laterTail } from "../decisions/decisionText";
 import "./GraphPanel.css";
 
-const EDGE_KIND: Record<GraphEdge["kind"], string> = {
+export const EDGE_KIND: Record<GraphEdge["kind"], string> = {
   attribution: "归属",
   cue: "线索",
   discussion: "讨论",
@@ -63,7 +64,16 @@ const EDGE_KIND: Record<GraphEdge["kind"], string> = {
   cross: "跨项目",
   suggested: "像是新需求",
   mentioned: "会上提到",
+  produced: "产出",
+  affects: "可能过时",
+  deliverable: "交付物",
+  related: "相关",
 };
+
+/** 线的种类名；认不出的新种类（后台比页面新）叫「连线」 */
+export function edgeKindName(kind: string): string {
+  return (EDGE_KIND as Record<string, string>)[kind] ?? "连线";
+}
 
 const KIND_LABEL: Record<LaidNode["kind"], string> = {
   project: "项目",
@@ -132,6 +142,35 @@ export interface GraphPanelProps {
   contextMeetingId?: string | null;
   /** 3g：文件夹面板、最近改过的文件、散放文件的文件行：在图上补出这个文件并打开文件面板，放不下时打开预览抽屉 */
   onOpenFile?: (file: PinnedFile) => void;
+  /** 4f：碰到选中节点却没画出来的线（面板里「还有 N 条线没画出来」） */
+  hiddenEdges?: GraphEdge[];
+  /** 4f：交付物线面板的［打开任务］ */
+  onOpenTask?: (taskId: string) => void;
+  /** 4f：［以它为中心看］［来龙去脉］；只在电脑上、新后台、客户端有这两个接口时传 */
+  onOpenLocal?: (local: GraphLocal) => void;
+  /** 4f：相关线面板里材料那一处：打开预览抽屉到那一段 */
+  onOpenPreviewTarget?: (target: PreviewTarget) => void;
+  /** 4f：问题回答成了以后（关系图把选中挪到新的交付物线或文件上） */
+  onRelationAnswered?: (question: RelationQuestion, answer: RelationAnswer, result: RelationAnswerResult) => void;
+}
+
+/** 4f：「还有 N 条线没画出来」，每行是线上的字，点了选中那条线 */
+function HiddenEdges({ props }: { props: GraphPanelProps }) {
+  const hidden = props.hiddenEdges ?? [];
+  if (!hidden.length) return null;
+  return (
+    <Section title={`还有 ${hidden.length} 条线没画出来`}>
+      <ul className="graph-panel__list">
+        {hidden.map((edge) => (
+          <li key={edge.id}>
+            <button className="text-button" onClick={() => props.onSelect(edge.id)} type="button">
+              {edge.label || edgeKindName(edge.kind)}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
 }
 
 // ------------------------------------------------------------------ 会议
@@ -776,11 +815,23 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
   );
   const [busy, setBusy] = useState(false);
   const meetingId = edge.meeting_id ?? (edge.from.startsWith("m:") ? edge.from.slice(2) : null);
+  // 4f：在问的产出、可能过时：交给那份文件的文件面板，这条线的问题排第一
+  if (edge.kind === "produced" || edge.kind === "affects") {
+    const fileId = edge.file_id ?? Number(edge.to.replace(/^file:/, ""));
+    return (
+      <>
+        <p className="graph-panel__meta">{edge.label}</p>
+        <FilePanelBody fileId={fileId} fromMeetingId={null} key={edge.id} props={props} sortFirst={edge.relation_id ?? null} />
+      </>
+    );
+  }
+  if (edge.kind === "deliverable") return <DeliverableEdgeBody edge={edge} props={props} />;
+  if (edge.kind === "related") return <RelatedEdgeBody edge={edge} props={props} />;
   if (edge.kind === "mentioned" || edge.kind === "suggested") {
     return (
       <>
         <p className="graph-panel__meta">
-          {EDGE_KIND[edge.kind]} · {edge.kind === "suggested" ? "AI 读纪要的判断" : edge.source === "minutes" ? "纪要里写到的" : "逐字稿里数出来的"}
+          {edgeKindName(edge.kind)} · {edge.kind === "suggested" ? "AI 读纪要的判断" : edge.source === "minutes" ? "纪要里写到的" : "逐字稿里数出来的"}
         </p>
         {edge.kind === "mentioned" ? <MentionEdgeBody edge={edge} props={props} /> : <SuggestedEdgeBody edge={edge} props={props} />}
         <p className="graph-panel__muted">两头：{describe(props.layout, edge.from)} ↔ {describe(props.layout, edge.to)}</p>
@@ -805,7 +856,7 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
   return (
     <>
       <p className="graph-panel__meta">
-        {EDGE_KIND[edge.kind]} · {who}
+        {edgeKindName(edge.kind)} · {who}
       </p>
       {edge.label && <p>{edge.label}</p>}
       {edge.kind === "attribution" && brief && meetingId && (
@@ -861,6 +912,113 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
         </button>
       )}
       {graph && <p className="graph-panel__muted">两头：{describe(props.layout, edge.from)} ↔ {describe(props.layout, edge.to)}</p>}
+    </>
+  );
+}
+
+/** 4f：原话一行：▶ 从那一刻放，后面是原话 */
+function EdgeQuote({ props, edge }: { props: GraphPanelProps; edge: GraphEdge }) {
+  const meetingId = edge.meeting_id ?? (edge.from.startsWith("m:") ? edge.from.slice(2) : null);
+  if (!meetingId || edge.at_ms === undefined || edge.at_ms === null) {
+    return edge.quote ? <p className="graph-panel__quote">『{edge.quote}』</p> : null;
+  }
+  const atMs = edge.at_ms;
+  return (
+    <p className="graph-panel__quote">
+      <button
+        aria-label={`从 ${formatTime(atMs, true)} 播放`}
+        className="graph-play"
+        onClick={() => void playMeetingAt(props, meetingId, atMs)}
+        type="button"
+      >
+        ▶ {formatTime(atMs, true)}
+      </button>
+      {edge.quote && `『${edge.quote}』`}
+    </p>
+  );
+}
+
+/** 4f：交付物线：线上的字、▶ 原话、［打开任务］，再接那份文件的文件面板 */
+function DeliverableEdgeBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdge }) {
+  const fileId = edge.file_id ?? Number(edge.to.replace(/^file:/, ""));
+  return (
+    <>
+      <p className="graph-panel__meta">{edge.label}</p>
+      <EdgeQuote edge={edge} props={props} />
+      {edge.task_id && props.onOpenTask && (
+        <div className="graph-panel__actions graph-panel__actions--start">
+          <button className="ghost-button" onClick={() => props.onOpenTask?.(edge.task_id!)} type="button">
+            打开任务
+          </button>
+        </div>
+      )}
+      <FilePanelBody fileId={fileId} fromMeetingId={null} key={edge.id} props={props} />
+    </>
+  );
+}
+
+/** 4f：相关线：「共同词：…」，会上一处原话带 ▶，材料一处点了打开预览抽屉到那一段，［不相关］ */
+function RelatedEdgeBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdge }) {
+  const [busy, setBusy] = useState(false);
+  const fileId = edge.file_id ?? Number(edge.to.replace(/^file:/, ""));
+  const fileNode = props.layout.byId.get(edge.to);
+  const fileName = fileNode?.kind === "file" ? fileNode.data.name : "这份文件";
+  const passage = edge.passage;
+  const canAnswer = typeof props.apiClient.answerRelation === "function" && edge.relation_id !== undefined;
+  return (
+    <>
+      <p className="graph-panel__meta">{edge.label}</p>
+      <EdgeQuote edge={edge} props={props} />
+      {passage && (
+        <p className="graph-panel__quote">
+          <button
+            className="text-button"
+            onClick={() =>
+              passage.content_key && typeof passage.ordinal === "number" && props.onOpenPreviewTarget
+                ? props.onOpenPreviewTarget({
+                    fileId,
+                    passage: { contentKey: passage.content_key, ordinal: passage.ordinal, from: "related", words: edge.words },
+                  })
+                : props.onOpenFile?.({
+                    file_id: fileId,
+                    name: fileName,
+                    rel_path: fileNode?.kind === "file" ? fileNode.data.rel_path : "",
+                    root_id: fileNode?.kind === "file" ? fileNode.data.root_id : 0,
+                    folder: fileNode?.kind === "file" ? fileNode.data.folder : "",
+                  })
+            }
+            type="button"
+          >
+            材料{passage.loc ? `：${passage.loc}` : ""}
+          </button>
+          {passage.text && `『${passage.text}』`}
+        </p>
+      )}
+      {canAnswer && (
+        <div className="graph-panel__actions graph-panel__actions--start">
+          <button
+            className="ghost-button"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                const result = await props.apiClient.answerRelation(edge.relation_id!, { answer: "no" });
+                const text = `已记下：『${fileName}』和这场会不相关`;
+                props.onNotice(text, { kind: "relation", relationId: edge.relation_id!, label: text, until: result.undo_until });
+                props.onSelect(edge.to);
+                await props.onChanged();
+              } catch (reason) {
+                props.onNotice(reason instanceof Error ? reason.message : "没标成", undefined, "warning");
+              } finally {
+                setBusy(false);
+              }
+            }}
+            type="button"
+          >
+            不相关
+          </button>
+        </div>
+      )}
     </>
   );
 }
@@ -1092,7 +1250,7 @@ export function GraphPanel(props: GraphPanelProps) {
     <aside aria-label="详情面板" className="graph-panel">
       <header className="graph-panel__head">
         <div>
-          <span className="graph-panel__kind">{edge ? `连线 · ${EDGE_KIND[edge.kind]}` : node ? KIND_LABEL[node.kind] : ""}</span>
+          <span className="graph-panel__kind">{edge ? `连线 · ${edgeKindName(edge.kind)}` : node ? KIND_LABEL[node.kind] : ""}</span>
           <h2>{titleOf(node, edge, props)}</h2>
         </div>
         <div className="graph-panel__nav">
@@ -1114,11 +1272,27 @@ export function GraphPanel(props: GraphPanelProps) {
         edge?.kind === "attribution" ||
         edge?.kind === "cue" ||
         edge?.kind === "mentioned" ||
-        edge?.kind === "suggested") &&
+        edge?.kind === "suggested" ||
+        edge?.kind === "produced" ||
+        edge?.kind === "affects" ||
+        edge?.kind === "deliverable" ||
+        edge?.kind === "related") &&
         props.playerNode}
-      <div className="graph-panel__body">{body}</div>
+      <div className="graph-panel__body">
+        {body}
+        {node && <HiddenEdges props={props} />}
+      </div>
       {action && (
         <footer className="graph-panel__foot">
+          {node?.kind === "meeting" && props.onOpenLocal && (
+            <button
+              className="ghost-button"
+              onClick={() => props.onOpenLocal?.({ kind: "trace", node: node.id })}
+              type="button"
+            >
+              来龙去脉
+            </button>
+          )}
           {node?.kind === "meeting" && props.onExpandMeeting && (
             <button
               className="ghost-button"

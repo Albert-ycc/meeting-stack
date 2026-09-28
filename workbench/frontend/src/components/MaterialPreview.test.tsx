@@ -553,3 +553,112 @@ describe("MaterialPreviewDrawer 的问题块（4e）", () => {
     expect(within(block).queryByRole("button", { name: "不相关" })).toBeNull();
   });
 });
+
+describe("MaterialPreviewDrawer 的［来龙去脉］（4f）", () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const TRACE = {
+    center: { id: "file:7", kind: "file", file_id: 7, name: "报价单.xlsx", at: "2026-09-18T10:00:00+08:00" },
+    nodes: [
+      { id: "file:5", kind: "file", file_id: 5, name: "报价单 v2.xlsx", at: "2026-09-09T10:00:00+08:00" },
+      { id: "m:m-77", kind: "meeting", title: "周会", at: "2026-09-14T10:00:00+08:00", audio_url: "/api/media/1" },
+      { id: "dec:dec-1", kind: "decision", text: "总价下调 5%", meeting_id: "m-81", start_ms: 754_000, at: "2026-09-21T10:12:34+08:00", audio_url: "/api/media/2" },
+    ],
+    edges: [
+      { id: "e:file:5:m-77", kind: "mentioned", from: "m:m-77", to: "file:5", label: "会上说『报价单』· 00:12:34", at_ms: 754_000, on_chain: true },
+      { id: "e:same:5:7", kind: "same_name", from: "file:5", to: "file:7", label: "同属『报价单』", on_chain: false },
+      { id: "e:dlv:1", kind: "deliverable", from: "m:m-77", to: "file:7", label: "交付物", on_chain: true },
+      { id: "e:aff:3", kind: "affects", from: "dec:dec-1", to: "file:7", label: "定的", on_chain: true },
+    ],
+    chain: ["file:5", "m:m-77", "file:7", "dec:dec-1"],
+    center_index: 2,
+    cut: { back: true, forward: false },
+  };
+
+  function open(isMobile: boolean, overrides: Record<string, unknown> = {}) {
+    const apiClient = {
+      getMaterialPreview: vi.fn().mockResolvedValue(previewData()),
+      revealMaterial: vi.fn(),
+      graphTrace: vi.fn().mockResolvedValue(TRACE),
+      ...overrides,
+    } as unknown as ApiClient & Record<string, ReturnType<typeof vi.fn>>;
+    const onOpenTrace = vi.fn();
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: true, llmConfigured: true }}>
+        <MaterialPreviewDrawer
+          apiClient={apiClient}
+          canReveal
+          fileId={7}
+          isMobile={isMobile}
+          onClose={vi.fn()}
+          onOpenMeeting={vi.fn()}
+          onOpenTrace={onOpenTrace}
+        />
+      </LinksFlagsContext.Provider>,
+    );
+    return { apiClient, onOpenTrace };
+  }
+
+  it("按了才取，从早到晚列、中心加粗、每步一行小字，▶ 用抽屉的播放器；电脑上有［在关系图上看 →］", async () => {
+    const { apiClient, onOpenTrace } = open(false);
+    const button = await screen.findByRole("button", { name: "来龙去脉" });
+    expect(apiClient.graphTrace).not.toHaveBeenCalled();
+    await userEvent.click(button);
+    const section = await screen.findByRole("region", { name: "来龙去脉" });
+    expect(apiClient.graphTrace).toHaveBeenCalledWith("file:7");
+    const rows = await within(section).findAllByRole("listitem");
+    expect(rows.map((row) => row.querySelector(".trace-list__row")?.textContent?.replace("▶", "").trim())).toEqual([
+      "9/9 报价单 v2.xlsx",
+      "9/14 周会 · 会上说『报价单』· 00:12:34",
+      "9/18 报价单.xlsx",
+      "9/21 决议『总价下调 5%』· 00:12:34",
+    ]);
+    expect(within(rows[2]).getByText("9/18 报价单.xlsx").tagName).toBe("STRONG");
+    expect(within(rows[1]).getByText("↓ 交付物")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("↓ 之后没改过")).toBeInTheDocument();
+    expect(within(section).getByText("往前走到 3 步为止，更早的没展开")).toBeInTheDocument();
+    // 「在 N 场会上被提到」在它下面：这里没有提到，只看 ▶
+    await userEvent.click(within(rows[3]).getByRole("button", { name: "从 00:12:34 播放" }));
+    expect(document.querySelector("audio")?.getAttribute("src")).toBe("/api/media/2");
+    await userEvent.click(within(section).getByRole("button", { name: "在关系图上看 →" }));
+    expect(onOpenTrace).toHaveBeenCalledWith("project-1", "file:7");
+  });
+
+  it("手机上也有列表，没有［在关系图上看 →］；取失败给［重试］", async () => {
+    open(true);
+    await userEvent.click(await screen.findByRole("button", { name: "来龙去脉" }));
+    const section = await screen.findByRole("region", { name: "来龙去脉" });
+    await within(section).findAllByRole("listitem");
+    expect(within(section).queryByRole("button", { name: "在关系图上看 →" })).toBeNull();
+    cleanup();
+
+    open(false, { graphTrace: vi.fn().mockRejectedValue(new Error("网络断了")) });
+    await userEvent.click(await screen.findByRole("button", { name: "来龙去脉" }));
+    expect(await screen.findByText("来龙去脉没取到")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+
+  it("旧后台（没有 linksFlags、没有 graphTrace）不出［来龙去脉］", async () => {
+    render(
+      <MaterialPreviewDrawer
+        apiClient={{ getMaterialPreview: vi.fn().mockResolvedValue(previewData()), revealMaterial: vi.fn() } as unknown as ApiClient}
+        canReveal
+        fileId={7}
+        isMobile={false}
+        onClose={vi.fn()}
+        onOpenMeeting={vi.fn()}
+      />,
+    );
+    await screen.findByText(/修改于/);
+    expect(screen.queryByRole("button", { name: "来龙去脉" })).toBeNull();
+  });
+});

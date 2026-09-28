@@ -305,11 +305,17 @@ export function FilePanelBody({
   props,
   fileId,
   fromMeetingId,
+  sortFirst = null,
+  isCenter = false,
 }: {
   props: GraphPanelProps;
   fileId: number;
   /** 从哪场会点进来的：那一行给［不是这份文件］，［换成这份］只换这一场 */
   fromMeetingId: string | null;
+  /** 4f：从产出、可能过时的线点进来时，那条线的问题排第一 */
+  sortFirst?: number | null;
+  /** 4f：局部图里这份文件就是中心时不给［以它为中心看］ */
+  isCenter?: boolean;
 }) {
   const { payload, error } = useFileDetail(props, fileId);
   const [busy, setBusy] = useState(false);
@@ -398,8 +404,10 @@ export function FilePanelBody({
         onChanged={props.onChanged}
         onNotice={props.onNotice}
         onPlay={(url, atMs, label) => props.player.play(url, atMs, label, { clip: true })}
+        onAnswered={props.onRelationAnswered}
         questions={payload.questions}
         scope={{ fileId }}
+        sortFirst={sortFirst}
       />
       <dl className="graph-panel__facts">
         <div>
@@ -520,6 +528,23 @@ export function FilePanelBody({
       <div className="graph-panel__file-actions">
         <CopyPath apiClient={props.apiClient} canReveal={canReveal} onNotice={props.onNotice} path={file.path} />
         {canMark && <MarkDeliverable fileId={file.id} fileName={file.name} props={props} />}
+        {/* 4f：电脑上再加［以它为中心看］和［来龙去脉］（旧后台、手机上不传 onOpenLocal） */}
+        {props.onOpenLocal && (
+          <span className="graph-panel__actions">
+            {!isCenter && (
+              <button className="ghost-button" onClick={() => props.onOpenLocal?.({ kind: "file", fileId: file.id })} type="button">
+                以它为中心看
+              </button>
+            )}
+            <button
+              className="ghost-button"
+              onClick={() => props.onOpenLocal?.({ kind: "trace", node: `file:${file.id}` })}
+              type="button"
+            >
+              来龙去脉
+            </button>
+          </span>
+        )}
       </div>
     </>
   );

@@ -70,6 +70,7 @@ from . import loose_mentions
 from . import relations as relations_module
 from . import related as related_module
 from . import related_read
+from . import graph_local
 from . import asks as asks_module
 from . import affects as affects_module
 from . import relation_read
@@ -3972,6 +3973,23 @@ def create_app(
                 relation_read.file_questions(connection, file_id), row, materials.volume_state
             )
             return result
+
+    # 4f：以文件为中心的局部图和来龙去脉。只查库、不读盘、不写库；不设 ETag（挪位置不动 graph_rev）
+    def _local_call(fn: Any) -> JSONResponse:
+        with db.autocommit() as connection:
+            try:
+                payload = fn(connection)
+            except graph_local.LocalError as error:
+                raise HTTPException(error.status, error.text) from None
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/graph/files/{file_id}/map")
+    def graph_file_map(file_id: int, related: int = Query(default=0, ge=0, le=1)):
+        return _local_call(lambda connection: graph_local.file_map(connection, file_id, related_on=bool(related)))
+
+    @app.get("/api/graph/trace")
+    def graph_trace(node: str = Query(..., max_length=80, pattern=graph_local.NODE_PATTERN)):
+        return _local_call(lambda connection: graph_local.trace(connection, node))
 
     def _mention_action(action: Any, *args: Any) -> dict[str, Any]:
         try:
