@@ -26,6 +26,7 @@
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import logging
@@ -90,6 +91,9 @@ REST_MEETINGS = 3
 REST_SECONDS = 8.0
 INCREMENT_CHUNKS = 4_096
 INCREMENT_BLOCK = 1_024
+# 增量打分时每次最多拿这么多个窗和一块片段相乘：2,048 窗 × 1,024 段的得分 8 MiB
+WINDOW_SLICE = 2_048
+WINDOW_FETCH = 1_024
 PARAM_BATCH = 400
 CHUNK_MARK_KEY = "related_chunk_mark"
 DEFAULT_FLOOR = 0.60
@@ -676,11 +680,15 @@ def pick_sample(rows: Iterable[tuple[int, str, int]]) -> list[int]:
     """背景样本：每份内容按 sha1(content_key, ordinal) 取最多 4 段，全部再按同一个值取最多 4,096 段。"""
     by_content: dict[str, list[tuple[str, int]]] = {}
     for chunk_id, content_key, ordinal in rows:
-        by_content.setdefault(content_key, []).append((_sample_key(content_key, ordinal), chunk_id))
-    picked: list[tuple[str, int]] = []
-    for items in by_content.values():
-        items.sort()
-        picked.extend(items[:SAMPLE_PER_CONTENT])
+        # 每份内容边读边只留最小的 4 个（有序），不把 14 万段的 sha1 都攒着
+        items = by_content.setdefault(content_key, [])
+        entry = (_sample_key(content_key, ordinal), chunk_id)
+        if len(items) < SAMPLE_PER_CONTENT:
+            bisect.insort(items, entry)
+        elif entry < items[-1]:
+            bisect.insort(items, entry)
+            items.pop()
+    picked = [entry for items in by_content.values() for entry in items]
     picked.sort()
     return [chunk_id for _key, chunk_id in picked[:SAMPLE_MAX]]
 
@@ -712,6 +720,121 @@ def _read_vectors(connection: Any, chunk_ids: Sequence[int], model: str) -> tupl
     keep = [index for index, blob in enumerate(blobs) if len(blob) == width]
     vectors = np.frombuffer(b"".join(blobs[index] for index in keep), dtype=np.float16).reshape(len(keep), width // 2)
     return np.asarray([ids[index] for index in keep], dtype=np.int64), vectors.astype(np.float32)
+
+
+_SCOPE_ROW = np.dtype([("id", np.int64), ("key", np.int32), ("ordinal", np.int64)])
+
+
+def scope_chunks(connection: Any, keys: Sequence[str], model: str) -> np.ndarray:
+    """本项目每个有向量的片段：(id, keys 里的下标, ordinal)，直接读成 numpy 结构数组，不建 Python 元组。"""
+    order = {key: index for index, key in enumerate(keys)}
+    parts: list[np.ndarray] = []
+    for part in _batches(list(keys)):
+        cursor = connection.execute(
+            f"""SELECT v.chunk_id, c.content_key, c.ordinal FROM material_chunk_vectors v
+                  JOIN material_chunks c ON c.id = v.chunk_id
+                 WHERE v.model = ? AND c.content_key IN ({_marks(part)})""",
+            [model, *part],
+        )
+        parts.append(np.fromiter(((row[0], order[row[1]], row[2]) for row in cursor), dtype=_SCOPE_ROW))
+    return np.concatenate(parts) if parts else np.zeros(0, dtype=_SCOPE_ROW)
+
+
+def _scope_tuples(rows: np.ndarray, keys: Sequence[str]) -> Iterable[tuple[int, str, int]]:
+    """给 pick_sample 用：按 4,096 行一段转回 (id, content_key, ordinal)，边转边用。"""
+    for start in range(0, rows.shape[0], EXTRA_BLOCK):
+        part = rows[start : start + EXTRA_BLOCK]
+        for chunk_id, index, ordinal in zip(
+            part["id"].tolist(), part["key"].tolist(), part["ordinal"].tolist(), strict=True
+        ):
+            yield chunk_id, keys[index], ordinal
+
+
+@dataclass
+class ProjectWindows:
+    """增量用：一个项目里已算过的会的窗（一轮 increment 里各块之间共用，每个项目只读一次）。"""
+
+    meeting_ids: list[str]
+    meeting: np.ndarray  # (窗数,) int32，meeting_ids 的下标
+    start_ms: np.ndarray  # (窗数,) int64
+    bars: np.ndarray  # (窗数,) float32
+    vectors: np.ndarray  # (窗数, 维数) float16，按原样存，打分时按切片转 float32
+
+
+def load_project_windows(connection: Any, model: str, meeting_ids: Sequence[str]) -> ProjectWindows | None:
+    """先数窗，再用 fetchmany 边读边放进预先分好的数组（np.frombuffer 直接转，不建 Python float 列表）。"""
+    ids = sorted(meeting_ids)
+    total = 0
+    for part in _batches(ids):
+        total += int(
+            connection.execute(
+                f"SELECT COUNT(*) FROM meeting_windows WHERE model = ? AND meeting_id IN ({_marks(part)})",
+                [model, *part],
+            ).fetchone()[0]
+        )
+    if not total:
+        return None
+    index = {meeting_id: position for position, meeting_id in enumerate(ids)}
+    meeting = np.empty(total, dtype=np.int32)
+    starts = np.empty(total, dtype=np.int64)
+    bars = np.empty(total, dtype=np.float32)
+    vectors: np.ndarray | None = None
+    filled = 0
+    for part in _batches(ids):
+        cursor = connection.execute(
+            f"""SELECT meeting_id, start_ms, bar, vector FROM meeting_windows
+                 WHERE model = ? AND meeting_id IN ({_marks(part)})""",
+            [model, *part],
+        )
+        while filled < total:
+            rows = cursor.fetchmany(WINDOW_FETCH)
+            if not rows:
+                break
+            for row in rows:
+                blob = row[3]
+                if vectors is None:
+                    vectors = np.empty((total, len(blob) // 2), dtype=np.float16)
+                if filled >= total or len(blob) != vectors.shape[1] * 2:
+                    continue
+                vectors[filled] = np.frombuffer(blob, dtype=np.float16)
+                meeting[filled] = index[str(row[0])]
+                starts[filled] = int(row[1])
+                bars[filled] = float(row[2])
+                filled += 1
+    if vectors is None or not filled:
+        return None
+    return ProjectWindows(ids, meeting[:filled], starts[:filled], bars[:filled], vectors[:filled])
+
+
+def increment_hits(
+    cached: ProjectWindows,
+    window_marks: np.ndarray,
+    matrix: np.ndarray,
+    chunk_ids: np.ndarray,
+    rows: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """窗 × 这块新片段：得分不低于窗的 bar、并且片段 id 大于这场会的 chunk_mark 的 (窗下标, 片段下标, 得分)。
+    每次最多 WINDOW_SLICE 个窗转 float32 相乘，峰值和项目有多少窗无关。"""
+    step = int(rows or WINDOW_SLICE)
+    found_windows: list[np.ndarray] = []
+    found_chunks: list[np.ndarray] = []
+    found_scores: list[np.ndarray] = []
+    for start in range(0, cached.vectors.shape[0], step):
+        end = min(cached.vectors.shape[0], start + step)
+        part = cached.vectors[start:end].astype(np.float32)
+        scores = part @ matrix.T
+        del part
+        window_index, chunk_index = np.nonzero(scores >= cached.bars[start:end, None])
+        keep = chunk_ids[chunk_index] > window_marks[start + window_index]
+        window_index, chunk_index = window_index[keep], chunk_index[keep]
+        found_windows.append(window_index + start)
+        found_chunks.append(chunk_index)
+        found_scores.append(scores[window_index, chunk_index])
+        del scores
+    if not found_windows:
+        empty = np.zeros(0, dtype=np.int64)
+        return empty, empty, np.zeros(0, dtype=np.float32)
+    return np.concatenate(found_windows), np.concatenate(found_chunks), np.concatenate(found_scores)
 
 
 # ---------------------------------------------------------------------- 候选
@@ -1338,7 +1461,8 @@ class RelatedPass:
         allowed_codes = np.fromiter(
             (snap.code_of[key] for key in scope.files if key in snap.code_of), dtype=np.int32
         )
-        in_matrix: set[int] = set()
+        # 片段 id 一律放 numpy 数组（14.3 万段约 1 MiB），不建 Python 集合或元组
+        in_matrix: list[np.ndarray] = []
         n = int(snap.n)
         if allowed_codes.size and n and snap.dim == windows.shape[1]:
             for start in range(0, n, BLOCK_ROWS):
@@ -1349,54 +1473,51 @@ class RelatedPass:
                 mask = snap.valid[start:end] & np.isin(snap.codes[start:end], allowed_codes)
                 if not mask.any():
                     continue
-                ids = snap.ids[start:end][mask]
-                in_matrix.update(int(value) for value in ids)
-                rows = snap.vectors[start:end][mask].astype(np.float32)
-                best_ids, best_scores = _merge_top(best_ids, best_scores, ids, windows @ rows.T)
+                picked = np.flatnonzero(mask) + start
+                in_matrix.append(snap.ids[picked])
+                # 一块里选中的行再按 4,096 行转 float32，不同时留一块的 float16 副本和 float32 副本
+                for offset in range(0, picked.size, EXTRA_BLOCK):
+                    rows_at = picked[offset : offset + EXTRA_BLOCK]
+                    rows = snap.vectors[rows_at].astype(np.float32)
+                    best_ids, best_scores = _merge_top(best_ids, best_scores, snap.ids[rows_at], windows @ rows.T)
+                    del rows
         # 矩阵外的行：只读 id（不带向量），按内容的修改时间从新到旧，最多 6 万行
-        everything: list[tuple[int, str, int]] = []
         keys = sorted(scope.files, key=lambda key: -scope.mtime.get(key, 0))
-        for part in _batches(keys):
-            everything.extend(
-                (int(r[0]), str(r[1]), int(r[2]))
-                for r in connection.execute(
-                    f"""SELECT v.chunk_id, c.content_key, c.ordinal FROM material_chunk_vectors v
-                          JOIN material_chunks c ON c.id = v.chunk_id
-                         WHERE v.model = ? AND c.content_key IN ({_marks(part)})""",
-                    [model, *part],
-                ).fetchall()
-            )
-        order = {key: index for index, key in enumerate(keys)}
-        missing = sorted(
-            (item for item in everything if item[0] not in in_matrix), key=lambda item: (order[item[1]], item[0])
-        )
-        partial = len(missing) > EXTRA_MAX
+        everything = scope_chunks(connection, keys, model)
+        all_ids = everything["id"]
+        matrix_ids = np.concatenate(in_matrix) if in_matrix else np.zeros(0, dtype=np.int64)
+        outside = np.isin(all_ids, matrix_ids, invert=True)
+        missing_ids, missing_keys = all_ids[outside], everything["key"][outside]
+        missing = missing_ids[np.lexsort((missing_ids, missing_keys))]
+        del outside, missing_ids, missing_keys, matrix_ids
+        partial = missing.size > EXTRA_MAX
         missing = missing[:EXTRA_MAX]
-        for start in range(0, len(missing), EXTRA_BLOCK):
+        for start in range(0, missing.size, EXTRA_BLOCK):
             halt = self._halt(ctx, deadline)
             if halt:
                 raise Stop(halt)
-            ids, rows = _read_vectors(connection, [item[0] for item in missing[start : start + EXTRA_BLOCK]], model)
+            ids, rows = _read_vectors(connection, missing[start : start + EXTRA_BLOCK].tolist(), model)
             if ids.size and rows.shape[1] == windows.shape[1]:
                 best_ids, best_scores = _merge_top(best_ids, best_scores, ids, windows @ rows.T)
-        mark = max([int(top), *(item[0] for item in everything)]) if everything else int(top)
-        sample = self._background(connection, scope, everything, model)
+        mark = max(int(top), int(all_ids.max())) if all_ids.size else int(top)
+        sample = self._background(connection, scope, everything, keys, model)
         floor = float(_setting(ctx.settings, "related_floor", DEFAULT_FLOOR))
         margin = float(_setting(ctx.settings, "related_margin", DEFAULT_MARGIN))
-        contents = len({item[1] for item in everything})
+        contents = int(np.unique(everything["key"]).size)
         if sample is not None and sample.shape[1] != windows.shape[1]:
             sample = None
         bars = window_bars(windows, sample, contents, floor, margin)
         return Scored(best_ids, best_scores, bars, partial, mark)
 
     def _background(
-        self, connection: Any, scope: Scope, everything: Sequence[tuple[int, str, int]], model: str
+        self, connection: Any, scope: Scope, everything: np.ndarray, keys: Sequence[str], model: str
     ) -> np.ndarray | None:
-        """项目的背景样本（只留最近用的一个项目，约 8MB）。"""
-        key = (scope.project_id, model, len(everything), max((item[0] for item in everything), default=0))
+        """项目的背景样本（只留最近用的一个项目，约 8MB）。everything 是 scope_chunks 的结构数组。"""
+        count = int(everything.shape[0])
+        key = (scope.project_id, model, count, int(everything["id"].max()) if count else 0)
         if self._sample is not None and self._sample[0] == key:
             return self._sample[1]
-        picked = pick_sample(everything)
+        picked = pick_sample(_scope_tuples(everything, keys))
         vectors: np.ndarray | None = None
         if picked:
             _ids, rows = _read_vectors(connection, picked, model)
@@ -1435,16 +1556,22 @@ class RelatedPass:
             ).fetchall()
         if not rows:
             return "done"
+        # 本轮各块之间共用：每个项目的窗只读一次
+        windows: dict[str, ProjectWindows | None] = {}
         for start in range(0, len(rows), INCREMENT_BLOCK):
             halt = self._halt(ctx, ctx.deadline)
             if halt:
                 return halt
             block = [dict(row) for row in rows[start : start + INCREMENT_BLOCK]]
-            self._increment_block(ctx, block, model)
+            self._increment_block(ctx, block, model, windows)
             ctx.work += 1
         return "budget" if len(rows) >= INCREMENT_CHUNKS else "done"
 
-    def _increment_block(self, ctx: Any, block: list[dict[str, Any]], model: str) -> None:
+    def _increment_block(
+        self, ctx: Any, block: list[dict[str, Any]], model: str, windows: dict[str, ProjectWindows | None] | None = None
+    ) -> None:
+        if windows is None:
+            windows = {}
         now = ctx.now.isoformat()
         last = int(block[-1]["chunk_id"])
         keys = sorted({str(row["content_key"]) for row in block})
@@ -1466,7 +1593,7 @@ class RelatedPass:
                 if sig is None or scope is None:
                     continue
                 chunks = [row for row in block if row["content_key"] in contents]
-                plans.extend(self._increment_project(ctx, connection, scope, sig, chunks, model))
+                plans.extend(self._increment_project(ctx, connection, scope, sig, chunks, model, windows))
         with ctx.db.transaction() as connection:
             for scope, meeting_id, passages, info in plans:
                 self._merge_passages(connection, meeting_id, passages)
@@ -1486,7 +1613,14 @@ class RelatedPass:
             )
 
     def _increment_project(
-        self, ctx: Any, connection: Any, scope: Scope, sig: str, chunks: list[dict[str, Any]], model: str
+        self,
+        ctx: Any,
+        connection: Any,
+        scope: Scope,
+        sig: str,
+        chunks: list[dict[str, Any]],
+        model: str,
+        windows: dict[str, ProjectWindows | None],
     ) -> list[tuple[Scope, str, list[Passage], dict[str, Any]]]:
         meetings = {
             str(row["meeting_id"]): dict(row)
@@ -1507,26 +1641,23 @@ class RelatedPass:
         chunk_ids = np.asarray([int(row["chunk_id"]) for row in chunks], dtype=np.int64)
         by_id = {int(row["chunk_id"]): row for row in chunks}
         hits: dict[str, dict[int, list[tuple[int, float]]]] = {}
-        ids = sorted(meetings)
-        for part in _batches(ids):
-            windows = connection.execute(
-                f"""SELECT meeting_id, start_ms, bar, vector FROM meeting_windows
-                     WHERE model = ? AND meeting_id IN ({_marks(part)})""",
-                [model, *part],
-            ).fetchall()
-            if not windows:
-                continue
-            vectors = np.vstack([_from_f16(row["vector"]) for row in windows])
-            if vectors.shape[1] != matrix.shape[1]:
-                continue
-            bars = np.asarray([float(row["bar"]) for row in windows], dtype=np.float32)
-            marks = np.asarray([int(meetings[row["meeting_id"]]["chunk_mark"]) for row in windows], dtype=np.int64)
-            scores = vectors @ matrix.T
-            passing = (scores >= bars[:, None]) & (chunk_ids[None, :] > marks[:, None])
-            for window_index, chunk_index in zip(*np.nonzero(passing), strict=True):
-                row = windows[int(window_index)]
-                bucket = hits.setdefault(str(row["meeting_id"]), {}).setdefault(int(row["start_ms"]), [])
-                bucket.append((int(chunk_ids[chunk_index]), float(scores[window_index, chunk_index])))
+        if scope.project_id not in windows:
+            windows[scope.project_id] = load_project_windows(connection, model, list(meetings))
+        cached = windows[scope.project_id]
+        if cached is not None and cached.vectors.shape[1] == matrix.shape[1]:
+            # 本轮读窗以后才变干净的会不在缓存里，下次完整计算会补上；已经不干净的会 mark 取最大，不算
+            never = np.iinfo(np.int64).max
+            per_meeting = np.fromiter(
+                (int(meetings[meeting_id]["chunk_mark"]) if meeting_id in meetings else never
+                 for meeting_id in cached.meeting_ids),
+                dtype=np.int64,
+                count=len(cached.meeting_ids),
+            )
+            found = increment_hits(cached, per_meeting[cached.meeting], matrix, chunk_ids)
+            for window_index, chunk_index, score in zip(*(part.tolist() for part in found), strict=True):
+                meeting_id = cached.meeting_ids[cached.meeting[window_index]]
+                bucket = hits.setdefault(meeting_id, {}).setdefault(int(cached.start_ms[window_index]), [])
+                bucket.append((int(chunk_ids[chunk_index]), float(score)))
         plans = []
         words = Words(connection, scope, self.checks) if hits else None
         for meeting_id, by_window in hits.items():

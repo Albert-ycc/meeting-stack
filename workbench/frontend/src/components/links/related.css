@@ -1,11 +1,7 @@
 /* 4d：会议页的相关材料栏（电脑上右栏最上面一节，手机上一条收起的横条） */
 
-/* 窗口至少 1,200 像素宽时右栏从 280 加到 320 像素 */
-@media (min-width: 1200px) {
-  .detail-workspace {
-    grid-template-columns: minmax(0, 1fr) 320px;
-  }
-}
+/* 窗口至少 1,200 像素宽时右栏加到 320 像素：这条写在 styles.css 的 .detail-workspace 紧后面，
+   写在这里打包后会排在 280 像素那条前面、不生效 */
 
 .related-materials {
   gap: 6px;

@@ -488,19 +488,36 @@ def passage(connection: Any, row: dict[str, Any], content_key: str | None, ordin
 
 
 def related_meetings(connection: Any, file_id: int, limit: int = RELATED_MEETINGS) -> list[dict[str, Any]]:
-    """文件面板、预览抽屉的「内容相关的会」：按内容找（同内容的副本上也看得到），新的在前，最多 5 条。"""
-    rows = connection.execute(
+    """文件面板、预览抽屉的「内容相关的会」：按内容找（同内容的副本上也看得到），新的在前，最多 5 条。
+    和项目图谱一样去掉到处都相关的内容（hub_keys）；和栏一样挡掉那场会里你标过不相关的（按内容或按这份
+    文件的位置，原地改过也挡）。"""
+    file = connection.execute(
+        """SELECT f.content_key, f.root_id, f.rel_path, pr.project_id FROM material_files f
+             JOIN project_material_roots pr ON pr.id = f.root_id WHERE f.id = ?""",
+        (file_id,),
+    ).fetchone()
+    if file is None or not file["content_key"]:
+        return []
+    project_id, key = str(file["project_id"]), str(file["content_key"])
+    if key in related.hub_keys(connection, project_id, [key]):
+        return []
+    place = {"root_id": file["root_id"], "rel_path": file["rel_path"]}
+    found = connection.execute(
         f"""SELECT r.id, r.meeting_id, r.at_ms, r.quote, r.evidence_json, m.title, m.recording_date, m.created_at,
                    {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id
-              FROM material_files f
-              JOIN project_material_roots pr ON pr.id = f.root_id
-              JOIN relations r ON r.project_id = pr.project_id AND r.content_key = f.content_key
+              FROM relations r
               JOIN meetings m ON m.id = r.meeting_id AND m.project_id = r.project_id
-             WHERE f.id = ? AND r.kind = 'related' AND r.status = 'shown'
-             ORDER BY COALESCE(m.recording_date, m.created_at) DESC, m.id
-             LIMIT ?""",
-        (file_id, int(limit)),
-    ).fetchall()
+             WHERE r.project_id = ? AND r.content_key = ? AND r.kind = 'related' AND r.status = 'shown'
+             ORDER BY COALESCE(m.recording_date, m.created_at) DESC, m.id""",
+        (project_id, key),
+    )
+    rows = []
+    for row in found:
+        if related.is_blocked(key, place, related.rejected_filter(connection, str(row["meeting_id"]), project_id)):
+            continue
+        rows.append(row)
+        if len(rows) >= int(limit):
+            break
     return [
         {
             "meeting_id": row["meeting_id"],

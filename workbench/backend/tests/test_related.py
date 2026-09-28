@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import threading
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -253,6 +254,12 @@ def test_background_sample_takes_at_most_four_per_content_and_is_stable():
         per_content[chunk_id // 100] = per_content.get(chunk_id // 100, 0) + 1
     assert max(per_content.values()) <= 4
     assert related.pick_sample(list(reversed(rows))) == picked
+    # 边读边只留每份内容最小的 4 个：和先全排序再取的结果一样
+    by_content: dict[str, list[tuple[str, int]]] = {}
+    for chunk_id, key, ordinal in rows:
+        by_content.setdefault(key, []).append((related._sample_key(key, ordinal), chunk_id))
+    reference = sorted(entry for items in by_content.values() for entry in sorted(items)[:4])
+    assert picked == [chunk_id for _key, chunk_id in reference[: related.SAMPLE_MAX]]
 
 
 def test_passage_quality_filter():
@@ -322,6 +329,72 @@ def test_too_many_rows_outside_the_matrix_mark_partial(tmp_path, monkeypatch):
     assert w.db.query_one("SELECT partial, dirty FROM meeting_related_scan WHERE meeting_id = 'm'") == {
         "partial": 0, "dirty": 0
     }
+
+
+def _score_world(tmp_path):
+    """KEY_A 在矩阵里；KEY_B、KEY_C 是快照之后才有的（矩阵外），KEY_C 最新。"""
+    w = build(tmp_path)
+    add_content(w.db, KEY_B, ["。".join(TOPIC_A[3:] + FILLER[:2]), "。".join(FILLER), "。".join(TOPIC_A[:5])])
+    add_content(w.db, KEY_C, ["。".join(TOPIC_A[::-1]), "。".join(FILLER[3:] + TOPIC_A[:2])])
+    add_file(w.db, w.root, "排期/附录.docx", key=KEY_B, mtime=3)
+    add_file(w.db, w.root, "排期/新版.docx", key=KEY_C, mtime=9)
+    windows = np.vstack([embed("。".join(TOPIC_A[index : index + 4] + FILLER[index : index + 2])) for index in range(5)])
+    ctx = SimpleNamespace(settings=w.settings, stopping=lambda: False, busy_now=lambda: False, clock=lambda: 0.0)
+    return w, windows.astype(np.float32), ctx
+
+
+def _brute_top(connection, keys, windows):
+    rows = connection.execute(
+        f"""SELECT v.chunk_id, v.vector FROM material_chunk_vectors v JOIN material_chunks c ON c.id = v.chunk_id
+             WHERE v.model = ? AND c.content_key IN ({", ".join("?" for _ in keys)}) ORDER BY v.chunk_id""",
+        [MODEL, *keys],
+    ).fetchall()
+    ids = np.asarray([row[0] for row in rows], dtype=np.int64)
+    matrix = np.vstack([np.frombuffer(row[1], dtype=np.float16).astype(np.float32) for row in rows])
+    scores = windows @ matrix.T
+    top = np.argsort(-scores, axis=1)[:, : related.TOP_SCORED]
+    return ids, np.take_along_axis(np.broadcast_to(ids, scores.shape), top, 1), np.take_along_axis(scores, top, 1)
+
+
+def test_score_reads_ids_as_arrays_and_matches_a_brute_force_top_six(tmp_path, monkeypatch):
+    w, windows, ctx = _score_world(tmp_path)
+    snap = w.vectors.snapshot()
+    assert KEY_A in snap.code_of and KEY_B not in snap.code_of and KEY_C not in snap.code_of
+    # 矩阵块也按 4,096 行转 float32：调小以后一块要分几段，结果不变
+    monkeypatch.setattr(related, "EXTRA_BLOCK", 1)
+    with w.db.autocommit() as connection:
+        scope = related.load_scope(connection, "p")
+        everything = related.scope_chunks(connection, sorted(scope.files), MODEL)
+        assert everything.dtype.names == ("id", "key", "ordinal") and everything.shape[0] == 6
+        scored = related.RelatedPass().score(ctx, connection, snap, scope, windows, 1e9)
+        all_ids, top_ids, top_scores = _brute_top(connection, [KEY_A, KEY_B, KEY_C], windows)
+    order = np.argsort(-scored.scores, axis=1, kind="stable")
+    assert np.allclose(np.take_along_axis(scored.scores, order, 1), top_scores, atol=1e-6)
+    assert [set(row) for row in scored.ids.tolist()] == [set(row) for row in top_ids.tolist()]
+    assert scored.partial is False and scored.mark == int(all_ids.max())
+
+
+def test_score_outside_the_matrix_takes_the_newest_contents_first(tmp_path, monkeypatch):
+    w, windows, ctx = _score_world(tmp_path)
+    monkeypatch.setattr(related, "EXTRA_MAX", 2)  # 矩阵外 5 段，只读得下 KEY_C 的 2 段
+    read: list[list[int]] = []
+    real = related._read_vectors
+
+    def spy(connection, chunk_ids, model):
+        read.append(list(chunk_ids))
+        return real(connection, chunk_ids, model)
+
+    monkeypatch.setattr(related, "_read_vectors", spy)
+    with w.db.autocommit() as connection:
+        scope = related.load_scope(connection, "p")
+        scored = related.RelatedPass().score(ctx, connection, w.vectors.snapshot(), scope, windows, 1e9)
+        newest = [row[0] for row in connection.execute(
+            "SELECT v.chunk_id FROM material_chunk_vectors v JOIN material_chunks c ON c.id = v.chunk_id "
+            "WHERE c.content_key = ? ORDER BY v.chunk_id", (KEY_C,)
+        ).fetchall()]
+        _ids, top_ids, top_scores = _brute_top(connection, [KEY_A, KEY_C], windows)
+    assert scored.partial is True and read[0] == newest
+    assert [set(row) for row in scored.ids.tolist()] == [set(row) for row in top_ids.tolist()]
 
 
 # ---------------------------------------------------------------------- 共同词
@@ -545,6 +618,26 @@ def test_a_rejection_blocks_by_content_or_by_place():
     assert not related.is_blocked(KEY_B, moved, rejected)  # 挪了又改的不挡
 
 
+def test_content_related_meetings_skip_hubs_and_rejected_places(tmp_path, monkeypatch):
+    w = build(tmp_path)
+    worker_for(w).run_round()
+    file_id = w.db.query_one("SELECT id FROM material_files WHERE content_key = ?", (KEY_A,))["id"]
+    with w.db.autocommit() as connection:
+        assert [row["meeting_id"] for row in related_read.related_meetings(connection, file_id)] == ["m"]
+        # 到处都相关的内容：和项目图谱一样不列
+        monkeypatch.setattr(related, "HUB_MIN_MEETINGS", 1)
+        assert related_read.related_meetings(connection, file_id) == []
+    monkeypatch.setattr(related, "HUB_MIN_MEETINGS", 6)
+    # 这场会里标过不相关的是这个位置上的旧内容：文件原地改过，按路径仍挡
+    add_content(w.db, KEY_B, ["。".join(FILLER)])
+    old = add_file(w.db, w.root, "旧/接口文档.docx", key=KEY_B)
+    _reject(w.db, KEY_B, old)
+    w.db.execute("UPDATE material_files SET rel_path = '旧/挪走了.docx', gone_at = ? WHERE id = ?", (utc_now(), old))
+    w.db.execute("UPDATE material_files SET rel_path = '旧/接口文档.docx' WHERE id = ?", (file_id,))
+    with w.db.autocommit() as connection:
+        assert related_read.related_meetings(connection, file_id) == []
+
+
 def write_headers(client):
     token = client.get("/api/bootstrap").json()["csrf_token"]
     return {"X-CSRF-Token": token, "Origin": "http://testserver"}
@@ -634,6 +727,81 @@ def test_new_chunks_go_through_the_increment_not_a_full_compute(tmp_path):
     mark = json.loads(w.db.query_one("SELECT value FROM app_state WHERE key = 'related_chunk_mark'")["value"])
     top = w.db.query_one("SELECT MAX(chunk_id) AS n FROM material_chunk_vectors")["n"]
     assert mark == {"model": MODEL, "id": top}
+
+
+class _SliceSpy:
+    """记下每次和片段矩阵相乘的窗有多少行（numpy 遇到 __array_ufunc__ = None 会交给 __rmatmul__）。"""
+
+    __array_ufunc__ = None
+
+    def __init__(self, matrix, seen):
+        self.matrix, self.seen = matrix, seen
+
+    @property
+    def T(self):  # noqa: N802
+        return _SliceSpy(self.matrix.T, self.seen)
+
+    def __rmatmul__(self, other):
+        self.seen.append(other.shape[0])
+        return other @ self.matrix
+
+
+def test_increment_hits_scores_in_slices_like_the_dense_formula():
+    rng = np.random.default_rng(7)
+    count, chunks = 50, 9
+    vectors = rng.standard_normal((count, 16)).astype(np.float16)
+    cached = related.ProjectWindows(
+        ["a", "b", "c"], rng.integers(0, 3, count).astype(np.int32), np.arange(count, dtype=np.int64) * 45_000,
+        rng.uniform(-1, 1, count).astype(np.float32), vectors,
+    )
+    matrix = rng.standard_normal((chunks, 16)).astype(np.float32)
+    chunk_ids = np.arange(100, 100 + chunks, dtype=np.int64)
+    marks = np.asarray([0, 104, 1 << 62], dtype=np.int64)[cached.meeting]
+    dense = vectors.astype(np.float32) @ matrix.T
+    expected = np.nonzero((dense >= cached.bars[:, None]) & (chunk_ids[None, :] > marks[:, None]))
+    for rows in (1, 4, 7, 50, 4_096):
+        seen: list[int] = []
+        windows, picked, scores = related.increment_hits(cached, marks, _SliceSpy(matrix, seen), chunk_ids, rows)
+        assert max(seen) <= rows and sum(seen) == count
+        assert windows.tolist() == expected[0].tolist() and picked.tolist() == expected[1].tolist()
+        assert np.allclose(scores, dense[expected], atol=1e-5)  # 不同切片的 BLAS 路径只差浮点末位
+
+
+def test_increment_reads_each_project_windows_once_a_round_and_matches(tmp_path, monkeypatch):
+    def world(path, sliced):
+        w = build(path, chunk_a=False)
+        for index in range(3):
+            add_meeting(w.db, f"x{index}", ago=2 + index, project_id="p", segments=segments_for(TOPIC_A[index:] + FILLER))
+        worker = worker_for(w)
+        for _ in range(3):
+            worker.run_round()
+        add_content(w.db, KEY_A, ["。".join(TOPIC_A), "。".join(TOPIC_A[::-1]), "。".join(TOPIC_A[2:] + TOPIC_A[:2])])
+        add_content(w.db, KEY_B, ["。".join(TOPIC_A[4:] + FILLER[:3])])
+        add_file(w.db, w.root, "需求/接口文档.docx", key=KEY_A, mtime=5)
+        add_file(w.db, w.root, "排期/附录.docx", key=KEY_B, mtime=3)
+        loads: list[str] = []
+        real = related.load_project_windows
+
+        def spy(connection, model, meeting_ids):
+            loads.append(",".join(sorted(meeting_ids)))
+            return real(connection, model, meeting_ids)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(related, "load_project_windows", spy)
+            if sliced:
+                patch.setattr(related, "INCREMENT_BLOCK", 1)  # 4 个新片段分 4 块
+                patch.setattr(related, "WINDOW_SLICE", 3)
+                patch.setattr(related, "WINDOW_FETCH", 2)
+            w.semantic.calls.clear()
+            worker.run_round()
+        assert w.semantic.calls == []  # 走的是增量
+        return loads, [dict(row) for row in passages(w.db)], sorted(_fingerprint(w.db))
+
+    plain_loads, plain_passages, plain_links = world(tmp_path / "plain", False)
+    loads, sliced_passages, sliced_links = world(tmp_path / "sliced", True)
+    assert loads == ["m,x0,x1,x2"] and plain_loads == loads  # 一轮一个项目只读一次
+    assert {row["content_key"] for row in plain_passages} >= {KEY_A}
+    assert (sliced_passages, sliced_links) == (plain_passages, plain_links)
 
 
 def _fingerprint(db):
@@ -754,22 +922,59 @@ def test_opened_meeting_goes_first_and_wakes_the_loop(tmp_path):
     assert order[0] == "m" and "m" not in worker.priorities()
 
 
+def _db_state(path):
+    """另开一条连接看库：PRAGMA data_version 在别的连接提交过写入时就变；再加上各表行数和两个 rev。"""
+    connection = sqlite3.connect(path)
+    try:
+        tables = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        counts = {table: connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] for table in tables}
+        revs = connection.execute(
+            "SELECT key, value FROM app_state WHERE key IN ('related_rev', 'graph_rev') ORDER BY key"
+        ).fetchall()
+        return connection, counts, revs
+    except Exception:
+        connection.close()
+        raise
+
+
 def test_get_endpoints_do_not_write(tmp_path):
-    config = app_settings(tmp_path).model_copy(
-        update={"links_enabled": True, "semantic_enabled": True, "material_content_enabled": True}
+    w = build(tmp_path)
+    worker_for(w).run_round()
+    assert passages(w.db) and related_rows(w.db)
+    file_id = w.db.query_one("SELECT id FROM material_files WHERE content_key = ?", (KEY_A,))["id"]
+    with w.db.transaction() as connection:
+        related.mark_dirty(connection, meeting_id="m")  # 到期：GET 栏时会顺手 prioritize
+    config = app_settings(tmp_path / "app").model_copy(
+        update={
+            "links_enabled": True, "semantic_enabled": True, "material_content_enabled": True,
+            "semantic_model": MODEL, "database_path": w.db.path,
+        }
     )
     app = create_app(config)
-    db = app.state.db if hasattr(app.state, "db") else Database(config.database_path)
-    db.initialize()
-    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', ?)", (utc_now(),))
-    add_meeting(db, "m", ago=1, project_id="p", segments=segments_for(TOPIC_A))
     client = TestClient(app)
-    with db.autocommit() as connection:
-        before = connection.total_changes
-        client.get("/api/meetings/m/related-materials")
-        client.get("/api/meetings/m/related-materials/rejected")
-        client.get("/api/graph/projects/p/related?window=all")
-        assert connection.total_changes == before
+    watcher, counts, revs = _db_state(w.db.path)
+    try:
+        version = watcher.execute("PRAGMA data_version").fetchone()[0]
+        replies = [
+            client.get("/api/meetings/m"),
+            client.get("/api/meetings/m/related-materials"),
+            client.get("/api/meetings/m/related-materials/rejected"),
+            client.get("/api/graph/projects/p/related?window=all"),
+            client.get(f"/api/materials/files/{file_id}/preview"),
+            client.get(f"/api/materials/files/{file_id}/preview?parts=preview&passage_key={KEY_A}&passage_ordinal=0"),
+        ]
+        assert [reply.status_code for reply in replies] == [200] * len(replies)
+        assert watcher.execute("PRAGMA data_version").fetchone()[0] == version
+    finally:
+        watcher.close()
+    after, counts_after, revs_after = _db_state(w.db.path)
+    after.close()
+    assert (counts_after, revs_after) == (counts, revs)
     assert app.state.links_worker.priorities() == ["m"]
 
 

@@ -1693,4 +1693,93 @@ describe("MeetingDetailPage 相关材料栏（4d）", () => {
     expect(screen.queryByText("相关材料")).not.toBeInTheDocument();
     expect(relatedMaterials).not.toHaveBeenCalled();
   });
+
+  it("在放时手动滚逐字稿，栏跟阅读线下那一行，4 秒后回到播放位置；暂停时停在滚到的地方", async () => {
+    const { LinksFlagsContext } = await import("./links/LinksFlagsContext");
+    const relatedMaterials = vi.fn().mockResolvedValue({
+      state: { kind: "ok", text: null, action: null }, files: {}, copies: [], windows: [], rejected: 0,
+    });
+    // 这场会有录音：波形换成假的（jsdom 里画不了）
+    const WaveSurfer = (await import("wavesurfer.js")).default;
+    const waveform = vi.spyOn(WaveSurfer, "create").mockReturnValue({
+      destroy: vi.fn(),
+      load: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn().mockReturnValue(() => undefined),
+      setOptions: vi.fn(),
+      setTime: vi.fn(),
+    } as unknown as ReturnType<typeof WaveSurfer.create>);
+    const segments: Segment[] = [
+      { id: "seg-a", ordinal: 0, start_ms: 0, end_ms: 60_000, speaker_name: "甲", text: "先说接口文档" },
+      { id: "seg-b", ordinal: 1, start_ms: 100_000, end_ms: 110_000, speaker_name: "乙", text: "再说驻场服务" },
+    ];
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: true, llmConfigured: false }}>
+        <MeetingDetailPage
+          apiClient={{ relatedMaterials, asrGoldSamples: vi.fn().mockResolvedValue({ items: [] }) } as unknown as ApiClient}
+          initialSeekMs={0}
+          isMobile={false}
+          meeting={{
+            ...meeting(false),
+            segments,
+            artifacts: [{ id: 7, meeting_id: "vm-1", kind: "audio", role: "original", source_root: "", path: "" }],
+          }}
+          onBack={vi.fn()}
+          onReload={vi.fn().mockResolvedValue(undefined)}
+          projects={[]}
+          tags={[]}
+        />
+      </LinksFlagsContext.Provider>,
+    );
+    const inspector = document.querySelector("aside.edit-inspector") as HTMLElement;
+    await within(inspector).findByText("00:00 前后");
+    const position = () => inspector.querySelector(".related-head small")?.textContent;
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 1;
+    });
+    const scrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn();
+    const box = document.querySelector(".transcript-scroll") as HTMLDivElement;
+    Object.defineProperty(box, "clientHeight", { configurable: true, value: 300 });
+    Object.defineProperty(box, "scrollTop", { configurable: true, value: 100, writable: true });
+    vi.spyOn(box, "getBoundingClientRect").mockReturnValue({ top: 0 } as DOMRect);
+    vi.spyOn(screen.getByTestId("segment-seg-a"), "getBoundingClientRect").mockReturnValue({ top: -100 } as DOMRect);
+    // 阅读线在 100 + 300/3 = 200，seg-b 的上沿 150 在线上：阅读位置 01:40，落在 01:30 那一段
+    vi.spyOn(screen.getByTestId("segment-seg-b"), "getBoundingClientRect").mockReturnValue({ top: 50 } as DOMRect);
+    const audio = screen.getByLabelText("录音播放器") as HTMLAudioElement;
+    Object.defineProperty(audio, "currentTime", { configurable: true, value: 10, writable: true });
+    const userScroll = () => {
+      fireEvent.wheel(box);
+      fireEvent.scroll(box);
+    };
+    vi.useFakeTimers();
+    try {
+      fireEvent.play(audio);
+      fireEvent.timeUpdate(audio);
+      expect(position()).toBe("00:00 前后");
+      userScroll();
+      expect(position()).toBe("01:30 前后");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_900);
+      });
+      expect(position()).toBe("01:30 前后");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      expect(position()).toBe("00:00 前后");
+      // 暂停时滚：停在滚到的地方，过了 4 秒也不回去
+      fireEvent.pause(audio);
+      userScroll();
+      expect(position()).toBe("01:30 前后");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(position()).toBe("01:30 前后");
+    } finally {
+      vi.useRealTimers();
+      raf.mockRestore();
+      waveform.mockRestore();
+      Element.prototype.scrollIntoView = scrollIntoView;
+    }
+  });
 });

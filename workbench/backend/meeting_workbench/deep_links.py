@@ -149,13 +149,16 @@ class LinksWorker:
     # ------------------------------------------------------------------ 外面调的
 
     def prioritize(self, meeting_id: str) -> None:
-        """会议页打开时调：记进内存（最多 64 个，新的在前），同时唤醒循环。"""
+        """会议页打开时调：记进内存（最多 64 个，新的在前）。只有这场会新进入队列时才唤醒循环：栏在
+        waiting 时每 15 秒重取一次，已经在队列里的会不再唤醒，免得循环每 15 秒整轮空跑。"""
         with self._state_lock:
+            fresh = meeting_id not in self._priorities
             self._priorities.pop(meeting_id, None)
             self._priorities[meeting_id] = None
             while len(self._priorities) > PRIORITY_LIMIT:
                 self._priorities.popitem(last=False)
-        self._wake.set()
+        if fresh:
+            self._wake.set()
 
     def priorities(self) -> list[str]:
         with self._state_lock:

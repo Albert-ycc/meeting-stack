@@ -385,6 +385,22 @@ def test_prioritize_keeps_at_most_64_newest_first(tmp_path):
     assert "m10" not in w.priorities()
 
 
+def test_prioritize_wakes_only_when_the_meeting_is_new_to_the_queue(tmp_path):
+    # 栏在 waiting 时每 15 秒重取：已经排着的会只挪到最前，不再唤醒循环
+    db, _ = make(tmp_path)
+    w = worker(db)
+    w.prioritize("m1")
+    w.prioritize("m2")
+    assert w._wake.is_set()
+    w._wake.clear()
+    w.prioritize("m1")
+    assert not w._wake.is_set() and w.priorities() == ["m1", "m2"]
+    # 算完出了队列，再打开就又是新的
+    w.done_priority("m1")
+    w.prioritize("m1")
+    assert w._wake.is_set()
+
+
 def test_next_delay():
     assert deep_links.next_delay({"work": True}) == 10
     assert deep_links.next_delay({"work": False}) == 60
