@@ -124,7 +124,7 @@ describe("MaterialWords", () => {
     expect(items[0]).toHaveTextContent("在 30 个文件里：入组标准.pdf、方案v1.docx 等");
     expect(items[1]).toHaveTextContent("会上说过 238 次 · 『驻场服务按月结』 · 例会 9/20");
     expect(items[1]).toHaveTextContent("在 15 个文件里：合同.docx 等");
-    expect(items[2]).toHaveTextContent("『按甲状腺髓样癌病史排除』 · 入组标准.pdf");
+    expect(items[2]).toHaveTextContent("『…按甲状腺髓样癌病史排除…』 · 入组标准.pdf");
     expect(within(items[2]).getByRole("button", { name: "记到『甲状腺髓样癌』" })).toBeInTheDocument();
     expect(screen.getByText(MATERIAL_WORDS_FOOTNOTE)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("%");
@@ -247,5 +247,63 @@ describe("MaterialWords", () => {
     expect(screen.queryByText(MATERIAL_WORDS_FOOTNOTE)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "记入 云图AI" }));
     await waitFor(() => expect(onAnswered).toHaveBeenCalled());
+  });
+  it("meeting rows: accept records only the shown wrong; rows of one word keep apart", async () => {
+    const base = { key: "司美格鲁肽", term: "司美格鲁肽", start_ms: 0, quote: "", project: { id: "p-yt", name: "云图AI" } };
+    const pairs: MaterialPair[] = [
+      { ...base, wrong: "司美格鲁太" },
+      { ...base, wrong: "司美格鲁泰" },
+    ];
+    const apiClient = makeClient();
+    render(
+      withFlags(
+        <MaterialWords apiClient={apiClient} canWrite pairs={pairs} projectId="p-yt" projectName="云图AI" variant="meeting" />,
+      ),
+    );
+    const rows = screen.getAllByText(/这场会听成了/);
+    expect(rows).toHaveLength(2);
+    await userEvent.click(screen.getAllByRole("button", { name: "记入 云图AI" })[0]);
+    expect(apiClient.acceptGlossaryCandidate).toHaveBeenCalledWith("p-yt", { key: "司美格鲁肽", only_wrong: "司美格鲁太" });
+    await screen.findByText("已记入『司美格鲁肽』，错写：司美格鲁太");
+    expect(screen.queryByText("材料里写作『司美格鲁肽』，这场会听成了『司美格鲁太』")).not.toBeInTheDocument();
+    expect(screen.getByText("材料里写作『司美格鲁肽』，这场会听成了『司美格鲁泰』")).toBeInTheDocument();
+  });
+
+  it("an existing term with every chip removed cannot be accepted", async () => {
+    const onto: MaterialWord = { ...PAIRED, key: "能耗看板", term: "能耗看板", existing_term: { id: "gt-1", term: "能耗看板" } };
+    const { apiClient } = renderBoard({ items: [onto] });
+    const item = screen.getAllByRole("listitem")[0];
+    const button = within(item).getByRole("button", { name: "记到『能耗看板』" });
+    await userEvent.click(within(item).getByRole("button", { name: "不是听错：司美格鲁太" }));
+    expect(button).toBeEnabled();
+    await userEvent.click(within(item).getByRole("button", { name: "不是听错：司美格鲁泰" }));
+    expect(button).toBeDisabled();
+    await userEvent.click(button);
+    expect(apiClient.acceptGlossaryCandidate).not.toHaveBeenCalled();
+    expect(within(item).getByRole("button", { name: "不是" })).toBeEnabled();
+  });
+
+  it("keeps the first item greyed while a second answer is in flight", async () => {
+    let finishAccept: (value: unknown) => void = () => undefined;
+    let finishReject: (value: unknown) => void = () => undefined;
+    const apiClient = makeClient({
+      acceptGlossaryCandidate: vi.fn(() => new Promise((resolve) => { finishAccept = resolve; })),
+      rejectGlossaryCandidate: vi.fn(() => new Promise((resolve) => { finishReject = resolve; })),
+    });
+    renderBoard({ apiClient });
+    const [first, second] = screen.getAllByRole("listitem");
+    const acceptFirst = within(first).getByRole("button", { name: "记入 云图AI" });
+    await userEvent.click(acceptFirst);
+    await userEvent.click(within(second).getByRole("button", { name: "不是" }));
+    expect(acceptFirst).toBeDisabled();
+    expect(within(second).getByRole("button", { name: "不是" })).toBeDisabled();
+    finishReject({ text: "以后不再提『驻场服务』", undo_until: later(600_000) });
+    await screen.findByText("以后不再提『驻场服务』");
+    expect(acceptFirst).toBeDisabled();
+    finishAccept({
+      term: { id: "gt-9", term: "司美格鲁肽", aliases: [], is_cue: false }, created: true, added_aliases: [],
+      skipped_aliases: [], already: false, text: "已记入『司美格鲁肽』", undo_until: later(600_000),
+    });
+    await screen.findByText("已记入『司美格鲁肽』");
   });
 });

@@ -75,6 +75,53 @@ def test_seed_memory_peak():
     assert peak <= 16 * 1024 * 1024
 
 
+HALVES = {
+    "受试者用药记", "试者用药记录", "云图科研用药", "图科研用药平", "科研用药平台", "司美格鲁肽注", "美格鲁肽注射",
+    "格鲁肽注射液", "注射液的冷链", "研用药平台需", "肽注射液的冷", "由北辰科研仓", "由项目组统一", "目组统一配置",
+}
+
+
+def test_real_style_seeds_have_no_halves():
+    """词后面总跟着同一串字时，种子留整串（最长 8 字），不留一截截的滑窗。"""
+    from .gm_real_style import P_DOCS
+
+    found = seeds("\n".join(P_DOCS))
+    assert {"受试者用药记录", "云图科研用药平台", "司美格鲁肽注射液", "北辰科研仓", "药品追溯码", "初审规则"} <= set(found)
+    assert not HALVES & set(found)
+    # 左邻总是同一个字的是半截；邻字是标点、虚字或一串汉字的头尾时不算
+    assert "格鲁肽注射液" not in seeds("司美格鲁肽注射液。司美格鲁肽注射液的")
+    assert seeds("北辰科研仓的接口。北辰科研仓的文档。")["北辰科研仓"] == 2
+
+
+def test_real_style_project_top_ten(tmp_path):
+    """真实风格样本：前 10 个里没有半截词，司美格鲁肽进候选并和会上听错的司美格鲁太成组。"""
+    from .gm_real_style import real_style_world
+
+    db = real_style_world(tmp_path)
+    stats = mine(db)
+    top = [item.term for item in stats.items[:10]]
+    assert top[0] == "司美格鲁肽" and [pair.wrong for pair in stats.items[0].pairs] == ["司美格鲁太"]
+    assert {"初审规则", "受试者用药记录", "药品追溯码", "北辰科研仓", "药房管理员"} <= set(top)
+    assert not HALVES & {item.term for item in stats.items}
+    assert ("司美格鲁肽", "司美格鲁太") in terms(db) and ("司美格鲁肽", "") in terms(db)
+
+
+def test_pool_drops_a_word_one_char_shorter_than_a_frequent_one(tmp_path):
+    """项目汇总：池里有多一个字、次数有它 0.9 以上的词，短的丢掉。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    for index in range(4):
+        add_content(db, f"k{index}", [body("冷链温度报警", "药房管理员")])
+        add_file(db, root, f"方案{index}.docx", key=f"k{index}")
+    fake = {f"k{index}": [("冷链温度报", 2), ("冷链温度报警", 2), ("药房管理员", 3)] for index in range(4)}
+    with db.autocommit() as conn:
+        stats = gm.compute(conn, "p", seeds=fake)
+    kept = {item.term for item in stats.items}
+    assert "冷链温度报警" in kept and "冷链温度报" not in kept and "药房管理员" in kept
+    assert stats.queries["spread_materials"] == 2  # 短的在候选池里就丢了，第 3 步不再查它
+
+
 # ---------------------------------------------------------------------- 挖哪些内容
 
 
@@ -158,6 +205,22 @@ def test_pairs_need_two_hearings_and_no_material(tmp_path):
     db.execute("UPDATE glossary_mining_scan SET mined_at = '2000-01-01T00:00:00+00:00'")
     mine(db)
     assert "驻场服剂" not in {wrong for _term, wrong in terms(db) if wrong}
+
+
+def test_head_of_a_long_word_pairs_only_with_a_real_misheard_form(tmp_path):
+    """长词的头几个字（至少 5 字）也拿来找听错的写法；换的是的、了这类虚字时不算。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    for index in range(3):
+        add_content(db, f"k{index}", [body("司美格鲁肽注射液", "受试者用药记录")])
+        add_file(db, root, f"方案{index}.docx", key=f"k{index}")
+    add_meeting(db, "m1", date="2026-09-20T10:00:00", project_id="p",
+                segments=["司美格鲁太的剂量", "受试者用的东西", "司美格鲁太再看", "受试者用的那个"])
+    stats = mine(db)
+    paired = {item.term: [pair.wrong for pair in item.pairs] for item in stats.items if item.pairs}
+    assert paired == {"司美格鲁肽": ["司美格鲁太"]}
+    assert ("司美格鲁肽", "司美格鲁太") in terms(db) and ("司美格鲁肽注射液", "") in terms(db)
 
 
 def test_three_char_words_get_no_pairs():
@@ -394,12 +457,21 @@ def test_worker_runs_h4_in_the_heavy_phase(tmp_path):
 
 
 def test_unchanged_pass_writes_nothing(tmp_path):
+    """一遍没有变化时主库一条写都不发（只写 temp 库里的 _gm_keys）。"""
     db, _roots = world(tmp_path)
     mine(db)
+    writes: list[str] = []
+
+    def trace(sql):
+        head = sql.strip().upper()
+        if head.startswith(("INSERT", "UPDATE", "DELETE", "REPLACE")) and "TEMP._GM_KEYS" not in head:
+            writes.append(sql)
+
     with db.autocommit() as conn:
-        before = conn.total_changes
+        conn.set_trace_callback(trace)
         gm.project_pass(conn, "p", NOW + timedelta(hours=7))
-        assert conn.total_changes == before
+        conn.set_trace_callback(None)
+    assert writes == []
 
 
 def test_no_insert_or_replace_on_candidates():
@@ -422,9 +494,34 @@ def test_caps_on_the_expensive_steps(tmp_path):
     add_meeting(db, "m1", date="2026-09-20T10:00:00", project_id="p", segments=["，".join(words[:300])])
     with db.autocommit() as conn:
         stats = gm.compute(conn, "p", seeds=fake)
-    assert stats.queries["spread_materials"] <= gm.POOL_CAP
+    assert stats.queries["spread_materials"] <= gm.POOL_QUERY_CAP
     assert stats.queries["spread_meetings"] <= gm.SPREAD_CAP
     assert stats.queries["pair_bases"] <= gm.PAIR_BASES_CAP
+
+
+def test_step_three_walks_the_ranked_pool_until_150_are_kept(tmp_path, monkeypatch):
+    """第 3 步不先截到 150：按排好的顺序逐个查，别的项目也有的丢掉，直到留满 POOL_CAP 个（或查满上限）。"""
+    monkeypatch.setattr(gm, "POOL_CAP", 5)
+    db = gm_db(tmp_path)
+    for pid, name in (("p", "云图AI"), ("q", "北辰仓"), ("r", "数据中台")):
+        add_project(db, pid, name)
+    roots = {pid: add_root(db, pid, tmp_path / pid) for pid in ("p", "q", "r")}
+    words = [chr(0x9A00 + index) + "鹏鹤鹦" for index in range(10)]  # 按字排：前 3 个别的项目也有
+    for index in range(3):
+        add_content(db, f"k{index}", [body(*words)])
+        add_file(db, roots["p"], f"方案{index}.docx", key=f"k{index}")
+    for pid in ("q", "r"):
+        add_content(db, f"k{pid}", [body(*words[:3])])
+        add_file(db, roots[pid], "规范.docx", key=f"k{pid}")
+    fake = {f"k{index}": [(word, 2) for word in words] for index in range(3)}
+    with db.autocommit() as conn:
+        stats = gm.compute(conn, "p", seeds=fake)
+    assert [item.term for item in stats.items] == sorted(words[3:8])
+    assert stats.queries["spread_materials"] == 8
+    monkeypatch.setattr(gm, "POOL_QUERY_CAP", 6)
+    with db.autocommit() as conn:
+        stats = gm.compute(conn, "p", seeds=fake)
+    assert [item.term for item in stats.items] == sorted(words[3:6]) and stats.queries["spread_materials"] == 6
 
 
 def test_write_transaction_is_short(tmp_path):
@@ -504,6 +601,87 @@ def test_aggregation_memory(tmp_path):
         peak = tracemalloc.get_traced_memory()[1]
         tracemalloc.stop()
     assert peak <= 10 * 1024 * 1024
+
+
+def test_transcript_memory(tmp_path):
+    """拼逐字稿：文字每字 2 字节，对照表每段约 20 字节（array），会议 id 每场只存一次；照这个比例，
+    400 万字、12 万段常驻约 11MB，峰值约 21MB（H4 一轮峰值 30MB 以内）。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    rng = random.Random(5)
+    alphabet = [chr(0x4E00 + index) for index in range(2000)]
+    for meeting in range(10):
+        add_meeting(db, f"m{meeting:02d}", date="2026-09-20T10:00:00", project_id="p",
+                    segments=["".join(rng.choice(alphabet) for _ in range(60)) for _ in range(1000)])
+    with db.autocommit() as conn:
+        tracemalloc.start()
+        transcript = gm.load_transcript(conn, "p")
+        held, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+    chars, segments = len(transcript.text), len(transcript.starts)
+    assert (chars, segments, len(transcript.meetings)) == (10 * 1000 * 61 - 1, 10_000, 10)
+    assert held <= 2.2 * chars + 48 * segments
+    assert peak <= 4.5 * chars + 100 * segments
+    position = transcript.text.index(transcript.text[61 * 1500 : 61 * 1500 + 8])
+    assert transcript.where(position) == ("m01", 500_000)
+    assert transcript.meeting_count([0, 5, position]) == 2
+
+
+def test_pass_gives_up_when_busy_or_past_the_deadline_and_writes_no_scan_row(tmp_path):
+    """汇总算到一半忙了或超了时间：这一遍放弃，候选词和 scan 行都不写，下一轮再做。"""
+    db, _roots = world(tmp_path)
+    with db.autocommit() as conn:
+        gm.seed_round(conn, float("inf"), lambda: False, now=NOW)
+    clock = {"t": 0.0}
+    original = gm.load_transcript
+
+    def slow(conn, project_id):
+        clock["t"] += 10.0  # 读逐字稿用了 10 秒
+        return original(conn, project_id)
+
+    gm.load_transcript = slow
+    try:
+        with db.autocommit() as conn:
+            stats = gm.project_pass(conn, "p", NOW, deadline=5.0, clock=lambda: clock["t"])
+    finally:
+        gm.load_transcript = original
+    assert stats.abandoned == "budget"
+    assert rows(db) == [] and db.query_all("SELECT * FROM glossary_mining_scan") == []
+    calls = {"n": 0}
+
+    def busy():
+        calls["n"] += 1
+        return calls["n"] > 2  # 第 3 步前不忙，第 6 步前开始转写
+
+    with db.autocommit() as conn:
+        stats = gm.project_pass(conn, "p", NOW, busy=busy)
+    assert stats.abandoned == "busy" and rows(db) == []
+    assert db.query_all("SELECT * FROM glossary_mining_scan") == []
+    # 下一轮不忙就照常做完
+    with db.autocommit() as conn:
+        assert gm.project_pass(conn, "p", NOW).abandoned is None
+    assert ("司美格鲁肽", "") in terms(db)
+    assert db.query_one("SELECT COUNT(*) AS n FROM glossary_mining_scan")["n"] == 1
+
+
+def test_mine_round_stops_when_a_pass_is_given_up(tmp_path):
+    db, _roots = world(tmp_path)
+    with db.autocommit() as conn:
+        gm.seed_round(conn, float("inf"), lambda: False, now=NOW)
+    state = {"busy": False}
+    original = gm.load_transcript
+
+    def turns_busy(conn, project_id):
+        state["busy"] = True  # 读逐字稿的时候开始转写
+        return original(conn, project_id)
+
+    gm.load_transcript = turns_busy
+    try:
+        result = gm.mine_round(db, lambda: state["busy"], now=NOW)
+    finally:
+        gm.load_transcript = original
+    assert result["projects"] == 0 and result["stopped"] == "busy"
+    assert db.query_all("SELECT * FROM glossary_mining_scan") == []
 
 
 # ---------------------------------------------------------------------- 命令行

@@ -9,6 +9,8 @@ import time
 import warnings
 from pathlib import Path
 
+import pytest
+
 from meeting_workbench import card_index, cards
 from meeting_workbench.cards import APP_FILE_NAMES, INDEX_PATHS_KEY, CardWriter
 from meeting_workbench.db import utc_now
@@ -213,7 +215,9 @@ def test_merging_projects_retires_the_index_of_the_folder_left_behind(tmp_path):
     assert _known(db) == {str(_index(target_root)): target}
 
 
-def test_an_offline_root_keeps_its_index_until_it_comes_back(tmp_path, monkeypatch):
+@pytest.mark.parametrize("state", ["root_offline", "root_missing", "root_in_archive"])
+def test_an_offline_root_keeps_its_index_until_it_comes_back(tmp_path, monkeypatch, state):
+    """不在线、找不到（挂载掉线）、不让写的根目录：记录留着，回来后收走旧索引。"""
     db, settings, writer, disk = _env(tmp_path)
     project_id, old_root = _project(db, disk, "云图AI")
     _meeting(db, project_id)
@@ -226,7 +230,7 @@ def test_an_offline_root_keeps_its_index_until_it_comes_back(tmp_path, monkeypat
     monkeypatch.setattr(
         writer,
         "_root_state",
-        lambda root, round_: "root_offline" if root == str(old_root) else original(root, round_),
+        lambda root, round_: state if root == str(old_root) else original(root, round_),
     )
 
     writer.reconcile()

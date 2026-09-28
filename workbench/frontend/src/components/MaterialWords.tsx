@@ -89,7 +89,8 @@ export function MaterialWords({
   const [words, setWords] = useState<MaterialWord[]>(Array.isArray(items) ? items : []);
   const [rows, setRows] = useState<MaterialPair[]>(Array.isArray(pairs) ? pairs : []);
   const [removed, setRemoved] = useState<Record<string, string[]>>({});
-  const [busyKey, setBusyKey] = useState<string | null>(null);
+  // 请求进行中的项（可以同时有几项）：这几项的按钮变灰，别的项照常能点
+  const [busyKeys, setBusyKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [hint, setHint] = useState<Hint | null>(null);
   const timer = useRef<number | null>(null);
 
@@ -114,16 +115,26 @@ export function MaterialWords({
   const count = variant === "meeting" ? rows.length : words.length;
   if (count === 0 && !hint) return null;
 
-  const drop = (key: string) => {
+  const isBusy = (key: string) => busyKeys.has(key);
+  const markBusy = (key: string, on: boolean) =>
+    setBusyKeys((current) => {
+      const next = new Set(current);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+
+  /** 拿掉一项；会议页记入只记了一个写法时（wrong），只拿掉这一行 */
+  const drop = (key: string, wrong?: string) => {
     setWords((current) => current.filter((item) => item.key !== key));
-    setRows((current) => current.filter((row) => row.key !== key));
+    setRows((current) => current.filter((row) => row.key !== key || (wrong !== undefined && row.wrong !== wrong)));
   };
 
-  const answer = async (key: string, work: () => Promise<Hint>) => {
-    setBusyKey(key);
+  const answer = async (key: string, work: () => Promise<Hint>, wrong?: string) => {
+    markBusy(key, true);
     try {
       const next = await work();
-      drop(key);
+      drop(key, wrong);
       setHint(next);
       await onAnswered?.();
     } catch (reason) {
@@ -134,15 +145,21 @@ export function MaterialWords({
         setHint({ text: answerFailure(reason) });
       }
     } finally {
-      setBusyKey(null);
+      markBusy(key, false);
     }
   };
 
-  const accept = (key: string) =>
-    void answer(key, async () => {
-      const result = await apiClient.acceptGlossaryCandidate(projectId, { key, not_wrong: removed[key] ?? [] });
-      return result.already ? { text: result.text } : { text: result.text, undoKey: key, until: result.undo_until };
-    });
+  const accept = (key: string, onlyWrong?: string) =>
+    void answer(
+      key,
+      async () => {
+        const body =
+          onlyWrong === undefined ? { key, not_wrong: removed[key] ?? [] } : { key, only_wrong: onlyWrong };
+        const result = await apiClient.acceptGlossaryCandidate(projectId, body);
+        return result.already ? { text: result.text } : { text: result.text, undoKey: key, until: result.undo_until };
+      },
+      onlyWrong,
+    );
 
   const reject = (key: string) =>
     void answer(key, async () => {
@@ -152,7 +169,7 @@ export function MaterialWords({
 
   const undo = (key: string) =>
     void (async () => {
-      setBusyKey(key);
+      markBusy(key, true);
       try {
         const result = await apiClient.undoGlossaryCandidate(projectId, { key });
         setHint({ text: result.text });
@@ -160,7 +177,7 @@ export function MaterialWords({
       } catch (reason) {
         setHint({ text: answerFailure(reason) });
       } finally {
-        setBusyKey(null);
+        markBusy(key, false);
       }
     })();
 
@@ -169,12 +186,18 @@ export function MaterialWords({
 
   const openAt = (meetingId: string, ms: number) => onOpenMeeting?.(meetingId, ms);
 
-  const buttons = (key: string, label: string) => (
+  /** blocked：记到已有词条、写法却全被去掉时，［记到『X』］没东西可记，置灰 */
+  const buttons = (key: string, label: string, options: { onlyWrong?: string; blocked?: boolean } = {}) => (
     <span className="material-words__buttons">
-      <button className="ghost-button" disabled={busyKey === key} onClick={() => accept(key)} type="button">
+      <button
+        className="ghost-button"
+        disabled={isBusy(key) || Boolean(options.blocked)}
+        onClick={() => accept(key, options.onlyWrong)}
+        type="button"
+      >
         {label}
       </button>
-      <button className="ghost-button" disabled={busyKey === key} onClick={() => reject(key)} type="button">
+      <button className="ghost-button" disabled={isBusy(key)} onClick={() => reject(key)} type="button">
         不是
       </button>
     </span>
@@ -186,7 +209,7 @@ export function MaterialWords({
       {hint.undoKey && (
         <button
           className="text-button"
-          disabled={busyKey === hint.undoKey}
+          disabled={isBusy(hint.undoKey)}
           onClick={() => undo(hint.undoKey!)}
           type="button"
         >
@@ -200,11 +223,11 @@ export function MaterialWords({
     return (
       <div className="material-words material-words--meeting">
         {rows.map((row) => (
-          <p className="material-words__pair" key={row.key}>
+          <p className="material-words__pair" key={`${row.key}+${row.wrong}`}>
             <span>
               材料里写作『{row.term}』，这场会听成了『{row.wrong}』
             </span>
-            {buttons(row.key, acceptLabel({}, projectName))}
+            {buttons(row.key, acceptLabel({}, projectName), { onlyWrong: row.wrong })}
           </p>
         ))}
         {hintLine}
@@ -233,7 +256,9 @@ export function MaterialWords({
             <li key={item.key}>
               <p className="material-words__head">
                 <strong>{item.term}</strong>
-                {buttons(item.key, acceptLabel(item, projectName))}
+                {buttons(item.key, acceptLabel(item, projectName), {
+                  blocked: Boolean(item.existing_term) && item.wrongs.length > 0 && wrongs.length === 0,
+                })}
               </p>
               {wrongs.length > 0 && (
                 <p className="material-words__wrongs">
@@ -243,7 +268,7 @@ export function MaterialWords({
                       『{wrong.text}』
                       <button
                         aria-label={`不是听错：${wrong.text}`}
-                        disabled={busyKey === item.key}
+                        disabled={isBusy(item.key)}
                         onClick={() => toggleWrong(item.key, wrong.text)}
                         type="button"
                       >
@@ -268,7 +293,7 @@ export function MaterialWords({
               ))}
               {item.file_quote && quoteFile ? (
                 <p className="material-words__files">
-                  『{item.file_quote.quote}』 · {quoteFile.name}
+                  『…{item.file_quote.quote}…』 · {quoteFile.name}
                 </p>
               ) : (
                 item.files > 0 && (

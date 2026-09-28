@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { GlossaryPage } from "./GlossaryPage";
@@ -204,6 +204,42 @@ describe("GlossaryPage", () => {
     const block = screen.getByRole("region", { name: "从云图 0830 迭代的材料里找到的词" });
     const term = screen.getByText("生长激素");
     expect(block.compareDocumentPosition(term) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("4h：回答或撤销以后一并重取候选词，撤销的词回到列表里", async () => {
+    const word = {
+      key: "驻场服务", term: "驻场服务", existing_term: null, wrongs: [], files: 15, spoken: 3,
+      heard: [], file_names: [], file_quote: null,
+    };
+    const glossaryCandidates = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [word], total: 1 })
+      .mockResolvedValueOnce({ items: [], total: 0 })
+      .mockResolvedValue({ items: [word], total: 1 });
+    const apiClient = client({
+      glossaryTerms: vi.fn().mockResolvedValue([generalTerm, projectTerm]),
+      glossaryCandidates,
+      acceptGlossaryCandidate: vi.fn(),
+      rejectGlossaryCandidate: vi.fn().mockResolvedValue({
+        text: "以后不再提『驻场服务』", undo_until: new Date(Date.now() + 600_000).toISOString(),
+      }),
+      undoGlossaryCandidate: vi.fn().mockResolvedValue({ status: "pending", text: "已撤销，『驻场服务』回到这里" }),
+    } as unknown as Partial<ApiClient>);
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: false, llmConfigured: false }}>
+        <GlossaryPage apiClient={apiClient} canWrite initialProjectId="project-1" meetings={meetings} projects={projects} />
+      </LinksFlagsContext.Provider>,
+    );
+    const block = await screen.findByRole("region", { name: "从云图 0830 迭代的材料里找到的词" });
+    expect(within(block).getAllByRole("listitem")).toHaveLength(1);
+    fireEvent.click(within(block).getByRole("button", { name: "不是" }));
+    expect(await within(block).findByText("以后不再提『驻场服务』")).toBeTruthy();
+    await waitFor(() => expect(glossaryCandidates).toHaveBeenCalledTimes(2));
+    expect(within(block).queryAllByRole("listitem")).toHaveLength(0);
+    fireEvent.click(within(block).getByRole("button", { name: "撤销" }));
+    expect(await within(block).findByText("已撤销，『驻场服务』回到这里")).toBeTruthy();
+    await waitFor(() => expect(glossaryCandidates).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(within(block).getAllByRole("listitem")).toHaveLength(1));
   });
 
   it("4h：候选词接口是旧后台（404 Not Found）时整块静默不出", async () => {

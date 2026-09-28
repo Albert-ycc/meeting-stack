@@ -91,6 +91,19 @@ def test_evidence_is_found_again_after_reread_and_retranscribe(api):
     assert "驻场服务" in items[1]["file_quote"]["quote"]
 
 
+def test_material_quote_falls_back_to_the_full_text_index_when_the_ordinal_moved(api):
+    """重读后分段变了（ordinal 对不上）：在这份内容里用全文索引找一段含这个词的，语句数不变。"""
+    client, _settings, db, _headers = api
+    chunk = db.query_one("SELECT * FROM material_chunks WHERE content_key = 'k1'")
+    for key in ("k1", "k2", "k3"):
+        db.execute("DELETE FROM material_chunks WHERE content_key = ?", (key,))
+    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('k1', 0, '新加的封面页')")
+    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('k1', 1, ?)", (chunk["text"],))
+    item = next(item for item in client.get("/api/projects/p/glossary-candidates").json()["items"] if item["key"] == "驻场服务")
+    assert item["file_quote"] is not None and "驻场服务" in item["file_quote"]["quote"]
+    assert count_reads(db, lambda c: gm.list_candidates(c, "p", limit=gm.SHOWN_ON_BOARD)) <= 3
+
+
 # ---------------------------------------------------------------------- 记入
 
 
@@ -188,6 +201,103 @@ def test_invalid_term_is_422(api):
     )
     response = client.post("/api/projects/p/glossary-candidates/accept", json={"key": "12345"}, headers=headers)
     assert response.status_code == 422 and response.json()["detail"] == "这个词不能记入词典"
+
+
+def test_accept_leaves_dropped_wrongs_alone_and_undo_does_not_revive_them(api):
+    """界面上没显示的（dropped）听错写法不跟着记成错写，行原样不动，撤销后也不回到 pending。"""
+    client, _settings, db, headers = api
+    db.execute("UPDATE segments SET text = '司美格鲁肽再看一下' WHERE text = '司美格鲁太再看一下'")
+    add_meeting(db, "m3", date="2026-09-27T10:00:00", project_id="p", segments=["司美格鲁肽的剂量"])
+    mine(db, now=NOW + timedelta(hours=7))
+    statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
+    assert statuses == {"": "pending", "司美格鲁太": "dropped"}
+    item = next(item for item in client.get("/api/projects/p/glossary-candidates").json()["items"] if item["key"] == "司美格鲁肽")
+    assert item["wrongs"] == []
+    result = gm.accept(db, "p", "司美格鲁肽", [], now=NOW + timedelta(hours=7))
+    assert result["text"] == "已记入『司美格鲁肽』" and result["added_aliases"] == []
+    assert json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE term = '司美格鲁肽'")["aliases"]) == []
+    statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
+    assert statuses == {"": "accepted", "司美格鲁太": "dropped"}
+    gm.undo(db, "p", "司美格鲁肽", now=NOW + timedelta(hours=7, seconds=30))
+    statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
+    assert statuses == {"": "pending", "司美格鲁太": "dropped"}
+    # 不是也一样：只动 pending 的行
+    gm.reject(db, "p", "司美格鲁肽", now=NOW + timedelta(hours=8))
+    statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
+    assert statuses == {"": "rejected", "司美格鲁太": "dropped"}
+
+
+def existing_term_world(db):
+    now = utc_now()
+    db.execute(
+        """INSERT INTO glossary_terms(id, term, aliases, scope, category, source, confirmed, project_id,
+               created_at, updated_at) VALUES ('gt-1', '能耗看板', '[]', '云图AI', '其他', 'manual', 1, 'p', ?, ?)""",
+        (now, now),
+    )
+    add_meeting(db, "m7", date="2026-09-27T10:00:00", project_id="p", segments=["能耗看版上线", "能耗看版再看"])
+    mine(db, now=NOW + timedelta(hours=7))
+
+
+def test_existing_term_with_every_wrong_removed_is_422_and_nothing_changes(api):
+    client, _settings, db, headers = api
+    existing_term_world(db)
+    response = client.post(
+        "/api/projects/p/glossary-candidates/accept",
+        json={"key": "能耗看板", "not_wrong": ["能耗看版"]},
+        headers=headers,
+    )
+    assert response.status_code == 422 and response.json()["detail"] == "至少留一个错写"
+    assert {row["status"] for row in rows(db) if row["term_key"] == "能耗看板"} == {"pending"}
+    assert json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-1'")["aliases"]) == []
+
+
+def test_existing_term_whose_wrongs_are_all_taken_says_so_without_undo(api):
+    client, _settings, db, headers = api
+    existing_term_world(db)
+    now = utc_now()
+    db.execute(
+        """INSERT INTO glossary_terms(id, term, aliases, scope, category, source, confirmed, created_at, updated_at)
+           VALUES ('gt-9', '别的看板', '["能耗看版"]', '通用', '其他', 'manual', 1, ?, ?)""",
+        (now, now),
+    )
+    response = client.post("/api/projects/p/glossary-candidates/accept", json={"key": "能耗看板"}, headers=headers)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "『能耗看版』已经用在别的词条上，没加成错写"
+    assert {row["status"] for row in rows(db) if row["term_key"] == "能耗看板"} == {"pending"}
+    assert json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-1'")["aliases"]) == []
+
+
+def test_meeting_accept_records_only_the_shown_wrong(api):
+    """会议页一行只显示一个写法：只记这个写法，别的写法留着，在词典页记到『词』上。"""
+    client, _settings, db, headers = api
+    now = utc_now()
+    db.execute(
+        """INSERT INTO glossary_candidates(project_id, term, term_key, wrong, spoken, status, created_at, updated_at)
+           VALUES ('p', '司美格鲁肽', '司美格鲁肽', '司美格鲁泰', 2, 'pending', ?, ?)""",
+        (now, now),
+    )
+    result = client.post(
+        "/api/projects/p/glossary-candidates/accept",
+        json={"key": "司美格鲁肽", "only_wrong": "司美格鲁太"},
+        headers=headers,
+    ).json()
+    assert result["added_aliases"] == ["司美格鲁太"]
+    statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
+    assert statuses == {"": "accepted", "司美格鲁太": "accepted", "司美格鲁泰": "pending"}
+    item = next(item for item in client.get("/api/projects/p/glossary-candidates").json()["items"] if item["key"] == "司美格鲁肽")
+    assert item["existing_term"]["term"] == "司美格鲁肽" and [w["text"] for w in item["wrongs"]] == ["司美格鲁泰"]
+    # 再记到已有词条上，撤销只撤这一次
+    second = gm.accept(db, "p", "司美格鲁肽", [], now=NOW + timedelta(days=1))
+    assert second["text"] == "已把『司美格鲁泰』记成『司美格鲁肽』的错写"
+    gm.undo(db, "p", "司美格鲁肽", now=NOW + timedelta(days=1, seconds=5))
+    statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
+    assert statuses == {"": "accepted", "司美格鲁太": "accepted", "司美格鲁泰": "pending"}
+    assert json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE term = '司美格鲁肽'")["aliases"]) == ["司美格鲁太"]
+    # 在会议页点［不是］（这个写法），记入过的词本身不被冲掉
+    gm.reject(db, "p", "司美格鲁肽", now=NOW + timedelta(days=1, seconds=10))
+    statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
+    assert statuses == {"": "accepted", "司美格鲁太": "accepted", "司美格鲁泰": "rejected"}
+    assert db.query_one("SELECT term_id FROM glossary_candidates WHERE term_key = '司美格鲁肽' AND wrong = ''")["term_id"]
 
 
 # ---------------------------------------------------------------------- 不是

@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+import io
 import json
 import re
 import time
 import unicodedata
+from array import array
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -50,8 +52,11 @@ PAIR_BASE_LEN = (4, 8)
 TRANSCRIPT_CHARS_CAP = 4_000_000
 AGG_LIMIT = 2_000
 POOL_CAP = 150
+POOL_QUERY_CAP = 400  # 第 3 步最多查几次（留满 POOL_CAP 个之前）
 SPREAD_CAP = 80
 PAIR_BASES_CAP = 60
+SUB_BASE_MIN = 5  # 长词的头尾几个字也拿来找听错的写法（见第 9 步）
+SUB_BASES_CAP = 60
 STABILITY_RATIO = 0.5
 CLOSED_RATIO = 0.9
 ROUND_SECONDS = 5.0
@@ -59,7 +64,7 @@ SEED_BATCH = 200
 SEED_SHARE_S = 4.0
 PROJECTS_PER_ROUND = 3
 RECENT_DAYS = 30
-HAN_LEN = (3, 6)
+HAN_LEN = (3, 8)  # 规格是 3 到 6 字；放到 8 字，见 extract_seeds 里的说明
 LATIN_LEN = (3, 20)
 NAME_SEG_LEN = (3, 8)
 QUOTE_SIDE = 20  # 材料原话：词前后各 20 字
@@ -127,6 +132,9 @@ ACCEPTED_WRONGS_TEXT = "已记入『{term}』，错写：{wrongs}"
 APPENDED_TEXT = "已把『{wrongs}』记成『{term}』的错写"
 ALREADY_TEXT = "『{term}』已经在词典里了"
 SKIPPED_TEXT = "已记入『{term}』；『{skipped}』已经用在别的词条上，没加成错写"
+SKIPPED_TAIL = "；『{skipped}』已经用在别的词条上，没加成错写"
+NOTHING_ADDED_TEXT = "『{skipped}』已经用在别的词条上，没加成错写"
+KEEP_ONE_WRONG = "至少留一个错写"
 REJECTED_TEXT = "以后不再提『{term}』"
 UNDONE_TEXT = "已撤销，『{term}』回到这里"
 
@@ -175,8 +183,15 @@ def _all_common(text: str) -> bool:
     return reach[len(text)]
 
 
+# 对规格的补充：除了 glossary._EXPAND_STOP_CHARS，这几个介词、指代字打头结尾的片段也不要（由北辰科研仓、
+# 由项目组统一配置、该系统）
+_SEED_EDGE_STOPS = frozenset("由将于该此各每")
+
+
 def _han_ok(fragment: str) -> bool:
     if fragment[0] in glossary._EXPAND_STOP_CHARS or fragment[-1] in glossary._EXPAND_STOP_CHARS:
+        return False
+    if fragment[0] in _SEED_EDGE_STOPS or fragment[-1] in _SEED_EDGE_STOPS:
         return False
     if _all_common(fragment):
         return False
@@ -208,6 +223,47 @@ def latin_ok(token: str) -> bool:
     return has_digit and len(letters) >= 2  # 小写加数字：gpt4；普通小写词不要
 
 
+_MIXED = "\x00"  # 左邻（右邻）不止一种
+
+
+def _stuck_sides(runs: Sequence[str], kept: dict[str, int]) -> set[str]:
+    """左邻或右邻总是同一个汉字的片段（这份内容里出现至少 2 次，kept 里的都是）。一串汉字的头尾是边界
+    （前后是标点、数字、字母或套话），的、了这类虚字也算边界，边界不算「同一个字」。每个片段只记见过的第一个邻字或「不止一种」。"""
+    left: dict[str, str] = {}
+    right: dict[str, str] = {}
+    sizes = sorted({len(fragment) for fragment in kept})
+    stops = glossary._EXPAND_STOP_CHARS
+    for run in runs:
+        length = len(run)
+        for size in sizes:
+            for start in range(length - size + 1):
+                fragment = run[start : start + size]
+                if fragment not in kept:
+                    continue
+                before = run[start - 1] if start else ""
+                after = run[start + size] if start + size < length else ""
+                # 的、了、和这类虚字也当边界：「北辰科研仓的」两次都跟「的」不说明它是半截
+                if before in stops:
+                    before = ""
+                if after in stops:
+                    after = ""
+                seen = left.get(fragment)
+                if seen is None:
+                    left[fragment] = before
+                elif seen != before:
+                    left[fragment] = _MIXED
+                seen = right.get(fragment)
+                if seen is None:
+                    right[fragment] = after
+                elif seen != after:
+                    right[fragment] = _MIXED
+    return {
+        fragment
+        for fragment in kept
+        if left.get(fragment, _MIXED) not in ("", _MIXED) or right.get(fragment, _MIXED) not in ("", _MIXED)
+    }
+
+
 def extract_seeds(text: str) -> list[tuple[str, int]]:
     """一份内容的种子：最多 18 个汉字词和 6 个字母词，带在这份里出现的次数。纯函数。"""
     text = unicodedata.normalize("NFKC", text[:MINE_CHARS])
@@ -229,8 +285,17 @@ def extract_seeds(text: str) -> list[tuple[str, int]]:
         frequent.update(level)
     kept = {fragment: count for fragment, count in frequent.items() if _han_ok(fragment)}
     del frequent, level
-    # 被更长、次数相同的片段包住的不要
-    by_len = sorted(kept, key=len, reverse=True)
+    # 对规格算法的补充（复查后加的）：规格只说「3 到 6 字、被更长且次数相同的片段包住的不要」。在真实风格的
+    # 材料上，一个词后面总跟着同一串字（司美格鲁肽注射液、受试者用药记录、云图科研用药平台）时，3 到 6 字的
+    # 滑窗全都够次数，真词被一截截包住去掉，留下的是「受试者用药记」「格鲁肽注射液」这类半截。所以：
+    # 1. 种子最长放到 8 字（和 PAIR_BASE_LEN 的上限一致），整串能留下来；
+    # 2. 左右邻字：一个片段在这份内容里的左邻（或右邻）总是同一个汉字，就是更长的词的一截，丢掉；
+    #    邻字是标点、套话或一串汉字的头尾时算「边界」，不算同一个字；
+    # 3. 被包住只认两端都「封闭」的长片段（左右邻字都不止一种，或是边界），半截包不住别的片段。
+    stuck = _stuck_sides(runs, kept)
+    del runs
+    halves = {fragment for fragment in kept if fragment in stuck}
+    by_len = sorted((fragment for fragment in kept if fragment not in halves), key=len, reverse=True)
     covered: set[str] = set()
     for long in by_len:
         if len(long) <= HAN_LEN[0]:
@@ -242,7 +307,7 @@ def extract_seeds(text: str) -> list[tuple[str, int]]:
                 if kept.get(inner) == count:
                     covered.add(inner)
     han = sorted(
-        ((fragment, count) for fragment, count in kept.items() if fragment not in covered),
+        ((fragment, count) for fragment, count in kept.items() if fragment not in covered and fragment not in halves),
         key=lambda item: (-item[1] * len(item[0]), item[0]),
     )[:SEEDS_HAN]
     latin_counts: Counter[str] = Counter(
@@ -518,20 +583,31 @@ def due_projects(conn: Any, now: datetime) -> list[tuple[str, str]]:
 
 @dataclass
 class Transcript:
-    """一个项目当前逐字稿拼起来的文字，和位置到（会议，段落开始时间）的对照。"""
+    """一个项目当前逐字稿拼起来的文字，和位置到（会议，段落开始时间）的对照。
+
+    对照表用 array 存（每段 8 字节的开始位置、4 字节的会议下标、8 字节的开始时间），会议 id 每场只存一次；
+    400 万字、十几万段时常驻约 10MB，用 list 和元组要 30MB。"""
 
     text: str = ""
-    starts: list[int] = field(default_factory=list)
-    spots: list[tuple[str, int]] = field(default_factory=list)
+    starts: array = field(default_factory=lambda: array("q"))
+    meeting_at: array = field(default_factory=lambda: array("l"))
+    start_ms: array = field(default_factory=lambda: array("q"))
+    meetings: list[str] = field(default_factory=list)
+    meeting_starts: list[int] = field(default_factory=list)  # 每场会从第几个字开始（一场一个数）
 
     def where(self, position: int) -> tuple[str, int]:
-        index = bisect.bisect_right(self.starts, position) - 1
-        return self.spots[max(0, index)]
+        index = max(0, bisect.bisect_right(self.starts, position) - 1)
+        return self.meetings[self.meeting_at[index]], self.start_ms[index]
+
+    def meeting_count(self, positions: Iterable[int]) -> int:
+        """这些位置落在几场会里（只查每场会的开头，不查十几万段的对照表）。"""
+        return len({bisect.bisect_right(self.meeting_starts, position) for position in positions})
 
 
 def load_transcript(conn: Any, project_id: str) -> Transcript:
-    parts: list[str] = []
+    """当前逐字稿按会议、段落拼起来，最多 400 万字。边读边写进 StringIO，不先攒一个段落列表。"""
     result = Transcript()
+    buffer = io.StringIO()
     total = 0
     for row in conn.execute(
         """SELECT s.meeting_id, s.start_ms, s.text FROM meetings m
@@ -542,11 +618,19 @@ def load_transcript(conn: Any, project_id: str) -> Transcript:
         text = unicodedata.normalize("NFKC", row["text"] or "")
         if total + len(text) + 1 > TRANSCRIPT_CHARS_CAP:
             break
+        if total:
+            buffer.write("\n")
+            total += 1
+        if not result.meetings or result.meetings[-1] != row["meeting_id"]:
+            result.meetings.append(row["meeting_id"])
+            result.meeting_starts.append(total)
         result.starts.append(total)
-        result.spots.append((row["meeting_id"], int(row["start_ms"] or 0)))
-        parts.append(text)
-        total += len(text) + 1
-    result.text = "\n".join(parts)
+        result.meeting_at.append(len(result.meetings) - 1)
+        result.start_ms.append(int(row["start_ms"] or 0))
+        buffer.write(text)
+        total += len(text)
+    result.text = buffer.getvalue()
+    buffer.close()
     return result
 
 
@@ -588,6 +672,7 @@ class PassStats:
     dropped: int = 0
     written: int = 0
     stale: bool = False
+    abandoned: str | None = None  # busy 或 budget：这一遍放弃了，什么都没写
     queries: Counter = field(default_factory=Counter)
 
 
@@ -643,13 +728,63 @@ def _decided_keys(conn: Any) -> set[str]:
     return {row["norm_key"] for row in conn.execute("SELECT norm_key FROM name_decisions").fetchall()}
 
 
+class PassAbandoned(Exception):
+    """忙了（开始转写）或过了截止时间：这一遍放弃，什么都不写（也不写 scan 行），下一轮再做。"""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _fill_keys(conn: Any, project_id: str) -> None:
+    """第 1 步的临时表：这个项目活着的、能挖的内容放进 temp 库的 _gm_keys，汇总和取证据都连它，
+    不再每个词重算一遍。只写 temp 库，不碰主库的锁；写 temp 表会让 sqlite3 隐式开事务，填完马上提交，
+    后面的只读查询不挂在事务里，也不和之后的 BEGIN IMMEDIATE 冲突。"""
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS _gm_keys(content_key TEXT PRIMARY KEY)")
+    conn.execute("DELETE FROM temp._gm_keys")
+    conn.execute(f"INSERT OR IGNORE INTO temp._gm_keys(content_key) {_project_keys_sql()}", {"pid": project_id})
+    if conn.in_transaction:
+        conn.commit()
+
+
+def _drop_keys(conn: Any) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp._gm_keys")
+    if conn.in_transaction:
+        conn.commit()
+
+
 def compute(
     conn: Any,
     project_id: str,
     *,
     seeds: dict[str, list[tuple[str, int]]] | None = None,
+    busy: Callable[[], bool] | None = None,
+    deadline: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> PassStats:
-    """第 1 到 10 步，只读。seeds 给了就用它（命令行 --dry-run 当场挖的），不读种子表。"""
+    """第 1 到 10 步，只读（只写 temp 库的 _gm_keys）。seeds 给了就用它（命令行 --dry-run 当场挖的），
+    不读种子表。在第 3、6、7、9 步之前（第 3 步里每查 50 个词也）查一次忙信号和截止时间，忙了或超了
+    抛 PassAbandoned。"""
+
+    def checkpoint() -> None:
+        if busy is not None and busy():
+            raise PassAbandoned("busy")
+        if deadline is not None and clock() >= deadline:
+            raise PassAbandoned("budget")
+
+    _fill_keys(conn, project_id)
+    try:
+        return _compute(conn, project_id, seeds, checkpoint)
+    finally:
+        _drop_keys(conn)
+
+
+def _compute(
+    conn: Any,
+    project_id: str,
+    seeds: dict[str, list[tuple[str, int]]] | None,
+    checkpoint: Callable[[], None],
+) -> PassStats:
     stats = PassStats(project_id=project_id)
     q = stats.queries
     params = {"pid": project_id, "miner": MINER_VERSION}
@@ -659,11 +794,10 @@ def compute(
         agg = [
             (row["term"], int(row["df"]), int(row["n"] or 0))
             for row in conn.execute(
-                f"""WITH keys AS ({_project_keys_sql()})
-                    SELECT json_extract(j.value, '$[0]') AS term, COUNT(*) AS df,
+                f"""SELECT json_extract(j.value, '$[0]') AS term, COUNT(*) AS df,
                            SUM(json_extract(j.value, '$[1]')) AS n
                       FROM glossary_mining_seeds s
-                      JOIN keys k ON k.content_key = s.content_key, json_each(s.terms_json) j
+                      JOIN temp._gm_keys k ON k.content_key = s.content_key, json_each(s.terms_json) j
                      WHERE s.miner = :miner
                      GROUP BY 1 ORDER BY df DESC, n DESC, term LIMIT {AGG_LIMIT}""",
                 params,
@@ -700,6 +834,17 @@ def compute(
         if count >= 2 and segment not in pool:
             d, n = body.get(segment, (0, 0))
             pool[segment] = [d, n]
+    # 对规格算法的补充：池里有一个多一个字、次数有它 0.9 以上的词，短的只是那个词的一截，丢掉
+    # （种子是一份一份挖的，各份里截出来的半截在项目这一层还会碰上整词，这里再兜一次）
+    longer_total: dict[str, int] = {}
+    for term, (_d, n) in pool.items():
+        if len(term) > HAN_LEN[0]:
+            for part in (term[1:], term[:-1]):
+                longer_total[part] = max(longer_total.get(part, 0), n)
+    for term in list(pool):
+        n = pool[term][1]
+        if n > 0 and longer_total.get(term, 0) >= CLOSED_RATIO * n:
+            pool.pop(term)
     keys_known, han_known, term_names, answered = _known_names(conn, project_id)
 
     def excluded(term: str) -> bool:
@@ -720,12 +865,15 @@ def compute(
     ranked_pool = sorted(
         (term for term in pool if not excluded(term)),
         key=lambda term: (-(pool[term][0] + segment_names.get(term, 0)), term),
-    )[:POOL_CAP]
+    )
+    # 3. 别的项目的材料：按排好的顺序逐个查，留满 150 个（POOL_CAP）或查满 400 次（POOL_QUERY_CAP）为止
+    checkpoint()
     found: dict[str, Found] = {}
     for term in ranked_pool:
-        found[term] = Found(term=term, key=light_key(term), df=pool[term][0], total=pool[term][1])
-    # 3. 别的项目的材料
-    for term in list(found):
+        if len(found) >= POOL_CAP or q["spread_materials"] >= POOL_QUERY_CAP:
+            break
+        if q["spread_materials"] and q["spread_materials"] % 50 == 0:
+            checkpoint()
         q["spread_materials"] += 1
         others = conn.execute(
             """SELECT DISTINCT r.project_id FROM material_chunks_fts
@@ -735,8 +883,8 @@ def compute(
                 WHERE material_chunks_fts MATCH ? AND r.project_id != ? LIMIT ?""",
             (_fts_phrase(term), project_id, OTHER_PROJECTS_DROP),
         ).fetchall()
-        if len(others) >= OTHER_PROJECTS_DROP:
-            found.pop(term)
+        if len(others) < OTHER_PROJECTS_DROP:
+            found[term] = Found(term=term, key=light_key(term), df=pool[term][0], total=pool[term][1])
     chunk_counts: dict[str, int] = {}
 
     def chunks_with(text: str) -> int:
@@ -767,15 +915,16 @@ def compute(
         ):
             found.pop(term)
     # 6. 会上说了几次
+    checkpoint()
     transcript = load_transcript(conn, project_id)
     for term, item in found.items():
         places = list(_occurrences(transcript.text, term))
         item.spoken = len(places)
-        met = {transcript.where(position)[0] for position in places}
-        item.meetings = len(met)
+        item.meetings = transcript.meeting_count(places)
         item.heard = _heard(transcript, places)
         item.names = name_count(term)
     # 7. 别的项目的会
+    checkpoint()
     spoken = sorted((term for term in found if found[term].spoken), key=lambda term: (-found[term].spoken, term))
     for term in spoken[:SPREAD_CAP]:
         q["spread_meetings"] += 1
@@ -794,8 +943,9 @@ def compute(
         if not (item.spoken or item.df >= MIN_DF_UNSPOKEN):
             found.pop(term)
     # 9. 听错的写法
-    bases: list[tuple[str, bool]] = [
-        (term, False)
+    checkpoint()
+    bases: list[str] = [
+        term
         for term in sorted(found, key=lambda term: (-found[term].spoken, term))
         if _is_han(term) and PAIR_BASE_LEN[0] <= len(term) <= PAIR_BASE_LEN[1]
     ]
@@ -805,8 +955,21 @@ def compute(
     ).fetchall():
         term = unicodedata.normalize("NFKC", row["term"])
         if _is_han(term) and PAIR_BASE_LEN[0] <= len(term) <= PAIR_BASE_LEN[1] and term not in found:
-            bases.append((term, True))
+            bases.append(term)
     bases = bases[:PAIR_BASES_CAP]
+    # 对规格算法的补充：留下的长词（7 字以上）的头几个字、尾几个字（至少 5 字，剩下至少 2 字）也拿来找。
+    # 材料里「司美格鲁肽」总跟着「注射液」，种子只留得下整串；会上说的却是「司美格鲁太」。只有听到了
+    # 这样的写法（至少 2 次、任何材料里都没有，换的不是的、了这类虚字），这一截才作为一个词提出来。
+    parents: dict[str, str] = {}
+    for term in sorted(found, key=lambda term: (-found[term].df, term)):
+        if not _is_han(term) or len(term) < SUB_BASE_MIN + 2:
+            continue
+        for size in range(min(len(term) - 2, PAIR_BASE_LEN[1]), SUB_BASE_MIN - 1, -1):
+            for sub in (term[:size], term[-size:]):
+                if sub in parents or sub in found or sub in bases or not _han_ok(sub) or excluded(sub):
+                    continue
+                parents[sub] = term
+    subs = list(parents)[:SUB_BASES_CAP]
     decided = _decided_keys(conn)
     material_cache: dict[str, bool] = {}
 
@@ -823,21 +986,41 @@ def compute(
         return material_cache[text]
 
     q["pair_bases"] = len(bases)
-    for pair in find_pairs([term for term, _is in bases], transcript.text, material_has):
+    q["pair_sub_bases"] = len(subs)
+    sub_set = set(subs)
+    for pair in find_pairs([*bases, *subs], transcript.text, material_has):
         wrong = pair.wrong
         if not glossary.MIN_DIFF_LEN <= len(wrong) <= glossary.MAX_DIFF_LEN:
             continue
         if wrong in term_names or norm_key(wrong) in decided or light_key(wrong) in answered:
             continue
         item = found.get(pair.base)
-        if item is None:
+        if item is None and pair.base in sub_set:
+            if _changed_char(pair.base, wrong) in glossary._EXPAND_STOP_CHARS:
+                continue
+            parent = found[parents[pair.base]]
+            places = list(_occurrences(transcript.text, pair.base))
+            item = found.setdefault(
+                pair.base,
+                Found(
+                    term=pair.base,
+                    key=light_key(pair.base),
+                    df=parent.df,
+                    total=parent.total,
+                    names=name_count(pair.base),
+                    spoken=len(places),
+                    meetings=transcript.meeting_count(places),
+                    heard=_heard(transcript, places),
+                ),
+            )
+        elif item is None:
             key = light_key(pair.base)
             if key in answered:
                 continue
             item = found.setdefault(pair.base, Found(term=pair.base, key=key, existing=True))
         item.pairs.append(pair)
         item.pair_heard[wrong] = _heard(transcript, pair.positions)
-        item.pair_meetings[wrong] = len({transcript.where(position)[0] for position in pair.positions})
+        item.pair_meetings[wrong] = transcript.meeting_count(pair.positions)
     for item in found.values():
         item.pairs = item.pairs[:EVIDENCE_KEEP]
     del transcript
@@ -848,7 +1031,7 @@ def compute(
             bool(item.pairs), sum(pair.heard for pair in item.pairs), item.spoken, item.df, item.names, item.term
         ),
     )
-    # 前 30 个的证据：含这个词的片段位置、文件名里有它的内容
+    # 前 30 个的证据：含这个词的片段位置（FTS 按 rowid 走，碰到 3 个就停）、文件名里有它的内容
     for item in ordered[:PENDING_CAP]:
         if item.existing:
             continue
@@ -856,12 +1039,12 @@ def compute(
         item.text = [
             {"k": row["content_key"], "o": int(row["ordinal"])}
             for row in conn.execute(
-                f"""WITH keys AS ({_project_keys_sql()})
-                    SELECT c.content_key, c.ordinal FROM material_chunks_fts
+                f"""SELECT c.content_key, c.ordinal FROM material_chunks_fts
                       JOIN material_chunks c ON c.id = material_chunks_fts.rowid
-                     WHERE material_chunks_fts MATCH :phrase AND c.content_key IN (SELECT content_key FROM keys)
-                     ORDER BY c.content_key, c.ordinal LIMIT {EVIDENCE_KEEP}""",
-                {**params, "phrase": _fts_phrase(item.term)},
+                     WHERE material_chunks_fts MATCH ?
+                       AND c.content_key IN (SELECT content_key FROM temp._gm_keys)
+                     ORDER BY material_chunks_fts.rowid LIMIT {EVIDENCE_KEEP}""",
+                (_fts_phrase(item.term),),
             ).fetchall()
         ]
         item.name_keys = sorted(
@@ -869,6 +1052,11 @@ def compute(
         )[:EVIDENCE_KEEP]
     stats.items = ordered
     return stats
+
+
+def _changed_char(base: str, wrong: str) -> str:
+    """听错的写法里换掉的那个字。"""
+    return next((char for char, other in zip(wrong, base, strict=False) if char != other), "")
 
 
 def _heard(transcript: Transcript, positions: Iterable[int]) -> list[dict[str, Any]]:
@@ -958,14 +1146,26 @@ _UPSERT = """INSERT INTO glossary_candidates(project_id, term, term_key, wrong, 
                      OR glossary_candidates.status IS NOT excluded.status)"""
 
 
-def project_pass(conn: Any, project_id: str, now: datetime) -> PassStats:
+def project_pass(
+    conn: Any,
+    project_id: str,
+    now: datetime,
+    *,
+    busy: Callable[[], bool] | None = None,
+    deadline: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> PassStats:
     """H4b：一个项目一遍。先在写事务外算完；再 BEGIN IMMEDIATE，重算签名，和算之前不同就丢掉结果
-    留给下一轮，相同就只写变了的行（没有变化时一条 UPDATE 都不发）。"""
+    留给下一轮，相同就只写变了的行（没有变化时一条 UPDATE 都不发）。算的中途忙了或过了 deadline，
+    这一遍放弃，不写 scan 行，下一轮再做（stats.abandoned 是 busy 或 budget）。"""
     forget_deleted_terms(conn, now)
     before = signatures(conn, only=project_id).get(project_id)
     if before is None:
         return PassStats(project_id=project_id, stale=True)
-    stats = compute(conn, project_id)
+    try:
+        stats = compute(conn, project_id, busy=busy, deadline=deadline, clock=clock)
+    except PassAbandoned as abandoned:
+        return PassStats(project_id=project_id, sig=before, abandoned=abandoned.reason)
     stats.sig = before
     rows = _rows_of(stats)
     moment = _stamp(now)
@@ -1065,8 +1265,13 @@ def mine_round(
         if index and clock() >= deadline:
             result["stopped"] = "budget"
             break
+        # 有到期的项目时每轮至少做一个：第一个项目从它开始算至少有一整轮的时间（5 秒），之后的按这一轮的截止
+        pass_deadline = max(deadline, clock() + budget_s) if index == 0 else deadline
         with db.autocommit() as conn:
-            project_pass(conn, project_id, moment)
+            stats = project_pass(conn, project_id, moment, busy=busy, deadline=pass_deadline, clock=clock)
+        if stats.abandoned:
+            result["stopped"] = stats.abandoned
+            break
         result["projects"] += 1
     if result["stopped"] is None and (
         len(due) > PROJECTS_PER_ROUND or clock() >= deadline
@@ -1173,32 +1378,39 @@ def serialize(conn: Any, project_id: str, items: Sequence[dict[str, Any]]) -> li
             segments.setdefault(row["id"], []).append({"start_ms": int(row["start_ms"]), "text": row["text"] or ""})
     # 文件名和材料原话
     content_keys: set[str] = set()
-    chunk_refs: set[tuple[str, int]] = set()
+    chunk_refs: dict[tuple[str, int], str] = {}
     for item in items:
         evidence = (item["base"] or {}).get("evidence") or {}
         for ref in evidence.get("text", []):
             content_keys.add(ref["k"])
             if not evidence.get("heard"):
-                chunk_refs.add((ref["k"], int(ref["o"])))
+                chunk_refs.setdefault((ref["k"], int(ref["o"])), item["term"])
         content_keys.update(evidence.get("names", []))
     names: dict[str, dict[str, Any]] = {}
     chunks: dict[tuple[str, int], str] = {}
     if content_keys:
         key_marks = ", ".join("?" for _ in content_keys)
+        head = ""
         chunk_sql = ""
         chunk_params: list[Any] = []
         if chunk_refs:
-            chunk_sql = " UNION ALL SELECT 'q', c.content_key, c.ordinal, NULL, c.text FROM material_chunks c WHERE " + " OR ".join(
-                "(c.content_key = ? AND c.ordinal = ?)" for _ in chunk_refs
-            )
-            for key, ordinal in sorted(chunk_refs):
-                chunk_params += [key, ordinal]
+            # 按 (content_key, ordinal) 取；重读后 ordinal 对不上（或那一段里已经没有这个词）时，在这份内容里
+            # 用全文索引找一段含这个词的。都在同一条语句里（COALESCE 取到第一个就不再算后面的）
+            head = "WITH refs(k, o, t, p) AS (VALUES " + ", ".join("(?, ?, ?, ?)" for _ in chunk_refs) + ") "
+            for (key, ordinal), term in sorted(chunk_refs.items()):
+                chunk_params += [key, ordinal, term, _fts_phrase(term)]
+            chunk_sql = """ UNION ALL SELECT 'q', refs.k, refs.o, NULL, COALESCE(
+                    (SELECT c.text FROM material_chunks c
+                      WHERE c.content_key = refs.k AND c.ordinal = refs.o AND instr(c.text, refs.t) > 0),
+                    (SELECT c.text FROM material_chunks_fts JOIN material_chunks c ON c.id = material_chunks_fts.rowid
+                      WHERE material_chunks_fts MATCH refs.p AND c.content_key = refs.k LIMIT 1))
+                  FROM refs"""
         for row in conn.execute(
-            f"""SELECT 'n' AS kind, f.content_key, f.id, f.name, NULL AS text FROM material_files f
+            f"""{head}SELECT 'n' AS kind, f.content_key, f.id, f.name, NULL AS text FROM material_files f
                   JOIN project_material_roots r ON r.id = f.root_id
                  WHERE r.project_id = ? AND f.gone_at IS NULL AND f.zone = 'normal'
                    AND f.content_key IN ({key_marks}){chunk_sql}""",
-            [project_id, *sorted(content_keys), *chunk_params],
+            [*chunk_params, project_id, *sorted(content_keys)],
         ).fetchall():
             if row["kind"] == "n":
                 current = names.get(row["content_key"])
@@ -1359,25 +1571,34 @@ def accept(
     key: str,
     not_wrong: Sequence[str] = (),
     *,
+    only_wrong: str | None = None,
     snapshot_path: Any = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """［记入］：一个事务里做完，再调一次 rewrite_snapshot。"""
+    """［记入］：一个事务里做完，再调一次 rewrite_snapshot。
+
+    只动这一项里 pending 的行：界面上看得到的只有 pending 的写法，dropped 的听错写法你没见过，
+    不能跟着记成错写，行也原样不动（撤销时也就不会被带回 pending）。only_wrong 给了（会议页，
+    一行只显示一个写法）时只记这个写法和词本身，别的写法留着等你在词典页回答。"""
     moment = _now(now)
     stamp = _stamp(moment)
     refused = set(not_wrong)
     with db.transaction() as connection:
         rows = _item_rows(connection, project_id, key)
-        if not any(row["status"] == "pending" for row in rows):
+        pending = [row for row in rows if row["status"] == "pending"]
+        if only_wrong is not None:
+            pending = [row for row in pending if row["wrong"] in ("", only_wrong)]
+        if not pending:
             raise CandidateError(409, ALREADY_DONE)
-        base = next((row for row in rows if row["wrong"] == ""), None)
-        term_text = (base or rows[0])["term"]
+        base = next((row for row in pending if row["wrong"] == ""), None)
+        named = base or next((row for row in rows if row["wrong"] == ""), None) or pending[0]
+        term_text = named["term"]
         try:
             term_text = glossary.validate_term_text(term_text, what="术语")
         except glossary.GlossaryError:
             raise CandidateError(422, TERM_INVALID) from None
         project = connection.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
-        wrongs = [row["wrong"] for row in rows if row["wrong"] and row["wrong"] not in refused]
+        wrongs = [row["wrong"] for row in pending if row["wrong"] and row["wrong"] not in refused]
         existing = connection.execute("SELECT * FROM glossary_terms WHERE term = ?", (term_text,)).fetchone()
         created = False
         already = False
@@ -1387,6 +1608,9 @@ def accept(
             already = True
             term_id = existing["id"]
         else:
+            if existing is not None and not wrongs:
+                # 记到已有词条，写法却全被去掉了：什么都加不上，不记、不给［撤销］
+                raise CandidateError(422, KEEP_ONE_WRONG)
             own = existing["id"] if existing is not None else None
             usable: list[str] = []
             for wrong in wrongs:
@@ -1400,6 +1624,9 @@ def accept(
                 else:
                     usable.append(wrong)
             if existing is not None:
+                if not usable:
+                    # 写法全都已经用在别的词条上：如实说，行留着（可以点［不是］）
+                    raise CandidateError(409, NOTHING_ADDED_TEXT.format(skipped="』『".join(skipped)))
                 term_id = existing["id"]
                 added = glossary._append_aliases(connection, term_id, usable, now=stamp)
             else:
@@ -1422,11 +1649,11 @@ def accept(
         undo_json = json.dumps(
             {"created": created, "aliases": added, "term_updated_at": term_row["updated_at"]}, ensure_ascii=False
         )
-        for row in rows:
+        for row in pending:
             status = "rejected" if row["wrong"] in refused and row["wrong"] else "accepted"
             connection.execute(
                 """UPDATE glossary_candidates SET status = ?, term_id = ?, undo_json = ?, decided_at = ?,
-                          updated_at = ? WHERE id = ?""",
+                          updated_at = ? WHERE id = ? AND status = 'pending'""",
                 (status, term_id, undo_json, stamp, stamp, row["id"]),
             )
         term = {
@@ -1439,10 +1666,12 @@ def accept(
         glossary.rewrite_snapshot(db, snapshot_path)
     if already:
         text = ALREADY_TEXT.format(term=term_text)
+    elif not created:
+        text = APPENDED_TEXT.format(wrongs="』『".join(added), term=term_text)
+        if skipped:
+            text += SKIPPED_TAIL.format(skipped="』『".join(skipped))
     elif skipped:
         text = SKIPPED_TEXT.format(term=term_text, skipped="』『".join(skipped))
-    elif not created:
-        text = APPENDED_TEXT.format(wrongs="』『".join(added) or "、".join(wrongs), term=term_text)
     elif added:
         text = ACCEPTED_WRONGS_TEXT.format(term=term_text, wrongs="、".join(added))
     else:
@@ -1459,7 +1688,8 @@ def accept(
 
 
 def reject(db: Database, project_id: str, key: str, *, now: datetime | None = None) -> dict[str, Any]:
-    """［不是］：这个项目里这个 key 的所有行记 rejected，以后在这个项目里不再提。"""
+    """［不是］：这个项目里这个 key 待认的行记 rejected，以后在这个项目里不再提（key 进了「答过的」，
+    汇总不再提它）。dropped 的和更早回答过的行不动，撤销时不会被带回 pending，记入过的也不会被冲掉。"""
     moment = _now(now)
     stamp = _stamp(moment)
     with db.transaction() as connection:
@@ -1470,7 +1700,7 @@ def reject(db: Database, project_id: str, key: str, *, now: datetime | None = No
         connection.execute(
             """UPDATE glossary_candidates SET status = 'rejected', term_id = NULL,
                       undo_json = '{"rejected": true}', decided_at = ?, updated_at = ?
-                WHERE project_id = ? AND term_key = ?""",
+                WHERE project_id = ? AND term_key = ? AND status = 'pending'""",
             (stamp, stamp, project_id, key),
         )
     return {"text": REJECTED_TEXT.format(term=term), "undo_until": _undo_until(moment)}
@@ -1495,13 +1725,17 @@ def undo(
         decided = [row for row in rows if row["decided_at"] and row["undo_json"]]
         if not decided:
             raise CandidateError(409, UNDO_EXPIRED)
-        at = datetime.fromisoformat(max(row["decided_at"] for row in decided))
+        latest = max(row["decided_at"] for row in decided)
+        at = datetime.fromisoformat(latest)
         if at.tzinfo is None:
             at = at.replace(tzinfo=UTC)
         if moment - at > timedelta(seconds=UNDO_WINDOW_S):
             raise CandidateError(409, UNDO_EXPIRED)
         term = next((row["term"] for row in rows if row["wrong"] == ""), rows[0]["term"])
-        accepted = next((row for row in rows if row["status"] == "accepted"), None)
+        # 只撤最后一次回答动过的行（同一个 decided_at）；dropped 的和更早回答过的行不动
+        accepted = next(
+            (row for row in rows if row["status"] == "accepted" and row["decided_at"] == latest), None
+        )
         if accepted is not None and accepted["term_id"]:
             info = json.loads(accepted["undo_json"] or "{}")
             term_row = connection.execute(
@@ -1523,8 +1757,9 @@ def undo(
         connection.execute(
             """UPDATE glossary_candidates SET status = 'pending', term_id = NULL, undo_json = NULL,
                       decided_at = NULL, updated_at = ?
-                WHERE project_id = ? AND term_key = ? AND status IN ('accepted', 'rejected')""",
-            (stamp, project_id, key),
+                WHERE project_id = ? AND term_key = ? AND status IN ('accepted', 'rejected')
+                  AND decided_at = ?""",
+            (stamp, project_id, key, latest),
         )
     if touched_terms and snapshot_path is not None:
         glossary.rewrite_snapshot(db, snapshot_path)

@@ -1294,8 +1294,11 @@ export const api = {
   /** 词典页：这个项目全部待认的词（最多 30 项） */
   glossaryCandidates: (projectId: string) =>
     read<MaterialWordsList>(`/api/projects/${encodeURIComponent(projectId)}/glossary-candidates`),
-  /** ［记入］：not_wrong 是去掉的听错写法 */
-  acceptGlossaryCandidate: (projectId: string, body: { key: string; not_wrong?: string[] }) =>
+  /** ［记入］：not_wrong 是去掉的听错写法；only_wrong 是会议页这一行的写法（只记它，别的写法不跟着记） */
+  acceptGlossaryCandidate: (
+    projectId: string,
+    body: { key: string; not_wrong?: string[]; only_wrong?: string },
+  ) =>
     write<MaterialWordAcceptResult>(
       `/api/projects/${encodeURIComponent(projectId)}/glossary-candidates/accept`,
       "POST",

@@ -690,7 +690,7 @@ export function GlossaryPage({
               canWrite={canWrite}
               items={candidates.items}
               onAnswered={async () => {
-                await Promise.all([loadTerms(), loadScopes()]);
+                await Promise.all([loadTerms(), loadScopes(), loadCandidates()]);
               }}
               onOpenMeeting={onOpenMeeting}
               projectId={activeChip.key}

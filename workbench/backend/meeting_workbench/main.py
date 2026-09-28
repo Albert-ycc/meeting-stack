@@ -528,9 +528,11 @@ class CandidateKeyInput(BaseModel):
 
 
 class CandidateAcceptInput(CandidateKeyInput):
-    """not_wrong：你在记入前去掉的听错写法（chip 上的 ×），这几行记 rejected。"""
+    """not_wrong：你在记入前去掉的听错写法（chip 上的 ×），这几行记 rejected。
+    only_wrong：会议页一行只显示一个写法，只记这个写法（和词本身），别的写法不跟着记。"""
 
     not_wrong: list[str] = Field(default_factory=list, max_length=10)
+    only_wrong: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class RelationAnswerInput(BaseModel):
@@ -3750,7 +3752,7 @@ def create_app(
     def accept_glossary_candidate(project_id: str, body: CandidateAcceptInput):
         return candidate_call(
             lambda: glossary_mining.accept(
-                db, project_id, body.key, body.not_wrong,
+                db, project_id, body.key, body.not_wrong, only_wrong=body.only_wrong,
                 snapshot_path=settings.data_dir / "glossary-snapshot.json",
             )
         )

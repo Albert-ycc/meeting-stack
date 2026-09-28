@@ -468,6 +468,9 @@ COPY_4H_WORDS = (
     "已把『{wrongs}』记成『{term}』的错写",
     "『{term}』已经在词典里了",
     "已记入『{term}』；『{skipped}』已经用在别的词条上，没加成错写",
+    "；『{skipped}』已经用在别的词条上，没加成错写",
+    "『{skipped}』已经用在别的词条上，没加成错写",
+    "至少留一个错写",
     "以后不再提『{term}』",
     "已撤销，『{term}』回到这里",
 )
@@ -808,7 +811,8 @@ def test_candidate_texts_match_the_module():
     module = {
         gm.PROJECT_MISSING, gm.TERM_GONE, gm.ALREADY_DONE, gm.UNDO_EXPIRED, gm.UNDO_TWICE, gm.TERM_CHANGED,
         gm.TERM_INVALID, gm.ACCEPTED_TEXT, gm.ACCEPTED_WRONGS_TEXT, gm.APPENDED_TEXT, gm.ALREADY_TEXT,
-        gm.SKIPPED_TEXT, gm.REJECTED_TEXT, gm.UNDONE_TEXT,
+        gm.SKIPPED_TEXT, gm.SKIPPED_TAIL, gm.NOTHING_ADDED_TEXT, gm.KEEP_ONE_WRONG, gm.REJECTED_TEXT,
+        gm.UNDONE_TEXT,
     }
     assert module == set(COPY_4H_WORDS)
 

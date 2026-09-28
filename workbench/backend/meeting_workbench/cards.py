@@ -1476,15 +1476,17 @@ class CardWriter:
         return targets
 
     def _retire_index(self, path: Path, round_: _Round) -> bool:
-        """收掉一份不再要的索引；返回能不能从记录里去掉（根目录不在线时留着，插回来再处理）。"""
+        """收掉一份不再要的索引；返回能不能从记录里去掉（根目录不在线、找不到或不让写时留着，
+        插回来、挂载回来再处理）。"""
         if path.name != INDEX_NAME or path.parent.name != CARDS_DIR_NAME:
             return True  # 记录坏了：不是声档写的位置，不碰
         root = path.parent.parent
         state = self._root_state(str(root), round_)
-        if state in (ROOT_OFFLINE, ROOT_REFUSED):
+        if state in (ROOT_OFFLINE, ROOT_REFUSED, ROOT_MISSING):
+            # 找不到的根目录也留着：网络盘、挂载点掉线时看起来就是文件夹没了，回来后要能收走旧索引
             return False
         if state != ROOT_ONLINE:
-            return True  # 盘在、文件夹没了：文件也就不在了
+            return True
         for key in [key for key in self._index_sigs if key[1] == str(root)]:
             self._index_sigs.pop(key, None)
         try:
