@@ -1,6 +1,7 @@
 """第四期 4e：问题块的读法（relation_read.file_questions、task_questions、decision_questions）和接口：
 两种 RelationQuestion 的形状、白名单、stat_guard、parts=preview、任务的 suggestions、需求卡的 stale_files
 （6 条语句）、展开一场会的 stale 和 asks。"""
+
 from __future__ import annotations
 
 import os
@@ -33,7 +34,10 @@ def world(tmp_path):
     (root / "报价").mkdir(parents=True)
     (root / "能耗看板").mkdir()
     db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', 'x')")
-    db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, 'x')", (str(root),))
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, 'x')",
+        (str(root),),
+    )
     root_id = int(db.query_one("SELECT id FROM project_material_roots")["id"])
     swept(db, root_id)
     # 一场三天前的会：定了「总价下调 5%」，派了一条任务，挂在需求「能耗看板」上
@@ -94,7 +98,9 @@ def world(tmp_path):
                    'x', ?, ?, ?)""",
         (root_id, info.st_size, info.st_mtime_ns, key, info.st_size, info.st_mtime_ns),
     )
-    quote_id = int(db.query_one("SELECT id FROM material_files WHERE name = '报价单 v3.xlsx'")["id"])
+    quote_id = int(
+        db.query_one("SELECT id FROM material_files WHERE name = '报价单 v3.xlsx'")["id"]
+    )
     db.execute("DELETE FROM material_file_events")
     # 需求文件夹里今天新出现的一份（包，size 是空的）
     plan = root / "能耗看板" / "能耗看板方案.key"
@@ -109,8 +115,15 @@ def world(tmp_path):
     later = datetime.now(UTC) + timedelta(seconds=1)
     affects.match_due(db, lambda: False, 5.0, now=later)
     produced.watch(db, later, 5.0)
-    return SimpleNamespace(client=client, settings=settings, db=db, root=root, quote=quote, quote_id=quote_id,
-                           plan_id=plan_id)
+    return SimpleNamespace(
+        client=client,
+        settings=settings,
+        db=db,
+        root=root,
+        quote=quote,
+        quote_id=quote_id,
+        plan_id=plan_id,
+    )
 
 
 def rev(db) -> int:
@@ -154,7 +167,11 @@ def test_question_shapes_and_whitelist(tmp_path):
         "words": ["能耗看板"],
         "answers": ["yes", "no"],
     }
-    for body in (affects_body, produced_body, w.client.get(f"/api/materials/files/{w.quote_id}/preview").json()):
+    for body in (
+        affects_body,
+        produced_body,
+        w.client.get(f"/api/materials/files/{w.quote_id}/preview").json(),
+    ):
         assert not HIDDEN & walk_keys(body["questions"])
     # 材料文字只在 passage 里现读，不进表
     row = w.db.query_one("SELECT quote, evidence_json FROM relations WHERE kind = 'affects'")
@@ -167,7 +184,9 @@ def test_preview_has_questions_after_deliverables_but_not_with_parts_preview(tmp
     keys = list(full)
     assert keys.index("questions") == keys.index("deliverables") + 1
     assert [item["kind"] for item in full["questions"]] == ["affects"]
-    light = w.client.get(f"/api/materials/files/{w.quote_id}/preview", params={"parts": "preview"}).json()
+    light = w.client.get(
+        f"/api/materials/files/{w.quote_id}/preview", params={"parts": "preview"}
+    ).json()
     assert "questions" not in light
 
 
@@ -180,12 +199,17 @@ def test_stat_guard_drops_affects_without_writing(tmp_path, monkeypatch):
     assert w.client.get(f"/api/graph/files/{w.quote_id}").json()["questions"] == []
     assert w.client.get(f"/api/materials/files/{w.quote_id}/preview").json()["questions"] == []
     # 接口不写库：行仍是 suggested，版本号不动（下一次整轮以后 L3 收回）
-    assert w.db.query_one("SELECT id, status, updated_at FROM relations WHERE kind = 'affects'") == relation
+    assert (
+        w.db.query_one("SELECT id, status, updated_at FROM relations WHERE kind = 'affects'")
+        == relation
+    )
     assert rev(w.db) == before
 
     # 资料盘不在时不 stat，问题照常给
     monkeypatch.setattr(materials, "volume_state", lambda _path: materials.ROOT_VOLUME_OFFLINE)
-    assert [item["kind"] for item in w.client.get(f"/api/graph/files/{w.quote_id}").json()["questions"]] == ["affects"]
+    assert [
+        item["kind"] for item in w.client.get(f"/api/graph/files/{w.quote_id}").json()["questions"]
+    ] == ["affects"]
     with w.db.autocommit() as connection:
         preview = material_status.file_preview(
             connection, w.quote_id, state_of=lambda _path: materials.ROOT_VOLUME_OFFLINE
@@ -221,8 +245,14 @@ def test_requirement_card_stale_files_in_six_statements(tmp_path):
     (stale,) = entry["stale_files"]
     # 需求卡用文件这一边的说法，决议本身就是那一行
     assert stale["text"] == "『报价单 v3』之后没改过，可能过时"
-    assert stale["kind"] == "affects" and stale["file"]["id"] == w.quote_id and stale["answers"] == ["updated", "no"]
-    reads = count_reads(w.db, lambda connection: decisions.requirement_log(connection, "r", settings=live))
+    assert (
+        stale["kind"] == "affects"
+        and stale["file"]["id"] == w.quote_id
+        and stale["answers"] == ["updated", "no"]
+    )
+    reads = count_reads(
+        w.db, lambda connection: decisions.requirement_log(connection, "r", settings=live)
+    )
     assert reads == 6
     # links_enabled 关着时按纪要现读，没有标记（接口的默认设置在测试里是关着的）
     off = w.client.get("/api/requirements/r/decisions").json()
@@ -234,7 +264,9 @@ def test_meeting_focus_has_stale_and_asks(tmp_path):
     focus = w.client.get("/api/graph/meetings/m").json()
     affects_id = w.db.query_one("SELECT id FROM relations WHERE kind = 'affects'")["id"]
     produced_id = w.db.query_one("SELECT id FROM relations WHERE kind = 'produced'")["id"]
-    assert focus["decisions"][0]["stale"] == [{"relation_id": affects_id, "file_id": w.quote_id, "name": "报价单 v3.xlsx"}]
+    assert focus["decisions"][0]["stale"] == [
+        {"relation_id": affects_id, "file_id": w.quote_id, "name": "报价单 v3.xlsx"}
+    ]
     (task,) = focus["tasks"]
     assert task["asks"] == [
         {"relation_id": produced_id, "file_id": w.plan_id, "name": "能耗看板方案.key", "ext": "key"}
@@ -246,10 +278,17 @@ def test_answer_endpoint_refuses_a_cancelled_task(tmp_path):
     headers = write_headers(w.client)
     produced_id = w.db.query_one("SELECT id FROM relations WHERE kind = 'produced'")["id"]
     w.db.execute("UPDATE tasks SET status = 'cancelled' WHERE id = 't'")
-    response = w.client.post(f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers)
-    assert response.status_code == 409 and response.json()["detail"] == "这条任务已经取消了，先恢复任务再登记"
+    response = w.client.post(
+        f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers
+    )
+    assert (
+        response.status_code == 409
+        and response.json()["detail"] == "这条任务已经取消了，先恢复任务再登记"
+    )
     w.db.execute("UPDATE tasks SET status = 'in_progress' WHERE id = 't'")
-    response = w.client.post(f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers)
+    response = w.client.post(
+        f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers
+    )
     assert response.status_code == 200 and response.json()["deliverable_id"]
     # ［是］以后问题没了，交付物在任务抽屉里
     body = w.client.get("/api/tasks/t").json()

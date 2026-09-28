@@ -61,9 +61,7 @@ def test_human_review_reason_flags_draft_kind(tmp_path):
     db = backfill_speakers._database(settings)
     meeting_id = "vm-20260101-120000"
     _seed_meeting(db, meeting_id, ["一句话"])
-    db.execute(
-        "UPDATE transcript_versions SET kind='draft' WHERE meeting_id=?", (meeting_id,)
-    )
+    db.execute("UPDATE transcript_versions SET kind='draft' WHERE meeting_id=?", (meeting_id,))
 
     reason = backfill_speakers._human_review_reason(db, meeting_id)
 
@@ -121,14 +119,16 @@ def test_process_meeting_dry_run_does_not_write(tmp_path):
 
     assert outcome.outcome == "applied"
     assert outcome.updated_segments == 2
-    segments = db.query_all(
-        "SELECT speaker_label FROM segments WHERE version_id=?", (version_id,)
-    )
+    segments = db.query_all("SELECT speaker_label FROM segments WHERE version_id=?", (version_id,))
     assert all(row["speaker_label"] is None for row in segments)
     assert db.query_all("SELECT 1 FROM speakers WHERE meeting_id=?", (meeting_id,)) == []
-    assert db.query_all(
-        "SELECT 1 FROM events WHERE meeting_id=? AND event_type='speaker_backfill'", (meeting_id,)
-    ) == []
+    assert (
+        db.query_all(
+            "SELECT 1 FROM events WHERE meeting_id=? AND event_type='speaker_backfill'",
+            (meeting_id,),
+        )
+        == []
+    )
 
 
 def test_process_meeting_writes_labels_and_versioned_event(tmp_path):

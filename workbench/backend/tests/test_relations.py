@@ -1,4 +1,5 @@
 """第四期 4a：关联表的写（系统行、upsert_system、clear_missing、遮盖、合并项目）和回答、撤销。"""
+
 import json
 import re
 from datetime import UTC, datetime, timedelta
@@ -66,7 +67,9 @@ def upsert(db, rows, *, now=None, since=None):
 
 
 def ident_id(db, ident, project_id="p"):
-    return db.query_one("SELECT id FROM relations WHERE ident = ? AND project_id = ?", (ident, project_id))["id"]
+    return db.query_one(
+        "SELECT id FROM relations WHERE ident = ? AND project_id = ?", (ident, project_id)
+    )["id"]
 
 
 def answer(db, relation_id, body, now=None):
@@ -94,10 +97,25 @@ def produced_setup(tmp_path):
         db,
         [
             system_row(
-                kind="produced", ident="t|k-plan", status="suggested", origin="rule", meeting_id=None,
-                task_id="t", stem_key=None, at_ms=None, quote="", file_id=file_id, content_key="k-plan",
-                root_id=root_id, rel_path="能耗看板/能耗看板方案.key",
-                evidence={"event_kind": "added", "folder": "能耗看板/", "days": 3, "ref": "meeting"},
+                kind="produced",
+                ident="t|k-plan",
+                status="suggested",
+                origin="rule",
+                meeting_id=None,
+                task_id="t",
+                stem_key=None,
+                at_ms=None,
+                quote="",
+                file_id=file_id,
+                content_key="k-plan",
+                root_id=root_id,
+                rel_path="能耗看板/能耗看板方案.key",
+                evidence={
+                    "event_kind": "added",
+                    "folder": "能耗看板/",
+                    "days": 3,
+                    "ref": "meeting",
+                },
             )
         ],
     )
@@ -119,13 +137,20 @@ def test_unchanged_upserts_fire_nothing_and_related_has_its_own_revision(tmp_pat
     assert upsert(db, [row], now=at(5), since=at(5)) == 0
     assert upsert(db, [{**row, "score": 0.8149}], now=at(6), since=at(6)) == 0
     # evidence 用 canonical 写：键的顺序不同也是同一串
-    assert upsert(db, [{**row, "evidence": {"via": "time_hint", "phrase": "上周那版报价单"}}], since=at(7)) == 0
+    assert (
+        upsert(
+            db, [{**row, "evidence": {"via": "time_hint", "phrase": "上周那版报价单"}}], since=at(7)
+        )
+        == 0
+    )
     assert rev(db) == graph0
     assert upsert(db, [{**row, "score": 0.9}], now=at(8), since=at(8)) == 1
     assert rev(db) == graph0 + 1 and ident_id(db, "m|报价单") == relation_id
     assert get(db, relation_id)["evidence_json"] == relations.canonical(row["evidence"])
 
-    related = system_row(kind="related", ident="m|k1", origin="vector", stem_key=None, content_key="k1")
+    related = system_row(
+        kind="related", ident="m|k1", origin="vector", stem_key=None, content_key="k1"
+    )
     upsert(db, [related], since=at(9))
     assert rev(db) == graph0 + 1 and rev(db, "related_rev") == related0 + 1
     assert upsert(db, [related], since=at(9)) == 0 and rev(db, "related_rev") == related0 + 1
@@ -150,12 +175,25 @@ def test_a_running_round_cannot_take_back_your_answer(tmp_path):
     assert get(db, relation_id)["status"] == "shown"
     assert upsert(db, [stale], now=at(4), since=since) == 0
     with db.transaction() as connection:
-        assert relations.clear_missing(connection, "mention", "p", {"meeting_id": "m"}, [], at(4), since=since) == 0
-    assert get(db, relation_id)["status"] == "shown" and get(db, relation_id)["quote"] == system_row()["quote"]
+        assert (
+            relations.clear_missing(
+                connection, "mention", "p", {"meeting_id": "m"}, [], at(4), since=since
+            )
+            == 0
+        )
+    assert (
+        get(db, relation_id)["status"] == "shown"
+        and get(db, relation_id)["quote"] == system_row()["quote"]
+    )
 
     # 下一轮（since 晚于你的撤销）照常收回
     with db.transaction() as connection:
-        assert relations.clear_missing(connection, "mention", "p", {"meeting_id": "m"}, [], at(9), since=at(8)) == 1
+        assert (
+            relations.clear_missing(
+                connection, "mention", "p", {"meeting_id": "m"}, [], at(9), since=at(8)
+            )
+            == 1
+        )
     assert get(db, relation_id)["status"] == "cleared"
 
 
@@ -169,7 +207,10 @@ def test_answer_and_round_race_on_the_same_row(tmp_path):
     loop = db.connect()
     try:
         # 这一轮读了输入（还在算）
-        assert loop.execute("SELECT status FROM relations WHERE id = ?", (relation_id,)).fetchone()[0] == "shown"
+        assert (
+            loop.execute("SELECT status FROM relations WHERE id = ?", (relation_id,)).fetchone()[0]
+            == "shown"
+        )
         answer(db, relation_id, {"answer": "no"}, now=utc_now())
         loop.execute("BEGIN IMMEDIATE")
         written = relations.upsert_system(
@@ -191,19 +232,35 @@ def test_system_rows_only(tmp_path):
     db.execute("UPDATE relations SET origin = 'manual' WHERE id = ?", (relation_id,))
     assert upsert(db, [system_row(file_id=None, status="cleared")], since=at(5)) == 0
     with db.transaction() as connection:
-        assert relations.clear_missing(connection, "mention", "p", None, [], at(5), since=at(5)) == 0
+        assert (
+            relations.clear_missing(connection, "mention", "p", None, [], at(5), since=at(5)) == 0
+        )
     assert get(db, relation_id)["status"] == "shown" and get(db, relation_id)["file_id"] == file_id
-    assert relations.SYSTEM_ROW_SQL == "origin != 'manual' AND status IN ('shown', 'suggested', 'cleared')"
+    assert (
+        relations.SYSTEM_ROW_SQL
+        == "origin != 'manual' AND status IN ('shown', 'suggested', 'cleared')"
+    )
 
 
 def test_cleared_produced_is_never_raised_again(tmp_path):
     db, _root_id, file_id, relation_id = produced_setup(tmp_path)
     with db.transaction() as connection:
-        relations.clear_missing(connection, "produced", "p", {"task_id": "t"}, [], at(5), since=at(5))
+        relations.clear_missing(
+            connection, "produced", "p", {"task_id": "t"}, [], at(5), since=at(5)
+        )
     assert get(db, relation_id)["status"] == "cleared"
     again = system_row(
-        kind="produced", ident="t|k-plan", status="suggested", origin="rule", meeting_id=None, task_id="t",
-        stem_key=None, quote="", file_id=file_id, content_key="k-plan", evidence={"days": 4},
+        kind="produced",
+        ident="t|k-plan",
+        status="suggested",
+        origin="rule",
+        meeting_id=None,
+        task_id="t",
+        stem_key=None,
+        quote="",
+        file_id=file_id,
+        content_key="k-plan",
+        evidence={"days": 4},
     )
     assert upsert(db, [again], since=at(9)) == 0
     assert get(db, relation_id)["status"] == "cleared"
@@ -213,7 +270,9 @@ def test_cleared_produced_is_never_raised_again(tmp_path):
     upsert(db, [system_row()], since=at(9))
     mention_id = ident_id(db, "m|报价单")
     with db.transaction() as connection:
-        relations.clear_missing(connection, "mention", "p", {"meeting_id": "m"}, [], at(10), since=at(10))
+        relations.clear_missing(
+            connection, "mention", "p", {"meeting_id": "m"}, [], at(10), since=at(10)
+        )
     assert get(db, mention_id)["status"] == "cleared"
     assert upsert(db, [system_row(quote="又说到了")], now=at(11), since=at(11)) == 1
     assert get(db, mention_id)["status"] == "shown"
@@ -224,13 +283,23 @@ def test_rejections_block_new_rows_for_the_same_file(tmp_path):
     answer(db, relation_id, {"answer": "no"})
     # 文件改过、有了新的内容标识：同一条任务、同一个位置仍然挡住
     changed = system_row(
-        kind="produced", ident="t|k-plan-2", status="suggested", origin="rule", meeting_id=None, task_id="t",
-        stem_key=None, file_id=file_id, content_key="k-plan-2", root_id=root_id,
+        kind="produced",
+        ident="t|k-plan-2",
+        status="suggested",
+        origin="rule",
+        meeting_id=None,
+        task_id="t",
+        stem_key=None,
+        file_id=file_id,
+        content_key="k-plan-2",
+        root_id=root_id,
         rel_path="能耗看板/能耗看板方案.key",
     )
     assert upsert(db, [changed], since=at(30)) == 0
     with db.autocommit() as connection:
-        assert relations.is_rejected(connection, "produced", "p", "t", "k-other", root_id, "能耗看板/能耗看板方案.key")
+        assert relations.is_rejected(
+            connection, "produced", "p", "t", "k-other", root_id, "能耗看板/能耗看板方案.key"
+        )
         assert relations.is_rejected(connection, "produced", "p", "t", "k-plan", None, None)
         assert not relations.is_rejected(connection, "produced", "p", "t2", "k-plan", root_id, "x")
     add_task(db, "t2", meeting_id="m", project_id="p", status="confirmed")
@@ -253,7 +322,9 @@ def test_loosened_mentions_step_aside_for_literal_ones(tmp_path):
 
 def test_insert_or_replace_is_banned():
     package = Path(relations.__file__).resolve().parent
-    banned = re.compile(r"\bOR\s+REPLACE\s+(INTO\s+)?relations\b|\bREPLACE\s+INTO\s+relations\b", re.IGNORECASE)
+    banned = re.compile(
+        r"\bOR\s+REPLACE\s+(INTO\s+)?relations\b|\bREPLACE\s+INTO\s+relations\b", re.IGNORECASE
+    )
     offenders = [
         f"{path.name}:{number}"
         for path in sorted(package.rglob("*.py"))
@@ -282,18 +353,46 @@ def _row_for(db, root_id, kind):
     base = {
         "mention": {"ident": f"m|{stem}", "stem_key": stem},
         "related": {"ident": "m|k-related", "origin": "vector", "stem_key": None},
-        "produced": {"ident": "t|k-produced", "status": "suggested", "origin": "rule", "meeting_id": None,
-                     "task_id": "t", "stem_key": None},
-        "affects": {"ident": "dec-a|k-affects", "status": "suggested", "origin": "rule", "decision_id": "dec-a",
-                    "stem_key": None},
-        "later_changed": {"ident": "dec-a|dec-b", "origin": "rule", "decision_id": "dec-a",
-                          "to_decision_id": "dec-b", "stem_key": None},
-        "restated": {"ident": "dec-a|dec-b", "origin": "llm", "decision_id": "dec-a", "to_decision_id": "dec-b",
-                     "stem_key": None},
+        "produced": {
+            "ident": "t|k-produced",
+            "status": "suggested",
+            "origin": "rule",
+            "meeting_id": None,
+            "task_id": "t",
+            "stem_key": None,
+        },
+        "affects": {
+            "ident": "dec-a|k-affects",
+            "status": "suggested",
+            "origin": "rule",
+            "decision_id": "dec-a",
+            "stem_key": None,
+        },
+        "later_changed": {
+            "ident": "dec-a|dec-b",
+            "origin": "rule",
+            "decision_id": "dec-a",
+            "to_decision_id": "dec-b",
+            "stem_key": None,
+        },
+        "restated": {
+            "ident": "dec-a|dec-b",
+            "origin": "llm",
+            "decision_id": "dec-a",
+            "to_decision_id": "dec-b",
+            "stem_key": None,
+        },
     }[kind]
-    target = {} if kind in ("later_changed", "restated") else {
-        "file_id": file_id, "content_key": f"k-{kind}", "root_id": root_id, "rel_path": f"{kind}/{kind}材料.docx"
-    }
+    target = (
+        {}
+        if kind in ("later_changed", "restated")
+        else {
+            "file_id": file_id,
+            "content_key": f"k-{kind}",
+            "root_id": root_id,
+            "rel_path": f"{kind}/{kind}材料.docx",
+        }
+    )
     upsert(db, [system_row(kind=kind, **{**base, **target})], now=at(-60), since=at(-60))
     return ident_id(db, base["ident"]), file_id
 
@@ -329,7 +428,10 @@ def test_every_kind_and_answer(tmp_path, kind, choice):
         restored = answer(db, relation_id, {"answer": "restore"}, now=at(40))
         assert restored["relation"]["status"] == relations.FIRST_STATUS[kind]
         # 撤销恢复：回到你刚才的回答
-        assert undo(db, relation_id, now=at(50))["relation"]["status"] == relations.ANSWERS[kind][choice]
+        assert (
+            undo(db, relation_id, now=at(50))["relation"]["status"]
+            == relations.ANSWERS[kind][choice]
+        )
 
 
 def test_conflicts_and_gone(tmp_path):
@@ -344,7 +446,9 @@ def test_conflicts_and_gone(tmp_path):
 
     # 循环刚收回
     with db.transaction() as connection:
-        relations.clear_missing(connection, "mention", "p", {"meeting_id": "m"}, [], at(0), since=at(0))
+        relations.clear_missing(
+            connection, "mention", "p", {"meeting_id": "m"}, [], at(0), since=at(0)
+        )
     assert error_of(answer, db, relation_id, {"answer": "no"}) == (409, "这条已经处理过了")
 
     # 回答、撤销、再撤销
@@ -360,11 +464,14 @@ def test_conflicts_and_gone(tmp_path):
 
     # 那场会已经离开这个项目：你标过的行留着，但不能在这个项目里再改
     answer(db, relation_id, {"answer": "no"}, now=at(800))
-    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),))
+    db.execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),)
+    )
     db.execute("UPDATE meetings SET project_id = 'q' WHERE id = 'm'")
     assert error_of(undo, db, relation_id, now=at(810)) == (409, "这条关联已经不在这个项目里了")
     assert error_of(answer, db, relation_id, {"answer": "restore"}, now=at(810)) == (
-        409, "这条关联已经不在这个项目里了"
+        409,
+        "这条关联已经不在这个项目里了",
     )
 
 
@@ -377,7 +484,11 @@ def test_pick_and_its_undo(tmp_path):
     keyed(db, v2, "k-v2")
     upsert(
         db,
-        [system_row(file_id=v1, content_key="k-v1", root_id=root_id, rel_path="报价/报价单 v1.xlsx")],
+        [
+            system_row(
+                file_id=v1, content_key="k-v1", root_id=root_id, rel_path="报价/报价单 v1.xlsx"
+            )
+        ],
         now=at(-60),
         since=at(-60),
     )
@@ -390,10 +501,16 @@ def test_pick_and_its_undo(tmp_path):
     db.execute("UPDATE material_files SET gone_at = NULL WHERE id = ?", (v2,))
 
     result = answer(db, relation_id, {"answer": "pick", "file_id": v2})
-    assert result["relation"]["status"] == "shown" and result["relation"]["file"] == {"id": v2, "name": "报价单 v2.xlsx"}
+    assert result["relation"]["status"] == "shown" and result["relation"]["file"] == {
+        "id": v2,
+        "name": "报价单 v2.xlsx",
+    }
     row = get(db, relation_id)
     assert (row["origin"], row["file_id"], row["content_key"], row["rel_path"]) == (
-        "manual", v2, "k-v2", "报价/报价单 v2.xlsx"
+        "manual",
+        v2,
+        "k-v2",
+        "报价/报价单 v2.xlsx",
     )
     prev = json.loads(row["prev_json"])
     assert prev["file_id"] == v1 and prev["origin"] == "llm" and prev["content_key"] == "k-v1"
@@ -403,7 +520,12 @@ def test_pick_and_its_undo(tmp_path):
     back = undo(db, relation_id)
     row = get(db, relation_id)
     assert back["relation"]["file"]["id"] == v1
-    assert (row["origin"], row["file_id"], row["content_key"], row["prev_json"]) == ("llm", v1, "k-v1", None)
+    assert (row["origin"], row["file_id"], row["content_key"], row["prev_json"]) == (
+        "llm",
+        v1,
+        "k-v1",
+        None,
+    )
 
 
 def test_yes_registers_a_deliverable_and_undo_removes_it(tmp_path):
@@ -415,13 +537,19 @@ def test_yes_registers_a_deliverable_and_undo_removes_it(tmp_path):
     deliverable = db.query_one("SELECT * FROM deliverables WHERE id = ?", (deliverable_id,))
     assert deliverable["kind"] == "file" and deliverable["title"] == "能耗看板方案.key"
     assert deliverable["url"] == f"{tmp_path / '云图AI'}/能耗看板/能耗看板方案.key"
-    assert db.query_one("SELECT * FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,))["content_key"] == (
-        "k-plan"
-    )
-    events = [row["kind"] for row in db.query_all("SELECT kind FROM task_events WHERE task_id = 't' ORDER BY id")]
+    assert db.query_one(
+        "SELECT * FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,)
+    )["content_key"] == ("k-plan")
+    events = [
+        row["kind"]
+        for row in db.query_all("SELECT kind FROM task_events WHERE task_id = 't' ORDER BY id")
+    ]
     assert events == ["deliverable_added"]
     row = get(db, relation_id)
-    assert row["deliverable_id"] == deliverable_id and json.loads(row["prev_json"])["created_deliverable"] is True
+    assert (
+        row["deliverable_id"] == deliverable_id
+        and json.loads(row["prev_json"])["created_deliverable"] is True
+    )
     assert rev(db) > before  # 交付物、关联都进 graph_rev
 
     removed = undo(db, relation_id)
@@ -429,7 +557,10 @@ def test_yes_registers_a_deliverable_and_undo_removes_it(tmp_path):
     assert removed["relation"]["status"] == "suggested"
     assert db.query_one("SELECT COUNT(*) AS n FROM deliverables")["n"] == 0
     assert db.query_one("SELECT COUNT(*) AS n FROM deliverable_files")["n"] == 0
-    events = [row["kind"] for row in db.query_all("SELECT kind FROM task_events WHERE task_id = 't' ORDER BY id")]
+    events = [
+        row["kind"]
+        for row in db.query_all("SELECT kind FROM task_events WHERE task_id = 't' ORDER BY id")
+    ]
     assert events == ["deliverable_added", "deliverable_removed"]
     assert get(db, relation_id)["deliverable_id"] is None
 
@@ -438,8 +569,13 @@ def test_yes_on_an_existing_deliverable_links_it_only(tmp_path):
     db, root_id, file_id, relation_id = produced_setup(tmp_path)
     with db.transaction() as connection:
         existing = _insert_deliverable(
-            connection, "t", name="能耗看板方案.key", content_key="k-plan", root_id=root_id,
-            rel_path="能耗看板/能耗看板方案.key", now=utc_now(),
+            connection,
+            "t",
+            name="能耗看板方案.key",
+            content_key="k-plan",
+            root_id=root_id,
+            rel_path="能耗看板/能耗看板方案.key",
+            now=utc_now(),
         )
     result = answer(db, relation_id, {"answer": "yes"})
     assert result["deliverable_id"] == existing
@@ -448,7 +584,10 @@ def test_yes_on_an_existing_deliverable_links_it_only(tmp_path):
     removed = undo(db, relation_id)
     assert removed["removed_deliverable_id"] is None
     assert db.query_one("SELECT COUNT(*) AS n FROM deliverables")["n"] == 1
-    assert get(db, relation_id)["deliverable_id"] is None and get(db, relation_id)["status"] == "suggested"
+    assert (
+        get(db, relation_id)["deliverable_id"] is None
+        and get(db, relation_id)["status"] == "suggested"
+    )
 
 
 def test_undo_after_the_deliverable_was_removed_in_the_drawer(tmp_path):
@@ -473,7 +612,11 @@ def test_undo_rolls_back_when_removing_the_deliverable_fails(tmp_path, monkeypat
     with pytest.raises(RuntimeError):
         undo(db, relation_id)
     row = get(db, relation_id)
-    assert row["status"] == "confirmed" and row["prev_json"] is not None and row["deliverable_id"] is not None
+    assert (
+        row["status"] == "confirmed"
+        and row["prev_json"] is not None
+        and row["deliverable_id"] is not None
+    )
 
 
 def test_yes_on_a_file_that_is_gone(tmp_path):
@@ -506,23 +649,45 @@ def test_leaving_the_project_drops_only_system_rows(tmp_path):
             system_row(file_id=file_id),
             system_row(ident="m|需求说明书", stem_key="需求说明书"),
             system_row(ident="m|周报", stem_key="周报"),
-            system_row(kind="related", ident="m|k1", origin="vector", stem_key=None, content_key="k1"),
+            system_row(
+                kind="related", ident="m|k1", origin="vector", stem_key=None, content_key="k1"
+            ),
             # 两条决议之间的标记：前一条或后一条在这场会里
-            system_row(kind="later_changed", ident="dec-m|dec-m2", origin="rule", meeting_id=None,
-                       decision_id="dec-m", to_decision_id="dec-m2", stem_key=None),
-            system_row(kind="restated", ident="dec-m2|dec-m", origin="llm", meeting_id=None,
-                       decision_id="dec-m2", to_decision_id="dec-m", stem_key=None),
-            system_row(kind="restated", ident="m2|other", origin="llm", meeting_id="m2", stem_key=None),
+            system_row(
+                kind="later_changed",
+                ident="dec-m|dec-m2",
+                origin="rule",
+                meeting_id=None,
+                decision_id="dec-m",
+                to_decision_id="dec-m2",
+                stem_key=None,
+            ),
+            system_row(
+                kind="restated",
+                ident="dec-m2|dec-m",
+                origin="llm",
+                meeting_id=None,
+                decision_id="dec-m2",
+                to_decision_id="dec-m",
+                stem_key=None,
+            ),
+            system_row(
+                kind="restated", ident="m2|other", origin="llm", meeting_id="m2", stem_key=None
+            ),
         ],
         now=at(-60),
         since=at(-60),
     )
     answer(db, ident_id(db, "m|需求说明书"), {"answer": "no"})
     db.execute("UPDATE relations SET origin = 'manual' WHERE ident = 'm|周报'")
-    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),))
+    db.execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),)
+    )
 
     db.execute("UPDATE meetings SET project_id = 'q' WHERE id = 'm'")
-    left = {row["ident"]: row["status"] for row in db.query_all("SELECT ident, status FROM relations")}
+    left = {
+        row["ident"]: row["status"] for row in db.query_all("SELECT ident, status FROM relations")
+    }
     assert left == {"m|需求说明书": "rejected", "m|周报": "shown", "m2|other": "shown"}
 
     # 撤销改归属把会挪回来：你的回答照样生效
@@ -532,14 +697,19 @@ def test_leaving_the_project_drops_only_system_rows(tmp_path):
 
 def test_merge_keeps_answers_and_the_2d_rejections(tmp_path):
     db, root_id = setup(tmp_path)
-    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),))
+    db.execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),)
+    )
     add_root(db, tmp_path / "数据中台", project_id="q")
     file_id = add_file(db, root_id, "报价单.xlsx")
     picked_id = add_file(db, root_id, "需求说明书 v2.docx")
     add_meeting(db, "mq", ago=2, project_id="q")
     now = utc_now()
     # 2d：一条「不是这份文件」，一条你换过的 picked=1
-    for stem, file, status, picked in (("周报", file_id, "rejected", 0), ("需求说明书", picked_id, "active", 1)):
+    for stem, file, status, picked in (
+        ("周报", file_id, "rejected", 0),
+        ("需求说明书", picked_id, "active", 1),
+    ):
         db.execute(
             """INSERT INTO meeting_file_mentions(meeting_id, project_id, stem_key, file_id, needle, count,
                    first_ms, anchors_json, minutes_count, source, status, picked, updated_at)
@@ -577,9 +747,13 @@ def test_merge_keeps_answers_and_the_2d_rejections(tmp_path):
     with db.transaction() as connection:
         project_names.merge_project(connection, "p", "q")
 
-    rows = {(row["ident"], row["project_id"]): row for row in db.query_all("SELECT * FROM relations")}
+    rows = {
+        (row["ident"], row["project_id"]): row for row in db.query_all("SELECT * FROM relations")
+    }
     assert rows[("m|报价单", "q")]["status"] == "rejected"  # 源项目的回答胜过目标项目的系统行
-    assert rows[("m|方案", "q")]["origin"] == "manual" and rows[("m|方案", "q")]["status"] == "shown"
+    assert (
+        rows[("m|方案", "q")]["origin"] == "manual" and rows[("m|方案", "q")]["status"] == "shown"
+    )
     assert rows[("m|会议纪要", "q")]["decided_at"] == at(11)
     assert all(project == "q" for _ident, project in rows)
     mentions = {row["stem_key"]: row for row in db.query_all("SELECT * FROM meeting_file_mentions")}
@@ -600,9 +774,19 @@ def test_removing_a_root_clears_the_file_cache(tmp_path):
     upsert(
         db,
         [
-            system_row(file_id=file_id, content_key="k-quote", root_id=root_id, rel_path="报价单.xlsx"),
-            system_row(kind="related", ident="m|k-quote", origin="vector", stem_key=None, file_id=file_id,
-                       content_key="k-quote", root_id=root_id, rel_path="报价单.xlsx"),
+            system_row(
+                file_id=file_id, content_key="k-quote", root_id=root_id, rel_path="报价单.xlsx"
+            ),
+            system_row(
+                kind="related",
+                ident="m|k-quote",
+                origin="vector",
+                stem_key=None,
+                file_id=file_id,
+                content_key="k-quote",
+                root_id=root_id,
+                rel_path="报价单.xlsx",
+            ),
         ],
     )
     manual_id = ident_id(db, "m|报价单")
@@ -617,7 +801,10 @@ def test_removing_a_root_clears_the_file_cache(tmp_path):
             assert live_file(connection, row)["id"] == copy_id
     db.execute("DELETE FROM project_material_roots WHERE id = ?", (copy_root,))
     with db.autocommit() as connection:
-        assert all(live_file(connection, row) is None for row in connection.execute("SELECT * FROM relations"))
+        assert all(
+            live_file(connection, row) is None
+            for row in connection.execute("SELECT * FROM relations")
+        )
 
 
 # ---------------------------------------------------------------------- 接口
@@ -636,19 +823,36 @@ def test_answer_and_undo_endpoints(tmp_path):
     upsert(db, [system_row(file_id=file_id)], now=at(-60), since=at(-60))
     relation_id = ident_id(db, "m|报价单")
 
-    response = client.post(f"/api/relations/{relation_id}/answer", json={"answer": "no"}, headers=headers)
+    response = client.post(
+        f"/api/relations/{relation_id}/answer", json={"answer": "no"}, headers=headers
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["relation"]["status"] == "rejected" and body["deliverable_id"] is None
     assert body["undo_until"].endswith("Z")
     assert set(body["relation"]) == {
-        "id", "kind", "status", "by_you", "meeting_id", "at_ms", "task_id", "decision_id", "to_decision_id",
-        "file", "quote", "evidence", "decided_at",
+        "id",
+        "kind",
+        "status",
+        "by_you",
+        "meeting_id",
+        "at_ms",
+        "task_id",
+        "decision_id",
+        "to_decision_id",
+        "file",
+        "quote",
+        "evidence",
+        "decided_at",
     }
     assert body["relation"]["evidence"] == {"phrase": "上周那版报价单", "via": "time_hint"}
-    again = client.post(f"/api/relations/{relation_id}/answer", json={"answer": "no"}, headers=headers)
+    again = client.post(
+        f"/api/relations/{relation_id}/answer", json={"answer": "no"}, headers=headers
+    )
     assert (again.status_code, again.json()["detail"]) == (409, "这条已经处理过了")
-    wrong = client.post(f"/api/relations/{relation_id}/answer", json={"answer": "yes"}, headers=headers)
+    wrong = client.post(
+        f"/api/relations/{relation_id}/answer", json={"answer": "yes"}, headers=headers
+    )
     assert (wrong.status_code, wrong.json()["detail"]) == (422, "这类关联不能这样回答")
 
     undone = client.post(f"/api/relations/{relation_id}/undo", json={}, headers=headers)
@@ -659,4 +863,7 @@ def test_answer_and_undo_endpoints(tmp_path):
     missing = client.post("/api/relations/999/answer", json={"answer": "no"}, headers=headers)
     assert (missing.status_code, missing.json()["detail"]) == (404, "这条关联已经不在了")
     # 写入校验：没有 CSRF 头不收
-    assert client.post(f"/api/relations/{relation_id}/answer", json={"answer": "no"}).status_code == 403
+    assert (
+        client.post(f"/api/relations/{relation_id}/answer", json={"answer": "no"}).status_code
+        == 403
+    )

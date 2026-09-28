@@ -7,6 +7,7 @@ RootsCache 在后台每 30 秒刷新一次，另走 /roots 接口，盘休眠或
 中圈最近 28 天、外圈更早。三圈都按滚动天数算，录音日期先统一转成本地时区再算。这里只决定
 每个节点在哪个方向、哪一圈、同圈里的先后，以及哪些折叠起来；坐标由前端的 layoutStarMap 算。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -181,9 +182,7 @@ def _json_dict(raw: Any) -> dict[str, Any]:
 
 
 def graph_rev(connection: Any) -> int:
-    row = connection.execute(
-        "SELECT value FROM app_state WHERE key=?", (GRAPH_REV_KEY,)
-    ).fetchone()
+    row = connection.execute("SELECT value FROM app_state WHERE key=?", (GRAPH_REV_KEY,)).fetchone()
     try:
         return int(row["value"]) if row else 0
     except (TypeError, ValueError):
@@ -324,7 +323,7 @@ def _select_window(
         inside = sum(1 for age in ages if _in_window(age, WINDOWS[key]))
         if inside < AUTO_WIDEN_MIN:
             chosen = None
-            for candidate in WIDEN_ORDER[WIDEN_ORDER.index(key) + 1:]:
+            for candidate in WIDEN_ORDER[WIDEN_ORDER.index(key) + 1 :]:
                 widened = sum(1 for age in ages if _in_window(age, WINDOWS[candidate]))
                 if widened >= AUTO_WIDEN_MIN or (candidate == "all" and widened > inside):
                     chosen = candidate
@@ -333,7 +332,7 @@ def _select_window(
                 reason = f"自动放宽到{_window_label(chosen)}：{WINDOWS[key]} 天内只有 {inside} 场会"
                 key = chosen
     if focus_age is not None and not _in_window(focus_age, WINDOWS[key]):
-        for candidate in WIDEN_ORDER[WIDEN_ORDER.index(key) + 1:]:
+        for candidate in WIDEN_ORDER[WIDEN_ORDER.index(key) + 1 :]:
             if _in_window(focus_age, WINDOWS[candidate]):
                 reason = f"放宽到{_window_label(candidate)}：要看的会在 {WINDOWS[key]} 天以外"
                 key = candidate
@@ -504,7 +503,9 @@ def project_graph(
         ).fetchall()
     ]
     root_rows = [
-        {"id": row["id"], "path": row["path"]} for row in folder_source_rows if row["kind"] == "root"
+        {"id": row["id"], "path": row["path"]}
+        for row in folder_source_rows
+        if row["kind"] == "root"
     ]
     pending_row = next((row for row in folder_source_rows if row["kind"] == "pending"), None)
 
@@ -639,7 +640,9 @@ def _assemble(
         row["day"] = local_day(row["recording_date"], row["created_at"])
         row["age"] = _age(row["day"], today)
         row["evidence"] = _json_list(row.pop("evidence_json", None))
-    meeting_rows.sort(key=lambda row: (row["day"], row["created_at"] or "", row["id"]), reverse=True)
+    meeting_rows.sort(
+        key=lambda row: (row["day"], row["created_at"] or "", row["id"]), reverse=True
+    )
     by_meeting = {row["id"]: row for row in meeting_rows}
 
     focus_age = None
@@ -795,7 +798,8 @@ def _assemble(
             if spoken not in bucket["spoken"] and len(bucket["spoken"]) < 3:
                 bucket["spoken"].append(spoken)
     suggested_requirements = sorted(
-        suggested_map.values(), key=lambda item: (-len(item["meeting_ids"]), item["last_day"], item["name"])
+        suggested_map.values(),
+        key=lambda item: (-len(item["meeting_ids"]), item["last_day"], item["name"]),
     )[:SUGGESTED_REQUIREMENT_CAP]
     for item in suggested_requirements:
         item["count"] = len(item["meeting_ids"])
@@ -849,7 +853,9 @@ def _assemble(
     for row in mention_rows:
         stem_meetings.setdefault(row["stem_key"], set()).add(row["meeting_id"])
     generic_stems = {
-        key for key, ids in stem_meetings.items() if file_mentions.is_generic(len(ids), len(meeting_rows))
+        key
+        for key, ids in stem_meetings.items()
+        if file_mentions.is_generic(len(ids), len(meeting_rows))
     }
     top_mentions: dict[str, list[dict[str, Any]]] = {}
     for row in mention_rows:
@@ -859,7 +865,10 @@ def _assemble(
         # 次数和纪要次数都相同时放宽的排在字面的后面
         rows.sort(
             key=lambda row: (
-                -int(row["count"]), -int(row["minutes_count"]), row.get("relation_id") is not None, row["name"]
+                -int(row["count"]),
+                -int(row["minutes_count"]),
+                row.get("relation_id") is not None,
+                row["name"],
             )
         )
         del rows[FILES_PER_MEETING:]
@@ -870,7 +879,15 @@ def _assemble(
             for row in top_mentions.get(meeting_id, []):
                 meetings, count, name = score.get(row["file_id"], (0, 0, row["name"]))
                 score[row["file_id"]] = (meetings + 1, count + int(row["count"]), name)
-        return sorted(score, key=lambda file_id: (-score[file_id][0], -score[file_id][1], score[file_id][2], file_id))
+        return sorted(
+            score,
+            key=lambda file_id: (
+                -score[file_id][0],
+                -score[file_id][1],
+                score[file_id][2],
+                file_id,
+            ),
+        )
 
     # ---- 琥珀色文件（4f）：在问的影响每份文件只留最新的一条决议（决议没了的丢掉），按决议时刻从新到旧；
     # 然后是在问的产出，按 created_at 从新到旧。前 AMBER_FILE_CAP 个固定画在图上，其余进 files_more；
@@ -887,7 +904,9 @@ def _assemble(
         kept = affects_by_file.get(row["file_id"])
         if kept is None or decision_key(row) > decision_key(kept):
             affects_by_file[row["file_id"]] = row
-    stale_order = sorted(affects_by_file, key=lambda file_id: decision_key(affects_by_file[file_id]), reverse=True)
+    stale_order = sorted(
+        affects_by_file, key=lambda file_id: decision_key(affects_by_file[file_id]), reverse=True
+    )
     produced_rows = sorted(
         (row for row in ask_rows if row["kind"] == "produced"),
         key=lambda row: (row["created_at"], int(row["relation_id"] or 0)),
@@ -934,7 +953,8 @@ def _assemble(
 
     def file_nodes(cap: int) -> int:
         shown = [
-            file_id for file_id in mentioned_files([row["id"] for row in inner + middle[:cap]])
+            file_id
+            for file_id in mentioned_files([row["id"] for row in inner + middle[:cap]])
             if file_id not in amber_set
         ]
         return min(len(shown), file_cap) + (1 if len(shown) > file_cap or amber_more else 0)
@@ -1093,7 +1113,10 @@ def _assemble(
             )
     shown_folder_ids = {item["id"] for item in shown_folders}
     for folder in folders:
-        if folder["kind"] != "requirement_folder" or folder["requirement_id"] not in requirement_ids:
+        if (
+            folder["kind"] != "requirement_folder"
+            or folder["requirement_id"] not in requirement_ids
+        ):
             continue
         source_id = (
             f"r:{folder['requirement_id']}"
@@ -1145,13 +1168,16 @@ def _assemble(
 
     # 文件：先放琥珀色的，再放提到的（多出来的琥珀色文件也被提到时照样能按提到上图，带着琥珀色标记）
     ranked_files = [
-        file_id for file_id in mentioned_files([row["id"] for row in visible_meetings]) if file_id not in amber_set
+        file_id
+        for file_id in mentioned_files([row["id"] for row in visible_meetings])
+        if file_id not in amber_set
     ]
     shown_file_ids = amber_ids + ranked_files[:file_cap]
     shown_file_set = set(shown_file_ids)
     hidden_file_ids = list(
         dict.fromkeys(
-            [file_id for file_id in amber_more if file_id not in shown_file_set] + ranked_files[file_cap:]
+            [file_id for file_id in amber_more if file_id not in shown_file_set]
+            + ranked_files[file_cap:]
         )
     )
     file_rows = {row["file_id"]: row for row in ask_rows}
@@ -1294,7 +1320,11 @@ def _assemble(
         "suggested_requirements": suggested_requirements,
         "folders": shown_folders,
         "folders_more": (
-            {"id": "f:more", "count": len(hidden_folders), "paths": [f["path"] for f in hidden_folders]}
+            {
+                "id": "f:more",
+                "count": len(hidden_folders),
+                "paths": [f["path"] for f in hidden_folders],
+            }
             if hidden_folders
             else None
         ),
@@ -1326,7 +1356,9 @@ def _loose_edge_fields(mention: dict[str, Any]) -> dict[str, Any]:
 
 
 def month_day(day: date, today: date) -> str:
-    return f"{day.month}/{day.day}" if day.year == today.year else f"{day.year}/{day.month}/{day.day}"
+    return (
+        f"{day.month}/{day.day}" if day.year == today.year else f"{day.year}/{day.month}/{day.day}"
+    )
 
 
 def file_stem(name: str) -> str:
@@ -1386,7 +1418,9 @@ def _ask_edges(
 
     def task_end(row: dict[str, Any]) -> str | None:
         # 需求不在图上的进行中需求里（结束了、暂停了）就当没有需求，退到任务的会
-        requirement_id = row["requirement_id"] if row["requirement_id"] in known_requirements else None
+        requirement_id = (
+            row["requirement_id"] if row["requirement_id"] in known_requirements else None
+        )
         item = {
             "requirement_id": requirement_id,
             "requirement_project_id": row["requirement_project_id"],
@@ -1438,7 +1472,9 @@ def _ask_edges(
                 "from": source,
                 "to": f"file:{file_id}",
                 "state": "ask",
-                "label": affects_label(row["decision_text"], row["name"], meeting["day"] if meeting else None, today),
+                "label": affects_label(
+                    row["decision_text"], row["name"], meeting["day"] if meeting else None, today
+                ),
                 "relation_id": row["relation_id"],
                 "decision_id": row["decision_id"],
                 "meeting_id": meeting_id,
@@ -1507,9 +1543,7 @@ def _local_end(
     return None
 
 
-def _resolve_candidates(
-    raw: Any, projects: dict[str, dict[str, Any]]
-) -> list[dict[str, Any]]:
+def _resolve_candidates(raw: Any, projects: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for item in _json_list(raw):
         if not isinstance(item, dict):
@@ -1591,7 +1625,9 @@ def _collapse(
         keys = sorted(months, reverse=True)
         for key in keys[:MONTH_CLUSTER_CAP]:
             rows = months[key]
-            groups.append(_group(f"c:{key}", "month", rows, label=f"{int(key[5:])} 月 {len(rows)} 场"))
+            groups.append(
+                _group(f"c:{key}", "month", rows, label=f"{int(key[5:])} 月 {len(rows)} 场")
+            )
         for key in keys[MONTH_CLUSTER_CAP:]:
             rest.extend(months[key])
         rest.extend(out_window)
@@ -1773,9 +1809,13 @@ def _status_sentence(
             }
         )
     if stale_files:
-        waiting.append({"text": f"{len(stale_files)} 个文件可能过时", "node_ids": list(stale_files)})
+        waiting.append(
+            {"text": f"{len(stale_files)} 个文件可能过时", "node_ids": list(stale_files)}
+        )
     if ask_files:
-        waiting.append({"text": f"{len(ask_files)} 个新文件等你认交付物", "node_ids": list(ask_files)})
+        waiting.append(
+            {"text": f"{len(ask_files)} 个新文件等你认交付物", "node_ids": list(ask_files)}
+        )
     if cards_on:
         stopped_cards = [row["id"] for row in meeting_rows if card_category(row)[0] == "stopped"]
         if stopped_cards:
@@ -1805,16 +1845,20 @@ def collapsed_meetings(
         raise GraphNotFound("折叠节点不存在")
     ids = group["meeting_ids"]
     placeholders = ", ".join("?" for _ in ids)
-    rows = [
-        dict(row)
-        for row in connection.execute(
-            f"""SELECT m.id, m.title, m.recording_date, m.created_at,
+    rows = (
+        [
+            dict(row)
+            for row in connection.execute(
+                f"""SELECT m.id, m.title, m.recording_date, m.created_at,
                        (SELECT COUNT(*) FROM tasks t
                          WHERE t.meeting_id = m.id AND t.status IN ({_OPEN})) AS open_tasks
                   FROM meetings m WHERE m.id IN ({placeholders})""",
-            ids,
-        ).fetchall()
-    ] if ids else []
+                ids,
+            ).fetchall()
+        ]
+        if ids
+        else []
+    )
     months: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         day = local_day(row["recording_date"], row["created_at"])
@@ -1828,7 +1872,9 @@ def collapsed_meetings(
         )
     result = []
     for key in sorted(months, reverse=True):
-        items = sorted(months[key], key=lambda item: (item["date"], item["meeting_id"]), reverse=True)
+        items = sorted(
+            months[key], key=lambda item: (item["date"], item["meeting_id"]), reverse=True
+        )
         result.append({"month": key, "label": f"{key[:4]} 年 {int(key[5:])} 月", "meetings": items})
     return {"id": group_id, "label": group["label"], "months": result}
 
@@ -1903,10 +1949,18 @@ def minutes_outline(
 
 
 def _ledger_outline(
-    connection: Any, meeting: dict[str, Any], outline: dict[str, Any], *, limit: int, chars: int, detail: bool
+    connection: Any,
+    meeting: dict[str, Any],
+    outline: dict[str, Any],
+    *,
+    limit: int,
+    chars: int,
+    detail: bool,
 ) -> dict[str, Any]:
     """4a：台账跟上当前纪要版本时决议从 decisions 表读（带 id）；落后或 links 关着时用当场解析的。"""
-    ledger = decisions_module.ledger_decisions(connection, meeting["id"], meeting["minutes_version_id"])
+    ledger = decisions_module.ledger_decisions(
+        connection, meeting["id"], meeting["minutes_version_id"]
+    )
     if ledger is None:
         return outline
     rows, note = ledger
@@ -1923,7 +1977,9 @@ def _ledger_outline(
 _LATER_CHARS = 40
 
 
-def _fill_later(connection: Any, meeting_id: str, entries: list[dict[str, Any]], *, detail: bool) -> None:
+def _fill_later(
+    connection: Any, meeting_id: str, entries: list[dict[str, Any]], *, detail: bool
+) -> None:
     """4c：简报每条决议填 later（最新一条 shown 的「后来改了」{date, meeting_title, text ≤ 40 字}）；展开一场会
     填 later、earlier 的 LinkRef（带 audio_url）。多一条语句：决议连 relations 再连另一头的决议和会。"""
     mine = "SELECT id FROM decisions WHERE meeting_id = :mid"
@@ -2110,9 +2166,7 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
     outline = _ledger_outline(
         connection,
         meeting,
-        minutes_outline(
-            meeting["minutes_markdown"], limit=_FOCUS_DECISIONS, chars=400, detail=True
-        )
+        minutes_outline(meeting["minutes_markdown"], limit=_FOCUS_DECISIONS, chars=400, detail=True)
         if meeting["minutes_markdown"]
         else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"},
         limit=_FOCUS_DECISIONS,
@@ -2254,7 +2308,12 @@ def _focus_questions(
             )
         else:
             asks.setdefault(str(row["task_id"]), []).append(
-                {"relation_id": row["id"], "file_id": row["file_id"], "name": row["name"], "ext": row["ext"]}
+                {
+                    "relation_id": row["id"],
+                    "file_id": row["file_id"],
+                    "name": row["name"],
+                    "ext": row["ext"],
+                }
             )
     return stale, asks
 
@@ -2874,8 +2933,15 @@ def expand_folder(row: dict[str, Any], relative: str = "") -> dict[str, Any]:
     head = {"root_id": row["id"], "project_id": row["project_id"], "root_path": row["path"]}
     if state != ROOT_ONLINE:
         return {
-            **head, "dir": "", "path": row["path"], "state": state, "crumbs": [],
-            "dirs": [], "dirs_total": 0, "files": [], "files_total": 0,
+            **head,
+            "dir": "",
+            "path": row["path"],
+            "state": state,
+            "crumbs": [],
+            "dirs": [],
+            "dirs_total": 0,
+            "files": [],
+            "files_total": 0,
         }
     target = _inside(base, relative)
     if not target.is_dir():
@@ -2990,7 +3056,9 @@ def reveal(path: Path, *, run: Any = None) -> None:
     if command is None:
         raise ValueError("这台电脑上找不到能打开文件夹的程序")
     try:
-        (run or subprocess.run)(command, check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        (run or subprocess.run)(
+            command, check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ValueError("打开访达失败") from error
 

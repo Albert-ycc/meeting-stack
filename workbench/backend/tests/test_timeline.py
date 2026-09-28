@@ -1,5 +1,6 @@
 """第四期 4c：项目时间线（TZ=Asia/Shanghai）——按有动静的天翻页、会议和决议、任务确认和完成、交付物、
 文件分组、记录开始前按修改时间、三种状态、语句数、时区。"""
+
 import os
 import time
 from datetime import UTC, date, datetime
@@ -33,16 +34,33 @@ def make(tmp_path):
     db = Database(tmp_path / "db.sqlite3")
     db.initialize()
     add_project(db, "p", "云图AI")
-    db.execute("UPDATE app_state SET value = ? WHERE key = 'links_since'", ("2026-09-20T00:00:00+00:00",))
+    db.execute(
+        "UPDATE app_state SET value = ? WHERE key = 'links_since'", ("2026-09-20T00:00:00+00:00",)
+    )
     return db
 
 
-def meeting(db, meeting_id, recording_date, *, title=None, duration_ms=2_880_000, created_at="2026-09-01T00:00:00"):
+def meeting(
+    db,
+    meeting_id,
+    recording_date,
+    *,
+    title=None,
+    duration_ms=2_880_000,
+    created_at="2026-09-01T00:00:00",
+):
     db.execute(
         """INSERT INTO meetings(id, title, recording_date, duration_ms, status, project_id, project_origin,
                                 created_at, updated_at)
            VALUES (?, ?, ?, ?, 'completed_unreviewed', 'p', 'manual', ?, ?)""",
-        (meeting_id, title or f"会{meeting_id}", recording_date, duration_ms, created_at, created_at),
+        (
+            meeting_id,
+            title or f"会{meeting_id}",
+            recording_date,
+            duration_ms,
+            created_at,
+            created_at,
+        ),
     )
 
 
@@ -53,8 +71,10 @@ def task(db, task_id, status, *, origin="ai", created_at="2026-09-01T00:00:00+00
         (task_id, f"任务{task_id}", status, origin, created_at, created_at, created_at),
     )
     for kind, body, at in events:
-        db.execute("INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, ?, ?, ?)",
-                   (task_id, kind, body, at))
+        db.execute(
+            "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, ?, ?, ?)",
+            (task_id, kind, body, at),
+        )
 
 
 def build(db, **kwargs):
@@ -72,13 +92,18 @@ def items(page, day):
 
 def test_pages_by_active_days(tmp_path):
     db = make(tmp_path)
-    for meeting_id, when in (("a", "2026-09-27T14:30:00"), ("b", "2026-09-25T09:00:00"),
-                             ("c", "2026-09-20T09:00:00"), ("d", "2026-09-10T09:00:00")):
+    for meeting_id, when in (
+        ("a", "2026-09-27T14:30:00"),
+        ("b", "2026-09-25T09:00:00"),
+        ("c", "2026-09-20T09:00:00"),
+        ("d", "2026-09-10T09:00:00"),
+    ):
         meeting(db, meeting_id, when)
 
     first = build(db, days=2)
     assert [(entry["day"], entry["label"]) for entry in first["days"]] == [
-        ("2026-09-27", "今天"), ("2026-09-25", "9月25日 周五"),
+        ("2026-09-27", "今天"),
+        ("2026-09-25", "9月25日 周五"),
     ]
     assert first["next_before"] == "2026-09-25"
     second = build(db, days=2, before=date(2026, 9, 25))
@@ -95,7 +120,13 @@ def test_pages_by_active_days(tmp_path):
 def test_days_are_clamped(tmp_path):
     db = make(tmp_path)
     for index in range(40):
-        meeting(db, f"m{index}", f"2026-08-{(index % 28) + 1:02d}T09:00:00" if index < 28 else f"2026-07-{index - 27:02d}T09:00:00")
+        meeting(
+            db,
+            f"m{index}",
+            f"2026-08-{(index % 28) + 1:02d}T09:00:00"
+            if index < 28
+            else f"2026-07-{index - 27:02d}T09:00:00",
+        )
     assert len(build(db, days=0)["days"]) == 1
     assert len(build(db, days=99)["days"]) == 31
 
@@ -138,18 +169,33 @@ def test_meeting_carries_up_to_eight_decisions_with_later(tmp_path):
 
 def test_confirmed_takes_the_earliest_of_three_sources_and_only_still_confirmed(tmp_path):
     db = make(tmp_path)
-    task(db, "a", "confirmed", events=[
-        ("status_changed", "pending_confirm → confirmed", "2026-09-22T02:00:00+00:00"),
-        ("confirmed", "", "2026-09-20T02:00:00+00:00"),
-    ])
-    task(db, "manual", "in_progress", origin="manual", created_at="2026-09-21T02:00:00+00:00",
-         events=[("created", "", "2026-09-21T02:00:00+00:00")])
+    task(
+        db,
+        "a",
+        "confirmed",
+        events=[
+            ("status_changed", "pending_confirm → confirmed", "2026-09-22T02:00:00+00:00"),
+            ("confirmed", "", "2026-09-20T02:00:00+00:00"),
+        ],
+    )
+    task(
+        db,
+        "manual",
+        "in_progress",
+        origin="manual",
+        created_at="2026-09-21T02:00:00+00:00",
+        events=[("created", "", "2026-09-21T02:00:00+00:00")],
+    )
     task(db, "gone", "cancelled", events=[("confirmed", "", "2026-09-21T03:00:00+00:00")])
     task(db, "draft", "pending_confirm")
     page = build(db, kind="tasks")
     assert [entry["day"] for entry in page["days"]] == ["2026-09-21", "2026-09-20"]
     (confirmed,) = items(page, "2026-09-20")
-    assert (confirmed["type"], confirmed["event"], confirmed["time"]) == ("tasks", "confirmed", "10:00")
+    assert (confirmed["type"], confirmed["event"], confirmed["time"]) == (
+        "tasks",
+        "confirmed",
+        "10:00",
+    )
     assert confirmed["tasks"] == [{"id": "a", "title": "任务a"}]
     assert [item["tasks"][0]["id"] for item in items(page, "2026-09-21")] == ["manual"]
 
@@ -157,10 +203,24 @@ def test_confirmed_takes_the_earliest_of_three_sources_and_only_still_confirmed(
 def test_done_only_when_still_done_and_three_merge(tmp_path):
     db = make(tmp_path)
     for index in range(4):
-        task(db, f"d{index}", "done", events=[("status_changed", "confirmed → done", f"2026-09-23T0{index}:00:00+00:00")])
-    task(db, "back", "in_progress", events=[("status_changed", "confirmed → done", "2026-09-23T05:00:00+00:00"),
-                                            ("status_changed", "done → in_progress", "2026-09-24T05:00:00+00:00")])
-    (item,) = [entry for entry in items(build(db, kind="tasks"), "2026-09-23") if entry["event"] == "done"]
+        task(
+            db,
+            f"d{index}",
+            "done",
+            events=[("status_changed", "confirmed → done", f"2026-09-23T0{index}:00:00+00:00")],
+        )
+    task(
+        db,
+        "back",
+        "in_progress",
+        events=[
+            ("status_changed", "confirmed → done", "2026-09-23T05:00:00+00:00"),
+            ("status_changed", "done → in_progress", "2026-09-24T05:00:00+00:00"),
+        ],
+    )
+    (item,) = [
+        entry for entry in items(build(db, kind="tasks"), "2026-09-23") if entry["event"] == "done"
+    ]
     assert len(item["tasks"]) == 3 and item["more"] == 1
 
 
@@ -178,11 +238,22 @@ def test_deliverable_names(tmp_path):
 # ---------------------------------------------------------------------- 文件
 
 
-def root(db, *, last_full_at="2026-09-19T00:00:00+00:00", state="done", created_at="2026-09-01T00:00:00+00:00"):
-    db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/盘/云图AI', ?)",
-               (created_at,))
+def root(
+    db,
+    *,
+    last_full_at="2026-09-19T00:00:00+00:00",
+    state="done",
+    created_at="2026-09-01T00:00:00+00:00",
+):
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/盘/云图AI', ?)",
+        (created_at,),
+    )
     root_id = db.query_one("SELECT MAX(id) AS id FROM project_material_roots")["id"]
-    db.execute("INSERT INTO material_index_state(root_id, state, last_full_at) VALUES (?, ?, NULL)", (root_id, state))
+    db.execute(
+        "INSERT INTO material_index_state(root_id, state, last_full_at) VALUES (?, ?, NULL)",
+        (root_id, state),
+    )
     return root_id
 
 
@@ -194,7 +265,20 @@ def add_file(db, root_id, rel_path, *, size=10, mtime=None, zone="normal", gone_
         """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns, zone,
                                       seen_at, gone_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (root_id, rel_path, dir_rel, name, stem, stem, ext, size, mtime_ns, zone, NOW.isoformat(), gone_at),
+        (
+            root_id,
+            rel_path,
+            dir_rel,
+            name,
+            stem,
+            stem,
+            ext,
+            size,
+            mtime_ns,
+            zone,
+            NOW.isoformat(),
+            gone_at,
+        ),
     )
     return db.query_one("SELECT id FROM material_files WHERE rel_path = ?", (rel_path,))["id"]
 
@@ -204,14 +288,25 @@ def event(db, root_id, file_id, rel_path, kind, day, *, size=10, mtime_ns=None, 
         """INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key, size, mtime_ns,
                                             day, at)
            VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
-        (root_id, file_id, rel_path, rel_path.rpartition("/")[0], kind, size, mtime_ns, day,
-         at or f"{day}T08:00:00.000Z"),
+        (
+            root_id,
+            file_id,
+            rel_path,
+            rel_path.rpartition("/")[0],
+            kind,
+            size,
+            mtime_ns,
+            day,
+            at or f"{day}T08:00:00.000Z",
+        ),
     )
 
 
 def finish_first_pass(db, root_id):
-    db.execute("UPDATE material_index_state SET last_full_at = '2026-09-19T00:00:00+00:00' WHERE root_id = ?",
-               (root_id,))
+    db.execute(
+        "UPDATE material_index_state SET last_full_at = '2026-09-19T00:00:00+00:00' WHERE root_id = ?",
+        (root_id,),
+    )
 
 
 def test_file_groups_names_cap_and_moves(tmp_path):
@@ -221,7 +316,14 @@ def test_file_groups_names_cap_and_moves(tmp_path):
         folder = f"资料/能耗看板{index}"
         for number in range(1 if index else 5):
             path = f"{folder}/报价单{number}.xlsx"
-            event(db, root_id, add_file(db, root_id, path, size=100 + index * 10 + number), path, "added", "2026-09-26")
+            event(
+                db,
+                root_id,
+                add_file(db, root_id, path, size=100 + index * 10 + number),
+                path,
+                "added",
+                "2026-09-26",
+            )
     changed = "资料/能耗看板0/排期表.xlsx"
     event(db, root_id, add_file(db, root_id, changed, size=7), changed, "changed", "2026-09-26")
     # 挪过来的：同项目前后 2 天有大小和修改时间相同的 gone
@@ -247,8 +349,12 @@ def test_prelog_files_by_modification_time_and_code_zone_is_hidden(tmp_path):
     root_id = root(db)
     add_file(db, root_id, "能耗看板/方案.docx", mtime=datetime(2026, 9, 10, 4, 0, tzinfo=UTC))
     add_file(db, root_id, "能耗看板/清单.xlsx", mtime=datetime(2026, 9, 10, 5, 0, tzinfo=UTC))
-    add_file(db, root_id, "代码/main.py", mtime=datetime(2026, 9, 10, 5, 0, tzinfo=UTC), zone="code")
-    add_file(db, root_id, "很早/旧.docx", mtime=datetime(2026, 6, 1, 5, 0, tzinfo=UTC))  # 分界之前 62 天以外
+    add_file(
+        db, root_id, "代码/main.py", mtime=datetime(2026, 9, 10, 5, 0, tzinfo=UTC), zone="code"
+    )
+    add_file(
+        db, root_id, "很早/旧.docx", mtime=datetime(2026, 6, 1, 5, 0, tzinfo=UTC)
+    )  # 分界之前 62 天以外
     finish_first_pass(db, root_id)
 
     page = build(db, kind="files", days=5)
@@ -275,7 +381,12 @@ def test_states(tmp_path, setup, expected):
         if setup in ("ok", "offline"):
             finish_first_pass(db, root_id)
     state = build(db)["state"]
-    assert (state["kind"], state["reason"], state["text"], (state["action"] or {}).get("kind")) == expected
+    assert (
+        state["kind"],
+        state["reason"],
+        state["text"],
+        (state["action"] or {}).get("kind"),
+    ) == expected
 
 
 # ---------------------------------------------------------------------- ［决议］
@@ -286,16 +397,28 @@ def test_decisions_filter_tags_requirements(tmp_path):
     add_requirement(db, "r1", "p", "初审规则 V2")
     add_requirement(db, "r2", "p", "驻场排班")
     meeting(db, "a", "2026-09-25T09:00:00")
-    set_minutes(db, "a", "mv-a", "# 周会\n\n## 决议\n1. 驻场排班改成两班\n2. 下周起统一口径\n", kind="generated")
+    set_minutes(
+        db,
+        "a",
+        "mv-a",
+        "# 周会\n\n## 决议\n1. 驻场排班改成两班\n2. 下周起统一口径\n",
+        kind="generated",
+    )
     meeting(db, "b", "2026-09-24T09:00:00")  # 没有决议的会不占一天
     for requirement_id in ("r1", "r2"):
-        db.execute("INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES (?, 'a', ?)",
-                   (requirement_id, NOW.isoformat()))
+        db.execute(
+            "INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES (?, 'a', ?)",
+            (requirement_id, NOW.isoformat()),
+        )
     decisions.ingest_pending(db, now=NOW)
     page = build(db, kind="decisions")
     assert [entry["day"] for entry in page["days"]] == ["2026-09-25"]
     first, second = items(page, "2026-09-25")
-    assert first["type"] == "decision" and first["requirement"] == {"id": "r2", "title": "驻场排班", "how": "title"}
+    assert first["type"] == "decision" and first["requirement"] == {
+        "id": "r2",
+        "title": "驻场排班",
+        "how": "title",
+    }
     assert second["requirement"] is None and second["how"] == "unplaced"
     assert second["linked_requirement_ids"] == ["r1", "r2"]
     assert [item["id"] for item in page["requirements"]] == ["r1", "r2"]
@@ -308,8 +431,10 @@ def test_decisions_filter_none_and_project_level_have_no_tag(tmp_path):
     add_requirement(db, "r1", "p", "初审规则 V2")
     meeting(db, "a", "2026-09-25T09:00:00")
     set_minutes(db, "a", "mv-a", "# 周会\n\n## 决议\n1. 初审规则周五上线\n", kind="generated")
-    db.execute("INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES ('r1', 'a', ?)",
-               (NOW.isoformat(),))
+    db.execute(
+        "INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES ('r1', 'a', ?)",
+        (NOW.isoformat(),),
+    )
     meeting(db, "b", "2026-09-24T09:00:00")  # 没关联需求：项目层
     set_minutes(db, "b", "mv-b", "# 周会\n\n## 决议\n1. 下周起统一口径\n", kind="generated")
     decisions.ingest_pending(db, now=NOW)
@@ -341,20 +466,46 @@ def test_timeline_is_at_most_ten_statements(tmp_path, count):
     root_id = root(db)
     for index in range(count):
         meeting(db, f"m{index:03d}", f"2026-{7 + index % 3:02d}-{index % 28 + 1:02d}T09:00:00")
-        set_minutes(db, f"m{index:03d}", f"mv-{index}", f"# 周会\n\n## 决议\n1. 第{index}条\n", kind="generated")
-        task(db, f"t{index}", "done", events=[("confirmed", "", f"2026-09-{index % 26 + 1:02d}T01:00:00+00:00"),
-                                              ("status_changed", "confirmed → done",
-                                               f"2026-09-{index % 26 + 1:02d}T05:00:00+00:00")])
+        set_minutes(
+            db,
+            f"m{index:03d}",
+            f"mv-{index}",
+            f"# 周会\n\n## 决议\n1. 第{index}条\n",
+            kind="generated",
+        )
+        task(
+            db,
+            f"t{index}",
+            "done",
+            events=[
+                ("confirmed", "", f"2026-09-{index % 26 + 1:02d}T01:00:00+00:00"),
+                (
+                    "status_changed",
+                    "confirmed → done",
+                    f"2026-09-{index % 26 + 1:02d}T05:00:00+00:00",
+                ),
+            ],
+        )
     for index in range(30):
         path = f"能耗看板{index % 5}/文件{index}.docx"
-        event(db, root_id, add_file(db, root_id, path, mtime=datetime(2026, 9, 5, tzinfo=UTC)), path, "added",
-              f"2026-09-{index % 7 + 20:02d}")
+        event(
+            db,
+            root_id,
+            add_file(db, root_id, path, mtime=datetime(2026, 9, 5, tzinfo=UTC)),
+            path,
+            "added",
+            f"2026-09-{index % 7 + 20:02d}",
+        )
     finish_first_pass(db, root_id)
     decisions.ingest_pending(db, now=NOW, max_meetings=count + 1, max_seconds=60)
 
     for kind in timeline.KINDS:
-        reads = count_reads(db, lambda connection, kind=kind: timeline.project_timeline(
-            connection, "p", kind=kind, now=NOW, days=31))
+        reads = count_reads(
+            db,
+            lambda connection, kind=kind: timeline.project_timeline(
+                connection, "p", kind=kind, now=NOW, days=31
+            ),
+        )
         assert reads <= 10, kind
     assert build(db, days=31)["days"]
     if count == 200:

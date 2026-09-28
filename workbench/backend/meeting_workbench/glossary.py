@@ -3,6 +3,7 @@
 纪要生成时给 LLM 注入快照里的术语对照表；编辑纪要时用 diff 捕获错字更正，
 写入待确认队列，确认后反写进词典，越用越准。
 """
+
 from __future__ import annotations
 
 import difflib
@@ -36,8 +37,7 @@ EXPAND_LEFT_MAX = 2
 # 旧纪要和逐字稿里都没有重复可依时，向右只扩到 4 字
 EXPAND_DEFAULT_LEN = 4
 _EXPAND_STOP_CHARS = frozenset(
-    "的地得了着过是在和与及或把被就也都还又吗呢吧啊"
-    "说去来到给让对向从跟请我你他她它这那们个"
+    "的地得了着过是在和与及或把被就也都还又吗呢吧啊说去来到给让对向从跟请我你他她它这那们个"
 )
 
 # 确认一条建议时记到哪：auto=按确认那一刻会议所属的项目；public=公共；其余当 project_id
@@ -86,9 +86,7 @@ def normalize_aliases(aliases: list[str]) -> list[str]:
     for value in aliases:
         if not isinstance(value, str):
             raise GlossaryError("别名必须是字符串")
-        alias = validate_term_text(
-            value, what="别名", min_len=MIN_DIFF_LEN, max_len=MAX_DIFF_LEN
-        )
+        alias = validate_term_text(value, what="别名", min_len=MIN_DIFF_LEN, max_len=MAX_DIFF_LEN)
         if alias not in seen:
             seen.add(alias)
             normalized.append(alias)
@@ -122,7 +120,9 @@ def normalize_also(values: list[str], *, term: str | None = None) -> list[str]:
 
 def _term_conflict(connection: Any, term_row: dict[str, Any]) -> dict[str, Any]:
     project = (
-        connection.execute("SELECT name FROM projects WHERE id=?", (term_row["project_id"],)).fetchone()
+        connection.execute(
+            "SELECT name FROM projects WHERE id=?", (term_row["project_id"],)
+        ).fetchone()
         if term_row.get("project_id")
         else None
     )
@@ -211,9 +211,7 @@ def _edit_distance(a: str, b: str) -> int:
     return previous[-1]
 
 
-def _covering_known_term(
-    text: str, start: int, end: int, known_terms: set[str]
-) -> str | None:
+def _covering_known_term(text: str, start: int, end: int, known_terms: set[str]) -> str | None:
     """找 text 中覆盖 [start, end) 的最长已知权威词；没有则 None。"""
     best: str | None = None
     for term in known_terms:
@@ -262,9 +260,9 @@ def _correction_spans(
             continue
         if wrong == correct or _punct_only(wrong, correct):
             continue
-        if _covering_known_term(
-            old_text, a_start, a_end, known_terms
-        ) and _covering_known_term(new_text, b_start, b_end, known_terms):
+        if _covering_known_term(old_text, a_start, a_end, known_terms) and _covering_known_term(
+            new_text, b_start, b_end, known_terms
+        ):
             # 两个权威写法之间的实质替换（如把数理协会整体改成数学学会），不是错字更正
             continue
         corrected_to_known = correct in known_terms
@@ -424,7 +422,9 @@ def _context_snippet(text: str, needle: str, width: int = 30) -> str:
         line = re.sub(r"\[\d{1,2}:\d{2}(?::\d{2})?\]", "", line).strip()
         if line:
             lines.append(line)
-    sentences = [part.strip() for part in re.split(r"[。！？；!?;\n]", "\n".join(lines)) if part.strip()]
+    sentences = [
+        part.strip() for part in re.split(r"[。！？；!?;\n]", "\n".join(lines)) if part.strip()
+    ]
     for sentence in sentences:
         index = sentence.find(needle)
         if index < 0:
@@ -927,7 +927,11 @@ def create_term(
     with db.transaction() as connection:
         _raise_duplicate(connection, term)
         _check_names(
-            connection, term=term, aliases=normalized_aliases, also=normalized_also, exclude_term_id=None
+            connection,
+            term=term,
+            aliases=normalized_aliases,
+            also=normalized_also,
+            exclude_term_id=None,
         )
         term_id = _insert_term(
             connection,
@@ -1099,9 +1103,7 @@ def merge_into_term(
     )
 
 
-def delete_term(
-    db: Database, term_id: str, snapshot_path: Path | str | None = None
-) -> bool:
+def delete_term(db: Database, term_id: str, snapshot_path: Path | str | None = None) -> bool:
     changed = db.execute_rowcount("DELETE FROM glossary_terms WHERE id=?", (term_id,))
     if changed == 1 and snapshot_path is not None:
         rewrite_snapshot(db, snapshot_path)
@@ -1177,9 +1179,7 @@ def rewrite_snapshot(db: Database, snapshot_path: Path | str) -> None:
     }
     path = Path(snapshot_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=path.parent
-    )
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False)

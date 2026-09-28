@@ -10,6 +10,7 @@
 内容检查都是「偷看」：PDF 读头尾各一段判断有没有文字层，Office 文件看是不是正常的 zip，
 音视频在装了 ffprobe 时读时长。不做全文解析，也不算哈希。
 """
+
 from __future__ import annotations
 
 import os
@@ -49,14 +50,33 @@ AUDIO_EXTS = rules.AUDIO_EXTS
 VIDEO_EXTS = rules.VIDEO_EXTS
 # macOS 上以文件夹形式存在、在 Finder 里看起来是一个文件的「包」
 PACKAGE_EXTS = IWORK_EXTS | {
-    "app", "bundle", "framework", "photoslibrary", "rtfd", "xcodeproj", "xcworkspace",
-    "fcpbundle", "logicx", "band", "imovielibrary", "lrlibrary", "sparsebundle",
+    "app",
+    "bundle",
+    "framework",
+    "photoslibrary",
+    "rtfd",
+    "xcodeproj",
+    "xcworkspace",
+    "fcpbundle",
+    "logicx",
+    "band",
+    "imovielibrary",
+    "lrlibrary",
+    "sparsebundle",
 }
 
 # —— 跳过与只收文件名 ——
 SYSTEM_NAMES = rules.SYSTEM_NAMES
 NAME_ONLY_DIRS = {
-    "node_modules", ".git", ".svn", ".hg", ".venv", "venv", "__pycache__", ".idea", ".vscode",
+    "node_modules",
+    ".git",
+    ".svn",
+    ".hg",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".idea",
+    ".vscode",
     CARDS_DIR_NAME,
 }
 
@@ -135,7 +155,7 @@ def peek_pdf(path: Path, size: int) -> tuple[str | None, str | None]:
         if end == -1:
             break
         try:
-            inflated = zlib.decompressobj().decompress(data[match.end():end], 4 * 1024 * 1024)
+            inflated = zlib.decompressobj().decompress(data[match.end() : end], 4 * 1024 * 1024)
         except zlib.error:
             continue
         if any(marker in inflated for marker in _PDF_STREAM_MARKERS):
@@ -175,12 +195,25 @@ def peek_readable(path: Path) -> None:
         handle.read(16)
 
 
-def ffprobe_duration(path: Path, ffprobe: str, timeout: int = MEDIA_PROBE_TIMEOUT) -> tuple[str | None, float | None]:
+def ffprobe_duration(
+    path: Path, ffprobe: str, timeout: int = MEDIA_PROBE_TIMEOUT
+) -> tuple[str | None, float | None]:
     try:
         result = subprocess.run(
-            [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of",
-             "default=noprint_wrappers=1:nokey=1", str(path)],
-            capture_output=True, text=True, timeout=timeout, check=False,
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return TIMEOUT, None
@@ -202,9 +235,7 @@ class Walk:
         self.ffprobe = shutil.which("ffprobe") if probe_media else None
         self.probe_media = probe_media
         self.progress = progress
-        self.layers = {
-            key: {"count": 0, "bytes": 0} for key in (TEXT, IMAGE, MEDIA, NAME_ONLY)
-        }
+        self.layers = {key: {"count": 0, "bytes": 0} for key in (TEXT, IMAGE, MEDIA, NAME_ONLY)}
         self.layers[IMAGE]["small"] = 0
         self.layers[MEDIA].update({"audio": 0, "video": 0, "seconds": 0.0, "probed": 0})
         self.extensions: Counter[str] = Counter()
@@ -346,7 +377,9 @@ class Walk:
                         continue
                     if entry.is_dir(follow_symlinks=False):
                         if name in NAME_ONLY_DIRS or name.startswith("."):
-                            self._name_only_tree(path, name if name in NAME_ONLY_DIRS else "其他隐藏文件夹")
+                            self._name_only_tree(
+                                path, name if name in NAME_ONLY_DIRS else "其他隐藏文件夹"
+                            )
                         elif file_ext(name) in PACKAGE_EXTS:
                             self._package(path, name)
                         else:
@@ -379,7 +412,9 @@ class Walk:
             "skipped_system": self.skipped_system,
             "symlinks": self.symlinks,
             "packages": self.packages,
-            "media_probe": "ffprobe" if self.ffprobe else ("off" if not self.probe_media else "missing"),
+            "media_probe": "ffprobe"
+            if self.ffprobe
+            else ("off" if not self.probe_media else "missing"),
             "extensions": self.extensions.most_common(30),
             "largest": [{"path": path, "bytes": size} for size, path in self.largest],
             "duplicates": {
@@ -417,7 +452,9 @@ def walk_materials(
         walker.roots.append(entry)
         real = os.path.realpath(path)
         # 嵌套挂载（A 挂了 /x，B 挂了 /x/y）只走外层一次，内层标出来
-        nested_in = next((other for other in seen if real == other or real.startswith(other + os.sep)), None)
+        nested_in = next(
+            (other for other in seen if real == other or real.startswith(other + os.sep)), None
+        )
         if nested_in is not None:
             entry["state"] = "nested"
             entry["nested_in"] = nested_in
@@ -458,7 +495,11 @@ def render_report(report: dict[str, Any]) -> str:
     for root in report["roots"]:
         project = f"{root['project_name']}：" if root.get("project_name") else ""
         detail = labels.get(root["state"], f"（{root['state']}）")
-        counted = f" {root['files']} 个，{human_bytes(root['bytes'])}" if root["state"] == "online" else ""
+        counted = (
+            f" {root['files']} 个，{human_bytes(root['bytes'])}"
+            if root["state"] == "online"
+            else ""
+        )
         lines.append(f"  {project}{root['path']}{detail}{counted}")
     lines.append("")
     lines.append("按第三期要做的事分：")
@@ -473,7 +514,9 @@ def render_report(report: dict[str, Any]) -> str:
                 extra += f"，读到时长的 {layer['probed']} 个共 {layer['seconds'] / 3600:.1f} 小时"
             elif report["media_probe"] == "missing":
                 extra += "，没装 ffprobe，没算时长"
-        lines.append(f"  {LAYER_LABELS[key]}：{layer['count']} 个，{human_bytes(layer['bytes'])}{extra}")
+        lines.append(
+            f"  {LAYER_LABELS[key]}：{layer['count']} 个，{human_bytes(layer['bytes'])}{extra}"
+        )
     pdf = report["pdf"]
     if sum(pdf.values()):
         lines.append(
@@ -481,12 +524,16 @@ def render_report(report: dict[str, Any]) -> str:
             f"看不出来 {pdf['unknown']} 个"
         )
         if pdf.get("encrypted"):
-            lines.append(f"  PDF 带加密标记（多数能读，第三期读的时候才知道）：{pdf['encrypted']} 个")
+            lines.append(
+                f"  PDF 带加密标记（多数能读，第三期读的时候才知道）：{pdf['encrypted']} 个"
+            )
     if report["name_only_dirs"]:
         lines.append("")
         lines.append("只收文件名的文件夹：")
         for name, bucket in sorted(report["name_only_dirs"].items()):
-            lines.append(f"  {name}：{bucket['dirs']} 个文件夹，{bucket['files']} 个文件，{human_bytes(bucket['bytes'])}")
+            lines.append(
+                f"  {name}：{bucket['dirs']} 个文件夹，{bucket['files']} 个文件，{human_bytes(bucket['bytes'])}"
+            )
     unreadable = report["unreadable"]
     if any(bucket["count"] for bucket in unreadable.values()):
         lines.append("")

@@ -232,9 +232,7 @@ def run(settings: Settings, *, dry_run: bool) -> BackfillReport:
         for meeting_id in funasr_ids:
             reason = _human_review_reason(db, meeting_id)
             if reason:
-                report.outcomes.append(
-                    MeetingOutcome(meeting_id, "human_review", detail=reason)
-                )
+                report.outcomes.append(MeetingOutcome(meeting_id, "human_review", detail=reason))
                 continue
             report.outcomes.append(_process_meeting(db, meeting_id, dry_run=dry_run))
 
@@ -320,9 +318,7 @@ def render_report_markdown(report: BackfillReport) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--dry-run", action="store_true", help="只解析、比对、出报告，不写库"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="只解析、比对、出报告，不写库")
     parser.add_argument(
         "--report",
         default=None,

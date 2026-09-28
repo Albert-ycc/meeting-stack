@@ -7,6 +7,7 @@ status 是 ok、io_error、password、corrupt、unsupported、permission、timeo
 
 服务这边：TextExtractor 按 3a 的共同规矩管这个进程，每个文件 60 秒超时，处理超时的下次用 120 秒。
 """
+
 from __future__ import annotations
 
 import json
@@ -83,7 +84,12 @@ def read_document(path: Path, ext: str, out: formats.Collector) -> str | None:
 
 
 def _status(status: str, **extra: Any) -> dict[str, Any]:
-    return {"status": status, "extractor": EXTRACTOR, "extractor_version": EXTRACTOR_VERSION, **extra}
+    return {
+        "status": status,
+        "extractor": EXTRACTOR,
+        "extractor_version": EXTRACTOR_VERSION,
+        **extra,
+    }
 
 
 def fit_answer(answer: dict[str, Any], limit: int = ANSWER_LIMIT_BYTES) -> dict[str, Any]:
@@ -216,7 +222,9 @@ class TextExtractor:
             )
         except (HelperTimeout, HelperCrashed) as error:
             logger.info("material text extract timed out or crashed for %s: %s", path, error)
-            return ExtractResult(status="timeout", extractor=self.name, extractor_version=self.version)
+            return ExtractResult(
+                status="timeout", extractor=self.name, extractor_version=self.version
+            )
         status = str(answer.get("status") or "corrupt")
         if status == "error":
             logger.warning("material text extract failed for %s: %s", path, answer.get("error"))

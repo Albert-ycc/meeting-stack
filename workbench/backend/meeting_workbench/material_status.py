@@ -6,6 +6,7 @@
 - unreadable_files：读不了的文件逐个列出，每页 100 个。
 - file_preview：预览抽屉和关系图文件面板的数据。state.text 由 material_rules 的说法表生成，前端只显示它。
 """
+
 from __future__ import annotations
 
 import os
@@ -227,10 +228,15 @@ def render_status(roots: list[dict[str, Any]], project_names: dict[str, str] | N
         ]
         unreadable = {reason: count for reason, count in content["unreadable"].items() if count}
         if unreadable:
-            detail = "、".join(f"{REASON_LABELS[reason]} {count}" for reason, count in unreadable.items())
+            detail = "、".join(
+                f"{REASON_LABELS[reason]} {count}" for reason, count in unreadable.items()
+            )
             parts.append(f"读不了 {_number(sum(unreadable.values()))} 个（{detail}）")
         if content["waiting"]:
-            parts.append("在等：" + "；".join(f"{item['what']} {item['files']} 个" for item in content["waiting"]))
+            parts.append(
+                "在等："
+                + "；".join(f"{item['what']} {item['files']} 个" for item in content["waiting"])
+            )
         if not root["online"]:
             parts.append("资料盘未连接")
         lines.append(f"{head}\n  " + " · ".join(parts))
@@ -360,7 +366,9 @@ def file_state(
             state["text"] = STATE_TEXTS["pending"]
     elif content["state"] == "waiting":
         what = waiting_what(content.get("layer"), engines)
-        state.update(kind="waiting", what=what, note="engine_missing", text=waiting_hint(what, engines))
+        state.update(
+            kind="waiting", what=what, note="engine_missing", text=waiting_hint(what, engines)
+        )
     elif content["state"] == "unreadable":
         reason = content.get("reason") if content.get("reason") in REASON_LABELS else "corrupt"
         state.update(kind="unreadable", reason=reason, text=unreadable_text(reason))
@@ -468,10 +476,13 @@ def file_preview_block(
     elif kind == "media":
         playable = ext in PLAYABLE_TYPES
         preview["playable"] = playable
-        preview["media_url"] = f"/api/materials/files/{file_id}/media" if playable and reachable else None
+        preview["media_url"] = (
+            f"/api/materials/files/{file_id}/media" if playable and reachable else None
+        )
         preview["duration_ms"] = content.get("duration_ms") if content else None
         preview["transcript"] = [
-            {"start_ms": chunk["start_ms"], "end_ms": chunk["end_ms"], "text": chunk["text"]} for chunk in chunks
+            {"start_ms": chunk["start_ms"], "end_ms": chunk["end_ms"], "text": chunk["text"]}
+            for chunk in chunks
         ]
     elif kind == "table":
         if chunks:
@@ -487,7 +498,10 @@ def file_preview_block(
 
 
 def file_mentions_for_preview(
-    connection: Any, file_id: int, *, quotes: Callable[[str, list[int]], dict[int, str]] | None = None
+    connection: Any,
+    file_id: int,
+    *,
+    quotes: Callable[[str, list[int]], dict[int, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """在哪几场会上被提到（有效的字面和放宽的提到，relation_read 读），新的 40 场，带那场会的录音地址。
     场数另用 relation_read.file_mention_counts 数（预览的 mentioned_meetings）。"""
@@ -552,7 +566,9 @@ def state_for_row(
 ) -> dict[str, Any]:
     """关系图文件面板（GET /api/graph/files/{id}）的 state，和预览的一样。"""
     online = state_of(str(row["root_path"])) == ROOT_ONLINE
-    return file_state(connection, row, _content_of(connection, row), online=online, paused=paused, engines=engines)
+    return file_state(
+        connection, row, _content_of(connection, row), online=online, paused=paused, engines=engines
+    )
 
 
 def file_preview(
@@ -596,7 +612,9 @@ def file_preview(
             "root_online": online,
             "gone": row["gone_at"] is not None,
         },
-        "state": file_state(connection, row, content, online=online, paused=paused, engines=engines),
+        "state": file_state(
+            connection, row, content, online=online, paused=paused, engines=engines
+        ),
         "preview": file_preview_block(connection, row, content, online=online),
     }
     if passage_ordinal is not None:
@@ -604,16 +622,22 @@ def file_preview(
     if parts == "preview":
         return result
     # 4d：［用本机应用打开］只在本机、白名单里的扩展名、文件没有不见时出现（前端只看这个字段）
-    result["file"]["can_open"] = related_read.can_open(row["ext"], local=can_reveal, gone=row["gone_at"] is not None)
+    result["file"]["can_open"] = related_read.can_open(
+        row["ext"], local=can_reveal, gone=row["gone_at"] is not None
+    )
     result["related_meetings"] = related_read.related_meetings(connection, file_id)
     result["mentions"] = file_mentions_for_preview(connection, file_id, quotes=quotes)
     # 先数再取：列表最多 40 场，场数不受它限制（抽屉标题用它）
-    result["mentioned_meetings"] = relation_read.file_mention_counts(connection, [file_id]).get(file_id, 0)
+    result["mentioned_meetings"] = relation_read.file_mention_counts(connection, [file_id]).get(
+        file_id, 0
+    )
     result["deliverables"] = file_deliverables(connection, row)
     # 4e：在问的可能过时和产出，放在交付物后面；有在问的影响时 stat 一次，文件变了就先不给影响的问题
     from .affects import guarded_questions
 
-    result["questions"] = guarded_questions(relation_read.file_questions(connection, file_id), row, state_of)
+    result["questions"] = guarded_questions(
+        relation_read.file_questions(connection, file_id), row, state_of
+    )
     result["can_reveal"] = can_reveal
     return result
 
@@ -621,7 +645,9 @@ def file_preview(
 PACKAGE_DIR_EXTS = frozenset({"key", "pages", "numbers"})
 
 
-def resolve_file(connection: Any, file_id: int, *, state_of: Callable[[str], str] = volume_state) -> tuple[str, Any]:
+def resolve_file(
+    connection: Any, file_id: int, *, state_of: Callable[[str], str] = volume_state
+) -> tuple[str, Any]:
     """thumb、page1、media 读盘前的检查：只按 file_id 找根目录和相对路径，realpath 必须还在根目录里。
     返回 (状态, 路径或行)：ok、missing（没有这行或已不见）、offline（盘不在）、outside（指到根目录外）。"""
     row = file_row(connection, file_id)
@@ -634,7 +660,10 @@ def resolve_file(connection: Any, file_id: int, *, state_of: Callable[[str], str
     if os.path.commonpath([root_real, target]) != root_real:
         return "outside", row
     # 4d：key、pages、numbers 可能是目录形式的包
-    if not (os.path.isfile(target) or (str(row["ext"] or "").lower() in PACKAGE_DIR_EXTS and os.path.isdir(target))):
+    if not (
+        os.path.isfile(target)
+        or (str(row["ext"] or "").lower() in PACKAGE_DIR_EXTS and os.path.isdir(target))
+    ):
         return "missing", row
     row["real_path"] = target
     return "ok", row

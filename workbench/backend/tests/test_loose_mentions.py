@@ -1,5 +1,6 @@
 """第四期 4b：放宽的提到（loose_mentions）——只发逐字稿、分段、截断、按段认领、本机校验、重新定位和重抽、
 T1 到 T4、按时间提示挑文件、和字面行一起、L5 的写和回答。"""
+
 import json
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
@@ -62,25 +63,49 @@ class FakeChat:
         self.calls: list[dict] = []
 
     def __call__(self, settings, *, system, user, json_mode, max_tokens, timeout):
-        self.calls.append({"system": system, "user": user, "json_mode": json_mode, "max_tokens": max_tokens,
-                           "timeout": timeout})
-        reply = self.replies.pop(0) if len(self.replies) > 1 else (self.replies[0] if self.replies else {"refs": []})
+        self.calls.append(
+            {
+                "system": system,
+                "user": user,
+                "json_mode": json_mode,
+                "max_tokens": max_tokens,
+                "timeout": timeout,
+            }
+        )
+        reply = (
+            self.replies.pop(0)
+            if len(self.replies) > 1
+            else (self.replies[0] if self.replies else {"refs": []})
+        )
         if isinstance(reply, Exception):
             raise reply
         if isinstance(reply, tuple):
             text, finish = reply
-            return ChatReply(text if isinstance(text, str) else json.dumps(text, ensure_ascii=False), finish)
-        return ChatReply(reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False), self.finish)
+            return ChatReply(
+                text if isinstance(text, str) else json.dumps(text, ensure_ascii=False), finish
+            )
+        return ChatReply(
+            reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False), self.finish
+        )
 
 
 def ref(ms, quote, phrase, core, *, aka=(), kind=None, rel=None, version=None):
-    return {"at": hms(ms), "quote": quote, "phrase": phrase, "core": core, "aka": list(aka), "kind": kind,
-            "when": {"rel": rel, "version": version}}
+    return {
+        "at": hms(ms),
+        "quote": quote,
+        "phrase": phrase,
+        "core": core,
+        "aka": list(aka),
+        "kind": kind,
+        "when": {"rel": rel, "version": version},
+    }
 
 
 def world(tmp_path, *special, ago=1, meeting_id="m", title=None, filler=20):
     db, root_id = fm_setup(tmp_path)
-    add_meeting(db, meeting_id, ago=ago, project_id="p", segments=talk(*special, filler=filler), title=title)
+    add_meeting(
+        db, meeting_id, ago=ago, project_id="p", segments=talk(*special, filler=filler), title=title
+    )
     return db, root_id
 
 
@@ -100,12 +125,15 @@ def extract(db, task, *, now=NOW, rounds=10):
 
 
 def resolve(db, *, now=NOW):
-    return loose_mentions.resolve_due(db, now=now, since=(now + timedelta(seconds=1)).isoformat(), clock=lambda: 0.0)
+    return loose_mentions.resolve_due(
+        db, now=now, since=(now + timedelta(seconds=1)).isoformat(), clock=lambda: 0.0
+    )
 
 
 def loose_rows(db, meeting_id="m"):
     return db.query_all(
-        "SELECT * FROM relations WHERE kind = 'mention' AND meeting_id = ? ORDER BY stem_key", (meeting_id,)
+        "SELECT * FROM relations WHERE kind = 'mention' AND meeting_id = ? ORDER BY stem_key",
+        (meeting_id,),
     )
 
 
@@ -129,7 +157,9 @@ def test_prompt_carries_only_the_neutralised_transcript(tmp_path):
     assert call["system"] == loose_mentions.SYSTEM_PROMPT and call["json_mode"] is True
     assert call["max_tokens"] == 4000 and call["timeout"] == 60
     user = call["user"]
-    assert user.startswith("转写稿（第 1/1 段）：\n<transcript>\n[00:00:00] ") and user.endswith("\n</transcript>")
+    assert user.startswith("转写稿（第 1/1 段）：\n<transcript>\n[00:00:00] ") and user.endswith(
+        "\n</transcript>"
+    )
     for sentinel in ("绝密文件名甲", "词条哨兵丙", "会名哨兵乙", "云图AI"):
         assert sentinel not in user.replace("＜b＞", "")
     assert "<b>" not in user and "＜b＞再看＜/b＞" in user
@@ -156,7 +186,12 @@ def test_too_long_meeting_is_sent_in_six_parts_and_marked_truncated_only_in_the_
     chat = FakeChat({"refs": []})
     extract(db, LooseMentionTask(settings(tmp_path), chat=chat))
     row = extraction(db)
-    assert len(chat.calls) == 6 and row["parts"] == 6 and row["parts_done"] == 6 and row["state"] == "done"
+    assert (
+        len(chat.calls) == 6
+        and row["parts"] == 6
+        and row["parts_done"] == 6
+        and row["state"] == "done"
+    )
     assert chat.calls[5]["user"].startswith("转写稿（第 6/6 段）")
     assert row["error"] == "truncated"
 
@@ -184,7 +219,12 @@ def test_truncated_survives_a_restart_a_recall_and_a_failed_try(tmp_path):
     # 做完以后重新转写成完全不同的长稿：清零重来，也记 truncated
     extract(db, task)
     assert extraction(db)["state"] == "done"
-    new_version(db, "m", "generated", [(index * 5000, f"完全不同{'别的话题' * 140}{index}") for index in range(160)])
+    new_version(
+        db,
+        "m",
+        "generated",
+        [(index * 5000, f"完全不同{'别的话题' * 140}{index}") for index in range(160)],
+    )
     assert resolve(db)["recalled"] == 1
     row = extraction(db)
     assert (row["state"], row["error"]) == ("pending", "truncated")
@@ -203,7 +243,9 @@ def test_a_part_done_later_clears_the_old_invalid(tmp_path):
     row = extraction(db)
     assert (row["state"], row["error"], row["attempts"]) == ("done", None, 1)
     # truncated_output 是这一段自己的记号：留着
-    db.execute("UPDATE mention_extractions SET state = 'pending', parts_done = 0, error = 'truncated_output'")
+    db.execute(
+        "UPDATE mention_extractions SET state = 'pending', parts_done = 0, error = 'truncated_output'"
+    )
     extract(db, task)
     assert extraction(db)["error"] == "truncated_output"
 
@@ -213,8 +255,14 @@ def test_a_part_done_later_clears_the_old_invalid(tmp_path):
 
 def test_truncated_reply_keeps_complete_items(tmp_path):
     db, _root = world(tmp_path, "上周那版报价单再看一下")
-    broken = json.dumps({"refs": [ref(at(0), "上周那版报价单再看一下", "上周那版报价单", "报价单", rel="last_week")]},
-                        ensure_ascii=False)
+    broken = json.dumps(
+        {
+            "refs": [
+                ref(at(0), "上周那版报价单再看一下", "上周那版报价单", "报价单", rel="last_week")
+            ]
+        },
+        ensure_ascii=False,
+    )
     broken = broken[:-2] + ', {"at": "00:2'
     chat = FakeChat((broken, "length"))
     extract(db, LooseMentionTask(settings(tmp_path), chat=chat))
@@ -257,8 +305,13 @@ def test_parts_resume_the_next_day_and_claims_survive_recovery(tmp_path):
     chat = FakeChat({"refs": []})
     task = LooseMentionTask(settings(tmp_path), chat=chat)
     day = {"value": date(2026, 9, 26)}
-    worker = LinksLLMWorker(db, settings(tmp_path, links_llm_daily_calls=1), tasks=[task], now=lambda: NOW,
-                            today=lambda: day["value"])
+    worker = LinksLLMWorker(
+        db,
+        settings(tmp_path, links_llm_daily_calls=1),
+        tasks=[task],
+        now=lambda: NOW,
+        today=lambda: day["value"],
+    )
     assert worker.tick()["state"] == "ok"
     row = extraction(db)
     parts = row["parts"]
@@ -271,7 +324,7 @@ def test_parts_resume_the_next_day_and_claims_survive_recovery(tmp_path):
     assert chat.calls[1]["user"].startswith(f"转写稿（第 2/{parts} 段）")
 
     # 认领超过 10 分钟收回：段进度和已抽出的说法都在
-    db.execute("UPDATE mention_extractions SET phrases_json = '[{\"at_ms\": 1, \"core\": \"报价单\"}]'")
+    db.execute('UPDATE mention_extractions SET phrases_json = \'[{"at_ms": 1, "core": "报价单"}]\'')
     job = task.claim(db, NOW - timedelta(minutes=30))
     assert job is not None
     with db.transaction() as connection:
@@ -322,14 +375,21 @@ def test_client_errors_are_not_retried(tmp_path, status, code):
 
 
 def test_validate_drops_only_the_bad_items():
-    lines = [Line(60_000, "上周那版报价单我们再看一下"), Line(120_000, "能耗看板那个PPT"), Line(180_000, "也发一下")]
+    lines = [
+        Line(60_000, "上周那版报价单我们再看一下"),
+        Line(120_000, "能耗看板那个PPT"),
+        Line(180_000, "也发一下"),
+    ]
     good = ref(60_000, "上周那版报价单我们再看一下", "上周那版报价单", "报价单", rel="last_week")
     items = [
         good,
         ref(600_000, "上周那版报价单", "报价单", "报价单"),  # 时间不在这一段
         ref(60_000, "这句话没说过", "没说过", "说过"),  # 编造的原话
         ref(60_000, "上周那版报价单", "能耗看板", "看板"),  # phrase 不在 quote 里
-        {**ref(120_000, "能耗看板那个PPT", "能耗看板那个PPT", "能耗看板", kind="视频"), "aka": ["看板", "不存在的叫法"]},
+        {
+            **ref(120_000, "能耗看板那个PPT", "能耗看板那个PPT", "能耗看板", kind="视频"),
+            "aka": ["看板", "不存在的叫法"],
+        },
         ref(120_000, "PPT也发一下", "PPT", "PPT"),  # 跨了两段的一句话
         ref(60_000, "报价单", "报价单", "报"),  # core 不到 2 个字
         {"at": 3},
@@ -342,7 +402,9 @@ def test_validate_drops_only_the_bad_items():
     [item] = loose_mentions.validate([weird], lines)
     assert item["kind"] == "表格" and item["when"] == {"rel": None, "version": None}
     # 每段最多 40 条
-    many = [ref(60_000 + index, f"第{index}份", f"第{index}份", f"第{index}份") for index in range(50)]
+    many = [
+        ref(60_000 + index, f"第{index}份", f"第{index}份", f"第{index}份") for index in range(50)
+    ]
     lines = [Line(60_000, "".join(f"第{index}份" for index in range(50)))]
     assert len(loose_mentions.validate(many, lines)) == 40
 
@@ -370,7 +432,10 @@ def test_relocate_follows_moved_lines_and_drops_deleted_ones():
         {"start_ms": 900_000, "text": "能耗看板那个 PPT"},  # 挪到很远，但全文只有一处
     ]
     moved = loose_mentions.relocate(phrases, segments)
-    assert [(item["core"], item["at_ms"]) for item in moved] == [("报价单", 75_000), ("能耗看板", 900_000)]
+    assert [(item["core"], item["at_ms"]) for item in moved] == [
+        ("报价单", 75_000),
+        ("能耗看板", 900_000),
+    ]
 
 
 def test_recall_needed_only_for_real_retranscription():
@@ -385,21 +450,36 @@ def test_recall_needed_only_for_real_retranscription():
 
 
 def done_with(db, meeting_id, phrases, version_id=None):
-    row = db.query_one("SELECT current_transcript_version_id AS v FROM meetings WHERE id = ?", (meeting_id,))
+    row = db.query_one(
+        "SELECT current_transcript_version_id AS v FROM meetings WHERE id = ?", (meeting_id,)
+    )
     db.execute(
         """INSERT INTO mention_extractions(meeting_id, version_id, text_sha, state, parts, parts_done, phrases_json,
                finished_at, created_at, updated_at)
            VALUES (?, ?, 'sha', 'done', 1, 1, ?, ?, ?, ?)
            ON CONFLICT(meeting_id) DO UPDATE SET phrases_json = excluded.phrases_json, state = 'done',
                version_id = excluded.version_id""",
-        (meeting_id, version_id or row["v"], json.dumps(phrases, ensure_ascii=False), utc_now(), utc_now(),
-         utc_now()),
+        (
+            meeting_id,
+            version_id or row["v"],
+            json.dumps(phrases, ensure_ascii=False),
+            utc_now(),
+            utc_now(),
+            utc_now(),
+        ),
     )
 
 
 def phrase(ms, quote, core, *, phrase_text=None, aka=(), kind=None, rel=None, version=None):
-    return {"at_ms": ms, "quote": quote, "phrase": phrase_text or quote, "core": core, "aka": list(aka), "kind": kind,
-            "when": {"rel": rel, "version": version}}
+    return {
+        "at_ms": ms,
+        "quote": quote,
+        "phrase": phrase_text or quote,
+        "core": core,
+        "aka": list(aka),
+        "kind": kind,
+        "when": {"rel": rel, "version": version},
+    }
 
 
 def new_version(db, meeting_id, kind, segments):
@@ -408,7 +488,13 @@ def new_version(db, meeting_id, kind, segments):
         version,
         meeting_id,
         [
-            {"id": f"{version}-s{index}", "ordinal": index, "start_ms": start, "end_ms": start + 4000, "text": text}
+            {
+                "id": f"{version}-s{index}",
+                "ordinal": index,
+                "start_ms": start,
+                "end_ms": start + 4000,
+                "text": text,
+            }
             for index, (start, text) in enumerate(segments)
         ],
     )
@@ -435,16 +521,28 @@ def test_drafts_never_reset_and_close_retranscription_is_kept(tmp_path):
     assert resolve(db)["recalled"] == 0 and extraction(db)["state"] == "done"
 
     # 重新转写，那句话没了：清零重来
-    new_version(db, "m", "generated", [(index * 60_000, f"完全不同的内容{index}" * 3) for index in range(30)])
+    new_version(
+        db,
+        "m",
+        "generated",
+        [(index * 60_000, f"完全不同的内容{index}" * 3) for index in range(30)],
+    )
     assert resolve(db)["recalled"] == 1
     row = extraction(db)
-    assert (row["state"], row["parts_done"], row["attempts"], row["phrases_json"]) == ("pending", 0, 0, "[]")
+    assert (row["state"], row["parts_done"], row["attempts"], row["phrases_json"]) == (
+        "pending",
+        0,
+        0,
+        "[]",
+    )
 
 
 def unique_lines(count, *, offset=0, special=None):
     """每行字都不一样的逐字稿（4 字片段互不重叠），好算 Jaccard；special 放在第 0 行。"""
-    lines = [(index * 60_000, "".join(chr(0x4E00 + offset + index * 40 + k) for k in range(30)))
-             for index in range(count)]
+    lines = [
+        (index * 60_000, "".join(chr(0x4E00 + offset + index * 40 + k) for k in range(30)))
+        for index in range(count)
+    ]
     if special:
         lines[0] = (0, special)
     return lines
@@ -467,7 +565,11 @@ def test_kept_retranscription_moves_the_row_to_the_new_version(tmp_path):
     row = extraction(db)
     with db.autocommit() as connection:
         sha = loose_mentions.text_sha(loose_mentions.transcript_lines(connection, generated))
-    assert (row["version_id"], row["text_sha"], row["state"]) == (generated, sha, "done") and generated != sent_id
+    assert (row["version_id"], row["text_sha"], row["state"]) == (
+        generated,
+        sha,
+        "done",
+    ) and generated != sent_id
     assert json.loads(row["phrases_json"])[0]["at_ms"] == 0
     # 签名跟着重算：下一轮不再重做
     assert resolve(db)["tried"] == 0
@@ -476,7 +578,11 @@ def test_kept_retranscription_moves_the_row_to_the_new_version(tmp_path):
     third = list(second)
     third[20], third[21] = unique_lines(2, offset=9000)
     fold = lambda lines: "".join(text for _ms, text in lines)  # noqa: E731
-    assert loose_mentions.jaccard(fold(first), fold(third)) < 0.85 <= loose_mentions.jaccard(fold(second), fold(third))
+    assert (
+        loose_mentions.jaccard(fold(first), fold(third))
+        < 0.85
+        <= loose_mentions.jaccard(fold(second), fold(third))
+    )
     new_version(db, "m", "draft", third)
     assert resolve(db)["recalled"] == 0 and extraction(db)["state"] == "done"
     assert [row["status"] for row in loose_rows(db)] == ["shown"]
@@ -490,9 +596,14 @@ def test_seven_mentions_read_as_seven_places(tmp_path):
     said = [f"能耗看板那个PPT再过一遍{index}" for index in range(7)]
     db, root_id = world(tmp_path, *said)
     plan = add_file(db, root_id, "能耗看板方案.pptx")
-    done_with(db, "m", [
-        phrase(at(index), text, "能耗看板", phrase_text="能耗看板那个PPT") for index, text in enumerate(said)
-    ])
+    done_with(
+        db,
+        "m",
+        [
+            phrase(at(index), text, "能耗看板", phrase_text="能耗看板那个PPT")
+            for index, text in enumerate(said)
+        ],
+    )
     resolve(db)
     [row] = loose_rows(db)
     evidence = json.loads(row["evidence_json"])
@@ -538,7 +649,9 @@ def context_of(db):
 def matched(db, *phrases_):
     return {
         stem: (item["file"]["name"], item["via"], item["tier"])
-        for stem, item in loose_mentions.resolve_phrases(context_of(db), list(phrases_), ns("2026-09-25"), None).items()
+        for stem, item in loose_mentions.resolve_phrases(
+            context_of(db), list(phrases_), ns("2026-09-25"), None
+        ).items()
     }
 
 
@@ -553,15 +666,25 @@ def test_tiers_one_to_four(tmp_path):
            VALUES ('t1', '设备采购清单', '[]', '["采购表"]', '通用', 1, 'p', ?, ?)""",
         (utc_now(), utc_now()),
     )
-    assert matched(db, phrase(1, "上周那版报价单", "报价单")) == {"报价单": ("报价单.xlsx", "stem", 1)}
+    assert matched(db, phrase(1, "上周那版报价单", "报价单")) == {
+        "报价单": ("报价单.xlsx", "stem", 1)
+    }
     assert matched(db, phrase(1, "那个能耗看板方案", "那个能耗看板方案")) == {
         "能耗看板方案": ("能耗看板方案.pptx", "stem", 2)
     }
-    assert matched(db, phrase(1, "能耗看板那个PPT", "能耗看板")) == {"能耗看板方案": ("能耗看板方案.pptx", "stem", 2)}
-    assert matched(db, phrase(1, "采购表发一下", "采购表")) == {"设备采购清单": ("设备采购清单.xlsx", "alias", 3)}
-    assert matched(db, phrase(1, "能原管理平台", "能原管理平台")) == {"能源管理平台": ("能源管理平台.docx", "stem", 4)}
+    assert matched(db, phrase(1, "能耗看板那个PPT", "能耗看板")) == {
+        "能耗看板方案": ("能耗看板方案.pptx", "stem", 2)
+    }
+    assert matched(db, phrase(1, "采购表发一下", "采购表")) == {
+        "设备采购清单": ("设备采购清单.xlsx", "alias", 3)
+    }
+    assert matched(db, phrase(1, "能原管理平台", "能原管理平台")) == {
+        "能源管理平台": ("能源管理平台.docx", "stem", 4)
+    }
     # aka 只走 T1、T2
-    assert matched(db, phrase(1, "那个东西", "那个东西", aka=["报价单"])) == {"报价单": ("报价单.xlsx", "alias", 1)}
+    assert matched(db, phrase(1, "那个东西", "那个东西", aka=["报价单"])) == {
+        "报价单": ("报价单.xlsx", "alias", 1)
+    }
     # 太短、常用词不算包含
     assert matched(db, phrase(1, "看板", "看板")) == {}
 
@@ -595,7 +718,9 @@ def calendar(tmp_path):
         stamp = int(datetime.fromisoformat(when).astimezone().timestamp() * 1_000_000_000)
         db.execute("UPDATE material_files SET mtime_ns = ? WHERE id = ?", (stamp, ids[label]))
     group = context_of(db).groups["报价单"]
-    meeting = int(datetime.fromisoformat("2026-09-28T10:00:00").astimezone().timestamp() * 1_000_000_000)
+    meeting = int(
+        datetime.fromisoformat("2026-09-28T10:00:00").astimezone().timestamp() * 1_000_000_000
+    )
     return group, meeting, ids
 
 
@@ -613,7 +738,9 @@ def calendar(tmp_path):
 )
 def test_when_rel_on_a_fixed_calendar(tmp_path, rel, expected):
     group, meeting, ids = calendar(tmp_path)
-    previous = int(datetime.fromisoformat("2026-09-22T10:00:00").astimezone().timestamp() * 1_000_000_000)
+    previous = int(
+        datetime.fromisoformat("2026-09-22T10:00:00").astimezone().timestamp() * 1_000_000_000
+    )
     chosen = file_mentions.pick_by_hint(group, {"rel": rel}, meeting, previous)
     assert chosen["id"] == ids[expected]
     assert file_mentions.pick_by_hint(group, {"version": 2}, meeting)["id"] == ids["v2"]
@@ -622,7 +749,9 @@ def test_when_rel_on_a_fixed_calendar(tmp_path, rel, expected):
 
 def test_sunday_meeting_counts_its_own_week(tmp_path):
     group, _meeting, ids = calendar(tmp_path)
-    sunday = int(datetime.fromisoformat("2026-09-27T21:00:00").astimezone().timestamp() * 1_000_000_000)
+    sunday = int(
+        datetime.fromisoformat("2026-09-27T21:00:00").astimezone().timestamp() * 1_000_000_000
+    )
     # 周日开会：「这周」从 9/21 周一算起，取开会前最新的那份（周日晚上 8 点）
     assert file_mentions.pick_by_hint(group, {"rel": "this_week"}, sunday)["id"] == ids["v3"]
     # 「上周」是 9/14 到 9/20：上上周六那份
@@ -638,27 +767,52 @@ def test_l5_writes_a_loose_row_when_there_is_no_literal_one(tmp_path):
     new = add_file(db, root_id, "报价单 v2.xlsx", day="2026-09-18")
     add_file(db, root_id, "报价单 v3.xlsx", day="2026-09-25")
     db.execute("UPDATE material_files SET mtime_ns = ? WHERE id = ?", (ns("2026-09-26"), old + 2))
-    done_with(db, "m", [
-        phrase(at(0), "上周那版报价单再看一下", "报价单", phrase_text="上周那版报价单", rel="last_week"),
-        phrase(at(1), "报价单还要改", "报价单"),
-    ])
+    done_with(
+        db,
+        "m",
+        [
+            phrase(
+                at(0),
+                "上周那版报价单再看一下",
+                "报价单",
+                phrase_text="上周那版报价单",
+                rel="last_week",
+            ),
+            phrase(at(1), "报价单还要改", "报价单"),
+        ],
+    )
     graph_before = rev(db)
     assert resolve(db)["written"] == 1
     [row] = loose_rows(db)
     evidence = json.loads(row["evidence_json"])
-    assert (row["status"], row["origin"], row["ident"], row["file_id"]) == ("shown", "llm", "m|报价单", new)
+    assert (row["status"], row["origin"], row["ident"], row["file_id"]) == (
+        "shown",
+        "llm",
+        "m|报价单",
+        new,
+    )
     assert row["at_ms"] == at(0) and row["quote"] == "上周那版报价单再看一下"
     assert evidence == {
         "phrase": "上周那版报价单",
         "via": "time_hint",
-        "hits": [{"at_ms": at(0), "quote": "上周那版报价单再看一下"}, {"at_ms": at(1), "quote": "报价单还要改"}],
+        "hits": [
+            {"at_ms": at(0), "quote": "上周那版报价单再看一下"},
+            {"at_ms": at(1), "quote": "报价单还要改"},
+        ],
         "count": 2,
     }
     assert rev(db) == graph_before + 1
 
     # 签名没变：整轮不写，graph_rev 不动
     stamp = row["updated_at"]
-    assert resolve(db) == {"pending": 0, "tried": 0, "written": 0, "unchanged": 0, "recalled": 0, "skipped": 0}
+    assert resolve(db) == {
+        "pending": 0,
+        "tried": 0,
+        "written": 0,
+        "unchanged": 0,
+        "recalled": 0,
+        "skipped": 0,
+    }
     assert loose_rows(db)[0]["updated_at"] == stamp and rev(db) == graph_before + 1
 
     # 说法没了：放宽行收回
@@ -688,23 +842,33 @@ def test_l5_with_literal_rows(tmp_path):
         """INSERT INTO meeting_file_scan(meeting_id, stems_sig, dirty) VALUES ('m', 'x', 0)
            ON CONFLICT(meeting_id) DO UPDATE SET dirty = 0"""
     )
-    done_with(db, "m", [
-        phrase(at(0), "上周那版报价单再看一下", "报价单", rel="last_week"),
-        phrase(at(1), "预算表也看一下", "预算表", rel="latest"),
-        phrase(at(2), "排期表再说", "排期表", rel="latest"),
-    ])
+    done_with(
+        db,
+        "m",
+        [
+            phrase(at(0), "上周那版报价单再看一下", "报价单", rel="last_week"),
+            phrase(at(1), "预算表也看一下", "预算表", rel="latest"),
+            phrase(at(2), "排期表再说", "排期表", rel="latest"),
+        ],
+    )
     resolve(db)
     # 有效、没换过的字面行：只写提示，2d 下一轮重挑；rejected 和你换过的什么都不写
     assert loose_rows(db) == []
     assert json.loads(extraction(db)["hints_json"]) == {"报价单": {"rel": "last_week"}}
-    assert db.query_one("SELECT dirty FROM meeting_file_scan WHERE meeting_id = 'm'") == {"dirty": 1}
+    assert db.query_one("SELECT dirty FROM meeting_file_scan WHERE meeting_id = 'm'") == {
+        "dirty": 1
+    }
     # 2d 按提示挪到上周那一版
     file_mentions.match_pending(db, clock=lambda: 0.0)
-    literal = db.query_one("SELECT file_id FROM meeting_file_mentions WHERE meeting_id = 'm' AND stem_key = '报价单'")
+    literal = db.query_one(
+        "SELECT file_id FROM meeting_file_mentions WHERE meeting_id = 'm' AND stem_key = '报价单'"
+    )
     assert literal == {"file_id": v2}
     # 提示没变：不再加 dirty
     resolve(db)
-    assert db.query_one("SELECT dirty FROM meeting_file_scan WHERE meeting_id = 'm'") == {"dirty": 0}
+    assert db.query_one("SELECT dirty FROM meeting_file_scan WHERE meeting_id = 'm'") == {
+        "dirty": 0
+    }
 
 
 def test_at_most_ten_rows_per_meeting(tmp_path):
@@ -712,7 +876,9 @@ def test_at_most_ten_rows_per_meeting(tmp_path):
     db, root_id = world(tmp_path, *[f"那个{name}看一下" for name in names])
     for name in names:
         add_file(db, root_id, f"{name}.xlsx")
-    done_with(db, "m", [phrase(at(index), f"那个{name}看一下", name) for index, name in enumerate(names)])
+    done_with(
+        db, "m", [phrase(at(index), f"那个{name}看一下", name) for index, name in enumerate(names)]
+    )
     resolve(db)
     rows = loose_rows(db)
     assert len(rows) == 10
@@ -769,7 +935,9 @@ def test_wrong_pick_is_422_with_the_phase_two_sentence(tmp_path):
     [row] = loose_rows(db)
     with db.transaction() as connection, pytest.raises(relations.RelationError) as error:
         relations.answer(connection, row["id"], {"answer": "pick", "file_id": other}, utc_now())
-    assert error.value.status == 422 and str(error.value) == "只能换成这个项目文件夹里同名的另一份文件"
+    assert (
+        error.value.status == 422 and str(error.value) == "只能换成这个项目文件夹里同名的另一份文件"
+    )
 
 
 # ---------------------------------------------------------------------- 状态句
@@ -823,7 +991,11 @@ def test_brief_state_sentences(tmp_path):
 
 def test_seed_does_nothing_when_the_ai_layer_is_off(tmp_path):
     db, _root = world(tmp_path, "上周那版报价单再看一下")
-    for off in ({"links_llm_enabled": False}, {"links_llm_daily_calls": 0}, {"links_enabled": False}):
+    for off in (
+        {"links_llm_enabled": False},
+        {"links_llm_daily_calls": 0},
+        {"links_enabled": False},
+    ):
         assert loose_mentions.seed(db, settings(tmp_path, **off), NOW) == 0
     assert extraction(db) is None
     assert loose_mentions.seed(db, settings(tmp_path), NOW) == 1
@@ -846,10 +1018,16 @@ def test_endpoints_carry_the_loose_rows_and_answers_work(tmp_path):
     key = tmp_path / "api-key"
     key.write_text("sk-test", encoding="utf-8")
     cfg = Settings(
-        data_dir=tmp_path / "data", database_path=tmp_path / "data" / "db.sqlite3",
-        archive_root=tmp_path / "archive", staging_root=tmp_path / "staging",
-        relay_jobs_db=tmp_path / "relay.sqlite3", semantic_enabled=False, lark_webhook_url="",
-        llm_api_key_file=key, material_browse_root=tmp_path / "browse", links_enabled=True,
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "db.sqlite3",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        relay_jobs_db=tmp_path / "relay.sqlite3",
+        semantic_enabled=False,
+        lark_webhook_url="",
+        llm_api_key_file=key,
+        material_browse_root=tmp_path / "browse",
+        links_enabled=True,
     )
     client = TestClient(create_app(cfg, FakeRelayClient()))
     headers = write_headers(client)
@@ -862,11 +1040,17 @@ def test_endpoints_carry_the_loose_rows_and_answers_work(tmp_path):
     )
     first = add_file(db, root_id, "报价单 v1.xlsx", day="2026-09-10")
     second = add_file(db, root_id, "报价/报价单 v2.xlsx", day="2026-09-18")
-    add_meeting(db, "m", ago=1, project_id="p", segments=talk("上周那版报价单再看一下", "那版报价单还要改"))
-    done_with(db, "m", [
-        phrase(at(0), "上周那版报价单再看一下", "报价单", phrase_text="上周那版报价单"),
-        phrase(at(1), "那版报价单还要改", "报价单"),
-    ])
+    add_meeting(
+        db, "m", ago=1, project_id="p", segments=talk("上周那版报价单再看一下", "那版报价单还要改")
+    )
+    done_with(
+        db,
+        "m",
+        [
+            phrase(at(0), "上周那版报价单再看一下", "报价单", phrase_text="上周那版报价单"),
+            phrase(at(1), "那版报价单还要改", "报价单"),
+        ],
+    )
     resolve(db)
     [row] = loose_rows(db)
     graph_rev = rev(db)
@@ -874,16 +1058,27 @@ def test_endpoints_carry_the_loose_rows_and_answers_work(tmp_path):
     brief = client.get("/api/meetings/m/brief").json()
     [item] = brief["files"]
     assert (item["relation_id"], item["phrase"], item["via"], item["count"], item["first_ms"]) == (
-        row["id"], "上周那版报价单", "stem", 2, at(0)
+        row["id"],
+        "上周那版报价单",
+        "stem",
+        2,
+        at(0),
     )
     assert brief["loose_state"] is None  # 抽完了：不写
     db.execute("UPDATE mention_extractions SET state = 'failed'")
     state = client.get("/api/meetings/m/brief").json()["loose_state"]
-    assert state == {"kind": "stopped", "text": "这场会的 AI 整理没做成", "action": {"kind": "retry", "label": "现在重试"}}
+    assert state == {
+        "kind": "stopped",
+        "text": "这场会的 AI 整理没做成",
+        "action": {"kind": "retry", "label": "现在重试"},
+    }
     detail = client.get(f"/api/graph/files/{second}").json()
     [meeting] = detail["meetings"]
     assert (meeting["relation_id"], meeting["phrase"], meeting["via"], meeting["status"]) == (
-        row["id"], "上周那版报价单", "stem", "active"
+        row["id"],
+        "上周那版报价单",
+        "stem",
+        "active",
     )
     assert detail["active_meetings"] == 1
     preview = client.get(f"/api/materials/files/{second}/preview").json()
@@ -892,24 +1087,42 @@ def test_endpoints_carry_the_loose_rows_and_answers_work(tmp_path):
     ]
     graph = client.get("/api/graph/projects/p").json()
     [edge] = [edge for edge in graph["edges"] if edge["kind"] == "mentioned"]
-    assert edge["id"] == f"e:file:{second}:m" and edge["label"] == "会上说『上周那版报价单』等 2 处 · 00:20:00"
+    assert (
+        edge["id"] == f"e:file:{second}:m"
+        and edge["label"] == "会上说『上周那版报价单』等 2 处 · 00:20:00"
+    )
     # GET 不写库
     assert rev(db) == graph_rev
     for payload in (brief, state, detail, preview, graph):
         assert [text for text in collect_copy(payload) if problems(text)] == []
 
     # ［不是这份文件］、过了撤销期从「你标过…」那一行 restore；［换成这份］
-    answered = client.post(f"/api/relations/{row['id']}/answer", json={"answer": "no"}, headers=headers).json()
+    answered = client.post(
+        f"/api/relations/{row['id']}/answer", json={"answer": "no"}, headers=headers
+    ).json()
     assert answered["relation"]["status"] == "rejected" and answered["undo_until"]
     rejected = client.get(f"/api/graph/files/{second}").json()["meetings"]
     assert [(item["status"], item["relation_id"]) for item in rejected] == [("rejected", row["id"])]
-    restored = client.post(f"/api/relations/{row['id']}/answer", json={"answer": "restore"}, headers=headers)
+    restored = client.post(
+        f"/api/relations/{row['id']}/answer", json={"answer": "restore"}, headers=headers
+    )
     assert restored.json()["relation"]["status"] == "shown"
-    wrong = client.post(f"/api/relations/{row['id']}/answer", json={"answer": "pick", "file_id": 9999},
-                        headers=headers)
-    assert wrong.status_code == 422 and wrong.json()["detail"] == "只能换成这个项目文件夹里同名的另一份文件"
-    picked = client.post(f"/api/relations/{row['id']}/answer", json={"answer": "pick", "file_id": first},
-                         headers=headers).json()
+    wrong = client.post(
+        f"/api/relations/{row['id']}/answer",
+        json={"answer": "pick", "file_id": 9999},
+        headers=headers,
+    )
+    assert (
+        wrong.status_code == 422
+        and wrong.json()["detail"] == "只能换成这个项目文件夹里同名的另一份文件"
+    )
+    picked = client.post(
+        f"/api/relations/{row['id']}/answer",
+        json={"answer": "pick", "file_id": first},
+        headers=headers,
+    ).json()
     assert picked["relation"]["file"]["id"] == first and picked["relation"]["status"] == "shown"
-    assert client.post(f"/api/relations/{row['id']}/undo", json={}, headers=headers).status_code == 200
+    assert (
+        client.post(f"/api/relations/{row['id']}/undo", json={}, headers=headers).status_code == 200
+    )
     assert loose_rows(db)[0]["file_id"] == second

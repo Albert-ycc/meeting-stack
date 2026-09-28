@@ -1,4 +1,5 @@
 """第三期 3g：关系图里的文件（最近改过的文件、内容计数、文件面板、需求文件夹查库、交付物连到文件）。"""
+
 from meeting_workbench import material_graph, material_status
 from meeting_workbench.db import utc_now
 from meeting_workbench.materials import ROOT_ONLINE, ROOT_VOLUME_OFFLINE
@@ -53,14 +54,21 @@ def test_roots_have_recent_files_split_between_root_and_requirement_folders(tmp_
     add_content(db, "k-done", ["正文"])
     add_file(db, root_id, "方案/定稿.docx", key="k-done", mtime=60)
     add_file(db, root_id, "图.zip", mtime=55)
-    client.app.state.material_content.progress["roots"] = {root_id: {"files": 13, "done": 1, "unreadable": 1}}
+    client.app.state.material_content.progress["roots"] = {
+        root_id: {"files": 13, "done": 1, "unreadable": 1}
+    }
 
     body = client.get("/api/graph/projects/p/roots").json()
 
     [item] = body["roots"]
     # 根目录最多 6 个候选：不含声档会议记录、不含已不见的、不含需求文件夹里的
     assert [entry["name"] for entry in item["recent_files"]] == [
-        "定稿.docx", "图.zip", "草稿7.docx", "草稿6.docx", "草稿5.docx", "草稿4.docx",
+        "定稿.docx",
+        "图.zip",
+        "草稿7.docx",
+        "草稿6.docx",
+        "草稿5.docx",
+        "草稿4.docx",
     ]
     first = item["recent_files"][0]
     assert first["dir_rel"] == "方案" and first["state"] == "done" and first["ext"] == "docx"
@@ -71,7 +79,8 @@ def test_roots_have_recent_files_split_between_root_and_requirement_folders(tmp_
     [folder] = body["folders"]
     assert folder["root_id"] == root_id
     assert [(entry["name"], entry["state"]) for entry in folder["recent_files"]] == [
-        ("名单.xlsx", "pending"), ("说明.pdf", "unreadable"),
+        ("名单.xlsx", "pending"),
+        ("说明.pdf", "unreadable"),
     ]
 
 
@@ -174,10 +183,17 @@ def test_requirement_folder_files_come_from_the_index_when_the_root_is_scanned(t
     body = client.get(f"/api/requirements/r1/folders/{folder_id}/files").json()
 
     assert body["exists"] is True and body["total"] == 2 and body["capped"] is False
-    assert [(item["relative_path"], item["file_id"]) for item in body["items"]] == [("b.xlsx", b), ("子/a.docx", a)]
+    assert [(item["relative_path"], item["file_id"]) for item in body["items"]] == [
+        ("b.xlsx", b),
+        ("子/a.docx", a),
+    ]
     assert body["items"][0]["size_bytes"] == 10
-    paged = client.get(f"/api/requirements/r1/folders/{folder_id}/files", params={"offset": 1, "limit": 1}).json()
-    assert [item["relative_path"] for item in paged["items"]] == ["子/a.docx"] and paged["total"] == 2
+    paged = client.get(
+        f"/api/requirements/r1/folders/{folder_id}/files", params={"offset": 1, "limit": 1}
+    ).json()
+    assert [item["relative_path"] for item in paged["items"]] == ["子/a.docx"] and paged[
+        "total"
+    ] == 2
 
 
 def test_requirement_folder_files_fall_back_to_disk_until_the_index_is_done(tmp_path):
@@ -200,13 +216,28 @@ def test_folder_files_from_index_needs_the_root_online(tmp_path):
 
     with db.autocommit() as connection:
         offline = material_graph.folder_files_from_index(
-            connection, "p", str(root / "白名单"), limit=10, offset=0, state_of=lambda path: ROOT_VOLUME_OFFLINE
+            connection,
+            "p",
+            str(root / "白名单"),
+            limit=10,
+            offset=0,
+            state_of=lambda path: ROOT_VOLUME_OFFLINE,
         )
         online = material_graph.folder_files_from_index(
-            connection, "p", str(root / "白名单"), limit=10, offset=0, state_of=lambda path: ROOT_ONLINE
+            connection,
+            "p",
+            str(root / "白名单"),
+            limit=10,
+            offset=0,
+            state_of=lambda path: ROOT_ONLINE,
         )
         elsewhere = material_graph.folder_files_from_index(
-            connection, "p", str(tmp_path / "别处"), limit=10, offset=0, state_of=lambda path: ROOT_ONLINE
+            connection,
+            "p",
+            str(tmp_path / "别处"),
+            limit=10,
+            offset=0,
+            state_of=lambda path: ROOT_ONLINE,
         )
 
     assert offline is None and elsewhere is None
@@ -229,7 +260,9 @@ def test_file_panel_has_state_and_deliverables(tmp_path):
     body = client.get(f"/api/graph/files/{file_id}").json()
 
     assert body["state"]["kind"] == "done"
-    assert [(item["task_id"], item["title"]) for item in body["deliverables"]] == [("t1", "任务 t1")]
+    assert [(item["task_id"], item["title"]) for item in body["deliverables"]] == [
+        ("t1", "任务 t1")
+    ]
 
 
 def test_mark_a_file_as_deliverable_then_undo(tmp_path):
@@ -253,18 +286,34 @@ def test_mark_a_file_as_deliverable_then_undo(tmp_path):
     assert item["file_id"] == file_id and item["gone"] is False
     # 标为交付物不顺带把任务标成完成
     assert body["status"] == "in_progress"
-    link = db.query_one("SELECT * FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,))
+    link = db.query_one(
+        "SELECT * FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,)
+    )
     # 还没算过内容标识的文件，盘在就现算一个
-    assert link["content_key"] and link["root_id"] == root_id and link["rel_path"] == "交付/定稿.pdf"
+    assert (
+        link["content_key"] and link["root_id"] == root_id and link["rel_path"] == "交付/定稿.pdf"
+    )
 
-    other = client.request("DELETE", f"/api/tasks/t2/deliverables/{deliverable_id}", json={}, headers=headers)
+    other = client.request(
+        "DELETE", f"/api/tasks/t2/deliverables/{deliverable_id}", json={}, headers=headers
+    )
     assert other.status_code == 404
-    undone = client.request("DELETE", f"/api/tasks/t1/deliverables/{deliverable_id}", json={}, headers=headers)
+    undone = client.request(
+        "DELETE", f"/api/tasks/t1/deliverables/{deliverable_id}", json={}, headers=headers
+    )
     assert undone.status_code == 200
     assert undone.json()["deliverables"] == []
     assert undone.json()["events"][-1]["kind"] == "deliverable_removed"
-    assert db.query_one("SELECT 1 FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,)) is None
-    assert client.request("DELETE", f"/api/tasks/t1/deliverables/{deliverable_id}", json={}, headers=headers).status_code == 404
+    assert (
+        db.query_one("SELECT 1 FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,))
+        is None
+    )
+    assert (
+        client.request(
+            "DELETE", f"/api/tasks/t1/deliverables/{deliverable_id}", json={}, headers=headers
+        ).status_code
+        == 404
+    )
 
 
 def test_deliverable_input_takes_exactly_one_of_url_and_file_id(tmp_path):
@@ -300,7 +349,9 @@ def test_file_deliverable_follows_the_content_after_a_move(tmp_path):
 
     [item] = client.get("/api/tasks/t1").json()["deliverables"]
     assert item["file_id"] == moved and item["name"] == "定稿-final.pdf" and item["gone"] is False
-    [task] = [task for task in client.get("/api/graph/meetings/m1").json()["tasks"] if task["id"] == "t1"]
+    [task] = [
+        task for task in client.get("/api/graph/meetings/m1").json()["tasks"] if task["id"] == "t1"
+    ]
     assert task["deliverables"][0]["file_id"] == moved
 
     db.execute("UPDATE material_files SET gone_at = ? WHERE id = ?", (utc_now(), moved))
@@ -329,7 +380,11 @@ def test_old_typed_paths_match_a_root_by_prefix(tmp_path):
         json={"kind": "file", "url": f"{root}/交付/早就删了.pdf"},
         headers=headers,
     )
-    client.post("/api/tasks/t1/deliverables", json={"kind": "figma", "url": "https://figma.com/x"}, headers=headers)
+    client.post(
+        "/api/tasks/t1/deliverables",
+        json={"kind": "figma", "url": "https://figma.com/x"},
+        headers=headers,
+    )
 
     items = client.get("/api/tasks/t1").json()["deliverables"]
 
@@ -346,7 +401,9 @@ def test_old_typed_paths_match_a_root_by_prefix(tmp_path):
 def test_cards_reveal_is_only_for_this_machine(tmp_path):
     client, db, _root, _root_id = graph_world(tmp_path)
 
-    remote = client.post("/api/cards/reveal", json={"project_id": "p"}, headers=write_headers(client))
+    remote = client.post(
+        "/api/cards/reveal", json={"project_id": "p"}, headers=write_headers(client)
+    )
     local, headers = local_client(client)
     here = local.post("/api/cards/reveal", json={"project_id": "p"}, headers=headers)
 

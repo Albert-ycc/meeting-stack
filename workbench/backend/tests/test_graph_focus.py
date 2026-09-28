@@ -1,4 +1,5 @@
 """1h 关系图：展开一场会、宽原话、残影日期、信标里的任务、全文次数、子文件夹、在访达中显示。"""
+
 import os
 import time
 from datetime import date
@@ -41,7 +42,9 @@ def add_deliverable(db, task_id, url):
 
 
 def set_anchor(db, task_id, anchor_ms, quote=""):
-    db.execute("UPDATE tasks SET anchor_ms=?, anchor_quote=? WHERE id=?", (anchor_ms, quote, task_id))
+    db.execute(
+        "UPDATE tasks SET anchor_ms=?, anchor_quote=? WHERE id=?", (anchor_ms, quote, task_id)
+    )
 
 
 def test_meeting_focus_has_timeline_items_and_neighbours(tmp_path):
@@ -50,7 +53,12 @@ def test_meeting_focus_has_timeline_items_and_neighbours(tmp_path):
     add_project(db, "q", "数据中台")
     add_meeting(db, "m-old", ago=9, project_id="p", origin="manual", title="上一场")
     add_meeting(
-        db, "m-1", ago=5, project_id="p", origin="manual", title="这一场",
+        db,
+        "m-1",
+        ago=5,
+        project_id="p",
+        origin="manual",
+        title="这一场",
         segments=[(0, "开场"), (600_000, "中间"), (1_500_000, "收尾")],
         minutes=FOCUS_MINUTES,
     )
@@ -61,7 +69,9 @@ def test_meeting_focus_has_timeline_items_and_neighbours(tmp_path):
         "INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES ('r-1', 'm-1', ?)",
         (utc_now(),),
     )
-    add_task(db, "t-late", meeting_id="m-1", project_id="p", status="confirmed", requirement_id="r-1")
+    add_task(
+        db, "t-late", meeting_id="m-1", project_id="p", status="confirmed", requirement_id="r-1"
+    )
     add_task(db, "t-early", meeting_id="m-1", project_id="p")
     add_task(db, "t-none", meeting_id="m-1", project_id="p", status="done")
     add_task(db, "t-gone", meeting_id="m-1", project_id="p", status="cancelled")
@@ -76,10 +86,24 @@ def test_meeting_focus_has_timeline_items_and_neighbours(tmp_path):
     # 没记录音长度时按逐字稿最后一段的结束时间
     assert body["meeting"]["duration_ms"] == 1_504_000
     assert body["decisions"] == [
-        {"id": None, "text": "阈值先按 0.8 执行", "start_ms": 754_000, "end_ms": None,
-         "detail": "理由是上周误报太多。 下周复盘一次。", "later": [], "earlier": []},
-        {"id": None, "text": "驻场排班改两班", "start_ms": None, "end_ms": None, "detail": "",
-         "later": [], "earlier": []},
+        {
+            "id": None,
+            "text": "阈值先按 0.8 执行",
+            "start_ms": 754_000,
+            "end_ms": None,
+            "detail": "理由是上周误报太多。 下周复盘一次。",
+            "later": [],
+            "earlier": [],
+        },
+        {
+            "id": None,
+            "text": "驻场排班改两班",
+            "start_ms": None,
+            "end_ms": None,
+            "detail": "",
+            "later": [],
+            "earlier": [],
+        },
     ]
     # 按时间点排，没时间点的排最后；已取消的不画
     assert [task["id"] for task in body["tasks"]] == ["t-early", "t-late", "t-none"]
@@ -116,8 +140,16 @@ def test_meeting_focus_without_project_has_no_neighbours(tmp_path):
 def test_wide_quotes_reach_twenty_seconds_each_side(tmp_path):
     client, _settings, db = make_db(tmp_path)
     add_meeting(
-        db, "m-1", ago=0,
-        segments=[(0, "开场"), (14_000, "前面"), (30_000, "锚点"), (46_000, "后面"), (80_000, "太远")],
+        db,
+        "m-1",
+        ago=0,
+        segments=[
+            (0, "开场"),
+            (14_000, "前面"),
+            (30_000, "锚点"),
+            (46_000, "后面"),
+            (80_000, "太远"),
+        ],
     )
     short = client.get("/api/meetings/m-1/quotes", params={"at": 30_000}).json()
     wide = client.get("/api/meetings/m-1/quotes", params={"at": 30_000, "span": "wide"}).json()
@@ -170,15 +202,25 @@ def test_fulltext_counts_all_spellings_once_and_ignores_window(tmp_path):
         "UPDATE glossary_terms SET aliases=?, also=? WHERE id='t-zt'",
         ('["数据中太"]', '["中台"]'),
     )
-    add_meeting(db, "m-new", ago=0, project_id="p", segments=[(0, "数据中台和中台是一回事"), (5000, "数据中太")])
-    add_meeting(db, "m-old", ago=200, project_id="p", segments=[(0, "老会议提到中台"), (7000, "没提")])
+    add_meeting(
+        db,
+        "m-new",
+        ago=0,
+        project_id="p",
+        segments=[(0, "数据中台和中台是一回事"), (5000, "数据中太")],
+    )
+    add_meeting(
+        db, "m-old", ago=200, project_id="p", segments=[(0, "老会议提到中台"), (7000, "没提")]
+    )
     add_meeting(db, "m-q", ago=0, project_id="q", segments=[(0, "中台中台中台")])
     add_meeting(db, "m-api", ago=1, project_id="p", segments=[(0, "API 和 api 都算")])
 
     by_term = client.get("/api/graph/projects/p/fulltext", params={"term": "t-zt"}).json()
     assert by_term["variants"] == ["数据中台", "数据中太", "中台"]
     # 「数据中台」不再拆出一次「中台」；别的项目的会不算；200 天前的也算
-    assert [(item["meeting_id"], item["count"], item["first_ms"]) for item in by_term["meetings"]] == [
+    assert [
+        (item["meeting_id"], item["count"], item["first_ms"]) for item in by_term["meetings"]
+    ] == [
         ("m-new", 3, 0),
         ("m-old", 1, 0),
     ]
@@ -250,7 +292,10 @@ def test_expand_refuses_paths_outside_the_root(tmp_path):
     for bad in ("../别的项目", "/etc", ".secret", "外链"):
         response = client.get("/api/graph/expand", params={"root": root_id, "dir": bad})
         assert response.status_code == 400, bad
-    assert client.get("/api/graph/expand", params={"root": root_id, "dir": "没有这个"}).status_code == 404
+    assert (
+        client.get("/api/graph/expand", params={"root": root_id, "dir": "没有这个"}).status_code
+        == 404
+    )
     assert client.get("/api/graph/expand", params={"root": 999}).status_code == 404
 
 
@@ -301,13 +346,17 @@ def test_reveal_only_from_this_machine_and_only_registered_folders(tmp_path, mon
     monkeypatch.setattr(graph, "reveal", lambda path: opened.append(path))
 
     remote = client.post(
-        "/api/materials/reveal", json={"path": str(root / "报价.xlsx")}, headers=write_headers(client)
+        "/api/materials/reveal",
+        json={"path": str(root / "报价.xlsx")},
+        headers=write_headers(client),
     )
     assert remote.status_code == 403
 
     local, headers = local_client(client)
     assert local.get("/api/graph/projects/p/roots").json()["can_reveal"] is True
-    ok = local.post("/api/materials/reveal", json={"path": str(root / "报价.xlsx")}, headers=headers)
+    ok = local.post(
+        "/api/materials/reveal", json={"path": str(root / "报价.xlsx")}, headers=headers
+    )
     assert ok.status_code == 200
     assert opened == [(root / "报价.xlsx").resolve()]
     for bad, status in (
@@ -357,7 +406,9 @@ def test_drag_preview_counts_match_what_the_move_does(tmp_path):
     add_task(db, "t-req", meeting_id="m-1", project_id="p", requirement_id="r-1")
 
     node = client.get("/api/graph/projects/p").json()["meetings"][0]
-    moved = client.patch("/api/meetings/m-1", json={"project_id": "q"}, headers=write_headers(client)).json()
+    moved = client.patch(
+        "/api/meetings/m-1", json={"project_id": "q"}, headers=write_headers(client)
+    ).json()
 
     assert (node["tasks_follow"], node["tasks_stay"]) == (3, 1)
     assert moved["effects"]["tasks_moved"] == node["tasks_follow"]
@@ -370,16 +421,27 @@ def test_meeting_focus_link_refs_carry_audio_urls(tmp_path):
 
     client, _settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
-    add_meeting(db, "m-old", ago=9, project_id="p", origin="manual", title="上一场", minutes=FOCUS_MINUTES)
-    add_meeting(db, "m-new", ago=2, project_id="p", origin="manual", title="下一场",
-                minutes="# 周会\n\n## 决议\n1. 阈值改成 0.7 执行 [00:00:30]\n")
+    add_meeting(
+        db, "m-old", ago=9, project_id="p", origin="manual", title="上一场", minutes=FOCUS_MINUTES
+    )
+    add_meeting(
+        db,
+        "m-new",
+        ago=2,
+        project_id="p",
+        origin="manual",
+        title="下一场",
+        minutes="# 周会\n\n## 决议\n1. 阈值改成 0.7 执行 [00:00:30]\n",
+    )
     db.execute(
         """INSERT INTO artifacts(meeting_id, kind, source_root, path, created_at)
            VALUES ('m-new', 'audio', 'archive', '/归档/m-new.m4a', ?)""",
         (utc_now(),),
     )
     decisions.ingest_pending(db)
-    early = db.query_one("SELECT id FROM decisions WHERE meeting_id = 'm-old' AND ordinal = 0")["id"]
+    early = db.query_one("SELECT id FROM decisions WHERE meeting_id = 'm-old' AND ordinal = 0")[
+        "id"
+    ]
     late = db.query_one("SELECT id FROM decisions WHERE meeting_id = 'm-new'")["id"]
     db.execute(
         """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id, at_ms, decision_id,
@@ -392,7 +454,11 @@ def test_meeting_focus_link_refs_carry_audio_urls(tmp_path):
     old = client.get("/api/graph/meetings/m-old").json()
     (ref,) = old["decisions"][0]["later"]
     assert ref["audio_url"] == f"/api/media/{audio_id}" and ref["decision_id"] == late
-    assert ref["meeting"]["title"] == "下一场" and ref["start_ms"] == 30_000 and ref["quote"] == "改成 0.7"
+    assert (
+        ref["meeting"]["title"] == "下一场"
+        and ref["start_ms"] == 30_000
+        and ref["quote"] == "改成 0.7"
+    )
     new = client.get("/api/graph/meetings/m-new").json()
     (back,) = new["decisions"][0]["earlier"]
     assert back["decision_id"] == early and back["audio_url"] is None

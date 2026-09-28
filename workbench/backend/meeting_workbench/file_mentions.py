@@ -17,6 +17,7 @@
   中文数字到二十）和全名针并列计入 versions（组里有这一版才算）；「终版」「定稿」、final 在组里恰好
   一份文件名带这类字样时选那一份。都没有时先看 L5 写的 hints_json（pick_by_hint），再用 _pick_by_date。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -47,12 +48,23 @@ _HHMMSS = re.compile(r"\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]")
 _ZONES_SQL = ", ".join(f"'{zone}'" for zone in MATCH_ZONES)
 # 4b：词干命中前后看几个字找口头版本号和「终版」
 NEAR_CHARS = 8
-_CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_DIGITS = {
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
 _NUM = r"[一二两三四五六七八九十]{1,3}|\d{1,2}"
 # 「第三版」「第3版」「三版」「V3版」「版本三」「3.0版」。光杆「N版」最容易误判：「上一版」「这一版」
 # 「下一版」「新一版」「这两版」「改了三版」说的不是第几版，所以前面是这些字（或数字本身的一部分）时不认；
 # 光杆的「一版」「两版」多半是在数版数（「出一版」「做了两版」），也不认（「第一版」「版本一」照认）。
-_BARE_NOT_AFTER = "上下这那前后新旧同每哪几各某本此该头首末好多了过出" "一二两三四五六七八九十"
+_BARE_NOT_AFTER = "上下这那前后新旧同每哪几各某本此该头首末好多了过出一二两三四五六七八九十"
 _ORAL_VERSION = re.compile(
     rf"第\s*(?P<a>{_NUM})\s*版"
     rf"|(?P<e>\d{{1,2}})\.0\s*版"
@@ -115,7 +127,11 @@ def _json_list(raw: Any) -> list[str]:
         value = json.loads(raw or "[]")
     except (TypeError, ValueError):
         return []
-    return [str(item) for item in value if isinstance(item, str) and item.strip()] if isinstance(value, list) else []
+    return (
+        [str(item) for item in value if isinstance(item, str) and item.strip()]
+        if isinstance(value, list)
+        else []
+    )
 
 
 def version_tag(name: str) -> str | None:
@@ -207,7 +223,10 @@ def _day_start_ns(day: date_type) -> int:
 
 
 def pick_by_hint(
-    group: list[dict[str, Any]], hint: dict[str, Any] | None, meeting_ns: int | None, previous_ns: int | None = None
+    group: list[dict[str, Any]],
+    hint: dict[str, Any] | None,
+    meeting_ns: int | None,
+    previous_ns: int | None = None,
 ) -> dict[str, Any] | None:
     """按提示在词干组里挑一份（4b，2d 和 L5 同一套）：{"version": 3} 挑那一版；{"rel": …} 以会议当天
     （本机时区，一周从周一开始）为准：上周是上一个周一到周日之间修改时间最新的；这周是本周到开会时为止
@@ -247,7 +266,9 @@ def pick_by_hint(
     return _latest([row for row in group if low <= _mtime(row) <= high])
 
 
-def previous_meeting_ns(connection: Any, meeting_id: str, project_id: str, meeting_ns: int | None) -> int | None:
+def previous_meeting_ns(
+    connection: Any, meeting_id: str, project_id: str, meeting_ns: int | None
+) -> int | None:
     """同项目上一场会的时间（「上次开会那版」用）。"""
     if meeting_ns is None:
         return None
@@ -271,7 +292,9 @@ class ProjectContext:
         ).fetchone()
         self.project_id = project_id
         names = [project["name"]] if project else []
-        names += [entry["name"] for entry in also_entries(project["also_names"] if project else None)]
+        names += [
+            entry["name"] for entry in also_entries(project["also_names"] if project else None)
+        ]
         root_rows = connection.execute(
             "SELECT id, path FROM project_material_roots WHERE project_id = ?", (project_id,)
         ).fetchall()
@@ -350,12 +373,16 @@ class ProjectContext:
         forms += [
             light_key(text)
             for text in blockers
-            if light_key(text) and light_key(text) not in self.needles and light_key(text) not in self.aliases
+            if light_key(text)
+            and light_key(text) not in self.needles
+            and light_key(text) not in self.aliases
         ]
         self.scanner = FormScanner(forms) if self.needles else None
         self.files_by_id = {row["id"]: row for group in self.groups.values() for row in group}
 
-    def follow_picked(self, key: str, content_key: str | None) -> tuple[dict[str, Any] | None, bool]:
+    def follow_picked(
+        self, key: str, content_key: str | None
+    ) -> tuple[dict[str, Any] | None, bool]:
         """你手动换过的文件不见了：在同一词干组的活文件里按内容标识找。返回 (找到的文件, 要不要等)。
 
         组里还有没算出标识（或标识过时）的活文件时要等：这条提到原样保留，不退回自动选。"""
@@ -363,7 +390,9 @@ class ProjectContext:
             return None, False
         waiting = False
         for row in sorted(self.groups.get(key, []), key=lambda item: item["id"]):
-            fresh = row["content_size"] == row["size"] and row["content_mtime_ns"] == row["mtime_ns"]
+            fresh = (
+                row["content_size"] == row["size"] and row["content_mtime_ns"] == row["mtime_ns"]
+            )
             if row["content_key"] is None or not fresh:
                 waiting = True
                 continue
@@ -458,7 +487,13 @@ def compute_mentions(
             if file_id is not None and _continues_number(text, _end):
                 file_id = None  # 说的是「报价单 v30」，不是 v3 那一份
             hits.setdefault(key, []).append(
-                (start_ms, form, file_id, near_version(text, _start, _end), near_final(text, _start, _end))
+                (
+                    start_ms,
+                    form,
+                    file_id,
+                    near_version(text, _start, _end),
+                    near_final(text, _start, _end),
+                )
             )
     spoken: dict[str, dict[str, Any]] = {}
     for key, found in hits.items():
@@ -473,7 +508,11 @@ def compute_mentions(
             if context.aliases[light_key(form)][2] == STEM_YES
             or (context.aliases[light_key(form)][2] == STEM_TWICE and times >= 2)
         }
-        counted = [hit for hit in found if (hit[1] is None and stem_ok) or (hit[1] is not None and hit[1] in forms_ok)]
+        counted = [
+            hit
+            for hit in found
+            if (hit[1] is None and stem_ok) or (hit[1] is not None and hit[1] in forms_ok)
+        ]
         if not counted:
             continue
         anchors: list[int] = []
@@ -496,7 +535,9 @@ def compute_mentions(
             "versions": versions,
             "finals": sum(1 for hit in counted if hit[4]),
             # 这一行的命中全来自别名时，线上的字写说得最多的那个叫法
-            "alias": aliases_said.most_common(1)[0][0] if aliases_said and not any(hit[1] is None for hit in counted) else None,
+            "alias": aliases_said.most_common(1)[0][0]
+            if aliases_said and not any(hit[1] is None for hit in counted)
+            else None,
         }
     written: dict[str, dict[str, Any]] = {}
     for line in (minutes or "").splitlines():
@@ -509,7 +550,9 @@ def compute_mentions(
             key, file_id = target
             if file_id is not None and _continues_number(line, _end):
                 file_id = None
-            entry = written.setdefault(key, {"count": 0, "first_ms": _line_anchor(line), "versions": Counter()})
+            entry = written.setdefault(
+                key, {"count": 0, "first_ms": _line_anchor(line), "versions": Counter()}
+            )
             entry["count"] += 1
             if file_id is not None:
                 entry["versions"][file_id] += 1
@@ -522,7 +565,12 @@ def compute_mentions(
         finals = 0
         alias_needle = None
         if said is not None:
-            source, count, first_ms, anchors = "transcript", said["count"], said["first_ms"], said["anchors"]
+            source, count, first_ms, anchors = (
+                "transcript",
+                said["count"],
+                said["first_ms"],
+                said["anchors"],
+            )
             versions = said["versions"]
             finals = said["finals"]
             alias_needle = said["alias"]
@@ -539,7 +587,11 @@ def compute_mentions(
         picked = 0
         followed: dict[str, Any] | None = None
         waiting = False
-        if previous is not None and previous["picked"] and previous["file_id"] not in context.files_by_id:
+        if (
+            previous is not None
+            and previous["picked"]
+            and previous["file_id"] not in context.files_by_id
+        ):
             followed, waiting = context.follow_picked(key, previous.get("picked_key"))
         if waiting:
             # 还有没算出标识的同名文件：原样保留你选的那份，等内容循环算完标识再比
@@ -557,7 +609,11 @@ def compute_mentions(
             continue
         finals_in_group = final_files(group) if finals else []
         hinted = None
-        if previous is not None and previous["picked"] and previous["file_id"] in context.files_by_id:
+        if (
+            previous is not None
+            and previous["picked"]
+            and previous["file_id"] in context.files_by_id
+        ):
             chosen = context.files_by_id[previous["file_id"]]
             picked = 1
         elif followed is not None:
@@ -585,11 +641,22 @@ def compute_mentions(
             "source": source,
             "picked": picked,
         }
-    ranked = sorted(result.values(), key=lambda row: (-row["count"], -row["minutes_count"], row["stem_key"]))
+    ranked = sorted(
+        result.values(), key=lambda row: (-row["count"], -row["minutes_count"], row["stem_key"])
+    )
     return {row["stem_key"]: row for row in ranked[:PER_MEETING]}
 
 
-_COMPARED = ("file_id", "needle", "count", "first_ms", "anchors_json", "minutes_count", "source", "picked")
+_COMPARED = (
+    "file_id",
+    "needle",
+    "count",
+    "first_ms",
+    "anchors_json",
+    "minutes_count",
+    "source",
+    "picked",
+)
 
 
 def _write_mentions(
@@ -616,8 +683,20 @@ def _write_mentions(
                 """INSERT INTO meeting_file_mentions(meeting_id, project_id, stem_key, file_id, needle, count,
                        first_ms, anchors_json, minutes_count, source, status, picked, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
-                (meeting_id, project_id, key, item["file_id"], item["needle"], item["count"], item["first_ms"],
-                 item["anchors_json"], item["minutes_count"], item["source"], item["picked"], now),
+                (
+                    meeting_id,
+                    project_id,
+                    key,
+                    item["file_id"],
+                    item["needle"],
+                    item["count"],
+                    item["first_ms"],
+                    item["anchors_json"],
+                    item["minutes_count"],
+                    item["source"],
+                    item["picked"],
+                    now,
+                ),
             )
             continue
         if previous["status"] != "active":
@@ -629,8 +708,20 @@ def _write_mentions(
             """UPDATE meeting_file_mentions SET file_id = ?, needle = ?, count = ?, first_ms = ?,
                    anchors_json = ?, minutes_count = ?, source = ?, picked = ?, updated_at = ?
              WHERE meeting_id = ? AND project_id = ? AND stem_key = ?""",
-            (item["file_id"], item["needle"], item["count"], item["first_ms"], item["anchors_json"],
-             item["minutes_count"], item["source"], item["picked"], now, meeting_id, project_id, key),
+            (
+                item["file_id"],
+                item["needle"],
+                item["count"],
+                item["first_ms"],
+                item["anchors_json"],
+                item["minutes_count"],
+                item["source"],
+                item["picked"],
+                now,
+                meeting_id,
+                project_id,
+                key,
+            ),
         )
 
 
@@ -652,13 +743,17 @@ def _pending(connection: Any) -> list[dict[str, Any]]:
         if row["dirty"] is None or row["dirty"] or row["stems_sig"] != sig:
             todo.append({**dict(row), "sig": sig})
     # 最近的会先比对
-    todo.sort(key=lambda row: (row["recording_date"] or row["created_at"] or "", row["id"]), reverse=True)
+    todo.sort(
+        key=lambda row: (row["recording_date"] or row["created_at"] or "", row["id"]), reverse=True
+    )
     return todo
 
 
 def read_hints(connection: Any, meeting_id: str) -> dict[str, dict[str, Any]]:
     """mention_extractions.hints_json：{stem_key: {"version": 3} 或 {"rel": "last_week"}}。"""
-    row = connection.execute("SELECT hints_json FROM mention_extractions WHERE meeting_id = ?", (meeting_id,)).fetchone()
+    row = connection.execute(
+        "SELECT hints_json FROM mention_extractions WHERE meeting_id = ?", (meeting_id,)
+    ).fetchone()
     if row is None:
         return {}
     try:
@@ -690,7 +785,9 @@ def match_meeting(db: Database, row: dict[str, Any], contexts: dict[str, Project
             else []
         )
         minutes_row = (
-            connection.execute("SELECT markdown FROM minutes_versions WHERE id = ?", (row["minutes_id"],)).fetchone()
+            connection.execute(
+                "SELECT markdown FROM minutes_versions WHERE id = ?", (row["minutes_id"],)
+            ).fetchone()
             if row["minutes_id"]
             else None
         )
@@ -736,7 +833,9 @@ def match_meeting(db: Database, row: dict[str, Any], contexts: dict[str, Project
             ).rowcount
         if not claimed:
             return False
-        still = connection.execute("SELECT project_id FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+        still = connection.execute(
+            "SELECT project_id FROM meetings WHERE id = ?", (meeting_id,)
+        ).fetchone()
         if still is None or still["project_id"] != project_id:
             return False
         _write_mentions(connection, meeting_id, project_id, result, existing_all)
@@ -811,7 +910,11 @@ def files_state(connection: Any, meeting_id: str, project_id: str | None) -> str
     scan = connection.execute(
         "SELECT dirty, stems_sig FROM meeting_file_scan WHERE meeting_id = ?", (meeting_id,)
     ).fetchone()
-    if scan is None or scan["dirty"] or scan["stems_sig"] != project_sigs(connection).get(project_id):
+    if (
+        scan is None
+        or scan["dirty"]
+        or scan["stems_sig"] != project_sigs(connection).get(project_id)
+    ):
         return "indexing"
     return "done"
 
@@ -843,11 +946,15 @@ def meeting_files(connection: Any, meeting_id: str, project_id: str | None) -> d
         }
         for row in rows
     ]
-    files.sort(key=lambda item: (item["generic"], -item["count"], -item["minutes_count"], item["name"]))
+    files.sort(
+        key=lambda item: (item["generic"], -item["count"], -item["minutes_count"], item["name"])
+    )
     return {"files": files[:PER_MEETING], "files_state": state}
 
 
-def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[int]], dict[int, str]]) -> dict[str, Any]:
+def file_detail(
+    connection: Any, file_id: int, *, quotes: Callable[[str, list[int]], dict[int, str]]
+) -> dict[str, Any]:
     """GET /api/graph/files/{id}：文件信息、同名的其他文件、在哪几场会上被提到。只查库。"""
     from . import related_read  # related_read 引 graph，graph 引本模块
 
@@ -884,9 +991,18 @@ def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[in
     # 「在 N 场会上被提到」的 N 另数，不受列表长度限制
     # 4b：标过「不是这份文件」的放宽行和字面行进同一个列表
     mention_rows = (
-        [{**item, "status": "active"} for item in relation_read.file_mention_meetings(connection, file_id)]
-        + [{**item, "status": "rejected"} for item in relation_read.rejected_file_mentions(connection, file_id)]
-        + [{**item, "status": "rejected"} for item in relation_read.rejected_loose_mentions(connection, file_id)]
+        [
+            {**item, "status": "active"}
+            for item in relation_read.file_mention_meetings(connection, file_id)
+        ]
+        + [
+            {**item, "status": "rejected"}
+            for item in relation_read.rejected_file_mentions(connection, file_id)
+        ]
+        + [
+            {**item, "status": "rejected"}
+            for item in relation_read.rejected_loose_mentions(connection, file_id)
+        ]
     )
     meetings = []
     for item in mention_rows:
@@ -944,14 +1060,20 @@ def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[in
 def _iso_ns(value: int | None) -> str | None:
     if not value:
         return None
-    return datetime.fromtimestamp(int(value) / 1_000_000_000).astimezone().isoformat(timespec="seconds")
+    return (
+        datetime.fromtimestamp(int(value) / 1_000_000_000)
+        .astimezone()
+        .isoformat(timespec="seconds")
+    )
 
 
 # ---------------------------------------------------------------------- 你的改动
 
 
 def _mention_row(connection: Any, meeting_id: str, stem_key: str) -> dict[str, Any]:
-    meeting = connection.execute("SELECT project_id FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+    meeting = connection.execute(
+        "SELECT project_id FROM meetings WHERE id = ?", (meeting_id,)
+    ).fetchone()
     if meeting is None:
         raise MentionNotFound("会议不存在")
     if not meeting["project_id"]:
@@ -1041,4 +1163,3 @@ def pick_mention_file(db: Database, meeting_id: str, stem_key: str, file_id: int
     except Exception:  # noqa: BLE001
         pass
     return _result(row)
-

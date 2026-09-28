@@ -35,17 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser("download-model", help="安装期下载固定本地语义模型")
     subcommands.add_parser("backup", help="创建在线 SQLite 备份")
     subcommands.add_parser("verify-audio", help="完整核验正式原音频哈希")
-    asr_evaluate = subcommands.add_parser(
-        "asr-evaluate", help="用人工金标比较多个 ASR 引擎"
-    )
+    asr_evaluate = subcommands.add_parser("asr-evaluate", help="用人工金标比较多个 ASR 引擎")
     asr_evaluate.add_argument("--gold", required=True)
-    asr_evaluate.add_argument(
-        "--engine", action="append", required=True, metavar="NAME=DIR"
-    )
+    asr_evaluate.add_argument("--engine", action="append", required=True, metavar="NAME=DIR")
     asr_evaluate.add_argument("--output")
-    asr_export = subcommands.add_parser(
-        "asr-export-gold", help="从工作台导出 ASR 金标 JSONL"
-    )
+    asr_export = subcommands.add_parser("asr-export-gold", help="从工作台导出 ASR 金标 JSONL")
     asr_export.add_argument("--output", required=True)
     asr_export.add_argument("--meeting-id")
     qwen_shadow = subcommands.add_parser(
@@ -58,20 +52,22 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_projects = subcommands.add_parser(
         "backfill-projects", help="为存量会议批量归类项目（字面线索 + LLM）"
     )
-    backfill_projects.add_argument(
-        "--dry-run", action="store_true", help="只打印判定结果，不写库"
-    )
+    backfill_projects.add_argument("--dry-run", action="store_true", help="只打印判定结果，不写库")
     backfill_projects.add_argument(
         "--evaluate",
         action="store_true",
         help="回测：拿人工归过项目的会当答案，藏起答案重判；模型高置信错 2 场以上时要求字面线索",
     )
     backfill_projects.add_argument(
-        "--no-apply", action="store_true", help="和 --evaluate 一起用：只报告，不改 link_require_literal"
+        "--no-apply",
+        action="store_true",
+        help="和 --evaluate 一起用：只报告，不改 link_require_literal",
     )
     backfill_projects.add_argument("--limit", type=int, help="最多处理的会议数")
 
-    materials_cmd = subcommands.add_parser("materials", help="项目材料：盘点、读了多少、图片文字识别试跑和引擎")
+    materials_cmd = subcommands.add_parser(
+        "materials", help="项目材料：盘点、读了多少、图片文字识别试跑和引擎"
+    )
     materials_sub = materials_cmd.add_subparsers(dest="materials_command", required=True)
     walk = materials_sub.add_parser(
         "walk", help="走一遍项目材料文件夹，统计第三期要索引的量（只读，不改数据库）"
@@ -79,28 +75,39 @@ def build_parser() -> argparse.ArgumentParser:
     walk.add_argument("--dry-run", action="store_true", help="只盘点，不建索引（目前只支持这一种）")
     walk.add_argument("--project", help="只看这个项目（项目 id 或名字）")
     walk.add_argument(
-        "--root", action="append", type=Path, help="只看这个文件夹，可以给多次；给了就不读数据库里挂的"
+        "--root",
+        action="append",
+        type=Path,
+        help="只看这个文件夹，可以给多次；给了就不读数据库里挂的",
     )
     walk.add_argument("--no-probe", action="store_true", help="不读音视频时长")
     walk.add_argument("--json", type=Path, help="把完整结果另存成 JSON")
     ocr = materials_sub.add_parser(
-        "ocr-trial", help="挑一些材料图片，分别用 Vision 和 tesseract 识别，比较用时和效果（在 Mac 上跑）"
+        "ocr-trial",
+        help="挑一些材料图片，分别用 Vision 和 tesseract 识别，比较用时和效果（在 Mac 上跑）",
     )
     ocr.add_argument("--project", help="只从这个项目的材料里挑（项目 id 或名字）")
     ocr.add_argument("--root", action="append", type=Path, help="只从这个文件夹里挑，可以给多次")
     ocr.add_argument("--limit", type=int, default=20, help="挑几张图，默认 20")
     ocr.add_argument(
-        "--engine", action="append", choices=["vision", "tesseract"], help="只跑某一个，默认两个都跑"
+        "--engine",
+        action="append",
+        choices=["vision", "tesseract"],
+        help="只跑某一个，默认两个都跑",
     )
     ocr.add_argument("--out", type=Path, help="结果写到哪个文件夹，默认数据目录下的 ocr-trial/")
     status = materials_sub.add_parser("status", help="看材料读了多少、还剩多少、哪些读不了（只读）")
     status.add_argument("--project", help="只看这个项目（项目 id 或名字）")
     status.add_argument("--json", action="store_true", help="输出 JSON")
     engine = materials_sub.add_parser(
-        "ocr-engine", help="选图片和扫描页用哪套认字：auto（默认）、vision、tesseract、off；不用重启服务"
+        "ocr-engine",
+        help="选图片和扫描页用哪套认字：auto（默认）、vision、tesseract、off；不用重启服务",
     )
     engine.add_argument(
-        "engine", nargs="?", choices=["auto", "vision", "tesseract", "off"], help="不给就只看现在用的是哪套"
+        "engine",
+        nargs="?",
+        choices=["auto", "vision", "tesseract", "off"],
+        help="不给就只看现在用的是哪套",
     )
     links_cmd = subcommands.add_parser(
         "links", help="深度关联：各步在等几个、AI 用量、现在重试、看一场会解析出的决议"
@@ -112,10 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     links_status.add_argument("--json", action="store_true", help="输出 JSON")
     links_sub.add_parser(
-        "retry", help="把没做成的 AI 整理和决议对比放回队列、次数清零，清掉 AI 循环的暂停（和页面上的［现在重试］一样）"
+        "retry",
+        help="把没做成的 AI 整理和决议对比放回队列、次数清零，清掉 AI 循环的暂停（和页面上的［现在重试］一样）",
     )
     links_decisions = links_sub.add_parser(
-        "decisions", help="打印一场会解析出的决议：id、原文、时间点、note，和对比时会发的提示词（只读，不发送）"
+        "decisions",
+        help="打印一场会解析出的决议：id、原文、时间点、note，和对比时会发的提示词（只读，不发送）",
     )
     links_decisions.add_argument("--meeting", required=True, help="会议 id")
     links_decisions.add_argument("--json", action="store_true", help="输出 JSON")
@@ -128,9 +137,13 @@ def build_parser() -> argparse.ArgumentParser:
     links_related.add_argument("--at", help="只看这个时刻所在的窗，比如 12:30 或 1:02:30")
     links_related.add_argument("--floor", type=float, help="临时换一个最低门槛（不改设置）")
     links_related.add_argument("--margin", type=float, help="临时换一个门槛余量（不改设置）")
-    links_related.add_argument("--encode", action="store_true", help="重新编码窗（不写库）；默认用存下的窗")
+    links_related.add_argument(
+        "--encode", action="store_true", help="重新编码窗（不写库）；默认用存下的窗"
+    )
     links_related.add_argument("--stats", action="store_true", help="这个项目的相关统计")
-    links_related.add_argument("--rebuild", action="store_true", help="标记重算：只把 dirty 加一，不当场算")
+    links_related.add_argument(
+        "--rebuild", action="store_true", help="标记重算：只把 dirty 加一，不当场算"
+    )
     links_related.add_argument("--json", action="store_true", help="输出 JSON")
     # 4g：问答试跑。问题从标准输入读，不放进命令行参数（免得出现在 ps 和 shell 历史里）；从不调 AI
     links_ask = links_sub.add_parser(
@@ -143,7 +156,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     links_words.add_argument("--project", required=True, help="项目 id")
     links_words.add_argument(
-        "--dry-run", action="store_true", help="当场给这个项目的内容挖一遍，什么都不写；不带就真做一遍项目汇总"
+        "--dry-run",
+        action="store_true",
+        help="当场给这个项目的内容挖一遍，什么都不写；不带就真做一遍项目汇总",
     )
     return parser
 
@@ -164,7 +179,9 @@ def _print_evaluation(result: dict) -> int:
     for item in result["results"]:
         guess = item["project_name"]
         if not guess and item["candidates"]:
-            guess = " / ".join(str(candidate.get("project_name") or "") for candidate in item["candidates"])
+            guess = " / ".join(
+                str(candidate.get("project_name") or "") for candidate in item["candidates"]
+            )
         print(
             f"{(item['meeting_title'] or ''):<30}"
             f"{(item['answer_project_name'] or ''):<16}"
@@ -182,7 +199,9 @@ def _print_evaluation(result: dict) -> int:
     if hints:
         print(f"有新需求提示的会 {hints['meetings']} / {hints['total']}")
     if result.get("skipped_untrusted"):
-        print(f"另有 {result['skipped_untrusted']} 场人工归属没算进来（先被 AI 归、后来只是确认，或没有纪要）")
+        print(
+            f"另有 {result['skipped_untrusted']} 场人工归属没算进来（先被 AI 归、后来只是确认，或没有纪要）"
+        )
     guard = result["literal_guard"]
     print(
         f"要求字面线索后：能拦下 {guard['wrong_blocked']} 场模型归错的，"
@@ -203,7 +222,9 @@ def _material_roots(
         return [{"path": str(root.expanduser())} for root in roots]
     assert settings.database_path is not None
     if not settings.database_path.exists():
-        raise SystemExit(f"找不到声档数据库：{settings.database_path}；可以用 --root 直接指定文件夹")
+        raise SystemExit(
+            f"找不到声档数据库：{settings.database_path}；可以用 --root 直接指定文件夹"
+        )
     connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
@@ -226,12 +247,16 @@ def _find_project(connection: sqlite3.Connection, project: str | None) -> dict[s
     """--project 按 id 或名字（不分全半角、大小写）找项目；找不到就列出现有项目退出。"""
     if not project:
         return None
-    projects = [dict(row) for row in connection.execute("SELECT id, name FROM projects ORDER BY name")]
+    projects = [
+        dict(row) for row in connection.execute("SELECT id, name FROM projects ORDER BY name")
+    ]
     wanted = unicodedata.normalize("NFKC", project).casefold().strip()
     chosen = next(
         (
-            item for item in projects
-            if item["id"] == project or unicodedata.normalize("NFKC", item["name"]).casefold().strip() == wanted
+            item
+            for item in projects
+            if item["id"] == project
+            or unicodedata.normalize("NFKC", item["name"]).casefold().strip() == wanted
         ),
         None,
     )
@@ -266,7 +291,9 @@ def _materials_status(args: argparse.Namespace, settings: Settings) -> int:
         chosen = _find_project(connection, args.project)
         engines = OcrEngines(_ReadOnlyDb(connection), settings)  # type: ignore[arg-type]
         roots = coverage(connection, chosen["id"] if chosen else None, engines=engines)
-        names = {row["id"]: row["name"] for row in connection.execute("SELECT id, name FROM projects")}
+        names = {
+            row["id"]: row["name"] for row in connection.execute("SELECT id, name FROM projects")
+        }
     finally:
         connection.close()
     if args.json:
@@ -276,7 +303,11 @@ def _materials_status(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
-ENGINE_LABELS = {"vision": "Vision（macOS 自带）", "tesseract": "tesseract", "off": "不认字（只读 PDF 文字层）"}
+ENGINE_LABELS = {
+    "vision": "Vision（macOS 自带）",
+    "tesseract": "tesseract",
+    "off": "不认字（只读 PDF 文字层）",
+}
 
 
 def _ocr_engine(args: argparse.Namespace, settings: Settings) -> int:
@@ -284,10 +315,14 @@ def _ocr_engine(args: argparse.Namespace, settings: Settings) -> int:
 
     engines = OcrEngines(_database(settings), settings)
     reread = engines.set_engine(args.engine)["reread"] if args.engine else 0
-    print("正在检查认字程序（第一次要编译 Vision 程序，可能要一两分钟）…", file=sys.stderr, flush=True)
+    print(
+        "正在检查认字程序（第一次要编译 Vision 程序，可能要一两分钟）…", file=sys.stderr, flush=True
+    )
     engines.refresh(force=True)
     current = engines.image_engine()
-    print(f"设置：{engines.setting()}；图片和扫描页现在用：{ENGINE_LABELS.get(current or '', '没有能用的（先装一套）')}")
+    print(
+        f"设置：{engines.setting()}；图片和扫描页现在用：{ENGINE_LABELS.get(current or '', '没有能用的（先装一套）')}"
+    )
     tools = engines.tools()
     print(f"Vision：{engines.build.describe() if sys.platform == 'darwin' else '只能在 Mac 上用'}")
     if not tools.tesseract:
@@ -335,7 +370,7 @@ def _materials(args: argparse.Namespace, settings: Settings) -> int:
     if not images:
         print("材料里没找到大于 20 KB 的图片", file=sys.stderr)
         return 1
-    out_dir = (args.out.expanduser() if args.out else ocr_trial.default_out_dir(settings.data_dir))
+    out_dir = args.out.expanduser() if args.out else ocr_trial.default_out_dir(settings.data_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     workdir = ocr_trial.scratch_dir()
     try:
@@ -347,13 +382,17 @@ def _materials(args: argparse.Namespace, settings: Settings) -> int:
         report = ocr_trial.run_trial(
             images,
             engines,
-            progress=lambda done, total: print(f"已识别 {done}/{total} 张…", file=sys.stderr, flush=True),
+            progress=lambda done, total: print(
+                f"已识别 {done}/{total} 张…", file=sys.stderr, flush=True
+            ),
         )
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     report["machine"] = ocr_trial.machine_summary()
     (out_dir / "结果.md").write_text(ocr_trial.render_markdown(report, notes), encoding="utf-8")
-    (out_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_dir / "result.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(ocr_trial.render_summary(report, out_dir))
     return 0
 
@@ -505,7 +544,10 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
     live = ((health or {}).get("details") or {}).get("links") if health else None
     if live and "llm" in live:
         llm_state = str(live["llm"])
-    elif not (settings.links_enabled and settings.links_llm_enabled) or settings.links_llm_daily_calls <= 0:
+    elif (
+        not (settings.links_enabled and settings.links_llm_enabled)
+        or settings.links_llm_daily_calls <= 0
+    ):
         llm_state = "off"
     elif not llm_ready(settings):
         llm_state = "no_key"
@@ -532,13 +574,21 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    print("关联整理：" + ("开着" if settings.links_enabled else "关着（MEETING_WORKBENCH_LINKS_ENABLED）"))
+    print(
+        "关联整理："
+        + ("开着" if settings.links_enabled else "关着（MEETING_WORKBENCH_LINKS_ENABLED）")
+    )
     if live is None:
         print("服务没开（或连不上）：上一轮的时间和各步的情况要服务开着才看得到")
     else:
-        print(f"上一轮：{_local_time(result['last_round_at']) or '还没跑过'}" + ("，会议在转写，重活先停" if result["paused"] == "busy" else ""))
+        print(
+            f"上一轮：{_local_time(result['last_round_at']) or '还没跑过'}"
+            + ("，会议在转写，重活先停" if result["paused"] == "busy" else "")
+        )
         for name, status in result["phases"].items():
-            print(f"  {LINKS_PHASE_LABELS.get(name, name)}：{LINKS_PHASE_STATES.get(status, status)}")
+            print(
+                f"  {LINKS_PHASE_LABELS.get(name, name)}：{LINKS_PHASE_STATES.get(status, status)}"
+            )
     print(
         f"在等：决议入库 {waiting['decisions']} 场，放宽的提到 {waiting['mentions']} 场"
         f"（没做成 {failed['mentions']} 场），决议对比 {waiting['pairs']} 场（没对比成 {failed['pairs']} 场）"
@@ -591,12 +641,15 @@ def _links_decisions(args: argparse.Namespace, settings: Settings) -> int:
     connection = _read_only(settings)
     try:
         meeting = connection.execute(
-            "SELECT id, title, current_minutes_version_id FROM meetings WHERE id = ?", (args.meeting,)
+            "SELECT id, title, current_minutes_version_id FROM meetings WHERE id = ?",
+            (args.meeting,),
         ).fetchone()
         if meeting is None:
             raise SystemExit(f"没有这场会：{args.meeting}")
         try:
-            ledger = decisions.ledger_decisions(connection, meeting["id"], meeting["current_minutes_version_id"])
+            ledger = decisions.ledger_decisions(
+                connection, meeting["id"], meeting["current_minutes_version_id"]
+            )
         except sqlite3.OperationalError:
             ledger = None
         if ledger is not None:
@@ -604,11 +657,18 @@ def _links_decisions(args: argparse.Namespace, settings: Settings) -> int:
             source = "table"
         else:
             row = connection.execute(
-                "SELECT markdown FROM minutes_versions WHERE id = ?", (meeting["current_minutes_version_id"],)
+                "SELECT markdown FROM minutes_versions WHERE id = ?",
+                (meeting["current_minutes_version_id"],),
             ).fetchone()
             parsed = decisions.parse_safely(row["markdown"] if row else None)
             items = [
-                {"id": None, "text": item.text, "detail": item.detail, "start_ms": item.start_ms, "end_ms": item.end_ms}
+                {
+                    "id": None,
+                    "text": item.text,
+                    "detail": item.detail,
+                    "start_ms": item.start_ms,
+                    "end_ms": item.end_ms,
+                }
                 for item in parsed.items
             ]
             note = parsed.note
@@ -625,8 +685,19 @@ def _links_decisions(args: argparse.Namespace, settings: Settings) -> int:
     finally:
         connection.close()
     if args.json:
-        print(json.dumps({"meeting_id": meeting["id"], "source": source, "note": note, "decisions": items,
-                          "prompt": prompt}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {
+                    "meeting_id": meeting["id"],
+                    "source": source,
+                    "note": note,
+                    "decisions": items,
+                    "prompt": prompt,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
     print(f"{meeting['title'] or meeting['id']}（{meeting['id']}）")
     if source == "parsed":
@@ -644,9 +715,13 @@ def _links_decisions(args: argparse.Namespace, settings: Settings) -> int:
     if prompt is not None:
         print()
         if prompt["needs_call"]:
-            print(f"对比时会发的提示词（这一场 {prompt['this']} 条、之前的 {prompt['others']} 条；只打印，不发送）：")
+            print(
+                f"对比时会发的提示词（这一场 {prompt['this']} 条、之前的 {prompt['others']} 条；只打印，不发送）："
+            )
         else:
-            print("初筛后没有要对比的决议，也没有要放的决议：这场会不用调用 AI。下面是按现在的数据拼出的提示词（不发送）：")
+            print(
+                "初筛后没有要对比的决议，也没有要放的决议：这场会不用调用 AI。下面是按现在的数据拼出的提示词（不发送）："
+            )
         print("---- system ----")
         print(prompt["system"])
         print("---- user ----")
@@ -694,7 +769,13 @@ def _links_related(args: argparse.Namespace, settings: Settings) -> int:
             encode = lambda texts: index.encode_texts(texts, background=False)  # noqa: E731
         try:
             result = related.explain_meeting(
-                connection, settings, args.meeting, at=args.at, floor=args.floor, margin=args.margin, encode=encode
+                connection,
+                settings,
+                args.meeting,
+                at=args.at,
+                floor=args.floor,
+                margin=args.margin,
+                encode=encode,
             )
         except LookupError:
             raise SystemExit(f"没有这场会：{args.meeting}") from None
@@ -719,7 +800,9 @@ def _links_related(args: argparse.Namespace, settings: Settings) -> int:
         for item in window["candidates"]:
             words = "、".join(item.get("words") or []) or "-"
             reason = item.get("reason") or "留下"
-            print(f"    {item['score']:.3f}  {item.get('content_key', '?')}#{item.get('ordinal', '?')}  {words}  {reason}")
+            print(
+                f"    {item['score']:.3f}  {item.get('content_key', '?')}#{item.get('ordinal', '?')}  {words}  {reason}"
+            )
     return 0
 
 
@@ -763,7 +846,9 @@ def _links_ask(args: argparse.Namespace, settings: Settings) -> int:
     print(f"取的词：{'、'.join(plan.terms.phrases + plan.terms.needles) or '（没有）'}")
     print(f"找到会议里的 {counts['meetings']} 段、材料里的 {counts['materials']} 段")
     if counts["materials"]:
-        print(f"发送时会写：将发送 {counts['materials']} 段材料原文给 {llm.destination(settings).host}")
+        print(
+            f"发送时会写：将发送 {counts['materials']} 段材料原文给 {llm.destination(settings).host}"
+        )
     for kind in plan.notes:
         print(NOTE_TEXTS.get(kind, kind))
     if plan.unattributed:
@@ -789,7 +874,12 @@ def _links_words(args: argparse.Namespace, settings: Settings) -> int:
     if args.dry_run:
         connection = _read_only(settings)  # 只读打开：什么都写不进去
         try:
-            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (args.project,)).fetchone() is None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM projects WHERE id = ?", (args.project,)
+                ).fetchone()
+                is None
+            ):
                 raise SystemExit(f"没有这个项目：{args.project}")
             stats = glossary_mining.dry_run(connection, args.project)
         finally:
@@ -797,7 +887,12 @@ def _links_words(args: argparse.Namespace, settings: Settings) -> int:
     else:
         db = Database(settings.database_path)
         with db.autocommit() as connection:
-            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (args.project,)).fetchone() is None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM projects WHERE id = ?", (args.project,)
+                ).fetchone()
+                is None
+            ):
                 raise SystemExit(f"没有这个项目：{args.project}")
             stats = glossary_mining.project_pass(connection, args.project, datetime.now(UTC))
     if stats.stale:
@@ -941,9 +1036,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "asr-shadow-qwen":
         try:
-            transcript = run_qwen_shadow(
-                args.audio, args.output_dir, model=args.model
-            )
+            transcript = run_qwen_shadow(args.audio, args.output_dir, model=args.model)
         except AsrEvaluationError as error:
             print(str(error), file=sys.stderr)
             return 2

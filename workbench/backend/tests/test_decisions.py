@@ -1,5 +1,6 @@
 """第四期 4a：决议入库。选段、拆条、时间点；id 跨纪要版本不变；L1 的快路径、对比排队、换项目；
 简报和聚焦视图的 id 与当场解析；放到需求下和撤销。"""
+
 from datetime import UTC, datetime, timedelta
 from itertools import count
 
@@ -63,7 +64,9 @@ def set_minutes(db, meeting_id, version_id, markdown, kind="draft"):
                            WHERE meeting_id = ?), ?, '', ?, 0, ?)""",
         (version_id, meeting_id, meeting_id, markdown, kind, utc_now()),
     )
-    db.execute("UPDATE meetings SET current_minutes_version_id = ? WHERE id = ?", (version_id, meeting_id))
+    db.execute(
+        "UPDATE meetings SET current_minutes_version_id = ? WHERE id = ?", (version_id, meeting_id)
+    )
 
 
 def ingest(db, **kwargs):
@@ -115,7 +118,11 @@ def test_six_section_minutes_keep_the_range_end():
     parsed = decisions.parse_decisions(MINUTES_SIX_SECTION)
 
     first, second = parsed.items
-    assert (first.text, first.start_ms, first.end_ms) == ("患者端支持手机号修改，设四重约束", 36_000, 319_000)
+    assert (first.text, first.start_ms, first.end_ms) == (
+        "患者端支持手机号修改，设四重约束",
+        36_000,
+        319_000,
+    )
     assert first.detail == "正文。"
     assert (second.start_ms, second.end_ms) == (347_000, 418_000)
 
@@ -167,7 +174,9 @@ def test_table_sections_are_one_decision_per_row():
     other = decisions.parse_decisions(
         "## 决议\n| 编号 | 议题 | 内容 | 锚点 |\n|:--:|---|---|---|\n| 一 | 报价 | 总价下调五个点 | [12:34] |\n"
     )
-    assert [(item.text, item.detail, item.start_ms) for item in other.items] == [("总价下调五个点", "报价", 754_000)]
+    assert [(item.text, item.detail, item.start_ms) for item in other.items] == [
+        ("总价下调五个点", "报价", 754_000)
+    ]
     # 认不出正文列的表格不硬拆
     assert decisions.parse_decisions("## 决议\n| 甲 | 乙 |\n|---|---|\n| 1 | 2 |\n").note == "empty"
 
@@ -197,8 +206,13 @@ def test_minutes_outline_uses_the_parser():
 def test_carry_over_matches_typos_reorders_and_near_anchors():
     old_items = decisions.parse_decisions(V1).items
     old = [
-        {"id": f"dec-{index}", "text_key": item.text_key, "start_ms": item.start_ms, "ordinal": index,
-         "gone_at": None}
+        {
+            "id": f"dec-{index}",
+            "text_key": item.text_key,
+            "start_ms": item.start_ms,
+            "ordinal": index,
+            "gone_at": None,
+        }
         for index, item in enumerate(old_items)
     ]
     new = decisions.parse_decisions(
@@ -226,7 +240,9 @@ def test_typo_fix_and_reorder_keep_ids_and_do_not_queue_a_comparison(tmp_path):
 
     assert ingest(db)["written"] == 1
     before = dict((text[:4], decision_id) for decision_id, text in live(db, "m"))
-    assert all(decision_id.startswith("dec-") and len(decision_id) == 20 for decision_id in before.values())
+    assert all(
+        decision_id.startswith("dec-") and len(decision_id) == 20 for decision_id in before.values()
+    )
     assert scan(db, "m")["pair_state"] == "pending"  # 第一次入库算实质变化
     db.execute("UPDATE decision_scan SET pair_state = 'done' WHERE meeting_id = 'm'")
 
@@ -234,7 +250,10 @@ def test_typo_fix_and_reorder_keep_ids_and_do_not_queue_a_comparison(tmp_path):
     ingest(db)
 
     after = live(db, "m")
-    assert [text for _id, text in after][:2] == ["驻场排班下周起改成两班", "司美格鲁肽的对照组先按 0.8 执行"]
+    assert [text for _id, text in after][:2] == [
+        "驻场排班下周起改成两班",
+        "司美格鲁肽的对照组先按 0.8 执行",
+    ]
     assert dict((text[:4], decision_id) for decision_id, text in after) == before
     assert scan(db, "m")["pair_state"] == "done"  # 改错字、调顺序不花一次对比
     assert scan(db, "m")["minutes_version_id"] == "mv-m-2"
@@ -246,7 +265,9 @@ def test_material_changes_queue_a_comparison(tmp_path):
     meeting_with_minutes(db)
     ingest(db)
     ids = [decision_id for decision_id, _text in live(db, "m")]
-    db.execute("UPDATE decision_scan SET pair_state = 'failed', pair_attempts = 3 WHERE meeting_id = 'm'")
+    db.execute(
+        "UPDATE decision_scan SET pair_state = 'failed', pair_attempts = 3 WHERE meeting_id = 'm'"
+    )
 
     set_minutes(db, "m", "mv-m-2", V1.replace("两班", "三班"))
     ingest(db)
@@ -309,7 +330,9 @@ def test_meetings_older_than_the_backfill_window_are_done_at_once(tmp_path):
     ingest(db, backfill_days=180)
 
     old = scan(db, "old")
-    rows = db.query_all("SELECT id, text FROM decisions WHERE meeting_id = 'old' AND gone_at IS NULL")
+    rows = db.query_all(
+        "SELECT id, text FROM decisions WHERE meeting_id = 'old' AND gone_at IS NULL"
+    )
     assert old["pair_state"] == "done"
     assert old["pair_hash"] == decisions.pair_hash(rows)
     assert scan(db, "new")["pair_state"] == "pending"
@@ -390,8 +413,11 @@ def test_newest_meetings_come_first_within_the_round_budget(tmp_path):
         meeting_with_minutes(db, meeting_id=f"m{ago}", ago=ago)
 
     assert ingest(db, max_meetings=2)["tried"] == 2
-    assert [row["meeting_id"] for row in db.query_all("SELECT meeting_id FROM decision_scan ORDER BY 1")] == [
-        "m1", "m2",
+    assert [
+        row["meeting_id"] for row in db.query_all("SELECT meeting_id FROM decision_scan ORDER BY 1")
+    ] == [
+        "m1",
+        "m2",
     ]
 
     ticks = count(0.0, 0.6)  # 第一场之前 0.6 秒，第二场之前 1.2 秒，超过 1.0 秒就停
@@ -435,11 +461,21 @@ def test_brief_and_focus_parse_live_until_the_ledger_catches_up(tmp_path):
     ingest(db)
     ids = [decision_id for decision_id, _text in live(db, "m")]
     brief = client.get("/api/meetings/m/brief").json()
-    assert brief["decisions"][0] == {"id": ids[0], "text": "上线改到 10 月", "start_ms": 1_200_000, "later": None}
+    assert brief["decisions"][0] == {
+        "id": ids[0],
+        "text": "上线改到 10 月",
+        "start_ms": 1_200_000,
+        "later": None,
+    }
     focus = client.get("/api/graph/meetings/m").json()
     assert focus["decisions"][0] == {
-        "id": ids[0], "text": "上线改到 10 月", "start_ms": 1_200_000, "end_ms": 1_510_000,
-        "detail": "前提是测试环境 9/30 前到位 市场部同步 补充说明一行", "later": [], "earlier": [],
+        "id": ids[0],
+        "text": "上线改到 10 月",
+        "start_ms": 1_200_000,
+        "end_ms": 1_510_000,
+        "detail": "前提是测试环境 9/30 前到位 市场部同步 补充说明一行",
+        "later": [],
+        "earlier": [],
         # 4e：台账里的决议带在问的可能过时
         "stale": [],
     }
@@ -449,7 +485,8 @@ def test_brief_and_focus_parse_live_until_the_ledger_catches_up(tmp_path):
     set_minutes(db, "m", "mv-m-2", TRICKY.replace("两班", "三班"))
     brief = client.get("/api/meetings/m/brief").json()
     assert [(item["id"], item["text"]) for item in brief["decisions"]] == [
-        (None, "上线改到 10 月"), (None, "驻场排班改三班"),
+        (None, "上线改到 10 月"),
+        (None, "驻场排班改三班"),
     ]
 
     db.execute("UPDATE meetings SET current_minutes_version_id = NULL WHERE id = 'm'")
@@ -536,11 +573,15 @@ def test_undo_after_placing_an_ai_decision_restores_ai(tmp_path):
     _place(db, decision_id, "ai", "r-1")
     url = f"/api/decisions/{decision_id}/placement"
 
-    body = client.post(url, json={"placement": "picked", "requirement_id": "r-2"}, headers=headers).json()
+    body = client.post(
+        url, json={"placement": "picked", "requirement_id": "r-2"}, headers=headers
+    ).json()
     assert body["undo"] == {"placement": "ai", "requirement_id": "r-1"}
     assert client.post(url, json=body["undo"], headers=headers).status_code == 200
 
-    row = db.query_one("SELECT placement, requirement_id FROM decisions WHERE id = ?", (decision_id,))
+    row = db.query_one(
+        "SELECT placement, requirement_id FROM decisions WHERE id = ?", (decision_id,)
+    )
     assert (row["placement"], row["requirement_id"]) == ("ai", "r-1")
 
 

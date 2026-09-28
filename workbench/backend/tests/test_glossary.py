@@ -1,4 +1,5 @@
 """术语词典库：CRUD、快照导出、diff 反写过滤、API 与 save_minutes 挂钩测试。"""
+
 from fastapi.testclient import TestClient
 
 from meeting_workbench.config import Settings
@@ -302,9 +303,7 @@ def test_glossary_terms_api_crud(tmp_path):
     assert updated.status_code == 200
     assert updated.json()["aliases"] == ["树立协会", "树立协绘"]
 
-    deleted = client.delete(
-        f"/api/glossary/terms/{term_id}", headers=write_headers(client)
-    )
+    deleted = client.delete(f"/api/glossary/terms/{term_id}", headers=write_headers(client))
     assert deleted.status_code == 200
     assert client.get("/api/glossary/terms").json() == []
 
@@ -448,9 +447,7 @@ def test_glossary_terms_api_project_id_none_filters_unassigned(tmp_path):
         json={"term": "多学科会诊", "project_id": "proj-mdt"},
         headers=write_headers(client),
     )
-    client.post(
-        "/api/glossary/terms", json={"term": "数理协会"}, headers=write_headers(client)
-    )
+    client.post("/api/glossary/terms", json={"term": "数理协会"}, headers=write_headers(client))
 
     unassigned = client.get("/api/glossary/terms", params={"project_id": "none"}).json()
     assert [t["term"] for t in unassigned] == ["数理协会"]
@@ -471,9 +468,7 @@ def test_glossary_scopes_api_groups_general_project_and_bucket(tmp_path):
         json={"term": "多学科会诊", "project_id": "proj-mdt"},
         headers=write_headers(client),
     )
-    client.post(
-        "/api/glossary/terms", json={"term": "数理协会"}, headers=write_headers(client)
-    )
+    client.post("/api/glossary/terms", json={"term": "数理协会"}, headers=write_headers(client))
     client.post(
         "/api/glossary/terms",
         json={"term": "样品发放", "scope": "启航"},
@@ -543,9 +538,7 @@ def test_save_minutes_suggestion_scope_follows_project(tmp_path):
         "INSERT INTO projects (id, name, color, origin, created_at) VALUES (?, ?, ?, 'manual', ?)",
         ("proj-1", "云图", "#667085", utc_now()),
     )
-    db.execute(
-        "UPDATE meetings SET project_id='proj-1' WHERE id='vm-20260102-101500'"
-    )
+    db.execute("UPDATE meetings SET project_id='proj-1' WHERE id='vm-20260102-101500'")
     seed_minutes(db, markdown="会上确定成立树立协会，下周三执行。")
 
     saved = client.put(

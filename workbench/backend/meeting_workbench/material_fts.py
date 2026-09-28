@@ -10,6 +10,7 @@
 - 补完跑一次 integrity-check（rank=1，连外部内容一起核对），不通过就 'rebuild'，然后删掉这个键。
 - 不看 material_content_enabled，也不看忙信号（40 万段约半分钟）。
 """
+
 from __future__ import annotations
 
 import json
@@ -48,7 +49,10 @@ def rebuild_mark(connection: Any) -> dict[str, Any] | None:
 def rebuild_pending(db: Database) -> bool:
     """全文表还没补完：材料循环不动片段，搜索写「材料的全文索引在重建」。"""
     try:
-        return db.query_one("SELECT 1 AS pending FROM app_state WHERE key = ?", (REBUILD_KEY,)) is not None
+        return (
+            db.query_one("SELECT 1 AS pending FROM app_state WHERE key = ?", (REBUILD_KEY,))
+            is not None
+        )
     except sqlite3.OperationalError:
         return False
 
@@ -72,7 +76,9 @@ def _write_mark(connection: sqlite3.Connection, end: int, done: int) -> None:
 def integrity_ok(connection: sqlite3.Connection) -> bool:
     """rank=1：连外部内容表一起核对（rank=0 只查索引自己）。doctor 也用它。"""
     try:
-        connection.execute("INSERT INTO material_chunks_fts(material_chunks_fts, rank) VALUES('integrity-check', 1)")
+        connection.execute(
+            "INSERT INTO material_chunks_fts(material_chunks_fts, rank) VALUES('integrity-check', 1)"
+        )
     except sqlite3.DatabaseError:
         return False
     return True
@@ -91,7 +97,9 @@ def run_rebuild(
         if mark is None:
             return stats
         if mark["end"] is None:
-            row = connection.execute("SELECT COALESCE(MAX(id), 0) AS end_id FROM material_chunks").fetchone()
+            row = connection.execute(
+                "SELECT COALESCE(MAX(id), 0) AS end_id FROM material_chunks"
+            ).fetchone()
             mark = {"end": int(row["end_id"]), "done": 0}
             _write_mark(connection, mark["end"], 0)
     end, done = mark["end"], mark["done"]
@@ -122,7 +130,9 @@ def run_rebuild(
     with db.transaction() as connection:
         if not integrity_ok(connection):
             logger.warning("材料全文表补完后核对不通过，整张重建")
-            connection.execute("INSERT INTO material_chunks_fts(material_chunks_fts) VALUES('rebuild')")
+            connection.execute(
+                "INSERT INTO material_chunks_fts(material_chunks_fts) VALUES('rebuild')"
+            )
             stats["rebuilt"] = True
         connection.execute("DELETE FROM app_state WHERE key = ?", (REBUILD_KEY,))
     stats["state"] = "done"

@@ -1,4 +1,5 @@
 """任务代办、AI 抽取与项目看板 API 测试（260804 新增）。"""
+
 from fastapi.testclient import TestClient
 
 from meeting_workbench.config import Settings
@@ -84,12 +85,18 @@ def test_manual_task_lifecycle(tmp_path):
     assert listing["total"] == 1
 
     # 合法流转 confirmed -> in_progress -> done
-    assert client.post(
-        f"/api/tasks/{task_id}/status", json={"status": "in_progress"}, headers=headers
-    ).json()["status"] == "in_progress"
-    assert client.post(
-        f"/api/tasks/{task_id}/status", json={"status": "done"}, headers=headers
-    ).json()["status"] == "done"
+    assert (
+        client.post(
+            f"/api/tasks/{task_id}/status", json={"status": "in_progress"}, headers=headers
+        ).json()["status"]
+        == "in_progress"
+    )
+    assert (
+        client.post(
+            f"/api/tasks/{task_id}/status", json={"status": "done"}, headers=headers
+        ).json()["status"]
+        == "done"
+    )
     detail = client.get(f"/api/tasks/{task_id}").json()
     assert detail["status"] == "done"
     assert any(e["kind"] == "status_changed" for e in detail["events"])
@@ -106,9 +113,7 @@ def test_status_transition_rejected(tmp_path):
         (utc_now(), utc_now(), utc_now()),
     )
     # 待确认 -> done 是非法迁移
-    response = client.post(
-        "/api/tasks/t-p1/status", json={"status": "done"}, headers=headers
-    )
+    response = client.post("/api/tasks/t-p1/status", json={"status": "done"}, headers=headers)
     assert response.status_code == 409
     # 同状态幂等不报错
     response = client.post(
@@ -260,9 +265,7 @@ def test_project_stats_and_board(tmp_path):
         headers=headers,
     )
     # 一条任务挂项目，另一条不挂
-    client.post(
-        "/api/tasks", json={"title": "在项目里", "project_id": project_id}, headers=headers
-    )
+    client.post("/api/tasks", json={"title": "在项目里", "project_id": project_id}, headers=headers)
     client.post("/api/tasks", json={"title": "不在项目里"}, headers=headers)
 
     projects = client.get("/api/projects").json()
@@ -441,8 +444,10 @@ def test_extract_pending_seeds_from_new_minutes(tmp_path, monkeypatch):
 
     def fake_llm(self, prompt):
         extracted["prompt"] = prompt
-        return '{"tasks":[{"title":"自动抽取","anchor_quote":"第二段内容",' \
-               '"assignee_suggestion":"me","project_match":null,"suggested_project_name":null}]}'
+        return (
+            '{"tasks":[{"title":"自动抽取","anchor_quote":"第二段内容",'
+            '"assignee_suggestion":"me","project_match":null,"suggested_project_name":null}]}'
+        )
 
     monkeypatch.setattr(TaskService, "_call_llm", fake_llm)
     db.execute(
@@ -468,11 +473,15 @@ def test_draft_card_carries_the_meetings_project(tmp_path, monkeypatch):
         "INSERT INTO projects(id, name, color, origin, created_at) VALUES ('p-card', '云图科研用药', '#2c8d83', 'manual', ?)",
         (utc_now(),),
     )
-    db.execute("UPDATE meetings SET project_id='p-card', project_origin='manual' WHERE id='vm-20260102-101500'")
+    db.execute(
+        "UPDATE meetings SET project_id='p-card', project_origin='manual' WHERE id='vm-20260102-101500'"
+    )
     monkeypatch.setattr(
         TaskService,
         "_call_llm",
-        lambda self, prompt: '{"tasks":[{"title":"对齐接口","anchor_quote":"","assignee_suggestion":"ai"}]}',
+        lambda self, prompt: (
+            '{"tasks":[{"title":"对齐接口","anchor_quote":"","assignee_suggestion":"ai"}]}'
+        ),
     )
     db.execute(
         """INSERT INTO task_extractions(meeting_id, minutes_version_id, supplement, created_at)
@@ -498,9 +507,7 @@ def test_draft_card_carries_the_meetings_project(tmp_path, monkeypatch):
 def test_parse_llm_tasks_tolerates_fence(tmp_path):
     from meeting_workbench.tasks import TaskService
 
-    payload = TaskService._parse_llm_tasks(
-        '```json\n{"tasks": [{"title": "A"}]}\n```'
-    )
+    payload = TaskService._parse_llm_tasks('```json\n{"tasks": [{"title": "A"}]}\n```')
     assert payload["tasks"][0]["title"] == "A"
     payload2 = TaskService._parse_llm_tasks('{"tasks": [{"title": "B"}')
     assert payload2["tasks"][0]["title"] == "B"
@@ -514,9 +521,7 @@ def test_parse_llm_tasks_drops_trailing_garbage_and_non_dict_items(tmp_path):
     )
     assert payload["tasks"][0]["title"] == "A"
 
-    payload2 = TaskService._parse_llm_tasks(
-        '{"tasks": [{"title": "B"}, "驳回", {"title": "C"}]}'
-    )
+    payload2 = TaskService._parse_llm_tasks('{"tasks": [{"title": "B"}, "驳回", {"title": "C"}]}')
     assert [task["title"] for task in payload2["tasks"]] == ["B", "C"]
 
 
@@ -570,15 +575,14 @@ def test_first_seed_skips_backlog_then_extracts_new(tmp_path, monkeypatch):
     seed_minutes(client, settings)
 
     monkeypatch.setattr(
-        TaskService, "_call_llm",
+        TaskService,
+        "_call_llm",
         lambda self, prompt: '{"tasks":[{"title":"不该出现的存量任务"}]}',
     )
     service = TaskService(db, settings)
     stats = service.extract_pending()
     assert stats["started"] == 0
-    row = db.query_one(
-        "SELECT status FROM task_extractions WHERE meeting_id='vm-20260102-101500'"
-    )
+    row = db.query_one("SELECT status FROM task_extractions WHERE meeting_id='vm-20260102-101500'")
     assert row["status"] == "skipped"
     assert client.get("/api/tasks").json()["total"] == 0
 
@@ -598,7 +602,8 @@ def test_first_seed_skips_backlog_then_extracts_new(tmp_path, monkeypatch):
         "UPDATE meetings SET current_minutes_version_id='mv-new' WHERE id='vm-20260890-090000'"
     )
     monkeypatch.setattr(
-        TaskService, "_call_llm",
+        TaskService,
+        "_call_llm",
         lambda self, prompt: '{"tasks":[{"title":"新会任务"}]}',
     )
     stats2 = service.extract_pending()
@@ -616,24 +621,34 @@ def test_draft_minutes_do_not_seed_extraction(tmp_path, monkeypatch):
     seed_editable_meeting(db, settings.archive_root)
     seed_minutes(client, settings)
     service = TaskService(db, settings)
-    monkeypatch.setattr(TaskService, "_call_llm", lambda self, prompt: '{"tasks":[{"title":"草稿里的任务"}]}')
+    monkeypatch.setattr(
+        TaskService, "_call_llm", lambda self, prompt: '{"tasks":[{"title":"草稿里的任务"}]}'
+    )
     service.extract_pending()  # 台账为空：存量记成 skipped
     meeting_id = "vm-20260102-101500"
-    for version_id, version_no, kind in (("mv-draft", 2, "draft"), ("mv-edit", 3, "published_edit")):
+    for version_id, version_no, kind in (
+        ("mv-draft", 2, "draft"),
+        ("mv-edit", 3, "published_edit"),
+    ):
         db.execute(
             """INSERT INTO minutes_versions
                (id, meeting_id, version_no, markdown, html, kind, published, created_at)
                VALUES (?, ?, ?, '# 摘要\n改了一个错字。', '<p></p>', ?, 0, ?)""",
             (version_id, meeting_id, version_no, kind, utc_now()),
         )
-        db.execute("UPDATE meetings SET current_minutes_version_id=? WHERE id=?", (version_id, meeting_id))
+        db.execute(
+            "UPDATE meetings SET current_minutes_version_id=? WHERE id=?", (version_id, meeting_id)
+        )
 
         stats = service.extract_pending()
 
         assert stats["started"] == 0
-        assert db.query_one(
-            "SELECT 1 AS x FROM task_extractions WHERE minutes_version_id=?", (version_id,)
-        ) is None
+        assert (
+            db.query_one(
+                "SELECT 1 AS x FROM task_extractions WHERE minutes_version_id=?", (version_id,)
+            )
+            is None
+        )
     # 重新生成的纪要照样进队列
     db.execute(
         """INSERT INTO minutes_versions
@@ -641,10 +656,14 @@ def test_draft_minutes_do_not_seed_extraction(tmp_path, monkeypatch):
            VALUES ('mv-regen', ?, 4, '# 摘要\n重新生成。', '<p></p>', 'stale_generated', 1, ?)""",
         (meeting_id, utc_now()),
     )
-    db.execute("UPDATE meetings SET current_minutes_version_id='mv-regen' WHERE id=?", (meeting_id,))
+    db.execute(
+        "UPDATE meetings SET current_minutes_version_id='mv-regen' WHERE id=?", (meeting_id,)
+    )
     assert service.extract_pending()["succeeded"] == 1
     # 回到草稿版本，［重新抽取］对它照样能用
-    db.execute("UPDATE meetings SET current_minutes_version_id='mv-draft' WHERE id=?", (meeting_id,))
+    db.execute(
+        "UPDATE meetings SET current_minutes_version_id='mv-draft' WHERE id=?", (meeting_id,)
+    )
     result = client.post(
         f"/api/meetings/{meeting_id}/tasks/re-extract", json={"supplement": ""}, headers=headers
     ).json()
@@ -675,9 +694,7 @@ def test_recover_uses_claim_time_not_created_time(tmp_path):
         (old, old),
     )
     service._recover_stalled_extractions()
-    fresh = db.query_one(
-        "SELECT status FROM task_extractions WHERE supplement='fresh-claim'"
-    )
+    fresh = db.query_one("SELECT status FROM task_extractions WHERE supplement='fresh-claim'")
     stale = db.query_one(
         "SELECT status, claimed_at FROM task_extractions WHERE supplement='stale-claim'"
     )

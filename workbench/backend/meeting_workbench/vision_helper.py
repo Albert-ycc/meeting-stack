@@ -13,6 +13,7 @@ data_dir/bin/sd-vision-<源码哈希前 12 位>。常驻时一行一个 JSON 请
 一次性的子命令给预览图用，不占常驻进程：`sd-vision thumb <path> <max_side> <out>`、
 `sd-vision page1 <path> <max_side> <out>`，写 JPEG，成功退出码 0。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -348,10 +349,14 @@ def find_swiftc(*, system: str = sys.platform, run: Runner = subprocess.run) -> 
     if system != "darwin":
         return None
     try:
-        selected = run(["xcode-select", "-p"], capture_output=True, text=True, timeout=10, check=False)
+        selected = run(
+            ["xcode-select", "-p"], capture_output=True, text=True, timeout=10, check=False
+        )
         if selected.returncode != 0:
             return None
-        found = run(["xcrun", "--find", "swiftc"], capture_output=True, text=True, timeout=30, check=False)
+        found = run(
+            ["xcrun", "--find", "swiftc"], capture_output=True, text=True, timeout=30, check=False
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     path = (found.stdout or "").strip().splitlines()
@@ -447,7 +452,10 @@ class VisionBuild:
             if not background:
                 return self.compile(swiftc)
             self._thread = threading.Thread(
-                target=self.compile, args=(swiftc,), name="meeting-workbench-vision-build", daemon=True
+                target=self.compile,
+                args=(swiftc,),
+                name="meeting-workbench-vision-build",
+                daemon=True,
             )
             self._thread.start()
         return False
@@ -465,7 +473,10 @@ class VisionBuild:
             # 找不到 SDK，报 unable to load standard library（macOS 26 + 命令行工具实测）
             result = self.run(
                 ["xcrun", "swiftc", "-O", "-o", str(temporary), str(source_file)],
-                capture_output=True, text=True, timeout=COMPILE_TIMEOUT, check=False,
+                capture_output=True,
+                text=True,
+                timeout=COMPILE_TIMEOUT,
+                check=False,
             )
             if result.returncode == 0 and temporary.is_file():
                 os.chmod(temporary, 0o755)
@@ -484,8 +495,11 @@ class VisionBuild:
         logger.warning("Vision 程序编译失败：%s", error)
         _marker(self.binary).write_text(
             json.dumps(
-                {"at": self.now().isoformat(), "swiftc_version": swiftc_version(swiftc, run=self.run),
-                 "error": error[:300]},
+                {
+                    "at": self.now().isoformat(),
+                    "swiftc_version": swiftc_version(swiftc, run=self.run),
+                    "error": error[:300],
+                },
                 ensure_ascii=False,
             ),
             encoding="utf-8",

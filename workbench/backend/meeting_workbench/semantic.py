@@ -113,7 +113,9 @@ class SemanticIndex:
         if not self.settings.semantic_enabled or not query.strip():
             return None
         return self._normalize(
-            self._model().encode([query.strip()], show_progress_bar=False, normalize_embeddings=False)
+            self._model().encode(
+                [query.strip()], show_progress_bar=False, normalize_embeddings=False
+            )
         )[0]
 
     @staticmethod
@@ -173,7 +175,9 @@ class SemanticIndex:
                 )
         return len(rows)
 
-    def search(self, query: str, *, limit: int = 20, scope: str | None = None) -> list[dict[str, Any]]:
+    def search(
+        self, query: str, *, limit: int = 20, scope: str | None = None
+    ) -> list[dict[str, Any]]:
         query_vector = self.encode_query(query)
         if query_vector is None:
             return []

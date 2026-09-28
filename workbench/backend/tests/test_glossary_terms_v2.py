@@ -1,4 +1,5 @@
 """1d-1b 词条：重名 409 与合并、也叫、分组排序、快照可选字段、项目页词条上限。"""
+
 import pytest
 
 from meeting_workbench.db import Database, utc_now
@@ -106,9 +107,12 @@ def test_duplicate_term_api_returns_409_with_conflict_and_merge_makes_public(tmp
             "also": ["病例报告表"],
         }
     ]
-    assert client.post(
-        "/api/glossary/terms/gt-missing/merge", json={"aliases": ["CRV"]}, headers=headers
-    ).status_code == 404
+    assert (
+        client.post(
+            "/api/glossary/terms/gt-missing/merge", json={"aliases": ["CRV"]}, headers=headers
+        ).status_code
+        == 404
+    )
 
     renamed = client.post("/api/glossary/terms", json={"term": "随访"}, headers=headers).json()
     clash = client.put(
@@ -164,7 +168,12 @@ def test_term_also_validation(tmp_path):
 
 def test_scopes_list_public_then_all_projects_by_latest_meeting(tmp_path):
     db = make_db(tmp_path)
-    for project_id, name in (("p-a", "阿尔法"), ("p-b", "贝塔"), ("p-c", "C 项目"), ("p-d", "D 项目")):
+    for project_id, name in (
+        ("p-a", "阿尔法"),
+        ("p-b", "贝塔"),
+        ("p-c", "C 项目"),
+        ("p-d", "D 项目"),
+    ):
         add_project(db, project_id, name)
     add_meeting(db, "m-1", "p-a", "2026-09-01")
     add_meeting(db, "m-2", "p-b", "2026-09-20")

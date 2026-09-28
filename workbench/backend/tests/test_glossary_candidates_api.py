@@ -1,5 +1,6 @@
 """第四期 4h：候选词的接口。GET 的键集合、看板的前 6 项、证据重新落位、记入/不是/撤销、404/409/422、
 会议的 material_pairs。"""
+
 from __future__ import annotations
 
 import json
@@ -16,7 +17,17 @@ from .helpers import count_reads
 from .test_search import add_meeting
 from .test_tasks_api import make_client, write_headers
 
-ITEM_KEYS = {"key", "term", "existing_term", "wrongs", "files", "spoken", "heard", "file_names", "file_quote"}
+ITEM_KEYS = {
+    "key",
+    "term",
+    "existing_term",
+    "wrongs",
+    "files",
+    "spoken",
+    "heard",
+    "file_names",
+    "file_quote",
+}
 
 
 @pytest.fixture
@@ -32,7 +43,11 @@ def api(tmp_path):
 
 def snapshot_terms(settings):
     path = settings.data_dir / "glossary-snapshot.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"terms": [], "projects": []}
+    return (
+        json.loads(path.read_text(encoding="utf-8"))
+        if path.exists()
+        else {"terms": [], "projects": []}
+    )
 
 
 # ---------------------------------------------------------------------- 读
@@ -45,11 +60,19 @@ def test_get_items_have_a_fixed_key_set_and_no_scores(api):
     first, second = payload["items"]
     for item in payload["items"]:
         assert set(item) == ITEM_KEYS
-    assert first["term"] == "司美格鲁肽" and first["wrongs"] == [{"text": "司美格鲁太", "meetings": 2}]
-    assert first["heard"][0]["quote"].startswith("这次司美格鲁太") and first["heard"][0]["meeting"]["id"] == "m1"
+    assert first["term"] == "司美格鲁肽" and first["wrongs"] == [
+        {"text": "司美格鲁太", "meetings": 2}
+    ]
+    assert (
+        first["heard"][0]["quote"].startswith("这次司美格鲁太")
+        and first["heard"][0]["meeting"]["id"] == "m1"
+    )
     assert first["file_quote"] is None  # 说过的词不给材料原话
     assert second["term"] == "驻场服务" and second["heard"] == []
-    assert second["file_quote"]["quote"].count("驻场服务") >= 1 and len(second["file_quote"]["quote"]) <= 40 + 4
+    assert (
+        second["file_quote"]["quote"].count("驻场服务") >= 1
+        and len(second["file_quote"]["quote"]) <= 40 + 4
+    )
     assert [entry["name"] for entry in second["file_names"]] == ["方案1.docx", "方案2.docx"]
     text = json.dumps(payload, ensure_ascii=False)
     for banned in ("score", "rank", "percent", "%"):
@@ -77,13 +100,26 @@ def test_evidence_is_found_again_after_reread_and_retranscribe(api):
     # 重读：片段 id 变了，(content_key, ordinal) 没变
     chunk = db.query_one("SELECT * FROM material_chunks WHERE content_key = 'k1'")
     db.execute("DELETE FROM material_chunks WHERE content_key = 'k1'")
-    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('k1', ?, ?)", (chunk["ordinal"], chunk["text"]))
+    db.execute(
+        "INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('k1', ?, ?)",
+        (chunk["ordinal"], chunk["text"]),
+    )
     # 重新转写：段落换了 id，时间点稍有出入
     version = db.create_transcript_version("m1", "funasr", published=True)
-    db.replace_segments(version, "m1", [
-        {"id": "m1-new-0", "ordinal": 0, "start_ms": 500, "end_ms": 900, "text": "开场白"},
-        {"id": "m1-new-1", "ordinal": 1, "start_ms": 800, "end_ms": 1900, "text": "这次司美格鲁太的剂量先按"},
-    ])
+    db.replace_segments(
+        version,
+        "m1",
+        [
+            {"id": "m1-new-0", "ordinal": 0, "start_ms": 500, "end_ms": 900, "text": "开场白"},
+            {
+                "id": "m1-new-1",
+                "ordinal": 1,
+                "start_ms": 800,
+                "end_ms": 1900,
+                "text": "这次司美格鲁太的剂量先按",
+            },
+        ],
+    )
     items = client.get("/api/projects/p/glossary-candidates").json()["items"]
     heard = items[0]["heard"]
     assert heard[0]["meeting"]["id"] == "m1" and heard[0]["start_ms"] == 800
@@ -97,9 +133,18 @@ def test_material_quote_falls_back_to_the_full_text_index_when_the_ordinal_moved
     chunk = db.query_one("SELECT * FROM material_chunks WHERE content_key = 'k1'")
     for key in ("k1", "k2", "k3"):
         db.execute("DELETE FROM material_chunks WHERE content_key = ?", (key,))
-    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('k1', 0, '新加的封面页')")
-    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('k1', 1, ?)", (chunk["text"],))
-    item = next(item for item in client.get("/api/projects/p/glossary-candidates").json()["items"] if item["key"] == "驻场服务")
+    db.execute(
+        "INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('k1', 0, '新加的封面页')"
+    )
+    db.execute(
+        "INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('k1', 1, ?)",
+        (chunk["text"],),
+    )
+    item = next(
+        item
+        for item in client.get("/api/projects/p/glossary-candidates").json()["items"]
+        if item["key"] == "驻场服务"
+    )
     assert item["file_quote"] is not None and "驻场服务" in item["file_quote"]["quote"]
     assert count_reads(db, lambda c: gm.list_candidates(c, "p", limit=gm.SHOWN_ON_BOARD)) <= 3
 
@@ -111,10 +156,14 @@ def test_accept_creates_a_material_term_and_rewrites_the_snapshot_once(api, monk
     client, settings, db, headers = api
     calls = []
     original = glossary.rewrite_snapshot
-    monkeypatch.setattr(glossary, "rewrite_snapshot", lambda *args: (calls.append(1), original(*args))[1])
+    monkeypatch.setattr(
+        glossary, "rewrite_snapshot", lambda *args: (calls.append(1), original(*args))[1]
+    )
 
     result = client.post(
-        "/api/projects/p/glossary-candidates/accept", json={"key": "司美格鲁肽", "not_wrong": []}, headers=headers
+        "/api/projects/p/glossary-candidates/accept",
+        json={"key": "司美格鲁肽", "not_wrong": []},
+        headers=headers,
     ).json()
 
     assert calls == [1]
@@ -123,9 +172,14 @@ def test_accept_creates_a_material_term_and_rewrites_the_snapshot_once(api, monk
     assert result["text"] == "已记入『司美格鲁肽』，错写：司美格鲁太"
     assert result["undo_until"]
     term = db.query_one("SELECT * FROM glossary_terms WHERE term = '司美格鲁肽'")
-    assert (term["source"], term["is_cue"], term["confirmed"], term["scope"], term["category"], term["project_id"]) == (
-        "material", 0, 1, "云图AI", "其他", "p"
-    )
+    assert (
+        term["source"],
+        term["is_cue"],
+        term["confirmed"],
+        term["scope"],
+        term["category"],
+        term["project_id"],
+    ) == ("material", 0, 1, "云图AI", "其他", "p")
     assert json.loads(term["aliases"]) == ["司美格鲁太"]
     assert {row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"} == {"accepted"}
     assert "司美格鲁肽" in {entry["term"] for entry in snapshot_terms(settings)["terms"]}
@@ -155,14 +209,28 @@ def test_accept_on_an_existing_term_appends_aliases(api):
                created_at, updated_at) VALUES ('gt-1', '能耗看板', '["能耗看扳"]', '云图AI', '其他', 'manual', 1, 'p', ?, ?)""",
         (now, now),
     )
-    add_meeting(db, "m7", date="2026-09-27T10:00:00", project_id="p", segments=["能耗看版上线", "能耗看版再看"])
+    add_meeting(
+        db,
+        "m7",
+        date="2026-09-27T10:00:00",
+        project_id="p",
+        segments=["能耗看版上线", "能耗看版再看"],
+    )
     mine(db, now=NOW + timedelta(hours=7))
-    item = next(item for item in client.get("/api/projects/p/glossary-candidates").json()["items"] if item["term"] == "能耗看板")
+    item = next(
+        item
+        for item in client.get("/api/projects/p/glossary-candidates").json()["items"]
+        if item["term"] == "能耗看板"
+    )
     assert item["existing_term"] == {"id": "gt-1", "term": "能耗看板"}
-    result = client.post("/api/projects/p/glossary-candidates/accept", json={"key": "能耗看板"}, headers=headers).json()
+    result = client.post(
+        "/api/projects/p/glossary-candidates/accept", json={"key": "能耗看板"}, headers=headers
+    ).json()
     assert result["created"] is False and result["added_aliases"] == ["能耗看版"]
     assert result["text"] == "已把『能耗看版』记成『能耗看板』的错写"
-    assert json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-1'")["aliases"]) == ["能耗看扳", "能耗看版"]
+    assert json.loads(
+        db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-1'")["aliases"]
+    ) == ["能耗看扳", "能耗看版"]
 
 
 def test_accept_when_the_term_is_already_there(api):
@@ -173,9 +241,16 @@ def test_accept_when_the_term_is_already_there(api):
            VALUES ('gt-2', '驻场服务', '[]', '通用', '其他', 'manual', 1, ?, ?)""",
         (now, now),
     )
-    result = client.post("/api/projects/p/glossary-candidates/accept", json={"key": "驻场服务"}, headers=headers).json()
+    result = client.post(
+        "/api/projects/p/glossary-candidates/accept", json={"key": "驻场服务"}, headers=headers
+    ).json()
     assert result["already"] is True and result["text"] == "『驻场服务』已经在词典里了"
-    assert db.query_one("SELECT term_id FROM glossary_candidates WHERE term_key = '驻场服务'")["term_id"] == "gt-2"
+    assert (
+        db.query_one("SELECT term_id FROM glossary_candidates WHERE term_key = '驻场服务'")[
+            "term_id"
+        ]
+        == "gt-2"
+    )
 
 
 def test_accept_skips_a_wrong_used_elsewhere(api):
@@ -186,7 +261,9 @@ def test_accept_skips_a_wrong_used_elsewhere(api):
            VALUES ('gt-3', '别的词', '["司美格鲁太"]', '通用', '其他', 'manual', 1, ?, ?)""",
         (now, now),
     )
-    result = client.post("/api/projects/p/glossary-candidates/accept", json={"key": "司美格鲁肽"}, headers=headers).json()
+    result = client.post(
+        "/api/projects/p/glossary-candidates/accept", json={"key": "司美格鲁肽"}, headers=headers
+    ).json()
     assert result["skipped_aliases"] == ["司美格鲁太"] and result["added_aliases"] == []
     assert result["text"] == "已记入『司美格鲁肽』；『司美格鲁太』已经用在别的词条上，没加成错写"
 
@@ -199,7 +276,9 @@ def test_invalid_term_is_422(api):
            VALUES ('p', '12345', '12345', 'pending', ?, ?)""",
         (now, now),
     )
-    response = client.post("/api/projects/p/glossary-candidates/accept", json={"key": "12345"}, headers=headers)
+    response = client.post(
+        "/api/projects/p/glossary-candidates/accept", json={"key": "12345"}, headers=headers
+    )
     assert response.status_code == 422 and response.json()["detail"] == "这个词不能记入词典"
 
 
@@ -211,11 +290,20 @@ def test_accept_leaves_dropped_wrongs_alone_and_undo_does_not_revive_them(api):
     mine(db, now=NOW + timedelta(hours=7))
     statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
     assert statuses == {"": "pending", "司美格鲁太": "dropped"}
-    item = next(item for item in client.get("/api/projects/p/glossary-candidates").json()["items"] if item["key"] == "司美格鲁肽")
+    item = next(
+        item
+        for item in client.get("/api/projects/p/glossary-candidates").json()["items"]
+        if item["key"] == "司美格鲁肽"
+    )
     assert item["wrongs"] == []
     result = gm.accept(db, "p", "司美格鲁肽", [], now=NOW + timedelta(hours=7))
     assert result["text"] == "已记入『司美格鲁肽』" and result["added_aliases"] == []
-    assert json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE term = '司美格鲁肽'")["aliases"]) == []
+    assert (
+        json.loads(
+            db.query_one("SELECT aliases FROM glossary_terms WHERE term = '司美格鲁肽'")["aliases"]
+        )
+        == []
+    )
     statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
     assert statuses == {"": "accepted", "司美格鲁太": "dropped"}
     gm.undo(db, "p", "司美格鲁肽", now=NOW + timedelta(hours=7, seconds=30))
@@ -234,7 +322,13 @@ def existing_term_world(db):
                created_at, updated_at) VALUES ('gt-1', '能耗看板', '[]', '云图AI', '其他', 'manual', 1, 'p', ?, ?)""",
         (now, now),
     )
-    add_meeting(db, "m7", date="2026-09-27T10:00:00", project_id="p", segments=["能耗看版上线", "能耗看版再看"])
+    add_meeting(
+        db,
+        "m7",
+        date="2026-09-27T10:00:00",
+        project_id="p",
+        segments=["能耗看版上线", "能耗看版再看"],
+    )
     mine(db, now=NOW + timedelta(hours=7))
 
 
@@ -248,7 +342,10 @@ def test_existing_term_with_every_wrong_removed_is_422_and_nothing_changes(api):
     )
     assert response.status_code == 422 and response.json()["detail"] == "至少留一个错写"
     assert {row["status"] for row in rows(db) if row["term_key"] == "能耗看板"} == {"pending"}
-    assert json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-1'")["aliases"]) == []
+    assert (
+        json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-1'")["aliases"])
+        == []
+    )
 
 
 def test_existing_term_whose_wrongs_are_all_taken_says_so_without_undo(api):
@@ -260,11 +357,16 @@ def test_existing_term_whose_wrongs_are_all_taken_says_so_without_undo(api):
            VALUES ('gt-9', '别的看板', '["能耗看版"]', '通用', '其他', 'manual', 1, ?, ?)""",
         (now, now),
     )
-    response = client.post("/api/projects/p/glossary-candidates/accept", json={"key": "能耗看板"}, headers=headers)
+    response = client.post(
+        "/api/projects/p/glossary-candidates/accept", json={"key": "能耗看板"}, headers=headers
+    )
     assert response.status_code == 409
     assert response.json()["detail"] == "『能耗看版』已经用在别的词条上，没加成错写"
     assert {row["status"] for row in rows(db) if row["term_key"] == "能耗看板"} == {"pending"}
-    assert json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-1'")["aliases"]) == []
+    assert (
+        json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-1'")["aliases"])
+        == []
+    )
 
 
 def test_meeting_accept_records_only_the_shown_wrong(api):
@@ -284,20 +386,30 @@ def test_meeting_accept_records_only_the_shown_wrong(api):
     assert result["added_aliases"] == ["司美格鲁太"]
     statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
     assert statuses == {"": "accepted", "司美格鲁太": "accepted", "司美格鲁泰": "pending"}
-    item = next(item for item in client.get("/api/projects/p/glossary-candidates").json()["items"] if item["key"] == "司美格鲁肽")
-    assert item["existing_term"]["term"] == "司美格鲁肽" and [w["text"] for w in item["wrongs"]] == ["司美格鲁泰"]
+    item = next(
+        item
+        for item in client.get("/api/projects/p/glossary-candidates").json()["items"]
+        if item["key"] == "司美格鲁肽"
+    )
+    assert item["existing_term"]["term"] == "司美格鲁肽" and [
+        w["text"] for w in item["wrongs"]
+    ] == ["司美格鲁泰"]
     # 再记到已有词条上，撤销只撤这一次
     second = gm.accept(db, "p", "司美格鲁肽", [], now=NOW + timedelta(days=1))
     assert second["text"] == "已把『司美格鲁泰』记成『司美格鲁肽』的错写"
     gm.undo(db, "p", "司美格鲁肽", now=NOW + timedelta(days=1, seconds=5))
     statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
     assert statuses == {"": "accepted", "司美格鲁太": "accepted", "司美格鲁泰": "pending"}
-    assert json.loads(db.query_one("SELECT aliases FROM glossary_terms WHERE term = '司美格鲁肽'")["aliases"]) == ["司美格鲁太"]
+    assert json.loads(
+        db.query_one("SELECT aliases FROM glossary_terms WHERE term = '司美格鲁肽'")["aliases"]
+    ) == ["司美格鲁太"]
     # 在会议页点［不是］（这个写法），记入过的词本身不被冲掉
     gm.reject(db, "p", "司美格鲁肽", now=NOW + timedelta(days=1, seconds=10))
     statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
     assert statuses == {"": "accepted", "司美格鲁太": "accepted", "司美格鲁泰": "rejected"}
-    assert db.query_one("SELECT term_id FROM glossary_candidates WHERE term_key = '司美格鲁肽' AND wrong = ''")["term_id"]
+    assert db.query_one(
+        "SELECT term_id FROM glossary_candidates WHERE term_key = '司美格鲁肽' AND wrong = ''"
+    )["term_id"]
 
 
 # ---------------------------------------------------------------------- 不是
@@ -305,7 +417,9 @@ def test_meeting_accept_records_only_the_shown_wrong(api):
 
 def test_reject_all_rows_and_never_again(api):
     client, _settings, db, headers = api
-    result = client.post("/api/projects/p/glossary-candidates/reject", json={"key": "司美格鲁肽"}, headers=headers).json()
+    result = client.post(
+        "/api/projects/p/glossary-candidates/reject", json={"key": "司美格鲁肽"}, headers=headers
+    ).json()
     assert result["text"] == "以后不再提『司美格鲁肽』" and result["undo_until"]
     assert {row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"} == {"rejected"}
     mine(db, now=NOW + timedelta(hours=7))
@@ -319,7 +433,9 @@ def test_undo_within_600_seconds(api):
     _client, settings, db, _headers = api
     snapshot = settings.data_dir / "glossary-snapshot.json"
     gm.accept(db, "p", "司美格鲁肽", [], snapshot_path=snapshot, now=NOW)
-    undone = gm.undo(db, "p", "司美格鲁肽", snapshot_path=snapshot, now=NOW + timedelta(seconds=599))
+    undone = gm.undo(
+        db, "p", "司美格鲁肽", snapshot_path=snapshot, now=NOW + timedelta(seconds=599)
+    )
     assert undone == {"status": "pending", "text": "已撤销，『司美格鲁肽』回到这里"}
     assert db.query_one("SELECT 1 AS x FROM glossary_terms WHERE term = '司美格鲁肽'") is None
     assert "司美格鲁肽" not in {entry["term"] for entry in snapshot_terms(settings)["terms"]}
@@ -351,11 +467,20 @@ def test_undo_after_600_seconds_or_after_an_edit_is_409(api):
 def test_not_found_and_csrf(api):
     client, _settings, _db, headers = api
     assert client.get("/api/projects/nope/glossary-candidates").json()["detail"] == "项目不存在"
-    missing = client.post("/api/projects/p/glossary-candidates/reject", json={"key": "没有这个词"}, headers=headers)
+    missing = client.post(
+        "/api/projects/p/glossary-candidates/reject", json={"key": "没有这个词"}, headers=headers
+    )
     assert missing.status_code == 404 and missing.json()["detail"] == "这个词已经不在了"
-    unknown = client.post("/api/projects/nope/glossary-candidates/reject", json={"key": "x"}, headers=headers)
+    unknown = client.post(
+        "/api/projects/nope/glossary-candidates/reject", json={"key": "x"}, headers=headers
+    )
     assert unknown.status_code == 404 and unknown.json()["detail"] == "项目不存在"
-    assert client.post("/api/projects/p/glossary-candidates/reject", json={"key": "驻场服务"}).status_code == 403
+    assert (
+        client.post(
+            "/api/projects/p/glossary-candidates/reject", json={"key": "驻场服务"}
+        ).status_code
+        == 403
+    )
 
 
 # ---------------------------------------------------------------------- 会议页
@@ -371,12 +496,21 @@ def test_meeting_material_pairs(api):
                    VALUES (?, ?, 1, '# 周会', '', 'generated', 0, ?)""",
                 (f"mv-{meeting_id}", meeting_id, utc_now()),
             )
-            connection.execute("UPDATE meetings SET current_minutes_version_id = ? WHERE id = ?", (f"mv-{meeting_id}", meeting_id))
+            connection.execute(
+                "UPDATE meetings SET current_minutes_version_id = ? WHERE id = ?",
+                (f"mv-{meeting_id}", meeting_id),
+            )
         glossary_checkup.check_meeting(db, meeting_id)
     pairs = client.get("/api/meetings/m1/glossary").json()["glossary"]["material_pairs"]
-    assert pairs == [{
-        "key": "司美格鲁肽", "term": "司美格鲁肽", "wrong": "司美格鲁太", "start_ms": 0,
-        "quote": "这次司美格鲁太的剂量先按", "project": {"id": "p", "name": "云图AI"},
-    }]
+    assert pairs == [
+        {
+            "key": "司美格鲁肽",
+            "term": "司美格鲁肽",
+            "wrong": "司美格鲁太",
+            "start_ms": 0,
+            "quote": "这次司美格鲁太的剂量先按",
+            "project": {"id": "p", "name": "云图AI"},
+        }
+    ]
     assert client.get("/api/meetings/m1").json()["glossary"]["material_pairs"] == pairs
     assert client.get("/api/meetings/m-free/glossary").json()["glossary"]["material_pairs"] == []

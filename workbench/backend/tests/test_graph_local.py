@@ -1,6 +1,7 @@
 """第四期 4f：以文件为中心的局部图（/map）和来龙去脉（/trace）：按内容标识找活文件、邻居的顺序和上限、
 语句数、相关只在打开时给；来龙去脉时间单调、每边最多 3 步、级别、包含关系不算步、不走相关和在问的建议；
 错误码、只有 GET、会议和决议节点的 audio_url。"""
+
 from datetime import date
 
 from meeting_workbench import graph, graph_local
@@ -41,9 +42,19 @@ def add_decision(db, decision_id, meeting_id, text, start_ms=754_000):
 
 
 def affects(decision_id, meeting_id, file_id, key, *, status="suggested"):
-    return system_row(kind="affects", ident=f"{decision_id}|{key}", status=status, origin="rule",
-                      meeting_id=meeting_id, decision_id=decision_id, stem_key=None, file_id=file_id,
-                      content_key=key, quote="总价下调 5%", evidence={"rule": "value", "terms": ["总价"]})
+    return system_row(
+        kind="affects",
+        ident=f"{decision_id}|{key}",
+        status=status,
+        origin="rule",
+        meeting_id=meeting_id,
+        decision_id=decision_id,
+        stem_key=None,
+        file_id=file_id,
+        content_key=key,
+        quote="总价下调 5%",
+        evidence={"rule": "value", "terms": ["总价"]},
+    )
 
 
 def deliver(db, task_id, root_id, rel_path, key):
@@ -118,11 +129,18 @@ def test_asks_come_first_twelve_are_drawn_and_the_rest_hidden(tmp_path):
     assert ids[:2] == ["dec:dec-a", "dec:dec-b"]
     assert len(ids) == graph_local.MAP_NEIGHBOURS and body["hidden_count"] == 10
     assert len(body["hidden"]) == 10
-    assert all(row["label"].startswith("会上说『报价单』2 次") and "周会" in row["node_label"] for row in body["hidden"])
+    assert all(
+        row["label"].startswith("会上说『报价单』2 次") and "周会" in row["node_label"]
+        for row in body["hidden"]
+    )
     # 没画出来的行带着节点本身和那条线：面板里点了直接打开它的面板
     row = body["hidden"][0]
     assert row["node"]["id"] == row["node_id"] and row["node"]["kind"] == "meeting"
-    assert row["node"]["at"] and "audio_url" in row["node"] and row["node"]["caption"] == row["node_label"]
+    assert (
+        row["node"]["at"]
+        and "audio_url" in row["node"]
+        and row["node"]["caption"] == row["node_label"]
+    )
     assert row["edge"]["id"] == row["edge_id"] and row["edge"]["kind"] == "mentioned"
     assert body["center"]["stale"] is True
     aff = next(edge for edge in body["edges"] if edge["id"].startswith("e:aff:"))
@@ -150,10 +168,26 @@ def test_map_neighbour_kinds_and_related_only_when_on(tmp_path):
     add_meeting(db, "m-2", ago=3, project_id="p", title="报价沟通")
     add_task(db, "t", meeting_id="m", project_id="p", status="confirmed")
     deliver(db, "t", root_id, "能耗看板/报价单 v3.xlsx", "k3")
-    upsert(db, [system_row(kind="related", ident="m-2|k3", origin="vector", meeting_id="m-2", stem_key=None,
-                           file_id=quote, content_key="k3", quote="报价单再核一下",
-                           evidence={"words": ["报价单", "驻场"], "windows": 2,
-                                     "material": {"content_key": "k3", "ordinal": 0, "loc": "第 1 页"}})])
+    upsert(
+        db,
+        [
+            system_row(
+                kind="related",
+                ident="m-2|k3",
+                origin="vector",
+                meeting_id="m-2",
+                stem_key=None,
+                file_id=quote,
+                content_key="k3",
+                quote="报价单再核一下",
+                evidence={
+                    "words": ["报价单", "驻场"],
+                    "windows": 2,
+                    "material": {"content_key": "k3", "ordinal": 0, "loc": "第 1 页"},
+                },
+            )
+        ],
+    )
     db.execute(
         "INSERT INTO material_contents(content_key, layer, state, created_at, updated_at) VALUES ('k3', 'text', 'done', ?, ?)",
         (utc_now(), utc_now()),
@@ -251,7 +285,15 @@ def test_trace_is_monotonic_capped_and_prefers_your_deliverable(tmp_path):
     db, _root_id, f3, f2, g1, _g2 = chain_world(tmp_path)
     body = trace(db, f"file:{f3}")
     chain = body["chain"]
-    assert chain == [f"file:{f2}", "m:m-b", "task:t", f"file:{f3}", "m:m-c1", f"file:{g1}", "m:m-c2"]
+    assert chain == [
+        f"file:{f2}",
+        "m:m-b",
+        "task:t",
+        f"file:{f3}",
+        "m:m-c1",
+        f"file:{g1}",
+        "m:m-c2",
+    ]
     assert body["center_index"] == 3
     assert body["cut"] == {"back": False, "forward": True}
     nodes = {node["id"]: node for node in body["nodes"]}
@@ -273,10 +315,26 @@ def test_trace_skips_related_asks_and_requirements(tmp_path):
     upsert(
         db,
         [
-            system_row(kind="related", ident="m-r|k3", origin="vector", meeting_id="m-r", stem_key=None,
-                       file_id=f3, content_key="k3"),
-            system_row(kind="produced", ident="t-ask|k3", status="suggested", origin="rule", meeting_id=None,
-                       task_id="t-ask", stem_key=None, file_id=f3, content_key="k3"),
+            system_row(
+                kind="related",
+                ident="m-r|k3",
+                origin="vector",
+                meeting_id="m-r",
+                stem_key=None,
+                file_id=f3,
+                content_key="k3",
+            ),
+            system_row(
+                kind="produced",
+                ident="t-ask|k3",
+                status="suggested",
+                origin="rule",
+                meeting_id=None,
+                task_id="t-ask",
+                stem_key=None,
+                file_id=f3,
+                content_key="k3",
+            ),
             affects("dec-a", "m-r", f3, "k3"),
         ],
     )
@@ -290,8 +348,20 @@ def test_trace_from_a_meeting_and_a_decision(tmp_path):
     db, _root_id, f3, *_ = chain_world(tmp_path)
     add_decision(db, "dec-a", "m-c1", "总价下调 5%", start_ms=60_000)
     add_decision(db, "dec-b", "m-c3", "总价下调 3%", start_ms=60_000)
-    upsert(db, [system_row(kind="later_changed", ident="dec-a|dec-b", origin="rule", meeting_id="m-c3",
-                           decision_id="dec-b", to_decision_id="dec-a", stem_key=None)])
+    upsert(
+        db,
+        [
+            system_row(
+                kind="later_changed",
+                ident="dec-a|dec-b",
+                origin="rule",
+                meeting_id="m-c3",
+                decision_id="dec-b",
+                to_decision_id="dec-a",
+                stem_key=None,
+            )
+        ],
+    )
     body = trace(db, "dec:dec-a")
     assert body["chain"][body["center_index"]] == "dec:dec-a"
     assert "dec:dec-b" in body["chain"]
@@ -309,17 +379,29 @@ def test_trace_is_not_cut_short_by_a_decision_with_nothing_after_it(tmp_path):
     add_task(db, "t-x", meeting_id="m-c1", project_id="p", status="confirmed")
     db.execute("UPDATE tasks SET anchor_ms = 40000 WHERE id = 't-x'")
     body = trace(db, f"file:{f3}")
-    assert body["chain"][body["center_index"]:] == [f"file:{f3}", "m:m-c1", f"file:{g1}", "m:m-c2"]
+    assert body["chain"][body["center_index"] :] == [f"file:{f3}", "m:m-c1", f"file:{g1}", "m:m-c2"]
     assert body["cut"] == {"back": False, "forward": True}
     assert count_reads(db, lambda connection: graph_local.trace(connection, f"file:{f3}")) <= 48
 
     # 包含关系还能接着走时照样走：会上的决议后来被改了
     add_decision(db, "dec-a", "m-c1", "总价下调 5%", start_ms=60_000)
     add_decision(db, "dec-b", "m-c3", "总价下调 3%", start_ms=60_000)
-    upsert(db, [system_row(kind="later_changed", ident="dec-a|dec-b", origin="rule", meeting_id="m-c3",
-                           decision_id="dec-b", to_decision_id="dec-a", stem_key=None)])
+    upsert(
+        db,
+        [
+            system_row(
+                kind="later_changed",
+                ident="dec-a|dec-b",
+                origin="rule",
+                meeting_id="m-c3",
+                decision_id="dec-b",
+                to_decision_id="dec-a",
+                stem_key=None,
+            )
+        ],
+    )
     meeting = trace(db, "m:m-c1")
-    forward = meeting["chain"][meeting["center_index"]:]
+    forward = meeting["chain"][meeting["center_index"] :]
     assert forward[:3] == ["m:m-c1", "dec:dec-a", "dec:dec-b"]
     assert count_reads(db, lambda connection: graph_local.trace(connection, "m:m-c1")) <= 48
 
@@ -329,8 +411,16 @@ def test_trace_dead_end_lookahead_stays_within_the_statement_budget(tmp_path):
     db, _root_id, f3, *_ = chain_world(tmp_path)
     for meeting_id in ("m-b", "m-x", "m-c1", "m-c2", "m-c3"):
         for index in range(6):
-            add_decision(db, f"dec-{meeting_id}-{index}", meeting_id, f"决议{index}", start_ms=1_000 + index)
-            add_task(db, f"t-{meeting_id}-{index}", meeting_id=meeting_id, project_id="p", status="confirmed")
+            add_decision(
+                db, f"dec-{meeting_id}-{index}", meeting_id, f"决议{index}", start_ms=1_000 + index
+            )
+            add_task(
+                db,
+                f"t-{meeting_id}-{index}",
+                meeting_id=meeting_id,
+                project_id="p",
+                status="confirmed",
+            )
     body = trace(db, f"file:{f3}")
     assert f"file:{f3}" in body["chain"] and "m:m-c1" in body["chain"]
     assert count_reads(db, lambda connection: graph_local.trace(connection, f"file:{f3}")) <= 48
@@ -374,8 +464,22 @@ def test_endpoints_are_get_only_and_speak_plainly(tmp_path):
     keyed(db, quote, "k")
     literal(db, "m", "报价单", quote)
     add_task(db, "t", meeting_id="m", project_id="p", status="confirmed")
-    upsert(db, [system_row(kind="produced", ident="t|k", status="suggested", origin="rule", meeting_id=None,
-                           task_id="t", stem_key=None, file_id=quote, content_key="k")])
+    upsert(
+        db,
+        [
+            system_row(
+                kind="produced",
+                ident="t|k",
+                status="suggested",
+                origin="rule",
+                meeting_id=None,
+                task_id="t",
+                stem_key=None,
+                file_id=quote,
+                content_key="k",
+            )
+        ],
+    )
 
     response = client.get(f"/api/graph/files/{quote}/map")
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
@@ -384,22 +488,43 @@ def test_endpoints_are_get_only_and_speak_plainly(tmp_path):
     assert client.get(f"/api/graph/files/{quote}/map", params={"related": 2}).status_code == 422
     assert client.get("/api/graph/files/999999/map").json()["detail"] == "这份文件不在索引里了"
     assert client.get("/api/graph/trace", params={"node": "foo"}).status_code == 422
-    assert client.get("/api/graph/trace", params={"node": "m:nope"}).json()["detail"] == "会议不存在"
+    assert (
+        client.get("/api/graph/trace", params={"node": "m:nope"}).json()["detail"] == "会议不存在"
+    )
     free = client.get("/api/graph/trace", params={"node": "m:m-free"})
     assert (free.status_code, free.json()["detail"]) == (409, "这场会没归项目")
-    assert client.get("/api/graph/trace", params={"node": "dec:dec-x"}).json()["detail"] == "这条决议已经不在了"
-    assert client.get("/api/graph/trace", params={"node": "task:nope"}).json()["detail"] == "这条任务已经不在了"
+    assert (
+        client.get("/api/graph/trace", params={"node": "dec:dec-x"}).json()["detail"]
+        == "这条决议已经不在了"
+    )
+    assert (
+        client.get("/api/graph/trace", params={"node": "task:nope"}).json()["detail"]
+        == "这条任务已经不在了"
+    )
     assert client.get("/api/graph/trace", params={"node": f"file:{quote}"}).status_code == 200
     headers = write_headers(client)
     assert client.post(f"/api/graph/files/{quote}/map", json={}, headers=headers).status_code == 405
-    assert client.post("/api/graph/trace", params={"node": "m:m"}, json={}, headers=headers).status_code == 405
+    assert (
+        client.post(
+            "/api/graph/trace", params={"node": "m:m"}, json={}, headers=headers
+        ).status_code
+        == 405
+    )
 
     # 回答再撤销：星图的 ETag 变两次
     first = client.get("/api/graph/projects/p").headers["etag"]
     relation_id = db.query_one("SELECT id FROM relations WHERE kind = 'produced'")["id"]
-    assert client.post(f"/api/relations/{relation_id}/answer", json={"answer": "no"}, headers=headers).status_code == 200
+    assert (
+        client.post(
+            f"/api/relations/{relation_id}/answer", json={"answer": "no"}, headers=headers
+        ).status_code
+        == 200
+    )
     second = client.get("/api/graph/projects/p").headers["etag"]
-    assert client.post(f"/api/relations/{relation_id}/undo", json={}, headers=headers).status_code == 200
+    assert (
+        client.post(f"/api/relations/{relation_id}/undo", json={}, headers=headers).status_code
+        == 200
+    )
     third = client.get("/api/graph/projects/p").headers["etag"]
     assert len({first, second, third}) == 3
     assert graph.GRAPH_API_VERSION == 4

@@ -1,4 +1,5 @@
 """项目材料目录：路径安全、递归统计上限、材料根目录 CRUD（260915 新增）。"""
+
 import os
 
 from meeting_workbench.db import Database
@@ -65,9 +66,7 @@ def test_create_project_duplicate_name_conflicts_409(tmp_path):
     )
     assert duplicate.status_code == 409
 
-    existing = next(
-        p for p in client.get("/api/projects").json() if p["name"] == "重复项目名"
-    )
+    existing = next(p for p in client.get("/api/projects").json() if p["name"] == "重复项目名")
     assert existing["material_roots"] == []
 
 
@@ -153,7 +152,8 @@ def test_browse_works_when_browse_root_itself_is_symlink(tmp_path):
     ).json()
     assert sub_payload["parent"] == real_target_resolved
     assert [c["name"] for c in sub_payload["breadcrumbs"]] == [
-        real_target.resolve().name, "子目录",
+        real_target.resolve().name,
+        "子目录",
     ]
 
     outside = tmp_path / "outside"

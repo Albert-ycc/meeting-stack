@@ -12,6 +12,7 @@ normal 区和 key、pages、numbers 包、changed 同一天一行、exFAT 整刻
 大小一律用 IS 比：key、pages、numbers 包的 size 是空的，用 = 永远配不上。时间线有语句数上限，
 classify 是一条语句（事件超过 500 条时每 500 条一条），day_groups、recent_added 各再加一条。
 """
+
 from __future__ import annotations
 
 import sqlite3

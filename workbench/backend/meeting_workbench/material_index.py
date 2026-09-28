@@ -11,6 +11,7 @@
   文件夹只读一层记个数；声档会议记录里的文件标 cards、代码和配置文件标 code，只收名字不比对；
   .key、.pages 这类包算一个文件；不跟随符号链接；受保护目录和嵌套的其他根目录整棵跳过。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -40,10 +41,55 @@ FULL_EVERY = timedelta(hours=24)
 # 代码和配置文件：收名字、不比对。
 CODE_EXTS = frozenset(
     {
-        "py", "pyc", "js", "mjs", "cjs", "ts", "tsx", "jsx", "json", "yaml", "yml", "toml", "ini",
-        "cfg", "conf", "css", "scss", "less", "lock", "log", "map", "sh", "bat", "ps1", "java",
-        "class", "go", "rs", "c", "h", "cpp", "hpp", "cs", "rb", "php", "swift", "kt", "sql",
-        "xml", "plist", "env", "gradle", "vue", "svelte", "o", "so", "dll", "dylib", "whl",
+        "py",
+        "pyc",
+        "js",
+        "mjs",
+        "cjs",
+        "ts",
+        "tsx",
+        "jsx",
+        "json",
+        "yaml",
+        "yml",
+        "toml",
+        "ini",
+        "cfg",
+        "conf",
+        "css",
+        "scss",
+        "less",
+        "lock",
+        "log",
+        "map",
+        "sh",
+        "bat",
+        "ps1",
+        "java",
+        "class",
+        "go",
+        "rs",
+        "c",
+        "h",
+        "cpp",
+        "hpp",
+        "cs",
+        "rb",
+        "php",
+        "swift",
+        "kt",
+        "sql",
+        "xml",
+        "plist",
+        "env",
+        "gradle",
+        "vue",
+        "svelte",
+        "o",
+        "so",
+        "dll",
+        "dylib",
+        "whl",
     }
 )
 # 拿来比对的文件区域。
@@ -137,7 +183,13 @@ class MaterialIndexer:
                 ORDER BY r.id"""
         )
         # 断点续扫的先走，再按上一轮开始的先后
-        roots.sort(key=lambda row: (row["state"] != STATE_WALKING, row["sweep_started_at"] or "", row["id"]))
+        roots.sort(
+            key=lambda row: (
+                row["state"] != STATE_WALKING,
+                row["sweep_started_at"] or "",
+                row["id"],
+            )
+        )
         skip_real = self._skip_paths(roots)
         self._deadline = self.clock() + self.round_seconds
         self._entries = 0
@@ -172,7 +224,10 @@ class MaterialIndexer:
         result: dict[int, set[str]] = {}
         for root_id, real in reals.items():
             inside: set[str] = set()
-            for other in [*protected, *(path for other_id, path in reals.items() if other_id != root_id)]:
+            for other in [
+                *protected,
+                *(path for other_id, path in reals.items() if other_id != root_id),
+            ]:
                 if other.startswith(real + os.sep):
                     inside.add(os.path.relpath(other, real).replace(os.sep, "/"))
             result[root_id] = inside
@@ -233,7 +288,9 @@ class MaterialIndexer:
         base = Path(root["path"])
         while stack:
             if self._out_of_budget():
-                self._save_cursor(root_id, {"stack": stack, "full": full, "started_at": cursor["started_at"]})
+                self._save_cursor(
+                    root_id, {"stack": stack, "full": full, "started_at": cursor["started_at"]}
+                )
                 return
             dir_rel = stack.pop()
             children = self._visit(root_id, base, dir_rel, full=full)
@@ -274,7 +331,8 @@ class MaterialIndexer:
                 digest.update(b"\0")
             stems_hash = digest.hexdigest()
             files = connection.execute(
-                "SELECT COUNT(*) AS n FROM material_files WHERE root_id = ? AND gone_at IS NULL", (root_id,)
+                "SELECT COUNT(*) AS n FROM material_files WHERE root_id = ? AND gone_at IS NULL",
+                (root_id,),
             ).fetchone()["n"]
             previous = connection.execute(
                 "SELECT stems_hash, stems_rev, last_full_at FROM material_index_state WHERE root_id = ?",
@@ -283,7 +341,9 @@ class MaterialIndexer:
             rev = int(previous["stems_rev"]) if previous else 0
             if previous is None or previous["stems_hash"] != stems_hash:
                 rev += 1
-            last_full = self.now().isoformat() if full else (previous["last_full_at"] if previous else None)
+            last_full = (
+                self.now().isoformat() if full else (previous["last_full_at"] if previous else None)
+            )
             connection.execute(
                 """INSERT INTO material_index_state(root_id, state, cursor, files, stems_rev, stems_hash,
                        sweep_started_at, last_full_at, error, updated_at)
@@ -316,7 +376,9 @@ class MaterialIndexer:
         if not stat.S_ISDIR(info.st_mode):
             return []
         known = self._dirs.get(dir_rel)
-        unchanged = known is not None and known["mtime_ns"] == info.st_mtime_ns and known["zone"] == zone
+        unchanged = (
+            known is not None and known["mtime_ns"] == info.st_mtime_ns and known["zone"] == zone
+        )
         if zone == "name_only":
             # 只读一层记个数，按它自己的修改时间跳过，整轮重读时也不重数
             if unchanged:
@@ -327,7 +389,9 @@ class MaterialIndexer:
             except OSError as error:
                 return self._unreadable(dir_rel, error)
             self._entries += count
-            self._write_dir(root_id, dir_rel, info.st_mtime_ns, zone, count, files=None, subdirs=None)
+            self._write_dir(
+                root_id, dir_rel, info.st_mtime_ns, zone, count, files=None, subdirs=None
+            )
             return []
         if unchanged and not full:
             children = self._children.get(dir_rel, set())
@@ -367,7 +431,9 @@ class MaterialIndexer:
                         continue
                     if file_ext(name) in PACKAGE_EXTS:
                         child = entry.stat(follow_symlinks=False)
-                        files[rel] = self._file_row(name, dir_rel, zone, None, child.st_mtime_ns, package=True)
+                        files[rel] = self._file_row(
+                            name, dir_rel, zone, None, child.st_mtime_ns, package=True
+                        )
                     else:
                         subdirs.append(rel)
                     continue
@@ -382,7 +448,9 @@ class MaterialIndexer:
                 continue
             if not stat.S_ISREG(child.st_mode):
                 continue
-            files[rel] = self._file_row(name, dir_rel, zone, child.st_size, child.st_mtime_ns, package=False)
+            files[rel] = self._file_row(
+                name, dir_rel, zone, child.st_size, child.st_mtime_ns, package=False
+            )
         unchanged_listing = (
             unchanged
             and known is not None
@@ -390,8 +458,16 @@ class MaterialIndexer:
             and int(known.get("symlinks") or 0) == symlinks
         )
         self._write_dir(
-            root_id, dir_rel, None if partial else info.st_mtime_ns, zone, len(entries), files=files,
-            subdirs=subdirs, touch_dir=partial or not unchanged_listing, partial=partial, symlinks=symlinks,
+            root_id,
+            dir_rel,
+            None if partial else info.st_mtime_ns,
+            zone,
+            len(entries),
+            files=files,
+            subdirs=subdirs,
+            touch_dir=partial or not unchanged_listing,
+            partial=partial,
+            symlinks=symlinks,
         )
         return subdirs
 
@@ -404,7 +480,14 @@ class MaterialIndexer:
         return []
 
     def _file_row(
-        self, name: str, dir_rel: str, dir_zone: str, size: int | None, mtime_ns: int, *, package: bool
+        self,
+        name: str,
+        dir_rel: str,
+        dir_zone: str,
+        size: int | None,
+        mtime_ns: int,
+        *,
+        package: bool,
     ) -> dict[str, Any]:
         stem = derive_stem(name)
         return {
@@ -455,8 +538,19 @@ class MaterialIndexer:
                             """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key,
                                    ext, size, mtime_ns, zone, seen_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (root_id, rel, dir_rel, item["name"], item["stem"], item["stem_key"], item["ext"],
-                             item["size"], item["mtime_ns"], item["zone"], now),
+                            (
+                                root_id,
+                                rel,
+                                dir_rel,
+                                item["name"],
+                                item["stem"],
+                                item["stem_key"],
+                                item["ext"],
+                                item["size"],
+                                item["mtime_ns"],
+                                item["zone"],
+                                now,
+                            ),
                         )
                         if item["zone"] in MATCH_ZONES:
                             new_stems.add(item["stem_key"])
@@ -473,8 +567,17 @@ class MaterialIndexer:
                     connection.execute(
                         """UPDATE material_files SET name = ?, stem = ?, stem_key = ?, ext = ?, size = ?,
                                mtime_ns = ?, zone = ?, seen_at = ?, gone_at = NULL WHERE id = ?""",
-                        (item["name"], item["stem"], item["stem_key"], item["ext"], item["size"],
-                         item["mtime_ns"], item["zone"], now, row["id"]),
+                        (
+                            item["name"],
+                            item["stem"],
+                            item["stem_key"],
+                            item["ext"],
+                            item["size"],
+                            item["mtime_ns"],
+                            item["zone"],
+                            now,
+                            row["id"],
+                        ),
                     )
                     # 重新出现、改过内容（修改时间决定按会议日期选哪一版）：提过这个词干的会重新比对
                     if item["zone"] in MATCH_ZONES:
@@ -488,7 +591,8 @@ class MaterialIndexer:
                 ]
                 if gone:
                     connection.executemany(
-                        "UPDATE material_files SET gone_at = ? WHERE id = ?", [(now, file_id) for file_id in gone]
+                        "UPDATE material_files SET gone_at = ? WHERE id = ?",
+                        [(now, file_id) for file_id in gone],
                     )
                     dirty_files.extend(gone)
             if subdirs is not None:
@@ -518,7 +622,11 @@ class MaterialIndexer:
                 )
             self._dirty_meetings(connection, root_id, dirty_files, new_stems)
         self._dirs[dir_rel] = {
-            "dir_rel": dir_rel, "mtime_ns": mtime_ns, "zone": zone, "child_count": child_count, "symlinks": symlinks,
+            "dir_rel": dir_rel,
+            "mtime_ns": mtime_ns,
+            "zone": zone,
+            "child_count": child_count,
+            "symlinks": symlinks,
         }
 
     def _drop_subtree(self, connection: Any, root_id: int, dir_rel: str, now: str) -> list[int]:
@@ -537,13 +645,17 @@ class MaterialIndexer:
                 f"UPDATE material_files SET gone_at = ? WHERE root_id = ? AND gone_at IS NULL AND {where}",
                 (now, root_id, *params),
             )
-        connection.execute(f"DELETE FROM material_dirs WHERE root_id = ? AND {where}", (root_id, *params))
+        connection.execute(
+            f"DELETE FROM material_dirs WHERE root_id = ? AND {where}", (root_id, *params)
+        )
         for known in [key for key in self._dirs if key == dir_rel or key.startswith(dir_rel + "/")]:
             self._dirs.pop(known, None)
             self._children.pop(known, None)
         return ids
 
-    def _dirty_meetings(self, connection: Any, root_id: int, file_ids: list[int], stems: set[str]) -> None:
+    def _dirty_meetings(
+        self, connection: Any, root_id: int, file_ids: list[int], stems: set[str]
+    ) -> None:
         """文件不见了或换了名字：指向它的会重新比对；新文件入库：本项目提过同一词干的会重新比对。"""
         if file_ids:
             for start in range(0, len(file_ids), 500):
@@ -608,7 +720,11 @@ def index_status(connection: Any, project_id: str | None = None) -> list[dict[st
             "path": row["path"],
             "state": row["state"],
             # 扫完的按那一轮的结果，扫到一半的按已经认得的
-            "files": int(row["files"] if row["state"] == STATE_DONE and row["files"] is not None else row["files_now"]),
+            "files": int(
+                row["files"]
+                if row["state"] == STATE_DONE and row["files"] is not None
+                else row["files_now"]
+            ),
             "name_only_dirs": int(row["name_only_dirs"]),
             "indexed_once": bool(row["indexed_once"]),
             "last_full_at": row["last_full_at"],

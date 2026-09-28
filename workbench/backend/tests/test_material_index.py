@@ -1,11 +1,19 @@
 """第二期 2d：文件名变词干、后台文件名索引。"""
+
 import os
 from types import SimpleNamespace
 
 import pytest
 
 from meeting_workbench.db import Database, utc_now
-from meeting_workbench.file_stems import STEM_NO, STEM_TWICE, STEM_YES, derive_stem, stem_key, stem_usability
+from meeting_workbench.file_stems import (
+    STEM_NO,
+    STEM_TWICE,
+    STEM_YES,
+    derive_stem,
+    stem_key,
+    stem_usability,
+)
 from meeting_workbench.material_index import MaterialIndexer, index_status
 from meeting_workbench.materials import ROOT_ONLINE, ROOT_VOLUME_OFFLINE
 
@@ -61,7 +69,9 @@ def make(tmp_path):
     db = Database(tmp_path / "workbench.sqlite3")
     db.initialize()
     settings = SimpleNamespace(
-        archive_root=tmp_path / "archive", staging_root=tmp_path / "staging", data_dir=tmp_path / "data"
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        data_dir=tmp_path / "data",
     )
     db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', ?)", (utc_now(),))
     return db, settings
@@ -94,7 +104,9 @@ def files(db, root_id=None, *, gone=False):
 def run_until_done(indexer, rounds=50):
     for _ in range(rounds):
         indexer.run_round()
-        states = {row["state"] for row in indexer.db.query_all("SELECT state FROM material_index_state")}
+        states = {
+            row["state"] for row in indexer.db.query_all("SELECT state FROM material_index_state")
+        }
         if states == {"done"}:
             return
     raise AssertionError("没扫完")
@@ -136,7 +148,9 @@ def test_skip_rules_and_zones(tmp_path):
     }
     name_only = {
         row["dir_rel"]: row["child_count"]
-        for row in db.query_all("SELECT dir_rel, child_count FROM material_dirs WHERE zone='name_only'")
+        for row in db.query_all(
+            "SELECT dir_rel, child_count FROM material_dirs WHERE zone='name_only'"
+        )
     }
     assert name_only == {"node_modules": 3, ".git": 1}
     status = index_status(db.connect())[0]
@@ -169,7 +183,9 @@ def test_resumes_from_cursor_and_keeps_rows_quiet_when_nothing_changed(tmp_path)
     fast.run_round()
     fast.run_round()
     assert db.query_all("SELECT * FROM material_files ORDER BY id") == before_files
-    assert db.query_all("SELECT dir_rel, listed_at FROM material_dirs ORDER BY dir_rel") == before_dirs
+    assert (
+        db.query_all("SELECT dir_rel, listed_at FROM material_dirs ORDER BY dir_rel") == before_dirs
+    )
     assert files(db, gone=True) == {}
     assert graph_rev(db) == before_rev
     assert db.query_one("SELECT stems_rev FROM material_index_state")["stems_rev"] == 1
@@ -196,13 +212,23 @@ def test_changes_are_judged_per_directory(tmp_path):
 
     assert set(files(db)) == {"报价/报价单 v2.xlsx", "报价/报价单 v3.xlsx"}
     assert set(files(db, gone=True)) == {
-        "报价/报价单 v1.xlsx", "设计/旧稿/首页原型.fig", "设计/旧稿/更旧/登录页原型.fig"
+        "报价/报价单 v1.xlsx",
+        "设计/旧稿/首页原型.fig",
+        "设计/旧稿/更旧/登录页原型.fig",
     }
-    assert db.query_one("SELECT COUNT(*) AS n FROM material_dirs WHERE dir_rel LIKE '设计/旧稿%'")["n"] == 0
-    gone_at = db.query_one("SELECT gone_at FROM material_files WHERE rel_path='报价/报价单 v1.xlsx'")
+    assert (
+        db.query_one("SELECT COUNT(*) AS n FROM material_dirs WHERE dir_rel LIKE '设计/旧稿%'")["n"]
+        == 0
+    )
+    gone_at = db.query_one(
+        "SELECT gone_at FROM material_files WHERE rel_path='报价/报价单 v1.xlsx'"
+    )
     indexer.run_round()
     # 不见了只写一次
-    assert db.query_one("SELECT gone_at FROM material_files WHERE rel_path='报价/报价单 v1.xlsx'") == gone_at
+    assert (
+        db.query_one("SELECT gone_at FROM material_files WHERE rel_path='报价/报价单 v1.xlsx'")
+        == gone_at
+    )
     # 回来了清掉 gone_at
     write(root / "报价" / "报价单 v1.xlsx")
     os.utime(root / "报价", ns=(1, 3_000_000_000))
@@ -219,7 +245,9 @@ def test_unplugged_mid_walk_keeps_rows_and_cursor(tmp_path):
     add_root(db, root)
     online = {"value": True}
     indexer = MaterialIndexer(
-        db, settings, clock=lambda: 0.0,
+        db,
+        settings,
+        clock=lambda: 0.0,
         state_of=lambda path: ROOT_ONLINE if online["value"] else ROOT_VOLUME_OFFLINE,
     )
     run_until_done(indexer)
@@ -249,7 +277,9 @@ def test_unplugged_while_reading_a_subfolder_stops_without_marking_gone(tmp_path
     add_root(db, root)
     online = {"value": True}
     indexer = MaterialIndexer(
-        db, settings, clock=lambda: 0.0,
+        db,
+        settings,
+        clock=lambda: 0.0,
         state_of=lambda path: ROOT_ONLINE if online["value"] else ROOT_VOLUME_OFFLINE,
     )
     run_until_done(indexer)
@@ -290,7 +320,9 @@ def test_unplugged_while_reading_a_subfolder_stops_without_marking_gone(tmp_path
 
 def test_nested_roots_are_walked_once(tmp_path):
     db, settings = make(tmp_path)
-    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),))
+    db.execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),)
+    )
     outer = tmp_path / "资料"
     inner = outer / "数据中台"
     write(outer / "总体规划.docx")
@@ -317,7 +349,8 @@ def test_root_path_change_restarts_with_a_full_pass(tmp_path):
     write(new / "权限中心说明.docx")
     db.execute("UPDATE project_material_roots SET path=? WHERE id=?", (str(new), root_id))
     assert db.query_one("SELECT state, last_full_at FROM material_index_state") == {
-        "state": "pending", "last_full_at": None
+        "state": "pending",
+        "last_full_at": None,
     }
     run_until_done(indexer)
     assert set(files(db)) == {"报价单.xlsx", "权限中心说明.docx"}
@@ -326,7 +359,9 @@ def test_root_path_change_restarts_with_a_full_pass(tmp_path):
 
 def test_nested_root_added_later_takes_its_files_from_the_outer_root(tmp_path):
     db, settings = make(tmp_path)
-    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),))
+    db.execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),)
+    )
     outer = tmp_path / "资料"
     write(outer / "总体规划.docx")
     write(outer / "数据中台" / "接口清单说明.xlsx")
@@ -359,13 +394,20 @@ def test_moving_the_root_mid_round_does_not_write_back_the_old_cursor(tmp_path):
     def visit_then_move(root_id_, base, dir_rel, *, full):
         calls.append(dir_rel)
         if len(calls) == 2:  # 两个文件夹之间，你在项目页「重新选…」了位置
-            db.execute("UPDATE project_material_roots SET path=? WHERE id=?", (str(other), root_id_))
+            db.execute(
+                "UPDATE project_material_roots SET path=? WHERE id=?", (str(other), root_id_)
+            )
         return visit(root_id_, base, dir_rel, full=full)
 
     indexer._visit = visit_then_move
     indexer.run_round()
 
-    assert db.query_one("SELECT cursor FROM material_index_state WHERE root_id=?", (root_id,))["cursor"] is None
+    assert (
+        db.query_one("SELECT cursor FROM material_index_state WHERE root_id=?", (root_id,))[
+            "cursor"
+        ]
+        is None
+    )
     indexer._visit = visit
     run_until_done(indexer)
     assert set(files(db, root_id)) == {"x/新的报价单.xlsx"}

@@ -14,6 +14,7 @@
 - evidence_json 只存位置和次数，不存材料原文；材料原话在读的时候现取，只给页面。
 - 不算分数：排序按「有听错写法的、说过的、没说过的」三档，档里按次数；接口里没有分数、名次、百分比。
 """
+
 from __future__ import annotations
 
 import bisect
@@ -90,52 +91,260 @@ LAW_CLAUSE_FILE_MIN = 20
 LAW_CLAUSE_FILE_DENSITY = 0.002
 
 # 代码、数据和字幕文件不挖（字幕多半是语音识别出来的）
-MINING_SKIP_EXTS = PLAIN_TEXT_EXTS - {"txt", "md", "markdown", "csv", "tsv", "tex", "eml", "mht", "mhtml"}
+MINING_SKIP_EXTS = PLAIN_TEXT_EXTS - {
+    "txt",
+    "md",
+    "markdown",
+    "csv",
+    "tsv",
+    "tex",
+    "eml",
+    "mht",
+    "mhtml",
+}
 _SKIP_SQL = ", ".join(f"'{ext}'" for ext in sorted(MINING_SKIP_EXTS))
 
 # 当标点用的套话（换成空格，词不会跨过它们）
 COMMON_PHRASES = (
-    "综上所述", "总的来说", "总而言之", "一方面", "另一方面", "也就是说", "换句话说", "进一步", "情况下",
-    "在此基础上", "与此同时", "由此可见", "除此之外", "不仅如此", "即便如此", "尽管如此", "一般来说",
-    "通常情况", "具体来说", "简单来说", "事实上", "实际上", "基本上", "原则上", "总体上", "整体上",
-    "根据以上", "如下所示", "如上所述", "如图所示", "如表所示", "详见附件", "以下简称", "有关规定",
-    "相关规定", "有关部门", "相关部门", "进行了", "开展了", "完成了", "的情况", "的基础上", "的要求",
-    "的问题", "的工作", "的时候", "的方式", "的过程中", "过程中", "之一", "等方面", "等工作", "为了",
-    "以便于", "是否需要", "需要注意", "请注意", "注意事项", "特此说明", "如有疑问", "谢谢大家",
+    "综上所述",
+    "总的来说",
+    "总而言之",
+    "一方面",
+    "另一方面",
+    "也就是说",
+    "换句话说",
+    "进一步",
+    "情况下",
+    "在此基础上",
+    "与此同时",
+    "由此可见",
+    "除此之外",
+    "不仅如此",
+    "即便如此",
+    "尽管如此",
+    "一般来说",
+    "通常情况",
+    "具体来说",
+    "简单来说",
+    "事实上",
+    "实际上",
+    "基本上",
+    "原则上",
+    "总体上",
+    "整体上",
+    "根据以上",
+    "如下所示",
+    "如上所述",
+    "如图所示",
+    "如表所示",
+    "详见附件",
+    "以下简称",
+    "有关规定",
+    "相关规定",
+    "有关部门",
+    "相关部门",
+    "进行了",
+    "开展了",
+    "完成了",
+    "的情况",
+    "的基础上",
+    "的要求",
+    "的问题",
+    "的工作",
+    "的时候",
+    "的方式",
+    "的过程中",
+    "过程中",
+    "之一",
+    "等方面",
+    "等工作",
+    "为了",
+    "以便于",
+    "是否需要",
+    "需要注意",
+    "请注意",
+    "注意事项",
+    "特此说明",
+    "如有疑问",
+    "谢谢大家",
 )
 # 常用词：全由它们拼成的片段不要；3 字片段两头是其中的二字词也不要
 COMMON_WORDS = frozenset(STOPWORDS | COMMON_TWO_CHAR) | frozenset(
     (
-        "我们", "你们", "他们", "大家", "自己", "需要", "进行", "可以", "这个", "那个", "一个", "没有",
-        "就是", "还是", "如果", "但是", "所以", "已经", "现在", "然后", "什么", "怎么", "这样", "那么",
-        "时候", "这些", "那些", "一些", "可能", "应该", "以及", "或者", "而且", "并且", "通过", "对于",
-        "关于", "其中", "目前", "以后", "之前", "之后", "今天", "明天", "一下", "比较", "非常", "主要",
-        "相关", "具体", "方面", "情况", "工作", "部分", "内容", "要求", "处理", "完成", "提供", "使用",
-        "包括", "根据", "按照", "进一步", "同时", "此外", "另外", "以上", "以下", "为了", "由于", "因此",
-        "不是", "还有", "一样", "这里", "那里", "所有", "每个", "其他", "有关", "时间", "地方", "问题",
+        "我们",
+        "你们",
+        "他们",
+        "大家",
+        "自己",
+        "需要",
+        "进行",
+        "可以",
+        "这个",
+        "那个",
+        "一个",
+        "没有",
+        "就是",
+        "还是",
+        "如果",
+        "但是",
+        "所以",
+        "已经",
+        "现在",
+        "然后",
+        "什么",
+        "怎么",
+        "这样",
+        "那么",
+        "时候",
+        "这些",
+        "那些",
+        "一些",
+        "可能",
+        "应该",
+        "以及",
+        "或者",
+        "而且",
+        "并且",
+        "通过",
+        "对于",
+        "关于",
+        "其中",
+        "目前",
+        "以后",
+        "之前",
+        "之后",
+        "今天",
+        "明天",
+        "一下",
+        "比较",
+        "非常",
+        "主要",
+        "相关",
+        "具体",
+        "方面",
+        "情况",
+        "工作",
+        "部分",
+        "内容",
+        "要求",
+        "处理",
+        "完成",
+        "提供",
+        "使用",
+        "包括",
+        "根据",
+        "按照",
+        "进一步",
+        "同时",
+        "此外",
+        "另外",
+        "以上",
+        "以下",
+        "为了",
+        "由于",
+        "因此",
+        "不是",
+        "还有",
+        "一样",
+        "这里",
+        "那里",
+        "所有",
+        "每个",
+        "其他",
+        "有关",
+        "时间",
+        "地方",
+        "问题",
     )
 )
-_NAME_EXTRA = frozenset(("说明", "文档", "表格", "汇总", "清单", "明细", "初稿", "终稿", "定稿", "附件", "模板"))
+_NAME_EXTRA = frozenset(
+    ("说明", "文档", "表格", "汇总", "清单", "明细", "初稿", "终稿", "定稿", "附件", "模板")
+)
 LATIN_STOP = frozenset(
     word.casefold()
     for word in (
-        "PDF", "DOC", "DOCX", "XLS", "XLSX", "PPT", "PPTX", "TXT", "CSV", "TSV", "URL", "URI", "HTTP",
-        "HTTPS", "WWW", "HTML", "HTM", "JSON", "XML", "YAML", "PNG", "JPG", "JPEG", "GIF", "BMP", "SVG",
-        "ZIP", "RAR", "MP3", "MP4", "WAV", "MOV", "COM", "NET", "ORG", "WPS", "UTF", "UTF-8", "ASCII",
-        "GBK", "TODO", "FAQ", "PS", "NO", "YES", "THE", "AND", "FOR", "WITH", "FROM", "PAGE", "TEL",
-        "FAX", "EMAIL", "MAIL", "EXCEL", "WORD", "WECHAT", "APP", "IOS", "MAC", "WIN", "PC", "OK",
+        "PDF",
+        "DOC",
+        "DOCX",
+        "XLS",
+        "XLSX",
+        "PPT",
+        "PPTX",
+        "TXT",
+        "CSV",
+        "TSV",
+        "URL",
+        "URI",
+        "HTTP",
+        "HTTPS",
+        "WWW",
+        "HTML",
+        "HTM",
+        "JSON",
+        "XML",
+        "YAML",
+        "PNG",
+        "JPG",
+        "JPEG",
+        "GIF",
+        "BMP",
+        "SVG",
+        "ZIP",
+        "RAR",
+        "MP3",
+        "MP4",
+        "WAV",
+        "MOV",
+        "COM",
+        "NET",
+        "ORG",
+        "WPS",
+        "UTF",
+        "UTF-8",
+        "ASCII",
+        "GBK",
+        "TODO",
+        "FAQ",
+        "PS",
+        "NO",
+        "YES",
+        "THE",
+        "AND",
+        "FOR",
+        "WITH",
+        "FROM",
+        "PAGE",
+        "TEL",
+        "FAX",
+        "EMAIL",
+        "MAIL",
+        "EXCEL",
+        "WORD",
+        "WECHAT",
+        "APP",
+        "IOS",
+        "MAC",
+        "WIN",
+        "PC",
+        "OK",
     )
 )
 _HAN = "一-鿿"
 _HAN_RUN = re.compile(f"[{_HAN}]{{{HAN_LEN[0]},}}")
 _HAN_ONLY = re.compile(f"[{_HAN}]+")
-_LATIN_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*(?![A-Za-z0-9])")
+_LATIN_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*(?![A-Za-z0-9])"
+)
 _LATIN_SHAPE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.\-_]*[A-Za-z0-9])?")
 _HEX = re.compile(r"[0-9a-fA-F]{6,}")
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-?[0-9a-fA-F]{4}){3}-?[0-9a-fA-F]{12}")
 _VERSION = re.compile(r"[vV]?\d+(?:\.\d+)+|[vV]\d+")
-_LAW_CLAUSE = re.compile(r"第[〇一二三四五六七八九十百千零]{1,10}条")  # 法条编号习惯用中文数字，阿拉伯数字更像业务序号
-_PHRASES = re.compile("|".join(re.escape(item) for item in sorted(COMMON_PHRASES, key=len, reverse=True)))
+_LAW_CLAUSE = re.compile(
+    r"第[〇一二三四五六七八九十百千零]{1,10}条"
+)  # 法条编号习惯用中文数字，阿拉伯数字更像业务序号
+_PHRASES = re.compile(
+    "|".join(re.escape(item) for item in sorted(COMMON_PHRASES, key=len, reverse=True))
+)
 
 # 回答的说法（进用词测试）
 PROJECT_MISSING = "项目不存在"
@@ -292,7 +501,8 @@ def _stuck_sides(runs: Sequence[str], kept: dict[str, int]) -> set[str]:
     return {
         fragment
         for fragment in kept
-        if left.get(fragment, _MIXED) not in ("", _MIXED) or right.get(fragment, _MIXED) not in ("", _MIXED)
+        if left.get(fragment, _MIXED) not in ("", _MIXED)
+        or right.get(fragment, _MIXED) not in ("", _MIXED)
     }
 
 
@@ -346,7 +556,8 @@ def _boundary_covers(items: dict[str, int], min_len: int) -> Coverage:
                 group[char] = max(group.get(char, 0), count)
     return Coverage(
         totals={
-            key: max(sum(front.get(key, {}).values()), sum(back.get(key, {}).values())) for key in items
+            key: max(sum(front.get(key, {}).values()), sum(back.get(key, {}).values()))
+            for key in items
         },
         front_chars={key: frozenset(front.get(key, {})) for key in items},
         back_chars={key: frozenset(back.get(key, {})) for key in items},
@@ -359,7 +570,9 @@ def extract_seeds(text: str) -> list[tuple[str, int]]:
     text = _PHRASES.sub(" ", text)
     runs = [match.group(0) for match in _HAN_RUN.finditer(text)]
     # 逐级数：长一个字的片段只在两截都够次数的位置上数，内存峰值只有 3 字那一级
-    first: Counter[str] = Counter(run[start : start + 3] for run in runs for start in range(len(run) - 2))
+    first: Counter[str] = Counter(
+        run[start : start + 3] for run in runs for start in range(len(run) - 2)
+    )
     level = {fragment: count for fragment, count in first.items() if count >= MIN_IN_CONTENT}
     del first
     frequent = dict(level)
@@ -367,7 +580,10 @@ def extract_seeds(text: str) -> list[tuple[str, int]]:
         grown: Counter[str] = Counter()
         for run in runs:
             for start in range(len(run) - size + 1):
-                if run[start : start + size - 1] in level and run[start + 1 : start + size] in level:
+                if (
+                    run[start : start + size - 1] in level
+                    and run[start + 1 : start + size] in level
+                ):
                     grown[run[start : start + size]] += 1
         level = {fragment: count for fragment, count in grown.items() if count >= MIN_IN_CONTENT}
         del grown
@@ -391,10 +607,15 @@ def extract_seeds(text: str) -> list[tuple[str, int]]:
     covered = {
         fragment
         for fragment in kept
-        if fragment not in halves and covering.totals.get(fragment, 0) >= COVER_RATIO * kept[fragment]
+        if fragment not in halves
+        and covering.totals.get(fragment, 0) >= COVER_RATIO * kept[fragment]
     }
     han = sorted(
-        ((fragment, count) for fragment, count in kept.items() if fragment not in covered and fragment not in halves),
+        (
+            (fragment, count)
+            for fragment, count in kept.items()
+            if fragment not in covered and fragment not in halves
+        ),
         key=lambda item: (-item[1] * len(item[0]), item[0]),
     )[:SEEDS_HAN]
     latin_counts: Counter[str] = Counter(
@@ -420,7 +641,11 @@ def name_segments(stem: str) -> list[str]:
                     run, changed = run[len(word) :], True
                 if len(run) - len(word) >= NAME_SEG_LEN[0] and run.endswith(word):
                     run, changed = run[: -len(word)], True
-        if NAME_SEG_LEN[0] <= len(run) <= NAME_SEG_LEN[1] and not _all_common(run) and run not in segments:
+        if (
+            NAME_SEG_LEN[0] <= len(run) <= NAME_SEG_LEN[1]
+            and not _all_common(run)
+            and run not in segments
+        ):
             segments.append(run)
     return segments
 
@@ -463,7 +688,11 @@ def find_pairs(
                 if start < 0 or start + size > len(transcript):
                     continue
                 candidate = transcript[start : start + size]
-                if candidate == base or candidate[:index] != base[:index] or candidate[index + 1 :] != base[index + 1 :]:
+                if (
+                    candidate == base
+                    or candidate[:index] != base[:index]
+                    or candidate[index + 1 :] != base[index + 1 :]
+                ):
                     continue
                 if not _is_han(candidate[index]):
                     continue
@@ -571,7 +800,11 @@ def seed_round(
         terms = extract_seeds(read_text(conn, row["content_key"]))
         terms_json = json.dumps([[term, count] for term, count in terms], ensure_ascii=False)
         sig = _source_sig(row)
-        if row["miner"] == MINER_VERSION and row["source_sig"] == sig and row["terms_json"] == terms_json:
+        if (
+            row["miner"] == MINER_VERSION
+            and row["source_sig"] == sig
+            and row["terms_json"] == terms_json
+        ):
             continue
         with conn:
             conn.execute(
@@ -612,7 +845,7 @@ def signatures(conn: Any, only: str | None = None) -> dict[str, str]:
     meetings: dict[str, list[str]] = {}
     for row in conn.execute(
         f"""SELECT project_id, id, COALESCE(current_transcript_version_id, '') AS tv FROM meetings
-             WHERE project_id IS NOT NULL {'AND project_id = :only' if only else ''} ORDER BY id""",
+             WHERE project_id IS NOT NULL {"AND project_id = :only" if only else ""} ORDER BY id""",
         params,
     ).fetchall():
         meetings.setdefault(row["project_id"], []).append(f"{row['id']}={row['tv']}")
@@ -620,7 +853,7 @@ def signatures(conn: Any, only: str | None = None) -> dict[str, str]:
         row["project_id"]: row["n"]
         for row in conn.execute(
             f"""SELECT project_id, COUNT(*) AS n FROM glossary_candidates
-                 WHERE status IN ('accepted', 'rejected') {'AND project_id = :only' if only else ''}
+                 WHERE status IN ('accepted', 'rejected') {"AND project_id = :only" if only else ""}
                  GROUP BY project_id""",
             params,
         ).fetchall()
@@ -642,7 +875,9 @@ def due_projects(conn: Any, now: datetime) -> list[tuple[str, str]]:
     sigs = signatures(conn)
     scans = {
         row["project_id"]: (row["sig"], row["mined_at"])
-        for row in conn.execute("SELECT project_id, sig, mined_at FROM glossary_mining_scan").fetchall()
+        for row in conn.execute(
+            "SELECT project_id, sig, mined_at FROM glossary_mining_scan"
+        ).fetchall()
     }
     cutoff = now - timedelta(seconds=PASS_INTERVAL_S)
     due: list[tuple[str, str, str]] = []
@@ -812,7 +1047,9 @@ def _known_names(conn: Any, project_id: str) -> tuple[set[str], list[str], set[s
 
 
 def _decided_keys(conn: Any) -> set[str]:
-    return {row["norm_key"] for row in conn.execute("SELECT norm_key FROM name_decisions").fetchall()}
+    return {
+        row["norm_key"] for row in conn.execute("SELECT norm_key FROM name_decisions").fetchall()
+    }
 
 
 class PassAbandoned(Exception):
@@ -829,7 +1066,10 @@ def _fill_keys(conn: Any, project_id: str) -> None:
     后面的只读查询不挂在事务里，也不和之后的 BEGIN IMMEDIATE 冲突。"""
     conn.execute("CREATE TEMP TABLE IF NOT EXISTS _gm_keys(content_key TEXT PRIMARY KEY)")
     conn.execute("DELETE FROM temp._gm_keys")
-    conn.execute(f"INSERT OR IGNORE INTO temp._gm_keys(content_key) {_project_keys_sql()}", {"pid": project_id})
+    conn.execute(
+        f"INSERT OR IGNORE INTO temp._gm_keys(content_key) {_project_keys_sql()}",
+        {"pid": project_id},
+    )
     if conn.in_transaction:
         conn.commit()
 
@@ -847,7 +1087,9 @@ def _file_is_regulation(conn: Any, content_key: str) -> bool:
     编号，但整份材料是法规页面，两条都过。"""
     total = 0
     length = 0
-    for row in conn.execute("SELECT text FROM material_chunks WHERE content_key = ? ORDER BY ordinal", (content_key,)):
+    for row in conn.execute(
+        "SELECT text FROM material_chunks WHERE content_key = ? ORDER BY ordinal", (content_key,)
+    ):
         text = row["text"] or ""
         total += len(_LAW_CLAUSE.findall(text))
         length += len(text)
@@ -941,7 +1183,10 @@ def _compute(
             for term, count in terms:
                 df[term] += 1
                 total[term] += count
-        agg = sorted(((term, df[term], total[term]) for term in df), key=lambda item: (-item[1], -item[2], item[0]))
+        agg = sorted(
+            ((term, df[term], total[term]) for term in df),
+            key=lambda item: (-item[1], -item[2], item[0]),
+        )
         agg = agg[:AGG_LIMIT]
     files = conn.execute(
         """SELECT f.stem, f.name, f.content_key FROM material_files f
@@ -1014,7 +1259,9 @@ def _compute(
             (_fts_phrase(term), project_id, OTHER_PROJECTS_DROP),
         ).fetchall()
         if len(others) < OTHER_PROJECTS_DROP:
-            found[term] = Found(term=term, key=light_key(term), df=pool[term][0], total=pool[term][1])
+            found[term] = Found(
+                term=term, key=light_key(term), df=pool[term][0], total=pool[term][1]
+            )
     chunk_counts: dict[str, int] = {}
 
     def chunks_with(text: str) -> int:
@@ -1060,14 +1307,19 @@ def _compute(
         if mine <= 0 or covering.totals.get(term, 0) < COVER_RATIO * mine:
             continue
         if item.spoken and _independently_spoken(
-            transcript.text, term, places_by_term[term], covering.front_chars.get(term, frozenset()),
+            transcript.text,
+            term,
+            places_by_term[term],
+            covering.front_chars.get(term, frozenset()),
             covering.back_chars.get(term, frozenset()),
         ):
             continue
         found.pop(term)
     # 7. 别的项目的会
     checkpoint()
-    spoken = sorted((term for term in found if found[term].spoken), key=lambda term: (-found[term].spoken, term))
+    spoken = sorted(
+        (term for term in found if found[term].spoken), key=lambda term: (-found[term].spoken, term)
+    )
     for term in spoken[:SPREAD_CAP]:
         q["spread_meetings"] += 1
         others = conn.execute(
@@ -1102,7 +1354,11 @@ def _compute(
         (project_id, glossary.PUBLIC_SCOPE),
     ).fetchall():
         term = unicodedata.normalize("NFKC", row["term"])
-        if _is_han(term) and PAIR_BASE_LEN[0] <= len(term) <= PAIR_BASE_LEN[1] and term not in found:
+        if (
+            _is_han(term)
+            and PAIR_BASE_LEN[0] <= len(term) <= PAIR_BASE_LEN[1]
+            and term not in found
+        ):
             bases.append(term)
     bases = bases[:PAIR_BASES_CAP]
     # 对规格算法的补充：留下的长词（7 字以上）的头几个字、尾几个字（至少 5 字，剩下至少 2 字）也拿来找。
@@ -1114,7 +1370,13 @@ def _compute(
             continue
         for size in range(min(len(term) - 2, PAIR_BASE_LEN[1]), SUB_BASE_MIN - 1, -1):
             for sub in (term[:size], term[-size:]):
-                if sub in parents or sub in found or sub in bases or not _han_ok(sub) or excluded(sub):
+                if (
+                    sub in parents
+                    or sub in found
+                    or sub in bases
+                    or not _han_ok(sub)
+                    or excluded(sub)
+                ):
                     continue
                 parents[sub] = term
     subs = list(parents)[:SUB_BASES_CAP]
@@ -1199,7 +1461,12 @@ def _compute(
     ordered = sorted(
         found.values(),
         key=lambda item: rank_key(
-            bool(item.pairs), sum(pair.heard for pair in item.pairs), item.spoken, item.df, item.names, item.term
+            bool(item.pairs),
+            sum(pair.heard for pair in item.pairs),
+            item.spoken,
+            item.df,
+            item.names,
+            item.term,
         ),
     )
     # 前 30 个的证据：含这个词的片段位置（FTS 按 rowid 走，碰到 3 个就停）、文件名里有它的内容
@@ -1219,14 +1486,22 @@ def _compute(
             ).fetchall()
         ]
         item.name_keys = sorted(
-            {row["content_key"] for row in files if row["content_key"] and item.term in (row["stem"] or row["name"] or "")}
+            {
+                row["content_key"]
+                for row in files
+                if row["content_key"] and item.term in (row["stem"] or row["name"] or "")
+            }
         )[:EVIDENCE_KEEP]
     stats.items = ordered
     return stats
 
 
 def _independently_spoken(
-    text: str, term: str, positions: Sequence[int], front_chars: frozenset[str], back_chars: frozenset[str]
+    text: str,
+    term: str,
+    positions: Sequence[int],
+    front_chars: frozenset[str],
+    back_chars: frozenset[str],
 ) -> bool:
     """会上这个词出现的地方，有没有一处不是紧挨着「包含」它的那些长词说的——「受试者用药记录」被
     说了，子串「受试者」也会命中，但两场会里「受试者」前后都没有跟别的字（`_occurrences` 是子串
@@ -1241,7 +1516,9 @@ def _independently_spoken(
     return False
 
 
-def _sub_base_coverage(conn: Any, sub: str, parent: str) -> tuple[float, frozenset[str], frozenset[str]]:
+def _sub_base_coverage(
+    conn: Any, sub: str, parent: str
+) -> tuple[float, frozenset[str], frozenset[str]]:
     """第 9 步「长词头尾」切出来的 sub（parents[sub] 记的那个长词就是 parent）在全部材料里是不是
     几乎都只是 parent 的一截：抽样材料里 sub 出现的地方，紧邻字是不是 parent 续下去该有的那个字，
     或者紧邻的压根不是汉字（标点、省略号、片段末尾——材料里常见界面把「人脸识别白名单」截断显示
@@ -1357,7 +1634,7 @@ def forget_deleted_terms(conn: Any, now: datetime | None = None) -> int:
     with conn:
         return conn.execute(
             f"""UPDATE glossary_candidates SET status = 'rejected', undo_json = NULL, updated_at = ?
-                 WHERE id IN ({', '.join(str(int(row['id'])) for row in stale)}) AND status = 'accepted'""",
+                 WHERE id IN ({", ".join(str(int(row["id"])) for row in stale)}) AND status = 'accepted'""",
             (moment,),
         ).rowcount
 
@@ -1420,10 +1697,15 @@ def project_pass(
             old = current.get((key, wrong))
             if old is not None and (
                 old["status"] not in ("pending", "dropped")
-                or all(old[name] == row[name] for name in ("term", "files", "spoken", "evidence_json", "status"))
+                or all(
+                    old[name] == row[name]
+                    for name in ("term", "files", "spoken", "evidence_json", "status")
+                )
             ):
                 continue
-            conn.execute(_UPSERT, {"pid": project_id, "key": key, "wrong": wrong, "now": moment, **row})
+            conn.execute(
+                _UPSERT, {"pid": project_id, "key": key, "wrong": wrong, "now": moment, **row}
+            )
             stats.written += 1
         gone = [
             (key, wrong)
@@ -1477,7 +1759,8 @@ def mine_round(
     with db.autocommit() as conn:
         if fts_rebuilding is None:
             fts_rebuilding = (
-                conn.execute("SELECT 1 FROM app_state WHERE key = ?", (REBUILD_KEY,)).fetchone() is not None
+                conn.execute("SELECT 1 FROM app_state WHERE key = ?", (REBUILD_KEY,)).fetchone()
+                is not None
             )
         result["seeded"] = seed_round(
             conn, min(deadline, start + SEED_SHARE_S), busy, clock=clock, now=moment
@@ -1499,14 +1782,14 @@ def mine_round(
         # 有到期的项目时每轮至少做一个：第一个项目从它开始算至少有一整轮的时间（5 秒），之后的按这一轮的截止
         pass_deadline = max(deadline, clock() + budget_s) if index == 0 else deadline
         with db.autocommit() as conn:
-            stats = project_pass(conn, project_id, moment, busy=busy, deadline=pass_deadline, clock=clock)
+            stats = project_pass(
+                conn, project_id, moment, busy=busy, deadline=pass_deadline, clock=clock
+            )
         if stats.abandoned:
             result["stopped"] = stats.abandoned
             break
         result["projects"] += 1
-    if result["stopped"] is None and (
-        len(due) > PROJECTS_PER_ROUND or clock() >= deadline
-    ):
+    if result["stopped"] is None and (len(due) > PROJECTS_PER_ROUND or clock() >= deadline):
         result["stopped"] = "budget"
     return result
 
@@ -1541,7 +1824,9 @@ def _fold(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
                 "base": None,
                 "wrongs": [],
                 "existing_term": (
-                    {"id": row["existing_id"], "term": row["existing_term"]} if row["existing_id"] else None
+                    {"id": row["existing_id"], "term": row["existing_term"]}
+                    if row["existing_id"]
+                    else None
                 ),
             },
         )
@@ -1582,9 +1867,16 @@ def serialize(conn: Any, project_id: str, items: Sequence[dict[str, Any]]) -> li
     heard_refs: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
     for item in items:
         if item["wrongs"]:
-            refs = [(row["wrong"], ref) for row in item["wrongs"] for ref in row["evidence"].get("heard", [])]
+            refs = [
+                (row["wrong"], ref)
+                for row in item["wrongs"]
+                for ref in row["evidence"].get("heard", [])
+            ]
         else:
-            refs = [(item["term"], ref) for ref in ((item["base"] or {}).get("evidence") or {}).get("heard", [])]
+            refs = [
+                (item["term"], ref)
+                for ref in ((item["base"] or {}).get("evidence") or {}).get("heard", [])
+            ]
         heard_refs.append((item, [{"needle": needle, **ref} for needle, ref in refs]))
     meeting_ids = sorted({ref["m"] for _item, refs in heard_refs for ref in refs})
     needles = sorted({ref["needle"] for _item, refs in heard_refs for ref in refs})
@@ -1594,7 +1886,7 @@ def serialize(conn: Any, project_id: str, items: Sequence[dict[str, Any]]) -> li
         marks = ", ".join("?" for _ in meeting_ids)
         wanted = " OR ".join("instr(s.text, ?) > 0" for _ in needles)
         for row in conn.execute(
-            f"""SELECT m.id, m.title, m.recording_date, m.created_at, {AUDIO_ID_SQL.format(meeting='m.id')} AS audio,
+            f"""SELECT m.id, m.title, m.recording_date, m.created_at, {AUDIO_ID_SQL.format(meeting="m.id")} AS audio,
                        s.start_ms, s.text
                   FROM meetings m JOIN segments s ON s.version_id = m.current_transcript_version_id
                  WHERE m.id IN ({marks}) AND ({wanted}) ORDER BY m.id, s.start_ms""",
@@ -1606,7 +1898,9 @@ def serialize(conn: Any, project_id: str, items: Sequence[dict[str, Any]]) -> li
                 "date": _day(row["recording_date"], row["created_at"]),
                 "audio_url": _audio_url(row["audio"]),
             }
-            segments.setdefault(row["id"], []).append({"start_ms": int(row["start_ms"]), "text": row["text"] or ""})
+            segments.setdefault(row["id"], []).append(
+                {"start_ms": int(row["start_ms"]), "text": row["text"] or ""}
+            )
     # 文件名和材料原话
     content_keys: set[str] = set()
     chunk_refs: dict[tuple[str, int], str] = {}
@@ -1627,7 +1921,11 @@ def serialize(conn: Any, project_id: str, items: Sequence[dict[str, Any]]) -> li
         if chunk_refs:
             # 按 (content_key, ordinal) 取；重读后 ordinal 对不上（或那一段里已经没有这个词）时，在这份内容里
             # 用全文索引找一段含这个词的。都在同一条语句里（COALESCE 取到第一个就不再算后面的）
-            head = "WITH refs(k, o, t, p) AS (VALUES " + ", ".join("(?, ?, ?, ?)" for _ in chunk_refs) + ") "
+            head = (
+                "WITH refs(k, o, t, p) AS (VALUES "
+                + ", ".join("(?, ?, ?, ?)" for _ in chunk_refs)
+                + ") "
+            )
             for (key, ordinal), term in sorted(chunk_refs.items()):
                 chunk_params += [key, ordinal, term, _fts_phrase(term)]
             chunk_sql = """ UNION ALL SELECT 'q', refs.k, refs.o, NULL, COALESCE(
@@ -1665,7 +1963,11 @@ def serialize(conn: Any, project_id: str, items: Sequence[dict[str, Any]]) -> li
             meeting = meetings[ref["m"]]
             heard.append(
                 {
-                    "meeting": {"id": meeting["id"], "title": meeting["title"], "date": meeting["date"]},
+                    "meeting": {
+                        "id": meeting["id"],
+                        "title": meeting["title"],
+                        "date": meeting["date"],
+                    },
                     "start_ms": segment["start_ms"],
                     "quote": _snippet(segment["text"], ref["needle"], HEARD_SIDE),
                     "audio_url": meeting["audio_url"],
@@ -1693,7 +1995,10 @@ def serialize(conn: Any, project_id: str, items: Sequence[dict[str, Any]]) -> li
                 "term": item["term"],
                 "existing_term": item.get("existing_term"),
                 "wrongs": [
-                    {"text": row["wrong"], "meetings": int((row["evidence"].get("n") or {}).get("meetings") or 0)}
+                    {
+                        "text": row["wrong"],
+                        "meetings": int((row["evidence"].get("n") or {}).get("meetings") or 0),
+                    }
                     for row in item["wrongs"]
                 ],
                 "files": int(base.get("files") or 0),
@@ -1787,11 +2092,17 @@ def _wrong_taken(connection: Any, wrong: str, own_term_id: str | None) -> bool:
             if row["term"] == wrong or wrong in json.loads(row["also"] or "[]"):
                 return True
             continue
-        if wrong == row["term"] or wrong in json.loads(row["aliases"] or "[]") or wrong in json.loads(row["also"] or "[]"):
+        if (
+            wrong == row["term"]
+            or wrong in json.loads(row["aliases"] or "[]")
+            or wrong in json.loads(row["also"] or "[]")
+        ):
             return True
     key = norm_key(wrong)
     for row in connection.execute("SELECT name, also_names FROM projects").fetchall():
-        if norm_key(row["name"]) == key or any(norm_key(entry["name"]) == key for entry in also_entries(row["also_names"])):
+        if norm_key(row["name"]) == key or any(
+            norm_key(entry["name"]) == key for entry in also_entries(row["also_names"])
+        ):
             return True
     return False
 
@@ -1828,9 +2139,13 @@ def accept(
             term_text = glossary.validate_term_text(term_text, what="术语")
         except glossary.GlossaryError:
             raise CandidateError(422, TERM_INVALID) from None
-        project = connection.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
+        project = connection.execute(
+            "SELECT name FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
         wrongs = [row["wrong"] for row in pending if row["wrong"] and row["wrong"] not in refused]
-        existing = connection.execute("SELECT * FROM glossary_terms WHERE term = ?", (term_text,)).fetchone()
+        existing = connection.execute(
+            "SELECT * FROM glossary_terms WHERE term = ?", (term_text,)
+        ).fetchone()
         created = False
         already = False
         added: list[str] = []
@@ -1857,7 +2172,9 @@ def accept(
             if existing is not None:
                 if not usable:
                     # 写法全都已经用在别的词条上：如实说，行留着（可以点［不是］）
-                    raise CandidateError(409, NOTHING_ADDED_TEXT.format(skipped="』『".join(skipped)))
+                    raise CandidateError(
+                        409, NOTHING_ADDED_TEXT.format(skipped="』『".join(skipped))
+                    )
                 term_id = existing["id"]
                 added = glossary._append_aliases(connection, term_id, usable, now=stamp)
             else:
@@ -1876,9 +2193,12 @@ def accept(
                 )
                 created = True
                 added = usable
-        term_row = connection.execute("SELECT * FROM glossary_terms WHERE id = ?", (term_id,)).fetchone()
+        term_row = connection.execute(
+            "SELECT * FROM glossary_terms WHERE id = ?", (term_id,)
+        ).fetchone()
         undo_json = json.dumps(
-            {"created": created, "aliases": added, "term_updated_at": term_row["updated_at"]}, ensure_ascii=False
+            {"created": created, "aliases": added, "term_updated_at": term_row["updated_at"]},
+            ensure_ascii=False,
         )
         for row in pending:
             status = "rejected" if row["wrong"] in refused and row["wrong"] else "accepted"
@@ -1918,7 +2238,9 @@ def accept(
     }
 
 
-def reject(db: Database, project_id: str, key: str, *, now: datetime | None = None) -> dict[str, Any]:
+def reject(
+    db: Database, project_id: str, key: str, *, now: datetime | None = None
+) -> dict[str, Any]:
     """［不是］：这个项目里这个 key 待认的行记 rejected，以后在这个项目里不再提（key 进了「答过的」，
     汇总不再提它）。dropped 的和更早回答过的行不动，撤销时不会被带回 pending，记入过的也不会被冲掉。"""
     moment = _now(now)
@@ -1965,7 +2287,8 @@ def undo(
         term = next((row["term"] for row in rows if row["wrong"] == ""), rows[0]["term"])
         # 只撤最后一次回答动过的行（同一个 decided_at）；dropped 的和更早回答过的行不动
         accepted = next(
-            (row for row in rows if row["status"] == "accepted" and row["decided_at"] == latest), None
+            (row for row in rows if row["status"] == "accepted" and row["decided_at"] == latest),
+            None,
         )
         if accepted is not None and accepted["term_id"]:
             info = json.loads(accepted["undo_json"] or "{}")
@@ -1979,7 +2302,11 @@ def undo(
                     connection.execute("DELETE FROM glossary_terms WHERE id = ?", (term_row["id"],))
                 else:
                     added = set(info.get("aliases") or [])
-                    aliases = [alias for alias in json.loads(term_row["aliases"] or "[]") if alias not in added]
+                    aliases = [
+                        alias
+                        for alias in json.loads(term_row["aliases"] or "[]")
+                        if alias not in added
+                    ]
                     connection.execute(
                         "UPDATE glossary_terms SET aliases = ?, updated_at = ? WHERE id = ?",
                         (json.dumps(aliases, ensure_ascii=False), stamp, term_row["id"]),
@@ -2022,4 +2349,3 @@ def describe(item: Found) -> str:
     if item.spoken:
         parts.append(f"会上 {item.spoken} 次")
     return " · ".join(parts)
-

@@ -11,6 +11,7 @@
 - 整条材料查询 1.5 秒预算（set_progress_handler），到点返回已经找到的，partial=true。
 - 「意思相近的」材料（similar_rows）：向量那边给出片段和分数，这里连回片段和代表文件，查不到的丢掉。
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -78,7 +79,9 @@ def _batches(values: Sequence[Any], size: int = PARAM_BATCH) -> Iterable[Sequenc
 _LIVE = "f.gone_at IS NULL AND f.zone != 'cards'"
 
 
-def _chunk_rows(connection: Any, source: str, where: str, params: list[Any]) -> list[dict[str, Any]]:
+def _chunk_rows(
+    connection: Any, source: str, where: str, params: list[Any]
+) -> list[dict[str, Any]]:
     """命中的片段：每份内容按顺序取前两段，total 是这份内容一共命中几段。"""
     sql = f"""SELECT id, content_key, ordinal, loc, start_ms, text, total FROM (
                   SELECT c.id, c.content_key, c.ordinal, c.loc, c.start_ms, c.text,
@@ -91,7 +94,9 @@ def _chunk_rows(connection: Any, source: str, where: str, params: list[Any]) -> 
     return [dict(row) for row in connection.execute(sql, params).fetchall()]
 
 
-def _body_hits_long(connection: Any, needles: list[str], root_ids: list[int]) -> list[dict[str, Any]]:
+def _body_hits_long(
+    connection: Any, needles: list[str], root_ids: list[int]
+) -> list[dict[str, Any]]:
     match = " OR ".join(_fts_phrase(needle) for needle in needles)
     return _chunk_rows(
         connection,
@@ -104,7 +109,9 @@ def _body_hits_long(connection: Any, needles: list[str], root_ids: list[int]) ->
     )
 
 
-def _body_hits_short(connection: Any, needles: list[str], root_ids: list[int]) -> list[dict[str, Any]]:
+def _body_hits_short(
+    connection: Any, needles: list[str], root_ids: list[int]
+) -> list[dict[str, Any]]:
     """两个字的词：先由 material_files 按根目录取内容标识，再按内容标识取片段，不扫全表。"""
     ors = " OR ".join("instr(lower(c.text), ?) > 0" for _ in needles)
     return _chunk_rows(
@@ -133,7 +140,9 @@ def _name_hits(connection: Any, needles: list[str], root_ids: list[int]) -> list
     return [dict(row) for row in rows]
 
 
-def _files_for_contents(connection: Any, keys: list[str], root_ids: list[int]) -> list[dict[str, Any]]:
+def _files_for_contents(
+    connection: Any, keys: list[str], root_ids: list[int]
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for part in _batches(keys):
         result += [
@@ -168,7 +177,9 @@ def _representative(files: list[dict[str, Any]], preferred: set[int]) -> dict[st
 class _Assembler:
     """把命中的内容和文件拼成一行：代表文件、根目录、项目、状态那一句、被会上提到几场。"""
 
-    def __init__(self, connection: Any, roots: list[dict[str, Any]], state_of: Callable[[str], str]):
+    def __init__(
+        self, connection: Any, roots: list[dict[str, Any]], state_of: Callable[[str], str]
+    ):
         self.connection = connection
         self.roots = {int(root["id"]): root for root in roots}
         self.root_ids = list(self.roots)
@@ -180,7 +191,9 @@ class _Assembler:
             self._online[root_id] = self.state_of(str(self.roots[root_id]["path"])) == ROOT_ONLINE
         return self._online[root_id]
 
-    def groups(self, keys: Iterable[str], extra_files: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    def groups(
+        self, keys: Iterable[str], extra_files: list[dict[str, Any]]
+    ) -> dict[str, list[dict[str, Any]]]:
         """每个组（内容标识，或没有标识的单个文件）在范围里的活文件。"""
         content_keys = [key for key in dict.fromkeys(keys) if not key.startswith("file:")]
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -253,7 +266,9 @@ class _Assembler:
         return result
 
     @staticmethod
-    def _state_text(rep: dict[str, Any], content: dict[str, Any] | None, online: bool) -> str | None:
+    def _state_text(
+        rep: dict[str, Any], content: dict[str, Any] | None, online: bool
+    ) -> str | None:
         error = rep.get("content_error")
         if error in FILE_ERRORS:
             return f"读不了：{REASON_LABELS[error]}"
@@ -401,7 +416,10 @@ def similar_rows(
             key=lambda item: item[0],
             reverse=True,
         )[:limit]
-        picked = [(key, _representative(grouped[key], set()), len(grouped[key]) - 1, False) for _s, key, _c in ordered]
+        picked = [
+            (key, _representative(grouped[key], set()), len(grouped[key]) - 1, False)
+            for _s, key, _c in ordered
+        ]
         hits = {key: [{**chunk, "matched": ""}] for _score, key, chunk in ordered}
         rows = assembler.rows(picked, hits, {key: 1 for key in hits})
         for row, (score, _key, _chunk) in zip(rows, ordered, strict=True):

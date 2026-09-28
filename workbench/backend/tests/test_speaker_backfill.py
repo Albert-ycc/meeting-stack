@@ -63,7 +63,8 @@ def test_apply_speaker_labels_updates_segments_and_speakers(tmp_path):
     )
     assert [row["speaker_label"] for row in segments] == ["SPEAKER_00", "SPEAKER_01"]
     speakers = {
-        row["label"] for row in db.query_all("SELECT label FROM speakers WHERE meeting_id=?", (meeting_id,))
+        row["label"]
+        for row in db.query_all("SELECT label FROM speakers WHERE meeting_id=?", (meeting_id,))
     }
     assert speakers == {"SPEAKER_00", "SPEAKER_01"}
 

@@ -12,6 +12,7 @@
 - 自动生效的 _no_real_llm 拦下发给真 AI 的请求，teardown 时记下过就让测试失败。测本机假 AI 服务
   的测试标 allow_local_llm（只放行本机地址）；断言拦下了的测试自己把 fixture 的列表清空。
 """
+
 from __future__ import annotations
 
 import os

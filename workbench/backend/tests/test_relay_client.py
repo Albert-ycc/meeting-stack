@@ -224,7 +224,9 @@ def test_health_preserves_unavailable_json_from_exit_code_two(tmp_path, monkeypa
     assert RelayClient(settings).health() == payload
 
 
-def test_relayctl_stderr_stays_in_server_log_not_in_client_facing_error(tmp_path, monkeypatch, caplog):
+def test_relayctl_stderr_stays_in_server_log_not_in_client_facing_error(
+    tmp_path, monkeypatch, caplog
+):
     """relayctl 失败时 stderr（可能带绝对路径/完整 traceback）只进日志，不回灌给客户端。"""
     relay_repo = tmp_path / "meeting-relay"
     executable = relay_repo / "quickstart" / "relayctl"
@@ -239,15 +241,13 @@ def test_relayctl_stderr_stays_in_server_log_not_in_client_facing_error(tmp_path
         semantic_enabled=False,
     )
     sensitive_stderr = (
-        f"Traceback (most recent call last):\n  File \"{tmp_path}/relayctl\", line 12\n"
+        f'Traceback (most recent call last):\n  File "{tmp_path}/relayctl", line 12\n'
         "KeyError: 'job-secret-internal-path'"
     )
 
     monkeypatch.setattr(
         "meeting_workbench.relay_client.subprocess.run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=1, stdout="", stderr=sensitive_stderr
-        ),
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr=sensitive_stderr),
     )
 
     with caplog.at_level("ERROR", logger="meeting_workbench.relay_client"):
@@ -280,7 +280,9 @@ def test_project_hint_travels_as_environment_not_as_argument(tmp_path, monkeypat
 
     def fake_run(arguments, **kwargs):
         calls.append((arguments, kwargs["env"]))
-        stdout = "job-created\n" if arguments[1] == "enqueue" else json.dumps({"job_id": "job-created"})
+        stdout = (
+            "job-created\n" if arguments[1] == "enqueue" else json.dumps({"job_id": "job-created"})
+        )
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
     monkeypatch.setattr("meeting_workbench.relay_client.subprocess.run", fake_run)

@@ -12,6 +12,7 @@
 - 会议在转写时不编码问题、不走任何向量，加一条 busy 说明；全文索引是普通 SQL，照跑。
 - 发给 AI 的只有段落文字、会名、日期和会上的时间：M 段在提示词里只有编号和「材料」，文件名、路径、位置从不进。
 """
+
 from __future__ import annotations
 
 import json
@@ -65,9 +66,23 @@ STOP_WORDS = tuple(
         reverse=True,
     )
 )
-STOP_CHARS = frozenset("的了吗呢吧啊呀么是在和与及或就都也还又把被给对向从到让请问该要会能有没个这那哪谁几")
+STOP_CHARS = frozenset(
+    "的了吗呢吧啊呀么是在和与及或就都也还又把被给对向从到让请问该要会能有没个这那哪谁几"
+)
 RECENT_WORDS = (
-    "最近", "最新", "上次", "上周", "这周", "本周", "这个月", "本月", "昨天", "今天", "刚才", "进展", "近况",
+    "最近",
+    "最新",
+    "上次",
+    "上周",
+    "这周",
+    "本周",
+    "这个月",
+    "本月",
+    "昨天",
+    "今天",
+    "刚才",
+    "进展",
+    "近况",
 )
 _HAN_RUN = re.compile(r"[㐀-鿿]+")
 _ALNUM = re.compile(r"[a-z0-9][a-z0-9._-]*")
@@ -271,11 +286,15 @@ def question_terms(
 ) -> Terms:
     """从问题里取词（语句：项目 1、词条 1、文件名词干 1、少见切片 1）。项目不存在抛 ProjectMissing。
     steps 给了时文件名词干那一步也归它管（到了硬上限就跳过）。"""
-    project = connection.execute("SELECT name, also_names FROM projects WHERE id = ?", (project_id,)).fetchone()
+    project = connection.execute(
+        "SELECT name, also_names FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
     if project is None:
         raise ProjectMissing(project_id)
     folded = search.fold(question)
-    terms = Terms(recent=any(word in folded for word in RECENT_WORDS), project_name=str(project["name"] or ""))
+    terms = Terms(
+        recent=any(word in folded for word in RECENT_WORDS), project_name=str(project["name"] or "")
+    )
     rest = folded
     group_phrases: list[str] = []
     group_needles: list[str] = []
@@ -284,7 +303,11 @@ def question_terms(
 
     # 词条整组：任一成员（2 个字以上）出现在问题里，整组都加进来
     for members in search._term_groups(_ConnDB(connection), project_id):
-        hits = [member for member in members if len(search.fold(member)) >= 2 and search.fold(member) in folded]
+        hits = [
+            member
+            for member in members
+            if len(search.fold(member)) >= 2 and search.fold(member) in folded
+        ]
         if not hits:
             continue
         matched += hits
@@ -319,7 +342,8 @@ def question_terms(
 
     # 项目名和也叫（范围里处处都有）、虚词、虚字
     for name in sorted(
-        [str(project["name"] or ""), *also_name_list(project["also_names"])], key=lambda value: -len(value)
+        [str(project["name"] or ""), *also_name_list(project["also_names"])],
+        key=lambda value: -len(value),
     ):
         rest = _blank(rest, search.fold(name))
     for word in STOP_WORDS:
@@ -358,7 +382,11 @@ def question_terms(
     terms.phrases = _dedupe([*group_phrases, *stems, *kept, *picked_slices])[:MAX_PHRASES]
     terms.needles = _dedupe(
         [
-            *[needle for needle in group_needles if _is_han(needle) or any(c.isalpha() for c in needle)],
+            *[
+                needle
+                for needle in group_needles
+                if _is_han(needle) or any(c.isalpha() for c in needle)
+            ],
             *needles,
             *alnum_needles,
         ]
@@ -479,7 +507,9 @@ def short_date(value: str, today: date | None = None) -> str:
     except (TypeError, ValueError):
         return ""
     this_year = (today or date.today()).year
-    return f"{day.month}/{day.day}" if day.year == this_year else f"{day.year}/{day.month}/{day.day}"
+    return (
+        f"{day.month}/{day.day}" if day.year == this_year else f"{day.year}/{day.month}/{day.day}"
+    )
 
 
 def clock_text(ms: int | None) -> str:
@@ -516,7 +546,9 @@ def _clean_line(line: str) -> str:
 
 def _same(left: str, right: str) -> bool:
     def squash(value: str) -> str:
-        return "".join(char for char in search.fold(value) if not char.isspace() and char not in "。，,.;；")
+        return "".join(
+            char for char in search.fold(value) if not char.isspace() and char not in "。，,.;；"
+        )
 
     return squash(left) == squash(right)
 
@@ -608,21 +640,29 @@ def retrieve(
     query_vector = None
     if busy():
         notes.insert(0, "busy")
-    elif semantic is not None and getattr(settings, "semantic_enabled", False) and not steps.out_of_time():
+    elif (
+        semantic is not None
+        and getattr(settings, "semantic_enabled", False)
+        and not steps.out_of_time()
+    ):
         try:
             query_vector = semantic.encode_query(question)
         except Exception as error:  # noqa: BLE001  模型没装好、暂停：只按原词找
             logger.info("问答没编码问题：%s", type(error).__name__)
             query_vector = None
 
-    decisions = steps.run("decisions", lambda: _decisions(connection, project_id, words), {"all": []})
+    decisions = steps.run(
+        "decisions", lambda: _decisions(connection, project_id, words), {"all": []}
+    )
     minutes = steps.run("minutes", lambda: _minutes(connection, project_id, terms), [])
     lines = _minutes_lines(minutes, words, decisions["all"])
     literal_t = steps.run("transcript", lambda: _segment_hits(connection, project_id, terms), [])
     semantic_t: list[dict[str, Any]] = []
     if query_vector is not None:
         semantic_t = steps.run(
-            "windows", lambda: _semantic_segments(connection, project_id, query_vector, settings, semantic), []
+            "windows",
+            lambda: _semantic_segments(connection, project_id, query_vector, settings, semantic),
+            [],
         )
     picked_t = _pick_segments(literal_t, semantic_t)
 
@@ -631,18 +671,28 @@ def retrieve(
     if root_ids:
         literal_m = steps.run(
             "materials",
-            lambda: _chunk_hits(connection, terms, root_ids, fts=not rebuilding, short=chunk_total <= SHORT_CHUNK_MAX),
+            lambda: _chunk_hits(
+                connection,
+                terms,
+                root_ids,
+                fts=not rebuilding,
+                short=chunk_total <= SHORT_CHUNK_MAX,
+            ),
             [],
         )
         if query_vector is not None and vectors is not None:
             semantic_m, lacking = steps.run(
-                "material_vectors", lambda: _material_vectors(connection, root_ids, vectors, query_vector), ([], False)
+                "material_vectors",
+                lambda: _material_vectors(connection, root_ids, vectors, query_vector),
+                ([], False),
             )
             if lacking:
                 notes.append("materials_pending")
 
     d_items, n_items = _pick_dn(decisions, lines, recent=terms.recent)
-    m_ranked = steps.run("rank_chunks", lambda: _rank_chunks(connection, literal_m, semantic_m, words), None)
+    m_ranked = steps.run(
+        "rank_chunks", lambda: _rank_chunks(connection, literal_m, semantic_m, words), None
+    )
     if m_ranked is None:
         # 查回按意思找到的片段文字那一步没跑：只排按原词的（不再查库）
         m_ranked = _rank_chunks(connection, literal_m, [], words)
@@ -653,7 +703,9 @@ def retrieve(
     meeting_ids = {item["meeting_id"] for item in (*d_items, *n_items, *t_items)}
     copies = steps.run("copies", lambda: _copies(connection, project_id, meeting_ids), set())
     m_items = steps.run(
-        "material_items", lambda: _material_items(connection, roots, m_ranked, copies, words, state_of), []
+        "material_items",
+        lambda: _material_items(connection, roots, m_ranked, copies, words, state_of),
+        [],
     )
 
     # 合计不超过 7,500 字，超了先去掉排在最后的 T
@@ -687,11 +739,13 @@ def retrieve(
 # ------------------------------------------------------------------ D、N
 
 
-def _decisions(connection: sqlite3.Connection, project_id: str, words: Sequence[str]) -> dict[str, Any]:
+def _decisions(
+    connection: sqlite3.Connection, project_id: str, words: Sequence[str]
+) -> dict[str, Any]:
     """项目里还在的决议（1 条语句），带最新的一条 shown 的「后来改了」。"""
     rows = connection.execute(
         f"""SELECT d.id, d.meeting_id, d.text, d.start_ms, d.ordinal, m.title, m.recording_date, m.created_at,
-                   {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id,
+                   {AUDIO_ID_SQL.format(meeting="m.id")} AS audio_id,
                    (SELECT json_object('id', sd.id, 'recording_date', sm.recording_date, 'created_at', sm.created_at)
                       FROM relations sr JOIN decisions sd ON sd.id = sr.to_decision_id
                       JOIN meetings sm ON sm.id = sd.meeting_id
@@ -708,7 +762,10 @@ def _decisions(connection: sqlite3.Connection, project_id: str, words: Sequence[
         if row["later_json"]:
             try:
                 raw = json.loads(row["later_json"])
-                later = {"date": _day(raw.get("recording_date"), raw.get("created_at")), "decision_id": raw.get("id")}
+                later = {
+                    "date": _day(raw.get("recording_date"), raw.get("created_at")),
+                    "decision_id": raw.get("id"),
+                }
             except (ValueError, AttributeError):
                 later = None
         day = _day(row["recording_date"], row["created_at"])
@@ -752,10 +809,10 @@ def _minutes(connection: sqlite3.Connection, project_id: str, terms: Terms) -> l
     params += [needle.lower() for needle in terms.needles]
     rows = connection.execute(
         f"""{cte}SELECT m.id AS meeting_id, m.title, m.recording_date, m.created_at, mv.markdown,
-                   {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id, {rank} AS rank
+                   {AUDIO_ID_SQL.format(meeting="m.id")} AS audio_id, {rank} AS rank
               FROM meetings m JOIN minutes_versions mv ON mv.id = m.current_minutes_version_id
               {join}
-             WHERE m.project_id = ? AND ({' OR '.join(conditions)})
+             WHERE m.project_id = ? AND ({" OR ".join(conditions)})
              GROUP BY m.id
              ORDER BY rank IS NULL, rank, COALESCE(m.recording_date, m.created_at) DESC
              LIMIT {N_MEETINGS}""",
@@ -779,7 +836,9 @@ def _minutes_lines(
                 entry = found.setdefault(hit["line"], {"words": set(), "start_ms": hit["start_ms"]})
                 entry["words"].add(search.fold(word))
         picked = []
-        for line_no, entry in sorted(found.items(), key=lambda pair: (-len(pair[1]["words"]), pair[0])):
+        for line_no, entry in sorted(
+            found.items(), key=lambda pair: (-len(pair[1]["words"]), pair[0])
+        ):
             raw = raw_lines[line_no] if line_no < len(raw_lines) else ""
             if raw.lstrip().startswith("#"):
                 continue
@@ -819,25 +878,36 @@ def _pick_dn(
     chosen: list[tuple[str, dict[str, Any]]] = []
     seen: set[str] = set()
     if recent:
-        for item in sorted(everything, key=lambda value: value["_order"], reverse=True)[:DECISIONS_LATEST]:
+        for item in sorted(everything, key=lambda value: value["_order"], reverse=True)[
+            :DECISIONS_LATEST
+        ]:
             chosen.append(("D", item))
             seen.add(item["decision_id"])
-    candidates = [("D", item) for item in everything if item["_hits"] > 0 and item["decision_id"] not in seen]
+    candidates = [
+        ("D", item) for item in everything if item["_hits"] > 0 and item["decision_id"] not in seen
+    ]
     candidates += [("N", item) for item in lines]
     candidates.sort(key=lambda pair: (-pair[1]["_hits"], pair[0] != "D", _neg(pair[1]["_order"])))
     for pair in candidates:
         if len(chosen) >= DN_LIMIT:
             break
         chosen.append(pair)
-    d_items = sorted((item for kind, item in chosen if kind == "D"), key=lambda value: _rank_key(value))
-    n_items = sorted((item for kind, item in chosen if kind == "N"), key=lambda value: _rank_key(value))
+    d_items = sorted(
+        (item for kind, item in chosen if kind == "D"), key=lambda value: _rank_key(value)
+    )
+    n_items = sorted(
+        (item for kind, item in chosen if kind == "N"), key=lambda value: _rank_key(value)
+    )
     return [_public(item) for item in d_items], [_public(item) for item in n_items]
 
 
 def _neg(order: tuple[Any, ...]) -> tuple[Any, ...]:
     """新的在前：日期字符串倒过来比。"""
     day, *rest = order
-    return (tuple(-ord(char) for char in str(day)), *[(-value if isinstance(value, int) else value) for value in rest])
+    return (
+        tuple(-ord(char) for char in str(day)),
+        *[(-value if isinstance(value, int) else value) for value in rest],
+    )
 
 
 def _rank_key(item: dict[str, Any]) -> tuple[Any, ...]:
@@ -847,7 +917,9 @@ def _rank_key(item: dict[str, Any]) -> tuple[Any, ...]:
 # ------------------------------------------------------------------ T
 
 
-def _segment_hits(connection: sqlite3.Connection, project_id: str, terms: Terms) -> list[dict[str, Any]]:
+def _segment_hits(
+    connection: sqlite3.Connection, project_id: str, terms: Terms
+) -> list[dict[str, Any]]:
     """按原词：segments_fts MATCH（bm25，最多 60 条）和短针 instr（最多 60 条），各 1 条语句。"""
     rows: list[dict[str, Any]] = []
     if terms.phrases:
@@ -881,10 +953,19 @@ def _segment_hits(connection: sqlite3.Connection, project_id: str, terms: Terms)
     for row in rows:
         key = (str(row["meeting_id"]), int(row["start_ms"] or 0))
         if key not in unique:
-            unique[key] = {**row, "_hits": _hits(row["text"], words), "_day": _day(row["recording_date"], row["created_at"])}
+            unique[key] = {
+                **row,
+                "_hits": _hits(row["text"], words),
+                "_day": _day(row["recording_date"], row["created_at"]),
+            }
     ordered = sorted(
         unique.values(),
-        key=lambda row: (-row["_hits"], row["rank"] is None, row["rank"] or 0, _neg((row["_day"],))),
+        key=lambda row: (
+            -row["_hits"],
+            row["rank"] is None,
+            row["rank"] or 0,
+            _neg((row["_day"],)),
+        ),
     )
     return ordered
 
@@ -940,14 +1021,20 @@ def _semantic_segments(
     ]
 
 
-def _pick_segments(literal: list[dict[str, Any]], semantic_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _pick_segments(
+    literal: list[dict[str, Any]], semantic_hits: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """RRF 合并两份名单，再按每场会 3 段、合计 8 段取。窗里有按原词的命中时算同一个。"""
     candidates: dict[Any, dict[str, Any]] = {}
     literal_names: list[Any] = []
     for row in literal:
         name = ("s", str(row["meeting_id"]), int(row["start_ms"] or 0))
-        candidates[name] = {"meeting_id": str(row["meeting_id"]), "anchor": int(row["start_ms"] or 0),
-                            "window": None, "_day": row["_day"]}
+        candidates[name] = {
+            "meeting_id": str(row["meeting_id"]),
+            "anchor": int(row["start_ms"] or 0),
+            "window": None,
+            "_day": row["_day"],
+        }
         literal_names.append(name)
     semantic_names: list[Any] = []
     for hit in semantic_hits:
@@ -955,20 +1042,36 @@ def _pick_segments(literal: list[dict[str, Any]], semantic_hits: list[dict[str, 
         if hit.get("window") is not None:
             start, end = hit["window"]
             inside = next(
-                (name for name in literal_names if name[1] == meeting_id and start <= name[2] < end), None
+                (
+                    name
+                    for name in literal_names
+                    if name[1] == meeting_id and start <= name[2] < end
+                ),
+                None,
             )
             name = inside or ("w", meeting_id, start)
             if name not in candidates:
-                candidates[name] = {"meeting_id": meeting_id, "anchor": None, "window": (start, end), "_day": hit["_day"]}
+                candidates[name] = {
+                    "meeting_id": meeting_id,
+                    "anchor": None,
+                    "window": (start, end),
+                    "_day": hit["_day"],
+                }
         else:
             name = ("s", meeting_id, int(hit["start_ms"]))
             if name not in candidates:
-                candidates[name] = {"meeting_id": meeting_id, "anchor": int(hit["start_ms"]), "window": None,
-                                    "_day": hit["_day"]}
+                candidates[name] = {
+                    "meeting_id": meeting_id,
+                    "anchor": int(hit["start_ms"]),
+                    "window": None,
+                    "_day": hit["_day"],
+                }
         if name not in semantic_names:
             semantic_names.append(name)
     scores = _rrf(literal_names, semantic_names)
-    ordered = sorted(scores, key=lambda name: (-scores[name], _neg((candidates[name]["_day"],)), name[2]))
+    ordered = sorted(
+        scores, key=lambda name: (-scores[name], _neg((candidates[name]["_day"],)), name[2])
+    )
     picked: list[dict[str, Any]] = []
     per_meeting: dict[str, int] = {}
     for name in ordered:
@@ -992,7 +1095,9 @@ def _segment_texts(
     ranges: list[tuple[str, int, int]] = []
     for item in picked:
         if item["anchor"] is not None:
-            ranges.append((item["meeting_id"], item["anchor"] - T_BEFORE_MS, item["anchor"] + T_AFTER_MS))
+            ranges.append(
+                (item["meeting_id"], item["anchor"] - T_BEFORE_MS, item["anchor"] + T_AFTER_MS)
+            )
         else:
             start = item["window"][0]
             ranges.append((item["meeting_id"], start, start + T_BEFORE_MS + T_AFTER_MS))
@@ -1001,13 +1106,15 @@ def _segment_texts(
         str(row["id"]): dict(row)
         for row in connection.execute(
             f"""SELECT m.id, m.current_transcript_version_id AS version_id, m.title, m.recording_date, m.created_at,
-                       {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id
+                       {AUDIO_ID_SQL.format(meeting="m.id")} AS audio_id
                   FROM meetings m WHERE m.id IN ({_marks(meeting_ids)})""",
             meeting_ids,
         ).fetchall()
         if row["version_id"] is not None
     }
-    wanted = [(meetings[mid]["version_id"], low, high) for mid, low, high in ranges if mid in meetings]
+    wanted = [
+        (meetings[mid]["version_id"], low, high) for mid, low, high in ranges if mid in meetings
+    ]
     if not wanted:
         return []
     versions = sorted({version for version, _low, _high in wanted})
@@ -1035,13 +1142,19 @@ def _segment_texts(
         )
     passages: list[dict[str, Any]] = []
     for item, (meeting_id, low, high) in zip(picked, ranges, strict=True):
-        segments = [row for row in by_meeting.get(meeting_id, []) if low <= int(row["start_ms"] or 0) <= high]
+        segments = [
+            row
+            for row in by_meeting.get(meeting_id, [])
+            if low <= int(row["start_ms"] or 0) <= high
+        ]
         if not segments:
             continue
         anchor = item["anchor"]
         if anchor is None:
             anchor = int(segments[0]["start_ms"] or 0)
-        passages.append({"meeting_id": meeting_id, "anchor": anchor, "segments": segments, "range": (low, high)})
+        passages.append(
+            {"meeting_id": meeting_id, "anchor": anchor, "segments": segments, "range": (low, high)}
+        )
     # 同一场会重叠的：合并后仍不超过 360 字时合并（留排在前面的那个命中）
     merged: list[dict[str, Any]] = []
     for passage in passages:
@@ -1056,11 +1169,17 @@ def _segment_texts(
             None,
         )
         if target is not None:
-            union = {int(row["start_ms"] or 0): row for row in (*target["segments"], *passage["segments"])}
+            union = {
+                int(row["start_ms"] or 0): row
+                for row in (*target["segments"], *passage["segments"])
+            }
             joined = [union[key] for key in sorted(union)]
             if len("".join(str(row["text"] or "") for row in joined)) <= T_CHARS:
                 target["segments"] = joined
-                target["range"] = (min(target["range"][0], passage["range"][0]), max(target["range"][1], passage["range"][1]))
+                target["range"] = (
+                    min(target["range"][0], passage["range"][0]),
+                    max(target["range"][1], passage["range"][1]),
+                )
                 continue
         merged.append(passage)
     result: list[dict[str, Any]] = []
@@ -1094,7 +1213,10 @@ def _segment_texts(
     # 一样）还是可能剩两条：只留分数高的那条（result 跟 picked 同序，排前面的分数更高）
     deduped: list[dict[str, Any]] = []
     for item in result:
-        if any(item["meeting_id"] == other["meeting_id"] and _same(item["text"], other["text"]) for other in deduped):
+        if any(
+            item["meeting_id"] == other["meeting_id"] and _same(item["text"], other["text"])
+            for other in deduped
+        ):
             continue
         deduped.append(item)
     return deduped
@@ -1165,7 +1287,9 @@ def _material_vectors(
     return score_snapshot(snapshot, query_vector, keys, k=M_VECTOR_K), lacking
 
 
-def score_snapshot(snapshot: Any, query_vector: Any, content_keys: Iterable[str], *, k: int = M_VECTOR_K) -> list[tuple[int, float]]:
+def score_snapshot(
+    snapshot: Any, query_vector: Any, content_keys: Iterable[str], *, k: int = M_VECTOR_K
+) -> list[tuple[int, float]]:
     """材料向量快照（不刷新）里、范围内的内容，和问题向量打分，取前 k 个不低于 0.45 的 (片段 id, 分数)。"""
     if snapshot is None or query_vector is None or not snapshot.n:
         return []
@@ -1173,7 +1297,8 @@ def score_snapshot(snapshot: Any, query_vector: Any, content_keys: Iterable[str]
     if query.shape[0] != snapshot.dim:
         return []
     codes = np.fromiter(
-        (snapshot.code_of[key] for key in set(content_keys) if key in snapshot.code_of), dtype=np.int32
+        (snapshot.code_of[key] for key in set(content_keys) if key in snapshot.code_of),
+        dtype=np.int32,
     )
     if codes.size == 0:
         return []
@@ -1210,7 +1335,12 @@ def _rank_chunks(
     literal_ids = [
         chunk_id
         for chunk_id in sorted(
-            chunks, key=lambda cid: (-chunks[cid]["_hits"], chunks[cid]["rank"] is None, chunks[cid]["rank"] or 0)
+            chunks,
+            key=lambda cid: (
+                -chunks[cid]["_hits"],
+                chunks[cid]["rank"] is None,
+                chunks[cid]["rank"] or 0,
+            ),
         )
     ]
     semantic_ids = [chunk_id for chunk_id, _score in semantic_hits]
@@ -1393,7 +1523,9 @@ def parse_answer(text: str, sent_ids: Iterable[str], *, finish_reason: str | Non
         return "".join(kept)
 
     body = _CITE_GROUP.sub(rewrite, text or "")
-    body = _OTHER_BRACKET.sub(lambda match: "" if match.group(0)[1:-1].upper() not in allowed else match.group(0), body)
+    body = _OTHER_BRACKET.sub(
+        lambda match: "" if match.group(0)[1:-1].upper() not in allowed else match.group(0), body
+    )
     # 去 Markdown：粗体、下划线、反引号、行首的 #；行首的 - * 换成「·」
     body = re.sub(r"\*\*|__|`", "", body)
     body = re.sub(r"(?m)^[ \t]*#{1,6}[ \t]*", "", body)

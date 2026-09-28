@@ -1,5 +1,6 @@
 """第四期 4h：从材料里挖词（H4）。种子、挖哪些内容、项目汇总的十步、听错的写法、不提的词、数量和去留、
 循环（转写、预算、签名、开关、材料全文表补建）、写（不变不写、不用 INSERT OR REPLACE、上限、写事务）、内存。"""
+
 from __future__ import annotations
 
 import json
@@ -84,10 +85,17 @@ def test_seeds_treat_guo_as_a_real_word_forming_char_not_a_stop_suffix():
     真词反而被卡在「过」前面）。"""
     text = "".join(
         [
-            "系统记录次初审通过时间用于统计。", "接口返回次初审通过时间字段。", "报表展示次初审通过时间数值。",
-            "首页显示首次初审通过时间提醒。", "详情页展示首次初审通过时间信息。", "列表按首次初审通过时间排序。",
-            "导出包含一次初审通过时间列。", "校验一次初审通过时间格式。", "统计一次初审通过时间分布。",
-            "文档写着初审通过时间的定义。", "手册解释初审通过时间的含义。",
+            "系统记录次初审通过时间用于统计。",
+            "接口返回次初审通过时间字段。",
+            "报表展示次初审通过时间数值。",
+            "首页显示首次初审通过时间提醒。",
+            "详情页展示首次初审通过时间信息。",
+            "列表按首次初审通过时间排序。",
+            "导出包含一次初审通过时间列。",
+            "校验一次初审通过时间格式。",
+            "统计一次初审通过时间分布。",
+            "文档写着初审通过时间的定义。",
+            "手册解释初审通过时间的含义。",
         ]
     )
     found = seeds(text)
@@ -96,7 +104,9 @@ def test_seeds_treat_guo_as_a_real_word_forming_char_not_a_stop_suffix():
 
 
 def test_latin_seeds():
-    found = seeds("GLP-1 和 GLP-1；CRF 表、CRF；ESG ESG；PDF PDF 3f2a9c1e0b7d 3f2a9c1e0b7d v1.2 v1.2 report report")
+    found = seeds(
+        "GLP-1 和 GLP-1；CRF 表、CRF；ESG ESG；PDF PDF 3f2a9c1e0b7d 3f2a9c1e0b7d v1.2 v1.2 report report"
+    )
     assert {"GLP-1", "CRF", "ESG"} <= set(found)
     assert not {"PDF", "v1.2", "report"} & set(found)
     for token in ("GLP-1", "CRF", "ESG", "OpenAI"):
@@ -138,8 +148,20 @@ def test_seed_memory_peak():
 
 
 HALVES = {
-    "受试者用药记", "试者用药记录", "云图科研用药", "图科研用药平", "科研用药平台", "司美格鲁肽注", "美格鲁肽注射",
-    "格鲁肽注射液", "注射液的冷链", "研用药平台需", "肽注射液的冷", "由北辰科研仓", "由项目组统一", "目组统一配置",
+    "受试者用药记",
+    "试者用药记录",
+    "云图科研用药",
+    "图科研用药平",
+    "科研用药平台",
+    "司美格鲁肽注",
+    "美格鲁肽注射",
+    "格鲁肽注射液",
+    "注射液的冷链",
+    "研用药平台需",
+    "肽注射液的冷",
+    "由北辰科研仓",
+    "由项目组统一",
+    "目组统一配置",
 }
 
 
@@ -148,7 +170,14 @@ def test_real_style_seeds_have_no_halves():
     from .gm_real_style import P_DOCS
 
     found = seeds("\n".join(P_DOCS))
-    assert {"受试者用药记录", "云图科研用药平台", "司美格鲁肽注射液", "北辰科研仓", "药品追溯码", "初审规则"} <= set(found)
+    assert {
+        "受试者用药记录",
+        "云图科研用药平台",
+        "司美格鲁肽注射液",
+        "北辰科研仓",
+        "药品追溯码",
+        "初审规则",
+    } <= set(found)
     assert not HALVES & set(found)
     # 左邻总是同一个字的是半截；邻字是标点、虚字或一串汉字的头尾时不算
     assert "格鲁肽注射液" not in seeds("司美格鲁肽注射液。司美格鲁肽注射液的")
@@ -162,7 +191,9 @@ def test_real_style_project_top_ten(tmp_path):
     db = real_style_world(tmp_path)
     stats = mine(db)
     top = [item.term for item in stats.items[:10]]
-    assert top[0] == "司美格鲁肽" and [pair.wrong for pair in stats.items[0].pairs] == ["司美格鲁太"]
+    assert top[0] == "司美格鲁肽" and [pair.wrong for pair in stats.items[0].pairs] == [
+        "司美格鲁太"
+    ]
     assert {"初审规则", "受试者用药记录", "药品追溯码", "北辰科研仓", "药房管理员"} <= set(top)
     assert not HALVES & {item.term for item in stats.items}
     assert ("司美格鲁肽", "司美格鲁太") in terms(db) and ("司美格鲁肽", "") in terms(db)
@@ -176,7 +207,10 @@ def test_pool_drops_a_word_one_char_shorter_than_a_frequent_one(tmp_path):
     for index in range(4):
         add_content(db, f"k{index}", [body("冷链温度报警", "药房管理员")])
         add_file(db, root, f"方案{index}.docx", key=f"k{index}")
-    fake = {f"k{index}": [("冷链温度报", 2), ("冷链温度报警", 2), ("药房管理员", 3)] for index in range(4)}
+    fake = {
+        f"k{index}": [("冷链温度报", 2), ("冷链温度报警", 2), ("药房管理员", 3)]
+        for index in range(4)
+    }
     with db.autocommit() as conn:
         stats = gm.compute(conn, "p", seeds=fake)
     kept = {item.term for item in stats.items}
@@ -255,7 +289,9 @@ def test_only_text_and_pdf_layers_of_normal_documents_are_mined(tmp_path):
         add_file(db, root, f"挖/{name}", key=key, zone=zone)
     with db.autocommit() as conn:
         gm.seed_round(conn, float("inf"), lambda: False, now=NOW)
-    mined = {row["content_key"] for row in db.query_all("SELECT content_key FROM glossary_mining_seeds")}
+    mined = {
+        row["content_key"] for row in db.query_all("SELECT content_key FROM glossary_mining_seeds")
+    }
     assert {"k-md", "k-csv", "k-docx"} <= mined
     assert not {"k-img", "k-media", "k-py", "k-json", "k-srt", "k-cards", "k-code", "k-pkg"} & mined
 
@@ -325,7 +361,9 @@ def test_law_clause_terms_survive_when_spoken(tmp_path):
     for index in range(3):
         add_content(db, f"k{index}", law_chunks)
         add_file(db, root, f"法规{index}.docx", key=f"k{index}")
-    add_meeting(db, "m1", date="2026-09-20T10:00:00", project_id="p", segments=["受托代理机构这边要不要改"])
+    add_meeting(
+        db, "m1", date="2026-09-20T10:00:00", project_id="p", segments=["受托代理机构这边要不要改"]
+    )
     fake = {f"k{index}": [("受托代理机构", 6)] for index in range(3)}
     with db.autocommit() as conn:
         stats = gm.compute(conn, "p", seeds=fake)
@@ -357,8 +395,27 @@ def test_file_level_regulation_density_catches_boilerplate(tmp_path):
     add_project(db, "p", "云图AI")
     root = add_root(db, "p", tmp_path / "云图目录")
     nums = [
-        "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二", "十三", "十四", "十五",
-        "十六", "十七", "十八", "十九", "二十", "二十一",
+        "一",
+        "二",
+        "三",
+        "四",
+        "五",
+        "六",
+        "七",
+        "八",
+        "九",
+        "十",
+        "十一",
+        "十二",
+        "十三",
+        "十四",
+        "十五",
+        "十六",
+        "十七",
+        "十八",
+        "十九",
+        "二十",
+        "二十一",
     ]
     clause_chunks = [f"第{n}条 违规经营处一万元以上罚款，由监督管理部门解释。" for n in nums]
     footer_chunk = "版权所有：中国示例网运行中心 网站标识码bm0999999"
@@ -379,11 +436,32 @@ def test_file_level_density_does_not_flag_a_mostly_business_file(tmp_path):
     add_project(db, "p", "云图AI")
     root = add_root(db, "p", tmp_path / "云图目录")
     nums = [
-        "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二", "十三", "十四", "十五",
-        "十六", "十七", "十八", "十九", "二十", "二十一",
+        "一",
+        "二",
+        "三",
+        "四",
+        "五",
+        "六",
+        "七",
+        "八",
+        "九",
+        "十",
+        "十一",
+        "十二",
+        "十三",
+        "十四",
+        "十五",
+        "十六",
+        "十七",
+        "十八",
+        "十九",
+        "二十",
+        "二十一",
     ]
     clause_chunks = [f"第{n}条 附录引用。" for n in nums]
-    biz_chunks = ["科研用药项目里药品追溯码要扫码校验，登记入库单和签收信息，核对批号有效期。" * 10] * 80
+    biz_chunks = [
+        "科研用药项目里药品追溯码要扫码校验，登记入库单和签收信息，核对批号有效期。" * 10
+    ] * 80
     for index in range(3):
         add_content(db, f"k{index}", biz_chunks + clause_chunks)
         add_file(db, root, f"业务{index}.docx", key=f"k{index}")
@@ -402,12 +480,16 @@ def test_misheard_writing_forms_a_pair(tmp_path):
     assert row["spoken"] == 2
     evidence = json.loads(row["evidence_json"])
     assert {ref["m"] for ref in evidence["heard"]} == {"m1", "m2"}
-    assert "司美格鲁" not in row["evidence_json"].replace("司美格鲁肽", "").replace("司美格鲁太", "")
+    assert "司美格鲁" not in row["evidence_json"].replace("司美格鲁肽", "").replace(
+        "司美格鲁太", ""
+    )
 
 
 def test_pairs_need_two_hearings_and_no_material(tmp_path):
     db, roots = world(tmp_path)
-    add_meeting(db, "m3", date="2026-09-27T10:00:00", project_id="p", segments=["驻场服剂再说", "驻场服剂"])
+    add_meeting(
+        db, "m3", date="2026-09-27T10:00:00", project_id="p", segments=["驻场服剂再说", "驻场服剂"]
+    )
     add_meeting(db, "m4", date="2026-09-27T11:00:00", project_id="p", segments=["驻扬服务只一次"])
     mine(db)
     wrongs = {wrong for _term, wrong in terms(db) if wrong}
@@ -429,8 +511,13 @@ def test_head_of_a_long_word_pairs_only_with_a_real_misheard_form(tmp_path):
     for index in range(3):
         add_content(db, f"k{index}", [body("司美格鲁肽注射液", "受试者用药记录")])
         add_file(db, root, f"方案{index}.docx", key=f"k{index}")
-    add_meeting(db, "m1", date="2026-09-20T10:00:00", project_id="p",
-                segments=["司美格鲁太的剂量", "受试者用的东西", "司美格鲁太再看", "受试者用的那个"])
+    add_meeting(
+        db,
+        "m1",
+        date="2026-09-20T10:00:00",
+        project_id="p",
+        segments=["司美格鲁太的剂量", "受试者用的东西", "司美格鲁太再看", "受试者用的那个"],
+    )
     stats = mine(db)
     paired = {item.term: [pair.wrong for pair in item.pairs] for item in stats.items if item.pairs}
     assert paired == {"司美格鲁肽": ["司美格鲁太"]}
@@ -447,15 +534,23 @@ def test_sub_base_pair_rejects_particle_wrong_even_after_a_real_one(tmp_path):
         add_content(db, f"k{index}", [body("受试者用药记录")])
         add_file(db, root, f"方案{index}.docx", key=f"k{index}")
     add_meeting(
-        db, "m1", date="2026-09-20T10:00:00", project_id="p",
+        db,
+        "m1",
+        date="2026-09-20T10:00:00",
+        project_id="p",
         segments=[
-            "受试者用一次就够", "受试者用一遍看看",
-            "受试者用了才知道", "受试者用了没反应",
-            "受试者用的时候要注意", "受试者用的效果不错",
+            "受试者用一次就够",
+            "受试者用一遍看看",
+            "受试者用了才知道",
+            "受试者用了没反应",
+            "受试者用的时候要注意",
+            "受试者用的效果不错",
         ],
     )
     stats = mine(db)
-    paired = {item.term: sorted(pair.wrong for pair in item.pairs) for item in stats.items if item.pairs}
+    paired = {
+        item.term: sorted(pair.wrong for pair in item.pairs) for item in stats.items if item.pairs
+    }
     assert paired == {"受试者用药": ["受试者用一"]}
 
 
@@ -492,7 +587,10 @@ def test_sub_base_survives_when_the_original_word_was_independently_spoken(tmp_p
     db = _face_whitelist_world(
         tmp_path,
         [
-            "人脸识别一开关", "人脸识别一还没配", "人脸识别应该怎么弄", "人脸识别应用范围",
+            "人脸识别一开关",
+            "人脸识别一还没配",
+            "人脸识别应该怎么弄",
+            "人脸识别应用范围",
             "这个人脸识别白要不要单独测",
         ],
     )
@@ -515,7 +613,13 @@ def test_pair_on_an_existing_project_term_names_that_term(tmp_path):
                created_at, updated_at) VALUES ('gt-1', '能耗看板', '[]', '云图AI', '其他', 'manual', 1, 'p', ?, ?)""",
         (utc_now(), utc_now()),
     )
-    add_meeting(db, "m5", date="2026-09-27T10:00:00", project_id="p", segments=["能耗看版上线", "能耗看版再看"])
+    add_meeting(
+        db,
+        "m5",
+        date="2026-09-27T10:00:00",
+        project_id="p",
+        segments=["能耗看版上线", "能耗看版再看"],
+    )
     mine(db)
     row = next(row for row in rows(db) if row["wrong"] == "能耗看版")
     assert row["term"] == "能耗看板" and row["status"] == "pending"
@@ -525,7 +629,13 @@ def test_pair_on_an_existing_project_term_names_that_term(tmp_path):
 @pytest.mark.parametrize(
     "setup",
     [
-        "other_alias", "project_also", "folder", "generic_folder", "ignored_name", "suggestion", "rejected",
+        "other_alias",
+        "project_also",
+        "folder",
+        "generic_folder",
+        "ignored_name",
+        "suggestion",
+        "rejected",
     ],
 )
 def test_words_that_are_never_proposed(tmp_path, setup):
@@ -539,7 +649,10 @@ def test_words_that_are_never_proposed(tmp_path, setup):
             (json.dumps([word], ensure_ascii=False), now, now),
         )
     elif setup == "project_also":
-        db.execute("UPDATE projects SET also_names = ? WHERE id = 'q'", (json.dumps([{"name": word, "source": "manual"}], ensure_ascii=False),))
+        db.execute(
+            "UPDATE projects SET also_names = ? WHERE id = 'q'",
+            (json.dumps([{"name": word, "source": "manual"}], ensure_ascii=False),),
+        )
     elif setup == "folder":
         add_root(db, "r", tmp_path / word)
     elif setup == "generic_folder":
@@ -579,10 +692,19 @@ def many_words_world(tmp_path, count=35):
     root = add_root(db, "p", tmp_path / "云图目录")
     # 用生僻的字造 35 个 4 字词，每个词在 3 份内容里各出现 2 次
     alphabet = [chr(code) for code in range(0x9A00, 0x9B00)]
-    words = sorted({"".join(alphabet[(index * 4 + offset) % len(alphabet)] for offset in range(4)) for index in range(count)})
+    words = sorted(
+        {
+            "".join(alphabet[(index * 4 + offset) % len(alphabet)] for offset in range(4))
+            for index in range(count)
+        }
+    )
     contents = 12
     for number in range(contents):
-        mine_words = [word for index, word in enumerate(words) if number in {index % contents, (index + 1) % contents, (index + 2) % contents}]
+        mine_words = [
+            word
+            for index, word in enumerate(words)
+            if number in {index % contents, (index + 1) % contents, (index + 2) % contents}
+        ]
         add_content(db, f"k{number:02d}", [body(*mine_words)])
         add_file(db, root, f"文{number:02d}.docx", key=f"k{number:02d}")
     return db, words
@@ -638,8 +760,12 @@ def test_merge_keeps_your_answer_and_the_target_pending_yields(tmp_path):
 
 
 def settings(**overrides):
-    values = {"links_enabled": True, "glossary_mining_enabled": True, "links_backfill_days": 180,
-              "semantic_model": "m"}
+    values = {
+        "links_enabled": True,
+        "glossary_mining_enabled": True,
+        "links_backfill_days": 180,
+        "semantic_model": "m",
+    }
     values.update(overrides)
     return SimpleNamespace(**values)
 
@@ -689,7 +815,9 @@ def test_signature_interval_and_first_time(tmp_path):
     again = gm.mine_round(db, lambda: False, now=NOW + timedelta(minutes=5))
     assert again["projects"] == 0  # 签名没变
     add_meeting(db, "m9", date="2026-09-27T10:00:00", project_id="p", segments=["驻场服务要续签"])
-    assert gm.mine_round(db, lambda: False, now=NOW + timedelta(hours=1))["projects"] == 0  # 6 小时内不做
+    assert (
+        gm.mine_round(db, lambda: False, now=NOW + timedelta(hours=1))["projects"] == 0
+    )  # 6 小时内不做
     later = gm.mine_round(db, lambda: False, now=NOW + timedelta(hours=7))
     assert later["projects"] == 1
 
@@ -702,7 +830,9 @@ def test_miner_version_bump_remines(tmp_path, monkeypatch):
     # _DUE_SEEDS 是模块加载时就拼好的字符串，MINER_VERSION 已经烤进去了；这里把它模拟成「又出了新版本」
     bumped = gm.MINER_VERSION + 1
     monkeypatch.setattr(
-        gm, "_DUE_SEEDS", gm._DUE_SEEDS.replace(f"s.miner != {gm.MINER_VERSION}", f"s.miner != {bumped}")
+        gm,
+        "_DUE_SEEDS",
+        gm._DUE_SEEDS.replace(f"s.miner != {gm.MINER_VERSION}", f"s.miner != {bumped}"),
     )
     monkeypatch.setattr(gm, "MINER_VERSION", bumped)
     with db.autocommit() as conn:
@@ -719,7 +849,9 @@ def test_switched_off_does_nothing(tmp_path):
 
 def test_material_fts_rebuild_only_seeds(tmp_path, monkeypatch):
     db, _roots = world(tmp_path)
-    db.execute("INSERT INTO app_state(key, value, updated_at) VALUES (?, '1', ?)", (REBUILD_KEY, utc_now()))
+    db.execute(
+        "INSERT INTO app_state(key, value, updated_at) VALUES (?, '1', ?)", (REBUILD_KEY, utc_now())
+    )
     called = []
     monkeypatch.setattr(gm, "project_pass", lambda *args, **kwargs: called.append(args))
     result = gm.mine_round(db, lambda: False, now=NOW)
@@ -746,7 +878,10 @@ def test_unchanged_pass_writes_nothing(tmp_path):
 
     def trace(sql):
         head = sql.strip().upper()
-        if head.startswith(("INSERT", "UPDATE", "DELETE", "REPLACE")) and "TEMP._GM_KEYS" not in head:
+        if (
+            head.startswith(("INSERT", "UPDATE", "DELETE", "REPLACE"))
+            and "TEMP._GM_KEYS" not in head
+        ):
             writes.append(sql)
 
     with db.autocommit() as conn:
@@ -761,7 +896,11 @@ def test_no_insert_or_replace_on_candidates():
     offenders = [
         path.name
         for path in package.glob("*.py")
-        if re.search(r"INSERT\s+OR\s+REPLACE\s+INTO\s+glossary_candidates", path.read_text(encoding="utf-8"), re.I)
+        if re.search(
+            r"INSERT\s+OR\s+REPLACE\s+INTO\s+glossary_candidates",
+            path.read_text(encoding="utf-8"),
+            re.I,
+        )
     ]
     assert offenders == []
 
@@ -771,9 +910,13 @@ def test_caps_on_the_expensive_steps(tmp_path):
     add_project(db, "p", "云图AI")
     add_root(db, "p", tmp_path / "云图目录")
     alphabet = [chr(code) for code in range(0x9A00, 0x9C00)]
-    words = ["".join(random.Random(index).sample(alphabet, 4)) for index in range(gm.AGG_LIMIT + 100)]
+    words = [
+        "".join(random.Random(index).sample(alphabet, 4)) for index in range(gm.AGG_LIMIT + 100)
+    ]
     fake = {f"k{index}": [(word, 2) for word in words] for index in range(2)}
-    add_meeting(db, "m1", date="2026-09-20T10:00:00", project_id="p", segments=["，".join(words[:300])])
+    add_meeting(
+        db, "m1", date="2026-09-20T10:00:00", project_id="p", segments=["，".join(words[:300])]
+    )
     with db.autocommit() as conn:
         stats = gm.compute(conn, "p", seeds=fake)
     assert stats.queries["spread_materials"] <= gm.POOL_QUERY_CAP
@@ -803,7 +946,9 @@ def test_step_three_walks_the_ranked_pool_until_150_are_kept(tmp_path, monkeypat
     monkeypatch.setattr(gm, "POOL_QUERY_CAP", 6)
     with db.autocommit() as conn:
         stats = gm.compute(conn, "p", seeds=fake)
-    assert [item.term for item in stats.items] == sorted(words[3:6]) and stats.queries["spread_materials"] == 6
+    assert [item.term for item in stats.items] == sorted(words[3:6]) and stats.queries[
+        "spread_materials"
+    ] == 6
 
 
 def test_write_transaction_is_short(tmp_path):
@@ -834,7 +979,9 @@ def test_signature_change_between_compute_and_write_discards(tmp_path, monkeypat
     def racing(conn, project_id, **kwargs):
         result = original(conn, project_id, **kwargs)
         threading.Thread(
-            target=lambda: add_meeting(db, "m-new", date="2026-09-27T10:00:00", project_id="p", segments=["新的会"])
+            target=lambda: add_meeting(
+                db, "m-new", date="2026-09-27T10:00:00", project_id="p", segments=["新的会"]
+            )
         ).start()
         time.sleep(0.2)
         return result
@@ -893,8 +1040,13 @@ def test_transcript_memory(tmp_path):
     rng = random.Random(5)
     alphabet = [chr(0x4E00 + index) for index in range(2000)]
     for meeting in range(10):
-        add_meeting(db, f"m{meeting:02d}", date="2026-09-20T10:00:00", project_id="p",
-                    segments=["".join(rng.choice(alphabet) for _ in range(60)) for _ in range(1000)])
+        add_meeting(
+            db,
+            f"m{meeting:02d}",
+            date="2026-09-20T10:00:00",
+            project_id="p",
+            segments=["".join(rng.choice(alphabet) for _ in range(60)) for _ in range(1000)],
+        )
     with db.autocommit() as conn:
         tracemalloc.start()
         transcript = gm.load_transcript(conn, "p")

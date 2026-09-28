@@ -20,6 +20,7 @@
 - 什么时候重抽：改字、存草稿、回滚、发布只让 L5 重新定位（前后 30 秒、全文唯一一处、找不到就丢）；只有出现
   新的 generated 或 imported 版本，而且 4 字片段 Jaccard 低于 0.85 或定位率低于 80% 时才清零重来。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -198,7 +199,10 @@ def _pack(lines: list[Line], limit: int, overlap: int = OVERLAP_LINES) -> list[t
 
 
 def split_parts(
-    lines: list[Line], limit: int = PART_CHARS, overlap: int = OVERLAP_LINES, max_parts: int = MAX_PARTS
+    lines: list[Line],
+    limit: int = PART_CHARS,
+    overlap: int = OVERLAP_LINES,
+    max_parts: int = MAX_PARTS,
 ) -> tuple[list[tuple[int, int]], bool]:
     """每段不超过 12,000 字、重叠 10 行、最多 6 段；返回 (段的行号范围, 有没有多出来不发的)。"""
     ranges = _pack(lines, limit, overlap)
@@ -299,7 +303,9 @@ def _span(text: str, needle_folded: str) -> str | None:
     return text[positions[at] : positions[at + len(needle_folded) - 1] + 1]
 
 
-def _check(raw: Any, lines: list[Line], by_at: dict[str, list[int]], part_folded: str) -> dict[str, Any] | None:
+def _check(
+    raw: Any, lines: list[Line], by_at: dict[str, list[int]], part_folded: str
+) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     at, quote, phrase, core = (raw.get(key) for key in ("at", "quote", "phrase", "core"))
@@ -309,7 +315,13 @@ def _check(raw: Any, lines: list[Line], by_at: dict[str, list[int]], part_folded
     if not candidates:
         return None  # 时间不在这一段
     quote_key, phrase_key, core_key = _fold(quote), _fold(phrase), _fold(core)
-    if not quote_key or not phrase_key or phrase_key not in quote_key or not core_key or core_key not in phrase_key:
+    if (
+        not quote_key
+        or not phrase_key
+        or phrase_key not in quote_key
+        or not core_key
+        or core_key not in phrase_key
+    ):
         return None
     if not 2 <= len(core_key) <= 24:
         return None
@@ -332,7 +344,12 @@ def _check(raw: Any, lines: list[Line], by_at: dict[str, list[int]], part_folded
     raw_aka = raw.get("aka")
     for item in raw_aka if isinstance(raw_aka, list) else []:
         key = _fold(item) if isinstance(item, str) else ""
-        if 2 <= len(key) <= 16 and key in part_folded and key != core_key and key not in {_fold(x) for x in aka}:
+        if (
+            2 <= len(key) <= 16
+            and key in part_folded
+            and key != core_key
+            and key not in {_fold(x) for x in aka}
+        ):
             aka.append(item.strip())
         if len(aka) >= 3:
             break
@@ -423,15 +440,23 @@ SELECT m.id, m.current_transcript_version_id AS version_id, m.recording_date, m.
  ORDER BY COALESCE(m.recording_date, m.created_at) DESC, m.id DESC"""
 
 
-def seed(db: Database, settings: Any, now: datetime, short: set[tuple[str, str]] | None = None) -> int:
+def seed(
+    db: Database, settings: Any, now: datetime, short: set[tuple[str, str]] | None = None
+) -> int:
     """给该抽的会建 pending 行（links_llm.seed 的 4b 部分）。short 记着逐字稿不到 300 字的
     (会议, 版本)，下次不再读它们的逐字稿。返回建了几行。"""
     if not llm_on(settings):
         return 0
     short = short if short is not None else set()
     with db.autocommit() as connection:
-        since = connection.execute("SELECT value FROM app_state WHERE key = 'links_since'").fetchone()
-        cutoff = backfill_cutoff(now, int(getattr(settings, "links_backfill_days", 180)), since["value"] if since else None)
+        since = connection.execute(
+            "SELECT value FROM app_state WHERE key = 'links_since'"
+        ).fetchone()
+        cutoff = backfill_cutoff(
+            now,
+            int(getattr(settings, "links_backfill_days", 180)),
+            since["value"] if since else None,
+        )
         cutoff_ns = int(cutoff.timestamp() * 1_000_000_000)
         todo: list[tuple[str, str, str, int]] = []
         for row in connection.execute(_SEED_SQL).fetchall():
@@ -636,9 +661,16 @@ class LooseMentionTask:
                            SET version_id = ?, text_sha = ?, parts = ?, parts_done = 0, phrases_json = '[]',
                                error = ?, updated_at = ?
                          WHERE {self._GUARD} AND text_sha = ?""",
-                    (fresh["version_id"], fresh["text_sha"], fresh["parts"], fresh["error"], utc_now(),
-                     job["meeting_id"],
-                     job["claimed_at"], row["text_sha"]),
+                    (
+                        fresh["version_id"],
+                        fresh["text_sha"],
+                        fresh["parts"],
+                        fresh["error"],
+                        utc_now(),
+                        job["meeting_id"],
+                        job["claimed_at"],
+                        row["text_sha"],
+                    ),
                 ).rowcount
             )
 
@@ -694,7 +726,11 @@ class LooseMentionTask:
             )
 
     def _split(
-        self, job: dict[str, Any], row: dict[str, Any], old: list[tuple[int, int]], new: list[tuple[int, int]]
+        self,
+        job: dict[str, Any],
+        row: dict[str, Any],
+        old: list[tuple[int, int]],
+        new: list[tuple[int, int]],
     ) -> None:
         """一条都解析不出的截断：换成多一段的切法，下一次分别发。已经发完的部分不再发：
         新切法里整段都落在已完成部分之内的算完成（段有重叠，不会漏行）。不加 attempts。"""
@@ -709,7 +745,15 @@ class LooseMentionTask:
             connection.execute(
                 f"""UPDATE mention_extractions SET parts = ?, parts_done = ?, state = 'pending', claimed_at = NULL,
                            updated_at = ? WHERE {self._GUARD} AND text_sha = ? AND parts_done = ?""",
-                (len(new), done, utc_now(), job["meeting_id"], job["claimed_at"], row["text_sha"], index),
+                (
+                    len(new),
+                    done,
+                    utc_now(),
+                    job["meeting_id"],
+                    job["claimed_at"],
+                    row["text_sha"],
+                    index,
+                ),
             )
 
 
@@ -778,7 +822,9 @@ def recall_needed(sent_text: str | None, new_text: str, located: int, total: int
     return jaccard(sent_text, new_text) < JACCARD_KEEP
 
 
-def _newer_generated(connection: Any, meeting_id: str, version_id: str, finished_at: str | None) -> bool:
+def _newer_generated(
+    connection: Any, meeting_id: str, version_id: str, finished_at: str | None
+) -> bool:
     """发出去那一版之后有没有新的转写生成版本（重新转写、重新导入）。"""
     kinds = ", ".join(f"'{kind}'" for kind in GENERATED_KINDS)
     sent = connection.execute(
@@ -836,7 +882,9 @@ def _kind_ok(context: ProjectContext, stem: str, kind: str | None) -> bool:
     return any(_ext(row["name"]) in family for row in context.groups.get(stem, []))
 
 
-def _decide(context: ProjectContext, found: dict[str, Match], kind: str | None) -> tuple[bool, Match | None]:
+def _decide(
+    context: ProjectContext, found: dict[str, Match], kind: str | None
+) -> tuple[bool, Match | None]:
     """一层找到的词干组按 kind 过滤：恰好一个就连；不止一个就不连、不猜（停下）；没有就看下一层。"""
     kept = {stem: match for stem, match in found.items() if _kind_ok(context, stem, kind)}
     if len(kept) == 1:
@@ -881,7 +929,9 @@ def _t2(context: ProjectContext, key: str, via: str, *, ratio: float = 0.0) -> d
             inside.append(stem)
         elif key in stem and _long_enough(key) and len(key) * 2 > len(stem):
             around.append(stem)
-    inside = [stem for stem in inside if not any(stem != other and stem in other for other in inside)]
+    inside = [
+        stem for stem in inside if not any(stem != other and stem in other for other in inside)
+    ]
     return {stem: Match(stem, 2, via) for stem in [*inside, *around]}
 
 
@@ -912,7 +962,10 @@ def match_phrase(context: ProjectContext, phrase: dict[str, Any]) -> Match | Non
     term = context.term_forms.get(core)
     if term and term != core:
         steps += [
-            lambda: {stem: Match(stem, 3, "alias", m.version, m.file_id) for stem, m in _t1(context, term, "alias").items()},
+            lambda: {
+                stem: Match(stem, 3, "alias", m.version, m.file_id)
+                for stem, m in _t1(context, term, "alias").items()
+            },
             lambda: {stem: Match(stem, 3, "alias") for stem in _t2(context, term, "alias")},
         ]
     steps.append(lambda: _t4(context, core))
@@ -937,7 +990,9 @@ def _version_of(phrase: dict[str, Any], match: Match) -> int | None:
     却没有明说版本号时，when.version 不算：「上一版报价单」按 rel=previous 挑，不被一个猜出来的 1 盖掉。"""
     if match.version is not None:
         return match.version
-    said = spoken_version(str(phrase.get("phrase") or "")) or spoken_version(str(phrase.get("core") or ""))
+    said = spoken_version(str(phrase.get("phrase") or "")) or spoken_version(
+        str(phrase.get("core") or "")
+    )
     if said is not None:
         return said
     when = phrase.get("when") or {}
@@ -968,13 +1023,16 @@ def resolve_phrases(
             # 「要说两次」的词干：必须 T1，并且至少 2 条说法或带时间提示
             entries = [entry for entry in entries if entry[1].tier == 1]
             hinted = any(
-                (entry[0].get("when") or {}).get("rel") or _version_of(entry[0], entry[1]) for entry in entries
+                (entry[0].get("when") or {}).get("rel") or _version_of(entry[0], entry[1])
+                for entry in entries
             )
             if len(entries) < 2 and not hinted:
                 continue
             if not entries:
                 continue
-        family = EXT_FAMILIES.get(next((entry[0].get("kind") for entry in entries if entry[0].get("kind")), "") or "")
+        family = EXT_FAMILIES.get(
+            next((entry[0].get("kind") for entry in entries if entry[0].get("kind")), "") or ""
+        )
         pool = [row for row in group if family is None or _ext(row["name"]) in family] or group
         chosen: dict[str, Any] | None = None
         hint: dict[str, Any] | None = None
@@ -991,7 +1049,14 @@ def resolve_phrases(
                 by_hint = chosen is not None
                 break
         if chosen is None:
-            rel = next(((entry[0].get("when") or {}).get("rel") for entry in entries if (entry[0].get("when") or {}).get("rel")), None)
+            rel = next(
+                (
+                    (entry[0].get("when") or {}).get("rel")
+                    for entry in entries
+                    if (entry[0].get("when") or {}).get("rel")
+                ),
+                None,
+            )
             if rel:
                 hint = hint or {"rel": rel}
                 chosen = pick_by_hint(pool, {"rel": rel}, meeting_ns, previous_ns)
@@ -1019,10 +1084,18 @@ def resolve_phrases(
 
 
 def _literal_summary(rows: list[Any]) -> str:
-    return "|".join(f"{row['stem_key']}:{row['status']}:{int(row['picked'])}:{row['file_id']}" for row in rows)
+    return "|".join(
+        f"{row['stem_key']}:{row['status']}:{int(row['picked'])}:{row['file_id']}" for row in rows
+    )
 
 
-def _sig(project_id: str, project_sig: str | None, phrases_json: str, current_id: str | None, literal: str) -> str:
+def _sig(
+    project_id: str,
+    project_sig: str | None,
+    phrases_json: str,
+    current_id: str | None,
+    literal: str,
+) -> str:
     digest = hashlib.sha1()
     for part in (
         project_id,
@@ -1066,7 +1139,13 @@ def _due(connection: Any) -> list[dict[str, Any]]:
         )
         if sig != row["resolved_sig"]:
             due.append({**dict(row), "sig": sig})
-    due.sort(key=lambda item: (str(item["recording_date"] or item["created_at"] or ""), item["meeting_id"]), reverse=True)
+    due.sort(
+        key=lambda item: (
+            str(item["recording_date"] or item["created_at"] or ""),
+            item["meeting_id"],
+        ),
+        reverse=True,
+    )
     return due
 
 
@@ -1077,7 +1156,9 @@ def _sig_now(connection: Any, meeting_id: str) -> str | None:
         return None
     rows = [
         item
-        for item in connection.execute(_LITERAL_SQL.format(where="AND fm.meeting_id = ?"), (meeting_id,)).fetchall()
+        for item in connection.execute(
+            _LITERAL_SQL.format(where="AND fm.meeting_id = ?"), (meeting_id,)
+        ).fetchall()
         if item["project_id"] == row["project_id"]
     ]
     return _sig(
@@ -1103,7 +1184,13 @@ def _relation_rows(
                 hints[stem] = item["hint"]
             continue
         rows.append(item)
-    rows.sort(key=lambda item: (-item["phrases"], item["tier"], item["hits"][0]["at_ms"] if item["hits"] else 0))
+    rows.sort(
+        key=lambda item: (
+            -item["phrases"],
+            item["tier"],
+            item["hits"][0]["at_ms"] if item["hits"] else 0,
+        )
+    )
     written: list[dict[str, Any]] = []
     for item in rows[:ROWS_PER_MEETING]:
         file = item["file"]
@@ -1119,7 +1206,12 @@ def _relation_rows(
                 "at_ms": hits[0]["at_ms"] if hits else None,
                 "quote": hits[0]["quote"] if hits else "",
                 # hits 最多存 3 处；count 是这个词干一共被说到几次（线上的「等 N 处」用它）
-                "evidence": {"phrase": item["phrase"], "hits": hits, "via": item["via"], "count": item["phrases"]},
+                "evidence": {
+                    "phrase": item["phrase"],
+                    "hits": hits,
+                    "via": item["via"],
+                    "count": item["phrases"],
+                },
                 "file_id": file["id"],
                 "content_key": file.get("content_key"),
                 "root_id": file["root_id"],
@@ -1132,7 +1224,12 @@ def _relation_rows(
 
 
 def resolve_meeting(
-    db: Database, item: dict[str, Any], contexts: dict[str, ProjectContext], *, now: datetime, since: str
+    db: Database,
+    item: dict[str, Any],
+    contexts: dict[str, ProjectContext],
+    *,
+    now: datetime,
+    since: str,
 ) -> str:
     """一场会：事务外算，BEGIN IMMEDIATE 里重新核对签名再写。返回 written、unchanged、recalled、skipped。"""
     meeting_id = item["meeting_id"]
@@ -1144,20 +1241,30 @@ def resolve_meeting(
         context = contexts.get(project_id)
         if context is None:
             context = contexts[project_id] = ProjectContext(connection, project_id)
-        segments = [
-            dict(row)
-            for row in connection.execute(
-                "SELECT start_ms, text FROM segments WHERE version_id = ? ORDER BY ordinal", (item["current_id"],)
-            ).fetchall()
-        ] if item["current_id"] else []
+        segments = (
+            [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT start_ms, text FROM segments WHERE version_id = ? ORDER BY ordinal",
+                    (item["current_id"],),
+                ).fetchall()
+            ]
+            if item["current_id"]
+            else []
+        )
         phrases = _phrases(item["phrases_json"])
         if item["current_id"] != item["version_id"]:
             located = relocate(phrases, segments)
-            if item["current_id"] and _newer_generated(connection, meeting_id, item["version_id"], item["finished_at"]):
+            if item["current_id"] and _newer_generated(
+                connection, meeting_id, item["version_id"], item["finished_at"]
+            ):
                 new_lines = transcript_lines(connection, item["current_id"])
                 sent_lines = transcript_lines(connection, item["version_id"])
                 sent_text = folded_text(sent_lines) if sent_lines else None
-                if recall_needed(sent_text, folded_text(new_lines), len(located), len(phrases)) and new_lines:
+                if (
+                    recall_needed(sent_text, folded_text(new_lines), len(located), len(phrases))
+                    and new_lines
+                ):
                     ranges, more = split_parts(new_lines)
                     recall = {
                         "version_id": item["current_id"],
@@ -1198,31 +1305,55 @@ def resolve_meeting(
                           phrases_json = '[]', error = ?, resolved_sig = NULL, claimed_at = NULL,
                           finished_at = NULL, updated_at = ?
                     WHERE meeting_id = ? AND state = 'done'""",
-                (recall["version_id"], recall["text_sha"], recall["parts"], recall["error"], utc_now(), meeting_id),
+                (
+                    recall["version_id"],
+                    recall["text_sha"],
+                    recall["parts"],
+                    recall["error"],
+                    utc_now(),
+                    meeting_id,
+                ),
             )
             return "recalled"
         written = relations.upsert_system(connection, rows, stamp, since=since)
         written += relations.clear_missing(
-            connection, "mention", project_id, {"meeting_id": meeting_id}, [row["ident"] for row in rows], stamp,
+            connection,
+            "mention",
+            project_id,
+            {"meeting_id": meeting_id},
+            [row["ident"] for row in rows],
+            stamp,
             since=since,
         )
         hints_changed = _hints(item["hints_json"]) != hints
         if hints_changed:
             connection.execute(
-                "UPDATE mention_extractions SET hints_json = ? WHERE meeting_id = ?", (hints_json, meeting_id)
+                "UPDATE mention_extractions SET hints_json = ? WHERE meeting_id = ?",
+                (hints_json, meeting_id),
             )
             # 2d 下一轮按提示重挑：「上周那版报价单」把已有的线挪到对的版本，不多画一条
-            connection.execute("UPDATE meeting_file_scan SET dirty = dirty + 1 WHERE meeting_id = ?", (meeting_id,))
+            connection.execute(
+                "UPDATE meeting_file_scan SET dirty = dirty + 1 WHERE meeting_id = ?", (meeting_id,)
+            )
         sig = item["sig"]
         if adopt is not None:
             connection.execute(
                 """UPDATE mention_extractions SET version_id = ?, text_sha = ?, phrases_json = ?, updated_at = ?
                     WHERE meeting_id = ? AND state = 'done'""",
-                (adopt["version_id"], adopt["text_sha"], adopt["phrases_json"], utc_now(), meeting_id),
+                (
+                    adopt["version_id"],
+                    adopt["text_sha"],
+                    adopt["phrases_json"],
+                    utc_now(),
+                    meeting_id,
+                ),
             )
             # 说法换成了重新定位过的，签名跟着重算（算出来的结果就是按它们写的，不用再来一轮）
             sig = _sig_now(connection, meeting_id) or sig
-        connection.execute("UPDATE mention_extractions SET resolved_sig = ? WHERE meeting_id = ?", (sig, meeting_id))
+        connection.execute(
+            "UPDATE mention_extractions SET resolved_sig = ? WHERE meeting_id = ?",
+            (sig, meeting_id),
+        )
     return "written" if written or hints_changed else "unchanged"
 
 
@@ -1248,7 +1379,14 @@ def resolve_due(
     deadline = clock() + max_seconds
     with db.autocommit() as connection:
         due = _due(connection)
-    counts = {"pending": len(due), "tried": 0, "written": 0, "unchanged": 0, "recalled": 0, "skipped": 0}
+    counts = {
+        "pending": len(due),
+        "tried": 0,
+        "written": 0,
+        "unchanged": 0,
+        "recalled": 0,
+        "skipped": 0,
+    }
     contexts: dict[str, ProjectContext] = {}
     for item in due[:max_meetings]:
         if clock() >= deadline:
@@ -1261,10 +1399,20 @@ def resolve_due(
 # ---------------------------------------------------------------------- 会议面板的状态句
 
 # 会议面板「会上提到的文件」下面只会出现这七句（第 4 节「状态」）
-LOOSE_SENTENCES = (LOOSE_QUEUED, LLM_NO_KEY, LLM_BAD_KEY, LLM_CAPPED, LLM_BALANCE, LLM_UNREACHABLE, LOOSE_FAILED)
+LOOSE_SENTENCES = (
+    LOOSE_QUEUED,
+    LLM_NO_KEY,
+    LLM_BAD_KEY,
+    LLM_CAPPED,
+    LLM_BALANCE,
+    LLM_UNREACHABLE,
+    LOOSE_FAILED,
+)
 
 
-def brief_state(connection: Any, meeting_id: str, project_id: str | None, worker: Any, settings: Any) -> dict[str, Any] | None:
+def brief_state(
+    connection: Any, meeting_id: str, project_id: str | None, worker: Any, settings: Any
+) -> dict[str, Any] | None:
     """会议面板「会上提到的文件」下面那一句（loose_state）：只在这场会排队、在抽或失败时写；抽完了、
     关着（关联整理或 AI 这一层关着）、没归项目、项目没挂根目录时不写（None）。不写库。"""
     if not project_id or not getattr(settings, "links_enabled", True):
@@ -1274,7 +1422,9 @@ def brief_state(connection: Any, meeting_id: str, project_id: str | None, worker
     ).fetchone()
     if has_root is None:
         return None
-    row = connection.execute("SELECT state FROM mention_extractions WHERE meeting_id = ?", (meeting_id,)).fetchone()
+    row = connection.execute(
+        "SELECT state FROM mention_extractions WHERE meeting_id = ?", (meeting_id,)
+    ).fetchone()
     if row is None or row["state"] == "done":
         return None
     snap = _snapshot(worker)

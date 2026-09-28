@@ -4,6 +4,7 @@
 测「将发送 …」那一行的都显式传 llm_api_base，另建临时 key 文件（conftest 把 AI 地址指到 127.0.0.1:9）。
 任务用 AskRegistry(spawn=…) 在当场跑完或先不跑；假的 chat 记下 (system, user) 和参数。
 """
+
 from __future__ import annotations
 
 import logging
@@ -81,12 +82,16 @@ def make(tmp_path, *, base=DEEPSEEK, key=True, spawn="now", clock=None, **overri
 
 
 def prepare(client, headers, question=QUESTION, project="p"):
-    return client.post(f"/api/projects/{project}/ask/prepare", json={"question": question}, headers=headers)
+    return client.post(
+        f"/api/projects/{project}/ask/prepare", json={"question": question}, headers=headers
+    )
 
 
 def ask(client, headers, plan_id, with_materials=True, project="p"):
     return client.post(
-        f"/api/projects/{project}/ask", json={"plan_id": plan_id, "with_materials": with_materials}, headers=headers
+        f"/api/projects/{project}/ask",
+        json={"plan_id": plan_id, "with_materials": with_materials},
+        headers=headers,
     )
 
 
@@ -117,12 +122,24 @@ def test_prepare_never_calls_ai_and_says_what_will_be_sent(tmp_path):
     body = response.json()
     assert app.state.asks.chat.calls == []
     assert set(body) == {
-        "plan_id", "expires_in", "question", "counts", "confirm", "local_model", "llm", "highlight", "sources",
-        "notes", "unattributed_meetings",
+        "plan_id",
+        "expires_in",
+        "question",
+        "counts",
+        "confirm",
+        "local_model",
+        "llm",
+        "highlight",
+        "sources",
+        "notes",
+        "unattributed_meetings",
     }
     materials = body["counts"]["materials"]
     assert materials > 0 and body["counts"]["meetings"] > 0
-    assert body["confirm"] == {"text": f"将发送 {materials} 段材料原文给 api.deepseek.com", "host": "api.deepseek.com"}
+    assert body["confirm"] == {
+        "text": f"将发送 {materials} 段材料原文给 api.deepseek.com",
+        "host": "api.deepseek.com",
+    }
     assert body["llm"] == "ok" and body["local_model"] is False and body["expires_in"] == 600
     assert body["question"] == QUESTION and "驻场服务" in body["highlight"]
     assert body["unattributed_meetings"] == 1
@@ -140,7 +157,10 @@ def test_local_model_still_gets_the_line(tmp_path):
     client, _app, headers, _ = make(tmp_path, base="http://127.0.0.1:11434/v1")
     body = prepare(client, headers).json()
     materials = body["counts"]["materials"]
-    assert body["confirm"] == {"text": f"将发送 {materials} 段材料原文给 127.0.0.1", "host": "127.0.0.1"}
+    assert body["confirm"] == {
+        "text": f"将发送 {materials} 段材料原文给 127.0.0.1",
+        "host": "127.0.0.1",
+    }
     assert body["local_model"] is True
     assert {"kind": "local_model", "text": "用本机模型回答"} in body["notes"]
 
@@ -174,7 +194,9 @@ def test_prepare_validation(tmp_path):
     # 问题从不进网址：GET 不受理（FastAPI 默认 405；打包过前端时根路径的静态挂载接走，回 404）
     assert client.get(f"/api/projects/p/ask/prepare?question={QUESTION}").status_code in (404, 405)
     assert app.state.asks.registry._plans.keys() == {ok.json()["plan_id"]}
-    extra = client.post("/api/projects/p/ask/prepare", json={"question": QUESTION, "x": 1}, headers=headers)
+    extra = client.post(
+        "/api/projects/p/ask/prepare", json={"question": QUESTION, "x": 1}, headers=headers
+    )
     assert extra.status_code == 422
 
 
@@ -200,8 +222,13 @@ def test_ask_runs_and_counts(tmp_path):
     assert usage(app) == 1
     job = client.get(f"/api/ask/{body['job_id']}").json()
     assert job["state"] == "done"
-    assert job["answer"] == {"text": ANSWER, "cited": ["D1", "M1"], "found": True, "no_evidence": False,
-                             "truncated": False}
+    assert job["answer"] == {
+        "text": ANSWER,
+        "cited": ["D1", "M1"],
+        "found": True,
+        "no_evidence": False,
+        "truncated": False,
+    }
     assert job["sent"] == plan["counts"]
     assert all(source["sent"] for source in job["sources"])
     assert len(job["sources"]) == len(plan["sources"])
@@ -228,7 +255,9 @@ def test_only_meetings_sends_no_material(tmp_path):
 
 def test_ask_errors_before_counting(tmp_path):
     ticks = {"now": 0.0}
-    client, app, headers, _ = make(tmp_path, spawn="later", clock=lambda: ticks["now"], qa_daily_questions=2)
+    client, app, headers, _ = make(
+        tmp_path, spawn="later", clock=lambda: ticks["now"], qa_daily_questions=2
+    )
     plan = prepare(client, headers).json()
     for bad in ("nope", ""):
         response = ask(client, headers, bad or "x")
@@ -260,7 +289,9 @@ def test_ask_cap_and_503s(tmp_path):
     plan = prepare(client, headers).json()
     assert ask(client, headers, plan["plan_id"]).status_code == 202
     capped = ask(client, headers, plan["plan_id"])
-    assert capped.status_code == 429 and capped.json()["detail"] == "今天问答的次数到上限了，明天再问"
+    assert (
+        capped.status_code == 429 and capped.json()["detail"] == "今天问答的次数到上限了，明天再问"
+    )
     assert usage(app) == 1
 
     client, app, headers, _ = make(tmp_path / "nokey", key=False)
@@ -273,7 +304,10 @@ def test_ask_cap_and_503s(tmp_path):
     client, app, headers, _ = make(tmp_path / "off", qa_daily_questions=0)
     plan = prepare(client, headers).json()
     response = ask(client, headers, plan["plan_id"])
-    assert response.status_code == 503 and response.json()["detail"] == "问答的 AI 回答已关闭，先列出找到的原话"
+    assert (
+        response.status_code == 503
+        and response.json()["detail"] == "问答的 AI 回答已关闭，先列出找到的原话"
+    )
     assert "MEETING_WORKBENCH_" not in response.text and usage(app) == 0
 
 
@@ -286,7 +320,10 @@ def test_materials_need_the_confirm_line(tmp_path):
     assert plan["llm"] == "capped" and plan["confirm"] is None and plan["counts"]["materials"] > 0
     worker.refund("qa")
     response = ask(client, headers, plan["plan_id"], with_materials=True)
-    assert response.status_code == 404 and response.json()["detail"] == "这次找到的原话过期了，请再问一次"
+    assert (
+        response.status_code == 404
+        and response.json()["detail"] == "这次找到的原话过期了，请再问一次"
+    )
     assert app.state.asks.chat.calls == [] and usage(app) == 0
     assert ask(client, headers, plan["plan_id"], with_materials=False).status_code == 202
     (call,) = app.state.asks.chat.calls
@@ -303,7 +340,9 @@ def test_spawn_failure_refunds_and_releases(tmp_path):
     registry.spawn = broken
     plan = prepare(client, headers).json()
     response = ask(client, headers, plan["plan_id"])
-    assert response.status_code == 503 and response.json()["detail"] == "出了点问题，先列出找到的原话"
+    assert (
+        response.status_code == 503 and response.json()["detail"] == "出了点问题，先列出找到的原话"
+    )
     assert usage(app) == 0
     assert not registry.project_busy("p") and registry._running == {}
     # 名额都还在
@@ -332,7 +371,6 @@ def test_job_view_is_copied_under_the_lock(tmp_path):
     assert after.state == "done" and "answer" in after.payload and after.with_materials is True
     body = client.get(f"/api/ask/{job_id}").json()
     assert body["state"] == "done" and body["answer"]["text"] == ANSWER
-
 
 
 def test_job_waiting_then_done_then_expired(tmp_path):
@@ -388,7 +426,13 @@ def test_llm_errors_become_stopped_reasons(tmp_path, code, reason, text, retry):
     plan = prepare(client, headers).json()
     job_id = ask(client, headers, plan["plan_id"]).json()["job_id"]
     body = client.get(f"/api/ask/{job_id}").json()
-    assert body == {"state": "stopped", "reason": reason, "text": text, "retry": retry, "sources": body["sources"]}
+    assert body == {
+        "state": "stopped",
+        "reason": reason,
+        "text": text,
+        "retry": retry,
+        "sources": body["sources"],
+    }
     assert len(body["sources"]) == len(plan["sources"])
 
 
@@ -403,7 +447,11 @@ def test_not_sent_errors_and_other_failures(tmp_path):
     app.state.asks.chat = FakeChat(error=ValueError("boom"))
     job_id = ask(client, headers, plan["plan_id"]).json()["job_id"]
     body = client.get(f"/api/ask/{job_id}").json()
-    assert body["reason"] == "error" and body["text"] == "出了点问题，先列出找到的原话" and body["retry"] is True
+    assert (
+        body["reason"] == "error"
+        and body["text"] == "出了点问题，先列出找到的原话"
+        and body["retry"] is True
+    )
 
 
 def test_slots_and_answer_flags(tmp_path):
@@ -426,7 +474,9 @@ def test_slots_and_answer_flags(tmp_path):
     app.state.asks.chat = FakeChat(reply="没找到", finish="length")
     job_id = ask(client, headers, plan["plan_id"]).json()["job_id"]
     answer = client.get(f"/api/ask/{job_id}").json()["answer"]
-    assert answer["found"] is False and answer["truncated"] is True and answer["no_evidence"] is False
+    assert (
+        answer["found"] is False and answer["truncated"] is True and answer["no_evidence"] is False
+    )
 
 
 # ---------------------------------------------------------------------- 键、提示词、日志
@@ -456,7 +506,17 @@ def test_prompt_has_no_file_names_or_locations(tmp_path):
             assert source["name"] not in user
             if source["loc"]:
                 assert source["loc"] not in user
-    for leak in (" name=", " file=", " path=", " loc=", "云图资料", "共用说明", "报价单 v3.xlsx", "云图AI", KEY_QUOTE):
+    for leak in (
+        " name=",
+        " file=",
+        " path=",
+        " loc=",
+        "云图资料",
+        "共用说明",
+        "报价单 v3.xlsx",
+        "云图AI",
+        KEY_QUOTE,
+    ):
         assert leak not in user
     assert str(tmp_path) not in user
 
@@ -468,7 +528,14 @@ def test_logs_have_no_question_sources_or_answer(tmp_path, caplog):
     job_id = ask(client, headers, plan["plan_id"]).json()["job_id"]
     client.get(f"/api/ask/{job_id}")
     assert "问答回来" in caplog.text
-    for secret in (QUESTION, "驻场", "报价", ANSWER, "下调五个点", *[s["text"] for s in plan["sources"]]):
+    for secret in (
+        QUESTION,
+        "驻场",
+        "报价",
+        ANSWER,
+        "下调五个点",
+        *[s["text"] for s in plan["sources"]],
+    ):
         assert secret not in caplog.text
 
 
@@ -519,7 +586,11 @@ def test_cli_links_ask_loads_the_model_before_the_budget_starts(tmp_path, monkey
     order = []
     monkeypatch.setattr(semantic.SemanticIndex, "warm", lambda self: order.append("warm") or True)
     real_retrieve = ask_retrieval.retrieve
-    monkeypatch.setattr(ask_retrieval, "retrieve", lambda *a, **kw: order.append("retrieve") or real_retrieve(*a, **kw))
+    monkeypatch.setattr(
+        ask_retrieval,
+        "retrieve",
+        lambda *a, **kw: order.append("retrieve") or real_retrieve(*a, **kw),
+    )
     monkeypatch.setattr("sys.stdin", io.StringIO(QUESTION + "\n"))
 
     assert cli.main(["links", "ask", "--project", "p"]) == 0

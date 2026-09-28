@@ -7,6 +7,7 @@
   Vision 就不出图。
 - 15 秒超时，同一时刻最多 2 个在生成；超时抛 PreviewTimeout（接口回 503「预览图生成超时」）。
 """
+
 from __future__ import annotations
 
 import os
@@ -48,8 +49,11 @@ def prune_cache(data_dir: Path, limit: int = CACHE_LIMIT_BYTES) -> int:
     folder = cache_dir(data_dir)
     with _prune_lock:
         try:
-            entries = [(entry.stat().st_mtime, entry.stat().st_size, Path(entry.path))
-                       for entry in os.scandir(folder) if entry.is_file() and entry.name.endswith(".jpg")]
+            entries = [
+                (entry.stat().st_mtime, entry.stat().st_size, Path(entry.path))
+                for entry in os.scandir(folder)
+                if entry.is_file() and entry.name.endswith(".jpg")
+            ]
         except FileNotFoundError:
             return 0
         total = sum(size for _mtime, size, _path in entries)

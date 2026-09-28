@@ -1,5 +1,6 @@
 """第四期 4e：产出建议（produced.watch，L4）。窗口起点、范围 A 和 B、共同词、哪些事件算、跳过和上限、
 收回、［是］的登记和撤销、证据的字。"""
+
 from __future__ import annotations
 
 import json
@@ -37,8 +38,13 @@ def world(tmp_path, *, links_since: datetime | None = None):
         "INSERT INTO projects(id, name, also_names, created_at) VALUES ('p', '云图AI', '[\"云图平台\"]', 'x')"
     )
     db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '别的项目', 'x')")
-    db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, 'x')", (ROOT,))
-    root_id = int(db.query_one("SELECT id FROM project_material_roots WHERE path = ?", (ROOT,))["id"])
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, 'x')",
+        (ROOT,),
+    )
+    root_id = int(
+        db.query_one("SELECT id FROM project_material_roots WHERE path = ?", (ROOT,))["id"]
+    )
     swept(db, root_id)
     db.execute(
         "UPDATE app_state SET value = ? WHERE key = 'links_since'", (stamp(links_since or at(-60)),)
@@ -111,17 +117,40 @@ def put_file(
         """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns, zone,
                seen_at, content_key, content_size, content_mtime_ns)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (root_id, rel_path, rel_path.rpartition("/")[0], name, stem or name, stem or name, ext.lower(), size,
-         mtime_ns, zone, utc_now(), key, size if key else None, mtime_ns if key else None),
+        (
+            root_id,
+            rel_path,
+            rel_path.rpartition("/")[0],
+            name,
+            stem or name,
+            stem or name,
+            ext.lower(),
+            size,
+            mtime_ns,
+            zone,
+            utc_now(),
+            key,
+            size if key else None,
+            mtime_ns if key else None,
+        ),
     )
-    file_id = int(db.query_one("SELECT id FROM material_files WHERE root_id = ? AND rel_path = ?", (root_id, rel_path))["id"])
+    file_id = int(
+        db.query_one(
+            "SELECT id FROM material_files WHERE root_id = ? AND rel_path = ?", (root_id, rel_path)
+        )["id"]
+    )
     move_events(db, file_id, when)
     return file_id
 
 
 def move_events(db, file_id: int, when: datetime, kind: str | None = None) -> None:
     where = "file_id = ?" + (" AND kind = ?" if kind else "")
-    params = (at_text(when), when.astimezone().date().isoformat(), file_id, *((kind,) if kind else ()))
+    params = (
+        at_text(when),
+        when.astimezone().date().isoformat(),
+        file_id,
+        *((kind,) if kind else ()),
+    )
     db.execute(f"UPDATE material_file_events SET at = ?, day = ? WHERE {where}", params)
 
 
@@ -170,17 +199,34 @@ def evidence(row: dict) -> dict:
 def test_window_starts_at_the_last_entry_into_confirmed(tmp_path):
     w = world(tmp_path)
     # 抽出的任务：AI 建的 created 不算，从确认那一刻起
-    task(w.db, "t-ai", "整理报价单明细", events=(("created", "AI 从会后纪要生成本条任务草稿", -5), ("confirmed", "任务已确认", -3)))
+    task(
+        w.db,
+        "t-ai",
+        "整理报价单明细",
+        events=(("created", "AI 从会后纪要生成本条任务草稿", -5), ("confirmed", "任务已确认", -3)),
+    )
     put_file(w.db, w.root, "报价/报价单明细 旧.xlsx", at(-4))
     put_file(w.db, w.root, "报价/报价单明细 v2.xlsx", at(-2))
     # 手动建的任务：取 created
-    task(w.db, "t-manual", "写一版能耗看板方案", origin="manual", events=(("created", "手动创建任务", -3),))
+    task(
+        w.db,
+        "t-manual",
+        "写一版能耗看板方案",
+        origin="manual",
+        events=(("created", "手动创建任务", -3),),
+    )
     put_file(w.db, w.root, "看板/能耗看板方案.docx", at(-1))
     # 取消后再确认：从再确认那一刻起
-    task(w.db, "t-again", "排期总表梳理", events=(
-        ("confirmed", "任务已确认", -10), ("rejected", "任务被驳回并取消", -8),
-        ("status_changed", "cancelled → confirmed", -2),
-    ))
+    task(
+        w.db,
+        "t-again",
+        "排期总表梳理",
+        events=(
+            ("confirmed", "任务已确认", -10),
+            ("rejected", "任务被驳回并取消", -8),
+            ("status_changed", "cancelled → confirmed", -2),
+        ),
+    )
     put_file(w.db, w.root, "排期/排期总表 初稿.xlsx", at(-5))
     put_file(w.db, w.root, "排期/排期总表 定稿.xlsx", at(-1))
 
@@ -194,10 +240,17 @@ def test_window_starts_at_the_last_entry_into_confirmed(tmp_path):
 
 def test_moving_back_from_in_progress_does_not_reopen_the_window(tmp_path):
     w = world(tmp_path)
-    task(w.db, "t", "整理报价单明细", status="confirmed", events=(
-        ("confirmed", "任务已确认", -20), ("status_changed", "confirmed → in_progress", -18),
-        ("status_changed", "in_progress → confirmed", -1),
-    ))
+    task(
+        w.db,
+        "t",
+        "整理报价单明细",
+        status="confirmed",
+        events=(
+            ("confirmed", "任务已确认", -20),
+            ("status_changed", "confirmed → in_progress", -18),
+            ("status_changed", "in_progress → confirmed", -1),
+        ),
+    )
     put_file(w.db, w.root, "报价/报价单明细 v9.xlsx", at(-0.5))
     watch(w.db)
     assert asked(w.db) == []
@@ -206,9 +259,16 @@ def test_moving_back_from_in_progress_does_not_reopen_the_window(tmp_path):
 def test_attaching_a_requirement_later_reopens_the_window(tmp_path):
     w = world(tmp_path)
     requirement(w.db, "r", "能耗看板", f"{ROOT}/能耗看板")
-    task(w.db, "t", "写方案", requirement_id="r", events=(
-        ("confirmed", "任务已确认", -30), ("requirement_changed", "挂到需求「能耗看板」", -2),
-    ))
+    task(
+        w.db,
+        "t",
+        "写方案",
+        requirement_id="r",
+        events=(
+            ("confirmed", "任务已确认", -30),
+            ("requirement_changed", "挂到需求「能耗看板」", -2),
+        ),
+    )
     put_file(w.db, w.root, "能耗看板/随手记.docx", at(-1))
     watch(w.db)
     row = asked(w.db, "t")[0]
@@ -218,9 +278,16 @@ def test_attaching_a_requirement_later_reopens_the_window(tmp_path):
 def test_reverted_confirmation_and_ai_created_event_do_not_count(tmp_path):
     w = world(tmp_path)
     # 确认被撤销：回到待确认，自然不在里面
-    task(w.db, "t-reverted", "整理报价单明细", status="pending_confirm", events=(
-        ("confirmed", "任务已确认", -3), ("reverted", "撤销上一步，恢复为待确认", -3),
-    ))
+    task(
+        w.db,
+        "t-reverted",
+        "整理报价单明细",
+        status="pending_confirm",
+        events=(
+            ("confirmed", "任务已确认", -3),
+            ("reverted", "撤销上一步，恢复为待确认", -3),
+        ),
+    )
     # AI 建的 created 不算起点：只剩 links_since（60 天前），窗口早关了
     task(w.db, "t-ai", "整理报价单明细", events=(("created", "AI 从会后纪要生成本条任务草稿", -3),))
     put_file(w.db, w.root, "报价/报价单明细 v2.xlsx", at(-1))
@@ -283,9 +350,14 @@ def test_shared_word_in_name_or_only_in_folder(tmp_path):
     watch(w.db)
     by_name = {row["name"]: evidence(row) for row in asked(w.db)}
     assert by_name["报价单明细-v2.xlsx"]["words"] == ["报价单明细"]
-    assert by_name["报价单明细-v2.xlsx"]["folder"] is None and by_name["报价单明细-v2.xlsx"]["scope"] == "word"
+    assert (
+        by_name["报价单明细-v2.xlsx"]["folder"] is None
+        and by_name["报价单明细-v2.xlsx"]["scope"] == "word"
+    )
     # 词只在文件夹名里：写有这个词的那一层文件夹
-    assert by_name["草图.docx"]["folder"] == "能耗看板/" and by_name["草图.docx"]["words"] == ["能耗看板"]
+    assert by_name["草图.docx"]["folder"] == "能耗看板/" and by_name["草图.docx"]["words"] == [
+        "能耗看板"
+    ]
 
 
 def test_shared_word_rules():
@@ -354,7 +426,9 @@ def test_temporary_shadow_empty_and_other_packages_do_not_count(tmp_path, rel_pa
 def test_keynote_package_without_size_counts(tmp_path):
     w = world(tmp_path)
     task(w.db, "t", "整理报价单明细")
-    file_id = put_file(w.db, w.root, "报价/报价单明细.key", at(-1), size=None, zone="package", content_key=None)
+    file_id = put_file(
+        w.db, w.root, "报价/报价单明细.key", at(-1), size=None, zone="package", content_key=None
+    )
     watch(w.db)
     row = asked(w.db)[0]
     assert row["file_id"] == file_id and row["ident"] == f"t|p:{w.root}:报价/报价单明细.key"
@@ -424,7 +498,9 @@ def test_a_file_in_two_windows_goes_to_the_stronger_match(tmp_path):
     task(w.db, "t-folder", "写方案", requirement_id="r")
     put_file(w.db, w.root, "能耗看板/能耗看板说明.docx", at(-1))
     watch(w.db)
-    assert [(row["task_id"], row["name"]) for row in asked(w.db)] == [("t-folder", "能耗看板说明.docx")]
+    assert [(row["task_id"], row["name"]) for row in asked(w.db)] == [
+        ("t-folder", "能耗看板说明.docx")
+    ]
 
 
 def test_deliverables_rejections_and_expired_rows_are_skipped(tmp_path):
@@ -433,10 +509,19 @@ def test_deliverables_rejections_and_expired_rows_are_skipped(tmp_path):
     task(w.db, "t-other", "别的事")
     done = put_file(w.db, w.root, "报价/报价单明细 已交.xlsx", at(-1))
     with w.db.transaction() as connection:
-        _insert_deliverable(connection, "t-other", name="x", content_key=None, root_id=w.root,
-                            rel_path="报价/报价单明细 已交.xlsx", now=utc_now())
+        _insert_deliverable(
+            connection,
+            "t-other",
+            name="x",
+            content_key=None,
+            root_id=w.root,
+            rel_path="报价/报价单明细 已交.xlsx",
+            now=utc_now(),
+        )
     said_no = put_file(w.db, w.root, "报价/报价单明细 不是.xlsx", at(-1))
-    key = w.db.query_one("SELECT content_key FROM material_files WHERE id = ?", (said_no,))["content_key"]
+    key = w.db.query_one("SELECT content_key FROM material_files WHERE id = ?", (said_no,))[
+        "content_key"
+    ]
     w.db.execute(
         """INSERT INTO relations(kind, project_id, ident, status, origin, task_id, content_key, file_id, created_at, updated_at)
            VALUES ('produced', 'p', ?, 'rejected', 'rule', 't-other', ?, ?, 'x', 'x')""",
@@ -463,12 +548,17 @@ def test_thirty_days_without_an_answer_clears_and_never_asks_again(tmp_path):
     assert asked(w.db)[0]["id"] == row["id"]
     w.db.execute("UPDATE tasks SET status = 'confirmed' WHERE id = 't'")
     watch(w.db, now=at(31))
-    assert w.db.query_one("SELECT status FROM relations WHERE id = ?", (row["id"],))["status"] == "cleared"
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE id = ?", (row["id"],))["status"]
+        == "cleared"
+    )
     watch(w.db, now=at(1))
     assert asked(w.db) == []
 
 
-@pytest.mark.parametrize("change_task", ["cancelled", "expired", "pending_confirm", "moved", "deliverable"])
+@pytest.mark.parametrize(
+    "change_task", ["cancelled", "expired", "pending_confirm", "moved", "deliverable"]
+)
 def test_rows_are_cleared_when_the_task_no_longer_qualifies(tmp_path, change_task):
     w = world(tmp_path)
     task(w.db, "t", "整理报价单明细")
@@ -480,12 +570,22 @@ def test_rows_are_cleared_when_the_task_no_longer_qualifies(tmp_path, change_tas
     elif change_task == "deliverable":
         # 文件从别的路（任务抽屉）成了交付物
         with w.db.transaction() as connection:
-            _insert_deliverable(connection, "t", name="报价单明细.xlsx", content_key=row["content_key"], root_id=w.root,
-                                rel_path="报价/报价单明细.xlsx", now=utc_now())
+            _insert_deliverable(
+                connection,
+                "t",
+                name="报价单明细.xlsx",
+                content_key=row["content_key"],
+                root_id=w.root,
+                rel_path="报价/报价单明细.xlsx",
+                now=utc_now(),
+            )
     else:
         w.db.execute("UPDATE tasks SET status = ? WHERE id = 't'", (change_task,))
     watch(w.db, now=at(0, minutes=1))
-    assert w.db.query_one("SELECT status FROM relations WHERE id = ?", (row["id"],))["status"] == "cleared"
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE id = ?", (row["id"],))["status"]
+        == "cleared"
+    )
     assert file_id
 
 
@@ -503,8 +603,13 @@ def test_idle_round_writes_nothing(tmp_path):
 def test_round_limit_by_task_count(tmp_path):
     w = world(tmp_path)
     w.db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p2', '第二个', 'x')")
-    w.db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p2', '/材料/第二个', 'x')")
-    swept(w.db, int(w.db.query_one("SELECT id FROM project_material_roots WHERE project_id = 'p2'")["id"]))
+    w.db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p2', '/材料/第二个', 'x')"
+    )
+    swept(
+        w.db,
+        int(w.db.query_one("SELECT id FROM project_material_roots WHERE project_id = 'p2'")["id"]),
+    )
     task(w.db, "t1", "整理报价单明细")
     task(w.db, "t2", "整理报价单明细", project_id="p2")
     first = watch(w.db, max_tasks=1)
@@ -518,8 +623,12 @@ def test_round_stops_inside_a_project_and_the_cursor_resumes_it(tmp_path):
     项目不看时间，一定做完。"""
     w = world(tmp_path)
     w.db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p2', '第二个', 'x')")
-    w.db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p2', '/材料/第二个', 'x')")
-    second_root = int(w.db.query_one("SELECT id FROM project_material_roots WHERE project_id = 'p2'")["id"])
+    w.db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p2', '/材料/第二个', 'x')"
+    )
+    second_root = int(
+        w.db.query_one("SELECT id FROM project_material_roots WHERE project_id = 'p2'")["id"]
+    )
     swept(w.db, second_root)
     task(w.db, "t1", "整理报价单明细")
     task(w.db, "t2", "整理排期总表", project_id="p2")
@@ -549,11 +658,23 @@ def test_shared_words_are_worked_out_once_per_text(tmp_path, monkeypatch):
                 """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns,
                        zone, seen_at, content_key, content_size, content_mtime_ns)
                    VALUES (?, ?, ?, ?, ?, ?, 'jpg', 10, ?, 'normal', 'x', ?, 10, ?)""",
-                (w.root, rel, rel.rpartition("/")[0], rel.rpartition("/")[2], f"图片{index}", f"图片{index}",
-                 1000 + index, f"q2:{index:032d}", 1000 + index),
+                (
+                    w.root,
+                    rel,
+                    rel.rpartition("/")[0],
+                    rel.rpartition("/")[2],
+                    f"图片{index}",
+                    f"图片{index}",
+                    1000 + index,
+                    f"q2:{index:032d}",
+                    1000 + index,
+                ),
             )
         when = at(-2)
-        connection.execute("UPDATE material_file_events SET at = ?, day = ?", (at_text(when), when.astimezone().date().isoformat()))
+        connection.execute(
+            "UPDATE material_file_events SET at = ?, day = ?",
+            (at_text(when), when.astimezone().date().isoformat()),
+        )
         connection.execute(
             """INSERT INTO material_file_events(root_id, file_id, kind, rel_path, dir_rel, size, mtime_ns, content_key, at, day)
                SELECT root_id, file_id, 'changed', rel_path, dir_rel, size, mtime_ns, content_key, at, day
@@ -595,23 +716,42 @@ def undo(db, relation_id: int):
 def test_yes_registers_in_one_transaction_and_undo_removes_it(tmp_path):
     w, _file_id, relation_id = answer_setup(tmp_path)
     result = answer(w.db, relation_id, "yes")
-    deliverable = w.db.query_one("SELECT * FROM deliverables WHERE id = ?", (result["deliverable_id"],))
+    deliverable = w.db.query_one(
+        "SELECT * FROM deliverables WHERE id = ?", (result["deliverable_id"],)
+    )
     assert deliverable["url"] == f"{ROOT}/报价/报价单明细.xlsx" and deliverable["kind"] == "file"
-    assert w.db.query_one("SELECT deliverable_id FROM relations WHERE id = ?", (relation_id,))["deliverable_id"] == deliverable["id"]
+    assert (
+        w.db.query_one("SELECT deliverable_id FROM relations WHERE id = ?", (relation_id,))[
+            "deliverable_id"
+        ]
+        == deliverable["id"]
+    )
     # 任务没被改成完成
     assert w.db.query_one("SELECT status FROM tasks WHERE id = 't'")["status"] == "confirmed"
     undone = undo(w.db, relation_id)
     assert undone["removed_deliverable_id"] == deliverable["id"]
     assert w.db.query_one("SELECT COUNT(*) AS n FROM deliverables")["n"] == 0
-    assert w.db.query_one("SELECT status FROM relations WHERE id = ?", (relation_id,))["status"] == "suggested"
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE id = ?", (relation_id,))["status"]
+        == "suggested"
+    )
 
 
 def test_yes_on_an_existing_deliverable_of_this_task_links_only(tmp_path):
     w, _file_id, relation_id = answer_setup(tmp_path)
-    key = w.db.query_one("SELECT content_key FROM relations WHERE id = ?", (relation_id,))["content_key"]
+    key = w.db.query_one("SELECT content_key FROM relations WHERE id = ?", (relation_id,))[
+        "content_key"
+    ]
     with w.db.transaction() as connection:
-        existing = _insert_deliverable(connection, "t", name="报价单明细.xlsx", content_key=key, root_id=w.root,
-                                       rel_path="报价/报价单明细.xlsx", now=utc_now())
+        existing = _insert_deliverable(
+            connection,
+            "t",
+            name="报价单明细.xlsx",
+            content_key=key,
+            root_id=w.root,
+            rel_path="报价/报价单明细.xlsx",
+            now=utc_now(),
+        )
     assert answer(w.db, relation_id, "yes")["deliverable_id"] == existing
     undo(w.db, relation_id)
     assert w.db.query_one("SELECT COUNT(*) AS n FROM deliverables")["n"] == 1
@@ -627,7 +767,9 @@ def test_undo_rolls_back_when_removing_fails_and_survives_a_drawer_removal(tmp_p
     monkeypatch.setattr(relations, "_delete_deliverable", broken)
     with pytest.raises(RuntimeError):
         undo(w.db, relation_id)
-    row = w.db.query_one("SELECT status, deliverable_id FROM relations WHERE id = ?", (relation_id,))
+    row = w.db.query_one(
+        "SELECT status, deliverable_id FROM relations WHERE id = ?", (relation_id,)
+    )
     assert row == {"status": "confirmed", "deliverable_id": deliverable_id}
     monkeypatch.undo()
     # 交付物已经在任务抽屉里删掉：撤销照样成功，只改回 suggested
@@ -642,7 +784,10 @@ def test_yes_on_a_cancelled_task_or_a_gone_file(tmp_path):
     w.db.execute("UPDATE tasks SET status = 'cancelled' WHERE id = 't'")
     with pytest.raises(RelationError) as cancelled:
         answer(w.db, relation_id, "yes")
-    assert (cancelled.value.status, str(cancelled.value)) == (409, "这条任务已经取消了，先恢复任务再登记")
+    assert (cancelled.value.status, str(cancelled.value)) == (
+        409,
+        "这条任务已经取消了，先恢复任务再登记",
+    )
     w.db.execute("UPDATE tasks SET status = 'in_progress' WHERE id = 't'")
     w.db.execute("UPDATE material_files SET gone_at = ? WHERE id = ?", (utc_now(), file_id))
     with pytest.raises(RelationError) as gone:
@@ -656,9 +801,15 @@ def test_yes_on_a_task_back_in_pending_confirm(tmp_path):
     w.db.execute("UPDATE tasks SET status = 'pending_confirm' WHERE id = 't'")
     with pytest.raises(RelationError) as unconfirmed:
         answer(w.db, relation_id, "yes")
-    assert (unconfirmed.value.status, str(unconfirmed.value)) == (409, "这条任务还没确认，先确认任务再登记")
+    assert (unconfirmed.value.status, str(unconfirmed.value)) == (
+        409,
+        "这条任务还没确认，先确认任务再登记",
+    )
     assert w.db.query_one("SELECT COUNT(*) AS n FROM deliverables")["n"] == 0
-    assert w.db.query_one("SELECT status FROM relations WHERE id = ?", (relation_id,))["status"] == "suggested"
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE id = ?", (relation_id,))["status"]
+        == "suggested"
+    )
 
 
 def test_yes_on_a_path_ident_does_not_carry_the_old_content_key(tmp_path):
@@ -666,13 +817,17 @@ def test_yes_on_a_path_ident_does_not_carry_the_old_content_key(tmp_path):
     w = world(tmp_path)
     task(w.db, "t", "整理报价单明细")
     file_id = put_file(w.db, w.root, "报价/报价单明细.xlsx", at(-1), content_key="q2:" + "7" * 32)
-    w.db.execute("UPDATE material_files SET content_size = content_size + 1 WHERE id = ?", (file_id,))
+    w.db.execute(
+        "UPDATE material_files SET content_size = content_size + 1 WHERE id = ?", (file_id,)
+    )
     watch(w.db)
     (row,) = asked(w.db)
     assert row["ident"] == f"t|p:{w.root}:报价/报价单明细.xlsx" and row["content_key"] is None
     deliverable_id = answer(w.db, int(row["id"]), "yes")["deliverable_id"]
-    written = w.db.query_one("SELECT content_key, root_id, rel_path FROM deliverable_files WHERE deliverable_id = ?",
-                             (deliverable_id,))
+    written = w.db.query_one(
+        "SELECT content_key, root_id, rel_path FROM deliverable_files WHERE deliverable_id = ?",
+        (deliverable_id,),
+    )
     assert written == {"content_key": None, "root_id": w.root, "rel_path": "报价/报价单明细.xlsx"}
 
 
@@ -681,20 +836,32 @@ def test_no_is_never_asked_again(tmp_path):
     answer(w.db, relation_id, "no")
     watch(w.db, now=at(0, minutes=5))
     assert asked(w.db) == []
-    assert w.db.query_one("SELECT status FROM relations WHERE id = ?", (relation_id,))["status"] == "rejected"
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE id = ?", (relation_id,))["status"]
+        == "rejected"
+    )
 
 
 def test_after_yes_the_confirmation_can_no_longer_be_undone(tmp_path):
     w = world(tmp_path)
     settings = Settings(
-        data_dir=tmp_path / "data", database_path=tmp_path / "workbench.sqlite3",
-        archive_root=tmp_path / "archive", staging_root=tmp_path / "staging",
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "workbench.sqlite3",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
     )
     service = TaskService(w.db, settings)
     task(w.db, "t", "整理报价单明细", status="pending_confirm", events=())
     service.confirm_task("t")
-    confirmed_at = w.db.query_one("SELECT created_at FROM task_events WHERE task_id = 't' AND kind = 'confirmed'")
-    put_file(w.db, w.root, "报价/报价单明细.xlsx", datetime.fromisoformat(confirmed_at["created_at"]) + timedelta(seconds=1))
+    confirmed_at = w.db.query_one(
+        "SELECT created_at FROM task_events WHERE task_id = 't' AND kind = 'confirmed'"
+    )
+    put_file(
+        w.db,
+        w.root,
+        "报价/报价单明细.xlsx",
+        datetime.fromisoformat(confirmed_at["created_at"]) + timedelta(seconds=1),
+    )
     now = datetime.now(UTC) + timedelta(seconds=5)
     produced.watch(w.db, now, 5.0, since=stamp(now))
     relation_id = int(asked(w.db)[0]["id"])
@@ -717,20 +884,83 @@ def test_questions_for_the_task_drawer(tmp_path):
 @pytest.mark.parametrize(
     ("evidence_json", "text"),
     [
-        ({"event_kind": "added", "scope": "folder", "folder": "能耗看板/", "words": [], "ref": "meeting", "days": 3},
-         "会后 3 天新增在『能耗看板/』"),
-        ({"event_kind": "added", "scope": "word", "folder": None, "words": ["能耗看板"], "ref": "meeting", "days": 3},
-         "会后 3 天新增，文件名里也有『能耗看板』"),
-        ({"event_kind": "added", "scope": "word", "folder": "能耗看板/", "words": ["能耗看板"], "ref": "meeting", "days": 3},
-         "会后 3 天新增在『能耗看板/』"),
-        ({"event_kind": "changed", "scope": "word", "folder": None, "words": ["报价单"], "ref": "meeting", "days": 3},
-         "会后 3 天改过，文件名里也有『报价单』"),
-        ({"event_kind": "added", "scope": "folder", "folder": "能耗看板/", "words": [], "ref": "confirm", "days": 3},
-         "任务确认后 3 天新增在『能耗看板/』"),
-        ({"event_kind": "added", "scope": "folder", "folder": "能耗看板/", "words": [], "ref": "meeting", "days": 0},
-         "会后当天新增在『能耗看板/』"),
-        ({"event_kind": "added", "scope": "folder", "folder": "能耗看板/", "words": [], "ref": "confirm", "days": 0},
-         "确认当天新增在『能耗看板/』"),
+        (
+            {
+                "event_kind": "added",
+                "scope": "folder",
+                "folder": "能耗看板/",
+                "words": [],
+                "ref": "meeting",
+                "days": 3,
+            },
+            "会后 3 天新增在『能耗看板/』",
+        ),
+        (
+            {
+                "event_kind": "added",
+                "scope": "word",
+                "folder": None,
+                "words": ["能耗看板"],
+                "ref": "meeting",
+                "days": 3,
+            },
+            "会后 3 天新增，文件名里也有『能耗看板』",
+        ),
+        (
+            {
+                "event_kind": "added",
+                "scope": "word",
+                "folder": "能耗看板/",
+                "words": ["能耗看板"],
+                "ref": "meeting",
+                "days": 3,
+            },
+            "会后 3 天新增在『能耗看板/』",
+        ),
+        (
+            {
+                "event_kind": "changed",
+                "scope": "word",
+                "folder": None,
+                "words": ["报价单"],
+                "ref": "meeting",
+                "days": 3,
+            },
+            "会后 3 天改过，文件名里也有『报价单』",
+        ),
+        (
+            {
+                "event_kind": "added",
+                "scope": "folder",
+                "folder": "能耗看板/",
+                "words": [],
+                "ref": "confirm",
+                "days": 3,
+            },
+            "任务确认后 3 天新增在『能耗看板/』",
+        ),
+        (
+            {
+                "event_kind": "added",
+                "scope": "folder",
+                "folder": "能耗看板/",
+                "words": [],
+                "ref": "meeting",
+                "days": 0,
+            },
+            "会后当天新增在『能耗看板/』",
+        ),
+        (
+            {
+                "event_kind": "added",
+                "scope": "folder",
+                "folder": "能耗看板/",
+                "words": [],
+                "ref": "confirm",
+                "days": 0,
+            },
+            "确认当天新增在『能耗看板/』",
+        ),
     ],
 )
 def test_evidence_texts(evidence_json, text):

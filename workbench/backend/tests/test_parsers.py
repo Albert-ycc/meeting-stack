@@ -131,14 +131,18 @@ def test_parse_funasr_multichunk_labels_get_chunk_prefix_and_dont_collide(tmp_pa
                     "chunk": 0,
                     "offset_sec": 0,
                     "result": {
-                        "sentence_info": [{"start": 100, "end": 800, "spk": 0, "text": "块一说话人0"}]
+                        "sentence_info": [
+                            {"start": 100, "end": 800, "spk": 0, "text": "块一说话人0"}
+                        ]
                     },
                 },
                 {
                     "chunk": 1,
                     "offset_sec": 2000,
                     "result": {
-                        "sentence_info": [{"start": 200, "end": 900, "spk": 0, "text": "块二说话人0"}]
+                        "sentence_info": [
+                            {"start": 200, "end": 900, "spk": 0, "text": "块二说话人0"}
+                        ]
                     },
                 },
             ]

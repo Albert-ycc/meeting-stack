@@ -1,4 +1,5 @@
 """第四期 4a：llm.chat、destination、neutralise。用本机假服务（allow_local_llm），不碰真 AI。"""
+
 from __future__ import annotations
 
 import json
@@ -22,7 +23,9 @@ class FakeAI:
 
     def __init__(self):
         self.requests: list[dict] = []
-        self.plan: list[tuple] = [("json", 200, {"choices": [{"message": {"content": "好"}, "finish_reason": "stop"}]})]
+        self.plan: list[tuple] = [
+            ("json", 200, {"choices": [{"message": {"content": "好"}, "finish_reason": "stop"}]})
+        ]
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -34,8 +37,11 @@ class FakeAI:
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 fake.requests.append(
-                    {"path": self.path, "body": json.loads(self.rfile.read(length) or b"{}"),
-                     "auth": self.headers.get("Authorization")}
+                    {
+                        "path": self.path,
+                        "body": json.loads(self.rfile.read(length) or b"{}"),
+                        "auth": self.headers.get("Authorization"),
+                    }
                 )
                 step = fake.plan[min(len(fake.requests) - 1, len(fake.plan) - 1)]
                 kind = step[0]
@@ -59,7 +65,7 @@ class FakeAI:
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Transfer-Encoding", "chunked")
                     self.end_headers()
-                    self.wfile.write(b"40\r\n{\"choices\": [")
+                    self.wfile.write(b'40\r\n{"choices": [')
                     self.wfile.flush()
                     self.close_connection = True
                 elif kind == "keepalive":

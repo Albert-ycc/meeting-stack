@@ -3,6 +3,7 @@
 relay 的阶段码和扫描器的隔离原因都是写给程序看的。这里统一翻成「发生了什么 / 下一步做什么」，
 资料库「需要处理」和工作台提示共用这一份口径，不在前端各写一套。
 """
+
 from __future__ import annotations
 
 import json
@@ -83,7 +84,11 @@ def manifest_job_id(directory: str | None) -> str | None:
         return None
     path = Path(directory) / "workbench-manifest.json"
     try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > MANIFEST_READ_LIMIT_BYTES:
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size > MANIFEST_READ_LIMIT_BYTES
+        ):
             return None
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):

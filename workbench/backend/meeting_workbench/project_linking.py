@@ -15,6 +15,7 @@ project_origin 互斥标记谁写的。判定用两类证据：
   ④ 其余有候选的记 needs_review（待你选），存前 2 个候选。
   ⑤ 什么线索都没有记 unresolved，不算待办；LLM 提了新项目名就一并存下。
 """
+
 from __future__ import annotations
 
 import json
@@ -90,7 +91,7 @@ def adopt_draft_tasks(connection: Any, meeting_id: str, project_id: str) -> list
     if task_ids:
         connection.execute(
             f"""UPDATE tasks SET project_id=?, updated_at=?
-                 WHERE id IN ({', '.join('?' for _ in task_ids)})""",
+                 WHERE id IN ({", ".join("?" for _ in task_ids)})""",
             (project_id, utc_now(), *task_ids),
         )
     return task_ids
@@ -108,7 +109,7 @@ def _close_review_rows(connection: Any, meeting_id: str) -> list[int]:
     if ids:
         connection.execute(
             f"""UPDATE project_links SET status='done', finished_at=?
-                 WHERE id IN ({', '.join('?' for _ in ids)})""",
+                 WHERE id IN ({", ".join("?" for _ in ids)})""",
             (utc_now(), *ids),
         )
     return ids
@@ -134,7 +135,8 @@ def _cue_hint(connection: Any, meeting_id: str, project_id: str) -> dict[str, An
     terms = sorted(
         (
             entry
-            for entry in evidence if isinstance(entry, dict)
+            for entry in evidence
+            if isinstance(entry, dict)
             and entry.get("kind") == "literal"
             and entry.get("source") == "term"
             and entry.get("project_id") == project_id
@@ -153,9 +155,7 @@ def _cue_hint(connection: Any, meeting_id: str, project_id: str) -> dict[str, An
 
 
 def _undo_until(event_at: str) -> str:
-    return (
-        datetime.fromisoformat(event_at) + timedelta(seconds=UNDO_WINDOW_SECONDS)
-    ).isoformat()
+    return (datetime.fromisoformat(event_at) + timedelta(seconds=UNDO_WINDOW_SECONDS)).isoformat()
 
 
 def reassign_meeting(
@@ -201,15 +201,13 @@ def reassign_meeting(
         (meeting_id, *movable_params),
     ).fetchall()
     moved_from = {
-        row["id"]: row["project_id"]
-        for row in movable_rows
-        if row["project_id"] != to_project_id
+        row["id"]: row["project_id"] for row in movable_rows if row["project_id"] != to_project_id
     }
     moved = list(moved_from)
     if moved:
         connection.execute(
             f"""UPDATE tasks SET project_id=?, updated_at=?
-                 WHERE id IN ({', '.join('?' for _ in moved)})""",
+                 WHERE id IN ({", ".join("?" for _ in moved)})""",
             (to_project_id, now, *moved),
         )
     left_rows = (
@@ -344,9 +342,11 @@ def undo_reassign(connection: Any, meeting_id: str, *, actor: str = "user") -> d
     if meeting["project_id"] != payload.get("to"):
         raise ConflictError("归属后来又变过，请直接改回")
     from_project_id = payload.get("from")
-    if from_project_id is not None and connection.execute(
-        "SELECT 1 FROM projects WHERE id=?", (from_project_id,)
-    ).fetchone() is None:
+    if (
+        from_project_id is not None
+        and connection.execute("SELECT 1 FROM projects WHERE id=?", (from_project_id,)).fetchone()
+        is None
+    ):
         raise ConflictError("原来的项目已经不在了，请直接改选")
     now = utc_now()
     connection.execute(
@@ -373,7 +373,7 @@ def undo_reassign(connection: Any, meeting_id: str, *, actor: str = "user") -> d
     if reopened:
         connection.execute(
             f"""UPDATE project_links SET status='needs_review', finished_at=?
-                 WHERE status='done' AND id IN ({', '.join('?' for _ in reopened)})""",
+                 WHERE status='done' AND id IN ({", ".join("?" for _ in reopened)})""",
             (now, *reopened),
         )
     _record_event(
@@ -527,7 +527,9 @@ class ProjectLinker:
 
     # ------------------------------------------------------------------ 单行归类
 
-    def _report(self, meeting_id: str, meeting_title: str, status: str, **extra: Any) -> dict[str, Any]:
+    def _report(
+        self, meeting_id: str, meeting_title: str, status: str, **extra: Any
+    ) -> dict[str, Any]:
         return {
             "meeting_id": meeting_id,
             "meeting_title": meeting_title,
@@ -541,7 +543,9 @@ class ProjectLinker:
             "new_requirement_name": extra.get("new_requirement_name"),
         }
 
-    def _link_one(self, link: dict[str, Any], *, cue_table: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _link_one(
+        self, link: dict[str, Any], *, cue_table: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         meeting_id = link["meeting_id"]
         meeting = self.db.query_one(
             "SELECT title, project_id, project_origin FROM meetings WHERE id=?", (meeting_id,)
@@ -611,8 +615,14 @@ class ProjectLinker:
                               error=NULL, finished_at=?
                         WHERE id=?""",
                     (
-                        result["method"], result["project_id"], result["raw_response"],
-                        result["reason"], evidence_json, *name_columns(result), now, link["id"],
+                        result["method"],
+                        result["project_id"],
+                        result["raw_response"],
+                        result["reason"],
+                        evidence_json,
+                        *name_columns(result),
+                        now,
+                        link["id"],
                     ),
                 )
                 adopted = adopt_draft_tasks(connection, meeting_id, result["project_id"])
@@ -634,9 +644,13 @@ class ProjectLinker:
                     connection=connection,
                 )
             return self._report(
-                meeting_id, title, "done",
-                project_id=result["project_id"], project_name=project_name,
-                method=result["method"], reason=result["reason"],
+                meeting_id,
+                title,
+                "done",
+                project_id=result["project_id"],
+                project_name=project_name,
+                method=result["method"],
+                reason=result["reason"],
                 new_requirement_name=result["new_requirement_name"],
             )
 
@@ -649,13 +663,20 @@ class ProjectLinker:
                           new_name_project_id=?, new_name_spoken=?, error=NULL, finished_at=?
                     WHERE id=?""",
                 (
-                    status, result["method"], result["raw_response"], result["reason"], evidence_json,
+                    status,
+                    result["method"],
+                    result["raw_response"],
+                    result["reason"],
+                    evidence_json,
                     candidates_json if status == "needs_review" else None,
-                    *name_columns(result), now, link["id"],
+                    *name_columns(result),
+                    now,
+                    link["id"],
                 ),
             )
             self.db.add_event(
-                "meeting_project_needs_review" if status == "needs_review"
+                "meeting_project_needs_review"
+                if status == "needs_review"
                 else "meeting_project_unresolved",
                 meeting_id=meeting_id,
                 actor="system",
@@ -668,9 +689,13 @@ class ProjectLinker:
                 connection=connection,
             )
         return self._report(
-            meeting_id, title, status,
-            method=result["method"], reason=result["reason"],
-            candidates=result["candidates"], new_project_name=result["new_project_name"],
+            meeting_id,
+            title,
+            status,
+            method=result["method"],
+            reason=result["reason"],
+            candidates=result["candidates"],
+            new_project_name=result["new_project_name"],
             new_requirement_name=result["new_requirement_name"],
         )
 
@@ -765,9 +790,13 @@ class ProjectLinker:
                 # 也留着，界面在候选下面问「也可能是一个新项目」。
                 suggested = parsed.get("new_project_name")
                 if llm_pick is None and isinstance(suggested, str) and suggested.strip():
-                    new_project_name = self._accept_new_project_name(suggested.strip(), project_rows)
+                    new_project_name = self._accept_new_project_name(
+                        suggested.strip(), project_rows
+                    )
                 wanted_requirement = parsed.get("new_requirement_name") if llm_pick else None
-                if new_project_name or (isinstance(wanted_requirement, str) and wanted_requirement.strip()):
+                if new_project_name or (
+                    isinstance(wanted_requirement, str) and wanted_requirement.strip()
+                ):
                     spoken = filter_spoken(
                         parsed.get("spoken_names"), segments=segments, minutes=minutes_markdown
                     )
@@ -834,12 +863,18 @@ class ProjectLinker:
             if pid in names
         ]
         if candidates:
-            return {**base, "decision": "needs_review", "candidates": candidates, "method": "review"}
+            return {
+                **base,
+                "decision": "needs_review",
+                "candidates": candidates,
+                "method": "review",
+            }
         return {
             **base,
             "decision": "unresolved",
             "method": "no_llm" if llm_state == "no_key" else None,
-            "reason": reason or ("没有认出任何项目" if llm_state != "no_key" else "没配置 AI，也没有认出项目"),
+            "reason": reason
+            or ("没有认出任何项目" if llm_state != "no_key" else "没配置 AI，也没有认出项目"),
         }
 
     def _injected_project(self, meeting_id: str) -> dict[str, Any] | None:
@@ -884,9 +919,7 @@ class ProjectLinker:
                 return row["id"]
         return None
 
-    def _accept_new_project_name(
-        self, name: str, project_rows: list[dict[str, Any]]
-    ) -> str | None:
+    def _accept_new_project_name(self, name: str, project_rows: list[dict[str, Any]]) -> str | None:
         """LLM 提的新项目名：和已有项目的名字或也叫同名、或用户说过「不是新项目」的，都不再提。"""
         key = norm_key(name)
         if not key:
@@ -942,7 +975,9 @@ class ProjectLinker:
             ]
             if recent:
                 parts.append("最近人工归入的会 " + "、".join(recent))
-            lines.append(f"- {project['name']}（{'；'.join(parts)}）" if parts else f"- {project['name']}")
+            lines.append(
+                f"- {project['name']}（{'；'.join(parts)}）" if parts else f"- {project['name']}"
+            )
         return lines
 
     def _answer_requirements(self, meeting_id: str | None) -> set[str]:
@@ -995,9 +1030,9 @@ class ProjectLinker:
             f"会议标题：{title}\n"
             f"已有项目：\n{project_block}\n"
             "输出格式（严格 JSON，不要 Markdown 围栏）：\n"
-            "{\"project_match\":\"项目名|null\",\"confidence\":\"high|low\","
-            "\"new_project_name\":\"新项目名|null\",\"new_requirement_name\":\"新需求名|null\","
-            "\"spoken_names\":[\"纪要里的原样写法\"],\"reason\":\"...\"}\n"
+            '{"project_match":"项目名|null","confidence":"high|low",'
+            '"new_project_name":"新项目名|null","new_requirement_name":"新需求名|null",'
+            '"spoken_names":["纪要里的原样写法"],"reason":"..."}\n'
             "<meeting_minutes>\n"
             f"{minutes_excerpt}\n"
             "</meeting_minutes>"
@@ -1141,7 +1176,9 @@ class ProjectLinker:
             "SELECT COUNT(*) AS count FROM meetings WHERE project_origin='manual' AND project_id IS NOT NULL"
         )
         cue_table = self.cue_table()
-        names = {row["id"]: row["name"] for row in self.db.query_all("SELECT id, name FROM projects")}
+        names = {
+            row["id"]: row["name"] for row in self.db.query_all("SELECT id, name FROM projects")
+        }
         items: list[dict[str, Any]] = []
         counts = {
             "auto_right": 0,
@@ -1192,7 +1229,9 @@ class ProjectLinker:
                     "verdict": verdict,
                     "decision": decision,
                     "project_id": result["project_id"],
-                    "project_name": names.get(result["project_id"]) if result["project_id"] else None,
+                    "project_name": names.get(result["project_id"])
+                    if result["project_id"]
+                    else None,
                     "method": result["method"],
                     "reason": result["reason"],
                     "candidates": result["candidates"],

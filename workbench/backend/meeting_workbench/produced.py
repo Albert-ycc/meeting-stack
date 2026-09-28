@@ -17,6 +17,7 @@
   文件断了线由 L2 收回。
 - 全部经 relations.upsert_system 写，只写新行，已有的行不改，闲着一轮不写。
 """
+
 from __future__ import annotations
 
 import time
@@ -50,7 +51,9 @@ BURST_COUNT = 20
 PACKAGE_EXTS = frozenset({"key", "pages", "numbers"})
 SKIP_EXTS = frozenset({"tmp", "part", "crdownload", "download", "partial", "swp", "lock"})
 # 只由这些词拼成的汉字词不算共同词
-GENERIC_WORDS = frozenset({*COMMON_TWO_CHAR, "文件", "资料", "最终", "修改", "版本", "副本", "新建"})
+GENERIC_WORDS = frozenset(
+    {*COMMON_TWO_CHAR, "文件", "资料", "最终", "修改", "版本", "副本", "新建"}
+)
 # 从这些状态改到 confirmed 才算重新进入已确认（从 in_progress 退回不算）
 _REENTER_BODIES = ("pending_confirm → confirmed", "expired → confirmed", "cancelled → confirmed")
 
@@ -137,7 +140,9 @@ def _grams(runs: Sequence[str]) -> frozenset[str]:
     return frozenset(run[index : index + 3] for run in runs for index in range(len(run) - 2))
 
 
-def _shared(task_runs: Sequence[str], file_runs: Sequence[str], excluded: Sequence[str]) -> str | None:
+def _shared(
+    task_runs: Sequence[str], file_runs: Sequence[str], excluded: Sequence[str]
+) -> str | None:
     best: str | None = None
     for run in file_runs:
         for word in _maximal(run, task_runs):
@@ -157,7 +162,11 @@ def shared_word(task_text: str, file_text: str, excluded: Sequence[str] = ()) ->
 
 def _stem(name: str) -> str:
     stem, dot, ext = str(name).rpartition(".")
-    return stem if dot and stem and ext and len(ext) <= 8 and ext.isascii() and ext.isalnum() else str(name)
+    return (
+        stem
+        if dot and stem and ext and len(ext) <= 8 and ext.isascii() and ext.isalnum()
+        else str(name)
+    )
 
 
 class _Words:
@@ -198,11 +207,15 @@ class _Words:
         grams = self._grams_of.get(key)
         if grams is None:
             texts = [_stem(key[0]), *(part for part in key[1].split("/") if part)]
-            grams = self._grams_of[key] = frozenset().union(*(self._side(text)[1] for text in texts))
+            grams = self._grams_of[key] = frozenset().union(
+                *(self._side(text)[1] for text in texts)
+            )
         self._last_file, self._last_grams = file, grams
         return grams
 
-    def file_word(self, task_text: str, file: Mapping[str, Any], below: str = "") -> tuple[str, str | None] | None:
+    def file_word(
+        self, task_text: str, file: Mapping[str, Any], below: str = ""
+    ) -> tuple[str, str | None] | None:
         if self._side(task_text)[1].isdisjoint(self.file_grams(file)):
             return None
         key = (task_text, str(file["name"]), str(file.get("dir_rel") or ""), below)
@@ -310,7 +323,12 @@ class _Pick:
 
     def order(self) -> tuple:
         """每条任务里的顺序：A 先于 B；共同词长的先；added 先于 changed；新的先。"""
-        return (*self.strength(), self.event["kind"] == file_events.ADDED, self.event["at"], self.event["id"])
+        return (
+            *self.strength(),
+            self.event["kind"] == file_events.ADDED,
+            self.event["at"],
+            self.event["id"],
+        )
 
 
 # ---------------------------------------------------------------------- 每轮
@@ -386,14 +404,22 @@ def watch(
             next_after = _previous(by_project, project_id)
             break
         with db.transaction() as connection:
-            count = _watch_project(connection, project_id, tasks, now, stamp, None if first else out_of_time)
+            count = _watch_project(
+                connection, project_id, tasks, now, stamp, None if first else out_of_time
+            )
         if count is None:
             next_after = _previous(by_project, project_id)
             break
         done += 1
         written += count
         tried += len(tasks)
-    return {"tried": tried, "pending": len(rows), "written": written, "cleared": cleared, "after": next_after}
+    return {
+        "tried": tried,
+        "pending": len(rows),
+        "written": written,
+        "cleared": cleared,
+        "after": next_after,
+    }
 
 
 def _previous(by_project: Mapping[str, Any], project_id: str) -> str:
@@ -409,7 +435,9 @@ def _marks(values: Sequence[Any]) -> str:
 def _meeting_day(row: Mapping[str, Any]) -> date | None:
     from .graph import local_day  # graph 引用的模块多，这里晚一点再引
 
-    if not row.get("meeting_id") or not (row.get("recording_date") or row.get("meeting_created_at")):
+    if not row.get("meeting_id") or not (
+        row.get("recording_date") or row.get("meeting_created_at")
+    ):
         return None
     return local_day(row.get("recording_date"), row.get("meeting_created_at"))
 
@@ -449,7 +477,9 @@ def _bursts(events: Iterable[Mapping[str, Any]]) -> set[int]:
     for event in events:
         moment = _parse(event["at"])
         if moment is not None:
-            groups.setdefault((int(event["root_id"]), str(event["dir_rel"])), []).append((moment, int(event["id"])))
+            groups.setdefault((int(event["root_id"]), str(event["dir_rel"])), []).append(
+                (moment, int(event["id"]))
+            )
     burst: set[int] = set()
     for items in groups.values():
         items.sort()
@@ -462,7 +492,9 @@ def _bursts(events: Iterable[Mapping[str, Any]]) -> set[int]:
     return burst
 
 
-def _match(task: _Task, event: Mapping[str, Any], file: Mapping[str, Any], words: _Words, burst: bool) -> tuple[str, str | None, str | None] | None:
+def _match(
+    task: _Task, event: Mapping[str, Any], file: Mapping[str, Any], words: _Words, burst: bool
+) -> tuple[str, str | None, str | None] | None:
     """(scope, folder, word) 或 None。added：范围 A 不要共同词（成批出现的要），范围 B 要；changed：都要。"""
     folder_label: str | None = None
     below = ""
@@ -519,19 +551,26 @@ def _watch_project(
         tasks.append(_Task(row=row, start=start, end=start + WINDOW, text=text))
     if not tasks:
         return 0
-    roots = [dict(row) for row in connection.execute(
-        "SELECT id, path FROM project_material_roots WHERE project_id = ?", (project_id,)
-    ).fetchall()]
+    roots = [
+        dict(row)
+        for row in connection.execute(
+            "SELECT id, path FROM project_material_roots WHERE project_id = ?", (project_id,)
+        ).fetchall()
+    ]
     root_ids = [int(root["id"]) for root in roots]
     if not root_ids:
         return 0
-    project = connection.execute("SELECT name, also_names FROM projects WHERE id = ?", (project_id,)).fetchone()
+    project = connection.execute(
+        "SELECT name, also_names FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
     excluded = [
         *(project_names(project["name"], project["also_names"]) if project is not None else []),
         *(str(root["path"]).rstrip("/").rpartition("/")[2] for root in roots),
     ]
     words = _Words(excluded)
-    requirement_ids = sorted({str(task.row["requirement_id"]) for task in tasks if task.row.get("requirement_id")})
+    requirement_ids = sorted(
+        {str(task.row["requirement_id"]) for task in tasks if task.row.get("requirement_id")}
+    )
     folders: dict[str, list[tuple[int, str, str]]] = {}
     if requirement_ids:
         for folder in connection.execute(
@@ -543,7 +582,9 @@ def _watch_project(
                 # 文件夹就是根目录本身时按范围 B：整个根目录太宽，说不出「新增在『…/』」
                 if prefix:
                     label = prefix.rstrip("/").rpartition("/")[2] + "/"
-                    folders.setdefault(str(folder["requirement_id"]), []).append((int(root["id"]), prefix, label))
+                    folders.setdefault(str(folder["requirement_id"]), []).append(
+                        (int(root["id"]), prefix, label)
+                    )
     for task in tasks:
         task.folders = folders.get(str(task.row.get("requirement_id") or ""), [])
         task.grams = words.task_grams(task.text)
@@ -560,7 +601,10 @@ def _watch_project(
         ).fetchall()
     ]
     labels = file_events.classify(connection, changed, now=now)
-    events = [*added, *(event for event in changed if labels[int(event["id"])] == file_events.CHANGED)]
+    events = [
+        *added,
+        *(event for event in changed if labels[int(event["id"])] == file_events.CHANGED),
+    ]
     if not events:
         return 0
     raw_added = [
@@ -650,7 +694,11 @@ def _watch_project(
             scope, folder, word = matched
             pick = _Pick(task, event, file, scope, folder, word, target)
             kept = best.get(target)
-            if kept is None or (pick.strength(), task.start, pick.order()) > (kept.strength(), kept.task.start, kept.order()):
+            if kept is None or (pick.strength(), task.start, pick.order()) > (
+                kept.strength(),
+                kept.task.start,
+                kept.order(),
+            ):
                 best[target] = pick
     if not best:
         return 0

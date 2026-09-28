@@ -8,6 +8,7 @@
 - 盘不在时照常建项目：记一条待补建的文件夹，插上盘后后台补建并挂上。
 - 文件夹改名后找回：根目录「找不到」时，按证据给候选，［是它］一起改掉嵌在里面的路径。
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -150,9 +151,7 @@ def _listing_entries(
     return entries
 
 
-def free_folders(
-    connection: Any, settings: Settings, cache: Any
-) -> list[dict[str, Any]] | None:
+def free_folders(connection: Any, settings: Settings, cache: Any) -> list[dict[str, Any]] | None:
     """新建项目弹窗、冷启动横幅用的「还没挂的文件夹」：项目总文件夹和已挂根目录的父目录各一层
     （都没有时浏览根往下两层）。缓存没好时返回 None，并在后台刷新一轮。"""
     targets, _depth = listing_targets(connection, settings)
@@ -545,7 +544,9 @@ class PendingFolders:
             (error, project_id, row["parent"], row["name"]),
         )
 
-    def drain(self, *, project_ids: list[str] | None = None, force: bool = False) -> list[dict[str, Any]]:
+    def drain(
+        self, *, project_ids: list[str] | None = None, force: bool = False
+    ) -> list[dict[str, Any]]:
         """返回这一轮建好并挂上的：[{project_id, project_name, path}]。"""
         with self._lock:
             rows = self.db.query_all(
@@ -612,7 +613,9 @@ class PendingFolders:
                     (project_id,),
                 ).fetchone()
                 if current is None or (
-                    current["parent"], current["name"], current["project_name"]
+                    current["parent"],
+                    current["name"],
+                    current["project_name"],
                 ) != (row["parent"], row["name"], row["project_name"]):
                     raise _Abandon
                 if connection.execute(
@@ -803,9 +806,7 @@ def rename_candidates_for(
     return candidates
 
 
-def rename_candidates(
-    connection: Any, cache: Any, project_id: str, root_id: int
-) -> dict[str, Any]:
+def rename_candidates(connection: Any, cache: Any, project_id: str, root_id: int) -> dict[str, Any]:
     root = connection.execute(
         """SELECT r.id, r.project_id, r.path, p.name AS project_name, p.also_names
              FROM project_material_roots r JOIN projects p ON p.id = r.project_id
@@ -864,13 +865,19 @@ def repoint_material_root(
         old = row["path"]
         path, nested = validate_new_root(connection, settings, project_id, raw_path)
         if path == old:
-            return {"path": path, "nested": nested, "moved_roots": [], "moved_folders": 0, "projects": []}
+            return {
+                "path": path,
+                "nested": nested,
+                "moved_roots": [],
+                "moved_folders": 0,
+                "projects": [],
+            }
         prefix = (old, old, old)
         if carry:
             rows = connection.execute(
                 f"""SELECT r.id, r.project_id, r.path, p.name AS project_name
                       FROM project_material_roots r JOIN projects p ON p.id = r.project_id
-                     WHERE {_PREFIX_WHERE.replace('path', 'r.path')}""",
+                     WHERE {_PREFIX_WHERE.replace("path", "r.path")}""",
                 prefix,
             ).fetchall()
         else:
@@ -881,7 +888,7 @@ def repoint_material_root(
                 (root_id,),
             ).fetchall()
         for item in rows:
-            new_path = path + item["path"][len(old):]
+            new_path = path + item["path"][len(old) :]
             try:
                 connection.execute(
                     "UPDATE project_material_roots SET path=? WHERE id=?", (new_path, item["id"])
@@ -903,7 +910,7 @@ def repoint_material_root(
             for folder in connection.execute(
                 f"""SELECT r.project_id FROM requirement_folders f
                       JOIN requirements r ON r.id = f.requirement_id
-                     WHERE {_PREFIX_WHERE.replace('path', 'f.path')}""",
+                     WHERE {_PREFIX_WHERE.replace("path", "f.path")}""",
                 prefix,
             ).fetchall():
                 projects.add(folder["project_id"])
@@ -915,7 +922,7 @@ def repoint_material_root(
             ).rowcount
             connection.execute(
                 f"""UPDATE pending_project_folders SET parent = ? || substr(parent, length(?) + 1)
-                     WHERE {_PREFIX_WHERE.replace('path', 'parent')}""",
+                     WHERE {_PREFIX_WHERE.replace("path", "parent")}""",
                 (path, old, *prefix),
             )
             connection.execute(

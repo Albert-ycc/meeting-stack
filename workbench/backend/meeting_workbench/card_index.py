@@ -11,6 +11,7 @@
   纪要 1 条。
 - cards.render_index 调这里；这个模块不写盘，也不碰文件系统。
 """
+
 from __future__ import annotations
 
 import json
@@ -48,8 +49,12 @@ SUMMARY_CHARS = 90
 PRIORITIES = ("P0", "P1", "P2", "P3")
 
 # 固定字句（进用词测试）
-QUOTE_MAINTAINED = "> 本文件由声档自动维护，请勿手改。把这个项目文件夹交给 Claude Code 时，先让它读这一份。"
-QUOTE_NO_MATERIAL = "> 这里只有会上说过的话、任务和文件位置，不摘材料的内容；文件内容请直接打开文件看。"
+QUOTE_MAINTAINED = (
+    "> 本文件由声档自动维护，请勿手改。把这个项目文件夹交给 Claude Code 时，先让它读这一份。"
+)
+QUOTE_NO_MATERIAL = (
+    "> 这里只有会上说过的话、任务和文件位置，不摘材料的内容；文件内容请直接打开文件看。"
+)
 TITLE_SUFFIX = " · 会议记录索引"
 TASKS_HEADING = "## 进行中的行动项"
 NO_TASKS = "暂无进行中的行动项。"
@@ -94,11 +99,15 @@ class IndexData:
     project_name: str
     root: str
     roots: dict[int, str] = field(default_factory=dict)
-    cards: list[dict[str, Any]] = field(default_factory=list)  # 按开会时间倒序，带 start、day、file_name
+    cards: list[dict[str, Any]] = field(
+        default_factory=list
+    )  # 按开会时间倒序，带 start、day、file_name
     tasks: list[dict[str, Any]] = field(default_factory=list)
     requirements: list[dict[str, Any]] = field(default_factory=list)  # 进行中的，已排好
     closed: list[dict[str, Any]] = field(default_factory=list)  # 已完成或搁置，已排好、截好
-    decisions: list[dict[str, Any]] = field(default_factory=list)  # 这个根目录的会里还在的，最新的在前
+    decisions: list[dict[str, Any]] = field(
+        default_factory=list
+    )  # 这个根目录的会里还在的，最新的在前
     deliverables: list[dict[str, Any]] = field(default_factory=list)
     mentioned: list[dict[str, Any]] = field(default_factory=list)
     summaries: dict[str, str] = field(default_factory=dict)
@@ -298,13 +307,17 @@ def load_index_data(connection: Any, project_id: str, root: str) -> IndexData:
                  WHERE m.id IN ({marks})""",
             latest,
         ).fetchall():
-            summary = _clip(_one_line(minutes_outline(row["markdown"] or "")["summary"]), SUMMARY_CHARS)
+            summary = _clip(
+                _one_line(minutes_outline(row["markdown"] or "")["summary"]), SUMMARY_CHARS
+            )
             if summary:
                 data.summaries[row["id"]] = summary
     return data
 
 
-def deliverable_rows(connection: Any, project_id: str, requirement_id: str | None = None) -> list[dict[str, Any]]:
+def deliverable_rows(
+    connection: Any, project_id: str, requirement_id: str | None = None
+) -> list[dict[str, Any]]:
     """登记的交付物现在指的活文件（一条语句）。只在这个项目自己的根目录里找，顺序固定：先认记下的位置，
     再按内容标识取 id 最小的一份（不像 material_graph._live_by_content 那样跨项目、按修改时间挑）；
     没有 deliverable_files 的老交付物按 url 对根目录前缀。只算定下来的任务（确认、进行中、已完成）的，
@@ -381,7 +394,7 @@ def _folder_path(data: IndexData, folder: str) -> str:
     if folder == root:
         return "`.`"
     if folder.startswith(root + "/"):
-        return f"`{folder[len(root) + 1:]}`"
+        return f"`{folder[len(root) + 1 :]}`"
     return f"`{folder}`"
 
 
@@ -403,7 +416,9 @@ def render_sections(data: IndexData) -> list[str]:
     """按节渲染（每节一段文字，空节不出）。拼法：节之间空一行，结尾一个换行。"""
     cards = {card["meeting_id"]: card for card in data.cards}
     sections = [
-        "\n".join(["---", f"project: {_yaml(data.project_name)}", f"generated_by: {GENERATED_BY}", "---"]),
+        "\n".join(
+            ["---", f"project: {_yaml(data.project_name)}", f"generated_by: {GENERATED_BY}", "---"]
+        ),
         "\n".join([QUOTE_MAINTAINED, QUOTE_NO_MATERIAL]),
         f"# {_one_line(data.project_name)}{TITLE_SUFFIX}",
     ]
@@ -438,16 +453,23 @@ def render_sections(data: IndexData) -> list[str]:
             lines += ["", f"### {_one_line(requirement['title'])}"]
             lines.append(PRIORITY_LABEL.format(priority=requirement["priority"]))
             if requirement["folder"]:
-                lines.append(FOLDER_LABEL.format(path=_folder_path(data, str(requirement["folder"]))))
+                lines.append(
+                    FOLDER_LABEL.format(path=_folder_path(data, str(requirement["folder"])))
+                )
             links = "、".join(_link(card) for card in requirement["meetings"])
             if requirement["elsewhere"]:
-                links += (ELSEWHERE_NOTE if links else ELSEWHERE_ONLY).format(n=requirement["elsewhere"])
+                links += (ELSEWHERE_NOTE if links else ELSEWHERE_ONLY).format(
+                    n=requirement["elsewhere"]
+                )
             if links:
                 lines.append(MEETINGS_LABEL.format(links=links))
             decided = by_requirement.get(requirement["id"], [])
             if decided:
                 lines.append(DECIDED_LABEL)
-                lines += [f"  - {_decision_line(item, cards)}" for item in decided[:DECISIONS_PER_REQUIREMENT]]
+                lines += [
+                    f"  - {_decision_line(item, cards)}"
+                    for item in decided[:DECISIONS_PER_REQUIREMENT]
+                ]
                 if len(decided) > DECISIONS_PER_REQUIREMENT:
                     lines.append(MORE_DECISIONS.format(n=len(decided) - DECISIONS_PER_REQUIREMENT))
             actions = [
@@ -550,7 +572,10 @@ def _context_decision(item: dict[str, Any], meetings: dict[str, dict[str, Any]])
     if item["start_ms"] is not None:
         where = f"{where} {format_clock(item['start_ms'])}".strip()
     notes = [where] if where else []
-    notes += [CHANGED_PHRASE.format(date=ref["date"], text=_one_line(ref["text"])) for ref in item["earlier"]]
+    notes += [
+        CHANGED_PHRASE.format(date=ref["date"], text=_one_line(ref["text"]))
+        for ref in item["earlier"]
+    ]
     dates = sorted({ref["date"] for ref in item["restated"]})
     if dates:
         notes.append(RESTATED_PHRASE.format(dates="、".join(dates)))
@@ -597,8 +622,12 @@ def requirement_context(conn: Any, requirement_id: str) -> dict[str, Any]:
         entry = dict(item)
         entry["start"] = meeting_start(entry)
         entry["day"] = entry["start"].date().isoformat()
-        located = entry["rel_path"] and entry["root_path"] and entry["state"] in ("synced", "user_edited")
-        entry["card"] = f"{str(entry['root_path']).rstrip('/')}/{entry['rel_path']}" if located else None
+        located = (
+            entry["rel_path"] and entry["root_path"] and entry["state"] in ("synced", "user_edited")
+        )
+        entry["card"] = (
+            f"{str(entry['root_path']).rstrip('/')}/{entry['rel_path']}" if located else None
+        )
         meetings[entry["id"]] = entry
     linked = sorted(
         (entry for entry in meetings.values() if entry["linked"]),
@@ -618,7 +647,9 @@ def requirement_context(conn: Any, requirement_id: str) -> dict[str, Any]:
             decided.append({**item, "day": meeting["day"], "order": index})
         folded = {ref.get("decision_id") for item in decided for ref in item["restated"]}
         decided = [item for item in decided if item["id"] not in folded]
-        decided.sort(key=lambda item: (-_day_number(item["day"]), item["meeting_id"], item["order"]))
+        decided.sort(
+            key=lambda item: (-_day_number(item["day"]), item["meeting_id"], item["order"])
+        )
     # 5. 行动项（已确认、进行中）
     tasks = conn.execute(
         """SELECT title, status, assignee FROM tasks
@@ -669,7 +700,9 @@ def requirement_context(conn: Any, requirement_id: str) -> dict[str, Any]:
             for task in tasks
         ],
     )
-    produced_paths = [f"{roots.get(int(item['root_id']), '').rstrip('/')}/{item['rel_path']}" for item in produced]
+    produced_paths = [
+        f"{roots.get(int(item['root_id']), '').rstrip('/')}/{item['rel_path']}" for item in produced
+    ]
     section(
         CONTEXT_PRODUCED,
         [

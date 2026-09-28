@@ -7,6 +7,7 @@
   图片记 done、不认字；换回别的引擎时这些再读一遍，已经认过的不重认。
 - 每 10 分钟看一次各个程序有没有新装上，有了就把对应层的 waiting 改回 pending。
 """
+
 from __future__ import annotations
 
 import logging
@@ -104,9 +105,13 @@ def probe_tools(
     if tesseract:
         tools.tesseract = tesseract
         try:
-            listed = run([tesseract, "--list-langs"], capture_output=True, text=True, timeout=30, check=False)
+            listed = run(
+                [tesseract, "--list-langs"], capture_output=True, text=True, timeout=30, check=False
+            )
             tools.tesseract_chinese = "chi_sim" in (listed.stdout or "").split()
-            version = run([tesseract, "--version"], capture_output=True, text=True, timeout=30, check=False)
+            version = run(
+                [tesseract, "--version"], capture_output=True, text=True, timeout=30, check=False
+            )
             lines = ((version.stdout or "") + (version.stderr or "")).strip().splitlines()
             tools.tesseract_version = lines[0] if lines else ""
         except (OSError, subprocess.SubprocessError):
@@ -135,13 +140,20 @@ def media_missing(tools: Tools) -> list[str]:
     return missing
 
 
-def machine_info(*, run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> dict[str, str]:
+def machine_info(
+    *, run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run
+) -> dict[str, str]:
     """macOS 版本和芯片型号，给 doctor 和试跑报告用。"""
     info = {"macos": platform.mac_ver()[0] or platform.platform(), "chip": platform.machine()}
     if sys.platform == "darwin":
         try:
-            result = run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, timeout=10,
-                         check=False)
+            result = run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
             if result.returncode == 0 and result.stdout.strip():
                 info["chip"] = result.stdout.strip()
         except (OSError, subprocess.SubprocessError):
@@ -218,7 +230,9 @@ def _tiff_size(data: bytes) -> tuple[int, int] | None:
         entry = data[offset + 2 + index * 12 : offset + 14 + index * 12]
         tag, kind = struct.unpack(order + "HH", entry[:4])
         if tag in (256, 257):
-            values[tag] = struct.unpack(order + ("H" if kind == 3 else "I"), entry[8 : 10 if kind == 3 else 12])[0]
+            values[tag] = struct.unpack(
+                order + ("H" if kind == 3 else "I"), entry[8 : 10 if kind == 3 else 12]
+            )[0]
     if 256 in values and 257 in values:
         return values[256], values[257]
     return None
@@ -255,15 +269,21 @@ def arrange_lines(lines: list[dict[str, Any]]) -> list[tuple[int, str]]:
         text = str(line.get("t") or "").strip()
         if not text:
             continue
-        items.append({
-            "t": text, "p": int(line.get("p") or 0), "x": float(line.get("x") or 0),
-            "y": float(line.get("y") or 0), "h": max(float(line.get("h") or 0), 1e-6),
-        })
+        items.append(
+            {
+                "t": text,
+                "p": int(line.get("p") or 0),
+                "x": float(line.get("x") or 0),
+                "y": float(line.get("y") or 0),
+                "h": max(float(line.get("h") or 0), 1e-6),
+            }
+        )
     items.sort(key=lambda item: (item["p"], item["y"], item["x"]))
     kept: list[dict[str, Any]] = []
     for item in items:
         duplicate = any(
-            other["p"] == item["p"] and other["t"] == item["t"]
+            other["p"] == item["p"]
+            and other["t"] == item["t"]
             and abs(other["y"] - item["y"]) <= max(other["h"], item["h"])
             for other in kept[-30:]
         )
@@ -291,7 +311,8 @@ def arrange_lines(lines: list[dict[str, Any]]) -> list[tuple[int, str]]:
         bottom = max(item["y"] + item["h"] for item in row)
         page = row[0]["p"]
         new_paragraph = (
-            not paragraphs or page != previous_page
+            not paragraphs
+            or page != previous_page
             or (previous_bottom is not None and top - previous_bottom > median * 0.8)
         )
         if new_paragraph:
@@ -376,7 +397,9 @@ class OcrEngines:
 
     def tools(self) -> Tools:
         if self._tools is None:
-            self._tools = probe_tools(self.settings, system=self.system, run=self.run, which=self.which)
+            self._tools = probe_tools(
+                self.settings, system=self.system, run=self.run, which=self.which
+            )
         return self._tools
 
     def refresh(self, *, force: bool = False) -> dict[str, int]:
@@ -480,7 +503,11 @@ class OcrEngines:
         else:
             # Vision 认 4096 像素的大图、切长截图时内存比读文档大，上限放到 2GB
             self._helper = HelperProcess(
-                "vision", [str(binary)], data_dir=self.data_dir, stop=self.stop, rss_limit_bytes=VISION_RSS_LIMIT
+                "vision",
+                [str(binary)],
+                data_dir=self.data_dir,
+                stop=self.stop,
+                rss_limit_bytes=VISION_RSS_LIMIT,
             )
         self._helper_binary = binary
         return self._helper
@@ -497,14 +524,23 @@ class OcrEngines:
         tools = self.tools()
         assert tools.tesseract is not None
         result = run_background(
-            [tools.tesseract, str(path), "stdout", "-l", "chi_sim+eng", "-c", "preserve_interword_spaces=1"],
+            [
+                tools.tesseract,
+                str(path),
+                "stdout",
+                "-l",
+                "chi_sim+eng",
+                "-c",
+                "preserve_interword_spaces=1",
+            ],
             timeout=timeout,
             stop=self.stop,
             env={"OMP_THREAD_LIMIT": "1"},
         )
         if result.returncode != 0:
             raise extract_formats.Unreadable(
-                extract_formats.CORRUPT, (result.stderr or b"").decode("utf-8", errors="replace")[-200:]
+                extract_formats.CORRUPT,
+                (result.stderr or b"").decode("utf-8", errors="replace")[-200:],
             )
         return result.stdout.decode("utf-8", errors="replace")
 
@@ -559,7 +595,9 @@ class ImageExtractor:
             return ExtractResult(status="ok", extractor=OFF, extractor_version=self.version)
         size = image_size(path)
         if size and is_small(*size):
-            return ExtractResult(status="ok", note="small_image", extractor=engine, extractor_version=self.version)
+            return ExtractResult(
+                status="ok", note="small_image", extractor=engine, extractor_version=self.version
+            )
         started = time.monotonic()
         try:
             if engine == VISION:
@@ -570,7 +608,9 @@ class ImageExtractor:
             logger.info("认字超时：%s（%s）", path, error)
             return ExtractResult(status="timeout", extractor=engine, extractor_version=self.version)
         except extract_formats.Unreadable as error:
-            return ExtractResult(status=error.reason, extractor=engine, extractor_version=self.version)
+            return ExtractResult(
+                status=error.reason, extractor=engine, extractor_version=self.version
+            )
         result.extractor = engine
         result.extractor_version = self.version
         result.duration_ms = int((time.monotonic() - started) * 1000)
@@ -579,7 +619,9 @@ class ImageExtractor:
         return result
 
     def _vision(self, path: Path, row: dict[str, Any]) -> ExtractResult:
-        answer = self.engines.vision().request({"cmd": "image", "path": str(path)}, timeout=_timeout_for(row))
+        answer = self.engines.vision().request(
+            {"cmd": "image", "path": str(path)}, timeout=_timeout_for(row)
+        )
         status = answer.get("status")
         if status != "ok":
             if status == "error":
@@ -593,7 +635,10 @@ class ImageExtractor:
             for page, text in arrange_lines(answer.get("lines") or [])
         ]
         return ExtractResult(
-            status="ok", blocks=blocks, pages=pages if pages > 1 else None, truncated=bool(answer.get("truncated"))
+            status="ok",
+            blocks=blocks,
+            pages=pages if pages > 1 else None,
+            truncated=bool(answer.get("truncated")),
         )
 
     def _tesseract(self, path: Path, row: dict[str, Any]) -> ExtractResult:
@@ -611,7 +656,9 @@ class ImageExtractor:
         finally:
             if converted is not None:
                 converted.unlink(missing_ok=True)
-        return ExtractResult(status="ok", blocks=[{"loc": None, "text": part} for part in ocr_paragraphs(text)])
+        return ExtractResult(
+            status="ok", blocks=[{"loc": None, "text": part} for part in ocr_paragraphs(text)]
+        )
 
 
 class PdfExtractor:
@@ -650,11 +697,17 @@ class PdfExtractor:
         try:
             opened = helper.request({"cmd": "pdf_open", "path": str(path)}, timeout=timeout)
         except (HelperTimeout, HelperCrashed):
-            return ExtractResult(status="timeout", extractor=extractor, extractor_version=self.version)
+            return ExtractResult(
+                status="timeout", extractor=extractor, extractor_version=self.version
+            )
         if opened.get("status") in {"password", "corrupt"}:
-            return ExtractResult(status=str(opened["status"]), extractor=extractor, extractor_version=self.version)
+            return ExtractResult(
+                status=str(opened["status"]), extractor=extractor, extractor_version=self.version
+            )
         if opened.get("status") != "ok":
-            return ExtractResult(status="corrupt", extractor=extractor, extractor_version=self.version)
+            return ExtractResult(
+                status="corrupt", extractor=extractor, extractor_version=self.version
+            )
         pages = int(opened.get("pages") or 0)
         truncated = pages > PDF_MAX_PAGES
         blocks: list[dict[str, Any]] = []
@@ -669,7 +722,9 @@ class PdfExtractor:
                 text = self._page(helper, path, row, index, mode, timeout)
             except (HelperTimeout, HelperCrashed):
                 if not blocks:
-                    return ExtractResult(status="timeout", extractor=extractor, extractor_version=self.version)
+                    return ExtractResult(
+                        status="timeout", extractor=extractor, extractor_version=self.version
+                    )
                 truncated = True  # 只读了前 N 页
                 break
             if text.strip():
@@ -684,24 +739,35 @@ class PdfExtractor:
             extractor_version=self.version,
         )
 
-    def _page(self, helper: Any, path: Path, row: dict[str, Any], index: int, mode: str, timeout: float) -> str:
-        answer = helper.request({"cmd": "pdf_text", "path": str(path), "page": index}, timeout=timeout)
+    def _page(
+        self, helper: Any, path: Path, row: dict[str, Any], index: int, mode: str, timeout: float
+    ) -> str:
+        answer = helper.request(
+            {"cmd": "pdf_text", "path": str(path), "page": index}, timeout=timeout
+        )
         text = str(answer.get("text") or "") if answer.get("status") == "ok" else ""
         if not needs_ocr(text) or mode not in (VISION, TESSERACT):
             return text.strip()
         if mode == VISION:
-            answer = helper.request({"cmd": "pdf_ocr", "path": str(path), "page": index}, timeout=timeout)
-            recognized = "\n\n".join(part for _page, part in arrange_lines(answer.get("lines") or []))
+            answer = helper.request(
+                {"cmd": "pdf_ocr", "path": str(path), "page": index}, timeout=timeout
+            )
+            recognized = "\n\n".join(
+                part for _page, part in arrange_lines(answer.get("lines") or [])
+            )
         else:
             out = self.engines.temp_dir() / f"{_key16(row)}-p{index + 1}.png"
             try:
                 answer = helper.request(
-                    {"cmd": "pdf_render", "path": str(path), "page": index, "out": str(out)}, timeout=timeout
+                    {"cmd": "pdf_render", "path": str(path), "page": index, "out": str(out)},
+                    timeout=timeout,
                 )
                 recognized = ""
                 if answer.get("status") == "ok" and out.is_file():
                     try:
-                        recognized = "\n\n".join(ocr_paragraphs(self.engines.tesseract_text(out, timeout=timeout)))
+                        recognized = "\n\n".join(
+                            ocr_paragraphs(self.engines.tesseract_text(out, timeout=timeout))
+                        )
                     except extract_formats.Unreadable:
                         recognized = ""
             finally:
@@ -719,7 +785,8 @@ def tools_report(settings: Any, *, build: VisionBuild | None = None) -> dict[str
     tesseract = "没装（brew install tesseract tesseract-lang）"
     if tools.tesseract:
         tesseract = (
-            f"能用（{tools.tesseract_version}）" if tools.tesseract_chinese
+            f"能用（{tools.tesseract_version}）"
+            if tools.tesseract_chinese
             else "没有中文语言包（brew install tesseract-lang）"
         )
     return {
@@ -728,8 +795,11 @@ def tools_report(settings: Any, *, build: VisionBuild | None = None) -> dict[str
         "textutil": "能用" if tools.textutil else "没有（只有 Mac 上有）",
         "ffmpeg": "能用" if tools.ffmpeg and tools.ffprobe else "没装（brew install ffmpeg）",
         "funasr": (
-            "没找到 FunASR 的 Python" if not tools.funasr_python
-            else "能用" if tools.media_script else "没找到材料转写程序 transcribe/funasr_material.py"
+            "没找到 FunASR 的 Python"
+            if not tools.funasr_python
+            else "能用"
+            if tools.media_script
+            else "没找到材料转写程序 transcribe/funasr_material.py"
         ),
         **machine_info(),
     }

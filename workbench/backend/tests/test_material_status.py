@@ -1,4 +1,5 @@
 """第三期 3e：覆盖率、materials status、读不了的列表、首页标签、文件状态的说法、预览数据、读盘的三个接口。"""
+
 import json
 import os
 import stat
@@ -10,7 +11,12 @@ from starlette.testclient import TestClient
 
 from meeting_workbench import cli
 from meeting_workbench.db import Database, utc_now
-from meeting_workbench.material_content import ExtractResult, MaterialContent, pending_counts, store_result
+from meeting_workbench.material_content import (
+    ExtractResult,
+    MaterialContent,
+    pending_counts,
+    store_result,
+)
 from meeting_workbench.material_index import MaterialIndexer
 from meeting_workbench.material_rules import STATE_TEXTS, WAITING_TEXTS
 from meeting_workbench.material_status import (
@@ -47,7 +53,9 @@ def build_root(root):
 
 
 def key_of(db, rel_path):
-    return db.query_one("SELECT content_key FROM material_files WHERE rel_path = ?", (rel_path,))["content_key"]
+    return db.query_one("SELECT content_key FROM material_files WHERE rel_path = ?", (rel_path,))[
+        "content_key"
+    ]
 
 
 def file_id(db, rel_path):
@@ -61,23 +69,35 @@ def store(db, rel_path, result):
 
 def fill_states(db):
     """把各份内容放进各种状态：读完的（文档、表格、录音）、在等识别程序的、要密码的、一时读不了的。"""
-    store(db, "方案.docx", ExtractResult("ok", blocks=[{"loc": None, "text": "第一行\n第二行"}], extractor="stdlib"))
+    store(
+        db,
+        "方案.docx",
+        ExtractResult("ok", blocks=[{"loc": None, "text": "第一行\n第二行"}], extractor="stdlib"),
+    )
     table = "\n".join(f"项目\t{index}" for index in range(8))
-    store(db, "报价.xlsx", ExtractResult("ok", blocks=[{"loc": "表「预算」", "text": table}], extractor="stdlib"))
+    store(
+        db,
+        "报价.xlsx",
+        ExtractResult("ok", blocks=[{"loc": "表「预算」", "text": table}], extractor="stdlib"),
+    )
     store(
         db,
         "访谈.m4a",
         ExtractResult(
             "ok",
-            spans=[{"start_ms": 1_000, "end_ms": 31_000, "text": "先讲报价。"},
-                   {"start_ms": 31_000, "end_ms": 62_000, "text": "再讲交付。"}],
+            spans=[
+                {"start_ms": 1_000, "end_ms": 31_000, "text": "先讲报价。"},
+                {"start_ms": 31_000, "end_ms": 62_000, "text": "再讲交付。"},
+            ],
             duration_ms=62_000,
             extractor="funasr-material",
         ),
     )
     store(db, "白板.png", ExtractResult("waiting", note="engine_missing"))
     store(db, "扫描.pdf", ExtractResult("password", extractor="pdfkit+vision"))
-    db.execute("UPDATE material_files SET content_error = 'io', content_attempts = 1 WHERE rel_path = '日志.txt'")
+    db.execute(
+        "UPDATE material_files SET content_error = 'io', content_attempts = 1 WHERE rel_path = '日志.txt'"
+    )
 
 
 def seeded(tmp_path):
@@ -101,7 +121,13 @@ def test_coverage_counts_files_not_contents(tmp_path):
     content = item["content"]
     # 两份一样的 docx 算两个；日志.txt 一时读不了算在还剩里；汇报.key 在文件行上记了格式不支持
     assert content["total"] == 8 and content["done"] == 4 and content["pending"] == 1
-    assert content["unreadable"] == {"password": 1, "corrupt": 0, "unsupported": 1, "timeout": 0, "permission": 0}
+    assert content["unreadable"] == {
+        "password": 1,
+        "corrupt": 0,
+        "unsupported": 1,
+        "timeout": 0,
+        "permission": 0,
+    }
     assert content["waiting"] == [{"what": "vision", "files": 1, "hint": WAITING_TEXTS["vision"]}]
     assert content["names_only"] == {"cards": 1, "other": 1}
     assert content["paused"] is None
@@ -111,7 +137,9 @@ def test_coverage_waiting_names_what_is_missing(tmp_path):
     db, _root, _root_id, _content, _state = seeded(tmp_path)
     store(db, "访谈.m4a", ExtractResult("waiting"))
     engines = SimpleNamespace(
-        tools=lambda: SimpleNamespace(ffmpeg=None, ffprobe=None, funasr_python="py", media_script="s"),
+        tools=lambda: SimpleNamespace(
+            ffmpeg=None, ffprobe=None, funasr_python="py", media_script="s"
+        ),
         setting=lambda: "auto",
         system="linux",
         build=SimpleNamespace(failure=lambda: None),
@@ -145,7 +173,10 @@ def test_render_status_one_line_per_root(tmp_path):
     with db.autocommit() as connection:
         text = render_status(coverage(connection, "p"), {"p": "云图AI"})
     assert f"［云图AI］{root}" in text
-    assert "文件名 10 个 · 已读 4 个 · 还剩 1 个 · 读不了 2 个（要密码 1、格式不支持 1） · 在等：vision 1 个" in text
+    assert (
+        "文件名 10 个 · 已读 4 个 · 还剩 1 个 · 读不了 2 个（要密码 1、格式不支持 1） · 在等：vision 1 个"
+        in text
+    )
     assert WAITING_TEXTS["vision"] in text
 
 
@@ -175,22 +206,38 @@ def test_unreadable_list_filters_by_root_and_reason_and_pages(tmp_path):
     db, root, root_id, _content, _state = seeded(tmp_path)
     other = tmp_path / "第二个盘"
     put(other / "坏.docx", b"bad")
-    db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, ?)",
-               (str(other), utc_now()))
-    run_until_done(MaterialIndexer(db, SimpleNamespace(archive_root=tmp_path / "a", staging_root=tmp_path / "s",
-                                                        data_dir=tmp_path / "data"), clock=lambda: 0.0))
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, ?)",
+        (str(other), utc_now()),
+    )
+    run_until_done(
+        MaterialIndexer(
+            db,
+            SimpleNamespace(
+                archive_root=tmp_path / "a", staging_root=tmp_path / "s", data_dir=tmp_path / "data"
+            ),
+            clock=lambda: 0.0,
+        )
+    )
     db.execute("UPDATE material_files SET content_error = 'corrupt' WHERE name = '坏.docx'")
     with db.autocommit() as connection:
         everything = unreadable_files(connection, "p")
         assert everything["total"] == 3 and everything["next_offset"] is None
-        assert {item["reason"] for item in everything["items"]} == {"password", "unsupported", "corrupt"}
+        assert {item["reason"] for item in everything["items"]} == {
+            "password",
+            "unsupported",
+            "corrupt",
+        }
         only_first = unreadable_files(connection, "p", root_id=root_id)
         assert {item["name"] for item in only_first["items"]} == {"扫描.pdf", "汇报.key"}
         page = unreadable_files(connection, "p", root_id=root_id, limit=1)
         assert page["total"] == 2 and page["next_offset"] == 1 and len(page["items"]) == 1
         rest = unreadable_files(connection, "p", root_id=root_id, offset=1, limit=1)
         assert rest["next_offset"] is None
-        assert unreadable_files(connection, "p", reason="password")["items"][0]["path"] == f"{root}/扫描.pdf"
+        assert (
+            unreadable_files(connection, "p", reason="password")["items"][0]["path"]
+            == f"{root}/扫描.pdf"
+        )
 
 
 # ---------------------------------------------------------------------- 文件状态的说法
@@ -199,20 +246,36 @@ def test_unreadable_list_filters_by_root_and_reason_and_pages(tmp_path):
 def state_for(db, rel_path, *, online=True, paused=None, engines=None):
     with db.autocommit() as connection:
         row = file_row(connection, file_id(db, rel_path))
-        found = connection.execute("SELECT * FROM material_contents WHERE content_key = ?",
-                                   (row["content_key"],)).fetchone()
-        return file_state(connection, row, dict(found) if found else None, online=online, paused=paused,
-                          engines=engines)
+        found = connection.execute(
+            "SELECT * FROM material_contents WHERE content_key = ?", (row["content_key"],)
+        ).fetchone()
+        return file_state(
+            connection,
+            row,
+            dict(found) if found else None,
+            online=online,
+            paused=paused,
+            engines=engines,
+        )
 
 
 def test_every_state_sentence(tmp_path):
     db, _root, _root_id, _content, _state = seeded(tmp_path)
     put(_root / "新.docx", b"new")
     assert state_for(db, "方案.docx") == {
-        "kind": "done", "reason": None, "note": None, "what": None, "paused": None, "meeting": None, "text": "",
+        "kind": "done",
+        "reason": None,
+        "note": None,
+        "what": None,
+        "paused": None,
+        "meeting": None,
+        "text": "",
     }
     assert state_for(db, "方案.docx", online=False)["text"] == "资料盘未连接，先看上次读到的"
-    db.execute("UPDATE material_contents SET state = 'pending' WHERE content_key = ?", (key_of(db, "方案.docx"),))
+    db.execute(
+        "UPDATE material_contents SET state = 'pending' WHERE content_key = ?",
+        (key_of(db, "方案.docx"),),
+    )
     assert state_for(db, "方案.docx")["text"] == "还没读到内容，读完后这里能预览"
     assert state_for(db, "方案.docx", paused="busy")["text"] == "转写会议时先停，转写完接着读"
     assert state_for(db, "方案.docx", online=False)["text"] == "资料盘未连接，先看上次读到的"
@@ -222,27 +285,49 @@ def test_every_state_sentence(tmp_path):
     )
     assert state_for(db, "扫描.pdf")["text"] == "读不了：要密码。文件名照样能搜到"
     assert state_for(db, "汇报.key")["text"] == "读不了：格式不支持。文件名照样能搜到"
-    assert state_for(db, "包.zip") == {**state_for(db, "包.zip"), "kind": "names_only", "text": "这种文件只收文件名"}
+    assert state_for(db, "包.zip") == {
+        **state_for(db, "包.zip"),
+        "kind": "names_only",
+        "text": "这种文件只收文件名",
+    }
     assert state_for(db, "声档会议记录/0926 周会.md")["text"] == "声档写的会议卡片，只收文件名"
 
-    for note, text in (("small_image", "图太小，没认字"), ("no_text", "图里没认出字"), ("no_speech", "没听到说话声")):
-        db.execute("UPDATE material_contents SET state = 'done', note = ? WHERE content_key = ?",
-                   (note, key_of(db, "白板.png")))
+    for note, text in (
+        ("small_image", "图太小，没认字"),
+        ("no_text", "图里没认出字"),
+        ("no_speech", "没听到说话声"),
+    ):
+        db.execute(
+            "UPDATE material_contents SET state = 'done', note = ? WHERE content_key = ?",
+            (note, key_of(db, "白板.png")),
+        )
         assert state_for(db, "白板.png")["text"] == text
-    for rel, layer_text in (("方案.docx", "只收了前 20 万字"), ("访谈.m4a", "只转了前 6 小时"),
-                            ("白板.png", "只收了前面一部分")):
-        db.execute("UPDATE material_contents SET state = 'done', note = 'truncated' WHERE content_key = ?",
-                   (key_of(db, rel),))
+    for rel, layer_text in (
+        ("方案.docx", "只收了前 20 万字"),
+        ("访谈.m4a", "只转了前 6 小时"),
+        ("白板.png", "只收了前面一部分"),
+    ):
+        db.execute(
+            "UPDATE material_contents SET state = 'done', note = 'truncated' WHERE content_key = ?",
+            (key_of(db, rel),),
+        )
         assert state_for(db, rel)["text"] == layer_text
-    db.execute("UPDATE material_contents SET state = 'done', note = 'truncated', pages = 300 WHERE content_key = ?",
-               (key_of(db, "扫描.pdf"),))
+    db.execute(
+        "UPDATE material_contents SET state = 'done', note = 'truncated', pages = 300 WHERE content_key = ?",
+        (key_of(db, "扫描.pdf"),),
+    )
     assert state_for(db, "扫描.pdf")["text"] == "只读了前 300 页"
 
     add_meeting(db, "m1", ago=1, title="云图周会")
-    db.execute("UPDATE material_contents SET note = 'meeting_audio', meeting_id = 'm1' WHERE content_key = ?",
-               (key_of(db, "访谈.m4a"),))
+    db.execute(
+        "UPDATE material_contents SET note = 'meeting_audio', meeting_id = 'm1' WHERE content_key = ?",
+        (key_of(db, "访谈.m4a"),),
+    )
     state = state_for(db, "访谈.m4a")
-    assert state["text"] == "这是会议『云图周会』的录音，内容看会议" and state["meeting"] == {"id": "m1", "title": "云图周会"}
+    assert state["text"] == "这是会议『云图周会』的录音，内容看会议" and state["meeting"] == {
+        "id": "m1",
+        "title": "云图周会",
+    }
 
     db.execute("UPDATE material_files SET gone_at = ? WHERE rel_path = '包.zip'", (utc_now(),))
     assert state_for(db, "包.zip")["kind"] == "gone"
@@ -276,7 +361,11 @@ def test_preview_kinds(tmp_path):
     assert pdf["preview"]["kind"] == "pdf" and pdf["preview"]["page_url"].endswith("/page1")
 
     media = preview_of(db, "访谈.m4a")["preview"]
-    assert media["kind"] == "media" and media["playable"] is True and media["media_url"].endswith("/media")
+    assert (
+        media["kind"] == "media"
+        and media["playable"] is True
+        and media["media_url"].endswith("/media")
+    )
     assert media["duration_ms"] == 62_000
     assert media["transcript"] == [
         {"start_ms": 1_000, "end_ms": 31_000, "text": "先讲报价。"},
@@ -286,7 +375,11 @@ def test_preview_kinds(tmp_path):
     assert preview_of(db, "包.zip")["preview"]["kind"] == "none"
     db.execute("UPDATE material_files SET gone_at = ? WHERE rel_path = '方案.docx'", (utc_now(),))
     gone = preview_of(db, "方案.docx")
-    assert gone["file"]["gone"] is True and gone["preview"]["kind"] == "none" and gone["state"]["kind"] == "gone"
+    assert (
+        gone["file"]["gone"] is True
+        and gone["preview"]["kind"] == "none"
+        and gone["state"]["kind"] == "gone"
+    )
 
     offline = preview_of(db, "白板.png", state_of=lambda path: ROOT_VOLUME_OFFLINE)
     assert offline["file"]["root_online"] is False and offline["preview"]["image_url"] is None
@@ -300,10 +393,16 @@ def test_pdf_preview_collapses_adjacent_duplicate_lines(tmp_path):
     index(indexer)
     content.run_round()
     store(
-        db, "扫描重复.pdf",
+        db,
+        "扫描重复.pdf",
         ExtractResult(
             "ok",
-            blocks=[{"loc": "第 1 页", "text": "智研与医米\n智研与医米\n课题审核隔离\n课题审核隔离\n背景说明"}],
+            blocks=[
+                {
+                    "loc": "第 1 页",
+                    "text": "智研与医米\n智研与医米\n课题审核隔离\n课题审核隔离\n背景说明",
+                }
+            ],
             extractor="pdfkit+vision",
         ),
     )
@@ -328,11 +427,17 @@ def test_preview_mentions_deliverables_and_parts(tmp_path):
         (target, utc_now()),
     )
     add_task(db, "t1", meeting_id="m1", project_id="p")
-    db.execute("INSERT INTO deliverables(task_id, kind, url, title, created_at) VALUES ('t1', 'file', ?, '', ?)",
-               (f"{root}/报价.xlsx", utc_now()))
-    result = preview_of(db, "报价.xlsx", quotes=lambda meeting_id, starts: {90_000: "说到报价单"}, can_reveal=True)
+    db.execute(
+        "INSERT INTO deliverables(task_id, kind, url, title, created_at) VALUES ('t1', 'file', ?, '', ?)",
+        (f"{root}/报价.xlsx", utc_now()),
+    )
+    result = preview_of(
+        db, "报价.xlsx", quotes=lambda meeting_id, starts: {90_000: "说到报价单"}, can_reveal=True
+    )
     [mention] = result["mentions"]
-    assert mention["title"] == "报价会" and mention["count"] == 2 and mention["quote"] == "说到报价单"
+    assert (
+        mention["title"] == "报价会" and mention["count"] == 2 and mention["quote"] == "说到报价单"
+    )
     assert mention["audio_url"] == f"/api/media/{audio_id}"
     assert [item["task_id"] for item in result["deliverables"]] == ["t1"]
     assert result["can_reveal"] is True
@@ -352,8 +457,10 @@ def api(tmp_path):
     root.mkdir()
     build_root(root)
     put(root / "录屏.mkv", b"video")
-    db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, ?)",
-               (str(root), utc_now()))
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, ?)",
+        (str(root), utc_now()),
+    )
     run_until_done(MaterialIndexer(db, settings, clock=lambda: 0.0))
     MaterialContent(db, settings, state_of=lambda path: ROOT_ONLINE).run_round()
     fill_states(db)
@@ -364,9 +471,18 @@ def test_coverage_and_unreadable_endpoints(api):
     coverage_payload = api.client.get("/api/materials/coverage", params={"project_id": "p"}).json()
     [item] = coverage_payload["roots"]
     assert item["content"]["done"] == 4 and item["content"]["unreadable"]["password"] == 1
-    listing = api.client.get("/api/materials/unreadable", params={"project_id": "p", "reason": "password"}).json()
-    assert [entry["name"] for entry in listing["items"]] == ["扫描.pdf"] and listing["next_offset"] is None
-    assert api.client.get("/api/materials/unreadable", params={"project_id": "p", "reason": "x"}).status_code == 422
+    listing = api.client.get(
+        "/api/materials/unreadable", params={"project_id": "p", "reason": "password"}
+    ).json()
+    assert [entry["name"] for entry in listing["items"]] == ["扫描.pdf"] and listing[
+        "next_offset"
+    ] is None
+    assert (
+        api.client.get(
+            "/api/materials/unreadable", params={"project_id": "p", "reason": "x"}
+        ).status_code
+        == 422
+    )
 
 
 def test_preview_endpoint(api):
@@ -375,7 +491,9 @@ def test_preview_endpoint(api):
     assert payload["preview"]["lines"] == ["第一行", "第二行"] and payload["can_reveal"] is False
     assert "mentions" in payload and "deliverables" in payload
     assert set(api.client.get(f"/api/materials/files/{target}/preview?parts=preview").json()) == {
-        "file", "state", "preview",
+        "file",
+        "state",
+        "preview",
     }
     assert api.client.get("/api/materials/files/999999/preview").status_code == 404
 
@@ -406,10 +524,17 @@ def test_thumb_page1_and_media_check_paths(api, monkeypatch):
 
     audio = file_id(api.db, "访谈.m4a")
     media = api.client.get(f"/api/materials/files/{audio}/media")
-    assert media.status_code == 200 and media.content == b"audio" and media.headers["content-type"] == "audio/mp4"
+    assert (
+        media.status_code == 200
+        and media.content == b"audio"
+        and media.headers["content-type"] == "audio/mp4"
+    )
     ranged = api.client.get(f"/api/materials/files/{audio}/media", headers={"Range": "bytes=1-2"})
     assert ranged.status_code == 206 and ranged.content == b"ud"
-    assert api.client.get(f"/api/materials/files/{file_id(api.db, '录屏.mkv')}/media").status_code == 415
+    assert (
+        api.client.get(f"/api/materials/files/{file_id(api.db, '录屏.mkv')}/media").status_code
+        == 415
+    )
 
     # 改过的 file_id、不见了的行、换成指到根目录外的符号链接
     assert api.client.get("/api/materials/files/999999/media").status_code == 404

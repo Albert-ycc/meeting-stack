@@ -11,6 +11,7 @@
 - serialize 是白名单：score、prev_json、root_id 和原样的 evidence_json 永远不出接口。
 - links_state：各页面的一句话状态 {kind, text, action}，kind 是 ok、waiting、stopped。
 """
+
 from __future__ import annotations
 
 import json
@@ -97,7 +98,8 @@ _FILE_PROJECT = _FILE_PROJECT_SQL.format(marks="?")
 def _file_union(marks: str) -> str:
     """按文件读的两种提到：字面一半按 file_id，放宽一半按文件所在的项目（活文件由来历规则定）。"""
     return mention_union(
-        literal=f"fm.file_id IN ({marks})", loose=f"r.project_id IN ({_FILE_PROJECT_SQL.format(marks=marks)})"
+        literal=f"fm.file_id IN ({marks})",
+        loose=f"r.project_id IN ({_FILE_PROJECT_SQL.format(marks=marks)})",
     )
 
 
@@ -147,7 +149,11 @@ def _one_per_file(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         key = (row["meeting_id"], row["file_id"])
         kept = best.get(key)
         rank = (row["via"] == "literal", int(row["count"]), int(row["minutes_count"]))
-        if kept is None or rank > (kept["via"] == "literal", int(kept["count"]), int(kept["minutes_count"])):
+        if kept is None or rank > (
+            kept["via"] == "literal",
+            int(kept["count"]),
+            int(kept["minutes_count"]),
+        ):
             best[key] = row
     return [row for row in rows if best[(row["meeting_id"], row["file_id"])] is row]
 
@@ -165,8 +171,13 @@ def meeting_mentions(connection: Any, meeting_id: str, project_id: str) -> list[
         (meeting_id, project_id),
     ).fetchall()
     items = [
-        {**_mention_item(row), "file_id": row["live_id"], "name": row["name"], "rel_path": row["rel_path"],
-         "root_id": row["root_id"]}
+        {
+            **_mention_item(row),
+            "file_id": row["live_id"],
+            "name": row["name"],
+            "rel_path": row["rel_path"],
+            "root_id": row["root_id"],
+        }
         for row in rows
     ]
     return _one_per_file(items)
@@ -237,8 +248,14 @@ def project_edges(connection: Any, project_id: str) -> list[dict[str, Any]]:
     mentions: list[dict[str, Any]] = []
     others: list[dict[str, Any]] = []
     for row in rows:
-        base = {"file_id": row["live_id"], "name": row["name"], "ext": row["ext"], "rel_path": row["rel_path"],
-                "root_id": row["root_id"], "mtime_ns": row["mtime_ns"]}
+        base = {
+            "file_id": row["live_id"],
+            "name": row["name"],
+            "ext": row["ext"],
+            "rel_path": row["rel_path"],
+            "root_id": row["root_id"],
+            "mtime_ns": row["mtime_ns"],
+        }
         if row["kind"] == "mention":
             mentions.append({**_mention_item(row), **base, "kind": "mention"})
             continue
@@ -339,7 +356,9 @@ def file_mention_meetings(
     return result
 
 
-def rejected_file_mentions(connection: Any, file_id: int, limit: int = REJECTED_LIST_LIMIT) -> list[dict[str, Any]]:
+def rejected_file_mentions(
+    connection: Any, file_id: int, limit: int = REJECTED_LIST_LIMIT
+) -> list[dict[str, Any]]:
     """你标过「不是这份文件」的字面提到（文件面板上给［撤销］）。"""
     return [
         {**dict(row), "date": str(row["recording_date"] or row["created_at"] or "")[:10]}
@@ -360,7 +379,9 @@ def _int_or(value: Any, fallback: int) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else fallback
 
 
-def rejected_loose_mentions(connection: Any, file_id: int, limit: int = REJECTED_LIST_LIMIT) -> list[dict[str, Any]]:
+def rejected_loose_mentions(
+    connection: Any, file_id: int, limit: int = REJECTED_LIST_LIMIT
+) -> list[dict[str, Any]]:
     """你标过「不是这份文件」的放宽提到（4b）：过了撤销期，文件面板上那一行的［撤销］发 restore。"""
     rows = connection.execute(
         f"""SELECT r.id AS relation_id, r.meeting_id, r.stem_key, r.at_ms, r.quote, r.evidence_json,
@@ -388,7 +409,9 @@ def rejected_loose_mentions(connection: Any, file_id: int, limit: int = REJECTED
                 # evidence 里的 count 是一共说到几次（hits 最多存 3 处）；旧行没有 count 时按 hits 算
                 "count": max(1, _int_or(row["said_count"], len(hits))),
                 "first_ms": row["at_ms"],
-                "anchors_json": json.dumps([hit.get("at_ms") for hit in hits if isinstance(hit, dict)]),
+                "anchors_json": json.dumps(
+                    [hit.get("at_ms") for hit in hits if isinstance(hit, dict)]
+                ),
                 "minutes_count": 0,
                 "source": "transcript",
                 "picked": 0,
@@ -457,7 +480,11 @@ def edges_of(
     prefix, value = _node(node)
     wanted = set(kinds) & EDGE_KINDS
     file_id = int(value) if prefix == "file" else None
-    group = [int(item) for item in dict.fromkeys([file_id, *(file_group or [])])] if file_id is not None else []
+    group = (
+        [int(item) for item in dict.fromkeys([file_id, *(file_group or [])])]
+        if file_id is not None
+        else []
+    )
     grouped = prefix == "file" and file_group is not None
     group_marks = _marks(group)
     parts: list[str] = []
@@ -588,9 +615,26 @@ def edges_of(
 
 # evidence_json 里能出接口的键；材料一端只给位置（段号、页码），不给文字
 _EVIDENCE_KEYS = (
-    "phrase", "hits", "via", "words", "windows", "meeting", "material", "passage", "terms", "rule",
-    "folder", "days", "ref", "scope", "event_kind", "event_day", "decision_ms", "ordinal",
-    "why_earlier", "why_later",
+    "phrase",
+    "hits",
+    "via",
+    "words",
+    "windows",
+    "meeting",
+    "material",
+    "passage",
+    "terms",
+    "rule",
+    "folder",
+    "days",
+    "ref",
+    "scope",
+    "event_kind",
+    "event_day",
+    "decision_ms",
+    "ordinal",
+    "why_earlier",
+    "why_later",
 )
 _HIDDEN_KEYS = frozenset({"score", "root_id", "prev_json", "text"})
 
@@ -622,7 +666,8 @@ def serialize(row: Any, file: dict[str, Any] | None = None) -> dict[str, Any]:
         "id": data["id"],
         "kind": data["kind"],
         "status": data["status"],
-        "by_you": data["origin"] == "manual" or data["status"] in ("rejected", "confirmed", "resolved"),
+        "by_you": data["origin"] == "manual"
+        or data["status"] in ("rejected", "confirmed", "resolved"),
         "meeting_id": data.get("meeting_id"),
         "at_ms": data.get("at_ms"),
         "task_id": data.get("task_id"),
@@ -644,7 +689,7 @@ SELECT r.id, r.kind, r.task_id, r.decision_id, r.meeting_id, r.at_ms, r.quote, r
        t.title AS task_title, t.status AS task_status,
        d.text AS decision_text, d.start_ms AS decision_ms, d.meeting_id AS decision_meeting_id,
        dm.title AS decision_meeting_title, dm.recording_date AS decision_recording_date,
-       dm.created_at AS decision_created_at, {AUDIO_ID_SQL.format(meeting='dm.id')} AS decision_audio_id,
+       dm.created_at AS decision_created_at, {AUDIO_ID_SQL.format(meeting="dm.id")} AS decision_audio_id,
        c.loc AS passage_loc, c.text AS passage_text
   FROM relations r
   JOIN material_files f ON f.id = {LIVE_ID_SQL} AND f.gone_at IS NULL
@@ -709,13 +754,21 @@ def _question(row: Any, *, for_requirement: bool = False) -> dict[str, Any]:
     item: dict[str, Any] = {
         "relation_id": row["id"],
         "kind": row["kind"],
-        "file": {"id": row["live_id"], "name": row["file_name"], "folder": f"{folder_name}/" if folder_name else ""},
+        "file": {
+            "id": row["live_id"],
+            "name": row["file_name"],
+            "folder": f"{folder_name}/" if folder_name else "",
+        },
         "answers": list(ANSWERS[row["kind"]]),
     }
     if row["kind"] == "produced":
         item["text"] = produced_evidence_text(evidence)
         item["ask"] = f"是任务『{row['task_title'] or ''}』的交付物吗？"
-        item["task"] = {"id": row["task_id"], "title": row["task_title"], "status": row["task_status"]}
+        item["task"] = {
+            "id": row["task_id"],
+            "title": row["task_title"],
+            "status": row["task_status"],
+        }
         item["words"] = [str(word) for word in evidence.get("words") or []]
         return item
     decision_text = row["decision_text"] or row["quote"] or ""
@@ -764,7 +817,9 @@ def task_questions(connection: Any, task_id: str) -> list[dict[str, Any]]:
     return [_question(row) for row in rows]
 
 
-def decision_questions(connection: Any, decision_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+def decision_questions(
+    connection: Any, decision_ids: Sequence[str]
+) -> dict[str, list[dict[str, Any]]]:
     """需求卡：每条决议在问的影响（文件这一边的说法），一条语句；按决议 id 分组。"""
     ids = list(dict.fromkeys(decision_ids))
     result: dict[str, list[dict[str, Any]]] = {decision_id: [] for decision_id in ids}
@@ -838,7 +893,8 @@ def links_state(worker: Any, settings: Any, surface: str, **ids: Any) -> dict[st
     if snap.get("enabled") is False:
         return _state("stopped", LINKS_OFF)
     if surface == "related" and not (
-        getattr(settings, "semantic_enabled", True) and getattr(settings, "material_content_enabled", True)
+        getattr(settings, "semantic_enabled", True)
+        and getattr(settings, "material_content_enabled", True)
     ):
         return _state("stopped", SEMANTIC_OFF)
     if ids.get("offline"):
@@ -847,9 +903,9 @@ def links_state(worker: Any, settings: Any, surface: str, **ids: Any) -> dict[st
         return _state("stopped", LOOSE_FAILED, RETRY_ACTION)
     if surface == "decisions" and ids.get("pair_state") == "failed":
         return _state("stopped", PAIR_FAILED, RETRY_ACTION)
-    pending_llm = (surface == "mentions" and ids.get("mention_state") in ("pending", "running")) or (
-        surface == "decisions" and ids.get("pair_state") in ("pending", "running")
-    )
+    pending_llm = (
+        surface == "mentions" and ids.get("mention_state") in ("pending", "running")
+    ) or (surface == "decisions" and ids.get("pair_state") in ("pending", "running"))
     if pending_llm and snap.get("llm") in _LLM_TEXTS:
         return _state("stopped", _LLM_TEXTS[str(snap["llm"])])
     if snap.get("paused") == "busy" and (pending_llm or ids.get("waiting") or surface == "related"):

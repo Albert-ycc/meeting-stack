@@ -3,6 +3,7 @@
 优先级 P0–P3 只挂在需求上；任务本身不设优先级，展示时从所属需求只读派生（见 tasks.py
 `TaskService.task_summary`）。不做删除需求/删除项目——不要的需求用状态「已搁置」（D12，不镀金）。
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -51,9 +52,7 @@ def _assert_status(status: str) -> None:
 
 
 def _requirement_row(connection: Any, requirement_id: str) -> dict[str, Any]:
-    row = connection.execute(
-        "SELECT * FROM requirements WHERE id=?", (requirement_id,)
-    ).fetchone()
+    row = connection.execute("SELECT * FROM requirements WHERE id=?", (requirement_id,)).fetchone()
     if row is None:
         raise NotFoundError(f"需求不存在：{requirement_id}")
     return dict(row)
@@ -193,7 +192,9 @@ def _requirement_summary(db: Database, requirement: dict[str, Any]) -> dict[str,
     }
 
 
-def _folder_detail(folder_row: dict[str, Any], *, db: Database | None = None, project_id: str | None = None) -> dict[str, Any]:
+def _folder_detail(
+    folder_row: dict[str, Any], *, db: Database | None = None, project_id: str | None = None
+) -> dict[str, Any]:
     path = Path(folder_row["path"])
     stat = folder_stat(path)
     preview_files: list[dict[str, Any]] | None = None
@@ -203,7 +204,11 @@ def _folder_detail(folder_row: dict[str, Any], *, db: Database | None = None, pr
 
         with db.autocommit() as connection:
             indexed = folder_files_from_index(
-                connection, project_id, str(folder_row["path"]), limit=FOLDER_PREVIEW_LIMIT, offset=0
+                connection,
+                project_id,
+                str(folder_row["path"]),
+                limit=FOLDER_PREVIEW_LIMIT,
+                offset=0,
             )
         if indexed is not None:
             preview_files = indexed["items"]
@@ -231,7 +236,8 @@ def get_requirement(task_service: TaskService, requirement_id: str) -> dict[str,
         (requirement_id,),
     )
     detail["folders"] = [
-        _folder_detail(folder_row, db=db, project_id=row.get("project_id")) for folder_row in folder_rows
+        _folder_detail(folder_row, db=db, project_id=row.get("project_id"))
+        for folder_row in folder_rows
     ]
     detail["meetings"] = db.query_all(
         """SELECT m.id, m.title, m.recording_date, m.duration_ms, m.canonical_dir
@@ -416,7 +422,12 @@ def folder_files(
     # 3g：根目录在线、文件名索引扫完时查库，否则照旧读盘
     with db.autocommit() as connection:
         payload = folder_files_from_index(
-            connection, str(folder["project_id"]), str(folder["path"]), limit=limit, offset=offset, state_of=state_of
+            connection,
+            str(folder["project_id"]),
+            str(folder["path"]),
+            limit=limit,
+            offset=offset,
+            state_of=state_of,
         )
     if payload is None:
         payload = list_folder_files(Path(folder["path"]), limit=limit, offset=offset)
@@ -471,15 +482,18 @@ def sync_meeting_requirements(
     )
 
 
-def set_meetings(task_service: TaskService, requirement_id: str, meeting_ids: list[str]) -> dict[str, Any]:
+def set_meetings(
+    task_service: TaskService, requirement_id: str, meeting_ids: list[str]
+) -> dict[str, Any]:
     db = task_service.db
     meeting_ids = dedupe_preserve_order(meeting_ids)
     with db.transaction() as connection:
         _requirement_row(connection, requirement_id)
         for meeting_id in meeting_ids:
-            if connection.execute(
-                "SELECT 1 FROM meetings WHERE id=?", (meeting_id,)
-            ).fetchone() is None:
+            if (
+                connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone()
+                is None
+            ):
                 raise NotFoundError(f"会议不存在：{meeting_id}")
         existing = {
             (requirement_id, row["meeting_id"])
@@ -517,7 +531,9 @@ def add_meeting(task_service: TaskService, requirement_id: str, meeting_id: str)
     return get_requirement(task_service, requirement_id)
 
 
-def remove_meeting(task_service: TaskService, requirement_id: str, meeting_id: str) -> dict[str, Any]:
+def remove_meeting(
+    task_service: TaskService, requirement_id: str, meeting_id: str
+) -> dict[str, Any]:
     db = task_service.db
     with db.transaction() as connection:
         _requirement_row(connection, requirement_id)
@@ -531,7 +547,9 @@ def remove_meeting(task_service: TaskService, requirement_id: str, meeting_id: s
 # ---------------------------------------------------------------- 任务挂靠
 
 
-def attach_tasks(task_service: TaskService, requirement_id: str, task_ids: list[str]) -> dict[str, Any]:
+def attach_tasks(
+    task_service: TaskService, requirement_id: str, task_ids: list[str]
+) -> dict[str, Any]:
     """把已有任务挂到本需求（D7/D8）：任务项目跟着需求项目改，留痕写 task_events。
 
     D24：先去重，再一次性校验全部 task_ids 存在，任一不存在整批 404、不写入任何一条
@@ -549,13 +567,15 @@ def attach_tasks(task_service: TaskService, requirement_id: str, task_ids: list[
             tasks[task_id] = dict(task_row)
         for task_id in task_ids:
             task = tasks[task_id]
-            resolved_requirement_id, resolved_project_id, event_body = resolve_requirement_and_project(
-                connection,
-                task,
-                requirement_id_given=True,
-                requirement_id=requirement_id,
-                project_id_given=False,
-                project_id=None,
+            resolved_requirement_id, resolved_project_id, event_body = (
+                resolve_requirement_and_project(
+                    connection,
+                    task,
+                    requirement_id_given=True,
+                    requirement_id=requirement_id,
+                    project_id_given=False,
+                    project_id=None,
+                )
             )
             if resolved_requirement_id == task.get("requirement_id"):
                 continue

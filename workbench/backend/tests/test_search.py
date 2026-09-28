@@ -1,4 +1,5 @@
 """1e 检索：纪要可搜、词典同义展开、项目范围和没归项目的会、原词命中和意思相近的分开列。"""
+
 import json
 
 import numpy as np
@@ -42,8 +43,13 @@ def add_meeting(db, meeting_id, *, date, project_id=None, title="周会", segmen
         version,
         meeting_id,
         [
-            {"id": f"{meeting_id}-s{index}", "ordinal": index, "start_ms": index * 1000,
-             "end_ms": index * 1000 + 900, "text": text}
+            {
+                "id": f"{meeting_id}-s{index}",
+                "ordinal": index,
+                "start_ms": index * 1000,
+                "end_ms": index * 1000 + 900,
+                "text": text,
+            }
             for index, text in enumerate(segments or ["开场"])
         ],
     )
@@ -63,15 +69,26 @@ def add_term(db, term, aliases=(), *, also=(), project_id=None, scope="通用"):
     db.execute(
         """INSERT INTO glossary_terms(id, term, aliases, also, scope, project_id, confirmed, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)""",
-        (f"t-{term}", term, json.dumps(list(aliases), ensure_ascii=False),
-         json.dumps(list(also), ensure_ascii=False), scope, project_id, utc_now(), utc_now()),
+        (
+            f"t-{term}",
+            term,
+            json.dumps(list(aliases), ensure_ascii=False),
+            json.dumps(list(also), ensure_ascii=False),
+            scope,
+            project_id,
+            utc_now(),
+            utc_now(),
+        ),
     )
 
 
 def test_words_only_in_minutes_are_found_with_the_nearest_timestamp(tmp_path):
     app, db = make_app(tmp_path)
     add_meeting(
-        db, "vm-1", date="2026-09-26", segments=["大家好", "下周上线"],
+        db,
+        "vm-1",
+        date="2026-09-26",
+        segments=["大家好", "下周上线"],
         minutes="# 初审规则\n\n## 一分钟摘要\n\n- 阈值先按 0.8 执行 [00:12:34]，由月总牵头 [00:20:00]\n- 月总负责对接\n",
     )
 
@@ -115,7 +132,9 @@ def test_search_expands_to_recorded_wrong_spellings_but_not_two_character_ones(t
     body = client.get("/api/search", params={"q": "数理协会"}).json()
     assert body["expanded"] == ["树立协会"]
     assert body["expand_hints"] == ["数协"]
-    assert [(item["segment_id"], item["matched"]) for item in body["items"]] == [("vm-1-s0", "树立协会")]
+    assert [(item["segment_id"], item["matched"]) for item in body["items"]] == [
+        ("vm-1-s0", "树立协会")
+    ]
 
     short = client.get("/api/search", params={"q": "随访"}).json()
     assert short["expanded"] == []
@@ -160,27 +179,43 @@ def test_project_scope_uses_that_projects_terms_and_counts_unattributed_hits(tmp
     assert in_yt["expanded"] == []
     assert [item["meeting_id"] for item in in_yt["items"]] == ["vm-yt"]
 
-    unattributed = client.get("/api/search", params={"q": "主数据平台", "project_id": "none"}).json()
+    unattributed = client.get(
+        "/api/search", params={"q": "主数据平台", "project_id": "none"}
+    ).json()
     assert {item["meeting_id"] for item in unattributed["items"]} == {"vm-none"}
     assert "unattributed_hits" not in unattributed
 
     everything = client.get("/api/search", params={"q": "主数据平台"}).json()
-    assert [item["meeting_id"] for item in everything["items"]] == ["vm-none", "vm-none", "vm-zt", "vm-yt"]
+    assert [item["meeting_id"] for item in everything["items"]] == [
+        "vm-none",
+        "vm-none",
+        "vm-zt",
+        "vm-yt",
+    ]
     assert "unattributed_hits" not in everything
 
-    assert client.get("/api/search", params={"q": "主数据", "project_id": "p-gone"}).status_code == 404
+    assert (
+        client.get("/api/search", params={"q": "主数据", "project_id": "p-gone"}).status_code == 404
+    )
 
 
 def test_one_meeting_cannot_flood_the_results(tmp_path):
     app, db = make_app(tmp_path)
     add_meeting(
-        db, "vm-busy", date="2026-09-26", title="灰度方案评审",
+        db,
+        "vm-busy",
+        date="2026-09-26",
+        title="灰度方案评审",
         segments=[f"灰度方案第 {index} 条" for index in range(8)],
         minutes="\n".join(f"- 灰度方案要点 {index}" for index in range(5)),
     )
     add_meeting(db, "vm-old", date="2026-09-01", segments=["灰度方案回顾"])
 
-    items = TestClient(app).get("/api/search", params={"q": "灰度方案", "mode": "exact"}).json()["items"]
+    items = (
+        TestClient(app)
+        .get("/api/search", params={"q": "灰度方案", "mode": "exact"})
+        .json()["items"]
+    )
 
     assert [(item["meeting_id"], item["match_kind"]) for item in items] == [
         ("vm-busy", "title"),
@@ -193,20 +228,48 @@ def test_one_meeting_cannot_flood_the_results(tmp_path):
     ]
 
 
-def test_hybrid_lists_similar_segments_separately_and_skips_what_is_already_listed(tmp_path, monkeypatch):
+def test_hybrid_lists_similar_segments_separately_and_skips_what_is_already_listed(
+    tmp_path, monkeypatch
+):
     app, db = make_app(tmp_path, semantic_enabled=True)
     add_project(db, "p-yt", "云图AI")
-    add_meeting(db, "vm-1", date="2026-09-26", project_id="p-yt", segments=["随访方案发给研发", "复诊安排"])
+    add_meeting(
+        db, "vm-1", date="2026-09-26", project_id="p-yt", segments=["随访方案发给研发", "复诊安排"]
+    )
     add_meeting(db, "vm-2", date="2026-09-25", segments=["回访计划"])
     semantic = app.state.semantic
     monkeypatch.setattr(semantic, "busy_check", lambda: False)
 
     def fake_search_vector(vector, *, scope=None, limit=20):
         rows = [
-            {"segment_id": "vm-1-s0", "meeting_id": "vm-1", "project_id": "p-yt", "score": 0.9, "text": "随访方案发给研发"},
-            {"segment_id": "vm-1-s1", "meeting_id": "vm-1", "project_id": "p-yt", "score": 0.7, "text": "复诊安排"},
-            {"segment_id": "vm-2-s0", "meeting_id": "vm-2", "project_id": None, "score": 0.6, "text": "回访计划"},
-            {"segment_id": "vm-x", "meeting_id": "vm-2", "project_id": None, "score": 0.2, "text": "无关"},
+            {
+                "segment_id": "vm-1-s0",
+                "meeting_id": "vm-1",
+                "project_id": "p-yt",
+                "score": 0.9,
+                "text": "随访方案发给研发",
+            },
+            {
+                "segment_id": "vm-1-s1",
+                "meeting_id": "vm-1",
+                "project_id": "p-yt",
+                "score": 0.7,
+                "text": "复诊安排",
+            },
+            {
+                "segment_id": "vm-2-s0",
+                "meeting_id": "vm-2",
+                "project_id": None,
+                "score": 0.6,
+                "text": "回访计划",
+            },
+            {
+                "segment_id": "vm-x",
+                "meeting_id": "vm-2",
+                "project_id": None,
+                "score": 0.2,
+                "text": "无关",
+            },
         ]
         # 3f：范围在取前 60 之前就过滤掉
         if scope == "none":
@@ -237,7 +300,9 @@ def test_search_still_answers_while_transcribing_or_without_the_model(tmp_path, 
     semantic = app.state.semantic
     calls = []
     monkeypatch.setattr(semantic, "busy_check", lambda: True)
-    monkeypatch.setattr(semantic, "encode_query", lambda query: calls.append(query) or np.ones(4, dtype=np.float32))
+    monkeypatch.setattr(
+        semantic, "encode_query", lambda query: calls.append(query) or np.ones(4, dtype=np.float32)
+    )
     monkeypatch.setattr(semantic, "search_vector", lambda vector, *, scope=None, limit=20: [])
     client = TestClient(app)
 

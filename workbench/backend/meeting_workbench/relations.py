@@ -17,6 +17,7 @@
 - 4d：相关材料栏里还没连成线的一条点［不相关］时新建 origin manual 的 rejected 行（reject_related）；
   这种行撤销、改回相关时整行删掉，回到「没说过」；vector 行改回 shown。
 """
+
 from __future__ import annotations
 
 import json
@@ -62,7 +63,16 @@ FROM_COLUMN = {
 }
 FILE_KINDS = ("mention", "related", "produced", "affects")
 # 回答能改的列（prev_json 只记这几列里这次改了的）
-_ANSWER_COLUMNS = ("status", "origin", "file_id", "content_key", "root_id", "rel_path", "deliverable_id", "decided_at")
+_ANSWER_COLUMNS = (
+    "status",
+    "origin",
+    "file_id",
+    "content_key",
+    "root_id",
+    "rel_path",
+    "deliverable_id",
+    "decided_at",
+)
 _SCOPE_COLUMNS = ("meeting_id", "task_id", "decision_id", "to_decision_id", "content_key")
 _ZONES_SQL = ", ".join(f"'{zone}'" for zone in MATCH_ZONES)
 
@@ -152,7 +162,9 @@ def _params(row: dict[str, Any], now: str, since: str) -> dict[str, Any]:
     }
 
 
-def literal_mention_exists(connection: Any, meeting_id: str, project_id: str, stem_key: str) -> bool:
+def literal_mention_exists(
+    connection: Any, meeting_id: str, project_id: str, stem_key: str
+) -> bool:
     """meeting_file_mentions 里同一 (会议, 项目, 词干) 已经有行（不管什么状态）。"""
     return (
         connection.execute(
@@ -170,8 +182,12 @@ def upsert_system(connection: Any, rows: Iterable[dict[str, Any]], now: str, *, 
     written = 0
     for row in rows:
         kind = row["kind"]
-        if kind == "mention" and row.get("stem_key") and literal_mention_exists(
-            connection, row.get("meeting_id"), row["project_id"], row["stem_key"]
+        if (
+            kind == "mention"
+            and row.get("stem_key")
+            and literal_mention_exists(
+                connection, row.get("meeting_id"), row["project_id"], row["stem_key"]
+            )
         ):
             continue
         if (
@@ -333,7 +349,9 @@ def _pick_target(connection: Any, row: dict[str, Any], file_id: Any) -> dict[str
     return dict(target)
 
 
-def _task_deliverable(connection: Any, task_id: str, file: dict[str, Any], content_key: str | None) -> int | None:
+def _task_deliverable(
+    connection: Any, task_id: str, file: dict[str, Any], content_key: str | None
+) -> int | None:
     """这份文件已经是这条任务的交付物：按内容标识、按位置，旧的手填路径也算。"""
     found = connection.execute(
         """SELECT d.id FROM deliverables d
@@ -363,7 +381,9 @@ def _file_of(connection: Any, row: dict[str, Any]) -> dict[str, Any] | None:
         return {"id": live["id"], "name": live["name"]}
     if row["file_id"] is None:
         return None
-    found = connection.execute("SELECT id, name FROM material_files WHERE id = ?", (row["file_id"],)).fetchone()
+    found = connection.execute(
+        "SELECT id, name FROM material_files WHERE id = ?", (row["file_id"],)
+    ).fetchone()
     return {"id": found["id"], "name": found["name"]} if found is not None else None
 
 
@@ -404,7 +424,9 @@ def answer(connection: Any, relation_id: int, body: dict[str, Any], now: str) ->
         # 换文件时连原来的文件一起记，撤销时整个换回来
         remember = ("origin", "file_id", "content_key", "root_id", "rel_path")
     elif choice == "yes":
-        task = connection.execute("SELECT status FROM tasks WHERE id = ?", (row["task_id"],)).fetchone()
+        task = connection.execute(
+            "SELECT status FROM tasks WHERE id = ?", (row["task_id"],)
+        ).fetchone()
         if task is not None and task["status"] in ("cancelled", "expired"):
             raise RelationError(409, TASK_CANCELLED)
         if task is not None and task["status"] == "pending_confirm":
@@ -465,7 +487,9 @@ def undo(connection: Any, relation_id: int, now: str) -> dict[str, Any]:
         raise RelationError(409, LEFT_PROJECT)
     if not row["prev_json"]:
         raise RelationError(409, UNDONE)
-    if row["decided_at"] and _parse(now) > _parse(row["decided_at"]) + timedelta(seconds=UNDO_WINDOW_SECONDS):
+    if row["decided_at"] and _parse(now) > _parse(row["decided_at"]) + timedelta(
+        seconds=UNDO_WINDOW_SECONDS
+    ):
         raise RelationError(409, UNDO_EXPIRED)
     if _manual_related(row):
         # 4d：你手动建的「不相关」行（栏里那一条还没连成线），撤销时整行删掉
@@ -483,7 +507,10 @@ def undo(connection: Any, relation_id: int, now: str) -> dict[str, Any]:
         [*restore.values(), now, relation_id],
     )
     fresh = _row(connection, relation_id)
-    return {"relation": serialize(fresh, _file_of(connection, fresh)), "removed_deliverable_id": removed}
+    return {
+        "relation": serialize(fresh, _file_of(connection, fresh)),
+        "removed_deliverable_id": removed,
+    }
 
 
 def _manual_related(row: dict[str, Any]) -> bool:
@@ -495,7 +522,12 @@ def _drop_manual(connection: Any, row: dict[str, Any], now: str) -> dict[str, An
     file = _file_of(connection, row)
     connection.execute("DELETE FROM relations WHERE id = ?", (row["id"],))
     gone = {**row, "status": "shown", "decided_at": None, "updated_at": now}
-    return {"relation": serialize(gone, file), "undo_until": None, "deliverable_id": None, "deleted": True}
+    return {
+        "relation": serialize(gone, file),
+        "undo_until": None,
+        "deliverable_id": None,
+        "deleted": True,
+    }
 
 
 def reject_related(
@@ -504,7 +536,9 @@ def reject_related(
     """相关材料栏的［不相关］（POST /api/meetings/{id}/related-materials/reject）：身份是（会，文件内容）。
     已经有行就按 answer(no) 办；没有行（这一条只在窗里，没连成线）就新建一行 origin manual、status
     rejected，同时记 root_id、rel_path（原地改过也挡）。"""
-    meeting = connection.execute("SELECT id, project_id FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+    meeting = connection.execute(
+        "SELECT id, project_id FROM meetings WHERE id = ?", (meeting_id,)
+    ).fetchone()
     if meeting is None:
         raise RelationError(404, MEETING_GONE)
     if not meeting["project_id"]:
@@ -521,7 +555,8 @@ def reject_related(
     project_id = str(meeting["project_id"])
     ident = f"{meeting_id}|{content_key}"
     existing = connection.execute(
-        "SELECT * FROM relations WHERE kind = 'related' AND project_id = ? AND ident = ?", (project_id, ident)
+        "SELECT * FROM relations WHERE kind = 'related' AND project_id = ? AND ident = ?",
+        (project_id, ident),
     ).fetchone()
     if existing is not None:
         row = dict(existing)
@@ -537,20 +572,35 @@ def reject_related(
             (now, canonical(prev), now, file["root_id"], file["rel_path"], row["id"]),
         )
         fresh = _row(connection, int(row["id"]))
-        return {"relation": serialize(fresh, _file_of(connection, fresh)), "undo_until": undo_until(now),
-                "deliverable_id": None}
+        return {
+            "relation": serialize(fresh, _file_of(connection, fresh)),
+            "undo_until": undo_until(now),
+            "deliverable_id": None,
+        }
     cursor = connection.execute(
         """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id, content_key, root_id, rel_path,
                file_id, quote, evidence_json, prev_json, decided_at, created_at, updated_at)
            VALUES ('related', ?, ?, 'rejected', 'manual', ?, ?, ?, ?, ?, '', '{}', ?, ?, ?, ?)""",
         (
-            project_id, ident, meeting_id, content_key, file["root_id"], file["rel_path"], file["id"],
-            canonical({"created": True}), now, now, now,
+            project_id,
+            ident,
+            meeting_id,
+            content_key,
+            file["root_id"],
+            file["rel_path"],
+            file["id"],
+            canonical({"created": True}),
+            now,
+            now,
+            now,
         ),
     )
     fresh = _row(connection, int(cursor.lastrowid))
-    return {"relation": serialize(fresh, _file_of(connection, fresh)), "undo_until": undo_until(now),
-            "deliverable_id": None}
+    return {
+        "relation": serialize(fresh, _file_of(connection, fresh)),
+        "undo_until": undo_until(now),
+        "deliverable_id": None,
+    }
 
 
 # ---------------------------------------------------------------------- 合并项目
@@ -568,7 +618,8 @@ def repoint_project(connection: Any, src: str, dst: str, now: str) -> dict[str, 
         (dst, src),
     )
     moved = connection.execute(
-        "UPDATE OR IGNORE relations SET project_id = ?, updated_at = ? WHERE project_id = ?", (dst, now, src)
+        "UPDATE OR IGNORE relations SET project_id = ?, updated_at = ? WHERE project_id = ?",
+        (dst, now, src),
     ).rowcount
     connection.execute("DELETE FROM relations WHERE project_id = ?", (src,))
     # 2d 的字面提到（连同「不是这份文件」和你换过的 picked=1）：以前 UPDATE meetings 先触发离开项目，

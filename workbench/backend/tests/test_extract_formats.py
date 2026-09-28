@@ -1,4 +1,5 @@
 """第三期 3b：各格式的正文读取、读不了的五种原因、上限。直接调读取进程的 handle，不起子进程。"""
+
 import codecs
 import json
 import os
@@ -30,7 +31,13 @@ from .material_fixtures import (
 
 
 def read(path: Path, ext: str | None = None) -> dict:
-    return handle({"path": str(path), "ext": ext if ext is not None else path.suffix.lstrip("."), "layer": "text"})
+    return handle(
+        {
+            "path": str(path),
+            "ext": ext if ext is not None else path.suffix.lstrip("."),
+            "layer": "text",
+        }
+    )
 
 
 def texts(answer: dict) -> list[str]:
@@ -45,17 +52,24 @@ def locs(answer: dict) -> list:
 
 
 def test_plain_text_encodings(tmp_path):
-    assert texts(read(write_bytes(tmp_path / "a.txt", "第一段\n\n第二段".encode())))== ["第一段", "第二段"]
+    assert texts(read(write_bytes(tmp_path / "a.txt", "第一段\n\n第二段".encode()))) == [
+        "第一段",
+        "第二段",
+    ]
     gbk = write_bytes(tmp_path / "gbk.txt", "中文 Windows 存的报价单".encode("gbk"))
     assert texts(read(gbk)) == ["中文 Windows 存的报价单"]
-    utf16 = write_bytes(tmp_path / "u16.txt", codecs.BOM_UTF16_LE + "带 BOM 的文字".encode("utf-16-le"))
+    utf16 = write_bytes(
+        tmp_path / "u16.txt", codecs.BOM_UTF16_LE + "带 BOM 的文字".encode("utf-16-le")
+    )
     assert texts(read(utf16)) == ["带 BOM 的文字"]
     sig = write_bytes(tmp_path / "sig.md", codecs.BOM_UTF8 + "# 标题".encode())
     assert texts(read(sig)) == ["# 标题"]
     broken = write_bytes(tmp_path / "broken.log", b"ok \xff\xfe\xfd end")
     answer = read(broken)
     assert answer["status"] == "ok" and "ok" in texts(answer)[0]
-    code = write_bytes(tmp_path / "main.py", b"def main():\n    return '\xe6\x8a\xa5\xe4\xbb\xb7'\n")
+    code = write_bytes(
+        tmp_path / "main.py", b"def main():\n    return '\xe6\x8a\xa5\xe4\xbb\xb7'\n"
+    )
     assert "报价" in texts(read(code))[0]
 
 
@@ -84,10 +98,17 @@ def test_ipynb_takes_sources_and_text_outputs(tmp_path):
     notebook = {
         "cells": [
             {"cell_type": "markdown", "source": ["# 分析\n", "结论"]},
-            {"cell_type": "code", "source": "print(1)", "outputs": [
-                {"output_type": "stream", "text": ["1\n"]},
-                {"output_type": "display_data", "data": {"image/png": "AAAA", "text/plain": ["<Figure>"]}},
-            ]},
+            {
+                "cell_type": "code",
+                "source": "print(1)",
+                "outputs": [
+                    {"output_type": "stream", "text": ["1\n"]},
+                    {
+                        "output_type": "display_data",
+                        "data": {"image/png": "AAAA", "text/plain": ["<Figure>"]},
+                    },
+                ],
+            },
         ]
     }
     answer = read(write_bytes(tmp_path / "a.ipynb", json.dumps(notebook).encode()))
@@ -105,7 +126,12 @@ def test_html_skips_script_and_uses_meta_charset(tmp_path):
 
 
 def test_html_saved_as_doc_is_read_as_html(tmp_path):
-    answer = read(write_bytes(tmp_path / "系统导出.doc", "<html><body><p>网上系统导出的文档</p></body></html>".encode()))
+    answer = read(
+        write_bytes(
+            tmp_path / "系统导出.doc",
+            "<html><body><p>网上系统导出的文档</p></body></html>".encode(),
+        )
+    )
     assert texts(answer) == ["网上系统导出的文档"]
 
 
@@ -120,7 +146,7 @@ def test_eml_and_mht(tmp_path):
     assert texts(answer) == ["周会纪要", "正文第一段", "正文第二段"]
     assert locs(answer)[0] == "主题"
     mht = (
-        "MIME-Version: 1.0\nContent-Type: multipart/related; boundary=\"x\"\n\n"
+        'MIME-Version: 1.0\nContent-Type: multipart/related; boundary="x"\n\n'
         "--x\nContent-Type: text/html; charset=utf-8\n\n<html><body><p>网页存档</p></body></html>\n--x--\n"
     )
     assert texts(read(write_bytes(tmp_path / "a.mht", mht.encode()))) == ["网页存档"]
@@ -130,8 +156,13 @@ def test_eml_and_mht(tmp_path):
 
 
 def test_docx_body_header_footnote_comment(tmp_path):
-    path = build_docx(tmp_path / "方案.docx", ["第一段", "第二段"], header="页眉文字", footnote="脚注文字",
-                      comment="批注文字")
+    path = build_docx(
+        tmp_path / "方案.docx",
+        ["第一段", "第二段"],
+        header="页眉文字",
+        footnote="脚注文字",
+        comment="批注文字",
+    )
     answer = read(path)
     assert answer["status"] == "ok"
     assert texts(answer) == ["第一段", "第二段", "甲\t乙\n丙", "页眉文字", "脚注文字", "批注文字"]
@@ -139,8 +170,13 @@ def test_docx_body_header_footnote_comment(tmp_path):
 
 
 def test_xlsx_sheets_cells_numbers_and_limits(tmp_path, monkeypatch):
-    path = build_xlsx(tmp_path / "预算.xlsx", [("预算", [["项目", "金额"], ["服务器", 12000], ["差旅", 3500.5]]),
-                                               ("备注", [["说明", None, "第三列"]])])
+    path = build_xlsx(
+        tmp_path / "预算.xlsx",
+        [
+            ("预算", [["项目", "金额"], ["服务器", 12000], ["差旅", 3500.5]]),
+            ("备注", [["说明", None, "第三列"]]),
+        ],
+    )
     answer = read(path)
     assert texts(answer) == ["项目\t金额\n服务器\t12000\n差旅\t3500.5", "说明\t\t第三列"]
     assert locs(answer) == ["表「预算」", "表「备注」"]
@@ -150,7 +186,11 @@ def test_xlsx_sheets_cells_numbers_and_limits(tmp_path, monkeypatch):
 
 
 def test_pptx_slide_order_and_notes(tmp_path):
-    path = build_pptx(tmp_path / "汇报.pptx", [["封面", "云图AI"], ["进度"], ["下一步"]], notes={2: "讲到这里停一下"})
+    path = build_pptx(
+        tmp_path / "汇报.pptx",
+        [["封面", "云图AI"], ["进度"], ["下一步"]],
+        notes={2: "讲到这里停一下"},
+    )
     answer = read(path)
     assert texts(answer) == ["封面\n云图AI", "进度", "讲到这里停一下", "下一步"]
     assert locs(answer) == ["第 1 页", "第 2 页", "第 2 页 备注", "第 3 页"]
@@ -163,14 +203,17 @@ def test_odt_epub_and_their_password_marks(tmp_path):
     assert read(build_odt(tmp_path / "b.odt", ["x"], encrypted=True))["status"] == "password"
     answer = read(build_epub(tmp_path / "书.epub", ["第一章", "第二章"]))
     assert texts(answer) == ["第一章", "第二章"]
-    locked = write_zip(tmp_path / "锁.epub", {
-        "mimetype": "application/epub+zip",
-        "META-INF/container.xml": "<container/>",
-        "META-INF/encryption.xml": '<encryption xmlns:enc="http://www.w3.org/2001/04/xmlenc#">'
-        '<enc:EncryptedData><enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/>'
-        '<enc:CipherData><enc:CipherReference URI="OEBPS/ch1.xhtml"/></enc:CipherData></enc:EncryptedData>'
-        "</encryption>",
-    })
+    locked = write_zip(
+        tmp_path / "锁.epub",
+        {
+            "mimetype": "application/epub+zip",
+            "META-INF/container.xml": "<container/>",
+            "META-INF/encryption.xml": '<encryption xmlns:enc="http://www.w3.org/2001/04/xmlenc#">'
+            '<enc:EncryptedData><enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/>'
+            '<enc:CipherData><enc:CipherReference URI="OEBPS/ch1.xhtml"/></enc:CipherData></enc:EncryptedData>'
+            "</encryption>",
+        },
+    )
     assert read(locked)["status"] == "password"
 
 
@@ -187,15 +230,25 @@ def test_zip_limits_declared_and_real_size(tmp_path, monkeypatch):
 
 def test_broken_packages_are_corrupt_only_on_parse_failure(tmp_path):
     assert read(write_bytes(tmp_path / "坏.docx", b"PK\x03\x04 broken"))["status"] == "corrupt"
-    assert read(write_zip(tmp_path / "缺.docx", {"[Content_Types].xml": "<Types/>"}))["status"] == "corrupt"
-    bad_xml = write_zip(tmp_path / "xml.docx", {"[Content_Types].xml": "<Types/>",
-                                                "word/document.xml": "<w:document><w:p>"})
+    assert (
+        read(write_zip(tmp_path / "缺.docx", {"[Content_Types].xml": "<Types/>"}))["status"]
+        == "corrupt"
+    )
+    bad_xml = write_zip(
+        tmp_path / "xml.docx",
+        {"[Content_Types].xml": "<Types/>", "word/document.xml": "<w:document><w:p>"},
+    )
     assert read(bad_xml)["status"] == "corrupt"
-    assert read(write_zip(tmp_path / "其实是压缩包.txt", {"a.bin": b"x"}))["status"] == "unsupported"
+    assert (
+        read(write_zip(tmp_path / "其实是压缩包.txt", {"a.bin": b"x"}))["status"] == "unsupported"
+    )
 
 
 def test_iwork_is_unsupported(tmp_path):
-    assert read(write_zip(tmp_path / "总结.pages", {"Index/Document.iwa": b"x"}))["status"] == "unsupported"
+    assert (
+        read(write_zip(tmp_path / "总结.pages", {"Index/Document.iwa": b"x"}))["status"]
+        == "unsupported"
+    )
     package = tmp_path / "演示.key"
     package.mkdir()
     (package / "Index.zip").write_bytes(b"PK")
@@ -204,7 +257,12 @@ def test_iwork_is_unsupported(tmp_path):
 
 def test_pdf_in_disguise_asks_to_change_layer(tmp_path):
     answer = read(write_bytes(tmp_path / "合同.doc", b"%PDF-1.7\n..."))
-    assert answer == {"status": "relayer", "layer": "pdf", "extractor": "stdlib", "extractor_version": 1}
+    assert answer == {
+        "status": "relayer",
+        "layer": "pdf",
+        "extractor": "stdlib",
+        "extractor_version": 1,
+    }
 
 
 # ---------------------------------------------------------------------- 老 Office
@@ -232,7 +290,9 @@ def test_et_saved_by_wps_reads_like_xls(tmp_path):
 
 
 def test_ppt_slides_notes_and_password(tmp_path):
-    answer = read(build_ppt(tmp_path / "旧.ppt", [["封面"], ["第二页", "要点"]], notes=["notes text"]))
+    answer = read(
+        build_ppt(tmp_path / "旧.ppt", [["封面"], ["第二页", "要点"]], notes=["notes text"])
+    )
     assert texts(answer) == ["封面", "第二页\n要点", "notes text"]
     assert locs(answer) == ["第 1 页", "第 2 页", "备注"]
     assert read(build_ppt(tmp_path / "锁.dps", [["x"]], encrypted=True))["status"] == "password"
@@ -259,7 +319,9 @@ def test_textutil_empty_output_is_done_and_failure_is_corrupt(tmp_path, monkeypa
     monkeypatch.setenv("MEETING_WORKBENCH_TEXTUTIL", str(fake_textutil(tmp_path / "empty")))
     answer = read(build_doc(tmp_path / "扫描件.doc"))
     assert answer["status"] == "ok" and answer["blocks"] == []
-    monkeypatch.setenv("MEETING_WORKBENCH_TEXTUTIL", str(fake_textutil(tmp_path / "fail", exit_code=1)))
+    monkeypatch.setenv(
+        "MEETING_WORKBENCH_TEXTUTIL", str(fake_textutil(tmp_path / "fail", exit_code=1))
+    )
     assert read(build_doc(tmp_path / "坏.doc"))["status"] == "corrupt"
 
 
@@ -280,8 +342,16 @@ def test_textutil_timeout(tmp_path, monkeypatch):
 
 def test_encrypted_ooxml_and_unknown_cfb(tmp_path):
     assert read(build_encrypted_ooxml(tmp_path / "锁.xlsx"))["status"] == "password"
-    assert read(write_bytes(tmp_path / "x.ppt", build_cfb({"Other": b"x" * 100})))["status"] == "unsupported"
-    assert read(write_bytes(tmp_path / "坏.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 64))["status"] == "corrupt"
+    assert (
+        read(write_bytes(tmp_path / "x.ppt", build_cfb({"Other": b"x" * 100})))["status"]
+        == "unsupported"
+    )
+    assert (
+        read(write_bytes(tmp_path / "坏.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 64))[
+            "status"
+        ]
+        == "corrupt"
+    )
 
 
 # ---------------------------------------------------------------------- 权限、IO、上限
@@ -325,8 +395,12 @@ def test_200k_char_cap_and_2mb_answer_cap(tmp_path, monkeypatch):
     paragraphs = "\n\n".join(f"第{i}段文字" for i in range(20))
     answer = read(write_bytes(tmp_path / "长.txt", paragraphs.encode()))
     assert answer["chars"] == 30 and answer["truncated"] is True
-    big = {"status": "ok", "blocks": [{"loc": None, "text": "字" * 1000} for _ in range(10)], "chars": 10000,
-           "truncated": False}
+    big = {
+        "status": "ok",
+        "blocks": [{"loc": None, "text": "字" * 1000} for _ in range(10)],
+        "chars": 10000,
+        "truncated": False,
+    }
     fitted = fit_answer(big, limit=5000)
     assert len(json.dumps(fitted, ensure_ascii=False).encode()) <= 5000
     assert fitted["truncated"] is True and fitted["chars"] == 1000 * len(fitted["blocks"])

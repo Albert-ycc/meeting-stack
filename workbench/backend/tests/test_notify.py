@@ -1,4 +1,5 @@
 """飞书通知通道与任务通知调度测试（260804 新增）。"""
+
 import json
 import shlex
 import subprocess
@@ -243,8 +244,11 @@ def test_cli_channel_enabled_and_sends(tmp_path, monkeypatch):
 
     monkeypatch.setattr(LarkNotifier, "_tmux_run", fake_tmux)
     notifier = LarkNotifier(
-        db, webhook_url="", public_base_url="http://x",
-        chat_id="oc_test123", lark_cli_bin="lark-cli",
+        db,
+        webhook_url="",
+        public_base_url="http://x",
+        chat_id="oc_test123",
+        lark_cli_bin="lark-cli",
     )
     assert notifier.enabled
     tasks = draft_tasks(11)
@@ -285,7 +289,10 @@ def test_cli_channel_failure_not_recorded(tmp_path, monkeypatch):
 
     monkeypatch.setattr(LarkNotifier, "_tmux_run", fail_tmux)
     notifier = LarkNotifier(
-        db, webhook_url="", public_base_url="http://x", chat_id="oc_test123",
+        db,
+        webhook_url="",
+        public_base_url="http://x",
+        chat_id="oc_test123",
     )
     assert not notifier.task_draft(12, meeting_title="会", tasks=draft_tasks(12))
     assert not notifier._sent("draft", "12")
@@ -400,9 +407,10 @@ def test_direct_app_long_minutes_first_card_failure_not_recorded(tmp_path, monke
 
     monkeypatch.setattr("meeting_workbench.notify.urllib_request.urlopen", fake_urlopen)
 
-    assert notifier.minutes_ready(
-        "mv-fail-first", meeting_title="超长会", markdown=long_markdown
-    ) is False
+    assert (
+        notifier.minutes_ready("mv-fail-first", meeting_title="超长会", markdown=long_markdown)
+        is False
+    )
     assert not notifier._sent("minutes", "mv-fail-first")
 
 
@@ -579,7 +587,10 @@ def test_minutes_ready_card_content_and_idempotency(tmp_path, monkeypatch):
 
     monkeypatch.setattr(LarkNotifier, "_tmux_run", fake_tmux)
     notifier = LarkNotifier(
-        db, webhook_url="", public_base_url="http://x", chat_id="oc_test123",
+        db,
+        webhook_url="",
+        public_base_url="http://x",
+        chat_id="oc_test123",
     )
     sent = notifier.minutes_ready(
         "mv-1",
@@ -647,7 +658,13 @@ def test_task_cards_show_read_only_project_line():
     """任务卡和确认后重建的卡都有一行只读项目信息；没项目时说还没定。"""
     from meeting_workbench.notify import build_task_draft_card, build_task_status_card
 
-    task = {"id": "task-1", "title": "对齐接口", "assignee": "ai", "anchor_ms": None, "extraction_id": 1}
+    task = {
+        "id": "task-1",
+        "title": "对齐接口",
+        "assignee": "ai",
+        "anchor_ms": None,
+        "extraction_id": 1,
+    }
     draft = build_task_draft_card(meeting_title="需求会", tasks=[task], project_name="云图科研用药")
     assert draft["body"]["elements"][1] == {"tag": "markdown", "content": "项目：云图科研用药"}
     unknown = build_task_draft_card(meeting_title="需求会", tasks=[task])
@@ -667,11 +684,20 @@ def test_daily_digest_has_attribution_line(tmp_path, monkeypatch):
     db, _settings = make_db(tmp_path)
     notifier = LarkNotifier(db, webhook_url="https://hook/", public_base_url="http://x")
     sent = []
-    monkeypatch.setattr(notifier, "_send", lambda kind, ref, title, text, **kw: sent.append(text) or True)
+    monkeypatch.setattr(
+        notifier, "_send", lambda kind, ref, title, text, **kw: sent.append(text) or True
+    )
     stats = {
-        "total": 0, "pending": 0, "pending_sources": [], "in_progress": 0, "stalled": 0,
-        "stalled_titles": [], "stalled_days": [], "done_today": [],
-        "auto_assigned_yesterday": 5, "needs_review": 2,
+        "total": 0,
+        "pending": 0,
+        "pending_sources": [],
+        "in_progress": 0,
+        "stalled": 0,
+        "stalled_titles": [],
+        "stalled_days": [],
+        "done_today": [],
+        "auto_assigned_yesterday": 5,
+        "needs_review": 2,
     }
     assert notifier.daily_digest(stats)
     assert sent[-1] == "· 昨天自动归属 5 场，2 场等你选项目。"

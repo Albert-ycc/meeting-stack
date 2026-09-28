@@ -1,5 +1,6 @@
 """4a：测试护栏本身。测试环境里第四期关着、没有 AI key、不读 .env、飞书清空，发给真 AI 的请求
 一定让测试失败。"""
+
 from __future__ import annotations
 
 import urllib.request
@@ -92,4 +93,6 @@ def test_a_swallowed_real_ai_call_still_fails_the_test(pytester):
     )
     result = pytester.runpytest("-p", "no:cacheprovider")
     result.assert_outcomes(passed=1, errors=1)
-    result.stdout.fnmatch_lines(["*测试里不许调真的 AI：https://api.deepseek.com/chat/completions*"])
+    result.stdout.fnmatch_lines(
+        ["*测试里不许调真的 AI：https://api.deepseek.com/chat/completions*"]
+    )

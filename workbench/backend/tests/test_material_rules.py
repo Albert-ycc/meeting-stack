@@ -1,4 +1,5 @@
 """第三期 3b：哪些文件读什么、哪些名字静默跳过；文件名索引、关系图浏览、文件夹统计用同一套判断。"""
+
 from meeting_workbench import graph, materials
 from meeting_workbench.material_index import MaterialIndexer
 from meeting_workbench.material_rules import (
@@ -23,12 +24,28 @@ def test_layers_by_extension():
     assert layer_for("白板.HEIC") == LAYER_IMAGE
     assert layer_for("访谈.m4a") == LAYER_MEDIA
     assert layer_for("汇报.key") == LAYER_UNSUPPORTED
-    for name in ("a.pyc", "lib.so", "app.dll", "secrets.env", "package.lock", "bundle.js.map", "包.zip", "字体.ttf"):
+    for name in (
+        "a.pyc",
+        "lib.so",
+        "app.dll",
+        "secrets.env",
+        "package.lock",
+        "bundle.js.map",
+        "包.zip",
+        "字体.ttf",
+    ):
         assert layer_for(name) is None, name
 
 
 def test_silent_skip_and_hidden_in_browse():
-    for name in ("._报价.pdf", ".DS_Store", "__MACOSX", "Thumbs.db", "~$方案.docx", ".~lock.报价.xlsx#"):
+    for name in (
+        "._报价.pdf",
+        ".DS_Store",
+        "__MACOSX",
+        "Thumbs.db",
+        "~$方案.docx",
+        ".~lock.报价.xlsx#",
+    ):
         assert silent_skip(name) and hidden_in_browse(name), name
     assert not silent_skip(".gitignore") and hidden_in_browse(".gitignore")
     assert not silent_skip("方案.docx") and not hidden_in_browse("方案.docx")
@@ -45,7 +62,9 @@ def test_index_browse_and_folder_stats_share_the_same_rules(tmp_path):
     add_root(db, root)
     run_until_done(MaterialIndexer(db, settings, clock=lambda: 0.0))
     names = set(files(db))
-    assert "~$方案.docx" not in names and ".~lock.报价.xlsx#" not in names and "Thumbs.db" not in names
+    assert (
+        "~$方案.docx" not in names and ".~lock.报价.xlsx#" not in names and "Thumbs.db" not in names
+    )
     assert "方案.docx" in names
 
     listing = graph.expand_folder({"id": 1, "project_id": "p", "path": str(root)})

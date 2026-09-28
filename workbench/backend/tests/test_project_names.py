@@ -1,5 +1,6 @@
 """项目名字与项目整理（v13 / 第一期 1b-2）：近似重名、也叫、新项目回扫、忽略名字、
 合并、删除空项目、同名文件夹。"""
+
 import json
 import os
 import uuid
@@ -121,7 +122,9 @@ def test_also_names_are_validated(tmp_path):
     assert too_long.status_code == 400
     assert (generic.status_code, generic.json()["detail"]) == (400, "「方案」太常见，不能当叫法")
     assert taken.status_code == 409
-    assert taken.json()["detail"] == "「云图」已经是「云图科研用药」的叫法，一个叫法只能指向一个项目"
+    assert (
+        taken.json()["detail"] == "「云图」已经是「云图科研用药」的叫法，一个叫法只能指向一个项目"
+    )
     assert taken_name.status_code == 409
     assert ok.status_code == 200, ok.text
     # 两字叫法可以存；重复的、和正式名相同的去掉
@@ -148,9 +151,7 @@ def test_former_names_survive_editing_the_also_list(tmp_path):
     project = _project(client, headers, "云图AI")
     _patch(client, headers, project["id"], name="云图智能")
 
-    updated = _patch(
-        client, headers, project["id"], also_names=["云图AI", "云图看板"]
-    ).json()
+    updated = _patch(client, headers, project["id"], also_names=["云图AI", "云图看板"]).json()
 
     assert updated["also_names"] == [
         {"name": "云图AI", "source": "former"},
@@ -237,9 +238,7 @@ def test_ignoring_a_name_stops_suggesting_it(tmp_path):
     _add_link(db, "m-2", "unresolved", new_project_name="内部 分享")
     assert _state(client, "m-1")["state"] == "new_project"
 
-    response = client.post(
-        "/api/project-names/ignore", json={"name": "内部分享"}, headers=headers
-    )
+    response = client.post("/api/project-names/ignore", json={"name": "内部分享"}, headers=headers)
 
     assert response.status_code == 200, response.text
     assert response.json()["meetings_updated"] == 2
@@ -265,7 +264,9 @@ def test_merging_moves_everything_and_keeps_the_name_as_also(tmp_path):
         "INSERT INTO project_material_roots(project_id, path, created_at) VALUES (?, ?, ?)",
         (src["id"], str(shared_folder.resolve()), utc_now()),
     )
-    _patch(client, headers, src["id"], material_roots=[str(shared_folder.resolve()), str(own_folder)])
+    _patch(
+        client, headers, src["id"], material_roots=[str(shared_folder.resolve()), str(own_folder)]
+    )
     seed_meeting(db, "m-ai", "周会", project_id=src["id"], origin="ai")
     seed_meeting(db, "m-review", "评审")
     _add_link(db, "m-review", "needs_review", candidates=[{"project_id": src["id"], "count": 2}])
@@ -298,7 +299,8 @@ def test_merging_moves_everything_and_keeps_the_name_as_also(tmp_path):
     assert [c["project_id"] for c in _state(client, "m-review")["candidates"]] == [dst["id"]]
     assert db.query_one("SELECT 1 AS present FROM projects WHERE id=?", (src["id"],)) is None
     titles = sorted(
-        r["title"] for r in db.query_all("SELECT title FROM requirements WHERE project_id=?", (dst["id"],))
+        r["title"]
+        for r in db.query_all("SELECT title FROM requirements WHERE project_id=?", (dst["id"],))
     )
     assert titles == ["登录改版", "登录改版（原 云图AI）"]
 
@@ -348,7 +350,7 @@ def test_only_empty_projects_can_be_deleted(tmp_path):
 
 def test_sanitize_folder_name_replaces_exfat_illegal_characters():
     assert sanitize_folder_name("云图/看板") == ("云图-看板", ["/"])
-    assert sanitize_folder_name('A:B*C?. ') == ("A-B-C-", ["*", ":", "?"])
+    assert sanitize_folder_name("A:B*C?. ") == ("A-B-C-", ["*", ":", "?"])
 
 
 def test_folder_matches_lists_unmounted_same_or_similar_folders(tmp_path):
@@ -403,9 +405,7 @@ def test_creating_a_project_can_mount_or_create_its_folder(tmp_path):
     mounted = _project(
         client, headers, "云图AI", folder={"mode": "mount", "path": str(root / "云图AI")}
     )
-    created = _project(
-        client, headers, "云图/看板", folder={"mode": "create", "path": str(root)}
-    )
+    created = _project(client, headers, "云图/看板", folder={"mode": "create", "path": str(root)})
 
     assert [r["path"] for r in mounted["material_roots"]] == [str((root / "云图AI").resolve())]
     assert (root / "云图-看板").is_dir()

@@ -1,4 +1,5 @@
 """回测命令 backfill-projects --evaluate：藏起人工答案重判（v13 第一期 1b-4）。"""
+
 import json
 
 from meeting_workbench.cli import main as cli_main
@@ -24,8 +25,12 @@ def test_turning_off_a_cue_word_stops_the_wrong_auto_attribution(tmp_path):
     project_b = make_project(db, "数据中台")
     term_id = make_term(db, project_a, "灰度方案")
     seed_meeting(
-        db, "vm-1", "周二评审", "# 摘要\n灰度方案先上一半，灰度方案的回滚预案下周定。",
-        project_id=project_b, origin="manual",
+        db,
+        "vm-1",
+        "周二评审",
+        "# 摘要\n灰度方案先上一半，灰度方案的回滚预案下周定。",
+        project_id=project_b,
+        origin="manual",
     )
     linker = ProjectLinker(db, settings)
 
@@ -35,7 +40,9 @@ def test_turning_off_a_cue_word_stops_the_wrong_auto_attribution(tmp_path):
 
     db.execute("UPDATE glossary_terms SET is_cue=0 WHERE id=?", (term_id,))
     after = linker.evaluate()
-    assert after["results"][0]["decision"] != "auto" or after["results"][0]["project_id"] != project_a
+    assert (
+        after["results"][0]["decision"] != "auto" or after["results"][0]["project_id"] != project_a
+    )
     assert after["counts"]["auto_wrong"] == 0
 
 
@@ -45,8 +52,12 @@ def test_adding_an_also_name_makes_the_meeting_land_in_the_right_project(tmp_pat
     make_project(db, "云图科研用药")
     project_b = make_project(db, "数据中台")
     seed_meeting(
-        db, "vm-2", "周三评审", "# 摘要\n统一指标平台的口径先对齐，统一指标平台下月上线。",
-        project_id=project_b, origin="manual",
+        db,
+        "vm-2",
+        "周三评审",
+        "# 摘要\n统一指标平台的口径先对齐，统一指标平台下月上线。",
+        project_id=project_b,
+        origin="manual",
     )
     linker = ProjectLinker(db, settings)
     assert _verdicts(linker.evaluate()) == {"vm-2": "unresolved"}

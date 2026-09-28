@@ -10,6 +10,7 @@
 扫描线程（reconcile）和接口线程（改归属后立刻 sync_meeting）会并发，所有卡片的磁盘动作
 共用一把进程内锁，拿到锁后重新读库再决定。
 """
+
 from __future__ import annotations
 
 import errno
@@ -296,9 +297,7 @@ def render_card(view: CardView) -> str:
     front.append(f"generated_by: {GENERATED_BY}")
     front.append("---")
 
-    source = (
-        "AI 自动判断（未人工确认）" if view.project_origin == "ai" else "人工确认"
-    )
+    source = "AI 自动判断（未人工确认）" if view.project_origin == "ai" else "人工确认"
     notes = [
         "> 本卡由声档自动生成并持续更新。要改纪要请到声档改；补充想法写在最下面「我的笔记」里。"
         "AI 助手请勿改动、移动或重命名本文件。",
@@ -326,9 +325,7 @@ def render_card(view: CardView) -> str:
             if task.get("anchor_ms") is not None:
                 # 时间点链回声档，点开从这一刻播放（#meetings/<id>@<秒>）
                 seconds = max(0, int(task["anchor_ms"])) // 1000
-                parts.append(
-                    f"[{format_clock(task['anchor_ms'])}]({view.workbench_url}@{seconds})"
-                )
+                parts.append(f"[{format_clock(task['anchor_ms'])}]({view.workbench_url}@{seconds})")
             actions.append("- " + " · ".join(parts))
     if not actions:
         actions.append("这场会没有行动项。")
@@ -377,7 +374,9 @@ def stem_candidates(meeting: dict[str, Any]) -> list[str]:
     date_code = f"{start:%y%m%d}"
     clock = f"{start:%H%M}"
     topic = _topic(str(meeting.get("title") or ""))
-    untitled = not topic or ArchiveImporter.is_untitled(str(meeting.get("title") or ""), meeting["id"])
+    untitled = not topic or ArchiveImporter.is_untitled(
+        str(meeting.get("title") or ""), meeting["id"]
+    )
     base = f"{date_code} {clock} 会议" if untitled else f"{date_code} {topic}"
     candidates = [base] if untitled else [base, f"{base} {clock}"]
     last = candidates[-1]
@@ -442,7 +441,11 @@ class _Round:
 
     def names(self, cards_dir: Path) -> set[str]:
         try:
-            return {entry.name.casefold() for entry in os.scandir(cards_dir) if entry.name.endswith(".md")}
+            return {
+                entry.name.casefold()
+                for entry in os.scandir(cards_dir)
+                if entry.name.endswith(".md")
+            }
         except OSError:
             return set()
 
@@ -731,7 +734,9 @@ class CardWriter:
             folder = requirement.get("folder")
             if folder and _within(Path(folder), root):
                 requirement["folder"] = os.path.relpath(folder, root)
-        host = self.settings.host if self.settings.host not in ("0.0.0.0", "::", "") else "127.0.0.1"
+        host = (
+            self.settings.host if self.settings.host not in ("0.0.0.0", "::", "") else "127.0.0.1"
+        )
         return CardView(
             meeting_id=meeting["id"],
             title=str(meeting.get("title") or meeting["id"]),
@@ -788,7 +793,8 @@ class CardWriter:
             elif volume != ROOT_ONLINE:
                 state = ROOT_MISSING
             elif Path(root).is_symlink() or any(
-                _within(resolved, protected) for protected, _message in _protected_roots(self.settings)
+                _within(resolved, protected)
+                for protected, _message in _protected_roots(self.settings)
             ):
                 state = ROOT_REFUSED
         round_.root_states[root] = state
@@ -884,13 +890,19 @@ class CardWriter:
                 # 根目录换了（Finder 里改名后重新选了）：先在新根目录按 meeting_id 认领，认到了
                 # 只更新路径，不重写、不出两份。
                 cards_dir = Path(target) / CARDS_DIR_NAME
-                claimed = round_.index(cards_dir).get(card.meeting_id) if cards_dir.is_dir() else None
+                claimed = (
+                    round_.index(cards_dir).get(card.meeting_id) if cards_dir.is_dir() else None
+                )
                 if claimed:
                     card.root_path = target
                     card.rel_path = f"{CARDS_DIR_NAME}/{claimed}"
                     card.user_named = 1
-                    tx_name = Path(card.transcript_rel_path).name if card.transcript_rel_path else None
-                    tx_rel = f"{CARDS_DIR_NAME}/{TRANSCRIPTS_DIR_NAME}/{tx_name}" if tx_name else None
+                    tx_name = (
+                        Path(card.transcript_rel_path).name if card.transcript_rel_path else None
+                    )
+                    tx_rel = (
+                        f"{CARDS_DIR_NAME}/{TRANSCRIPTS_DIR_NAME}/{tx_name}" if tx_name else None
+                    )
                     card.transcript_rel_path = (
                         tx_rel if tx_rel and (Path(target) / tx_rel).is_file() else None
                     )
@@ -978,10 +990,16 @@ class CardWriter:
                 tx_stem = Path(recorded).stem
             else:
                 tx_stem = self._free_stem(
-                    card, card.root_path, [stem, *stem_candidates(snapshot.meeting)], taken, transcript
+                    card,
+                    card.root_path,
+                    [stem, *stem_candidates(snapshot.meeting)],
+                    taken,
+                    transcript,
                 )
         else:
-            stem = self._free_stem(card, card.root_path, stem_candidates(snapshot.meeting), taken, transcript)
+            stem = self._free_stem(
+                card, card.root_path, stem_candidates(snapshot.meeting), taken, transcript
+            )
             tx_stem = stem
         tx_rel = f"{TRANSCRIPTS_DIR_NAME}/{tx_stem}.txt" if transcript else None
         new_auto = render_card(self._view(snapshot, root, tx_rel))
@@ -1009,7 +1027,9 @@ class CardWriter:
             card.written_fps = (card.written_fps + [new_fp])[-KEEP_FPS:]
             round_.writes += 1
             round_.forget(cards_dir)
-            action.update(action="updated", to=self._label(card.root_path, f"{CARDS_DIR_NAME}/{new_name}"))
+            action.update(
+                action="updated", to=self._label(card.root_path, f"{CARDS_DIR_NAME}/{new_name}")
+            )
             card.synced_at = utc_now()
         card.rel_path = f"{CARDS_DIR_NAME}/{new_name}"
         card.project_id = project_id
@@ -1036,7 +1056,9 @@ class CardWriter:
         if state == ROOT_ONLINE:
             cards_dir = Path(old_root) / CARDS_DIR_NAME
             if not old_path.is_file():
-                claimed = round_.index(cards_dir).get(card.meeting_id) if cards_dir.is_dir() else None
+                claimed = (
+                    round_.index(cards_dir).get(card.meeting_id) if cards_dir.is_dir() else None
+                )
                 old_path = cards_dir / claimed if claimed else None
             if old_path is not None:
                 text = old_path.read_text(encoding="utf-8", errors="replace")
@@ -1055,7 +1077,9 @@ class CardWriter:
         elif state == ROOT_OFFLINE:
             queued = [{"path": str(old_path), "meeting_id": card.meeting_id, "kind": "card"}]
             if tx_path is not None:
-                queued.append({"path": str(tx_path), "meeting_id": card.meeting_id, "kind": "transcript"})
+                queued.append(
+                    {"path": str(tx_path), "meeting_id": card.meeting_id, "kind": "transcript"}
+                )
             self._queue_retire(queued)
         card.clear_location()
 
@@ -1113,7 +1137,9 @@ class CardWriter:
             card.state = USER_EDITED
             card.user_named = 1
         else:
-            stem = self._free_stem(card, target, stem_candidates(snapshot.meeting), taken, transcript)
+            stem = self._free_stem(
+                card, target, stem_candidates(snapshot.meeting), taken, transcript
+            )
             tx_stem = stem
             name = f"{stem}.md"
             tx_rel = f"{TRANSCRIPTS_DIR_NAME}/{stem}.txt" if transcript else None
@@ -1245,7 +1271,9 @@ class CardWriter:
         now = utc_now()
         with self.db.transaction() as connection:
             if snapshot.meeting is None:
-                connection.execute("DELETE FROM meeting_cards WHERE meeting_id=?", (card.meeting_id,))
+                connection.execute(
+                    "DELETE FROM meeting_cards WHERE meeting_id=?", (card.meeting_id,)
+                )
                 return
             values = (
                 card.project_id,
@@ -1370,7 +1398,9 @@ class CardWriter:
 
     def _queue_retire(self, entries: list[dict[str, Any]]) -> None:
         with self.db.transaction() as connection:
-            queue = [item for item in _json_state(connection, RETIRE_QUEUE_KEY) if isinstance(item, dict)]
+            queue = [
+                item for item in _json_state(connection, RETIRE_QUEUE_KEY) if isinstance(item, dict)
+            ]
             known = {item.get("path") for item in queue}
             queue.extend(entry for entry in entries if entry["path"] not in known)
             write_state(connection, RETIRE_QUEUE_KEY, json.dumps(queue, ensure_ascii=False))
@@ -1378,7 +1408,9 @@ class CardWriter:
     def _drain_retire_queue(self, round_: _Round) -> None:
         """旧盘插回来后，把换项目时没来得及撤下的旧卡片移进回收区（只认带同一个 meeting_id 的）。"""
         with self.db.autocommit() as connection:
-            queue = [item for item in _json_state(connection, RETIRE_QUEUE_KEY) if isinstance(item, dict)]
+            queue = [
+                item for item in _json_state(connection, RETIRE_QUEUE_KEY) if isinstance(item, dict)
+            ]
             located = {
                 (row["root_path"] or "") + "/" + (row["rel_path"] or "")
                 for row in connection.execute(
@@ -1395,7 +1427,9 @@ class CardWriter:
                 continue
             try:
                 if path.is_file() and str(path) not in located:
-                    if item.get("kind") == "transcript" or _read_meeting_id(path) == item.get("meeting_id"):
+                    if item.get("kind") == "transcript" or _read_meeting_id(path) == item.get(
+                        "meeting_id"
+                    ):
                         self._retire_file(path, str(item.get("meeting_id") or "card"))
             except OSError:
                 remaining.append(item)
@@ -1455,7 +1489,11 @@ class CardWriter:
                 known.pop(path, None)
         if raw is None or known != before:
             with self.db.transaction() as connection:
-                write_state(connection, INDEX_PATHS_KEY, json.dumps(known, ensure_ascii=False, sort_keys=True))
+                write_state(
+                    connection,
+                    INDEX_PATHS_KEY,
+                    json.dumps(known, ensure_ascii=False, sort_keys=True),
+                )
 
     def _index_targets(self, connection: Any) -> dict[str, str]:
         """要写索引的根目录 → 项目：每个没暂停的项目取第一个根目录（按 created_at, id，和卡片的算法
@@ -1673,7 +1711,10 @@ class CardWriter:
         if action not in ("rewrite", "regenerate"):
             raise CardsError("不认识的卡片操作")
         with self.db.autocommit() as connection:
-            if connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
+            if (
+                connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone()
+                is None
+            ):
                 raise LookupError("会议不存在")
         self.sync_meeting(meeting_id, mode=action)
         with self.db.autocommit() as connection:
@@ -1799,17 +1840,27 @@ class CardWriter:
                     if not path.is_file():
                         # 你在 Finder 里改了名：按会议 id 认回来再撤
                         cards_dir = Path(card.root_path or "") / CARDS_DIR_NAME
-                        claimed = round_.index(cards_dir).get(card.meeting_id) if cards_dir.is_dir() else None
+                        claimed = (
+                            round_.index(cards_dir).get(card.meeting_id)
+                            if cards_dir.is_dir()
+                            else None
+                        )
                         if claimed:
                             path = cards_dir / claimed
                     if not path.is_file():
                         edited = False
                     else:
                         auto, notes = split_card(path.read_text(encoding="utf-8", errors="replace"))
-                        edited = card.state == USER_EDITED or content_fp(auto) not in card.written_fps
+                        edited = (
+                            card.state == USER_EDITED or content_fp(auto) not in card.written_fps
+                        )
                     if edited:
                         kept.append(
-                            {"meeting_id": card.meeting_id, "title": row.get("title"), "path": str(path)}
+                            {
+                                "meeting_id": card.meeting_id,
+                                "title": row.get("title"),
+                                "path": str(path),
+                            }
                         )
                         # 记下你改过：留在原处，也不再算作能撤下的卡片
                         with self.db.transaction() as connection:
@@ -1839,7 +1890,13 @@ class CardWriter:
                                   synced_at=CASE WHEN ? THEN NULL ELSE synced_at END,
                                   updated_at=?
                             WHERE meeting_id=?""",
-                        (reason, notes or None, 1 if forget_sync else 0, utc_now(), card.meeting_id),
+                        (
+                            reason,
+                            notes or None,
+                            1 if forget_sync else 0,
+                            utc_now(),
+                            card.meeting_id,
+                        ),
                     )
             # 关掉卡片时撤下记着的全部索引，暂停时撤下这个项目的索引（都不计进 retired，那是卡片数）；
             # 其余情况更新碰过的根目录的索引。
@@ -1911,7 +1968,8 @@ class CardWriter:
                 if answer == "yes":
                     # 已经有记录、因为没补写而没写的（包括撤下过的补写卡片）：下一轮扫描照常补写
                     connection.execute(
-                        "UPDATE meeting_cards SET dirty = dirty + 1 WHERE reason=?", (NOT_BACKFILLED,)
+                        "UPDATE meeting_cards SET dirty = dirty + 1 WHERE reason=?",
+                        (NOT_BACKFILLED,),
                     )
             else:
                 raise CardsError("只能回答补写、不补写或稍后")

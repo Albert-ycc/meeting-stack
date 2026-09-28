@@ -1,5 +1,6 @@
 """第四期 4a：links_loop（deep_links.LinksWorker）的骨架：节奏、轻活和重活的预算、转写时让路、
 database is locked、L1、L2、清理；编码锁和材料向量快照；健康检查、bootstrap 和 links 命令。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -50,6 +51,8 @@ def world(tmp_path):
     root = add_material_root(db, "p", tmp_path / "云图AI")
     other = add_material_root(db, "q", tmp_path / "别的")
     return SimpleNamespace(db=db, root=root, other=other, tmp=tmp_path)
+
+
 MINUTES = "# 周会\n\n## 决议\n\n- 报价单按第三版发出 [00:12:34]\n- 排期表下周定稿\n"
 MINUTES_EARLIER = "# 周会\n\n## 决议\n\n- 报价单按第四版发出 [00:05:00]\n- 排期表下周定稿\n"
 
@@ -116,7 +119,13 @@ def idle_world(tmp_path):
     add_task(db, "t", meeting_id="m", project_id="p", status="confirmed")
     with db.transaction() as connection:
         _insert_deliverable(
-            connection, "t", name="方案.docx", content_key="k-plan", root_id=root_id, rel_path="方案.docx", now=at(-7200)
+            connection,
+            "t",
+            name="方案.docx",
+            content_key="k-plan",
+            root_id=root_id,
+            rel_path="方案.docx",
+            now=at(-7200),
         )
     db.execute(
         """INSERT INTO meeting_file_mentions(meeting_id, project_id, stem_key, file_id, needle, count, first_ms,
@@ -125,18 +134,63 @@ def idle_world(tmp_path):
         (plan_id, at(-7200)),
     )
     rows = [
-        {"kind": "mention", "project_id": "p", "ident": "m|报价单", "status": "shown", "origin": "llm",
-         "meeting_id": "m", "at_ms": 60_000, "stem_key": "报价单", "file_id": quote_id, "content_key": "k-quote",
-         "root_id": root_id, "rel_path": "报价单.xlsx", "quote": "上周那版报价单", "evidence": {"phrase": "上周那版"}},
-        {"kind": "related", "project_id": "p", "ident": "m|k-quote", "status": "shown", "origin": "vector",
-         "meeting_id": "m", "at_ms": 90_000, "file_id": quote_id, "content_key": "k-quote", "root_id": root_id,
-         "rel_path": "报价单.xlsx", "score": 0.71, "evidence": {"words": ["报价"]}},
-        {"kind": "produced", "project_id": "p", "ident": "t|k-quote", "status": "suggested", "origin": "rule",
-         "task_id": "t", "file_id": quote_id, "content_key": "k-quote", "root_id": root_id,
-         "rel_path": "报价单.xlsx", "evidence": {"words": ["报价单"]}},
-        {"kind": "mention", "project_id": "p", "ident": "m2|旧稿", "status": "cleared", "origin": "llm",
-         "meeting_id": "m2", "stem_key": "旧稿", "file_id": gone_id, "content_key": "k-old", "root_id": root_id,
-         "rel_path": "旧稿.docx"},
+        {
+            "kind": "mention",
+            "project_id": "p",
+            "ident": "m|报价单",
+            "status": "shown",
+            "origin": "llm",
+            "meeting_id": "m",
+            "at_ms": 60_000,
+            "stem_key": "报价单",
+            "file_id": quote_id,
+            "content_key": "k-quote",
+            "root_id": root_id,
+            "rel_path": "报价单.xlsx",
+            "quote": "上周那版报价单",
+            "evidence": {"phrase": "上周那版"},
+        },
+        {
+            "kind": "related",
+            "project_id": "p",
+            "ident": "m|k-quote",
+            "status": "shown",
+            "origin": "vector",
+            "meeting_id": "m",
+            "at_ms": 90_000,
+            "file_id": quote_id,
+            "content_key": "k-quote",
+            "root_id": root_id,
+            "rel_path": "报价单.xlsx",
+            "score": 0.71,
+            "evidence": {"words": ["报价"]},
+        },
+        {
+            "kind": "produced",
+            "project_id": "p",
+            "ident": "t|k-quote",
+            "status": "suggested",
+            "origin": "rule",
+            "task_id": "t",
+            "file_id": quote_id,
+            "content_key": "k-quote",
+            "root_id": root_id,
+            "rel_path": "报价单.xlsx",
+            "evidence": {"words": ["报价单"]},
+        },
+        {
+            "kind": "mention",
+            "project_id": "p",
+            "ident": "m2|旧稿",
+            "status": "cleared",
+            "origin": "llm",
+            "meeting_id": "m2",
+            "stem_key": "旧稿",
+            "file_id": gone_id,
+            "content_key": "k-old",
+            "root_id": root_id,
+            "rel_path": "旧稿.docx",
+        },
     ]
     with db.transaction() as connection:
         relations.upsert_system(connection, rows, at(-3600), since=at(-3600))
@@ -153,7 +207,13 @@ def idle_world(tmp_path):
         (at(-3600), at(-3600)),
     )
     # 4b：一场抽完了放宽提到的会，L5 前两轮写出放宽行和给字面行的提示，之后签名不变就不再写
-    add_meeting(db, "m3", ago=1, project_id="p", segments=[(60_000, "上周那版报价单再看一下"), (120_000, "方案也改")])
+    add_meeting(
+        db,
+        "m3",
+        ago=1,
+        project_id="p",
+        segments=[(60_000, "上周那版报价单再看一下"), (120_000, "方案也改")],
+    )
     db.execute(
         """INSERT INTO meeting_file_mentions(meeting_id, project_id, stem_key, file_id, needle, count, first_ms,
                anchors_json, minutes_count, source, status, picked, updated_at)
@@ -161,8 +221,15 @@ def idle_world(tmp_path):
         (plan_id, at(-7200)),
     )
     phrases = [
-        {"at_ms": 60_000, "quote": "上周那版报价单再看一下", "phrase": "上周那版报价单", "core": "报价单", "aka": [],
-         "kind": "表格", "when": {"rel": "last_week", "version": None}},
+        {
+            "at_ms": 60_000,
+            "quote": "上周那版报价单再看一下",
+            "phrase": "上周那版报价单",
+            "core": "报价单",
+            "aka": [],
+            "kind": "表格",
+            "when": {"rel": "last_week", "version": None},
+        },
     ]
     # 4d：一份读完、算好向量的材料（假编码器按文字哈希给向量）和一场会上说到它的会，H3 前两轮算出相关行
     from .test_related import TOPIC_A, add_content, segments_for
@@ -171,7 +238,9 @@ def idle_world(tmp_path):
     doc_id = add_file(db, root_id, "接口文档.docx")
     db.execute("UPDATE material_files SET content_key = ? WHERE id = ?", ("q2:" + "a" * 32, doc_id))
     add_meeting(db, "m4", ago=1, project_id="p", segments=segments_for(TOPIC_A))
-    version = db.query_one("SELECT current_transcript_version_id AS v FROM meetings WHERE id = 'm3'")["v"]
+    version = db.query_one(
+        "SELECT current_transcript_version_id AS v FROM meetings WHERE id = 'm3'"
+    )["v"]
     db.execute(
         """INSERT INTO mention_extractions(meeting_id, version_id, text_sha, state, parts, parts_done, phrases_json,
                created_at, updated_at)
@@ -193,17 +262,25 @@ def idle_world(tmp_path):
     detail_id = add_file(db, root_id, "报价单明细 v2.xlsx")
     db.execute(
         "UPDATE material_file_events SET at = ?, day = ? WHERE file_id = ?",
-        (file_events.at_text(NOW - timedelta(hours=1)), (NOW - timedelta(hours=1)).astimezone().date().isoformat(),
-         detail_id),
+        (
+            file_events.at_text(NOW - timedelta(hours=1)),
+            (NOW - timedelta(hours=1)).astimezone().date().isoformat(),
+            detail_id,
+        ),
     )
-    add_meeting(db, "m5", ago=1, project_id="p", minutes="# 周会\n\n## 决议\n\n- 总价下调 5% [00:01:00]\n")
+    add_meeting(
+        db, "m5", ago=1, project_id="p", minutes="# 周会\n\n## 决议\n\n- 总价下调 5% [00:01:00]\n"
+    )
     price_key = "q2:" + "c" * 32
     db.execute(
         """INSERT INTO material_contents(content_key, layer, state, chars, chunks, created_at, updated_at)
            VALUES (?, 'text', 'done', 20, 1, 'x', 'x')""",
         (price_key,),
     )
-    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES (?, 0, '报价说明：总价下调 3%')", (price_key,))
+    db.execute(
+        "INSERT INTO material_chunks(content_key, ordinal, text) VALUES (?, 0, '报价说明：总价下调 3%')",
+        (price_key,),
+    )
     price_id = add_file(db, root_id, "报价/总价说明.docx")
     db.execute(
         """UPDATE material_files SET content_key = ?, content_size = size, content_mtime_ns = mtime_ns WHERE id = ?""",
@@ -222,7 +299,9 @@ def idle_world(tmp_path):
             (key, f"驻场服务按月结算，第{index}条。驻场服务另计，第{index + 5}条。"),
         )
         file_id = add_file(db, root_id, f"驻场/合同{index}.docx")
-        db.execute("UPDATE material_files SET content_key = ?, ext = 'docx' WHERE id = ?", (key, file_id))
+        db.execute(
+            "UPDATE material_files SET content_key = ?, ext = 'docx' WHERE id = ?", (key, file_id)
+        )
     db.execute("DELETE FROM material_file_events WHERE file_id != ?", (detail_id,))
     return db
 
@@ -234,9 +313,21 @@ def add_pair_rows(db):
     with db.transaction() as connection:
         relations.upsert_system(
             connection,
-            [{"kind": "later_changed", "project_id": "p", "ident": f"{early}|{late}", "status": "shown",
-              "origin": "llm", "meeting_id": "m", "at_ms": 754_000, "decision_id": early, "to_decision_id": late,
-              "quote": "按第三版", "evidence": {"why_earlier": "按第四版", "why_later": "按第三版"}}],
+            [
+                {
+                    "kind": "later_changed",
+                    "project_id": "p",
+                    "ident": f"{early}|{late}",
+                    "status": "shown",
+                    "origin": "llm",
+                    "meeting_id": "m",
+                    "at_ms": 754_000,
+                    "decision_id": early,
+                    "to_decision_id": late,
+                    "quote": "按第三版",
+                    "evidence": {"why_earlier": "按第四版", "why_later": "按第三版"},
+                }
+            ],
             at(-3600),
             since=at(-3600),
         )
@@ -246,13 +337,21 @@ def fingerprint(db):
     return {
         "graph_rev": rev(db),
         "related_rev": rev(db, "related_rev"),
-        "relations": db.query_all("SELECT id, status, file_id, updated_at FROM relations ORDER BY id"),
+        "relations": db.query_all(
+            "SELECT id, status, file_id, updated_at FROM relations ORDER BY id"
+        ),
         "decisions": db.query_all("SELECT id, text, updated_at FROM decisions ORDER BY id"),
-        "candidates": db.query_all("SELECT id, status, updated_at FROM glossary_candidates ORDER BY id"),
+        "candidates": db.query_all(
+            "SELECT id, status, updated_at FROM glossary_candidates ORDER BY id"
+        ),
         "seeds": db.query_all("SELECT * FROM glossary_mining_seeds ORDER BY content_key"),
         "mining_scan": db.query_all("SELECT * FROM glossary_mining_scan ORDER BY project_id"),
-        "extractions": db.query_all("SELECT meeting_id, hints_json, resolved_sig, updated_at FROM mention_extractions"),
-        "related": db.query_all("SELECT * FROM meeting_window_passages ORDER BY meeting_id, start_ms, rank"),
+        "extractions": db.query_all(
+            "SELECT meeting_id, hints_json, resolved_sig, updated_at FROM mention_extractions"
+        ),
+        "related": db.query_all(
+            "SELECT * FROM meeting_window_passages ORDER BY meeting_id, start_ms, rank"
+        ),
         "related_scan": db.query_all("SELECT * FROM meeting_related_scan ORDER BY meeting_id"),
     }
 
@@ -261,7 +360,9 @@ def test_idle_round_leaves_revisions_alone(tmp_path):
     from .test_related import FakeSemantic
 
     db = idle_world(tmp_path)
-    config = loop_settings(semantic_enabled=True, material_content_enabled=True, glossary_mining_enabled=True)
+    config = loop_settings(
+        semantic_enabled=True, material_content_enabled=True, glossary_mining_enabled=True
+    )
     semantic = FakeSemantic()
     vectors = MaterialVectors(db, config, semantic, clock=lambda: 0.0)
     vectors.refresh()
@@ -273,29 +374,40 @@ def test_idle_round_leaves_revisions_alone(tmp_path):
     assert len(stable["decisions"]) == 5  # 样本真的入库了（4e 加了一场定了总价的会）
     # 4c：规则版「后来又提到」和 AI 的「后来改了」都在
     assert db.query_one("SELECT origin, status FROM relations WHERE kind = 'restated'") == {
-        "origin": "rule", "status": "shown"
+        "origin": "rule",
+        "status": "shown",
     }
-    assert db.query_one("SELECT status FROM relations WHERE kind = 'later_changed'") == {"status": "shown"}
+    assert db.query_one("SELECT status FROM relations WHERE kind = 'later_changed'") == {
+        "status": "shown"
+    }
     # 放宽的提到真的写出来了（L5）
     assert db.query_one("SELECT status, origin FROM relations WHERE ident = 'm3|报价单'") == {
-        "status": "shown", "origin": "llm"
+        "status": "shown",
+        "origin": "llm",
     }
     assert stable["extractions"][0]["resolved_sig"]
     # 4d：相关真的算出来了（H3）
-    assert db.query_one("SELECT status, origin FROM relations WHERE ident = ?", ("m4|q2:" + "a" * 32,)) == {
-        "status": "shown", "origin": "vector"
-    }
+    assert db.query_one(
+        "SELECT status, origin FROM relations WHERE ident = ?", ("m4|q2:" + "a" * 32,)
+    ) == {"status": "shown", "origin": "vector"}
     assert first["phases"]["decisions"] == "done"
     # 4e：L4 写出了产出，H2 写出了影响（第三轮下面不能再写）
-    assert db.query_one("SELECT status, origin FROM relations WHERE kind = 'produced' AND task_id = 't-new'") == {
-        "status": "suggested", "origin": "rule"
-    }
+    assert db.query_one(
+        "SELECT status, origin FROM relations WHERE kind = 'produced' AND task_id = 't-new'"
+    ) == {"status": "suggested", "origin": "rule"}
     assert db.query_one("SELECT status, quote FROM relations WHERE kind = 'affects'") == {
-        "status": "suggested", "quote": "总价下调 5%"
+        "status": "suggested",
+        "quote": "总价下调 5%",
     }
-    assert w.snapshot()["open"] == {"produced": 2, "affects": 1} and w.snapshot()["waiting"]["affects"] == 0
+    assert (
+        w.snapshot()["open"] == {"produced": 2, "affects": 1}
+        and w.snapshot()["waiting"]["affects"] == 0
+    )
     # 4h：H4 挖出了词（手放的「能耗看板」证据没了，记 dropped）
-    words = {row["term"]: row["status"] for row in db.query_all("SELECT term, status FROM glossary_candidates")}
+    words = {
+        row["term"]: row["status"]
+        for row in db.query_all("SELECT term, status FROM glossary_candidates")
+    }
     assert words["能耗看板"] == "dropped" and words["驻场服务"] == "pending"
     assert w.snapshot()["waiting"]["terms"] == 0
 
@@ -314,7 +426,9 @@ def test_light_budget_leaves_later_steps_for_the_next_round(tmp_path):
     clock = Clock()
     w = worker(db, clock=clock)
     calls: list[str] = []
-    w.l1_decisions = recorder(calls, "l1", effect=lambda ctx: setattr(clock, "value", clock.value + 3.5))
+    w.l1_decisions = recorder(
+        calls, "l1", effect=lambda ctx: setattr(clock, "value", clock.value + 3.5)
+    )
     w.l2_resolve = recorder(calls, "l2")
     fake_heavy(w, calls, h2_affects=lambda ctx: setattr(clock, "value", clock.value + 15.5))
 
@@ -337,7 +451,10 @@ def test_light_steps_run_while_transcribing_and_heavy_steps_wait(tmp_path):
     result = w.run_round()
 
     assert calls == []
-    assert result["phases"]["decisions"] == "done" and len(db.query_all("SELECT id FROM decisions")) == 2
+    assert (
+        result["phases"]["decisions"] == "done"
+        and len(db.query_all("SELECT id FROM decisions")) == 2
+    )
     assert {result["phases"][name] for name in ("affects", "related", "terms")} == {"busy"}
     snap = w.snapshot()
     assert snap["paused"] == "busy" and snap["phases"]["related"] == "busy"
@@ -388,7 +505,9 @@ def test_one_broken_step_does_not_stop_the_rest(tmp_path, caplog):
 
     assert result["phases"]["affects"] == "error"
     assert "h4_terms" in calls
-    assert db.query_one("SELECT 1 AS x FROM app_state WHERE key = 'links_housekeeping_at'") is not None
+    assert (
+        db.query_one("SELECT 1 AS x FROM app_state WHERE key = 'links_housekeeping_at'") is not None
+    )
     snap = w.snapshot()
     assert snap["phases"]["affects"] == "error" and snap["last_round_at"] is not None
     assert "affects" in caplog.text
@@ -396,7 +515,10 @@ def test_one_broken_step_does_not_stop_the_rest(tmp_path, caplog):
 
 def test_material_fts_rebuild_skips_h2_and_h3(tmp_path):
     db, _ = make(tmp_path)
-    db.execute("INSERT INTO app_state(key, value, updated_at) VALUES ('material_fts_rebuild', '{}', ?)", (utc_now(),))
+    db.execute(
+        "INSERT INTO app_state(key, value, updated_at) VALUES ('material_fts_rebuild', '{}', ?)",
+        (utc_now(),),
+    )
     w = worker(db, clock=Clock())
     calls: list[str] = []
     seen: list[bool] = []
@@ -449,8 +571,14 @@ def test_l3_and_l4_run_while_transcribing(tmp_path):
     result = busy.run_round()
     assert calls == []
     assert (result["phases"]["stale"], result["phases"]["produced"]) == ("done", "done")
-    assert w.db.query_one("SELECT status FROM relations WHERE ident = 'dec-gone|k'")["status"] == "cleared"
-    assert w.db.query_one("SELECT status FROM relations WHERE kind = 'produced'")["status"] == "suggested"
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE ident = 'dec-gone|k'")["status"]
+        == "cleared"
+    )
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE kind = 'produced'")["status"]
+        == "suggested"
+    )
 
 
 def test_l3_and_l4_per_round_limits(tmp_path, monkeypatch):
@@ -458,8 +586,12 @@ def test_l3_and_l4_per_round_limits(tmp_path, monkeypatch):
     monkeypatch.setattr(produced, "ROUND_TASKS", 1)
     monkeypatch.setattr(affects, "L3_ROWS", 1)
     w.db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p2', '第二个', 'x')")
-    w.db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p2', '/材料/第二个', 'x')")
-    second_root = int(w.db.query_one("SELECT id FROM project_material_roots WHERE project_id = 'p2'")["id"])
+    w.db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p2', '/材料/第二个', 'x')"
+    )
+    second_root = int(
+        w.db.query_one("SELECT id FROM project_material_roots WHERE project_id = 'p2'")["id"]
+    )
     from .test_file_events import swept
 
     swept(w.db, second_root)
@@ -475,8 +607,15 @@ def test_l3_and_l4_per_round_limits(tmp_path, monkeypatch):
             """INSERT INTO relations(kind, project_id, ident, status, origin, file_id, content_key, root_id, rel_path,
                    created_at, updated_at)
                VALUES ('affects', 'p', ?, 'suggested', 'rule', ?, ?, ?, ?, ?, ?)""",
-            (f"dec-gone|{index}", file["id"], file["content_key"], file["root_id"], file["rel_path"], at(-3600),
-             at(-3600)),
+            (
+                f"dec-gone|{index}",
+                file["id"],
+                file["content_key"],
+                file["root_id"],
+                file["rel_path"],
+                at(-3600),
+                at(-3600),
+            ),
         )
     runner = worker(w.db, clock=Clock(), settings=_e4_settings())
     fake_heavy(runner, [])
@@ -501,14 +640,24 @@ def test_h2_stops_within_a_batch_once_transcribing_starts(tmp_path):
 
     def busy():
         # 第一场会配完（台账写上）以后开始转写
-        return w.db.query_one("SELECT COUNT(*) AS n FROM decision_scan WHERE affects_hash IS NOT NULL")["n"] >= 1
+        return (
+            w.db.query_one(
+                "SELECT COUNT(*) AS n FROM decision_scan WHERE affects_hash IS NOT NULL"
+            )["n"]
+            >= 1
+        )
 
     runner = worker(w.db, clock=Clock(), busy=busy, settings=_e4_settings())
     phases = runner.run_round()["phases"]
     assert phases["affects"] == "busy"
     rows = w.db.query_all("SELECT meeting_id FROM relations WHERE kind = 'affects'")
     assert rows == [{"meeting_id": "m1"}]
-    assert w.db.query_one("SELECT affects_hash FROM decision_scan WHERE meeting_id = 'm2'")["affects_hash"] is None
+    assert (
+        w.db.query_one("SELECT affects_hash FROM decision_scan WHERE meeting_id = 'm2'")[
+            "affects_hash"
+        ]
+        is None
+    )
 
 
 def test_h2_reports_budget_not_busy_when_the_round_is_full(tmp_path, monkeypatch):
@@ -522,7 +671,12 @@ def test_h2_reports_budget_not_busy_when_the_round_is_full(tmp_path, monkeypatch
     runner = worker(w.db, clock=Clock(), settings=_e4_settings())
     assert runner.run_round()["phases"]["affects"] == "budget"
     assert runner.snapshot()["phases"]["affects"] == "budget"
-    assert w.db.query_one("SELECT affects_hash FROM decision_scan WHERE meeting_id = 'm2'")["affects_hash"] is None
+    assert (
+        w.db.query_one("SELECT affects_hash FROM decision_scan WHERE meeting_id = 'm2'")[
+            "affects_hash"
+        ]
+        is None
+    )
     runner.moment["value"] = NOW + timedelta(minutes=1)
     assert runner.run_round()["phases"]["affects"] == "done"
     assert w.db.query_one("SELECT COUNT(*) AS n FROM relations WHERE kind = 'affects'")["n"] == 2
@@ -636,26 +790,53 @@ def test_l2_finds_a_moved_file_behind_600_rejected_rows(tmp_path):
     add_meeting(db, "m", ago=1, project_id="p")
     old_id = add_file(db, root_id, "报价单.xlsx", gone=True)
     new_id = add_file(db, root_id, "发客户/报价单.xlsx")
-    db.execute("UPDATE material_files SET content_key = 'k-quote' WHERE id IN (?, ?)", (old_id, new_id))
+    db.execute(
+        "UPDATE material_files SET content_key = 'k-quote' WHERE id IN (?, ?)", (old_id, new_id)
+    )
     stamp = at(-3600)
     with db.transaction() as connection:
         connection.executemany(
             """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id, stem_key, content_key,
                    root_id, rel_path, created_at, updated_at, decided_at)
                VALUES ('mention', 'p', ?, 'rejected', 'llm', 'm', ?, ?, ?, ?, ?, ?, ?)""",
-            [(f"m|旧{index}", f"旧{index}", f"k-gone-{index}", root_id, f"旧{index}.docx", stamp, stamp, stamp)
-             for index in range(600)],
+            [
+                (
+                    f"m|旧{index}",
+                    f"旧{index}",
+                    f"k-gone-{index}",
+                    root_id,
+                    f"旧{index}.docx",
+                    stamp,
+                    stamp,
+                    stamp,
+                )
+                for index in range(600)
+            ],
         )
         relations.upsert_system(
             connection,
-            [{"kind": "mention", "project_id": "p", "ident": "m|报价单", "status": "shown", "origin": "llm",
-              "meeting_id": "m", "stem_key": "报价单", "file_id": old_id, "content_key": "k-quote",
-              "root_id": root_id, "rel_path": "报价单.xlsx"}],
+            [
+                {
+                    "kind": "mention",
+                    "project_id": "p",
+                    "ident": "m|报价单",
+                    "status": "shown",
+                    "origin": "llm",
+                    "meeting_id": "m",
+                    "stem_key": "报价单",
+                    "file_id": old_id,
+                    "content_key": "k-quote",
+                    "root_id": root_id,
+                    "rel_path": "报价单.xlsx",
+                }
+            ],
             stamp,
             since=stamp,
         )
     moved = db.query_one("SELECT id FROM relations WHERE ident = 'm|报价单'")["id"]
-    before = db.query_all("SELECT id, status, file_id, updated_at FROM relations WHERE status = 'rejected'")
+    before = db.query_all(
+        "SELECT id, status, file_id, updated_at FROM relations WHERE status = 'rejected'"
+    )
     w = worker(db, clock=Clock())
 
     first = w.run_round()
@@ -663,9 +844,15 @@ def test_l2_finds_a_moved_file_behind_600_rejected_rows(tmp_path):
     w.run_round()
 
     assert db.query_one("SELECT file_id, status FROM relations WHERE id = ?", (moved,)) == {
-        "file_id": new_id, "status": "shown",
+        "file_id": new_id,
+        "status": "shown",
     }
-    assert db.query_all("SELECT id, status, file_id, updated_at FROM relations WHERE status = 'rejected'") == before
+    assert (
+        db.query_all(
+            "SELECT id, status, file_id, updated_at FROM relations WHERE status = 'rejected'"
+        )
+        == before
+    )
 
 
 def test_l2_clears_system_rows_and_leaves_answers_and_manual_rows(tmp_path):
@@ -676,18 +863,47 @@ def test_l2_clears_system_rows_and_leaves_answers_and_manual_rows(tmp_path):
     other_id = add_file(db, root_id, "别的.docx")
     db.execute("UPDATE material_files SET content_key = 'k-other' WHERE id = ?", (other_id,))
     stamp = at(-3600)
-    base = {"project_id": "p", "meeting_id": "m", "root_id": root_id, "rel_path": "旧稿.docx", "file_id": gone_id}
+    base = {
+        "project_id": "p",
+        "meeting_id": "m",
+        "root_id": root_id,
+        "rel_path": "旧稿.docx",
+        "file_id": gone_id,
+    }
     with db.transaction() as connection:
         relations.upsert_system(
             connection,
             [
-                {**base, "kind": "mention", "ident": "m|旧稿", "status": "shown", "origin": "llm", "stem_key": "旧稿",
-                 "content_key": "k-old"},
-                {**base, "kind": "mention", "ident": "m|手动", "status": "shown", "origin": "llm", "stem_key": "手动",
-                 "content_key": "k-old2"},
+                {
+                    **base,
+                    "kind": "mention",
+                    "ident": "m|旧稿",
+                    "status": "shown",
+                    "origin": "llm",
+                    "stem_key": "旧稿",
+                    "content_key": "k-old",
+                },
+                {
+                    **base,
+                    "kind": "mention",
+                    "ident": "m|手动",
+                    "status": "shown",
+                    "origin": "llm",
+                    "stem_key": "手动",
+                    "content_key": "k-old2",
+                },
                 # 相关只按内容标识找：同一路径上有别的内容的活文件也算断了线
-                {**base, "kind": "related", "ident": "m|k-old3", "status": "shown", "origin": "vector",
-                 "content_key": "k-old3", "rel_path": "别的.docx", "file_id": None, "score": 0.7},
+                {
+                    **base,
+                    "kind": "related",
+                    "ident": "m|k-old3",
+                    "status": "shown",
+                    "origin": "vector",
+                    "content_key": "k-old3",
+                    "rel_path": "别的.docx",
+                    "file_id": None,
+                    "score": 0.7,
+                },
             ],
             stamp,
             since=stamp,
@@ -715,7 +931,10 @@ def test_l2_never_undoes_an_answer_made_during_the_round(tmp_path):
         (root_id, gone_id, later, later),
     )
     worker(db, clock=Clock()).run_round()
-    assert db.query_one("SELECT status, updated_at FROM relations") == {"status": "shown", "updated_at": later}
+    assert db.query_one("SELECT status, updated_at FROM relations") == {
+        "status": "shown",
+        "updated_at": later,
+    }
 
 
 # ---------------------------------------------------------------------- 清理
@@ -754,7 +973,9 @@ def test_housekeeping_once_a_day_in_batches(tmp_path, monkeypatch):
 
     def candidate(term, status, days, *, undo=None, decided_days=None):
         stamp = (NOW - timedelta(days=days)).isoformat()
-        decided = (NOW - timedelta(days=decided_days)).isoformat() if decided_days is not None else None
+        decided = (
+            (NOW - timedelta(days=decided_days)).isoformat() if decided_days is not None else None
+        )
         db.execute(
             """INSERT INTO glossary_candidates(project_id, term, term_key, status, undo_json, decided_at,
                    created_at, updated_at) VALUES ('p', ?, ?, ?, ?, ?, ?, ?)""",
@@ -776,13 +997,30 @@ def test_housekeeping_once_a_day_in_batches(tmp_path, monkeypatch):
 
     w.run_round()
 
-    assert [row["day"] for row in db.query_all("SELECT day FROM material_file_events")] == ["2025-09-01"]
-    assert sorted(row["ident"] for row in db.query_all("SELECT ident FROM relations")) == ["m|手动", "m|新", "m|驳回"]
-    assert {row["term"]: row["undo_json"] for row in db.query_all("SELECT term, undo_json FROM glossary_candidates")} == {
-        "新词": None, "不要": None, "记入早": None, "记入晚": '{"term_id": "t2"}',
+    assert [row["day"] for row in db.query_all("SELECT day FROM material_file_events")] == [
+        "2025-09-01"
+    ]
+    assert sorted(row["ident"] for row in db.query_all("SELECT ident FROM relations")) == [
+        "m|手动",
+        "m|新",
+        "m|驳回",
+    ]
+    assert {
+        row["term"]: row["undo_json"]
+        for row in db.query_all("SELECT term, undo_json FROM glossary_candidates")
+    } == {
+        "新词": None,
+        "不要": None,
+        "记入早": None,
+        "记入晚": '{"term_id": "t2"}',
     }
-    assert [row["model"] for row in db.query_all("SELECT model FROM meeting_windows")] == ["bge-test"]
-    assert db.query_one("SELECT value FROM app_state WHERE key = 'links_housekeeping_at'")["value"] == NOW.isoformat()
+    assert [row["model"] for row in db.query_all("SELECT model FROM meeting_windows")] == [
+        "bge-test"
+    ]
+    assert (
+        db.query_one("SELECT value FROM app_state WHERE key = 'links_housekeeping_at'")["value"]
+        == NOW.isoformat()
+    )
 
     # 24 小时以内不再清理；过了 24 小时再来
     event("2025-08-02")
@@ -847,8 +1085,12 @@ def test_semantic_rebuild_encodes_in_locked_batches(tmp_path):
     db.execute("INSERT INTO meetings(id, title) VALUES ('m', '会')")
     version = db.create_transcript_version("m", "funasr", published=True)
     db.replace_segments(
-        version, "m",
-        [{"id": f"s{n}", "ordinal": n, "start_ms": n, "end_ms": n + 1, "text": f"第 {n} 句"} for n in range(40)],
+        version,
+        "m",
+        [
+            {"id": f"s{n}", "ordinal": n, "start_ms": n, "end_ms": n + 1, "text": f"第 {n} 句"}
+            for n in range(40)
+        ],
     )
     assert index.rebuild() == 40
     assert embedder.batches == [32, 8]
@@ -862,8 +1104,11 @@ def test_snapshot_does_not_refresh(world, monkeypatch):
     monkeypatch.undo()
     vectors.refresh()
     snap = vectors.snapshot()
-    assert snap.n == 3 and snap.dim == 4 and sorted(snap.ids[: snap.n].tolist()) == sorted(
-        chunk_ids(db, f"k-{n}")[0] for n in range(3)
+    assert (
+        snap.n == 3
+        and snap.dim == 4
+        and sorted(snap.ids[: snap.n].tolist())
+        == sorted(chunk_ids(db, f"k-{n}")[0] for n in range(3))
     )
 
 
@@ -913,7 +1158,9 @@ def test_new_rows_after_a_snapshot_stay_outside_it(world):
 def test_embed_loop_does_not_refresh_while_transcribing(world, monkeypatch):
     db = matrix_world(world, 2)
     busy = {"value": True}
-    vectors = MaterialVectors(db, vector_settings(), FakeEncoder(), busy_check=lambda: busy["value"])
+    vectors = MaterialVectors(
+        db, vector_settings(), FakeEncoder(), busy_check=lambda: busy["value"]
+    )
     refreshed: list[int] = []
     monkeypatch.setattr(vectors, "refresh", lambda: refreshed.append(1))
     assert vectors.background_round()["refreshed"] is False and refreshed == []
@@ -944,7 +1191,9 @@ def app_settings(tmp_path, **overrides):
 def test_health_has_links_details_without_changing_services(tmp_path):
     from .test_tasks_api import FakeRelayClient
 
-    on = TestClient(create_app(app_settings(tmp_path / "on", links_enabled=True), FakeRelayClient()))
+    on = TestClient(
+        create_app(app_settings(tmp_path / "on", links_enabled=True), FakeRelayClient())
+    )
     off = TestClient(create_app(app_settings(tmp_path / "off"), FakeRelayClient()))
     health_on = on.get("/api/health").json()
     health_off = off.get("/api/health").json()
@@ -953,13 +1202,31 @@ def test_health_has_links_details_without_changing_services(tmp_path):
     links = health_on["details"]["links"]
     assert links["enabled"] is True and links["phases"] == {} and links["last_round_at"] is None
     assert set(links) == {
-        "enabled", "paused", "last_round_at", "phases", "waiting", "open", "failed", "llm", "calls_today",
+        "enabled",
+        "paused",
+        "last_round_at",
+        "phases",
+        "waiting",
+        "open",
+        "failed",
+        "llm",
+        "calls_today",
     }
     assert links["failed"] == {"mentions": 0, "pairs": 0}
-    assert set(links["waiting"]) == {"decisions", "mentions", "pairs", "related", "affects", "terms"}
+    assert set(links["waiting"]) == {
+        "decisions",
+        "mentions",
+        "pairs",
+        "related",
+        "affects",
+        "terms",
+    }
     assert set(links["open"]) == {"produced", "affects"}
     assert links["calls_today"] == {"background": 0, "qa": 0}
-    assert health_on["services"] == health_off["services"] and health_on["status"] == health_off["status"]
+    assert (
+        health_on["services"] == health_off["services"]
+        and health_on["status"] == health_off["status"]
+    )
     assert "links" not in health_on["services"]
 
 
@@ -1002,7 +1269,10 @@ def cli_world(tmp_path, monkeypatch):
     )
     db.execute(
         "INSERT INTO app_state(key, value, updated_at) VALUES ('links_llm_usage', ?, ?)",
-        (json.dumps({"day": datetime.now().date().isoformat(), "background": 7, "qa": 2}), utc_now()),
+        (
+            json.dumps({"day": datetime.now().date().isoformat(), "background": 7, "qa": 2}),
+            utc_now(),
+        ),
     )
     return db, path
 
@@ -1029,8 +1299,16 @@ def test_cli_links_status_speaks_chinese_and_local_time(tmp_path, monkeypatch, c
 
     assert set(PHASE_STATES) <= set(cli.LINKS_PHASE_STATES)
     cli_world(tmp_path, monkeypatch)
-    health = {"details": {"links": {"last_round_at": "2026-09-28T13:30:08Z", "paused": None, "llm": "ok",
-                                    "phases": {"decisions": "done", "related": "budget"}}}}
+    health = {
+        "details": {
+            "links": {
+                "last_round_at": "2026-09-28T13:30:08Z",
+                "paused": None,
+                "llm": "ok",
+                "phases": {"decisions": "done", "related": "budget"},
+            }
+        }
+    }
     monkeypatch.setattr(cli, "_server_json", lambda _settings, _path: health)
 
     assert cli.main(["links", "status"]) == 0
@@ -1039,7 +1317,10 @@ def test_cli_links_status_speaks_chinese_and_local_time(tmp_path, monkeypatch, c
     local = datetime(2026, 9, 28, 13, 30, 8, tzinfo=UTC).astimezone().strftime("%Y-%m-%d %H:%M")
     assert f"上一轮：{local}" in out and "13:30:08Z" not in out
     assert cli.main(["links", "status", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["phases"] == {"decisions": "done", "related": "budget"}
+    assert json.loads(capsys.readouterr().out)["phases"] == {
+        "decisions": "done",
+        "related": "budget",
+    }
 
 
 def test_cli_links_decisions_and_retry(tmp_path, monkeypatch, capsys):
@@ -1051,9 +1332,15 @@ def test_cli_links_decisions_and_retry(tmp_path, monkeypatch, capsys):
     LinksWorker(db, loop_settings(), clock=Clock(), now=lambda: NOW).run_round()
     assert cli.main(["links", "decisions", "--meeting", "m", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["source"] == "table" and [item["id"][:4] for item in payload["decisions"]] == ["dec-", "dec-"]
+    assert payload["source"] == "table" and [item["id"][:4] for item in payload["decisions"]] == [
+        "dec-",
+        "dec-",
+    ]
     # 4c：对比时会发的提示词，只打印，不发送（测试护栏拦着真的 AI 请求）
-    assert payload["prompt"]["user"].startswith("<this>\nn1 [") and "报价单按第三版发出" in payload["prompt"]["user"]
+    assert (
+        payload["prompt"]["user"].startswith("<this>\nn1 [")
+        and "报价单按第三版发出" in payload["prompt"]["user"]
+    )
     assert cli.main(["links", "decisions", "--meeting", "m"]) == 0
     out = capsys.readouterr().out
     assert "---- system ----" in out and "<others>" in out and "不发送" in out
@@ -1064,7 +1351,10 @@ def test_cli_links_decisions_and_retry(tmp_path, monkeypatch, capsys):
 
     assert cli.main(["links", "retry"]) == 0
     assert "已放回 1 场" in capsys.readouterr().out
-    assert db.query_one("SELECT state, attempts FROM mention_extractions") == {"state": "pending", "attempts": 0}
+    assert db.query_one("SELECT state, attempts FROM mention_extractions") == {
+        "state": "pending",
+        "attempts": 0,
+    }
 
 
 def test_doctor_reports_links_without_requiring_it(tmp_path, monkeypatch, capsys):

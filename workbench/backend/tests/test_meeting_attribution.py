@@ -1,5 +1,6 @@
 """会议归属地基（v13 / 第一期 1a）：只在归属真的变了时才写、任务跟着会议走、
 只有新生成的纪要才重判归属。"""
+
 import json
 import uuid
 
@@ -27,7 +28,9 @@ def _project(client, headers, name):
     return client.post("/api/projects", json={"name": name}, headers=headers).json()["id"]
 
 
-def _task(db, *, project_id=None, requirement_id=None, status="pending_confirm", meeting_id=MEETING):
+def _task(
+    db, *, project_id=None, requirement_id=None, status="pending_confirm", meeting_id=MEETING
+):
     task_id = f"task-{uuid.uuid4().hex}"
     now = utc_now()
     db.execute(
@@ -41,9 +44,7 @@ def _task(db, *, project_id=None, requirement_id=None, status="pending_confirm",
 
 
 def _meeting(db):
-    return db.query_one(
-        "SELECT project_id, project_origin FROM meetings WHERE id=?", (MEETING,)
-    )
+    return db.query_one("SELECT project_id, project_origin FROM meetings WHERE id=?", (MEETING,))
 
 
 def _task_project(db, task_id):
@@ -166,10 +167,13 @@ def test_moving_to_another_project_leaves_requirement_tasks_behind(tmp_path):
     metadata = _events(db, "meeting_metadata_updated")[-1]
     assert (metadata["project_from"], metadata["project_to"]) == (project_a, project_b)
     # 挂在旧需求上的任务没被写事件，刚确认的任务仍能撤销确认
-    assert db.query_one(
-        "SELECT COUNT(*) AS n FROM task_events WHERE task_id IN (?, ?)",
-        (confirmed_on_a, draft_on_a),
-    )["n"] == 0
+    assert (
+        db.query_one(
+            "SELECT COUNT(*) AS n FROM task_events WHERE task_id IN (?, ?)",
+            (confirmed_on_a, draft_on_a),
+        )["n"]
+        == 0
+    )
 
 
 def test_resending_the_same_project_changes_nothing(tmp_path):
@@ -201,9 +205,10 @@ def test_returning_to_ai_clears_origin_and_reseeds(tmp_path):
 
     assert _meeting(db) == {"project_id": None, "project_origin": None}
     assert _task_project(db, moved) is None
-    assert db.query_one(
-        "SELECT COUNT(*) AS n FROM project_links WHERE meeting_id=?", (MEETING,)
-    )["n"] == 0
+    assert (
+        db.query_one("SELECT COUNT(*) AS n FROM project_links WHERE meeting_id=?", (MEETING,))["n"]
+        == 0
+    )
     assert linker.seed() == 1
 
 
@@ -245,13 +250,16 @@ def test_only_newly_generated_minutes_reopen_attribution(tmp_path, monkeypatch):
     monkeypatch.setattr(
         project_linking_module,
         "call_llm",
-        lambda settings, prompt, *, system: '{"project_match":null,"confidence":"low","reason":"x"}',
+        lambda settings, prompt, *, system: (
+            '{"project_match":null,"confidence":"low","reason":"x"}'
+        ),
     )
     linker = ProjectLinker(db, settings)
     linker.link_pending()
-    assert db.query_one(
-        "SELECT status FROM project_links WHERE meeting_id=?", (MEETING,)
-    )["status"] == "unresolved"
+    assert (
+        db.query_one("SELECT status FROM project_links WHERE meeting_id=?", (MEETING,))["status"]
+        == "unresolved"
+    )
 
     for version_no, kind in ((2, "draft"), (3, "published_edit"), (4, "superseded")):
         db.execute(

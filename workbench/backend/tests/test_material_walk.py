@@ -1,4 +1,5 @@
 """1f 材料盘点与图片文字识别试跑：只读、分层统计、读不了的五种原因、挑图和对照报告。"""
+
 import json
 import os
 import zipfile
@@ -30,12 +31,22 @@ def docx(path: Path) -> None:
 
 
 def build_tree(root: Path) -> None:
-    write(root / "合同" / "报价.pdf", b"%PDF-1.4\n1 0 obj << /Type /Font /BaseFont /Song >> endobj\n")
-    write(root / "合同" / "扫描件.pdf", b"%PDF-1.4\n1 0 obj << /XObject << /Im0 2 0 R >> /Subtype /Image >>\n")
+    write(
+        root / "合同" / "报价.pdf", b"%PDF-1.4\n1 0 obj << /Type /Font /BaseFont /Song >> endobj\n"
+    )
+    write(
+        root / "合同" / "扫描件.pdf",
+        b"%PDF-1.4\n1 0 obj << /XObject << /Im0 2 0 R >> /Subtype /Image >>\n",
+    )
     write(root / "合同" / "加密.pdf", b"%PDF-1.6\ntrailer << /Encrypt 5 0 R >>\n")
     write(root / "合同" / "坏.pdf", b"not a pdf at all")
     packed = zlib.compress(b"<< /Type /Font /Subtype /Type0 >>")
-    write(root / "合同" / "新版.pdf", b"%PDF-1.7\n3 0 obj << /Type /ObjStm /Filter /FlateDecode >>\nstream\n" + packed + b"\nendstream\n")
+    write(
+        root / "合同" / "新版.pdf",
+        b"%PDF-1.7\n3 0 obj << /Type /ObjStm /Filter /FlateDecode >>\nstream\n"
+        + packed
+        + b"\nendstream\n",
+    )
     docx(root / "文档" / "方案.docx")
     build_encrypted_ooxml(root / "文档" / "加密.docx")
     build_doc(root / "文档" / "改了扩展名的老文档.docx")
@@ -69,18 +80,30 @@ def test_walk_counts_layers_skips_system_files_and_keeps_name_only_dirs_apart(tm
     # 文档：5 个 PDF、4 个 docx（~$ 锁文件不算）、1 个 pages 包、1 个 md
     assert layers["text"]["count"] == 11
     assert (layers["image"]["count"], layers["image"]["small"]) == (3, 1)
-    assert (layers["media"]["count"], layers["media"]["audio"], layers["media"]["video"]) == (2, 1, 1)
+    assert (layers["media"]["count"], layers["media"]["audio"], layers["media"]["video"]) == (
+        2,
+        1,
+        1,
+    )
     assert layers["name_only"]["count"] == 1
     # 带 /Encrypt 的 PDF 单列，不直接算要密码；改了扩展名的老 .doc 也不算
     assert report["pdf"] == {"text": 2, "scanned": 1, "unknown": 0, "encrypted": 1}
     unreadable = {reason: bucket["count"] for reason, bucket in report["unreadable"].items()}
-    assert unreadable == {"password": 1, "corrupt": 2, "unsupported": 1, "timeout": 0, "permission": 0}
+    assert unreadable == {
+        "password": 1,
+        "corrupt": 2,
+        "unsupported": 1,
+        "timeout": 0,
+        "permission": 0,
+    }
     assert "带加密标记（多数能读，第三期读的时候才知道）：1 个" in render_report(report)
     assert report["skipped_system"] == 4
     assert report["symlinks"] == 1
     assert report["packages"] == 1
     assert {name: bucket["files"] for name, bucket in report["name_only_dirs"].items()} == {
-        "node_modules": 1, ".git": 1, "声档会议记录": 1,
+        "node_modules": 1,
+        ".git": 1,
+        "声档会议记录": 1,
     }
     assert report["duplicates"]["groups"] == 1
     # 总数也算上只收文件名的那 3 个
@@ -96,7 +119,9 @@ def test_walk_reads_media_duration_when_ffprobe_is_there(tmp_path, monkeypatch):
     monkeypatch.setattr(
         material_walk,
         "ffprobe_duration",
-        lambda path, ffprobe: (None, 5400.0) if path.suffix == ".m4a" else (material_walk.TIMEOUT, None),
+        lambda path, ffprobe: (
+            (None, 5400.0) if path.suffix == ".m4a" else (material_walk.TIMEOUT, None)
+        ),
     )
 
     report = walk_materials([{"path": str(root)}])
@@ -172,7 +197,8 @@ def test_cli_walk_needs_dry_run_and_reads_roots_from_the_database(tmp_path, monk
     db = Database(data_dir / "workbench.sqlite3")
     db.initialize()
     db.execute(
-        "INSERT INTO projects(id, name, color, created_at) VALUES ('p-yt', '云图AI', '#123456', ?)", (utc_now(),)
+        "INSERT INTO projects(id, name, color, created_at) VALUES ('p-yt', '云图AI', '#123456', ?)",
+        (utc_now(),),
     )
     db.execute(
         """INSERT INTO project_material_roots(project_id, path, created_at)
@@ -186,7 +212,21 @@ def test_cli_walk_needs_dry_run_and_reads_roots_from_the_database(tmp_path, monk
     assert "请加 --dry-run：材料索引由服务在后台自动建，这个命令只做盘点" in capsys.readouterr().err
 
     out = tmp_path / "walk.json"
-    assert cli.main(["materials", "walk", "--dry-run", "--project", "云图ai", "--no-probe", "--json", str(out)]) == 0
+    assert (
+        cli.main(
+            [
+                "materials",
+                "walk",
+                "--dry-run",
+                "--project",
+                "云图ai",
+                "--no-probe",
+                "--json",
+                str(out),
+            ]
+        )
+        == 0
+    )
     printed = capsys.readouterr().out
     assert f"云图AI：{root}" in printed
     assert "读不了的（文件名照样能搜到）" in printed
@@ -239,7 +279,9 @@ def test_engines_explain_what_to_install(tmp_path, monkeypatch):
         "tesseract 没跑：没找到 tesseract：brew install tesseract tesseract-lang",
     ]
     engines, notes = ocr_trial.prepare_engines(["vision"], tmp_path, system="Darwin")
-    assert notes == ["Vision 没跑：没找到 swiftc：先在终端运行 xcode-select --install 装 Xcode 命令行工具"]
+    assert notes == [
+        "Vision 没跑：没找到 swiftc：先在终端运行 xcode-select --install 装 Xcode 命令行工具"
+    ]
 
 
 def test_trial_report_compares_engines_side_by_side(tmp_path):
@@ -255,9 +297,17 @@ def test_trial_report_compares_engines_side_by_side(tmp_path):
 
     report = ocr_trial.run_trial(images, engines)
 
-    assert report["summary"]["vision"] == {"images": 2, "succeeded": 2, "avg_seconds": 0.4, "chars": 12, "empty": 0}
+    assert report["summary"]["vision"] == {
+        "images": 2,
+        "succeeded": 2,
+        "avg_seconds": 0.4,
+        "chars": 12,
+        "empty": 0,
+    }
     assert report["summary"]["tesseract"]["succeeded"] == 1
-    markdown = ocr_trial.render_markdown(report, ["tesseract 没装中文语言包，只能认英文：brew install tesseract-lang"])
+    markdown = ocr_trial.render_markdown(
+        report, ["tesseract 没装中文语言包，只能认英文：brew install tesseract-lang"]
+    )
     assert "| Vision（macOS 自带） | 2/2 | 0.4 秒 | 12 | 0 |" in markdown
     assert "**tesseract**：没认成，tesseract 读不了 HEIC" in markdown
     assert "```text\n数理协会 成立\n```" in markdown
@@ -270,14 +320,22 @@ def test_cli_ocr_trial_writes_results_into_the_data_dir(tmp_path, monkeypatch, c
     monkeypatch.setattr(
         ocr_trial,
         "prepare_engines",
-        lambda wanted, workdir: ({"vision": lambda path: {"text": "你好", "seconds": 0.3, "error": None}}, []),
+        lambda wanted, workdir: (
+            {"vision": lambda path: {"text": "你好", "seconds": 0.3, "error": None}},
+            [],
+        ),
     )
 
     assert cli.main(["materials", "ocr-trial", "--root", str(root)]) == 0
 
     [result_dir] = list((data_dir / "ocr-trial").iterdir())
     assert "你好" in (result_dir / "结果.md").read_text(encoding="utf-8")
-    assert json.loads((result_dir / "result.json").read_text(encoding="utf-8"))["summary"]["vision"]["chars"] == 2
+    assert (
+        json.loads((result_dir / "result.json").read_text(encoding="utf-8"))["summary"]["vision"][
+            "chars"
+        ]
+        == 2
+    )
     assert "Vision（macOS 自带）：认出 1/1 张" in capsys.readouterr().out
 
 

@@ -1,4 +1,5 @@
 """会议卡片接口（第一期 1c-2）：详情和改归属带卡片去向、重写、补写、撤下、暂停与恢复。"""
+
 from pathlib import Path
 
 from meeting_workbench import cards
@@ -105,7 +106,9 @@ def test_unassigned_meeting_says_what_the_card_is_waiting_for(tmp_path):
     _meeting(db, project_id)
     writer.reconcile()
 
-    detail = client.patch(f"/api/meetings/{MEETING}", json={"project_id": ""}, headers=headers).json()
+    detail = client.patch(
+        f"/api/meetings/{MEETING}", json={"project_id": ""}, headers=headers
+    ).json()
 
     assert detail["effects"]["card"]["action"] == "retired"
     assert detail["card"]["reason"] == "waiting_project"
@@ -130,9 +133,12 @@ def test_regenerating_a_deleted_card(tmp_path):
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "synced"
     assert _card_files(root) == ["260926 初审规则沟通.md"]
-    assert client.post(
-        "/api/meetings/nope/card", json={"action": "rewrite"}, headers=headers
-    ).status_code == 404
+    assert (
+        client.post(
+            "/api/meetings/nope/card", json={"action": "rewrite"}, headers=headers
+        ).status_code
+        == 404
+    )
 
 
 def test_mounting_a_folder_writes_the_backlog_and_the_board_counts_cards(tmp_path):
@@ -169,7 +175,9 @@ def test_offline_disk_does_not_block_renaming_the_project(tmp_path):
     writer.reconcile()
 
     response = client.patch(
-        f"/api/projects/{project_id}", json={"name": "云图AI 二期", "color": "#5090ff"}, headers=headers
+        f"/api/projects/{project_id}",
+        json={"name": "云图AI 二期", "color": "#5090ff"},
+        headers=headers,
     )
 
     assert response.status_code == 200, response.text
@@ -187,9 +195,15 @@ def test_backfill_banner_answer_and_notices(tmp_path, monkeypatch):
     banner = client.get("/api/cards/banner").json()
     assert banner["backfill"]["meetings"] == 1
     assert banner["notices"] == []
-    assert client.post("/api/cards/backfill", json={"answer": "maybe"}, headers=headers).status_code == 422
+    assert (
+        client.post("/api/cards/backfill", json={"answer": "maybe"}, headers=headers).status_code
+        == 422
+    )
 
-    assert client.post("/api/cards/backfill", json={"answer": "yes"}, headers=headers).status_code == 200
+    assert (
+        client.post("/api/cards/backfill", json={"answer": "yes"}, headers=headers).status_code
+        == 200
+    )
     writer.reconcile()
 
     banner = client.get("/api/cards/banner").json()
@@ -218,7 +232,9 @@ def test_pause_resume_and_retire_all(tmp_path):
     assert not (root / CARDS / "00 索引.md").exists()
     assert client.get(f"/api/projects/{project_id}/board").json()["cards"]["paused"] is True
 
-    resumed = client.post(f"/api/projects/{project_id}/cards/resume", json={}, headers=headers).json()
+    resumed = client.post(
+        f"/api/projects/{project_id}/cards/resume", json={}, headers=headers
+    ).json()
     assert resumed["written"] == 1
     assert resumed["cards"]["paused"] is False
     assert _card_files(root) == ["260926 初审规则沟通.md"]
@@ -280,7 +296,9 @@ def test_reassigning_while_the_scanner_reconciles_leaves_one_card(tmp_path):
     thread.start()
     try:
         for target in (project_b, project_a, project_b):
-            response = client.patch(f"/api/meetings/{MEETING}", json={"project_id": target}, headers=headers)
+            response = client.patch(
+                f"/api/meetings/{MEETING}", json={"project_id": target}, headers=headers
+            )
             assert response.status_code == 200, response.text
     finally:
         stop.set()

@@ -282,9 +282,7 @@ def test_concurrent_upload_completion_allows_only_one_relay_enqueue_owner(tmp_pa
     assert second_response.json()["status"] == "enqueueing"
 
 
-def test_upload_recovers_relay_success_before_receipt_commit_with_same_job(
-    tmp_path, monkeypatch
-):
+def test_upload_recovers_relay_success_before_receipt_commit_with_same_job(tmp_path, monkeypatch):
     client, relay = make_client(tmp_path)
     headers = write_headers(client)
     payload = b"audio-data"
@@ -346,9 +344,7 @@ def test_manual_path_enqueue_rejects_paths_outside_managed_roots(tmp_path, audio
     client, relay = make_client(tmp_path)
     headers = write_headers(client)
 
-    response = client.post(
-        "/api/jobs/enqueue", json={"audio_path": audio_path}, headers=headers
-    )
+    response = client.post("/api/jobs/enqueue", json={"audio_path": audio_path}, headers=headers)
 
     assert response.status_code == 400
     assert relay.enqueued == []
@@ -393,7 +389,12 @@ def test_hotwords_reach_manual_upload_retry_and_retranscribe_without_event_plain
         headers=headers,
     )
 
-    assert (manual.status_code, retried.status_code, uploaded.status_code, retranscribed.status_code) == (
+    assert (
+        manual.status_code,
+        retried.status_code,
+        uploaded.status_code,
+        retranscribed.status_code,
+    ) == (
         200,
         200,
         200,
@@ -405,7 +406,9 @@ def test_hotwords_reach_manual_upload_retry_and_retranscribe_without_event_plain
         ("enqueue", ["药品名"]),
         ("retry", ["术语甲"]),
     ]
-    event_payload = "\n".join(row["payload_json"] for row in db.query_all("SELECT payload_json FROM events"))
+    event_payload = "\n".join(
+        row["payload_json"] for row in db.query_all("SELECT payload_json FROM events")
+    )
     assert all(term not in event_payload for term in ["ACME", "云图", "客户A", "药品名", "术语甲"])
 
 
@@ -496,9 +499,7 @@ def test_minutes_regeneration_pins_the_requested_backend(tmp_path):
     )
     relay.statuses["job-linked"] = "completed_unreviewed"
 
-    default = client.post(
-        "/api/meetings/vm-linked/minutes/regenerate", json={}, headers=headers
-    )
+    default = client.post("/api/meetings/vm-linked/minutes/regenerate", json={}, headers=headers)
     assert default.status_code == 200
     assert relay.backend_calls[-1] == ("retry", None)
 
@@ -535,7 +536,12 @@ def test_minutes_regeneration_tells_relay_the_meeting_project(tmp_path):
     )
     relay.statuses["job-linked"] = "completed_unreviewed"
 
-    assert client.post("/api/meetings/vm-linked/minutes/regenerate", json={}, headers=headers).status_code == 200
+    assert (
+        client.post(
+            "/api/meetings/vm-linked/minutes/regenerate", json={}, headers=headers
+        ).status_code
+        == 200
+    )
     assert relay.project_hint_calls[-1] == ("retry", None)
 
     db.execute(
@@ -543,9 +549,19 @@ def test_minutes_regeneration_tells_relay_the_meeting_project(tmp_path):
         (utc_now(),),
     )
     db.execute("UPDATE meetings SET project_id='p-yt' WHERE id='vm-linked'")
-    assert client.post("/api/meetings/vm-linked/minutes/regenerate", json={}, headers=headers).status_code == 200
+    assert (
+        client.post(
+            "/api/meetings/vm-linked/minutes/regenerate", json={}, headers=headers
+        ).status_code
+        == 200
+    )
     assert relay.project_hint_calls[-1] == ("retry", "p-yt")
-    assert client.post("/api/jobs/job-linked/retry", json={"stage": "transcribing"}, headers=headers).status_code == 200
+    assert (
+        client.post(
+            "/api/jobs/job-linked/retry", json={"stage": "transcribing"}, headers=headers
+        ).status_code
+        == 200
+    )
     assert relay.project_hint_calls[-1] == ("retry", "p-yt")
 
 
@@ -608,7 +624,9 @@ def test_minutes_snapshot_is_removed_when_relay_rejects_regeneration(tmp_path):
     db.execute("UPDATE meetings SET source_job_id='job-cleanup' WHERE id='vm-cleanup'")
     relay.statuses["job-cleanup"] = "published"
 
-    def fail_retry(job_id, stage, *, transcript_path=None, hotwords=None, backend=None, project_hint=None):
+    def fail_retry(
+        job_id, stage, *, transcript_path=None, hotwords=None, backend=None, project_hint=None
+    ):
         relay.retry_transcripts.append((str(transcript_path), Path(transcript_path).read_text()))
         raise RelayUnavailable("rejected")
 
@@ -787,9 +805,12 @@ def test_auto_recovery_links_a_job_to_its_meeting_by_recording_name(tmp_path):
 
     assert client.app.state.recover_stalled_minutes() == 1
     assert relay.retried == [("job-abc", "minutes_generating")]
-    assert client.app.state.db.query_one(
-        "SELECT source_job_id FROM meetings WHERE id='vm-20260102-101500'"
-    )["source_job_id"] == "job-abc"
+    assert (
+        client.app.state.db.query_one(
+            "SELECT source_job_id FROM meetings WHERE id='vm-20260102-101500'"
+        )["source_job_id"]
+        == "job-abc"
+    )
 
 
 def test_auto_recovery_ignores_an_unrelated_recording_name(tmp_path):

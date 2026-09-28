@@ -113,19 +113,14 @@ def atomic_copy_verified(source: Path, destination: Path, expected_sha256: str) 
     if source.is_symlink() or not source.is_file() or sha256_file(source) != expected_sha256:
         raise PublishValidationError("attempt 来源文件已变化，禁止发布")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{destination.name}.", dir=destination.parent
-    )
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
     try:
         with source.open("rb") as input_handle, os.fdopen(descriptor, "wb") as output_handle:
             shutil.copyfileobj(input_handle, output_handle)
             output_handle.flush()
             os.fsync(output_handle.fileno())
         temporary_path = Path(temporary)
-        if (
-            sha256_file(temporary_path) != expected_sha256
-            or sha256_file(source) != expected_sha256
-        ):
+        if sha256_file(temporary_path) != expected_sha256 or sha256_file(source) != expected_sha256:
             raise PublishValidationError("attempt 来源文件在复制期间发生变化，禁止发布")
         os.replace(temporary_path, destination)
         fsync_directory(destination.parent)
@@ -693,8 +688,7 @@ class MeetingService:
                 archive_dir = self._validated_archive_directory(canonical_dir)
                 installing_new_directory = False
                 work_dir = (
-                    archive_dir.parent
-                    / f".{archive_dir.name}.workbench-publish-{publish_token}"
+                    archive_dir.parent / f".{archive_dir.name}.workbench-publish-{publish_token}"
                 )
             else:
                 archive_dir = self._new_archive_directory(meeting)
@@ -732,7 +726,9 @@ class MeetingService:
         managed_canonical_dir = (
             attempt_provenance.source_directory
             if copying_managed_sources and attempt_provenance
-            else None if copying_managed_sources else archive_dir
+            else None
+            if copying_managed_sources
+            else archive_dir
         )
         self._validate_source_artifacts(
             artifacts,
@@ -750,9 +746,7 @@ class MeetingService:
             canonical_dir=archive_dir,
             meeting_id=meeting_id,
             preferred_directory=(
-                attempt_provenance.source_directory
-                if promoting and attempt_provenance
-                else None
+                attempt_provenance.source_directory if promoting and attempt_provenance else None
             ),
         )
         audio_path = Path(audio_row["path"]) if audio_row else None
@@ -767,9 +761,7 @@ class MeetingService:
         segments_snapshot = self._publish_segments_snapshot(segments)
         transcript_text = self._normalized_transcript_text(segments)
         minutes_input = (
-            self._normalized_transcript_srt(segments)
-            if attempt_provenance
-            else transcript_text
+            self._normalized_transcript_srt(segments) if attempt_provenance else transcript_text
         )
         if (
             minutes_only_metadata
@@ -1696,9 +1688,7 @@ class MeetingService:
     ) -> dict[str, Any] | None:
         ranks = {"archive": 4, "draft": 3, "staging": 2, "history": 1}
         canonical_root = Path(os.path.abspath(canonical_dir))
-        preferred_root = (
-            Path(os.path.abspath(preferred_directory)) if preferred_directory else None
-        )
+        preferred_root = Path(os.path.abspath(preferred_directory)) if preferred_directory else None
         candidates = [
             row
             for row in artifacts
@@ -1851,9 +1841,7 @@ class MeetingService:
             atomic_copy_verified(sources[0], destination / "input-transcript.srt", expected_source)
 
     @staticmethod
-    def _copy_attempt_sidecars(
-        provenance: AttemptPublishProvenance, destination: Path
-    ) -> None:
+    def _copy_attempt_sidecars(provenance: AttemptPublishProvenance, destination: Path) -> None:
         for target_name, (source, expected_sha256) in provenance.files.items():
             atomic_copy_verified(source, destination / target_name, expected_sha256)
 
@@ -1983,9 +1971,7 @@ class MeetingService:
                 requested_stage=minutes.get("requested_stage"),
                 input_transcript_sha256=minutes.get("input_transcript_sha256"),
             )
-            relay_attempt = load_relay_attempt(
-                self.relay_jobs_db, job_id=job_id, attempt=attempt
-            )
+            relay_attempt = load_relay_attempt(self.relay_jobs_db, job_id=job_id, attempt=attempt)
         except MinutesEvidenceError as error:
             raise PublishValidationError(str(error)) from error
         payload = manifest["payload"]
@@ -2055,14 +2041,11 @@ class MeetingService:
         self._validate_attempt_provenance(provenance)
         return provenance
 
-    def _validate_attempt_provenance(
-        self, provenance: AttemptPublishProvenance
-    ) -> None:
+    def _validate_attempt_provenance(self, provenance: AttemptPublishProvenance) -> None:
         if (
             provenance.source_manifest_path.is_symlink()
             or not provenance.source_manifest_path.is_file()
-            or sha256_file(provenance.source_manifest_path)
-            != provenance.source_manifest_sha256
+            or sha256_file(provenance.source_manifest_path) != provenance.source_manifest_sha256
         ):
             raise PublishValidationError("attempt manifest 已变化，禁止发布")
         for source, expected_sha256 in provenance.files.values():

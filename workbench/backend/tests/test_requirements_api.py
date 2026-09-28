@@ -1,4 +1,5 @@
 """需求层：CRUD、D6/D7 任务-项目不变量、D8 留痕、D11 重名冲突（260915 新增）。"""
+
 from meeting_workbench.db import Database, utc_now
 
 from .helpers import seed_editable_meeting
@@ -38,7 +39,9 @@ def test_create_requirement_with_folder_and_get_detail(tmp_path):
     created = client.post(
         "/api/requirements",
         json={
-            "project_id": project_id, "title": "北辰仓快递配送", "priority": "P1",
+            "project_id": project_id,
+            "title": "北辰仓快递配送",
+            "priority": "P1",
             "folder_paths": [str(folder)],
         },
         headers=headers,
@@ -70,7 +73,9 @@ def test_create_requirement_rejects_folder_not_direct_child_of_root(tmp_path):
     response = client.post(
         "/api/requirements",
         json={
-            "project_id": project_id, "title": "不合规文件夹", "priority": "P2",
+            "project_id": project_id,
+            "title": "不合规文件夹",
+            "priority": "P2",
             "folder_paths": [str(nested)],
         },
         headers=headers,
@@ -88,7 +93,9 @@ def test_create_requirement_rejects_folder_outside_any_root(tmp_path):
     response = client.post(
         "/api/requirements",
         json={
-            "project_id": project_id, "title": "越界文件夹", "priority": "P2",
+            "project_id": project_id,
+            "title": "越界文件夹",
+            "priority": "P2",
             "folder_paths": [str(elsewhere)],
         },
         headers=headers,
@@ -285,7 +292,9 @@ def test_task_update_missing_requirement_id_field_does_not_change_it(tmp_path):
         headers=headers,
     ).json()["id"]
 
-    updated = client.patch(f"/api/tasks/{task_id}", json={"title": "改了标题"}, headers=headers).json()
+    updated = client.patch(
+        f"/api/tasks/{task_id}", json={"title": "改了标题"}, headers=headers
+    ).json()
     assert updated["requirement_id"] == requirement_id
     assert updated["title"] == "改了标题"
 
@@ -350,7 +359,9 @@ def test_attach_existing_tasks_forces_project_and_writes_event(tmp_path):
         json={"project_id": project_id, "title": "需求T", "priority": "P1"},
         headers=headers,
     ).json()["id"]
-    loose_task_id = client.post("/api/tasks", json={"title": "游离任务"}, headers=headers).json()["id"]
+    loose_task_id = client.post("/api/tasks", json={"title": "游离任务"}, headers=headers).json()[
+        "id"
+    ]
 
     attached = client.post(
         f"/api/requirements/{requirement_id}/tasks",
@@ -396,7 +407,12 @@ def test_remove_folder_and_not_found(tmp_path):
     folder.mkdir()
     requirement = client.post(
         "/api/requirements",
-        json={"project_id": project_id, "title": "需求R", "priority": "P1", "folder_paths": [str(folder)]},
+        json={
+            "project_id": project_id,
+            "title": "需求R",
+            "priority": "P1",
+            "folder_paths": [str(folder)],
+        },
         headers=headers,
     ).json()
     folder_id = requirement["folders"][0]["id"]
@@ -423,7 +439,12 @@ def test_folder_files_listing_sorted_and_paginated(tmp_path):
         (folder / name).write_text("x", encoding="utf-8")
     requirement = client.post(
         "/api/requirements",
-        json={"project_id": project_id, "title": "需求Q", "priority": "P1", "folder_paths": [str(folder)]},
+        json={
+            "project_id": project_id,
+            "title": "需求Q",
+            "priority": "P1",
+            "folder_paths": [str(folder)],
+        },
         headers=headers,
     ).json()
     folder_id = requirement["folders"][0]["id"]
@@ -523,31 +544,39 @@ def test_list_requirements_sorted_by_priority_then_latest_meeting_then_created(t
         )
 
     r_p1_no_meeting = client.post(
-        "/api/requirements", json={"project_id": project_id, "title": "P1无会议", "priority": "P1"},
+        "/api/requirements",
+        json={"project_id": project_id, "title": "P1无会议", "priority": "P1"},
         headers=headers,
     ).json()["id"]
     r_p1_old_meeting = client.post(
-        "/api/requirements", json={"project_id": project_id, "title": "P1旧会议", "priority": "P1"},
+        "/api/requirements",
+        json={"project_id": project_id, "title": "P1旧会议", "priority": "P1"},
         headers=headers,
     ).json()["id"]
     r_p1_new_meeting = client.post(
-        "/api/requirements", json={"project_id": project_id, "title": "P1新会议", "priority": "P1"},
+        "/api/requirements",
+        json={"project_id": project_id, "title": "P1新会议", "priority": "P1"},
         headers=headers,
     ).json()["id"]
     r_p0 = client.post(
-        "/api/requirements", json={"project_id": project_id, "title": "P0需求", "priority": "P0"},
+        "/api/requirements",
+        json={"project_id": project_id, "title": "P0需求", "priority": "P0"},
         headers=headers,
     ).json()["id"]
     client.put(
         f"/api/requirements/{r_p1_old_meeting}/meetings",
-        json={"meeting_ids": ["vm-old"]}, headers=headers,
+        json={"meeting_ids": ["vm-old"]},
+        headers=headers,
     )
     client.put(
         f"/api/requirements/{r_p1_new_meeting}/meetings",
-        json={"meeting_ids": ["vm-new"]}, headers=headers,
+        json={"meeting_ids": ["vm-new"]},
+        headers=headers,
     )
 
-    items = client.get("/api/requirements", params={"project_id": project_id, "limit": 50}).json()["items"]
+    items = client.get("/api/requirements", params={"project_id": project_id, "limit": 50}).json()[
+        "items"
+    ]
     ids = [item["id"] for item in items]
     assert ids == [r_p0, r_p1_new_meeting, r_p1_old_meeting, r_p1_no_meeting]
 
@@ -557,11 +586,13 @@ def test_list_requirements_counts_ignore_status_filter(tmp_path):
     headers = write_headers(client)
     project_id, _root = make_project_with_root(client, headers, browse_root)
     active_id = client.post(
-        "/api/requirements", json={"project_id": project_id, "title": "进行中", "priority": "P1"},
+        "/api/requirements",
+        json={"project_id": project_id, "title": "进行中", "priority": "P1"},
         headers=headers,
     ).json()["id"]
     shelved_id = client.post(
-        "/api/requirements", json={"project_id": project_id, "title": "已搁置", "priority": "P1"},
+        "/api/requirements",
+        json={"project_id": project_id, "title": "已搁置", "priority": "P1"},
         headers=headers,
     ).json()["id"]
     client.patch(f"/api/requirements/{shelved_id}", json={"status": "shelved"}, headers=headers)
@@ -584,7 +615,9 @@ def test_create_requirement_rejects_hidden_folder_segment(tmp_path):
     response = client.post(
         "/api/requirements",
         json={
-            "project_id": project_id, "title": "隐藏文件夹需求", "priority": "P1",
+            "project_id": project_id,
+            "title": "隐藏文件夹需求",
+            "priority": "P1",
             "folder_paths": [str(hidden_folder)],
         },
         headers=headers,
@@ -613,7 +646,8 @@ def test_attach_tasks_dedupes_duplicate_ids(tmp_path):
     assert attached.status_code == 200
     assert [t["id"] for t in attached.json()["tasks"]] == [task_id]
     events = [
-        event for event in client.get(f"/api/tasks/{task_id}").json()["events"]
+        event
+        for event in client.get(f"/api/tasks/{task_id}").json()["events"]
         if event["kind"] == "requirement_changed"
     ]
     assert len(events) == 1
@@ -629,7 +663,9 @@ def test_attach_tasks_missing_id_rejects_all_and_writes_nothing(tmp_path):
         json={"project_id": project_id, "title": "需求Miss", "priority": "P1"},
         headers=headers,
     ).json()["id"]
-    real_task_id = client.post("/api/tasks", json={"title": "真实任务"}, headers=headers).json()["id"]
+    real_task_id = client.post("/api/tasks", json={"title": "真实任务"}, headers=headers).json()[
+        "id"
+    ]
 
     response = client.post(
         f"/api/requirements/{requirement_id}/tasks",
@@ -746,7 +782,12 @@ def test_folder_preview_files_carry_file_ids_once_the_root_is_indexed(tmp_path):
         (folder / name).write_text("x", encoding="utf-8")
     requirement = client.post(
         "/api/requirements",
-        json={"project_id": project_id, "title": "报价需求", "priority": "P1", "folder_paths": [str(folder)]},
+        json={
+            "project_id": project_id,
+            "title": "报价需求",
+            "priority": "P1",
+            "folder_paths": [str(folder)],
+        },
         headers=headers,
     ).json()
     before = requirement["folders"][0]["preview_files"]
@@ -756,6 +797,13 @@ def test_folder_preview_files_carry_file_ids_once_the_root_is_indexed(tmp_path):
     run_until_done(MaterialIndexer(db, settings, clock=lambda: 0.0))
     detail = client.get(f"/api/requirements/{requirement['id']}").json()
     files = detail["folders"][0]["preview_files"]
-    assert [item["relative_path"] for item in files] == ["a.md", "b.md", "c.md", "d.md", "e.md", "f.md"]
+    assert [item["relative_path"] for item in files] == [
+        "a.md",
+        "b.md",
+        "c.md",
+        "d.md",
+        "e.md",
+        "f.md",
+    ]
     ids = {row["name"]: row["id"] for row in db.query_all("SELECT id, name FROM material_files")}
     assert [item["file_id"] for item in files] == [ids[item["relative_path"]] for item in files]

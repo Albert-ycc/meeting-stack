@@ -7,6 +7,7 @@
   stopped_cards 停了的卡片（卡片开着、项目没暂停、挂了文件夹时才算）
 文件夹缓存的部分（还没挂的文件夹）走 overview_folders，不在这里读。
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -49,7 +50,9 @@ def overview_etag(connection: Any, window: str, today: date, ai_configured: bool
     return f'W/"o-{digest}"'
 
 
-def _candidates(raw: Any, projects: dict[str, dict[str, Any]], current: str | None) -> list[dict[str, Any]]:
+def _candidates(
+    raw: Any, projects: dict[str, dict[str, Any]], current: str | None
+) -> list[dict[str, Any]]:
     """和资料库那一行同一个形状（attribution.resolve_candidates），只是不再查库。"""
     candidates: list[dict[str, Any]] = []
     for item in _json_list(raw):
@@ -275,7 +278,9 @@ def overview_folders(connection: Any, settings: Any, cache: Any) -> dict[str, An
         "conflict": "conflict",
     }.get(unclaimed["state"], "offline")
     folders = sorted(
-        unclaimed["folders"], key=lambda folder: (folder["modified_at"], folder["name"]), reverse=True
+        unclaimed["folders"],
+        key=lambda folder: (folder["modified_at"], folder["name"]),
+        reverse=True,
     )
     return {
         "state": state,

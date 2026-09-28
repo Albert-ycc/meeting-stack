@@ -759,8 +759,7 @@ def test_topic_named_markdown_and_html_pair_is_imported_as_minutes(tmp_path):
         "# 产品二期需求评审\n\n- 已确认二期排期", encoding="utf-8"
     )
     (meeting_dir / "产品二期需求评审.html").write_text(
-        '<h1 onclick="bad()">产品二期需求评审</h1>'
-        "<script>alert(1)</script><p>已确认二期排期</p>",
+        '<h1 onclick="bad()">产品二期需求评审</h1><script>alert(1)</script><p>已确认二期排期</p>',
         encoding="utf-8",
     )
     settings = Settings(
@@ -2147,9 +2146,9 @@ def test_recording_timestamp_in_the_id_is_read_as_local_wall_clock(tmp_path):
     importer = ArchiveImporter(db, settings)
     importer.scan()
 
-    recorded_at = db.query_one(
-        "SELECT recording_date FROM meetings WHERE id=?", (meeting_id,)
-    )["recording_date"]
+    recorded_at = db.query_one("SELECT recording_date FROM meetings WHERE id=?", (meeting_id,))[
+        "recording_date"
+    ]
     parsed = datetime.fromisoformat(recorded_at)
     # 归档目录写的是 260729，界面上的日期必须是同一天。
     assert (parsed.year, parsed.month, parsed.day) == (2026, 7, 29)
@@ -2183,9 +2182,9 @@ def test_rescan_repairs_a_recording_date_that_was_stored_as_utc(tmp_path):
 
     importer.scan()
 
-    recorded_at = db.query_one(
-        "SELECT recording_date FROM meetings WHERE id=?", (meeting_id,)
-    )["recording_date"]
+    recorded_at = db.query_one("SELECT recording_date FROM meetings WHERE id=?", (meeting_id,))[
+        "recording_date"
+    ]
     assert datetime.fromisoformat(recorded_at).utcoffset() == (
         datetime.now().astimezone().utcoffset()
     )
@@ -2330,7 +2329,8 @@ def test_new_meeting_import_backfills_speaker_labels_from_funasr_json(tmp_path):
     )
     assert [row["speaker_label"] for row in segments] == ["SPEAKER_00", "SPEAKER_01"]
     speakers = {
-        row["label"] for row in db.query_all("SELECT label FROM speakers WHERE meeting_id=?", (meeting_id,))
+        row["label"]
+        for row in db.query_all("SELECT label FROM speakers WHERE meeting_id=?", (meeting_id,))
     }
     assert speakers == {"SPEAKER_00", "SPEAKER_01"}
 
@@ -2387,7 +2387,14 @@ def test_cached_sha256_reuses_fingerprint_cache_row_without_rehashing(tmp_path, 
     db.execute(
         """INSERT INTO fingerprint_cache(path, size_bytes, mtime_ns, sha256, pcm_sha256, updated_at)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (str(path), stat.st_size, stat.st_mtime_ns, cached_sha256, "p" * 64, "2026-09-05T00:00:00Z"),
+        (
+            str(path),
+            stat.st_size,
+            stat.st_mtime_ns,
+            cached_sha256,
+            "p" * 64,
+            "2026-09-05T00:00:00Z",
+        ),
     )
     calls = []
     monkeypatch.setattr(
