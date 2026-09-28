@@ -213,6 +213,7 @@ def test_pause_resume_and_retire_all(tmp_path):
 
     paused = client.post(f"/api/projects/{project_id}/cards/pause", json={}, headers=headers).json()
     assert paused["retired"] == 1
+    assert not (root / CARDS / "00 索引.md").exists()
     assert client.get(f"/api/projects/{project_id}/board").json()["cards"]["paused"] is True
 
     resumed = client.post(f"/api/projects/{project_id}/cards/resume", json={}, headers=headers).json()

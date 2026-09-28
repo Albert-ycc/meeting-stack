@@ -658,6 +658,8 @@ def test_retire_all_recycles_untouched_cards_and_lists_edited_ones(tmp_path):
     assert not (root / CARDS / "00 索引.md").exists()
     writer.reconcile()
     assert _card_files(root) == ["260927 周会.md"]
+    # 改过的卡片还在原处，索引也不会被下一轮写回来（4h 第 1 个毛病）
+    assert not (root / CARDS / "00 索引.md").exists()
     with db.autocommit() as connection:
         assert writer.meeting_card(connection, MEETING)["reason"] == "disabled"
 
@@ -677,8 +679,9 @@ def test_first_card_notice_and_dont_write(tmp_path):
 
     result = writer.pause_project(project_id)
 
-    assert result["retired"] == 1
+    assert result["retired"] == 1  # 只数卡片，索引不计
     assert _card_files(root) == []
+    assert not (root / CARDS / "00 索引.md").exists()
     with db.autocommit() as connection:
         assert writer.notices(connection) == []
         assert writer.meeting_card(connection, MEETING)["reason"] == "paused"
