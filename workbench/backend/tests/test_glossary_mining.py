@@ -51,6 +51,50 @@ def test_seed_boundary_keeps_verb_like_word_endings():
     assert "用药申" not in found
 
 
+def test_seeds_combine_several_longer_words_to_cover_a_short_one():
+    """「组状态」只以「入组状态」「出组状态」两种写法出现，单独一个都不到 90%，合起来够——
+    覆盖判断要按合起来算，不能只认某一个长词单独盖住（第四期复查后修，原来这种情况短词会留下）。"""
+    text = "。".join(["入组状态确认"] * 6 + ["出组状态确认"] * 5)
+    found = seeds(text)
+    assert "组状态" not in found
+    assert found.get("入组状态确认") == 6 and found.get("出组状态确认") == 5
+
+
+def test_seeds_cover_a_word_via_a_prefix_that_fails_han_ok_itself():
+    """「在」是虚字头，「在组状态」自己进不了候选词（_han_ok 挡在门外），但它仍然是「组状态」的
+    真实出处——覆盖判断要用 _han_ok 过滤前的全体（frequent），只用候选词表（kept）会漏掉这条证据。"""
+    text = "。".join(["在组状态确认"] * 10)
+    found = seeds(text)
+    assert "组状态" not in found
+    assert "在组状态" not in found  # 虚字头，本来就不该是候选词
+
+
+def test_seeds_keep_a_word_that_is_also_used_on_its_own():
+    """「组状态」大部分时候独立出现，只是偶尔搭配「入组」「出组」——覆盖判断不能连累它，
+    不能误伤。"""
+    text = "。".join(["入组状态确认"] * 3 + ["出组状态确认"] * 3 + ["组状态"] * 10)
+    found = seeds(text)
+    assert "组状态" in found
+
+
+def test_seeds_treat_guo_as_a_real_word_forming_char_not_a_stop_suffix():
+    """「过」不是的、地、得、了、着这类纯语法虚字（通过、超过都以它收尾）；「次初审通过时间」
+    「首次初审通过时间」「一次初审通过时间」分头出现时，「初审通过时间」这六个字的核心要留住，
+    不能被切成「首次初审通」这种半截（复查后修：原来照搬 _SEED_STOP_CHARS 挡住了「过」，
+    真词反而被卡在「过」前面）。"""
+    text = "".join(
+        [
+            "系统记录次初审通过时间用于统计。", "接口返回次初审通过时间字段。", "报表展示次初审通过时间数值。",
+            "首页显示首次初审通过时间提醒。", "详情页展示首次初审通过时间信息。", "列表按首次初审通过时间排序。",
+            "导出包含一次初审通过时间列。", "校验一次初审通过时间格式。", "统计一次初审通过时间分布。",
+            "文档写着初审通过时间的定义。", "手册解释初审通过时间的含义。",
+        ]
+    )
+    found = seeds(text)
+    assert "首次初审通" not in found
+    assert found.get("初审通过时间") == 11
+
+
 def test_latin_seeds():
     found = seeds("GLP-1 和 GLP-1；CRF 表、CRF；ESG ESG；PDF PDF 3f2a9c1e0b7d 3f2a9c1e0b7d v1.2 v1.2 report report")
     assert {"GLP-1", "CRF", "ESG"} <= set(found)
@@ -140,6 +184,53 @@ def test_pool_drops_a_word_one_char_shorter_than_a_frequent_one(tmp_path):
     assert stats.queries["spread_materials"] == 2  # 短的在候选池里就丢了，第 3 步不再查它
 
 
+def _grouped_state_world(tmp_path, segments=()):
+    """「组状态」只以「入组状态」「出组状态」两种写法出现（第 6 步「包含」的合起来算场景），
+    单独一个都不到 95%，合起来够；可选传入会上说过的话。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    for index in range(4):
+        add_content(db, f"k{index}", [body("入组状态", "出组状态")])
+        add_file(db, root, f"方案{index}.docx", key=f"k{index}")
+    if segments:
+        add_meeting(db, "m1", date="2026-09-20T10:00:00", project_id="p", segments=list(segments))
+    return db
+
+
+def _grouped_state_seeds():
+    return {f"k{index}": [("组状态", 20), ("入组状态", 11), ("出组状态", 9)] for index in range(4)}
+
+
+def test_project_covering_combines_several_longer_words(tmp_path):
+    """第 6 步「包含」：「入组状态」占 11/20、「出组状态」占 9/20，单独一个都不到 95%，
+    合起来 20/20 够——不能只认某一个长词单独盖住短词（复查后修）。"""
+    db = _grouped_state_world(tmp_path)
+    with db.autocommit() as conn:
+        stats = gm.compute(conn, "p", seeds=_grouped_state_seeds())
+    kept = {item.term for item in stats.items}
+    assert "组状态" not in kept
+    assert "入组状态" in kept and "出组状态" in kept
+
+
+def test_covering_does_not_drop_a_word_that_was_actually_spoken(tmp_path):
+    """会上真的独立说了「组状态」（前后都不是覆盖它的长词的紧邻字），就不能被第 6 步的
+    「包含」当成别的词的一截收掉——「说过」是硬证据，比写在材料里的次数更可信。"""
+    db = _grouped_state_world(tmp_path, segments=["这个组状态字段还没定"])
+    with db.autocommit() as conn:
+        stats = gm.compute(conn, "p", seeds=_grouped_state_seeds())
+    assert "组状态" in {item.term for item in stats.items}
+
+
+def test_covering_still_drops_a_word_only_ever_spoken_as_part_of_the_longer_one(tmp_path):
+    """会上说的其实是「入组状态」，「组状态」只是子串命中算出来的「说过」——不是真独立说的，
+    不能靠这个逃过「包含」（反例：证明「说过」保护不会被子串命中滥用）。"""
+    db = _grouped_state_world(tmp_path, segments=["受试者的入组状态确认一下"])
+    with db.autocommit() as conn:
+        stats = gm.compute(conn, "p", seeds=_grouped_state_seeds())
+    assert "组状态" not in {item.term for item in stats.items}
+
+
 # ---------------------------------------------------------------------- 挖哪些内容
 
 
@@ -196,6 +287,111 @@ def test_unspoken_word_needs_three_files(tmp_path):
     add_file(db, roots["p"], "方案4.docx", key="k4")
     mine(db)
     assert ("入组标准", "") in terms(db)
+
+
+# ---------------------------------------------------------------------- 法规原文噪声
+
+
+def test_law_clause_terms_are_dropped_when_never_spoken(tmp_path):
+    """没说过、命中的片段几乎全带「第……条」编号的，是法规原文摘出来的噪声，不是业务词。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    law_chunks = [
+        "第一条 为规范违规经营行为，制定本办法。",
+        "第二条 违规经营受托代理机构罚没款项，处一万元以上五万元以下罚款。",
+        "第三条 由监督管理部门负责解释。",
+    ]
+    for index in range(3):
+        add_content(db, f"k{index}", law_chunks)
+        add_file(db, root, f"法规{index}.docx", key=f"k{index}")
+    fake = {f"k{index}": [("受托代理机构", 6)] for index in range(3)}
+    with db.autocommit() as conn:
+        stats = gm.compute(conn, "p", seeds=fake)
+    assert "受托代理机构" not in {item.term for item in stats.items}
+
+
+def test_law_clause_terms_survive_when_spoken(tmp_path):
+    """同一个词、同样命中带条款编号的片段，只要会上真说过，就不该被法规噪声判断收掉——
+    「说过」优先于法规信号，不能一刀切（反例：证明法规过滤不会误伤真被讨论过的词）。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    law_chunks = [
+        "第一条 为规范违规经营行为，制定本办法。",
+        "第二条 违规经营受托代理机构罚没款项，处一万元以上五万元以下罚款。",
+        "第三条 由监督管理部门负责解释。",
+    ]
+    for index in range(3):
+        add_content(db, f"k{index}", law_chunks)
+        add_file(db, root, f"法规{index}.docx", key=f"k{index}")
+    add_meeting(db, "m1", date="2026-09-20T10:00:00", project_id="p", segments=["受托代理机构这边要不要改"])
+    fake = {f"k{index}": [("受托代理机构", 6)] for index in range(3)}
+    with db.autocommit() as conn:
+        stats = gm.compute(conn, "p", seeds=fake)
+    assert "受托代理机构" in {item.term for item in stats.items}
+
+
+def test_business_term_in_a_mostly_business_file_is_not_dropped(tmp_path):
+    """业务文档里偶尔引用一句法规，不能连累同一份材料里的真业务词——命中片段本身不带编号、
+    整份材料也不是法规页面（反例：证明法规过滤不会因为材料里有一句引用就整份牵连）。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    chunks = ["科研用药项目需要药房管理员登记入库单，签收后交给药师核对。"] * 8 + [
+        "第一条 引用了一句相关法规作为背景说明。"
+    ]
+    for index in range(3):
+        add_content(db, f"k{index}", chunks)
+        add_file(db, root, f"业务{index}.docx", key=f"k{index}")
+    fake = {f"k{index}": [("药房管理员", 5)] for index in range(3)}
+    with db.autocommit() as conn:
+        stats = gm.compute(conn, "p", seeds=fake)
+    assert "药房管理员" in {item.term for item in stats.items}
+
+
+def test_file_level_regulation_density_catches_boilerplate(tmp_path):
+    """网页页脚、导航条这类抓下来的边角文字（「中国示例网」「网站标识码」）本身不挨着条款编号，
+    但整份材料条款编号总数够多、密度也够高（是法规页面本身），也该按法规噪声收掉。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    nums = [
+        "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二", "十三", "十四", "十五",
+        "十六", "十七", "十八", "十九", "二十", "二十一",
+    ]
+    clause_chunks = [f"第{n}条 违规经营处一万元以上罚款，由监督管理部门解释。" for n in nums]
+    footer_chunk = "版权所有：中国示例网运行中心 网站标识码bm0999999"
+    for index in range(3):
+        add_content(db, f"k{index}", clause_chunks + [footer_chunk])
+        add_file(db, root, f"法规{index}.docx", key=f"k{index}")
+    fake = {f"k{index}": [("中国示例网", 6)] for index in range(3)}
+    with db.autocommit() as conn:
+        assert gm._file_is_regulation(conn, "k0") is True
+        stats = gm.compute(conn, "p", seeds=fake)
+    assert "中国示例网" not in {item.term for item in stats.items}
+
+
+def test_file_level_density_does_not_flag_a_mostly_business_file(tmp_path):
+    """同样凑够了 LAW_CLAUSE_FILE_MIN 个条款编号，但整份材料绝大部分是业务正文——密度不够，
+    不该被判成法规页面（反例：证明「总数够」不等于「整份都是法规」）。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    nums = [
+        "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二", "十三", "十四", "十五",
+        "十六", "十七", "十八", "十九", "二十", "二十一",
+    ]
+    clause_chunks = [f"第{n}条 附录引用。" for n in nums]
+    biz_chunks = ["科研用药项目里药品追溯码要扫码校验，登记入库单和签收信息，核对批号有效期。" * 10] * 80
+    for index in range(3):
+        add_content(db, f"k{index}", biz_chunks + clause_chunks)
+        add_file(db, root, f"业务{index}.docx", key=f"k{index}")
+    fake = {f"k{index}": [("追溯码", 5)] for index in range(3)}
+    with db.autocommit() as conn:
+        assert gm._file_is_regulation(conn, "k0") is False
+        stats = gm.compute(conn, "p", seeds=fake)
+    assert "追溯码" in {item.term for item in stats.items}
 
 
 def test_misheard_writing_forms_a_pair(tmp_path):
@@ -261,6 +457,48 @@ def test_sub_base_pair_rejects_particle_wrong_even_after_a_real_one(tmp_path):
     stats = mine(db)
     paired = {item.term: sorted(pair.wrong for pair in item.pairs) for item in stats.items if item.pairs}
     assert paired == {"受试者用药": ["受试者用一"]}
+
+
+def _face_whitelist_world(tmp_path, segments):
+    """「人脸识别白名单」是完整词，「人脸识别白」是切出来找听错写法用的 sub；不同 segments
+    验证「只有听错写法」和「原词也真独立说过」两种情况。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    for index in range(4):
+        add_content(db, f"k{index}", [body("人脸识别白名单")])
+        add_file(db, root, f"方案{index}.docx", key=f"k{index}")
+    add_meeting(db, "m1", date="2026-09-20T10:00:00", project_id="p", segments=segments)
+    return db
+
+
+def test_sub_base_drops_when_covered_and_multiple_wrong_forms(tmp_path):
+    """「人脸识别白名单」材料里从不单独出现「人脸识别白」；会上「人脸识别一」「人脸识别应」两种
+    写法都被听到 2 次以上——不是同一个词被听错成一种写法，是「人脸识别」后面接哪个字都算，这是
+    位置本身不稳定（sub 就是截断的伪影）的信号，「人脸识别白」不该冒出来当候选词（D6 原始样例）。"""
+    db = _face_whitelist_world(
+        tmp_path,
+        ["人脸识别一开关", "人脸识别一还没配", "人脸识别应该怎么弄", "人脸识别应用范围"],
+    )
+    stats = mine(db)
+    terms_found = {item.term: [pair.wrong for pair in item.pairs] for item in stats.items}
+    assert "人脸识别白" not in terms_found
+    assert "人脸识别白名单" in terms_found
+
+
+def test_sub_base_survives_when_the_original_word_was_independently_spoken(tmp_path):
+    """同样两种听错写法都出现，但会上也真独立说过一次「人脸识别白」（后面跟的不是「名」）——
+    这次不是伪影，是真有这个说法，不能被截断判断收掉（反例：证明独立说过优先于「多种写法」信号）。"""
+    db = _face_whitelist_world(
+        tmp_path,
+        [
+            "人脸识别一开关", "人脸识别一还没配", "人脸识别应该怎么弄", "人脸识别应用范围",
+            "这个人脸识别白要不要单独测",
+        ],
+    )
+    stats = mine(db)
+    terms_found = {item.term: sorted(pair.wrong for pair in item.pairs) for item in stats.items}
+    assert terms_found.get("人脸识别白") == ["人脸识别一", "人脸识别应"]
 
 
 def test_three_char_words_get_no_pairs():
@@ -461,8 +699,12 @@ def test_miner_version_bump_remines(tmp_path, monkeypatch):
     gm.mine_round(db, lambda: False, now=NOW)
     with db.autocommit() as conn:
         assert gm.seeds_due(conn) == 0
-    monkeypatch.setattr(gm, "MINER_VERSION", 2)
-    monkeypatch.setattr(gm, "_DUE_SEEDS", gm._DUE_SEEDS.replace("s.miner != 1", "s.miner != 2"))
+    # _DUE_SEEDS 是模块加载时就拼好的字符串，MINER_VERSION 已经烤进去了；这里把它模拟成「又出了新版本」
+    bumped = gm.MINER_VERSION + 1
+    monkeypatch.setattr(
+        gm, "_DUE_SEEDS", gm._DUE_SEEDS.replace(f"s.miner != {gm.MINER_VERSION}", f"s.miner != {bumped}")
+    )
+    monkeypatch.setattr(gm, "MINER_VERSION", bumped)
     with db.autocommit() as conn:
         assert gm.seeds_due(conn) == 5
 

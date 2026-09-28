@@ -37,7 +37,7 @@ from .material_fts import REBUILD_KEY
 from .material_rules import PLAIN_TEXT_EXTS
 from .project_profile import GENERIC_FOLDER_NAMES, GENERIC_PROJECT_SPREAD, light_key, norm_key
 
-MINER_VERSION = 1
+MINER_VERSION = 2  # 覆盖判断改成合起来算、法规噪声过滤（第四期 4h 复查），旧缓存的种子要重挖
 MINE_CHARS = 60_000
 SEEDS_HAN = 18
 SEEDS_LATIN = 6
@@ -59,6 +59,11 @@ SUB_BASE_MIN = 5  # 长词的头尾几个字也拿来找听错的写法（见第
 SUB_BASES_CAP = 60
 STABILITY_RATIO = 0.5
 CLOSED_RATIO = 0.9
+# _boundary_covers 专用、比 CLOSED_RATIO 更严：合起来算之后基数变大，容易卡在 90% 整数边界上
+# （实测「初审通过时间」被「次/首次/一次初审通过时间」合起来解释了 9/10=0.9，卡在整数边界，但它
+# 自己就是完整词，「次/首次/一次」是场景限定词不是残留前缀；真正的截断在样本里都是 96%-100%，
+# 见 mining-diff.md），留出 5 个点余量不影响两个目标 bug
+COVER_RATIO = 0.95
 ROUND_SECONDS = 5.0
 SEED_BATCH = 200
 SEED_SHARE_S = 4.0
@@ -71,6 +76,18 @@ QUOTE_SIDE = 20  # 材料原话：词前后各 20 字
 HEARD_SIDE = 10  # 会上的原话：前后各 10 字
 EVIDENCE_KEEP = 3
 UNDO_WINDOW_S = 600
+LAW_CLAUSE_SAMPLE = 200  # 第 8 步查法规噪声：最多抽查几个命中的片段
+# 抽查到的片段里带「第……条」编号的占比到这个数，判定是法规原文摘出来的噪声：实测「中华人民共和国」
+# 0.65、「国务院」0.81、「万元以下的罚款」0.96，最低的「国家药监局」也有 0.25；同一批材料里的真业务词
+# （药品追溯码、选择药房、科研用药计划……）全部不超过 0.06，见 /private/tmp/claude-501/sd/mining-diff.md
+LAW_CLAUSE_RATIO = 0.2
+# 命中片段本身没有条款编号，但所在文件「整份都是法规」时也算法规噪声：网站页眉页脚、导航条这类
+# 抓下来的边角文字（「中国政府网」「版权所有」）贴在条文正文旁边，片段本身够不到「第……条」，但
+# 整份文件是法规页面。判两条：条款编号总数够多（不是偶尔引用一条法规），且密度够高（是整份材料的
+# 底色，不是长文档里顺带提了一句）——实测法规页面 60-200 处、每 100-200 字一处；业务文档里偶尔
+# 引用法规条文的，通常 1-2 处、密度差 30 倍以上，两条都设得比这道界线宽松很多，两条都要满足
+LAW_CLAUSE_FILE_MIN = 20
+LAW_CLAUSE_FILE_DENSITY = 0.002
 
 # 代码、数据和字幕文件不挖（字幕多半是语音识别出来的）
 MINING_SKIP_EXTS = PLAIN_TEXT_EXTS - {"txt", "md", "markdown", "csv", "tsv", "tex", "eml", "mht", "mhtml"}
@@ -117,6 +134,7 @@ _LATIN_SHAPE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.\-_]*[A-Za-z0-9])?")
 _HEX = re.compile(r"[0-9a-fA-F]{6,}")
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-?[0-9a-fA-F]{4}){3}-?[0-9a-fA-F]{12}")
 _VERSION = re.compile(r"[vV]?\d+(?:\.\d+)+|[vV]\d+")
+_LAW_CLAUSE = re.compile(r"第[〇一二三四五六七八九十百千零]{1,10}条")  # 法条编号习惯用中文数字，阿拉伯数字更像业务序号
 _PHRASES = re.compile("|".join(re.escape(item) for item in sorted(COMMON_PHRASES, key=len, reverse=True)))
 
 # 回答的说法（进用词测试）
@@ -190,6 +208,11 @@ _SEED_EDGE_STOPS = frozenset("由将于该此各每")
 # 虚字挡在边界外；但种子挖的是正经名词，「请」常是词尾（申请、邀请），照搬那份表会把「用药申请」卡死
 # 在「用药申」——三个字都不是虚字，长一个字反而被当成扩展过头挡掉，覆盖不到它，永远留不下整词
 _SEED_STOP_CHARS = glossary._EXPAND_STOP_CHARS - frozenset("请")
+# _boundary_covers 判断「加了后缀」是不是真延伸时用：只挡的、地、得、了、着这五个纯语法助词——
+# 现代汉语里这五个字收尾从来不是复合词的一截，只会是造句造出来的（见「北辰科研仓的」）；
+# 「过」不放进来是同一个道理的反面：通过、超过、经过、度过都以「过」收尾，是正经词的一截，
+# 照搬 _SEED_STOP_CHARS 会把「首次初审通过时间」卡在「首次初审通」（复查后加）
+_COVER_SUFFIX_STOPS = frozenset("的地得了着")
 
 
 def _han_ok(fragment: str) -> bool:
@@ -273,6 +296,63 @@ def _stuck_sides(runs: Sequence[str], kept: dict[str, int]) -> set[str]:
     }
 
 
+@dataclass
+class Coverage:
+    """_boundary_covers 的结果：每个片段被合起来解释了多少次（totals），以及是靠哪些紧邻字解释的
+    （front_chars 是「被加了前缀」时紧邻的那些字，back_chars 是「被加了后缀」时紧邻的那些字）——
+    后者用来判断一次会上的出现是不是真独立说的，还是恰好夹在长词中间被子串命中（见 _compute 第 6 步）。"""
+
+    totals: dict[str, int]
+    front_chars: dict[str, frozenset[str]]
+    back_chars: dict[str, frozenset[str]]
+
+
+def _boundary_covers(items: dict[str, int], min_len: int) -> Coverage:
+    """给一批「文本：次数」，算每一条被「比它长、紧贴着它开头或结尾」的别的文本**合起来**解释了多少次
+    出现（第四期复查后加的：原来只认某一个更长的单独盖住 90% 以上，「入组状态」「出组状态」分头各说
+    一部分时谁都不到 90%，短词「组状态」就留下；改成合起来算）。
+
+    按短文本在长文本里是被「加了前缀」（长文本以短文本结尾，紧邻字是长文本里短文本前面那个字）还是
+    「加了后缀」（长文本以短文本开头，紧邻字是短文本后面那个字）分两组；同一组内、紧邻字相同的取
+    最大值——不同长度但紧邻字一样的长文本是套娃关系（「入组状态」和「已入组状态」邻字都是「入」），
+    只算一次，不然一次实际出现会被数好几遍；不同紧邻字之间是互斥的实际出现（一次出现的前一个字只能
+    是某一个具体的字），可以放心相加。最后前缀组、后缀组两个和取较大值，防止「两头同时被延伸」的
+    同一次出现在两组里各被算一次。
+
+    传入的 items 既是「更长的词」的候选源，也是「被覆盖」的目标全集（一个片段能不能被覆盖，只看
+    items 里比它长的那些，不要求它自己也满足取候选词的门槛——「在组状态」的「在」是虚字头，进不了
+    候选词表，但照样是「组状态」的真实出处，见 glossary_mining.py 头部改动记录）。
+
+    「加了后缀」单独多一条限制：紧邻字是的、地、得、了、着这五个纯语法助词（_COVER_SUFFIX_STOPS）
+    时不算——这五个字收尾从来不是复合词的一截，「北辰科研仓」后面跟着「的」只是造句造出来的，不能
+    当「北辰科研仓」是「北辰科研仓的」一截的证据；「过」不在这份表里，通过、超过这类词就以它收尾。
+    「加了前缀」不设这条限制：业务黑话里单字状态头（在组、入组、出组、初审、复审）很常见，「在」
+    虽然是 _SEED_STOP_CHARS 里的字，但「在组状态」确实是「组状态」的真实出处（见上一段）。"""
+    front: dict[str, dict[str, int]] = {}
+    back: dict[str, dict[str, int]] = {}
+    for text, count in items.items():
+        length = len(text)
+        for size in range(min_len, length):
+            prefix = text[:size]
+            if prefix in items:
+                char = text[size]
+                if char not in _COVER_SUFFIX_STOPS:
+                    group = back.setdefault(prefix, {})
+                    group[char] = max(group.get(char, 0), count)
+            suffix = text[length - size :]
+            if suffix in items:
+                group = front.setdefault(suffix, {})
+                char = text[length - size - 1]
+                group[char] = max(group.get(char, 0), count)
+    return Coverage(
+        totals={
+            key: max(sum(front.get(key, {}).values()), sum(back.get(key, {}).values())) for key in items
+        },
+        front_chars={key: frozenset(front.get(key, {})) for key in items},
+        back_chars={key: frozenset(back.get(key, {})) for key in items},
+    )
+
+
 def extract_seeds(text: str) -> list[tuple[str, int]]:
     """一份内容的种子：最多 18 个汉字词和 6 个字母词，带在这份里出现的次数。纯函数。"""
     text = unicodedata.normalize("NFKC", text[:MINE_CHARS])
@@ -293,7 +373,7 @@ def extract_seeds(text: str) -> list[tuple[str, int]]:
         del grown
         frequent.update(level)
     kept = {fragment: count for fragment, count in frequent.items() if _han_ok(fragment)}
-    del frequent, level
+    del level
     # 对规格算法的补充（复查后加的）：规格只说「3 到 6 字、被更长且次数相同的片段包住的不要」。在真实风格的
     # 材料上，一个词后面总跟着同一串字（司美格鲁肽注射液、受试者用药记录、云图科研用药平台）时，3 到 6 字的
     # 滑窗全都够次数，真词被一截截包住去掉，留下的是「受试者用药记」「格鲁肽注射液」这类半截。所以：
@@ -304,17 +384,15 @@ def extract_seeds(text: str) -> list[tuple[str, int]]:
     stuck = _stuck_sides(runs, kept)
     del runs
     halves = {fragment for fragment in kept if fragment in stuck}
-    by_len = sorted((fragment for fragment in kept if fragment not in halves), key=len, reverse=True)
-    covered: set[str] = set()
-    for long in by_len:
-        if len(long) <= HAN_LEN[0]:
-            continue
-        count = kept[long]
-        for size in range(HAN_LEN[0], len(long)):
-            for start in range(0, len(long) - size + 1):
-                inner = long[start : start + size]
-                if kept.get(inner) == count:
-                    covered.add(inner)
+    # 覆盖：谁能证明一个短片段只是更长词的一截，用 frequent（_han_ok 过滤前的全体）去算——「在组状态」
+    # 的「在」是虚字头进不了 kept，但它是「组状态」的真实出处，只用 kept 会漏掉这条证据（见 _boundary_covers）
+    covering = _boundary_covers(frequent, HAN_LEN[0])
+    del frequent
+    covered = {
+        fragment
+        for fragment in kept
+        if fragment not in halves and covering.totals.get(fragment, 0) >= COVER_RATIO * kept[fragment]
+    }
     han = sorted(
         ((fragment, count) for fragment, count in kept.items() if fragment not in covered and fragment not in halves),
         key=lambda item: (-item[1] * len(item[0]), item[0]),
@@ -762,6 +840,49 @@ def _drop_keys(conn: Any) -> None:
         conn.commit()
 
 
+def _file_is_regulation(conn: Any, content_key: str) -> bool:
+    """这份材料本身是不是法规页面：全文「第……条」编号总数够多、密度也够高才算——业务文档里顺带
+    引用一两条法规不算（总数不够），几万字的长文档里有一节引用法规也不算（密度不够，那一节之外的
+    别的候选词不该被连累）。网页版权声明、导航条这类抓下来的边角文字混进候选时，命中片段本身没有
+    编号，但整份材料是法规页面，两条都过。"""
+    total = 0
+    length = 0
+    for row in conn.execute("SELECT text FROM material_chunks WHERE content_key = ? ORDER BY ordinal", (content_key,)):
+        text = row["text"] or ""
+        total += len(_LAW_CLAUSE.findall(text))
+        length += len(text)
+    return total >= LAW_CLAUSE_FILE_MIN and length > 0 and total / length >= LAW_CLAUSE_FILE_DENSITY
+
+
+def _law_ratio(conn: Any, term: str) -> float:
+    """这个词命中的片段（最多抽 LAW_CLAUSE_SAMPLE 个）里，带「第……条」条款编号的、或所在整份材料是
+    法规页面的（_file_is_regulation），占多少——法规原文摘出来的词（法律、条例、办法逐条罗列时反复
+    出现的短语，以及网站页眉页脚这类边角文字）几乎全落在这两类里；真业务词就算在同一批材料里，也
+    几乎不会。没命中任何片段时当 0（不该走到这里：调用方只在 df 够、已经确认有命中的词上查）。"""
+    rows = conn.execute(
+        """SELECT c.content_key, c.text FROM material_chunks_fts
+             JOIN material_chunks c ON c.id = material_chunks_fts.rowid
+            WHERE material_chunks_fts MATCH ? LIMIT ?""",
+        (_fts_phrase(term), LAW_CLAUSE_SAMPLE),
+    ).fetchall()
+    if not rows:
+        return 0.0
+    file_is_regulation: dict[str, bool] = {}
+    hits = 0
+    for row in rows:
+        if _LAW_CLAUSE.search(row["text"] or ""):
+            hits += 1
+            continue
+        key = row["content_key"]
+        is_regulation = file_is_regulation.get(key)
+        if is_regulation is None:
+            is_regulation = _file_is_regulation(conn, key)
+            file_is_regulation[key] = is_regulation
+        if is_regulation:
+            hits += 1
+    return hits / len(rows)
+
+
 def compute(
     conn: Any,
     project_id: str,
@@ -915,23 +1036,35 @@ def _compute(
         own = chunks_with(term)
         if any(own <= STABILITY_RATIO * chunks_with(part) for part in (term[1:], term[:-1])):
             found.pop(term)
-    # 5. 包含：更长的、留下的词包住它，次数又有它的 0.9 以上
-    for term in sorted(found, key=len):
-        mine = found[term].total
-        if any(
-            other != term and term in other and found[other].total >= CLOSED_RATIO * mine
-            for other in found
-        ):
-            found.pop(term)
-    # 6. 会上说了几次
+    # 5. 会上说了几次（挪到「包含」前面：会上真的独立说过，就是独立存在的证据，「包含」不能把它当
+    # 别的词的一截收掉，见 test_covering_does_not_drop_a_word_that_was_actually_spoken）
     checkpoint()
     transcript = load_transcript(conn, project_id)
+    places_by_term: dict[str, list[int]] = {}
     for term, item in found.items():
         places = list(_occurrences(transcript.text, term))
+        places_by_term[term] = places
         item.spoken = len(places)
         item.meetings = transcript.meeting_count(places)
         item.heard = _heard(transcript, places)
         item.names = name_count(term)
+    # 6. 包含：更长的、留下的词合起来（不要求单独一个就够，见 _boundary_covers）包住它的次数，
+    # 有它的 COVER_RATIO（0.95）以上就收掉——「初审驳回」「复审驳回」分头各说一部分时，单独一个
+    # 都不到 90%，「审驳回」合起来才够，这里也按合起来算。会上「说过」是子串命中算的，「受试者用药记录」被说了，
+    # 「受试者」也会算说过——不能直接拿 spoken>0 免死，要挨个看会上出现的地方是不是真的独立说的
+    # （前一个字不是覆盖它的长词的紧邻前缀字、后一个字也不是紧邻后缀字），有一处独立说的才留
+    covering = _boundary_covers({term: item.total for term, item in found.items()}, HAN_LEN[0])
+    for term in sorted(found, key=len):
+        item = found[term]
+        mine = item.total
+        if mine <= 0 or covering.totals.get(term, 0) < COVER_RATIO * mine:
+            continue
+        if item.spoken and _independently_spoken(
+            transcript.text, term, places_by_term[term], covering.front_chars.get(term, frozenset()),
+            covering.back_chars.get(term, frozenset()),
+        ):
+            continue
+        found.pop(term)
     # 7. 别的项目的会
     checkpoint()
     spoken = sorted((term for term in found if found[term].spoken), key=lambda term: (-found[term].spoken, term))
@@ -946,10 +1079,16 @@ def _compute(
         ).fetchall()
         if len(others) >= OTHER_PROJECTS_DROP:
             found.pop(term)
-    # 8. 留下：说过，或正文 df 至少 3；只有文件名的，正文里要有或会上说过
+    # 8. 留下：说过，或正文 df 至少 3；只有文件名的，正文里要有或会上说过。没说过、光靠 df 留下的，
+    # 再查是不是法规原文摘出来的噪声（挖词是为会上说的话服务的，没说过又是法条摘出来的，两条都不占）
     for term in list(found):
         item = found[term]
         if not (item.spoken or item.df >= MIN_DF_UNSPOKEN):
+            found.pop(term)
+    checkpoint()
+    for term in [term for term, item in found.items() if not item.spoken]:
+        q["law_ratio"] += 1
+        if _law_ratio(conn, term) >= LAW_CLAUSE_RATIO:
             found.pop(term)
     # 9. 听错的写法
     checkpoint()
@@ -997,6 +1136,7 @@ def _compute(
     q["pair_bases"] = len(bases)
     q["pair_sub_bases"] = len(subs)
     sub_set = set(subs)
+    sub_created: set[str] = set()
     for pair in find_pairs([*bases, *subs], transcript.text, material_has):
         wrong = pair.wrong
         if not glossary.MIN_DIFF_LEN <= len(wrong) <= glossary.MAX_DIFF_LEN:
@@ -1025,6 +1165,7 @@ def _compute(
                     heard=_heard(transcript, places),
                 ),
             )
+            sub_created.add(pair.base)
         elif item is None:
             key = light_key(pair.base)
             if key in answered:
@@ -1033,6 +1174,24 @@ def _compute(
         item.pairs.append(pair)
         item.pair_heard[wrong] = _heard(transcript, pair.positions)
         item.pair_meetings[wrong] = transcript.meeting_count(pair.positions)
+    # 截断伪影兜底：长词头尾切出来的 sub 本身就是截断（几乎全是 parent 的一截，见 _sub_base_coverage），
+    # 又配出两种以上不同的「听错写法」——真的特定误听通常只有一种写法反复被听到（「司美格鲁肽」只有
+    # 「司美格鲁太」一种、「受试者用药」过滤虚字后也只剩一种）；「后面接哪个字都算听错」（「人脸识别白名单」
+    # 被切成「人脸识别白」，「人脸识别一」「人脸识别应」两种写法都对上）才是位置本身不稳定、base 不是真
+    # 独立词的信号，整条连同它的听错写法一起丢——原词真独立说过的（_independently_spoken）不受影响。
+    checkpoint()
+    for sub in sub_created:
+        item = found.get(sub)
+        if item is None or len(item.pairs) < 2:
+            continue
+        q["sub_coverage"] += 1
+        ratio, front_chars, back_chars = _sub_base_coverage(conn, sub, found[parents[sub]].term)
+        if ratio < COVER_RATIO:
+            continue
+        places = list(_occurrences(transcript.text, sub))
+        if places and _independently_spoken(transcript.text, sub, places, front_chars, back_chars):
+            continue
+        found.pop(sub)
     for item in found.values():
         item.pairs = item.pairs[:EVIDENCE_KEEP]
     del transcript
@@ -1064,6 +1223,66 @@ def _compute(
         )[:EVIDENCE_KEEP]
     stats.items = ordered
     return stats
+
+
+def _independently_spoken(
+    text: str, term: str, positions: Sequence[int], front_chars: frozenset[str], back_chars: frozenset[str]
+) -> bool:
+    """会上这个词出现的地方，有没有一处不是紧挨着「包含」它的那些长词说的——「受试者用药记录」被
+    说了，子串「受试者」也会命中，但两场会里「受试者」前后都没有跟别的字（`_occurrences` 是子串
+    匹配，这里另外核对紧邻字），一次都不是单独出现，就不该靠「说过」逃过「包含」。front_chars／
+    back_chars 是 _boundary_covers 算出来「包含」它的那些长词紧邻的字（哪个字续在前面／后面）。"""
+    length = len(term)
+    for position in positions:
+        before = text[position - 1] if position > 0 else ""
+        after = text[position + length] if position + length < len(text) else ""
+        if before not in front_chars and after not in back_chars:
+            return True
+    return False
+
+
+def _sub_base_coverage(conn: Any, sub: str, parent: str) -> tuple[float, frozenset[str], frozenset[str]]:
+    """第 9 步「长词头尾」切出来的 sub（parents[sub] 记的那个长词就是 parent）在全部材料里是不是
+    几乎都只是 parent 的一截：抽样材料里 sub 出现的地方，紧邻字是不是 parent 续下去该有的那个字，
+    或者紧邻的压根不是汉字（标点、省略号、片段末尾——材料里常见界面把「人脸识别白名单」截断显示
+    成「人脸识别白…」，这不是独立出现，是界面截断）。真的接了一个不是 parent 延伸、又是汉字的
+    字符，才算独立出现。返回被解释的比例，以及紧邻字本身（front_chars／back_chars，交给
+    _independently_spoken 复核会上听到的位置是不是也一样只是 parent 的一截）。"""
+    is_prefix = parent.startswith(sub) and len(parent) > len(sub)
+    is_suffix = not is_prefix and parent.endswith(sub) and len(parent) > len(sub)
+    front_chars: frozenset[str] = frozenset()
+    back_chars: frozenset[str] = frozenset()
+    if not is_prefix and not is_suffix:
+        return 0.0, front_chars, back_chars
+    rows = conn.execute(
+        """SELECT c.text FROM material_chunks_fts
+             JOIN material_chunks c ON c.id = material_chunks_fts.rowid
+            WHERE material_chunks_fts MATCH ? LIMIT ?""",
+        (_fts_phrase(sub), LAW_CLAUSE_SAMPLE),
+    ).fetchall()
+    total = 0
+    explained = 0
+    if is_prefix:
+        boundary = parent[len(sub)]
+        back_chars = frozenset(boundary)
+        for row in rows:
+            text = row["text"] or ""
+            for match in re.finditer(re.escape(sub), text):
+                total += 1
+                after = text[match.end() : match.end() + 1]
+                if not after or after == boundary or not _HAN_ONLY.match(after):
+                    explained += 1
+    else:
+        boundary = parent[len(parent) - len(sub) - 1]
+        front_chars = frozenset(boundary)
+        for row in rows:
+            text = row["text"] or ""
+            for match in re.finditer(re.escape(sub), text):
+                total += 1
+                before = text[match.start() - 1 : match.start()] if match.start() else ""
+                if not before or before == boundary or not _HAN_ONLY.match(before):
+                    explained += 1
+    return (explained / total if total else 0.0), front_chars, back_chars
 
 
 def _changed_char(base: str, wrong: str) -> str:
