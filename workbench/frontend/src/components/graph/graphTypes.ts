@@ -1,6 +1,7 @@
 // 关系图（1g、1h）接口的数据形状，和后端 graph.py 一一对应。
 
 import type { MaterialDeliverable, MaterialFileState, MeetingAttribution, MeetingCard } from "../../types";
+import type { LinksState } from "../../api";
 
 export type GraphWindow = "7d" | "28d" | "90d" | "all";
 export type Ring = "inner" | "middle" | "outer";
@@ -415,6 +416,8 @@ export interface MeetingBrief {
   /** 这场会提到的全部文件（最多 20 条，按次数排，通用的排最后） */
   files: BriefFile[];
   files_state: FilesState;
+  /** 4b：会上换了叫法的文件整理到哪了（一句话，最多一个按钮）；没什么可说时为 null，旧后台没有 */
+  loose_state?: LinksState | null;
 }
 
 /** 简报里的文件列表为空时按这个说：认完了没提到、还在认、盘没插、会没归项目、项目没挂文件夹 */
@@ -438,6 +441,22 @@ export interface BriefFile {
   picked: boolean;
   /** 通用词：本项目一半以上的会都提到，排在最后、淡一点 */
   generic: boolean;
+  /** 4b 放宽的提到才有（字面行为 null，旧后台没有）：回答走 answerRelation */
+  relation_id?: number | null;
+  /** 4b：会上的那句说法（「上周那版报价单」） */
+  phrase?: string | null;
+  /** 4b：怎么对上的 */
+  via?: LooseVia | null;
+}
+
+/** 放宽的提到怎么对上的：词干本身、别名、时间提示（只在简报、文件面板、预览里用；关系图线上叫 origin） */
+export type LooseVia = "stem" | "alias" | "time_hint";
+
+/** 放宽行才有的三项（字面行都是 null，旧后台没有） */
+export interface LooseFields {
+  relation_id?: number | null;
+  phrase?: string | null;
+  via?: LooseVia | null;
 }
 
 /** 文件面板 GET /api/graph/files/{id}（2d） */
@@ -482,7 +501,7 @@ export interface GraphFileDetail {
     picked: boolean;
     /** 第一次说到的那段原话 */
     quote: string;
-  }>;
+  } & LooseFields>;
   active_meetings: number;
 }
 

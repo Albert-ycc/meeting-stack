@@ -11,12 +11,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from meeting_workbench import links_llm
+from meeting_workbench import links_llm, loose_mentions
 from meeting_workbench.db import Database, utc_now
 from meeting_workbench.links_llm import LinksLLMWorker, claim_stamp
 from meeting_workbench.llm import LLMError
 
+from .test_file_mentions import setup as fm_setup
 from .test_graph import add_meeting
+from .test_loose_mentions import NOW as LOOSE_NOW
+from .test_loose_mentions import FakeChat, talk
+from .test_loose_mentions import settings as loose_settings
 from .test_material_index import make
 
 NOW = datetime(2026, 9, 27, 8, 0, tzinfo=UTC)
@@ -356,3 +360,58 @@ def test_unexpected_error_in_a_task_releases_the_job_and_backs_off(tmp_path):
     # 这份活放回去了，不会卡在认领状态；循环整体退避，不在 60 秒后接着耗当天的用量
     assert task.released == ["m1"] and task.failed == []
     assert w.tick() == {"called": False, "state": "backoff"}
+
+
+# ---------------------------------------------------------------------- 4b：放宽的提到放进这个循环
+
+
+def test_loose_mentions_seed_only_qualified_meetings(tmp_path):
+    db, _root = fm_setup(tmp_path)
+    add_meeting(db, "good", ago=1, project_id="p", segments=talk())
+    add_meeting(db, "short", ago=1, project_id="p", segments=[(0, "报价单再看一下")])
+    add_meeting(db, "old", ago=200, project_id="p", segments=talk())
+    add_meeting(db, "loose", ago=1, segments=talk())
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '别的项目', ?)", (utc_now(),))
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('q', '/没收完', ?)", (utc_now(),)
+    )
+    add_meeting(db, "unindexed", ago=1, project_id="q", segments=talk())
+
+    assert loose_mentions.seed(db, loose_settings(tmp_path), LOOSE_NOW) == 1
+    assert [row["meeting_id"] for row in db.query_all("SELECT meeting_id FROM mention_extractions")] == ["good"]
+    # 已经有行的不再建；300 天回补的设置能补到老会
+    assert loose_mentions.seed(db, loose_settings(tmp_path), LOOSE_NOW) == 0
+    assert loose_mentions.seed(db, loose_settings(tmp_path, links_backfill_days=300), LOOSE_NOW) == 1
+    # 0 表示只做新会：以 links_since 为界
+    db.execute("DELETE FROM mention_extractions")
+    db.execute("UPDATE app_state SET value = '2026-09-25T00:00:00+00:00' WHERE key = 'links_since'")
+    assert loose_mentions.seed(db, loose_settings(tmp_path, links_backfill_days=0), LOOSE_NOW) == 1
+
+
+def test_order_recent_then_pairs_then_backfill_and_one_shared_cap(tmp_path):
+    db, _root = fm_setup(tmp_path)
+    add_meeting(db, "recent", ago=1, project_id="p", segments=talk())
+    add_meeting(db, "older", ago=30, project_id="p", segments=talk())
+    chat = FakeChat({"refs": []})
+    cfg = loose_settings(tmp_path, links_llm_daily_calls=3)
+    pairs = FakeTask(name="pairs", jobs=["d1"])
+    tasks = links_llm.ordered(
+        [
+            loose_mentions.LooseMentionTask(cfg, loose_mentions.TASK_BACKFILL, chat=chat),
+            pairs,
+            loose_mentions.LooseMentionTask(cfg, loose_mentions.TASK_RECENT, chat=chat),
+        ]
+    )
+    assert [task.name for task in tasks] == list(links_llm.TASK_ORDER)
+    worker = LinksLLMWorker(db, cfg, tasks=tasks, now=lambda: LOOSE_NOW, today=lambda: date(2026, 9, 26))
+    states = [db.query_one("SELECT state FROM mention_extractions WHERE meeting_id = ?", (m,)) for m in ("recent", "older")]
+    assert states == [None, None]
+    assert worker.tick()["called"] is True
+    assert db.query_one("SELECT state FROM mention_extractions WHERE meeting_id = 'recent'") == {"state": "done"}
+    assert worker.tick()["called"] is True and pairs.ran == ["d1"]
+    assert worker.tick()["called"] is True
+    assert db.query_one("SELECT state FROM mention_extractions WHERE meeting_id = 'older'") == {"state": "done"}
+    # 三种一起用每天的上限
+    pairs.jobs.append("d2")
+    assert worker.tick()["state"] == "capped" and pairs.ran == ["d1"]
+    assert usage(db)["background"] == 3

@@ -11,7 +11,7 @@
 - 清理每 24 小时一次（links_housekeeping_at），每个事务最多 5,000 行，会议转写时照跑。
 - 各步上一轮怎么结束的记在内存快照里（done、budget、busy、stopping、locked、off、waiting），健康检查
   从快照拼 details.links，请求时不查库。GET 接口从不写库。
-- 4a 里 L1、L2 和清理是实的；L3（4e）、L4（4e）、L5（4b）、H2（4e）、H3（4d）、H4（4h）是空位。
+- 4a 里 L1、L2 和清理是实的，4b 填了 L5；L3（4e）、L4（4e）、H2（4e）、H3（4d）、H4（4h）是空位。
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from . import decisions, file_events
+from . import decisions, file_events, loose_mentions
 from .db import Database
 from .material_fts import REBUILD_KEY
 from .relation_read import live_file
@@ -399,9 +399,19 @@ class LinksWorker:
         return "off"
 
     def l5_loose_mentions(self, ctx: RoundContext) -> str:
-        """L5 放宽的提到（4b 填）：在本机把 AI 挑出的说法对到文件，写 mention 行和 hints_json。
-        每轮 20 场会或 1.5 秒。"""
-        return "off"
+        """L5 放宽的提到（4b）：在本机把 AI 挑出的说法对到文件，写 mention 行和 hints_json
+        （loose_mentions.resolve_due）。每轮 20 场会或 1.5 秒（和这一段剩下的时间取小的）；签名没变的会
+        整轮不写。"""
+        counts = loose_mentions.resolve_due(
+            ctx.db,
+            now=ctx.now,
+            since=ctx.since,
+            clock=ctx.clock,
+            max_seconds=max(0.0, min(loose_mentions.ROUND_SECONDS, ctx.remaining())),
+        )
+        if counts["tried"]:
+            ctx.work += 1
+        return "done" if counts["tried"] >= counts["pending"] else "budget"
 
     # ------------------------------------------------------------------ 重活
 

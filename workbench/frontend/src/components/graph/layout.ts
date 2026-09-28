@@ -752,8 +752,21 @@ export const DIRECTION_NAMES: Record<Direction, string> = {
   bottom: "线索词",
 };
 
-/** 「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」。和后端 mention_label 一致 */
-export function mentionLabel(item: { needle: string; count: number; first_ms: number | null; source: string }): string {
+/**
+ * 「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」。
+ * 4b 放宽的提到（relation_id 不为空）：会上说『上周那版报价单』· 00:12:34，两处以上「等 N 处」。和后端 mention_label 一致
+ */
+export function mentionLabel(item: {
+  needle: string;
+  count: number;
+  first_ms: number | null;
+  source: string;
+  relation_id?: number | null;
+}): string {
   if (item.source === "minutes") return `纪要里写到『${item.needle}』`;
-  return `会上说『${item.needle}』${item.count} 次 · ${formatTime(item.first_ms, true)}`;
+  const clock = formatTime(item.first_ms, true);
+  if (item.relation_id !== undefined && item.relation_id !== null) {
+    return `会上说『${item.needle}』${item.count >= 2 ? `等 ${item.count} 处 ` : ""}· ${clock}`;
+  }
+  return `会上说『${item.needle}』${item.count} 次 · ${clock}`;
 }

@@ -484,7 +484,9 @@ def file_mentions_for_preview(
     for row in rows:
         first_ms = row["first_ms"]
         quote = ""
-        if quotes is not None and row["source"] == "transcript" and first_ms is not None:
+        if row.get("relation_id") is not None and row.get("quote"):
+            quote = row["quote"]  # 放宽行（4b）存着那句原话
+        elif quotes is not None and row["source"] == "transcript" and first_ms is not None:
             quote = quotes(row["meeting_id"], [int(first_ms)]).get(int(first_ms), "")
         result.append(
             {
@@ -495,6 +497,8 @@ def file_mentions_for_preview(
                 "first_ms": first_ms,
                 "quote": quote,
                 "audio_url": f"/api/media/{row['audio_id']}" if row["audio_id"] else None,
+                # 4b：放宽行的 relation_id、说法和对上的方式（字面行都是 None）
+                **relation_read.loose_fields(row),
             }
         )
     return result

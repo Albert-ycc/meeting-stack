@@ -334,4 +334,12 @@ describe("layoutStarMap 第二期的新节点", () => {
     expect(mentionLabel({ needle: "报价单", count: 3, first_ms: 754_000, source: "transcript" })).toBe("会上说『报价单』3 次 · 00:12:34");
     expect(mentionLabel({ needle: "报价单", count: 0, first_ms: null, source: "minutes" })).toBe("纪要里写到『报价单』");
   });
+
+  it("放宽的提到（4b）：会上说『说法』· 时间，两处以上「等 N 处」，和后端 mention_label 一致", () => {
+    const loose = { needle: "上周那版报价单", first_ms: 754_000, source: "transcript", relation_id: 11 };
+    expect(mentionLabel({ ...loose, count: 1 })).toBe("会上说『上周那版报价单』· 00:12:34");
+    expect(mentionLabel({ ...loose, count: 2 })).toBe("会上说『上周那版报价单』等 2 处 · 00:12:34");
+    // 字面行（relation_id 为 null）照旧写「N 次」
+    expect(mentionLabel({ ...loose, count: 2, relation_id: null })).toBe("会上说『上周那版报价单』2 次 · 00:12:34");
+  });
 });

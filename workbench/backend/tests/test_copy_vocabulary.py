@@ -32,6 +32,7 @@ PHASE_FOUR_MODULES = (
     "deep_links.py",
     "links_llm.py",
     "llm.py",
+    "loose_mentions.py",
 )
 
 # 4a：relation_read.links_state 的状态句（第 3 节「状态和提示」，每种一句话、最多一个按钮）
@@ -67,7 +68,33 @@ ANSWER_COPY_4A = (
     "已撤销",
     "后台还是旧版本，重启声档后再试",
 )
-COPY_TABLES = {"4a 状态句": STATE_SENTENCES_4A, "4a 回答和撤销": ANSWER_COPY_4A}
+# 4b：会议面板「会上提到的文件」下面的七句（loose_mentions.LOOSE_SENTENCES）、线上的字、小字和回答的提示
+STATE_SENTENCES_4B = (
+    "会上换了叫法的文件还在整理",
+    "没配置 AI，会上换了叫法的文件先不整理",
+    "AI 的 key 不对，会上换了叫法的文件先不整理",
+    "今天的 AI 用量到上限了，明天接着整理",
+    "AI 账户余额不足，会上换了叫法的文件先不整理",
+    "AI 连不上，过一会儿自动再试",
+    "这场会的 AI 整理没做成",
+)
+COPY_4B = (
+    *STATE_SENTENCES_4B,
+    "会上说『上周那版报价单』· 00:12:34",
+    "会上说『上周那版报价单』等 2 处 · 00:12:34",
+    "说的是『上周那版报价单』",
+    "已记下：『上周那版报价单』不是这份文件",
+    "已换成「报价单 v4.xlsx」",
+    "你标过「周会」说的不是这份文件",
+    "不是这份文件",
+    "换成这份",
+    "撤销",
+)
+COPY_TABLES = {
+    "4a 状态句": STATE_SENTENCES_4A,
+    "4a 回答和撤销": ANSWER_COPY_4A,
+    "4b 状态句和提到": COPY_4B,
+}
 
 
 def unquote(text: str) -> str:
@@ -146,8 +173,14 @@ def test_phase_four_copy_tables(table):
 
 def test_state_sentences_are_one_sentence_each():
     assert len(STATE_SENTENCES_4A) == 16
-    for text in STATE_SENTENCES_4A:
+    for text in (*STATE_SENTENCES_4A, *STATE_SENTENCES_4B):
         assert not re.search(r"[。！？!?]", text.rstrip("。")), text
+
+
+def test_loose_state_sentences_match_the_module():
+    from meeting_workbench.loose_mentions import LOOSE_SENTENCES
+
+    assert LOOSE_SENTENCES == STATE_SENTENCES_4B
 
 
 @pytest.mark.parametrize("module", PHASE_FOUR_MODULES)

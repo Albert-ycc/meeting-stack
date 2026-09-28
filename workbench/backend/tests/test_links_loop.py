@@ -150,6 +150,25 @@ def idle_world(tmp_path):
            VALUES ('p', '能耗看板', '能耗看板', 3, 1, 'pending', ?, ?)""",
         (at(-3600), at(-3600)),
     )
+    # 4b：一场抽完了放宽提到的会，L5 前两轮写出放宽行和给字面行的提示，之后签名不变就不再写
+    add_meeting(db, "m3", ago=1, project_id="p", segments=[(60_000, "上周那版报价单再看一下"), (120_000, "方案也改")])
+    db.execute(
+        """INSERT INTO meeting_file_mentions(meeting_id, project_id, stem_key, file_id, needle, count, first_ms,
+               anchors_json, minutes_count, source, status, picked, updated_at)
+           VALUES ('m3', 'p', '方案', ?, '方案', 1, 0, '[0]', 0, 'transcript', 'active', 0, ?)""",
+        (plan_id, at(-7200)),
+    )
+    phrases = [
+        {"at_ms": 60_000, "quote": "上周那版报价单再看一下", "phrase": "上周那版报价单", "core": "报价单", "aka": [],
+         "kind": "表格", "when": {"rel": "last_week", "version": None}},
+    ]
+    version = db.query_one("SELECT current_transcript_version_id AS v FROM meetings WHERE id = 'm3'")["v"]
+    db.execute(
+        """INSERT INTO mention_extractions(meeting_id, version_id, text_sha, state, parts, parts_done, phrases_json,
+               created_at, updated_at)
+           VALUES ('m3', ?, 'sha', 'done', 1, 1, ?, ?, ?)""",
+        (version, json.dumps(phrases, ensure_ascii=False), at(-3600), at(-3600)),
+    )
     return db
 
 
@@ -160,6 +179,7 @@ def fingerprint(db):
         "relations": db.query_all("SELECT id, status, file_id, updated_at FROM relations ORDER BY id"),
         "decisions": db.query_all("SELECT id, text, updated_at FROM decisions ORDER BY id"),
         "candidates": db.query_all("SELECT id, status, updated_at FROM glossary_candidates ORDER BY id"),
+        "extractions": db.query_all("SELECT meeting_id, hints_json, resolved_sig, updated_at FROM mention_extractions"),
     }
 
 
@@ -170,6 +190,11 @@ def test_idle_round_leaves_revisions_alone(tmp_path):
     w.run_round()
     stable = fingerprint(db)
     assert len(stable["decisions"]) == 2  # 样本真的入库了
+    # 放宽的提到真的写出来了（L5）
+    assert db.query_one("SELECT status, origin FROM relations WHERE ident = 'm3|报价单'") == {
+        "status": "shown", "origin": "llm"
+    }
+    assert stable["extractions"][0]["resolved_sig"]
     assert first["phases"]["decisions"] == "done"
 
     w.moment["value"] = NOW + timedelta(hours=3)  # 同一天

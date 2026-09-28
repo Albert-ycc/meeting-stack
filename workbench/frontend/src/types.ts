@@ -1354,6 +1354,11 @@ export interface MaterialMention {
   first_ms: number | null;
   quote: string;
   audio_url: string | null;
+  /** 4b 放宽的提到才有（字面行为 null，旧后台没有） */
+  relation_id?: number | null;
+  /** 4b：会上的那句说法，小字写「说的是『…』」代替「N 次」 */
+  phrase?: string | null;
+  via?: "stem" | "alias" | "time_hint" | null;
 }
 
 export interface MaterialDeliverable {

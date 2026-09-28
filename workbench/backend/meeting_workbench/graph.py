@@ -592,9 +592,15 @@ def _clock_hms(ms: int | None) -> str:
 
 
 def mention_label(row: dict[str, Any]) -> str:
-    """「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」。"""
+    """「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」；
+    放宽的提到（4b）是「会上说『上周那版报价单』· 00:12:34」，两处以上「会上说『…』等 2 处 · 00:12:34」。"""
     if row["source"] == "minutes":
         return f"纪要里写到『{row['needle']}』"
+    if row.get("relation_id") is not None:
+        # 4b 放宽的提到：needle 是会上的那句说法，「等 N 处」数的是命中处数
+        count = int(row.get("count") or 1)
+        more = f"等 {count} 处 " if count >= 2 else ""
+        return f"会上说『{row['needle']}』{more}· {_clock_hms(row['first_ms'])}"
     return f"会上说『{row['needle']}』{row['count']} 次 · {_clock_hms(row['first_ms'])}"
 
 

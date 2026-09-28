@@ -286,6 +286,28 @@ describe("MaterialPreviewDrawer", () => {
     expect(await within(dialog).findByText("在 41 场会上被提到")).toBeInTheDocument();
   });
 
+  it("放宽的提到（4b）写「说的是『…』」代替「N 次」，没有按钮；旧后台照「N 次」", async () => {
+    const loose = {
+      meeting_id: "m-2",
+      title: "周会",
+      date: "2026-09-22",
+      count: 1,
+      first_ms: 754_000,
+      quote: "上周那版报价单再看一下",
+      audio_url: null,
+      relation_id: 11,
+      phrase: "上周那版报价单",
+      via: "time_hint" as const,
+    };
+    renderDrawer({
+      apiClient: apiClient({ ...drawerData, mentions: [...(drawerData.mentions ?? []), loose], mentioned_meetings: 2 }),
+    });
+    const dialog = await screen.findByRole("dialog", { name: "材料预览" });
+    expect(await within(dialog).findByText("2026-09-22 · 说的是『上周那版报价单』")).toBeInTheDocument();
+    expect(within(dialog).getByText("2026-09-21 · 2 次")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "不是这份文件" })).toBeNull();
+  });
+
   it("不在本机时没有［在访达中显示］，手机上没有［在关系图里看］", async () => {
     renderDrawer({ canReveal: false, isMobile: true });
     expect(await screen.findByRole("heading", { name: "报价单.xlsx" })).toBeInTheDocument();

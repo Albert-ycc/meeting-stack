@@ -63,6 +63,7 @@ from . import decisions as decisions_module
 from . import deep_links
 from . import links_llm as links_llm_module
 from . import file_mentions
+from . import loose_mentions
 from . import relations as relations_module
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from . import material_content as material_content_module
@@ -772,7 +773,18 @@ def create_app(
     # 第四期（4a）：两个循环各有自己的停止标记；worker 常在（问答的用量计数、健康检查的快照都用它们），
     # 循环只在 links_enabled 开着时启动。
     links_stop = StopFlag()
-    links_llm_worker = links_llm_module.LinksLLMWorker(db, settings, stop=links_stop)
+    # 4b：放宽的提到放进 AI 循环（最近 7 天的会、回补两种顺序），4c 的对比按 TASK_ORDER 排在中间
+    links_llm_worker = links_llm_module.LinksLLMWorker(
+        db,
+        settings,
+        stop=links_stop,
+        tasks=links_llm_module.ordered(
+            [
+                loose_mentions.LooseMentionTask(settings, loose_mentions.TASK_RECENT),
+                loose_mentions.LooseMentionTask(settings, loose_mentions.TASK_BACKFILL),
+            ]
+        ),
+    )
     links_worker = deep_links.LinksWorker(
         db,
         settings,
@@ -3759,9 +3771,18 @@ def create_app(
             if attribution is None:
                 raise HTTPException(404, "会议不存在")
             card = card_writer.meeting_card(connection, meeting_id)
-            return graph_module.meeting_brief(
+            brief = graph_module.meeting_brief(
                 connection, meeting_id, attribution=attribution, card=card
             )
+            # 4b：会上换了叫法的文件整理到哪了（一句话或 null），只读快照和台账，不写库
+            brief["loose_state"] = loose_mentions.brief_state(
+                connection,
+                meeting_id,
+                brief["meeting"]["project_id"],
+                links_worker,
+                settings,
+            )
+            return brief
 
     @app.get("/api/graph/files/{file_id}")
     def graph_file_detail(file_id: int):

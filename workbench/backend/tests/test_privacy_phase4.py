@@ -9,6 +9,9 @@
 - 文件名：根目录下面一个子文件夹（不是根目录本身：根目录名会进项目线索）里的「绝密文件名甲」文件夹
   和文件。只查往外发的地方：AI 请求、快照、项目线索、两张会议全文表、卡片、日志；存位置的列不算，
   不做整库扫描。
+- 4b：候选词（glossary_candidates.term）里的「候选词哨兵丁」不出现在任何提示词里；会名里的「会名哨兵乙」
+  不出现在 4b 发出的请求里（4c、4g 和项目归属本来就发会名）；假 AI 给 4b 回一条说法，L5 真的写出放宽行，
+  材料文字哨兵不出现在它的 quote、evidence_json 里。
 """
 from __future__ import annotations
 
@@ -24,7 +27,8 @@ from meeting_workbench.cards import CardWriter
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database, utc_now
 from meeting_workbench.deep_links import LinksWorker
-from meeting_workbench.links_llm import LinksLLMWorker
+from meeting_workbench.links_llm import LinksLLMWorker, ordered
+from meeting_workbench.loose_mentions import TASK_BACKFILL, TASK_RECENT, LooseMentionTask
 from meeting_workbench.glossary import SNAPSHOT_FILENAME, rewrite_snapshot
 from meeting_workbench.material_index import MaterialIndexer
 from meeting_workbench.project_linking import ProjectLinker
@@ -36,6 +40,11 @@ from .test_project_linking import make_project, seed_meeting
 
 MATERIAL_SENTINEL = "蓝鲸七号材料原文"
 NAME_SENTINEL = "绝密文件名甲"
+TITLE_SENTINEL = "会名哨兵乙"
+CANDIDATE_SENTINEL = "候选词哨兵丁"
+LOOSE_MEETING = "vm-20260926-160000"
+# 4b 的请求：user 消息里有 <transcript> 标签
+LOOSE_MARK = "<transcript>"
 CONTENT_KEY = "q2:" + "7" * 32
 
 # 材料文字哨兵本来就在的表，和三处白名单
@@ -81,8 +90,17 @@ def fake_ai(monkeypatch) -> list[str]:
 
     def urlopen(request, *_args, **_kwargs):
         data = getattr(request, "data", None) or b""
-        requests.append(f"{getattr(request, 'full_url', request)}\n{data.decode('utf-8')}")
-        return _Reply({"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]})
+        body = data.decode("utf-8")
+        requests.append(f"{getattr(request, 'full_url', request)}\n{body}")
+        content = "{}"
+        if LOOSE_MARK in body:
+            # 4b：回一条会上真说过的说法，L5 才有东西可对
+            content = json.dumps(
+                {"refs": [{"at": "00:01:00", "quote": "上周那版报价单再看一下", "phrase": "上周那版报价单",
+                           "core": "报价单", "aka": [], "kind": "表格", "when": {"rel": "last_week", "version": None}}]},
+                ensure_ascii=False,
+            )
+        return _Reply({"choices": [{"message": {"content": content}, "finish_reason": "stop"}]})
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     return requests
@@ -137,6 +155,20 @@ def build_world(tmp_path: Path) -> tuple[Database, Settings, Path]:
         project_id=project_id, origin="ai",
     )
     seed_meeting(db, "vm-20260927-100000", "周会", "# 摘要\n\n讨论报价单。", segments=segments)
+    # 4b：一场逐字稿够长的会（会名里有哨兵），会上说了「上周那版报价单」
+    long_talk = [(0, "开始吧")] + [
+        (60_000, "上周那版报价单再看一下"),
+        *[((index + 2) * 60_000, f"我们今天把排期再过一遍，确认下周的节奏安排和人手{index}") for index in range(20)],
+    ]
+    seed_meeting(
+        db, LOOSE_MEETING, f"{TITLE_SENTINEL}周会", "# 摘要\n\n排期。", segments=long_talk,
+        project_id=project_id, origin="manual",
+    )
+    db.execute(
+        """INSERT INTO glossary_candidates(project_id, term, term_key, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (project_id, CANDIDATE_SENTINEL, CANDIDATE_SENTINEL, now, now),
+    )
     return db, settings, root
 
 
@@ -147,9 +179,23 @@ def run_everything(db: Database, settings: Settings) -> None:
     ProjectLinker(db, settings).link_pending()
     TaskService(db, settings).extract_pending()
     links_settings = settings.model_copy(update={"links_enabled": True, "glossary_mining_enabled": True})
-    llm_worker = LinksLLMWorker(db, links_settings)
-    LinksWorker(db, links_settings, llm=llm_worker).run_round()
-    llm_worker.tick()
+    llm_worker = LinksLLMWorker(
+        db,
+        links_settings,
+        tasks=ordered(
+            [
+                LooseMentionTask(links_settings, TASK_RECENT),
+                LooseMentionTask(links_settings, TASK_BACKFILL),
+            ]
+        ),
+    )
+    links = LinksWorker(db, links_settings, llm=llm_worker)
+    links.run_round()
+    # AI 循环跑到没活（4b 一段一次），再跑一轮本机循环让 L5 把说法对到文件
+    for _ in range(10):
+        if not llm_worker.tick()["called"]:
+            break
+    links.run_round()
     CardWriter(db, settings).reconcile()
     rewrite_snapshot(db, settings.data_dir / SNAPSHOT_FILENAME)
 
@@ -234,3 +280,26 @@ def test_file_name_stays_in_location_columns(tmp_path, fake_ai, caplog):
     places["日志"] = caplog.text
     for place, text in places.items():
         assert NAME_SENTINEL not in text, place
+
+
+def test_loose_mentions_send_only_the_transcript(tmp_path, fake_ai):
+    db, settings, root = build_world(tmp_path)
+
+    run_everything(db, settings)
+
+    loose_requests = [text for text in fake_ai if LOOSE_MARK in text]
+    assert loose_requests, "4b 一次都没发，这个测试什么都没验证"
+    for text in loose_requests:
+        for sentinel in (TITLE_SENTINEL, NAME_SENTINEL, MATERIAL_SENTINEL, CANDIDATE_SENTINEL, "云图AI"):
+            assert sentinel not in text, sentinel
+        assert "上周那版报价单再看一下" in text
+    # 候选词、文件名、材料文字不在任何一次请求里
+    for text in fake_ai:
+        for sentinel in (CANDIDATE_SENTINEL, NAME_SENTINEL, MATERIAL_SENTINEL):
+            assert sentinel not in text, sentinel
+    # L5 真的写出了放宽行（上面的材料文字断言才有意义）
+    rows = db.query_all("SELECT quote, evidence_json FROM relations WHERE kind = 'mention' AND origin = 'llm'")
+    assert rows and rows[0]["quote"] == "上周那版报价单再看一下"
+    for row in rows:
+        assert MATERIAL_SENTINEL not in row["quote"] + row["evidence_json"]
+        assert NAME_SENTINEL not in row["quote"] + row["evidence_json"]

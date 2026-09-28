@@ -5,6 +5,7 @@ import { copyText } from "../clipboard";
 import { formatBytes, formatDate, formatTime } from "../format";
 import type { MaterialFilePreview, MaterialPreviewContent } from "../types";
 import { AsyncState } from "./AsyncState";
+import { looseId, looseSaid } from "./links/looseMention";
 import type { MiniPlayerHandle, PlayOptions } from "./graph/MiniPlayer";
 import { claimSound } from "./soundFocus";
 import { useDialogFocus } from "./useDialog";
@@ -400,7 +401,7 @@ export function MaterialPreviewDrawer({
                           {item.title}
                         </button>
                         <span className="material-preview__muted">
-                          {item.date} · {item.count} 次
+                          {item.date} · {looseId(item) !== null && item.phrase ? looseSaid(item.phrase) : `${item.count} 次`}
                         </span>
                         {item.quote && (
                           <span className="material-drawer__quote">

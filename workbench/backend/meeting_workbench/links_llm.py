@@ -6,6 +6,8 @@
 - 顺序（TASK_ORDER）：最近 7 天的会的放宽提到（4b）；等着对比、pair_after 已到的会（4c）；再按会议
   新的在前补 links_backfill_days 天内的放宽提到（4b）。4a 里 tasks 是空的：LLMTask 是它们的接口。
 - 认领超过 10 分钟的收回成 pending，不算一次失败（mention_extractions、decision_scan 两处）。
+- 每次 tick 先 seed：有 seed(db, now) 的任务给该做的会建 pending 行（4b 在 AI 这一层关着、当天上限为 0
+  时不建，免得状态句一直写「还在整理」）。
 - 失败按 LLMError 的代码分三种：
   - auth、no_key、balance：整个循环停下，不给任何会加次数，等 key 文件的修改时间变了或点［现在重试］；
   - network、timeout、server、rate_limited：整个循环退避 1 分钟、5 分钟、30 分钟，之后每 30 分钟试一次，
@@ -154,6 +156,27 @@ def requeue_failed(connection: sqlite3.Connection) -> int:
         (stamp,),
     ).rowcount
     return count
+
+
+def seed(db: Database, tasks: Sequence[Any], now: datetime) -> int:
+    """links_llm.seed()：让各任务给该做的会建 pending 行（有 seed(db, now) 的任务才建，4b 的
+    loose_mentions.seed 在 AI 这一层关着、当天上限为 0 时不建）。建行出错只记日志，不耽误这次调用。"""
+    created = 0
+    for task in tasks:
+        seeder = getattr(task, "seed", None)
+        if not callable(seeder):
+            continue
+        try:
+            created += int(seeder(db, now) or 0)
+        except sqlite3.Error:
+            logger.warning("AI 循环建行失败：%s", getattr(task, "name", "?"))
+    return created
+
+
+def ordered(tasks: Sequence[LLMTask]) -> list[LLMTask]:
+    """按 TASK_ORDER 排（不认识的名字排在最后）。"""
+    rank = {name: index for index, name in enumerate(TASK_ORDER)}
+    return sorted(tasks, key=lambda task: rank.get(getattr(task, "name", ""), len(rank)))
 
 
 # ---------------------------------------------------------------------- 循环
@@ -323,6 +346,8 @@ class LinksLLMWorker:
         now = self.now()
         with self.db.transaction() as connection:
             recover_claims(connection, now)
+        # 建行（4b 的 seed）在 key、上限、退避之前：没配置 AI、到了上限时这场会也有一行，状态句才说得出在等什么
+        seed(self.db, self.tasks, now)
         self._ready = llm_ready(self.settings)
         if self._still_paused():
             return {"called": False, "state": "paused"}

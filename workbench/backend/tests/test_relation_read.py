@@ -311,3 +311,63 @@ def test_links_state_sentences():
     # 会议在转写时，已经整理完的页面不写这句
     assert state({"paused": "busy"}, on, "mentions", mention_state="done")["kind"] == "ok"
     assert state({"paused": "busy"}, on, "mentions", mention_state="pending")["text"] == relation_read.TRANSCRIBING
+
+
+def test_loose_edges_reuse_the_mentioned_line_and_its_labels(tmp_path):
+    db, root_id = setup(tmp_path)
+    quote = add_file(db, root_id, "报价单.xlsx")
+    plan = add_file(db, root_id, "能耗看板方案.pptx")
+    upsert(
+        db,
+        [
+            system_row(file_id=quote, evidence={"phrase": "上周那版报价单", "via": "time_hint",
+                                                  "hits": [{"at_ms": 754_000, "quote": "上周那版报价单"}]},
+                       at_ms=754_000),
+            system_row(ident="m|能耗看板方案", stem_key="能耗看板方案", file_id=plan, at_ms=60_000,
+                       evidence={"phrase": "能耗看板那个PPT", "via": "stem",
+                                 "hits": [{"at_ms": 60_000, "quote": "a"}, {"at_ms": 90_000, "quote": "b"}]}),
+        ],
+    )
+    assert count_reads(db, lambda connection: graph.project_graph(connection, "p", today=TODAY)) == 12
+    with db.autocommit() as connection:
+        body = graph.project_graph(connection, "p", today=TODAY)
+    edges = {edge["to"]: edge for edge in body["edges"] if edge["kind"] == "mentioned"}
+    assert edges[f"file:{quote}"]["id"] == f"e:file:{quote}:m"
+    assert edges[f"file:{quote}"]["label"] == "会上说『上周那版报价单』· 00:12:34"
+    assert edges[f"file:{plan}"]["label"] == "会上说『能耗看板那个PPT』等 2 处 · 00:01:00"
+    assert edges[f"file:{plan}"]["anchors_ms"] == [60_000, 90_000]
+    assert graph.GRAPH_API_VERSION == 3
+    # 简报、文件面板多出的三项：放宽行才有
+    with db.autocommit() as connection:
+        from meeting_workbench import file_mentions
+
+        files = {item["file_id"]: item for item in file_mentions.meeting_files(connection, "m", "p")["files"]}
+        detail = file_mentions.file_detail(connection, plan, quotes=lambda meeting_id, starts: {})
+    assert (files[quote]["relation_id"], files[quote]["phrase"], files[quote]["via"]) == (
+        ident_id(db, "m|报价单"), "上周那版报价单", "time_hint"
+    )
+    assert files[plan]["count"] == 2 and files[plan]["source"] == "transcript"
+    [row] = detail["meetings"]
+    assert (row["relation_id"], row["phrase"], row["via"], row["status"], row["quote"]) == (
+        ident_id(db, "m|能耗看板方案"), "能耗看板那个PPT", "stem", "active", "上周那版报价单再对一下"
+    )
+    # 字面行三项都是 None
+    literal(db, "m", "报价单", quote)
+    with db.autocommit() as connection:
+        files = {item["file_id"]: item for item in file_mentions.meeting_files(connection, "m", "p")["files"]}
+    assert (files[quote]["relation_id"], files[quote]["phrase"], files[quote]["via"]) == (None, None, None)
+
+
+def test_rejected_loose_rows_join_the_rejected_list(tmp_path):
+    from meeting_workbench import file_mentions
+
+    db, root_id = setup(tmp_path)
+    plan = add_file(db, root_id, "能耗看板方案.pptx")
+    relation_id = loose(db, "m", "能耗看板方案", plan, status="rejected", phrase="能耗看板那个PPT")
+    with db.autocommit() as connection:
+        detail = file_mentions.file_detail(connection, plan, quotes=lambda meeting_id, starts: {})
+    assert detail["active_meetings"] == 0
+    [row] = detail["meetings"]
+    assert (row["status"], row["relation_id"], row["phrase"], row["title"]) == (
+        "rejected", relation_id, "能耗看板那个PPT", "会 m"
+    )

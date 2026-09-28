@@ -1,5 +1,6 @@
 /* 关系图面板里第二期的几类：会上提到的文件（2d）、「像是新需求」和等补建的文件夹（2c）；
-   第三期文件面板加预览、交付物、［标为交付物 ▾］（3g） */
+   第三期文件面板加预览、交付物、［标为交付物 ▾］（3g）；
+   第四期 4b：放宽的提到（会上换了叫法的文件）的小字、回答和会议面板的状态句 */
 import { useEffect, useId, useState } from "react";
 
 import { formatMonthDayClock, formatTime } from "../../format";
@@ -9,7 +10,19 @@ import { NewNamePrompt } from "../NewNamePrompt";
 import type { GraphPanelProps } from "./GraphPanel";
 import type { FilesState, GraphEdge, GraphFileDetail, GraphFolder, GraphSuggestedRequirement, MeetingBrief } from "./graphTypes";
 import { meetingDateLabel } from "./layout";
-import { CopyPath, PlayButton, Section, TASK_STATUS, loadBrief, localUndoUntil, playMeetingAt } from "./panelParts";
+import { LinksStateLine } from "../links/LinksStateLine";
+import { answerLoose, looseFailure, looseId, loosePhrase, looseRejectedNotice, looseSaid } from "../links/looseMention";
+import {
+  CopyPath,
+  PlayButton,
+  Section,
+  TASK_STATUS,
+  forgetBrief,
+  loadBrief,
+  localUndoUntil,
+  playMeetingAt,
+  type GraphNoticeUndo,
+} from "./panelParts";
 
 /** ［标为交付物 ▾］最多列这么多个任务 */
 export const DELIVERABLE_TASKS_MAX = 30;
@@ -38,13 +51,31 @@ function saidText(item: { needle: string; count: number; source: string }) {
 /**
  * ［不是这份文件］：立即生效，提示里有［撤销］（走画布的撤销栈，⌘Z 也能撤）。
  * 这份文件可能因此从图上下去，所以先回到那场会再刷新。
+ * 4b：放宽行（有 relation_id）走 answerRelation(id, {answer: "no"})，撤销期取服务端的 undo_until；
+ * 字面行照第二期走 rejectFileMention。
  */
-async function rejectMention(props: GraphPanelProps, meetingId: string, stemKey: string, fileName: string) {
-  await props.apiClient.rejectFileMention(meetingId, stemKey);
-  props.onNotice("已标成不是这份文件", { kind: "mention", meetingId, stemKey, name: fileName, until: localUndoUntil() });
+async function rejectMention(
+  props: GraphPanelProps,
+  meetingId: string,
+  stemKey: string,
+  fileName: string,
+  loose?: { relationId: number; phrase: string } | null,
+) {
+  if (loose) {
+    await answerLoose(props.apiClient, props.onNotice, loose.relationId, { answer: "no" }, looseRejectedNotice(loose.phrase));
+  } else {
+    await props.apiClient.rejectFileMention(meetingId, stemKey);
+    props.onNotice("已标成不是这份文件", { kind: "mention", meetingId, stemKey, name: fileName, until: localUndoUntil() });
+  }
   if (props.layout.byId.has(`m:${meetingId}`)) props.onSelect(`m:${meetingId}`);
   else props.onClose();
   await props.onChanged();
+}
+
+/** 一行提到的放宽信息：有 relation_id 才算放宽行 */
+function looseOf(row: { relation_id?: number | null; phrase?: string | null; needle: string }) {
+  const relationId = looseId(row);
+  return relationId === null ? null : { relationId, phrase: loosePhrase(row) };
 }
 
 // ------------------------------------------------------------------ 会议面板里的文件列表
@@ -63,12 +94,22 @@ export function MeetingFiles({ props, brief }: { props: GraphPanelProps; brief: 
               <button className="text-button" onClick={() => props.onSelect(`file:${file.file_id}`)} title={file.rel_path} type="button">
                 {file.name}
               </button>
-              <small>{saidText(file)}</small>
+              <small>{looseId(file) !== null ? looseSaid(loosePhrase(file)) : saidText(file)}</small>
               <PlayButton atMs={file.first_ms} audioUrl={audio} label={brief.meeting.title} player={props.player} />
             </li>
           ))}
         </ul>
       )}
+      {/* 4b：会上换了叫法的文件整理到哪了（旧后台没有 loose_state 时不画） */}
+      <LinksStateLine
+        apiClient={props.apiClient}
+        className="graph-panel__loose-state"
+        onRetried={async () => {
+          forgetBrief(brief.meeting.id);
+          await props.onChanged();
+        }}
+        state={brief.loose_state}
+      />
     </Section>
   );
 }
@@ -280,12 +321,14 @@ export function FilePanelBody({
   // ［换成这份］：从某场会点进来时只换那一场，否则提到这份文件的会一起换
   const pickTargets = fromRow ? [fromRow] : active;
 
-  const run = async (work: () => Promise<void>, fallback: string) => {
+  const run = async (work: () => Promise<void>, fallback: string, loose = false) => {
     setBusy(true);
     try {
       await work();
     } catch (reason) {
-      props.onNotice(errorText(reason, fallback), undefined, "error");
+      // 放宽行的回答：旧后台、409、422 按第四期的说法；字面行照旧
+      if (loose) looseFailure(props.onNotice, reason, fallback);
+      else props.onNotice(errorText(reason, fallback), undefined, "error");
     } finally {
       setBusy(false);
     }
@@ -298,25 +341,45 @@ export function FilePanelBody({
 
   const pick = (sibling: GraphFileDetail["siblings"][number]) =>
     run(async () => {
+      const text =
+        pickTargets.length > 1 ? `已把 ${pickTargets.length} 场会换成「${sibling.name}」` : `已换成「${sibling.name}」`;
+      let undo: GraphNoticeUndo | undefined;
       for (const row of pickTargets) {
-        await props.apiClient.pickFileMention(row.meeting_id, row.stem_key, sibling.id);
+        const loose = looseOf(row);
+        if (loose) {
+          // 4b：放宽行发 pick，仍是 shown、origin 改 manual；撤销换回原文件
+          const result = await props.apiClient.answerRelation(loose.relationId, { answer: "pick", file_id: sibling.id });
+          undo = { kind: "relation", relationId: loose.relationId, label: text, until: result.undo_until };
+        } else {
+          await props.apiClient.pickFileMention(row.meeting_id, row.stem_key, sibling.id);
+        }
       }
-      props.onNotice(
-        pickTargets.length > 1 ? `已把 ${pickTargets.length} 场会换成「${sibling.name}」` : `已换成「${sibling.name}」`,
-      );
+      // 只换了一场放宽行时提示带［撤销］（和第二期同一句）
+      props.onNotice(text, pickTargets.length === 1 ? undo : undefined);
       // 这份文件可能不再有会提到；回到那场会看换好的列表
       const back = pickTargets.length === 1 ? pickTargets[0].meeting_id : null;
       if (back && props.layout.byId.has(`m:${back}`)) props.onSelect(`m:${back}`);
       else props.onClose();
       await props.onChanged();
-    }, "没换成");
+    }, "没换成", pickTargets.some((row) => looseOf(row) !== null));
 
-  const restore = (row: MentionRow) =>
-    run(async () => {
-      await props.apiClient.restoreFileMention(row.meeting_id, row.stem_key);
-      props.onNotice(`已撤销，「${row.title}」又连回这份文件`);
-      await props.onChanged();
-    }, "撤销失败");
+  const restore = (row: MentionRow) => {
+    const loose = looseOf(row);
+    return run(
+      async () => {
+        const text = `已撤销，「${row.title}」又连回这份文件`;
+        // 4b：过了撤销期，放宽行从「你标过…」这一行发 restore
+        if (loose) await answerLoose(props.apiClient, props.onNotice, loose.relationId, { answer: "restore" }, text, false);
+        else {
+          await props.apiClient.restoreFileMention(row.meeting_id, row.stem_key);
+          props.onNotice(text);
+        }
+        await props.onChanged();
+      },
+      "撤销失败",
+      loose !== null,
+    );
+  };
 
   const deliverables = payload.deliverables;
   // 旧后端的文件面板没有交付物：不显示这一节和［标为交付物］
@@ -344,14 +407,26 @@ export function FilePanelBody({
                 <button className="text-button" onClick={() => openMeeting(row.meeting_id)} type="button">
                   {meetingDateLabel(row.date, props.graph.today)} {row.title}
                 </button>
-                <small>{row.source === "minutes" ? "纪要里写到" : `${row.count} 次`}</small>
+                <small>
+                  {looseOf(row)
+                    ? looseSaid(loosePhrase(row))
+                    : row.source === "minutes"
+                      ? "纪要里写到"
+                      : `${row.count} 次`}
+                </small>
                 <MentionQuote props={props} row={row} />
                 {row.meeting_id === fromMeetingId && (
                   <span className="graph-panel__actions">
                     <button
                       className="ghost-button"
                       disabled={busy}
-                      onClick={() => void run(() => rejectMention(props, row.meeting_id, row.stem_key, file.name), "没标成")}
+                      onClick={() =>
+                        void run(
+                          () => rejectMention(props, row.meeting_id, row.stem_key, file.name, looseOf(row)),
+                          "没标成",
+                          looseOf(row) !== null,
+                        )
+                      }
                       type="button"
                     >
                       不是这份文件
@@ -367,7 +442,7 @@ export function FilePanelBody({
         {rejected.length > 0 && (
           <ul className="graph-panel__list graph-panel__rejected">
             {rejected.map((row) => (
-              <li key={row.meeting_id}>
+              <li key={`${row.meeting_id}-${row.relation_id ?? row.stem_key}`}>
                 <small>你标过「{row.title}」说的不是这份文件</small>
                 <button className="text-button" disabled={busy} onClick={() => void restore(row)} type="button">
                   撤销
@@ -436,11 +511,15 @@ export function MentionEdgeBody({ props, edge }: { props: GraphPanelProps; edge:
   const fileName = payload?.file.name ?? describeFile(props, edge.to);
   const stemKey = edge.stem_key ?? row?.stem_key ?? "";
   const needle = edge.needle ?? row?.needle ?? "";
+  // 4b：这条线是放宽的提到（文件面板里这一行有 relation_id）
+  const loose = row ? looseOf(row) : null;
 
   return (
     <>
       <p className="graph-panel__question">
-        {saidText({ needle, count: edge.count ?? row?.count ?? 0, source: edge.source ?? row?.source ?? "transcript" })}
+        {loose
+          ? looseSaid(loose.phrase)
+          : saidText({ needle, count: edge.count ?? row?.count ?? 0, source: edge.source ?? row?.source ?? "transcript" })}
       </p>
       {row ? (
         <MentionQuote props={props} row={row} />
@@ -465,9 +544,10 @@ export function MentionEdgeBody({ props, edge }: { props: GraphPanelProps; edge:
           onClick={async () => {
             setBusy(true);
             try {
-              await rejectMention(props, meetingId, stemKey, fileName);
+              await rejectMention(props, meetingId, stemKey, fileName, loose);
             } catch (reason) {
-              props.onNotice(errorText(reason, "没标成"), undefined, "error");
+              if (loose) looseFailure(props.onNotice, reason, "没标成");
+              else props.onNotice(errorText(reason, "没标成"), undefined, "error");
             } finally {
               setBusy(false);
             }

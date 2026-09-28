@@ -46,7 +46,7 @@ LIVE_ID_SQL = """COALESCE(
 _MENTION_UNION = f"""
 SELECT 'literal' AS via, NULL AS relation_id, fm.meeting_id, fm.project_id, fm.stem_key,
        fm.file_id, fm.needle, fm.count, fm.first_ms, fm.anchors_json, fm.minutes_count, fm.source,
-       fm.picked, '' AS quote
+       fm.picked, '' AS quote, NULL AS phrase, NULL AS hint_via
   FROM meeting_file_mentions fm
   JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
  WHERE fm.status = 'active' AND {{literal}}
@@ -58,9 +58,14 @@ SELECT 'literal' AS via, NULL AS relation_id, fm.meeting_id, fm.project_id, fm.s
 UNION ALL
 SELECT r.origin, r.id, r.meeting_id, r.project_id, r.stem_key,
        {LIVE_ID_SQL},
-       COALESCE(json_extract(r.evidence_json, '$.phrase'), r.stem_key), 1, r.at_ms,
-       CASE WHEN r.at_ms IS NULL THEN '[]' ELSE json_array(r.at_ms) END, 0, 'transcript',
-       r.origin = 'manual', r.quote
+       COALESCE(json_extract(r.evidence_json, '$.phrase'), r.stem_key),
+       MAX(1, COALESCE(json_array_length(r.evidence_json, '$.hits'), 0)), r.at_ms,
+       CASE WHEN COALESCE(json_array_length(r.evidence_json, '$.hits'), 0) > 0
+            THEN (SELECT json_group_array(json_extract(h.value, '$.at_ms'))
+                    FROM json_each(r.evidence_json, '$.hits') h)
+            WHEN r.at_ms IS NULL THEN '[]' ELSE json_array(r.at_ms) END,
+       0, 'transcript', r.origin = 'manual', r.quote,
+       json_extract(r.evidence_json, '$.phrase'), json_extract(r.evidence_json, '$.via')
   FROM relations r
   JOIN meetings m ON m.id = r.meeting_id AND m.project_id = r.project_id
  WHERE r.kind = 'mention' AND r.status = 'shown' AND {{loose}}
@@ -118,6 +123,19 @@ def _mention_item(row: Any) -> dict[str, Any]:
         "source": row["source"],
         "picked": bool(row["picked"]),
         "quote": row["quote"] or "",
+        # 4b：放宽行才有（字面行为 None）；hint_via 是 stem、alias、time_hint 之一
+        "phrase": row["phrase"],
+        "hint_via": row["hint_via"],
+    }
+
+
+def loose_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """接口里给放宽行多出来的三项（字面行都是 None）：relation_id、phrase（会上的说法）、via。"""
+    loose = row.get("relation_id") is not None
+    return {
+        "relation_id": row.get("relation_id") if loose else None,
+        "phrase": (row.get("phrase") or row.get("needle")) if loose else None,
+        "via": (row.get("hint_via") or "stem") if loose else None,
     }
 
 
@@ -235,6 +253,47 @@ def rejected_file_mentions(connection: Any, file_id: int, limit: int = REJECTED_
             (file_id, int(limit)),
         ).fetchall()
     ]
+
+
+def rejected_loose_mentions(connection: Any, file_id: int, limit: int = REJECTED_LIST_LIMIT) -> list[dict[str, Any]]:
+    """你标过「不是这份文件」的放宽提到（4b）：过了撤销期，文件面板上那一行的［撤销］发 restore。"""
+    rows = connection.execute(
+        f"""SELECT r.id AS relation_id, r.meeting_id, r.stem_key, r.at_ms, r.quote, r.evidence_json,
+                   m.title, m.recording_date, m.created_at
+              FROM relations r
+              JOIN meetings m ON m.id = r.meeting_id AND m.project_id = r.project_id
+             WHERE r.kind = 'mention' AND r.status = 'rejected' AND r.project_id IN ({_FILE_PROJECT})
+               AND {LIVE_ID_SQL} = ?
+             ORDER BY COALESCE(m.recording_date, m.created_at) DESC, m.id
+             LIMIT ?""",
+        (file_id, file_id, int(limit)),
+    ).fetchall()
+    result = []
+    for row in rows:
+        evidence = public_evidence(row["evidence_json"])
+        hits = evidence.get("hits") or []
+        result.append(
+            {
+                "relation_id": row["relation_id"],
+                "meeting_id": row["meeting_id"],
+                "stem_key": row["stem_key"],
+                "needle": evidence.get("phrase") or row["stem_key"],
+                "phrase": evidence.get("phrase") or row["stem_key"],
+                "hint_via": evidence.get("via") or "stem",
+                "count": max(1, len(hits)),
+                "first_ms": row["at_ms"],
+                "anchors_json": json.dumps([hit.get("at_ms") for hit in hits if isinstance(hit, dict)]),
+                "minutes_count": 0,
+                "source": "transcript",
+                "picked": 0,
+                "quote": row["quote"] or "",
+                "title": row["title"],
+                "recording_date": row["recording_date"],
+                "created_at": row["created_at"],
+                "date": str(row["recording_date"] or row["created_at"] or "")[:10],
+            }
+        )
+    return result
 
 
 # ---------------------------------------------------------------------- 来历和一跳

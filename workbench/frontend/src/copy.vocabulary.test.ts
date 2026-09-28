@@ -5,11 +5,20 @@ import { describe, expect, it } from "vitest";
  * 再查不许出现的词。只查含汉字的字符串字面量和 JSX 文字，CSS 里的 100% 不算。
  * 4b 到 4h 每步把自己的新组件加进 SOURCES。
  */
-const SOURCES = import.meta.glob(["./components/links/*.{ts,tsx}", "!./components/links/*.test.{ts,tsx}"], {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = import.meta.glob(
+  [
+    "./components/links/*.{ts,tsx}",
+    "!./components/links/*.test.{ts,tsx}",
+    // 4b：会议面板、文件面板里放宽的提到和状态句；预览抽屉的小字
+    "./components/graph/FilePanels.tsx",
+    "./components/MaterialPreview.tsx",
+  ],
+  {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  },
+) as Record<string, string>;
 
 const FORBIDDEN = ["导致", "因为", "推翻", "影响了", "%", "相似度", "置信度", "分数"];
 /** 另外三样：没有「又说了一次」；不出现 key 的位置和环境变量 */
@@ -50,6 +59,23 @@ describe("第四期界面的用词", () => {
     expect(violations("这两份的相似度 80%")).toEqual(["%", "相似度"]);
     expect(violations("没配置 AI（~/.config/ds/api-key）")).toEqual(["~/.config"]);
     expect(uiStrings('// 因为注释不算\nconst a = "已记下";\nconst b = <p>后来又提到</p>;')).toEqual(["已记下", "后来又提到"]);
+  });
+
+  it("4b 的状态句、小字和提示", () => {
+    const copy = [
+      "会上换了叫法的文件还在整理",
+      "没配置 AI，会上换了叫法的文件先不整理",
+      "AI 的 key 不对，会上换了叫法的文件先不整理",
+      "今天的 AI 用量到上限了，明天接着整理",
+      "AI 账户余额不足，会上换了叫法的文件先不整理",
+      "AI 连不上，过一会儿自动再试",
+      "这场会的 AI 整理没做成",
+      "说的是『上周那版报价单』",
+      "已记下：『上周那版报价单』不是这份文件",
+      "会上说『上周那版报价单』等 2 处 · 00:12:34",
+    ];
+    expect(copy.flatMap(violations)).toEqual([]);
+    expect(Object.keys(SOURCES).some((file) => file.endsWith("looseMention.ts"))).toBe(true);
   });
 
   it("第四期新组件的源码里没有不许出现的词", () => {

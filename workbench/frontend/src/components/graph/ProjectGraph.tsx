@@ -9,7 +9,7 @@ import { GraphCanvas, type DoorstepAnswer, type DropTarget } from "./GraphCanvas
 import { FocusPanel } from "./FocusPanel";
 import { GraphPanel, clearBriefCache } from "./GraphPanel";
 import { GraphSearch } from "./GraphSearch";
-import { loadBrief, localUndoUntil, type GraphNoticeUndo } from "./panelParts";
+import { forgetBrief, loadBrief, localUndoUntil, type GraphNoticeUndo } from "./panelParts";
 import type {
   BriefFile,
   GraphEdge,
@@ -386,11 +386,17 @@ export function ProjectGraph({
     void load();
   }, [key, load]);
 
+  const looseWaitingRef = useRef<string | null>(null);
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
       void load();
       setRootsTick((tick) => tick + 1);
+      const waiting = looseWaitingRef.current;
+      if (waiting) {
+        forgetBrief(waiting);
+        setVersion((current) => current + 1);
+      }
     }, REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [load]);
@@ -433,7 +439,12 @@ export function ProjectGraph({
     if (!contextOnGraph) return;
     let active = true;
     loadBrief(apiClient, contextOnGraph)
-      .then((brief) => active && setBriefFiles({ meetingId: contextOnGraph, files: brief.files ?? [] }))
+      .then((brief) => {
+        if (!active) return;
+        // 4b：会上换了叫法的文件还在整理时，30 秒的刷新顺带重取这场会的简报
+        looseWaitingRef.current = brief.loose_state?.kind === "waiting" ? contextOnGraph : null;
+        setBriefFiles({ meetingId: contextOnGraph, files: brief.files ?? [] });
+      })
       .catch(() => active && setBriefFiles({ meetingId: contextOnGraph, files: [] }));
     return () => {
       active = false;
