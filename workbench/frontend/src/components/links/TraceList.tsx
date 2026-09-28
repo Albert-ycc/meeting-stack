@@ -49,7 +49,8 @@ export function stepText(edge: LocalEdge | undefined): string {
     case "deliverable":
       return "交付物";
     case "affects":
-      return "之后没改过";
+      // 来龙去脉只走你标过已更新的那种（和舞台线上的字一样）
+      return "你标过已更新";
     case "mentioned":
       return "会上提到这份文件";
     case "later_changed":

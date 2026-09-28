@@ -624,7 +624,7 @@ describe("MaterialPreviewDrawer 的［来龙去脉］（4f）", () => {
     ]);
     expect(within(rows[2]).getByText("9/18 报价单.xlsx").tagName).toBe("STRONG");
     expect(within(rows[1]).getByText("↓ 交付物")).toBeInTheDocument();
-    expect(within(rows[2]).getByText("↓ 之后没改过")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("↓ 你标过已更新")).toBeInTheDocument();
     expect(within(section).getByText("往前走到 3 步为止，更早的没展开")).toBeInTheDocument();
     // 「在 N 场会上被提到」在它下面：这里没有提到，只看 ▶
     await userEvent.click(within(rows[3]).getByRole("button", { name: "从 00:12:34 播放" }));

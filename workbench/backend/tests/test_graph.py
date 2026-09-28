@@ -755,10 +755,15 @@ def test_produced_proxy_end(tmp_path):
     for index in range(graph.REQUIREMENT_CAP):
         add_requirement(db, f"r-{index}", "p", f"需求{index}", "P0")
     add_requirement(db, "r-folded", "p", "老报表", "P3", updated_ago=60)
+    add_requirement(db, "r-done", "p", "旧需求", status="done")
+    add_requirement(db, "r-paused", "p", "搁着的需求", status="shelved")
     add_meeting(db, "m-old", ago=200, project_id="p")
     tasks = {
         "t-req": dict(meeting_id="m", requirement_id="r-shown"),
         "t-fold": dict(meeting_id="m", requirement_id="r-folded"),
+        # 需求已结束、暂停（不在图上也没折起来）：退到任务的会，不给一个图上没有的 r:more
+        "t-done": dict(meeting_id="m", requirement_id="r-done"),
+        "t-paused": dict(meeting_id="m", requirement_id="r-paused"),
         "t-meet": dict(meeting_id="m", requirement_id=None),
         "t-old": dict(meeting_id="m-old", requirement_id=None),
         "t-none": dict(meeting_id=None, requirement_id=None),
@@ -774,6 +779,8 @@ def test_produced_proxy_end(tmp_path):
     ends = {edge["task_id"]: edge for edge in body["edges"] if edge["kind"] == "produced"}
     assert ends["t-req"]["from"] == "r:r-shown"
     assert ends["t-fold"]["from"] == "r:more"
+    assert "r-done" not in body["requirements_more"]["requirement_ids"]
+    assert ends["t-done"]["from"] == "m:m" and ends["t-paused"]["from"] == "m:m"
     assert ends["t-meet"]["from"] == "m:m" and ends["t-meet"]["meeting_id"] == "m"
     older = next(group for group in body["collapsed"] if "m-old" in group["meeting_ids"])
     assert ends["t-old"]["from"] == older["id"] and ends["t-old"]["meeting_id"] == "m-old"

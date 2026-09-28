@@ -1005,7 +1005,16 @@ function RelatedEdgeBody({ props, edge }: { props: GraphPanelProps; edge: GraphE
                 const result = await props.apiClient.answerRelation(edge.relation_id!, { answer: "no" });
                 const text = `已记下：『${fileName}』和这场会不相关`;
                 props.onNotice(text, { kind: "relation", relationId: edge.relation_id!, label: text, until: result.undo_until });
-                props.onSelect(edge.to);
+                // 选中挪到那份文件并钉住：相关线收回以后它可能不该上图了，面板还得在
+                if (fileNode?.kind === "file" && props.onOpenFile) {
+                  props.onOpenFile({
+                    file_id: fileNode.data.file_id,
+                    name: fileNode.data.name,
+                    rel_path: fileNode.data.rel_path,
+                    root_id: fileNode.data.root_id,
+                    folder: fileNode.data.folder,
+                  });
+                } else props.onSelect(edge.to);
                 await props.onChanged();
               } catch (reason) {
                 props.onNotice(reason instanceof Error ? reason.message : "没标成", undefined, "warning");

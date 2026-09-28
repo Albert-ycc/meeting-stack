@@ -119,6 +119,11 @@ def test_asks_come_first_twelve_are_drawn_and_the_rest_hidden(tmp_path):
     assert len(ids) == graph_local.MAP_NEIGHBOURS and body["hidden_count"] == 10
     assert len(body["hidden"]) == 10
     assert all(row["label"].startswith("会上说『报价单』2 次") and "周会" in row["node_label"] for row in body["hidden"])
+    # 没画出来的行带着节点本身和那条线：面板里点了直接打开它的面板
+    row = body["hidden"][0]
+    assert row["node"]["id"] == row["node_id"] and row["node"]["kind"] == "meeting"
+    assert row["node"]["at"] and "audio_url" in row["node"] and row["node"]["caption"] == row["node_label"]
+    assert row["edge"]["id"] == row["edge_id"] and row["edge"]["kind"] == "mentioned"
     assert body["center"]["stale"] is True
     aff = next(edge for edge in body["edges"] if edge["id"].startswith("e:aff:"))
     assert aff["state"] == "ask" and aff["label"].endswith("报价单 之后没改过")
@@ -276,6 +281,64 @@ def test_trace_from_a_meeting_and_a_decision(tmp_path):
     meeting = trace(db, "m:m-c1")
     assert meeting["center"]["id"] == "m:m-c1" and meeting["center"]["kind"] == "meeting"
     assert "audio_url" in meeting["center"]
+
+
+def test_trace_is_not_cut_short_by_a_decision_with_nothing_after_it(tmp_path):
+    """会上一条没有下文的决议（包含关系、级 1、时间差最小）不能把往后的方向截断。"""
+    db, _root_id, f3, _f2, g1, _g2 = chain_world(tmp_path)
+    add_decision(db, "dec-x", "m-c1", "先这样", start_ms=30_000)
+    add_task(db, "t-x", meeting_id="m-c1", project_id="p", status="confirmed")
+    db.execute("UPDATE tasks SET anchor_ms = 40000 WHERE id = 't-x'")
+    body = trace(db, f"file:{f3}")
+    assert body["chain"][body["center_index"]:] == [f"file:{f3}", "m:m-c1", f"file:{g1}", "m:m-c2"]
+    assert body["cut"] == {"back": False, "forward": True}
+    assert count_reads(db, lambda connection: graph_local.trace(connection, f"file:{f3}")) <= 48
+
+    # 包含关系还能接着走时照样走：会上的决议后来被改了
+    add_decision(db, "dec-a", "m-c1", "总价下调 5%", start_ms=60_000)
+    add_decision(db, "dec-b", "m-c3", "总价下调 3%", start_ms=60_000)
+    upsert(db, [system_row(kind="later_changed", ident="dec-a|dec-b", origin="rule", meeting_id="m-c3",
+                           decision_id="dec-b", to_decision_id="dec-a", stem_key=None)])
+    meeting = trace(db, "m:m-c1")
+    forward = meeting["chain"][meeting["center_index"]:]
+    assert forward[:3] == ["m:m-c1", "dec:dec-a", "dec:dec-b"]
+    assert count_reads(db, lambda connection: graph_local.trace(connection, "m:m-c1")) <= 48
+
+
+def test_trace_dead_end_lookahead_stays_within_the_statement_budget(tmp_path):
+    """每场会都挂一堆没有下文的决议和任务：多看一眼的展开有上限，语句总数仍 ≤ 48。"""
+    db, _root_id, f3, *_ = chain_world(tmp_path)
+    for meeting_id in ("m-b", "m-x", "m-c1", "m-c2", "m-c3"):
+        for index in range(6):
+            add_decision(db, f"dec-{meeting_id}-{index}", meeting_id, f"决议{index}", start_ms=1_000 + index)
+            add_task(db, f"t-{meeting_id}-{index}", meeting_id=meeting_id, project_id="p", status="confirmed")
+    body = trace(db, f"file:{f3}")
+    assert f"file:{f3}" in body["chain"] and "m:m-c1" in body["chain"]
+    assert count_reads(db, lambda connection: graph_local.trace(connection, f"file:{f3}")) <= 48
+    assert count_reads(db, lambda connection: graph_local.trace(connection, "m:m-c2")) <= 48
+
+
+def test_trace_of_a_moved_or_gone_file_keeps_the_lines_on_its_old_id(tmp_path):
+    db, root_id = setup(tmp_path)
+    add_meeting(db, "m-a", ago=5, project_id="p")
+    old = add_file(db, root_id, "报价/报价单 v3.xlsx", day="2026-09-18")
+    keyed(db, old, "k-quote")
+    literal(db, "m-a", "报价单", old)
+    gone(db, old)
+    new = add_file(db, root_id, "2026/报价单 v3.xlsx", day="2026-09-18")
+    keyed(db, new, "k-quote")
+    for node in (f"file:{old}", f"file:{new}"):
+        body = trace(db, node)
+        assert body["center"]["file_id"] == new
+        assert body["chain"] == [f"file:{new}", "m:m-a"]
+        edge = next(edge for edge in body["edges"] if edge["kind"] == "mentioned")
+        assert (edge["id"], edge["to"]) == (f"e:file:{new}:m-a", f"file:{new}")
+
+    # 找不到活文件：照样按同内容那一组读，画它还在时的线
+    gone(db, new)
+    body = trace(db, f"file:{old}")
+    assert body["center"]["gone"] is True
+    assert "m:m-a" in body["chain"]
 
 
 def test_endpoints_are_get_only_and_speak_plainly(tmp_path):

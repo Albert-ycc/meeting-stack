@@ -1213,6 +1213,7 @@ def _assemble(
             visible_ids=visible_ids,
             collapsed_of=collapsed_of,
             shown_requirement_ids=shown_requirement_ids,
+            folded_requirement_ids={item["requirement_id"] for item in hidden_requirements},
             days=days,
             today=today,
         )
@@ -1372,17 +1373,22 @@ def _ask_edges(
     visible_ids: set[str],
     collapsed_of: dict[str, str],
     shown_requirement_ids: set[str],
+    folded_requirement_ids: set[str],
     days: int | None,
     today: date,
 ) -> list[dict[str, Any]]:
     """4f 的三类线：在问的产出（e:prod:）、在问的影响（e:aff:）、交付物（e:dlv:）。起点用 _local_end：
-    需求在图上用 r:<id>，折起来用 r:more，没有需求用任务的会或它的折叠组；都没有就不画线（不退到项目
-    节点），文件照样是琥珀色。文件不在图上的线也给，前端两端都在时才画（钉住以后就画出来）。"""
+    需求在图上用 r:<id>，折起来用 r:more，没有需求（或需求已结束、暂停，不在图上也没折起来）用任务的
+    会或它的折叠组；都没有就不画线（不退到项目节点），文件照样是琥珀色。文件不在图上的线也给，前端
+    两端都在时才画（钉住以后就画出来）。"""
     edges: list[dict[str, Any]] = []
+    known_requirements = shown_requirement_ids | folded_requirement_ids
 
     def task_end(row: dict[str, Any]) -> str | None:
+        # 需求不在图上的进行中需求里（结束了、暂停了）就当没有需求，退到任务的会
+        requirement_id = row["requirement_id"] if row["requirement_id"] in known_requirements else None
         item = {
-            "requirement_id": row["requirement_id"],
+            "requirement_id": requirement_id,
             "requirement_project_id": row["requirement_project_id"],
             "meeting_id": row["meeting_id"],
         }

@@ -325,7 +325,8 @@ export interface LocalGraph {
   center: LocalCenter;
   nodes: LocalNode[];
   edges: LocalEdge[];
-  hidden: Array<{ edge_id: string; label: string; node_id: string; node_label: string }>;
+  /** 没画出来的（最多 20 行）：新后台带节点本身和那条线，面板里点了直接打开它的面板 */
+  hidden: Array<{ edge_id: string; label: string; node_id: string; node_label: string; node?: LocalNode; edge?: LocalEdge }>;
   hidden_count: number;
 }
 

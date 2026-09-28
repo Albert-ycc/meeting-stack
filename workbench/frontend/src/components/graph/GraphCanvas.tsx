@@ -34,6 +34,7 @@ import {
   type StarLayout,
 } from "./layout";
 import { useGraphViewport } from "./useGraphViewport";
+import { edgeKindName } from "./GraphPanel";
 import "./GraphCanvas.css";
 
 const BASE_FONT = 13;
@@ -962,7 +963,7 @@ export function GraphCanvas({
                   </g>
                 )}
                 <path
-                  aria-label={`连线：${edge.label || (edge.kind === "suggested" && edge.name ? `像是新需求『${edge.name}』` : edge.kind)}`}
+                  aria-label={`连线：${edge.label || (edge.kind === "suggested" && edge.name ? `像是新需求『${edge.name}』` : edgeKindName(edge.kind))}`}
                   className="graph-edge__hit"
                   d={path}
                   onClick={() => onSelect(edge.id === selectedEdge ? null : edge.id)}

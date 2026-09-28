@@ -9,7 +9,8 @@
 - 来龙去脉：只走有原话或你确认过的线，分三级（0 你做的，1 字面或规则，2 AI），时间单调，每个方向最多
   3 个算数的步，全链最多 12 个节点；包含关系（会议到决议、会议到任务）不算步但占节点。每展开一个节点
   用 relation_read.edges_of（2 条）加 1 条节点和包含关系的 SELECT，中心是文件时再加 1 条同名的 SELECT；
-  总共不超过 48 条语句。
+  包含关系的一步先展开那个决议或任务看能不能接着走，没走通的最多 3 次；总共不超过 48 条语句。
+  中心文件按同内容那一组读（挪过位置、找不到活文件时旧 id 上的线也算）。
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ REQUIREMENT_CAP = 1
 RELATED_CAP = 3
 TRACE_STEPS = 3
 TRACE_NODES = 12
+TRACE_LOOKAHEAD = 3  # 包含关系的一步先看一眼能不能接着走；没走通的展开最多这么多次（语句总数仍 ≤ 48）
 NODE_PATTERN = r"^(file:\d{1,12}|m:[A-Za-z0-9_-]{1,64}|dec:[A-Za-z0-9_-]{1,64}|task:[A-Za-z0-9_-]{1,64})$"
 TRACE_TASK_STATUSES = ("confirmed", "in_progress", "done")
 
@@ -595,12 +597,15 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
             if edge["kind"] == "mentioned" and not edge["quote"]:
                 edge["quote"] = quotes.get((edge["meeting_id"], int(edge.get("at_ms") or -1)), "")
 
+    # 没画出来的：带上节点本身和那条线（和画出来的一样的字段），面板里点了能直接打开它的面板
     hidden = [
         {
             "edge_id": item.edge["id"],
             "label": item.edge["label"],
             "node_id": item.node_id,
             "node_label": _node_label(nodes[item.node_id]),
+            "node": nodes[item.node_id],
+            "edge": item.edge,
         }
         for item in list(hidden_nodes.values())[:HIDDEN_ROWS]
     ]
@@ -827,7 +832,9 @@ SELECT 'file', f.id, f.name, NULL, NULL, NULL, NULL, f.gone_at, f.mtime_ns, f.ex
 
     def _expand(self, node_id: str) -> list[_Step]:
         prefix = node_id.partition(":")[0]
-        raw = relation_read.edges_of(self.connection, node_id, _TRACE_KINDS)
+        # 中心文件按同内容那一组读（和局部图一样）：挪过位置、找不到活文件时旧 id 上的线也算在它上面
+        group = self.center_file.group if self.center_file is not None and node_id == self.center_id else None
+        raw = relation_read.edges_of(self.connection, node_id, _TRACE_KINDS, file_group=group)
         others = set()
         for edge in raw:
             others.update((edge["from"], edge["to"]))
@@ -982,7 +989,8 @@ def _public(node: dict[str, Any]) -> dict[str, Any]:
 
 def trace(connection: Any, node: str, *, today: date | None = None) -> dict[str, Any]:
     """来龙去脉：从中心往前、往后各走最多 3 个算数的步。每一步在还没进链的候选里按
-    （级，时间差的绝对值，节点 id）取最好的一个；往前每一步都严格早于当前节点，往后严格晚于。"""
+    （级，时间差的绝对值，节点 id）取最好的一个；往前每一步都严格早于当前节点，往后严格晚于。
+    包含关系的一步（会议到决议、任务）只在走进去以后还能沿同一方向接着走时才取（见下面的修正）。"""
     if not re.match(NODE_PATTERN, node):
         raise LocalError(422, "节点格式不对")
     tracer = _Tracer(connection, today or datetime.now().astimezone().date())
@@ -992,29 +1000,51 @@ def trace(connection: Any, node: str, *, today: date | None = None) -> dict[str,
     sides: dict[str, list[str]] = {"back": [], "forward": []}
     chain_edges: set[str] = set()
     cut = {"back": False, "forward": False}
+    spare = [TRACE_LOOKAHEAD]
+
+    def candidates_of(node_id: str, direction: str, taken: set[str]) -> list[tuple[int, int, str, _Step]]:
+        current_ms = tracer.info[node_id].get("_ms")
+        if current_ms is None:
+            return []
+        found = []
+        for step in tracer.expand(node_id, first_from_center=node_id == center_id):
+            if step.target in taken:
+                continue
+            target_ms = tracer.info.get(step.target, {}).get("_ms")
+            if target_ms is None:
+                continue
+            if (direction == "back" and target_ms < current_ms) or (direction == "forward" and target_ms > current_ms):
+                found.append((step.level, abs(target_ms - current_ms), step.target, step))
+        return sorted(found, key=lambda item: item[:3])
+
+    def leads_on(step: _Step, direction: str) -> bool:
+        """包含关系的一步（会议到决议、任务）只在那个节点还能沿同一方向往下走时才走。多展开的那一次
+        之后反正要用（走进去就是链上的下一个节点）；没走通的最多 TRACE_LOOKAHEAD 次，用完了就不再试。"""
+        if step.target in tracer.expanded:
+            return bool(candidates_of(step.target, direction, chain_nodes | {step.target}))
+        if spare[0] <= 0:
+            return False
+        ok = bool(candidates_of(step.target, direction, chain_nodes | {step.target}))
+        if not ok:
+            spare[0] -= 1
+        return ok
+
     for direction in ("back", "forward"):
         current = center_id
         counted = 0
         while True:
-            current_ms = tracer.info[current].get("_ms")
-            if current_ms is None:
-                break
-            steps = tracer.expand(current, first_from_center=current == center_id)
-            candidates = []
-            for step in steps:
-                if step.target in chain_nodes:
-                    continue
-                target_ms = tracer.info.get(step.target, {}).get("_ms")
-                if target_ms is None:
-                    continue
-                if (direction == "back" and target_ms < current_ms) or (direction == "forward" and target_ms > current_ms):
-                    candidates.append((step.level, abs(target_ms - current_ms), step.target, step))
+            candidates = candidates_of(current, direction, chain_nodes)
             if not candidates:
                 break
             if counted >= TRACE_STEPS or len(chain_nodes) >= TRACE_NODES:
                 cut[direction] = True
                 break
-            *_order, best = min(candidates, key=lambda item: item[:3])
+            # 对规格取法的修正：规格是在候选里直接取（级，时间差，id）最小的一个。包含关系级 1、时间差小，
+            # 几乎总先被取中，会上一条没有下文的决议就把这个方向截断了（cut 还是 false）。这里仍按那个
+            # 顺序看，但包含关系的一步只在它还能接着走时才取；都走不通时退回原来的取法（取排第一的，
+            # 这时链就停在它上面）。
+            best = next((step for *_order, step in candidates if step.counted or leads_on(step, direction)),
+                        candidates[0][3])
             chain_nodes.add(best.target)
             sides[direction].append(best.target)
             chain_edges.add(best.edge["id"])

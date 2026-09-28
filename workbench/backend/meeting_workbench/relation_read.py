@@ -444,34 +444,58 @@ def _node(node: str) -> tuple[str, str]:
     return prefix, value
 
 
-def edges_of(connection: Any, node: str, kinds: Iterable[str]) -> list[dict[str, Any]]:
+def edges_of(
+    connection: Any, node: str, kinds: Iterable[str], *, file_group: Sequence[int] | None = None
+) -> list[dict[str, Any]]:
     """一个节点走一跳能到的线（4f 的来龙去脉用），每走一跳最多 2 条查询：提到和关联表一条，交付物
     一条。节点是 m:会议、file:文件、task:任务、dec:决议；kinds 取自 EDGE_KINDS。只给有原话或你回答
-    过的线：字面和放宽的提到、你标过已更新的影响、后来改了和后来又提到、交付物。"""
+    过的线：字面和放宽的提到、你标过已更新的影响、后来改了和后来又提到、交付物。
+
+    file_group（只对 file: 节点）：和这份文件同内容的那一组 id（局部图用的那种：活文件、挪走前的旧行、
+    同内容的副本）。给了就按整组读，挂在旧 id 上的提到也算进来，线的文件一端都写成 node 本身；
+    中心文件已经不见了（找不到活文件）时也照样读得到它还在时的线。"""
     prefix, value = _node(node)
     wanted = set(kinds) & EDGE_KINDS
     file_id = int(value) if prefix == "file" else None
+    group = [int(item) for item in dict.fromkeys([file_id, *(file_group or [])])] if file_id is not None else []
+    grouped = prefix == "file" and file_group is not None
+    group_marks = _marks(group)
     parts: list[str] = []
     params: list[Any] = []
     if "mention" in wanted and prefix in ("m", "file"):
-        where = "u.meeting_id = ?" if prefix == "m" else "u.file_id = ?"
-        parts.append(
-            f"""SELECT 'mention' AS kind, u.via, u.relation_id, u.meeting_id, NULL AS decision_id,
-                       NULL AS to_decision_id, u.file_id, u.first_ms AS at_ms, u.quote, u.needle
-                  FROM u JOIN material_files f ON f.id = u.file_id AND f.gone_at IS NULL WHERE {where}"""
-        )
-        params += [value] if prefix == "m" else [file_id]
+        if grouped:
+            # 整组读：旧行（挪走前的 id）上的提到也要，不按活文件筛
+            parts.append(
+                f"""SELECT 'mention' AS kind, u.via, u.relation_id, u.meeting_id, NULL AS decision_id,
+                           NULL AS to_decision_id, u.file_id, u.first_ms AS at_ms, u.quote, u.needle
+                      FROM u WHERE u.file_id IN ({group_marks})"""
+            )
+            params += group
+        else:
+            where = "u.meeting_id = ?" if prefix == "m" else "u.file_id = ?"
+            parts.append(
+                f"""SELECT 'mention' AS kind, u.via, u.relation_id, u.meeting_id, NULL AS decision_id,
+                           NULL AS to_decision_id, u.file_id, u.first_ms AS at_ms, u.quote, u.needle
+                      FROM u JOIN material_files f ON f.id = u.file_id AND f.gone_at IS NULL WHERE {where}"""
+            )
+            params += [value] if prefix == "m" else [file_id]
     if "affects_resolved" in wanted and prefix in ("file", "dec"):
-        where = (
-            f"{LIVE_ID_SQL} = ? AND r.project_id IN ({_FILE_PROJECT})" if prefix == "file" else "r.decision_id = ?"
-        )
+        if grouped:
+            where = f"{LIVE_ID_SQL} IN ({group_marks}) AND r.project_id IN ({_FILE_PROJECT})"
+        elif prefix == "file":
+            where = f"{LIVE_ID_SQL} = ? AND r.project_id IN ({_FILE_PROJECT})"
+        else:
+            where = "r.decision_id = ?"
         parts.append(
             f"""SELECT 'affects_resolved' AS kind, r.origin AS via, r.id AS relation_id, r.meeting_id,
                        r.decision_id, NULL AS to_decision_id, {LIVE_ID_SQL} AS file_id, r.at_ms, r.quote,
                        NULL AS needle
                   FROM relations r WHERE r.kind = 'affects' AND r.status = 'resolved' AND {where}"""
         )
-        params += [file_id, file_id] if prefix == "file" else [value]
+        if grouped:
+            params += [*group, file_id]
+        else:
+            params += [file_id, file_id] if prefix == "file" else [value]
     pair_kinds = [kind for kind in ("later_changed", "restated") if kind in wanted]
     if pair_kinds and prefix == "dec":
         parts.append(
@@ -484,18 +508,25 @@ def edges_of(connection: Any, node: str, kinds: Iterable[str]) -> list[dict[str,
         params += [*pair_kinds, value, value]
     edges: list[dict[str, Any]] = []
     if parts:
-        union, union_params = (_file_union("?"), [file_id, file_id]) if prefix == "file" else (MENTION_UNION_SQL, [])
+        if grouped:
+            union, union_params = _file_union(group_marks), [*group, *group]
+        elif prefix == "file":
+            union, union_params = _file_union("?"), [file_id, file_id]
+        else:
+            union, union_params = MENTION_UNION_SQL, []
         sql = f"WITH u AS ({union}) " + " UNION ALL ".join(parts)
         for row in connection.execute(sql, union_params + params).fetchall():
             kind = row["kind"]
-            if kind == "mention":
-                ends = (f"m:{row['meeting_id']}", f"file:{row['file_id']}")
-            elif kind == "affects_resolved":
-                ends = (f"dec:{row['decision_id']}", f"file:{row['file_id']}")
-            else:
-                ends = (f"dec:{row['decision_id']}", f"dec:{row['to_decision_id']}")
             if row["file_id"] is None and kind in ("mention", "affects_resolved"):
                 continue
+            # 整组读的时候文件一端就是这份文件本身
+            file_end = node if grouped else f"file:{row['file_id']}"
+            if kind == "mention":
+                ends = (f"m:{row['meeting_id']}", file_end)
+            elif kind == "affects_resolved":
+                ends = (f"dec:{row['decision_id']}", file_end)
+            else:
+                ends = (f"dec:{row['decision_id']}", f"dec:{row['to_decision_id']}")
             edges.append(
                 {
                     "kind": kind,
@@ -505,7 +536,7 @@ def edges_of(connection: Any, node: str, kinds: Iterable[str]) -> list[dict[str,
                     "relation_id": row["relation_id"],
                     "meeting_id": row["meeting_id"],
                     "decision_id": row["decision_id"],
-                    "file_id": row["file_id"],
+                    "file_id": file_id if grouped else row["file_id"],
                     "at_ms": row["at_ms"],
                     "quote": row["quote"] or "",
                     "needle": row["needle"],
@@ -515,10 +546,10 @@ def edges_of(connection: Any, node: str, kinds: Iterable[str]) -> list[dict[str,
         if prefix == "task":
             where, args = "d.task_id = ?", [value]
         else:
-            where = """EXISTS (SELECT 1 FROM material_files x WHERE x.id = ?
+            where = f"""EXISTS (SELECT 1 FROM material_files x WHERE x.id IN ({group_marks})
                          AND ((df.content_key IS NOT NULL AND df.content_key = x.content_key)
                               OR (df.root_id = x.root_id AND df.rel_path = x.rel_path)))"""
-            args = [file_id]
+            args = group
         for row in connection.execute(
             f"""SELECT d.id AS deliverable_id, d.task_id, t.meeting_id, t.anchor_ms, t.anchor_quote,
                        COALESCE(
@@ -534,17 +565,17 @@ def edges_of(connection: Any, node: str, kinds: Iterable[str]) -> list[dict[str,
                  WHERE {where}""",
             args,
         ).fetchall():
-            if row["file_id"] is None:
+            if row["file_id"] is None and not grouped:
                 continue
             edges.append(
                 {
                     "kind": "deliverable",
                     "from": f"task:{row['task_id']}",
-                    "to": f"file:{row['file_id']}",
+                    "to": node if grouped else f"file:{row['file_id']}",
                     "via": "user",
                     "deliverable_id": row["deliverable_id"],
                     "meeting_id": row["meeting_id"],
-                    "file_id": row["file_id"],
+                    "file_id": file_id if grouped else row["file_id"],
                     "at_ms": row["anchor_ms"],
                     "quote": row["anchor_quote"] or "",
                 }

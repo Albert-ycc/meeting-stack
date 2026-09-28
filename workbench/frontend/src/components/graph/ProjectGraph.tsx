@@ -472,7 +472,10 @@ export function ProjectGraph({
   const requestRef = useRef(0);
   const missingRef = useRef<string | null>(null);
   // 4f：线上回答以后，新数据到了再把选中挪到新的交付物线（没有就挪到那份文件）
-  const afterAnswerRef = useRef<{ edgeId: string | null; fileId: number } | null>(null);
+  const afterAnswerRef = useRef<{ edgeId: string | null; fileId: number; from: string | null } | null>(null);
+  // load 里读当时的选中（load 不跟着选中重挂）
+  const selectionRef = useRef<string | null>(selection);
+  selectionRef.current = selection;
   // 3g：从面板、深链点出来要在图上补出的那一个文件；深链的文件先取名字和根目录
   const [pinned, setPinned] = useState<PinnedFile | null>(null);
   const [fileLookup, setFileLookup] = useState<{ id: string; state: "loading" | "failed" } | null>(null);
@@ -493,11 +496,16 @@ export function ProjectGraph({
       const moveTo = afterAnswerRef.current;
       if (moveTo) {
         afterAnswerRef.current = null;
-        const found = moveTo.edgeId !== null && payload.edges.some((edge) => edge.id === moveTo.edgeId);
-        onSelectionChange(found ? moveTo.edgeId : `file:${moveTo.fileId}`);
+        // 回答以后用户已经换了选中：不再挪
+        if (selectionRef.current === moveTo.from) {
+          const found = moveTo.edgeId !== null && payload.edges.some((edge) => edge.id === moveTo.edgeId);
+          onSelectionChange(found ? moveTo.edgeId : `file:${moveTo.fileId}`);
+        }
       }
     } catch (reason) {
       if (token !== requestRef.current) return;
+      // 重取失败：这次回答的「挪选中」作废，免得下一次不相干的重取把选中挪走
+      afterAnswerRef.current = null;
       setLoadError(errorText(reason, "关系图读取失败"));
     } finally {
       if (token === requestRef.current) setLoading(false);
@@ -641,12 +649,15 @@ export function ProjectGraph({
     request
       .then((payload: LocalGraph | TracePayload) => {
         if (!active) return;
-        setLocalData({ key: localKey, payload });
-        // 挪过位置：地址换成新 id（替换，不压历史），那一句留着
+        // 挪过位置：地址换成新 id（替换，不压历史），那一句留着。数据直接记在新 id 名下，换地址以后
+        // 舞台留着这份数据，不先闪一下「正在取这份文件的关系」（新 id 那次重取回来再换上）
         const center = payload.center;
-        if (local.kind === "file" && center.moved_from !== undefined && center.file_id !== undefined) {
-          setMoved({ fileId: center.file_id, folder: center.folder ?? "" });
-          changeLocal({ kind: "file", fileId: center.file_id }, { replace: true });
+        const movedTo =
+          local.kind === "file" && center.moved_from !== undefined && center.file_id !== undefined ? center.file_id : null;
+        setLocalData({ key: movedTo !== null ? `file:${movedTo}` : localKey, payload });
+        if (movedTo !== null) {
+          setMoved({ fileId: movedTo, folder: center.folder ?? "" });
+          changeLocal({ kind: "file", fileId: movedTo }, { replace: true });
         }
       })
       .catch((reason: unknown) => {
@@ -906,9 +917,10 @@ export function ProjectGraph({
       afterAnswerRef.current = {
         edgeId: answer === "yes" && result.deliverable_id ? `e:dlv:${result.deliverable_id}` : null,
         fileId,
+        from: selection,
       };
     },
-    [liveGraph?.files, local],
+    [liveGraph?.files, local, selection],
   );
 
   /** 进出局部图、换中心（App 压历史；没有 App 时自己记） */
@@ -1030,6 +1042,8 @@ export function ProjectGraph({
         );
       }
       await changed();
+      // 局部图、来龙去脉不走 ETag：撤销以后舞台整张重取
+      if (local) setLocalTick((tick) => tick + 1);
     } catch (reason) {
       // 关联的撤销过期、已撤销过：原样显示服务端那句，用 warning（role="status"）
       const status = reason instanceof ApiError ? reason.status : 0;

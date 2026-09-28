@@ -55,11 +55,17 @@ export function LocalGraphPanel({
   onClose,
 }: LocalGraphPanelProps) {
   const center = payload.center;
-  const nodes = new Map<string, LocalNode>([[center.id, center], ...payload.nodes.map((node) => [node.id, node] as const)]);
-  const edge = selectedId ? payload.edges.find((item) => item.id === selectedId) : undefined;
-  const node = selectedId ? nodes.get(selectedId) : undefined;
   const hidden = "hidden" in payload ? payload.hidden : [];
   const hiddenCount = "hidden_count" in payload ? payload.hidden_count : 0;
+  // 没画出来的节点和线也收进来：「还有 N 个没画出来」的行点了打开它们的面板
+  const nodes = new Map<string, LocalNode>([
+    ...hidden.flatMap((row) => (row.node ? [[row.node.id, row.node] as const] : [])),
+    [center.id, center],
+    ...payload.nodes.map((node) => [node.id, node] as const),
+  ]);
+  const edges: LocalEdge[] = [...payload.edges, ...hidden.flatMap((row) => (row.edge ? [row.edge] : []))];
+  const edge = selectedId ? payload.edges.find((item) => item.id === selectedId) : undefined;
+  const node = selectedId ? nodes.get(selectedId) : undefined;
   const centerFileId = center.kind === "file" ? center.file_id ?? null : null;
   const target = node ?? (edge ? undefined : center);
 
@@ -108,7 +114,7 @@ export function LocalGraphPanel({
         break;
       case "meeting": {
         title = target.title ?? "";
-        const mention = payload.edges.find((item) => item.kind === "mentioned" && item.from === target.id);
+        const mention = edges.find((item) => item.kind === "mentioned" && item.from === target.id);
         body = (
           <>
             <p className="graph-panel__meta">{target.caption ?? nodeDay(target.at)}</p>
@@ -190,9 +196,14 @@ export function LocalGraphPanel({
     }
   }
 
-  const openHidden = (nodeId: string) => {
+  /** 「还有 N 个没画出来」的一行：是文件就以它为中心，否则在这里打开它的面板（旧后台的行不带节点：
+      决议走它的来龙去脉，其余照旧打开它自己的页面） */
+  const openHidden = (row: (typeof hidden)[number]) => {
+    const nodeId = row.node_id;
     const [prefix, value] = [nodeId.slice(0, nodeId.indexOf(":")), nodeId.slice(nodeId.indexOf(":") + 1)];
     if (prefix === "file") onRecenter(Number(value));
+    else if (row.node) onSelect(nodeId);
+    else if (prefix === "dec") trace(nodeId);
     else if (prefix === "m") panel.onOpenMeeting(value);
     else if (prefix === "task") onOpenTask?.(value);
     else if (prefix === "r") panel.onOpenRequirement(value);
@@ -223,7 +234,7 @@ export function LocalGraphPanel({
             <ul className="graph-panel__list">
               {hidden.map((row) => (
                 <li key={row.edge_id}>
-                  <button className="text-button" onClick={() => openHidden(row.node_id)} type="button">
+                  <button className="text-button" onClick={() => openHidden(row)} type="button">
                     {row.node_label} · {row.label}
                   </button>
                 </li>

@@ -7,6 +7,7 @@ import type { GraphLocal, LocalCenter, LocalEdge, LocalGraph, LocalNode, TracePa
 import { DECISION_CHARS, layoutLocal, type LocalLaidNode } from "./localLayout";
 import { fitText } from "./layout";
 import { useGraphViewport } from "./useGraphViewport";
+import { edgeKindName } from "./GraphPanel";
 import { TASK_STATUS } from "./panelParts";
 import { TRACE_BACK_CUT, TRACE_FORWARD_CUT, nodeDay, traceEmptyText } from "../links/TraceList";
 import "./LocalGraph.css";
@@ -47,6 +48,11 @@ function nodeLabel(node: LocalNode): string {
     default:
       return `文件：${node.name ?? ""}`;
   }
+}
+
+/** 线的种类名（读屏用，线上没有字时）：会议到决议写「这场会定的」，认不出的叫「连线」 */
+export function localEdgeName(kind: string): string {
+  return kind === "in_meeting" ? "这场会定的" : edgeKindName(kind);
 }
 
 function edgeClass(edge: LocalEdge, trace: boolean): string {
@@ -97,20 +103,23 @@ export function LocalGraphView({
   const [hoverEdge, setHoverEdge] = useState<string | null>(null);
   const center = payload?.center ?? null;
 
+  // 状态只写一句（每个状态一句话）：错误和取数中在下面单独画；其余按
+  // 已经不在资料盘里 > 挪过位置 > 没有邻居（来龙去脉：两个方向都没有 > 往前到了上限 > 往后到了上限）
   const notes: string[] = [];
-  if (payload && !trace) {
+  if (payload && !trace && !error) {
     const map = payload as LocalGraph;
+    if (map.center.gone) notes.push(LOCAL_GONE);
     if (movedFolder !== undefined && movedFolder !== null) notes.push(movedText(movedFolder));
     else if (map.center.moved_from !== undefined) notes.push(movedText(map.center.folder));
-    if (map.center.gone) notes.push(LOCAL_GONE);
     if (!map.nodes.length) notes.push(LOCAL_EMPTY);
   }
-  if (payload && trace) {
+  if (payload && trace && !error) {
     const chain = payload as TracePayload;
     if (chain.chain.length <= 1) notes.push(traceEmptyText(chain.center));
     if (chain.cut.back) notes.push(TRACE_BACK_CUT);
     if (chain.cut.forward) notes.push(TRACE_FORWARD_CUT);
   }
+  const note = notes[0] ?? null;
 
   const renderNode = (item: LocalLaidNode) => {
     const node = item.node;
@@ -159,11 +168,11 @@ export function LocalGraphView({
           回到关系图
         </button>
       </header>
-      {notes.map((note) => (
-        <p className="local-stage__note" key={note} role="status">
+      {note && (
+        <p className="local-stage__note" role="status">
           {note}
         </p>
-      ))}
+      )}
       {error ? (
         <div className="project-graph__empty" role="alert">
           <p>{error.text}</p>
@@ -208,7 +217,7 @@ export function LocalGraphView({
                   <g className={`${edgeClass(edge, trace)}${edge.id === selectedId || edge.id === hoverEdge ? " is-lit" : ""}`} key={edge.id}>
                     <path className="graph-edge__line" d={path} markerEnd={arrow} />
                     <path
-                      aria-label={`连线：${edge.label || edge.kind}`}
+                      aria-label={`连线：${edge.label || localEdgeName(edge.kind)}`}
                       className="graph-edge__hit"
                       d={path}
                       onClick={() => onSelect(edge.id === selectedId ? null : edge.id)}

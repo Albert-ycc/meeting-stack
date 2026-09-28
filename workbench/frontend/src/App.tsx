@@ -169,6 +169,8 @@ export default function App({ apiClient = api }: AppProps) {
   // 4f：关系图的局部图、来龙去脉；每换一次中心压一条历史（state 里记 localDepth），返回键回到上一个中心
   const [graphLocal, setGraphLocal] = useState<GraphLocal | null>(null);
   const localPushRef = useRef(false);
+  // ［回到关系图］一次退了好几层：落到的那一条要是进局部图的那一条（state 里记着 localRoot），就换成星图
+  const localExitRef = useRef(false);
   // 全部项目概览里选中的节点（地址栏 #graph?sel=p:<id>）
   const [overviewSelection, setOverviewSelection] = useState<string | null>(null);
   // 从关系图点进需求页时，面包屑写「关系图」，返回回到画布
@@ -341,6 +343,8 @@ export default function App({ apiClient = api }: AppProps) {
   const applyHash = useCallback(() => {
     historySyncRef.current = true;
     const hash = window.location.hash;
+    const exitingLocal = localExitRef.current;
+    localExitRef.current = false;
     if (hash.startsWith("#meetings/")) {
       const target = decodeURIComponent(hash.slice("#meetings/".length));
       // 会议卡片里的时间点链接 #meetings/<id>@<秒>：打开这场会并从那一秒开始播放
@@ -390,7 +394,22 @@ export default function App({ apiClient = api }: AppProps) {
         const graphMode = sub === "graph";
         const params = new URLSearchParams(queryPart);
         const selection = graphMode ? params.get("sel") : null;
-        const local = graphMode ? localFromQuery(params) : null;
+        let local = graphMode ? localFromQuery(params) : null;
+        // ［回到关系图］退到了进局部图的那一条（冷启动深链、从别的页进来的，它自己就带着 file、trace）：
+        // 不再打开那个中心，换成星图。地址当场替换掉 file、trace（紧跟着的 hashchange 读到的就是星图）
+        const landed = window.history.state as Record<string, unknown> | null;
+        if (exitingLocal && local && landed?.localRoot) {
+          local = null;
+          params.delete("file");
+          params.delete("trace");
+          const { localRoot: _dropped, ...rest } = landed;
+          const query = params.toString();
+          history.replaceState(
+            rest,
+            "",
+            `${window.location.pathname}${window.location.search}#projects/${pathPart}${query ? `?${query}` : ""}`,
+          );
+        }
         // 4f：手机上没有局部图和来龙去脉的舞台：照 #graph 的规矩退回项目列表
         if (local && isMobileRef.current) {
           setView("projects");
@@ -679,6 +698,7 @@ export default function App({ apiClient = api }: AppProps) {
     if (next === null) {
       const depth = (window.history.state as { localDepth?: number } | null)?.localDepth;
       if (depth && !options.replace) {
+        localExitRef.current = true;
         window.history.go(-depth);
         return;
       }
@@ -778,7 +798,24 @@ export default function App({ apiClient = api }: AppProps) {
                   : `#${view}`;
     const fromHistory = historySyncRef.current;
     historySyncRef.current = false;
-    if (window.location.hash === path) return;
+    // 4f：进局部图、来龙去脉的那一条（冷启动深链、从别的页进来，state 里没有 localDepth）记 localRoot，
+    // ［回到关系图］退到它上面时换成星图；地址不再带 file、trace 时去掉这个记号
+    const nowLocal = localParam(path);
+    const rootState = () => {
+      const state = (window.history.state ?? null) as Record<string, unknown> | null;
+      if (nowLocal && !state?.localDepth) return { ...(state ?? {}), app: true, localRoot: true };
+      if (!nowLocal && state?.localRoot) {
+        const { localRoot: _dropped, ...rest } = state;
+        return rest;
+      }
+      return state;
+    };
+    if (window.location.hash === path) {
+      // 冷启动深链：地址不用改，只给这一条记上 localRoot
+      const state = window.history.state as { localRoot?: boolean; localDepth?: number } | null;
+      if (nowLocal && !state?.localDepth && !state?.localRoot) history.replaceState(rootState(), "", window.location.href);
+      return;
+    }
     const url = window.location.pathname + window.location.search + path;
     // 关系图里换选中只改地址栏的 ?sel=，不压历史，后退键直接回到上一个页面；
     // 展开一场会压一条（后退键收起），展开着换到前后场只替换
@@ -786,7 +823,6 @@ export default function App({ apiClient = api }: AppProps) {
     const wasExpanded = expandParam(window.location.hash);
     const nowExpanded = expandParam(path);
     // 4f：进局部图、来龙去脉和在里面每换一次中心压一条历史，记下第几层（［回到关系图］一次退回去）
-    const nowLocal = localParam(path);
     const pushLocal = localPushRef.current;
     localPushRef.current = false;
     if (!fromHistory && sameBase && pushLocal && nowLocal && nowLocal !== localParam(window.location.hash)) {
@@ -794,8 +830,8 @@ export default function App({ apiClient = api }: AppProps) {
       history.pushState({ app: true, graphLocal: true, localDepth: depth }, "", url);
     } else if (!fromHistory && sameBase && !wasExpanded && nowExpanded) {
       history.pushState({ app: true, graphExpand: true }, "", url);
-    } else if (fromHistory || sameBase) history.replaceState(window.history.state, "", url);
-    else history.pushState({ app: true }, "", url);
+    } else if (fromHistory || sameBase) history.replaceState(rootState(), "", url);
+    else history.pushState(nowLocal ? { app: true, localRoot: true } : { app: true }, "", url);
   }, [
     glossaryProjectId,
     graphExpanded,

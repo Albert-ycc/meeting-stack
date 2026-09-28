@@ -300,6 +300,40 @@ describe("局部图和来龙去脉的地址（4f）", () => {
     expect(localDepth()).toBeUndefined();
   });
 
+  it("冷启动深链或从别的页进来以后换了中心，［回到关系图］仍回到星图", async () => {
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#projects/p/graph?file=7");
+    const { unmount } = render(<App apiClient={localClient()} />);
+    expect(await screen.findByRole("heading", { name: "以『文件7.xlsx』为中心" })).toBeInTheDocument();
+    // 进局部图的那一条记上 localRoot
+    await waitFor(() => expect((window.history.state as { localRoot?: boolean } | null)?.localRoot).toBe(true));
+    await userEvent.dblClick(await screen.findByRole("button", { name: "文件：文件8.xlsx" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?file=8"));
+    await userEvent.dblClick(await screen.findByRole("button", { name: "文件：文件9.xlsx" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?file=9"));
+    await userEvent.click(screen.getByRole("button", { name: "回到关系图" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph"));
+    expect(await screen.findByRole("application", { name: "云图AI 关系图" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /为中心$/ })).toBeNull();
+    expect((window.history.state as { localRoot?: boolean } | null)?.localRoot).toBeUndefined();
+    unmount();
+
+    // 从别的页进来（这一条也没有 localDepth）：同样
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#tasks");
+    render(<App apiClient={localClient()} />);
+    await screen.findByRole("heading", { name: "任务" });
+    window.history.pushState({ app: true }, "", "/#projects/p/graph?file=7");
+    window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
+    expect(await screen.findByRole("heading", { name: "以『文件7.xlsx』为中心" })).toBeInTheDocument();
+    await waitFor(() => expect((window.history.state as { localRoot?: boolean } | null)?.localRoot).toBe(true));
+    await userEvent.dblClick(await screen.findByRole("button", { name: "文件：文件8.xlsx" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph?file=8"));
+    await userEvent.click(screen.getByRole("button", { name: "回到关系图" }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/p/graph"));
+    expect(await screen.findByRole("application", { name: "云图AI 关系图" })).toBeInTheDocument();
+  });
+
   it("expand 和 file 同时有时留 expand；手机上 ?file= 退回项目列表", async () => {
     forgetGraphCache();
     window.history.replaceState(null, "", "/#projects/p/graph?expand=a&file=7");
