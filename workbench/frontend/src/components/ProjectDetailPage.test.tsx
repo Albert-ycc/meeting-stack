@@ -503,11 +503,12 @@ describe("ProjectDetailPage 文件夹改名后找回", () => {
       renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(missingBoard), renameCandidates }) });
 
       expect(await screen.findByText("找不到该目录")).toBeInTheDocument();
-      expect(renameCandidates).toHaveBeenCalledTimes(1);
+      // 「找不到该目录」可能先于第一次询问画出来，等询问真的发出去再推时间
+      await waitFor(() => expect(renameCandidates).toHaveBeenCalledTimes(1));
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2000);
       });
-      expect(renameCandidates).toHaveBeenCalledTimes(2);
+      await waitFor(() => expect(renameCandidates).toHaveBeenCalledTimes(2));
       expect(await screen.findByText(/是不是改名成了『云图2026』？（里面 12 个子文件夹有 11 个对得上）/)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
