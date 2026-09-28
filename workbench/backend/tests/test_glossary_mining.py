@@ -43,6 +43,14 @@ def test_seeds_find_the_planted_word_and_skip_noise():
     assert "天可以" not in seeds("明天可以。后天可以。")
 
 
+def test_seed_boundary_keeps_verb_like_word_endings():
+    """「请」是 glossary._EXPAND_STOP_CHARS 里的字，但也是很多正经词的收尾字（申请、邀请）；
+    边界不能把它当虚字挡在词外，否则长一个字的整词反而卡不住，只留得下「用药申」这半截。"""
+    found = seeds(body("用药申请"))
+    assert found["用药申请"] == 2
+    assert "用药申" not in found
+
+
 def test_latin_seeds():
     found = seeds("GLP-1 和 GLP-1；CRF 表、CRF；ESG ESG；PDF PDF 3f2a9c1e0b7d 3f2a9c1e0b7d v1.2 v1.2 report report")
     assert {"GLP-1", "CRF", "ESG"} <= set(found)
@@ -51,6 +59,16 @@ def test_latin_seeds():
         assert gm.latin_ok(token), token
     for token in ("PDF", "3f2a9c1e0b7d", "v1.2", "report", "550e8400-e29b-41d4-a716-446655440000"):
         assert not gm.latin_ok(token), token
+
+
+def test_versioned_filename_is_not_a_seed():
+    """「V1.4.0.txt」「V1.0.2-phase3.txt」这类版本号/阶段名带扩展名的文件名不算词：
+    _VERSION 只认整串是版本号，带扩展名或「-phase3」这类后缀就漏了，扩展名本身是停用词才是关键。"""
+    for token in ("V1.4.0.txt", "V1.5.3.txt", "V1.0.2-phase3.txt", "V1.1.0.txt"):
+        assert not gm.latin_ok(token), token
+    found = seeds(body("V1.4.0.txt", "R01"))
+    assert "V1.4.0.txt" not in found
+    assert found["R01"] == 2  # 需求编号（R01）这类不是文件名，照样留着
 
 
 def test_only_the_first_60000_chars_are_read():
@@ -221,6 +239,28 @@ def test_head_of_a_long_word_pairs_only_with_a_real_misheard_form(tmp_path):
     paired = {item.term: [pair.wrong for pair in item.pairs] for item in stats.items if item.pairs}
     assert paired == {"司美格鲁肽": ["司美格鲁太"]}
     assert ("司美格鲁肽", "司美格鲁太") in terms(db) and ("司美格鲁肽注射液", "") in terms(db)
+
+
+def test_sub_base_pair_rejects_particle_wrong_even_after_a_real_one(tmp_path):
+    """同一个头几个字的 base 配出好几种写法：头一个不是的、了这类虚字收尾、后面几个是的时候，
+    后面几个也要照样挡掉——不能因为这个 base 已经被头一个立住了，就不再查后面的。"""
+    db = gm_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    root = add_root(db, "p", tmp_path / "云图目录")
+    for index in range(3):
+        add_content(db, f"k{index}", [body("受试者用药记录")])
+        add_file(db, root, f"方案{index}.docx", key=f"k{index}")
+    add_meeting(
+        db, "m1", date="2026-09-20T10:00:00", project_id="p",
+        segments=[
+            "受试者用一次就够", "受试者用一遍看看",
+            "受试者用了才知道", "受试者用了没反应",
+            "受试者用的时候要注意", "受试者用的效果不错",
+        ],
+    )
+    stats = mine(db)
+    paired = {item.term: sorted(pair.wrong for pair in item.pairs) for item in stats.items if item.pairs}
+    assert paired == {"受试者用药": ["受试者用一"]}
 
 
 def test_three_char_words_get_no_pairs():

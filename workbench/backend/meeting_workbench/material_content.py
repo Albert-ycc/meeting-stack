@@ -747,6 +747,8 @@ class MaterialContent:
     def orphan_pass(self, *, all_online: bool) -> dict[str, int]:
         """记下、清掉 orphan_since；超过 30 天、所有根目录在线、文件名索引都扫完才删。"""
         now = utc_now()
+        # 记 orphan_since 和下面删除时比的 30 天用同一个时钟、同一种写法
+        orphan_stamp = _iso(self.now())
         with self.db.transaction() as connection:
             # 文件行的标识在内容表里找不到（刚被清理掉）：重新插一行 pending
             revived = connection.execute(
@@ -769,7 +771,7 @@ class MaterialContent:
                     WHERE orphan_since IS NULL AND NOT EXISTS (
                         SELECT 1 FROM material_files f
                          WHERE f.content_key = material_contents.content_key AND f.gone_at IS NULL)""",
-                (now,),
+                (orphan_stamp,),
             ).rowcount
             cleared = connection.execute(
                 """UPDATE material_contents SET orphan_since = NULL

@@ -210,4 +210,20 @@ describe("RequirementModal", () => {
     expect(onOpenProject).toHaveBeenCalledWith("project-a");
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("D9：需求名称限 200 字，输入框拦在提交之前，不用等后端 422 才发现", () => {
+    render(
+      <RequirementModal
+        apiClient={{} as unknown as ApiClient}
+        canPickFolders={false}
+        defaultProjectId="project-a"
+        mode="create"
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        projects={projects}
+      />,
+    );
+
+    expect(screen.getByPlaceholderText("例如：北辰仓快递配送")).toHaveAttribute("maxLength", "200");
+  });
 });

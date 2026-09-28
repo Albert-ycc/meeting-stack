@@ -39,7 +39,9 @@ from .tasks import UNDO_WINDOW_SECONDS
 logger = logging.getLogger(__name__)
 
 # 解析规则改了就加一：台账里 parser 对不上的会整场重新入库，id 照样接回。
-PARSER_VERSION = 1
+# 2：认表格式决议段（「| # | 决议 | 音频锚点 |」）
+# 3：清掉「T05　」「R07　」这类议题编号前缀
+PARSER_VERSION = 3
 
 ROUND_MEETINGS = 100
 ROUND_SECONDS = 1.0
@@ -87,6 +89,12 @@ _PREFIX = re.compile(
     r"^(?:决议|结论|共识)\s*(?:[一二三四五六七八九十百\d]+\s*[·:：、.．\-—]?|[·:：、.．\-—])\s*"
 )
 _EMPTY_KEYS = frozenset({"无", "暂无", "无决议", "暂无决议"})
+# 「T05　」「R07　」这类议题编号前缀（字母加数字，后面跟一个全角空格当分隔符，材料里当成议程
+# 标号用）。全角空格是关键：跟 TNM 分期（T3、N1、M0）不会撞——分期后面接的是文字或半角空格，
+# 没有人会在分期后面手打一个全角空格
+_TAG_PREFIX = re.compile(r"^[A-Za-z]{1,3}\d{1,3}　+")
+# 表格的分隔行「|---|:--:|」
+_TABLE_RULE = re.compile(r":?-{3,}:?")
 # 数值词：日期、星期、数字和百分数、中文数字（百分号写成 \x25，用词检查不把正则当界面文字）
 _VALUE_TOKEN = re.compile(
     r"\d{1,2}月\d{1,2}[日号]|(?:周|星期)[一二三四五六日天]|\d+(?:\.\d+)?\x25?|[零一二两三四五六七八九十百千万]+"
@@ -153,9 +161,10 @@ def value_tokens(text: str) -> list[str]:
 
 
 def _clean(raw: str) -> str:
-    """先去时间点和 **、__，再去「决议一：」这类前缀。存的时候不截断。"""
+    """先去时间点和 **、__，再去「决议一：」「T05　」这类前缀。存的时候不截断。"""
     text = _ANCHOR_ANY.sub("", raw).replace("**", "").replace("__", "")
     text = text.strip(" \t　`|")
+    text = _TAG_PREFIX.sub("", text)
     text = _PREFIX.sub("", text)
     return text.strip(" \t　`|-—·：:")
 
@@ -242,13 +251,58 @@ def _list_items(body: str) -> list[dict[str, Any]]:
     return items
 
 
+def _cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _table_items(body: str) -> list[dict[str, Any]]:
+    """表格式（「| # | 决议 | 音频锚点 |」这类）：一行一条。表头含「决议 / 结论 / 共识 / 内容」的列是正文，
+    含「锚 / 时间」的列取时间点，「# / 编号 / 序号」列不要，其余列（比如「议题」）放 detail。"""
+    rows = [_cells(line) for line in body.splitlines() if line.lstrip().startswith("|")]
+    if len(rows) < 2:
+        return []
+    header = rows[0]
+    rows = [row for row in rows[1:] if not all(_TABLE_RULE.fullmatch(cell) for cell in row)]
+    kinds = []
+    for cell in header:
+        name = cell.replace("**", "").strip()
+        if name in {"#", "编号", "序号"}:
+            kinds.append("index")
+        elif any(word in name for word in ("决议", "结论", "共识", "内容")):
+            kinds.append("text")
+        elif "锚" in name or "时间" in name:
+            kinds.append("time")
+        else:
+            kinds.append("other")
+    if "text" not in kinds:
+        return []
+    text_at = kinds.index("text")
+    items = []
+    for row in rows:
+        cells = row + [""] * (len(kinds) - len(row))
+        start, stop = parse_anchor(cells[text_at])
+        for kind, cell in zip(kinds, cells, strict=False):
+            if start is None and kind == "time":
+                start, stop = parse_anchor(cell)
+        detail = [_clean(cell) for kind, cell in zip(kinds, cells, strict=False) if kind == "other"]
+        items.append(
+            {
+                "text": _clean(cells[text_at]),
+                "detail": " ".join(piece for piece in detail if piece),
+                "start_ms": start,
+                "end_ms": stop,
+            }
+        )
+    return items
+
+
 def parse_decisions(markdown: str) -> Parsed:
     """纪要决议段里的条目。note 是 no_section 或 empty；section_hash 是选中那一段正文的 sha1。"""
     body = pick_section(markdown or "")
     if body is None:
         return Parsed([], NO_SECTION, None)
     heads = list(_H3.finditer(body))
-    raw = _heading_items(body, heads) if heads else _list_items(body)
+    raw = _heading_items(body, heads) if heads else (_list_items(body) or _table_items(body))
     seen: set[str] = set()
     items: list[Item] = []
     for entry in raw:

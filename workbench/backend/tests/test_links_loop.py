@@ -1023,6 +1023,25 @@ def test_cli_links_status_reads_the_database(tmp_path, monkeypatch, capsys):
     assert path.stat().st_mtime_ns == stamp  # 只读
 
 
+def test_cli_links_status_speaks_chinese_and_local_time(tmp_path, monkeypatch, capsys):
+    """D14：各步状态写人话，时间按本机时区；--json 仍给原始值。"""
+    from meeting_workbench.deep_links import PHASE_STATES
+
+    assert set(PHASE_STATES) <= set(cli.LINKS_PHASE_STATES)
+    cli_world(tmp_path, monkeypatch)
+    health = {"details": {"links": {"last_round_at": "2026-09-28T13:30:08Z", "paused": None, "llm": "ok",
+                                    "phases": {"decisions": "done", "related": "budget"}}}}
+    monkeypatch.setattr(cli, "_server_json", lambda _settings, _path: health)
+
+    assert cli.main(["links", "status"]) == 0
+    out = capsys.readouterr().out
+    assert "决议入库：做完了" in out and "相关：这轮时间到了，下轮接着做" in out
+    local = datetime(2026, 9, 28, 13, 30, 8, tzinfo=UTC).astimezone().strftime("%Y-%m-%d %H:%M")
+    assert f"上一轮：{local}" in out and "13:30:08Z" not in out
+    assert cli.main(["links", "status", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["phases"] == {"decisions": "done", "related": "budget"}
+
+
 def test_cli_links_decisions_and_retry(tmp_path, monkeypatch, capsys):
     db, _path = cli_world(tmp_path, monkeypatch)
 

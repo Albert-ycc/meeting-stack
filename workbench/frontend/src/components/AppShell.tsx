@@ -175,6 +175,8 @@ export function AppShell({
   taskBadge = 0,
   glossaryBadge = 0,
 }: AppShellProps) {
+  const healthText =
+    health === "healthy" ? "服务正常" : health === "degraded" ? "部分降级" : health === "failed" ? "服务异常" : "连接中";
   return (
     <div className={`app-frame ${isMobile ? "is-mobile" : ""}`}>
       <aside className="rail" aria-label="主导航">
@@ -236,9 +238,9 @@ export function AppShell({
         <header className="topbar">
           {searchSlot}
           <ThemeSwitch />
-          <div className={`health-pill health-pill--${health}`} aria-label={`服务状态：${health}`}>
+          <div className={`health-pill health-pill--${health}`} aria-label={`服务状态：${healthText}`}>
             <span />
-            {health === "healthy" ? "服务正常" : health === "degraded" ? "部分降级" : health === "failed" ? "服务异常" : "连接中"}
+            {healthText}
           </div>
         </header>
         <main className="main-stage">{children}</main>

@@ -1952,7 +1952,8 @@ class TaskService:
         in_progress: list[dict[str, Any]] = []
         stalled: list[dict[str, Any]] = []
         done_today: list[str] = []
-        today = datetime.now(UTC).date()
+        # 「今天完成」按本地日算，和下面「昨天自动归属」同一口径
+        today = datetime.now().astimezone().date()
         for row in rows:
             task = self.task_summary(row)
             if task["status"] == "pending_confirm":
@@ -1963,7 +1964,7 @@ class TaskService:
                     stalled.append(task)
             elif task["status"] == "done":
                 done_at = _parse_dt(task.get("status_changed_at"))
-                if done_at and done_at.date() == today:
+                if done_at and done_at.astimezone().date() == today:
                     done_today.append(task["title"])
         pending_sources = sorted(
             {task["meeting_title"] for task in pending if task["meeting_title"]}

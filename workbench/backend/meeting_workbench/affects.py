@@ -7,9 +7,11 @@ relations.quote 是决议原文。
 - 纯函数：values(text) 认六种数值（百分数、金额、日期、月份、数量、普通数，中文数字到「千」）；
   decided_values(text) 是决议自己定下的值（「由 A 改成 B」只留 B）；decision_subject(text) 取主语
   （紧挨着第一个数值前面的那段，在「在」「按」「由」「从」处截断，加上决议里出现的已确认词条，最多
-  3 个）；cancel_objects(text) 取「取消 X」「X 换成…」里的 X。项目名、它的也叫和根目录名永远不当主语。
+  3 个）；cancel_objects(text) 取「取消 X」「X 换成…」里的 X（「订单取消接口」「采购单取消」这类复合名词
+  里的「取消」不算）。项目名、它的也叫和根目录名永远不当主语。
 - 找片段：3 个字以上用 material_chunks_fts MATCH；2 个字的只在本项目片段不超过 10 万段时用 instr，
-  一场会的 2 字主语合成一条语句一起查。
+  一场会的 2 字主语合成一条语句一起查。字面上这个主语在项目材料里超过 10 份文件都有（「EDC」「定位」
+  这类到处都是的词）时太泛，不能当证据，这个主语直接跳过。
 - 两条规则：数值规则（片段里有主语，主语前后 40 个字以内有同类、值不同的数；决议自己的值已经在
   里面就跳过）；取消规则（片段里原样有 X）。
 - 文件：活的、normal 区、内容标识新鲜、不是录音和会议材料、修改时间早于决议且在一年以内、不是这条
@@ -269,6 +271,11 @@ _CANCEL_BEFORE = re.compile(r"(取消|不再|去掉|砍掉|停用|下线|不做)
 _CANCEL_AFTER = re.compile(r"(换成|替换为|替换成|改用|改成)")
 _CANCEL_STOP = re.compile(r"(?:和|与|以及|及|或)")
 _TRAILING_PARTICLES = ("了", "的", "吧", "呢", "啊")
+# 「取消」当名词用时夹在复合词里：「订单取消接口」（后面直接跟着接口、按钮这类名词）、「采购单取消」
+# （前面是「单」）。这两种不当动词处理；「本期去掉 X」「会上决定取消 X」照常算
+_CANCEL_NOUN_HEADS = (
+    "接口", "按钮", "功能", "流程", "原因", "状态", "操作", "记录", "规则", "逻辑", "入口", "权限", "页面", "时间",
+)
 
 
 def _run_char(char: str) -> bool:
@@ -387,12 +394,22 @@ def _object(word: str) -> str | None:
     return word if 2 <= len(word) <= 12 else None
 
 
+def _cancel_is_verb(body: str, start: int, end: int) -> bool:
+    """body[start:end] 处的触发词是不是动词用法：前面紧贴「单」（「采购单取消」）或后面紧跟接口、按钮这类
+    名词（「订单取消接口」）时是复合名词的一截，不算。"""
+    before = _run_before(body, start)
+    return not before.endswith("单") and not body[end:].startswith(_CANCEL_NOUN_HEADS)
+
+
 def cancel_objects(text: str, *, excluded: Sequence[str] = ()) -> list[str]:
     """取消的说法里旧的那个东西 X（2 到 12 个字）：「取消」「不再」「去掉」「砍掉」「停用」「下线」「不做」
-    加 X，或 X 加「换成」「替换为」「改用」「改成」（后面紧跟数值的「改成」是改数，不算）。"""
+    加 X，或 X 加「换成」「替换为」「改用」「改成」（后面紧跟数值的「改成」是改数，不算）。「订单取消
+    接口」「采购单取消」这类复合名词里的「取消」不当动词处理。"""
     body = _normal(text)
     found: list[str] = []
     for match in _CANCEL_BEFORE.finditer(body):
+        if not _cancel_is_verb(body, match.start(), match.end()):
+            continue
         word = _object(_run_after(body, match.end()))
         if word:
             found.append(word)
@@ -708,6 +725,10 @@ def match_decision(
             cached = (short_cache or {}).get(needle)
             chunks = cached if cached is not None else _short_chunks(connection, project_id, [needle], after, upto)[needle]
         else:
+            continue
+        if rule == RULE_VALUE and len({chunk["content_key"] for chunk in chunks}) > TOO_MANY_FILES:
+            # 主语在项目材料里到处都是（「EDC」「定位」这类广泛出现的词），不止决议自己说的这份，
+            # 太泛不能当证据：这条决议的字面主语没抓准，跳过这个主语，不进一步判断片段
             continue
         for chunk in chunks:
             mtime = int(chunk["mtime_ns"] or 0)

@@ -3,7 +3,7 @@ import json
 import shlex
 import subprocess
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.error import URLError
 
@@ -695,7 +695,7 @@ def test_digest_stats_count_yesterdays_auto_assignments(tmp_path):
         db.execute(
             """INSERT INTO events(meeting_id, event_type, actor, payload_json, created_at)
                VALUES (?, 'meeting_project_auto_assigned', 'system', '{}', ?)""",
-            (meeting_id, when.isoformat()),
+            (meeting_id, when.astimezone(UTC).isoformat()),  # 和 add_event 一样写 UTC
         )
 
     auto_event("m1", yesterday_noon)

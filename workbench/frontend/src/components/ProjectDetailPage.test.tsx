@@ -1041,11 +1041,11 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
     } as Partial<ApiClient>);
 
     const card = await screen.findByRole("region", { name: "时间线" });
-    const hint = screen.getByText(/这个项目是 AI 自动建的/);
-    const roots = screen.getByRole("heading", { name: "材料根目录" });
+    const hint = await screen.findByText(/这个项目是 AI 自动建的/);
+    const roots = await screen.findByRole("heading", { name: "材料根目录" });
     expect(hint.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(card.compareDocumentPosition(roots) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(projectTimeline).toHaveBeenCalledWith("project-1", { kind: "all", days: 7 });
+    await waitFor(() => expect(projectTimeline).toHaveBeenCalledWith("project-1", { kind: "all", days: 7 }));
 
     const inCard = within(card);
     expect(await inCard.findByText("今天")).toBeInTheDocument();

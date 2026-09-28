@@ -89,6 +89,9 @@
 
 .material-drawer__body {
   flex: 1;
+  /* D5：flex 列容器里的项默认 min-width:auto，会被子孙里不折行的宽表格（td 是 white-space:nowrap）
+     顶到内容的最小宽度，table-scroll 自己的 overflow-x:auto 也就用不上——先把这层松开 */
+  min-width: 0;
   min-height: 0;
   padding: 16px 22px 24px;
   overflow-y: auto;
@@ -226,6 +229,13 @@
   margin: 0 0 4px;
   color: var(--ink-faint);
   font-size: 12px;
+}
+
+/* D5：.material-preview__block 是 display:grid，table-wrap 是它的网格子项，同样默认
+   min-width:auto——上一层 .material-drawer__body 松开了还不够，这一层也要松开，
+   table-scroll 自己的 overflow-x:auto 才轮得到起作用，不然表格把外层全部撑穿 */
+.material-preview__table-wrap {
+  min-width: 0;
 }
 
 .material-preview__table-scroll {

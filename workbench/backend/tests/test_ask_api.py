@@ -20,6 +20,7 @@ from meeting_workbench.main import create_app
 
 from .test_ask_retrieval import KEY_QUOTE, online, world
 from .test_tasks_api import FakeRelayClient
+from .test_timeline import shanghai  # noqa: F401  用例的会议时间按 +08:00 写，日期按北京时间断言
 
 DEEPSEEK = "https://api.deepseek.com"
 QUESTION = "驻场服务的报价单"
@@ -501,3 +502,25 @@ def test_cli_links_ask_reads_stdin_and_never_calls_ai(tmp_path, monkeypatch, cap
         cli.main(["links", "ask", "--project", "p", QUESTION])
     monkeypatch.setattr("sys.stdin", io.StringIO("报"))
     assert cli.main(["links", "ask", "--project", "p"]) == 2
+
+
+def test_cli_links_ask_loads_the_model_before_the_budget_starts(tmp_path, monkeypatch, capsys):
+    """D13：命令行冷启动先加载模型，再开始计 2.5 秒的检索预算。"""
+    import io
+
+    from meeting_workbench import ask_retrieval, cli, semantic
+
+    path = tmp_path / "workbench.sqlite3"
+    monkeypatch.setenv("MEETING_WORKBENCH_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEETING_WORKBENCH_DATABASE_PATH", str(path))
+    db = Database(path)
+    db.initialize()
+    world(tmp_path, db)
+    order = []
+    monkeypatch.setattr(semantic.SemanticIndex, "warm", lambda self: order.append("warm") or True)
+    real_retrieve = ask_retrieval.retrieve
+    monkeypatch.setattr(ask_retrieval, "retrieve", lambda *a, **kw: order.append("retrieve") or real_retrieve(*a, **kw))
+    monkeypatch.setattr("sys.stdin", io.StringIO(QUESTION + "\n"))
+
+    assert cli.main(["links", "ask", "--project", "p"]) == 0
+    assert order[:2] == ["warm", "retrieve"]

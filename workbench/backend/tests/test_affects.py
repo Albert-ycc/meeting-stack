@@ -208,6 +208,14 @@ def test_cancel_objects():
     assert affects.cancel_objects("不再做周报了") == ["做周报"]
     # 后面紧跟数值的「改成」是改数
     assert affects.cancel_objects("驻场改成 2 人") == []
+    # 复合名词里的「取消」（「订单取消接口」「销售单取消」「采购单取消」）：D2 误报复现，不能把「共用」
+    # 当成取消的对象
+    assert affects.cancel_objects("订单取消接口统一为一个，销售单取消与采购单取消共用，需要对。") == []
+    # 句中动词用法照常算：前面是别的词（本期、决定、这次）也不能丢
+    assert affects.cancel_objects("也取消驻场服务") == ["驻场服务"]
+    assert affects.cancel_objects("本期去掉资质核验模块") == ["资质核验模块"]
+    assert affects.cancel_objects("会上决定取消驻场服务") == ["驻场服务"]
+    assert affects.cancel_objects("这次不做医助端") == ["医助端"]
 
 
 def test_rules():
@@ -239,6 +247,23 @@ def test_value_rule_marks_an_old_file(tmp_path):
     scan = w.db.query_one("SELECT affects_hash, section_hash, affects_chunk_mark FROM decision_scan WHERE meeting_id = 'm'")
     assert scan["affects_hash"] == scan["section_hash"] and scan["affects_chunk_mark"] > 0
     assert run(w.db)["pending"] == 0
+
+
+def test_too_common_term_subject_is_skipped(tmp_path):
+    """D2 误报复现：决议里带一个全项目到处都是的已确认词条（EDC）当主语时，这个词条本身太泛，
+    不能当证据——即使某几份文件里刚好有一个不一样的数，也不该因为这个词条而标过时；真正具体的
+    主语（节点数量）不受影响，照样能标到对的文件。"""
+    w = world(tmp_path)
+    w.db.execute(
+        """INSERT INTO glossary_terms(id, term, aliases, also, confirmed, project_id, created_at, updated_at)
+           VALUES ('t-edc', 'EDC', '[]', '[]', 1, 'p', 'x', 'x')"""
+    )
+    meeting(w.db, "m", "EDC 节点数量调整为 2 个")
+    material(w.db, w.root, "方案/节点方案.docx", "节点数量为 5 个")
+    for index in range(11):
+        material(w.db, w.root, f"EDC/接口说明{index}.docx", f"EDC 模块处理 {index + 3} 个数据")
+    run(w.db)
+    assert names(w.db) == ["节点方案.docx"]
 
 
 def test_cancel_rule_and_two_char_subjects(tmp_path, monkeypatch):

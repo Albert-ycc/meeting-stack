@@ -292,6 +292,25 @@ def test_preview_kinds(tmp_path):
     assert offline["file"]["root_online"] is False and offline["preview"]["image_url"] is None
 
 
+def test_pdf_preview_collapses_adjacent_duplicate_lines(tmp_path):
+    """D8：PDF 文字层和认字结果叠出重复行时（同一行紧挨着出现两遍），预览只留一份；
+    隔开的重复（不紧挨着）不受影响。"""
+    db, _settings, root, _root_id, content, indexer, _now, _state = setup(tmp_path)
+    put(root / "扫描重复.pdf", b"%PDF-1.4 scanned dup")
+    index(indexer)
+    content.run_round()
+    store(
+        db, "扫描重复.pdf",
+        ExtractResult(
+            "ok",
+            blocks=[{"loc": "第 1 页", "text": "智研与医米\n智研与医米\n课题审核隔离\n课题审核隔离\n背景说明"}],
+            extractor="pdfkit+vision",
+        ),
+    )
+    pdf = preview_of(db, "扫描重复.pdf")["preview"]
+    assert pdf["lines"] == ["智研与医米", "课题审核隔离", "背景说明"]
+
+
 def test_preview_mentions_deliverables_and_parts(tmp_path):
     db, root, _root_id, _content, _state = seeded(tmp_path)
     add_meeting(db, "m1", ago=2, project_id="p", title="报价会", segments=[(90_000, "说到报价单")])

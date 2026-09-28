@@ -741,7 +741,7 @@ def _minutes(connection: sqlite3.Connection, project_id: str, terms: Terms) -> l
     rank = "NULL"
     join = ""
     if terms.phrases:
-        cte = "WITH hit AS (SELECT meeting_id, bm25(minutes_fts) AS rank FROM minutes_fts WHERE minutes_fts MATCH ?) "
+        cte = "WITH hit AS MATERIALIZED (SELECT meeting_id, bm25(minutes_fts) AS rank FROM minutes_fts WHERE minutes_fts MATCH ?) "
         params.append(_fts_query(terms.phrases))
         join = "LEFT JOIN hit ON hit.meeting_id = m.id"
         rank = "MIN(hit.rank)"
@@ -1090,7 +1090,14 @@ def _segment_texts(
                 "quote": _quote(clipped, words),
             }
         )
-    return result
+    # 按时间范围合并（上面那步）漏不掉大多数重叠，但漏网的重复原话（同一场会最终文字完全
+    # 一样）还是可能剩两条：只留分数高的那条（result 跟 picked 同序，排前面的分数更高）
+    deduped: list[dict[str, Any]] = []
+    for item in result:
+        if any(item["meeting_id"] == other["meeting_id"] and _same(item["text"], other["text"]) for other in deduped):
+            continue
+        deduped.append(item)
+    return deduped
 
 
 # ------------------------------------------------------------------ M

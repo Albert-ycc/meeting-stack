@@ -19,6 +19,7 @@ from .helpers import count_reads
 from .test_material_search import add_content, add_file, add_root
 from .test_project_linking import seed_meeting
 from .test_related import embed
+from .test_timeline import shanghai  # noqa: F401  用例的会议时间按 +08:00 写，日期按北京时间断言
 
 MODEL = "bge-test"
 SETTINGS = SimpleNamespace(semantic_enabled=True, semantic_model=MODEL)
@@ -608,6 +609,27 @@ def test_segment_texts_read_by_version_without_scanning_meetings(tmp_path):
     assert [item["meeting_id"] for item in items] == ["m-14", "m-21"]
     assert items[0]["start_ms"] == 310_000 and "单列" in items[0]["text"]
     assert items[1]["title"] == "初审规则沟通" and "下调五个点" in items[1]["text"]
+
+
+def test_segment_texts_drops_a_duplicate_quote_too_far_apart_to_merge(tmp_path):
+    """存疑 7：同一场会里隔得太远（超过 15 秒到 45 秒那个窗口，合并不到一起）的两段命中，文字却完全
+    一样（转写重复收了一遍）时，只留分数高、排在前面的那条，不把同一句话当两条不同原话给用户看。"""
+    db = world(tmp_path)
+    meeting(
+        db, "m-dup", "重复转写的会", 25,
+        [
+            (0, "开场白"),
+            (400_000, "驻场服务的报价单总价下调五个点"),
+            (800_000, "驻场服务的报价单总价下调五个点"),
+        ],
+    )
+    picked = [
+        {"meeting_id": "m-dup", "anchor": 400_000, "window": None},
+        {"meeting_id": "m-dup", "anchor": 800_000, "window": None},
+    ]
+    with db.autocommit() as connection:
+        items = ar._segment_texts(connection, picked, ["驻场服务"])
+    assert len(items) == 1 and items[0]["start_ms"] == 400_000
 
 
 def _meetings(db, count):

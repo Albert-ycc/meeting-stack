@@ -30,14 +30,22 @@ export function cardEffectNote(card: MeetingCardEffect | undefined) {
   return "";
 }
 
-/** 改归属提示的后半句：「3 条任务和会议卡片一起移过去」；什么都没跟着动时是空串 */
+/**
+ * 改归属提示的后半句：「3 条待确认/过期的任务和会议卡片一起移过去」；什么都没跟着动时是空串。
+ *
+ * 存疑 2：这里数的是后端 reassign_meeting 里「没挂需求、且是草稿/过期状态」的任务（待确认 + 过期），
+ * 跟会议页「本场任务」页签角标不是一个口径——角标只数待确认的（MeetingDetailPage.loadPendingTaskCount
+ * 按 status:"pending_confirm" 查），过期的任务不算在角标里，所以角标数字会比这里小。
+ * 不是 bug：两边本来就是不同的统计范围（移动了多少 vs 需要你确认多少），这里把「待确认/过期」写明白，
+ * 不让用户拿它去对角标数字。
+ */
 export function reassignNote(tasksMoved: number, tasksLeft: number, card?: MeetingCardEffect) {
   const cardMoved = card?.action === "moved";
   const moved =
     tasksMoved > 0 && cardMoved
-      ? `${tasksMoved} 条任务和会议卡片一起移过去`
+      ? `${tasksMoved} 条待确认/过期的任务和会议卡片一起移过去`
       : tasksMoved > 0
-        ? `${tasksMoved} 条任务一起移过去`
+        ? `${tasksMoved} 条待确认/过期的任务一起移过去`
         : cardMoved
           ? "会议卡片一起移过去"
           : "";

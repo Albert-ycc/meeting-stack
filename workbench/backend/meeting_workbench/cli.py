@@ -413,6 +413,17 @@ LINKS_PHASE_LABELS = {
     "related": "相关",
     "terms": "挖词",
 }
+# deep_links.PHASE_STATES 的人话
+LINKS_PHASE_STATES = {
+    "done": "做完了",
+    "budget": "这轮时间到了，下轮接着做",
+    "busy": "会议在转写，先停",
+    "stopping": "服务在停，没做完",
+    "locked": "数据库忙，下轮再做",
+    "off": "关着",
+    "waiting": "在等前一步",
+    "error": "出错了，下轮再试（详见服务日志）",
+}
 LINKS_LLM_LABELS = {
     "ok": "正常",
     "off": "关着",
@@ -423,6 +434,19 @@ LINKS_LLM_LABELS = {
     "backoff": "连不上，在退避，会自己再试",
     "failing": "连续几次连不上",
 }
+
+
+def _local_time(value: str | None) -> str | None:
+    """库里和健康检查里的 UTC 时间（带 Z 或 +00:00）按本机时区写成「2026-09-28 06:30」。"""
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def _links_status(args: argparse.Namespace, settings: Settings) -> int:
@@ -512,9 +536,9 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
     if live is None:
         print("服务没开（或连不上）：上一轮的时间和各步的情况要服务开着才看得到")
     else:
-        print(f"上一轮：{result['last_round_at'] or '还没跑过'}" + ("，会议在转写，重活先停" if result["paused"] == "busy" else ""))
+        print(f"上一轮：{_local_time(result['last_round_at']) or '还没跑过'}" + ("，会议在转写，重活先停" if result["paused"] == "busy" else ""))
         for name, status in result["phases"].items():
-            print(f"  {LINKS_PHASE_LABELS.get(name, name)}：{status}")
+            print(f"  {LINKS_PHASE_LABELS.get(name, name)}：{LINKS_PHASE_STATES.get(status, status)}")
     print(
         f"在等：决议入库 {waiting['decisions']} 场，放宽的提到 {waiting['mentions']} 场"
         f"（没做成 {failed['mentions']} 场），决议对比 {waiting['pairs']} 场（没对比成 {failed['pairs']} 场）"
@@ -524,7 +548,7 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
         f"在问你：产出 {opened['produced']} 条，可能过时 {opened['affects']} 条"
         f"（可能过时还有 {waiting['affects']} 场会到期没配）"
     )
-    print(f"上次清理：{result['housekeeping_at'] or '还没清理过'}")
+    print(f"上次清理：{_local_time(result['housekeeping_at']) or '还没清理过'}")
     print(f"AI（{result['llm_host']}）：{LINKS_LLM_LABELS.get(llm_state, llm_state)}")
     print(
         f"今天调了：后台 {usage['background']} / {settings.links_llm_daily_calls} 次，"
@@ -719,6 +743,8 @@ def _links_ask(args: argparse.Namespace, settings: Settings) -> int:
 
             db = Database(settings.database_path)
             semantic = SemanticIndex(db, settings)
+            # 先把模型加载好：命令行是冷启动，加载要好几秒，不先加载会吃光 2.5 秒的检索预算（页面上服务早已加载）
+            semantic.warm()
             vectors = MaterialVectors(db, settings, semantic)
             vectors.refresh()
         except Exception as error:  # noqa: BLE001  模型没装好时只按原词找

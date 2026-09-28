@@ -407,6 +407,17 @@ def _first_lines(texts: list[str], limit: int = PREVIEW_LINES) -> tuple[list[str
     return lines, False
 
 
+def _drop_adjacent_dupes(lines: list[str]) -> list[str]:
+    """紧挨着完全一样的整行只留一份：PDF 文字层和认字结果叠出重复行时用（见 D8），
+    只挡紧挨着的，隔开的重复（比如真的重复出现的表头）不动。"""
+    result: list[str] = []
+    for line in lines:
+        if line.strip() and result and result[-1] == line:
+            continue
+        result.append(line)
+    return result
+
+
 def file_preview_block(
     connection: Any,
     row: dict[str, Any],
@@ -452,7 +463,8 @@ def file_preview_block(
     elif kind == "pdf":
         preview["page_url"] = f"/api/materials/files/{file_id}/page1" if reachable else None
         first_page = [chunk["text"] for chunk in chunks if chunk["loc"] in (None, "第 1 页")]
-        preview["lines"], preview["more"] = _first_lines(first_page)
+        lines, more = _first_lines(first_page)
+        preview["lines"], preview["more"] = _drop_adjacent_dupes(lines), more
     elif kind == "media":
         playable = ext in PLAYABLE_TYPES
         preview["playable"] = playable

@@ -175,6 +175,25 @@ def test_map_neighbour_kinds_and_related_only_when_on(tmp_path):
     assert "材料正文不出" not in str(with_related)
 
 
+def test_generic_file_name_does_not_pair_as_same_name(tmp_path):
+    """D7：PRD.md、README.md 这类通用文件名，别的文件夹下的同名文件不是「同一份的别的版本」，
+    不该连 same_name（也不进局部图的同名邻居）。真正的词干（报价单）还是照样连，见上一个用例。"""
+    db, root_id = setup(tmp_path)
+    prd_a = add_file(db, root_id, "260910-赠药套利与发票风控/N2/PRD.md")
+    keyed(db, prd_a, "k-prd-a")
+    prd_b = add_file(db, root_id, "别的需求/PRD.md")
+    keyed(db, prd_b, "k-prd-b")
+    readme_a = add_file(db, root_id, "项目A/README.md")
+    keyed(db, readme_a, "k-readme-a")
+    readme_b = add_file(db, root_id, "项目B/README.md")
+    keyed(db, readme_b, "k-readme-b")
+    literal(db, "m", "赠药套利", prd_a)
+    literal(db, "m", "项目A", readme_a)
+    for center in (prd_a, readme_a):
+        body = file_map(db, center)
+        assert "same_name" not in {edge["kind"] for edge in body["edges"]}
+
+
 def test_meeting_and_decision_nodes_carry_audio_url(tmp_path):
     db, root_id = setup(tmp_path)
     quote = add_file(db, root_id, "报价单.xlsx")

@@ -1,6 +1,7 @@
 """会议卡片接口（第一期 1c-2）：详情和改归属带卡片去向、重写、补写、撤下、暂停与恢复。"""
 from pathlib import Path
 
+from meeting_workbench import cards
 from meeting_workbench.cards import CardWriter
 from meeting_workbench.db import Database, utc_now
 
@@ -177,7 +178,7 @@ def test_offline_disk_does_not_block_renaming_the_project(tmp_path):
     assert (card["state"], card["reason"]) == ("blocked", "root_offline")
 
 
-def test_backfill_banner_answer_and_notices(tmp_path):
+def test_backfill_banner_answer_and_notices(tmp_path, monkeypatch):
     client, _settings, headers, db, disk, writer = _setup(tmp_path)
     project_id, root = _project(db, disk, "云图AI")
     _meeting(db, project_id)
@@ -199,7 +200,8 @@ def test_backfill_banner_answer_and_notices(tmp_path):
     # 3g：远程的设备不能让服务器那台电脑打开访达
     remote = client.post("/api/cards/reveal", json={"project_id": project_id}, headers=headers)
     assert remote.status_code == 403
-    # 本机打开：这台机器不是 Mac，打开文件夹要说清楚
+    # 本机打开：这台机器不是 Mac，打开文件夹要说清楚（钉成非 Mac，在 Mac 上跑也不真去开访达）
+    monkeypatch.setattr(cards.sys, "platform", "linux")
     local, local_headers = local_client(client)
     reveal = local.post("/api/cards/reveal", json={"project_id": project_id}, headers=local_headers)
     assert reveal.status_code == 409

@@ -1044,6 +1044,7 @@ textarea {
   gap: 6px;
   padding: 0 11px;
   font-size: 10px;
+  white-space: nowrap;
   border-color: var(--line);
   border-radius: 8px;
 }
@@ -1694,7 +1695,9 @@ textarea {
 .detail-title-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-top: 17px; }
 .detail-title-row h1 { margin: 3px 0 8px; font-size: clamp(28px, 3vw, 42px); }
 .detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; color: var(--ink-soft); font-size: 10px; }
-.detail-state { display: flex; align-items: center; gap: 7px; }
+/* D12：右侧的复制路径按钮不设 nowrap 就没有下限，标题一长就被挤成一字一行的竖排；
+   不许它比自己内容还窄，挤不下时让 detail-title-row 换行（见下面 767px 那条），而不是把它压扁 */
+.detail-state { display: flex; flex-shrink: 0; align-items: center; gap: 7px; }
 
 .audio-waveform-console { padding: 21px 40px 8px; color: var(--ink); background: var(--night); }
 .audio-transport-dock { padding: 9px 40px 13px; color: var(--ink); background: var(--night); border-bottom: 1px solid var(--line); }
@@ -1956,12 +1959,14 @@ textarea {
   .todo-board { padding: 17px; }
   .todo-item { grid-template-columns: minmax(0, 1fr); }
   .project-ledger { grid-template-columns: 1fr; }
-  .search-hit { grid-template-columns: 1fr auto; gap: 9px; padding: 16px 0; }
+  /* D4：1fr 轨道默认最小宽度是内容的 min-content，长文件名/长句子照样把轨道撑宽——
+     改成 minmax(0, 1fr) 才会真的服从容器宽度，让子元素自己的 overflow-wrap/ellipsis 生效 */
+  .search-hit { grid-template-columns: minmax(0, 1fr) auto; gap: 9px; padding: 16px 0; }
   .search-hit p { grid-row: 2; grid-column: 1 / -1; font-size: 12px; }
   .time-anchor { grid-row: 1; grid-column: 2; }
   .detail-header { padding: 18px 16px 14px; }
   .conflict-panel { padding: 14px 16px; }
-  .detail-title-row { align-items: flex-start; }
+  .detail-title-row { flex-wrap: wrap; align-items: flex-start; }
   .detail-title-row h1 { font-size: 28px; }
   .audio-waveform-console { padding: 16px 12px 8px; }
   .audio-transport-dock { padding: 9px 12px 12px; }
@@ -2499,10 +2504,14 @@ textarea {
 /* 搜索页的材料（3f）：计数写成一句，材料行和会议行同一个格子 */
 .record-count--text span { margin-top: 0; color: var(--ink-soft); font-size: 13px; white-space: nowrap; }
 .material-hit__name { display: flex; min-width: 0; align-items: center; gap: 6px; }
-.material-hit__name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* D4：strong 是 flex 子项，不设 min-width:0 的话浏览器按不折行的整串文字算最小宽度，
+   撑开父级 flex 容器（哪怕父级自己已经 min-width:0），ellipsis 也就没机会生效 */
+.material-hit__name strong { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
 .material-hit__ext { flex: none; padding: 1px 5px; color: var(--ink-soft); font-family: var(--font-mono); font-size: 9px; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; }
 .material-hit__quotes { display: grid; gap: 6px; min-width: 0; }
-.material-hit__quotes p { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.65; }
+/* D4：命中片段是文件里摘出来的原文，长文件名/路径/代码常常没有空格断点，
+   普通 white-space 遇到这种长串就不换行，整行撑宽手机页面——允许在任意字符处折行 */
+.material-hit__quotes p { margin: 0; overflow-wrap: anywhere; color: var(--ink-soft); font-size: 13px; line-height: 1.65; }
 .material-hit__path { color: var(--ink-faint) !important; font-size: 12px !important; word-break: break-all; }
 .material-hit__loc { display: inline-block; margin-right: 8px; color: var(--ink-faint); font-size: 10px; }
 .material-hit__seek { margin-right: 8px; padding: 1px 6px; color: var(--signal-dark); font-family: var(--font-mono); font-size: 10px; background: transparent; border: 1px solid var(--signal-line); border-radius: 6px; }

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager, suppress
 import hashlib
 import json
 import logging
+import re
 import secrets
 import sqlite3
 import threading
@@ -186,6 +187,20 @@ ATTENTION_REFRESH_SECONDS = 60.0
 ACKNOWLEDGE_REFRESH_MIN_SECONDS = 10.0
 
 logger = logging.getLogger(__name__)
+
+
+def _evidence_message(error: Exception) -> str:
+    """纪要证据复验的报错给人看：内部词（Relay attempt、manifest、哈希、路径）只进日志。"""
+    text = str(error)
+    if text.startswith("暂无可验证证据"):
+        if "Relay" in text:
+            return "暂无可验证证据：转写中转的记录暂时读不到"
+        if "manifest" in text:
+            return "暂无可验证证据：这场会登记了不止一份转写产物，没法确定是哪一份"
+        return text
+    if isinstance(error, OSError) or re.search(r"manifest|Relay|attempt|sha|/", text):
+        return "来源证据未通过一致性复验"
+    return text
 
 
 class HotwordsModel(BaseModel):
@@ -2223,7 +2238,8 @@ def create_app(
                 ),
             )
         except (OSError, MinutesEvidenceError) as error:
-            raise HTTPException(409, str(error)) from error
+            logger.info("纪要证据复验没通过（%s）：%s", meeting_id, error)
+            raise HTTPException(409, _evidence_message(error)) from error
 
     @app.post("/api/meetings/{meeting_id}/asr-shadow/qwen", status_code=202)
     def request_qwen_shadow(meeting_id: str, _body: dict[str, Any]):

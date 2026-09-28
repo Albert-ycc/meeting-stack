@@ -461,8 +461,10 @@ class VisionBuild:
         started = time.monotonic()
         error = ""
         try:
+            # 经 xcrun 调：它会带上 SDK 路径。直接调 xcrun --find 找到的 swiftc，在后台服务的干净环境里
+            # 找不到 SDK，报 unable to load standard library（macOS 26 + 命令行工具实测）
             result = self.run(
-                [swiftc, "-O", "-o", str(temporary), str(source_file)],
+                ["xcrun", "swiftc", "-O", "-o", str(temporary), str(source_file)],
                 capture_output=True, text=True, timeout=COMPILE_TIMEOUT, check=False,
             )
             if result.returncode == 0 and temporary.is_file():

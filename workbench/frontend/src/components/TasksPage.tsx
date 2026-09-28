@@ -599,7 +599,7 @@ export function TasksPage({
             type="button"
           >
             <i aria-hidden="true" style={{ background: task.project_color || "#3ecf8e" }} />
-            {task.project_name}
+            <span className="tasks-table__project-name">{task.project_name}</span>
           </button>
         ) : (
           <span className="tasks-table__muted">—</span>
@@ -615,7 +615,7 @@ export function TasksPage({
             }}
             type="button"
           >
-            {task.requirement_title}
+            <span className="tasks-table__requirement-name">{task.requirement_title}</span>
           </button>
         ) : (
           <span className="tasks-table__muted">—</span>

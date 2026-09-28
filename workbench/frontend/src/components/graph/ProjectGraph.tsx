@@ -183,14 +183,16 @@ function Legend() {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
-    const onDown = (event: MouseEvent) => {
+    // 画布空白处的按下会被 d3-zoom 的拖拽手势吃掉（useGraphViewport 对 pointerdown 类事件
+    // preventDefault 以支持拖拽平移），合成的 mousedown 不再派发到 window，改听 pointerdown 本身
+    const onDown = (event: PointerEvent) => {
       if (boxRef.current && !boxRef.current.contains(event.target as Node)) setOpen(false);
     };
     window.addEventListener("keydown", onKey);
-    window.addEventListener("mousedown", onDown);
+    window.addEventListener("pointerdown", onDown);
     return () => {
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("pointerdown", onDown);
     };
   }, [open]);
   return (

@@ -25,6 +25,7 @@ from . import related
 from . import relation_read
 from .decisions import decision_moment
 from .file_mentions import _meeting_ns
+from .file_stems import STEM_YES, stem_usability
 from .relation_read import AUDIO_ID_SQL, LIVE_ID_SQL, _marks, _short, mention_union
 
 MAP_NEIGHBOURS = 12
@@ -280,10 +281,11 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
         ).fetchall()
     ]
 
-    # ⑥ 同名的别的版本（同 stem_key、不同内容）
+    # ⑥ 同名的别的版本（同 stem_key、不同内容）：stem_key 要过 stem_usability 这道判断，PRD、
+    # README 这类通用文件名在别的文件夹里也很常见，不代表是同一份的别的版本（见 D7）
     same_rows: list[dict[str, Any]] = []
     stem_key = center.row.get("stem_key")
-    if stem_key:
+    if stem_key and stem_usability(stem_key) == STEM_YES:
         same_rows = [
             dict(row)
             for row in connection.execute(
@@ -871,7 +873,8 @@ SELECT 'file', f.id, f.name, NULL, NULL, NULL, NULL, f.gone_at, f.mtime_ns, f.ex
         center = self.center_file
         assert center is not None
         stem_key = center.row.get("stem_key")
-        if not stem_key:
+        # PRD、README 这类通用文件名在别的文件夹里也很常见，不代表是同一份的别的版本（见 D7）
+        if not stem_key or stem_usability(stem_key) != STEM_YES:
             return []
         group = center.group
         rows = self.connection.execute(

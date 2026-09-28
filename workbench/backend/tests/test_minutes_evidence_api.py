@@ -880,3 +880,18 @@ def test_minutes_evidence_api_accepts_same_srt_under_two_names(tmp_path):
     response = client.get("/api/meetings/vm-evidence/minutes-evidence")
 
     assert response.status_code == 200, response.text
+
+
+def test_minutes_evidence_errors_do_not_show_internal_words():
+    """D10：Relay attempt、manifest、哈希、路径这些内部词只进日志，界面上是人话。"""
+    from meeting_workbench.main import _evidence_message
+    from meeting_workbench.minutes_evidence import MinutesEvidenceError
+
+    assert _evidence_message(MinutesEvidenceError("暂无可验证证据：Relay attempt 不可用")) == (
+        "暂无可验证证据：转写中转的记录暂时读不到"
+    )
+    assert "manifest" not in _evidence_message(MinutesEvidenceError("暂无可验证证据：manifest 关联不唯一"))
+    assert _evidence_message(MinutesEvidenceError("暂无可验证证据：仅支持 v3 证据协议")) == "暂无可验证证据：仅支持 v3 证据协议"
+    for internal in ("纪要 manifest 与 Relay attempt 哈希不一致", "纪要 attempt 缺少可信哈希"):
+        assert _evidence_message(MinutesEvidenceError(internal)) == "来源证据未通过一致性复验"
+    assert _evidence_message(FileNotFoundError(2, "No such file", "/Volumes/x/a.md")) == "来源证据未通过一致性复验"

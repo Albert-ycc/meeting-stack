@@ -89,6 +89,17 @@ describe("RelatedMaterials", () => {
     expect(screen.getByText("共同词：字段命名、驻场")).toBeInTheDocument();
   });
 
+  it("存疑 1：会议改归属（projectId 变了，meetingId 没变）要重新取相关材料，不留旧项目的数据", async () => {
+    const { api, props, view } = setup({ projectId: "project-old" }, payload({}, { rejected: 3 }));
+    await screen.findByText("接口文档.docx");
+    expect(api.relatedMaterials).toHaveBeenCalledTimes(1);
+
+    api.relatedMaterials.mockResolvedValueOnce(payload({}, { rejected: 0 }));
+    view.rerender(<RelatedMaterials {...props} projectId="project-new" />);
+
+    await waitFor(() => expect(api.relatedMaterials).toHaveBeenCalledTimes(2));
+  });
+
   it("点条目打开预览并定位；▶ 跳到会上那一句", async () => {
     const { props } = setup();
     await userEvent.click(await screen.findByRole("button", { name: "预览 接口文档.docx 第三节" }));

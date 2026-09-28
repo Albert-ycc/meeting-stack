@@ -131,11 +131,45 @@ def test_sub_items_fold_into_detail_and_duplicates_and_none_are_dropped():
     assert parsed.note is None and len(parsed.section_hash) == 40
 
 
+def test_topic_tag_prefix_is_stripped_but_tnm_staging_is_not():
+    """会议材料里「T05　」「R07　」这类议题编号（字母+数字+全角空格）是格式噪声，要清掉；
+    TNM 分期（T3、N1M0）后面接的是文字或半角空格，不会被这条规则误伤。"""
+    tagged = decisions.parse_decisions(
+        "## 决议\n1. T05　确定要把职称证校验加进去 [00:10:00]\n2. R07　亲友自购得积分 [00:20:00]\n"
+    )
+    assert [item.text for item in tagged.items] == ["确定要把职称证校验加进去", "亲友自购得积分"]
+    staging = decisions.parse_decisions("## 决议\n1. T3N1M0 分期评估通过 [00:10:00]\n")
+    assert [item.text for item in staging.items] == ["T3N1M0 分期评估通过"]
+
+
 def test_notes_for_missing_and_empty_sections():
     assert decisions.parse_decisions("# 周会\n## 会议背景\n聊了\n### 议题一\n").note == "no_section"
     empty = decisions.parse_decisions("# 周会\n## 决议\n（无）\n")
     assert (empty.items, empty.note) == ([], "empty")
     assert decisions.parse_safely("").note == "no_minutes"
+
+
+def test_table_sections_are_one_decision_per_row():
+    """真实纪要里最常见的写法（v3 协议）：决议段是表格。"""
+    parsed = decisions.parse_decisions(
+        "# 周会\n## 决议\n\n| # | 决议 | 音频锚点 |\n|---|---|---|\n"
+        "| 1 | 五个问题排在知情同意书之前 `[00:00:40]` | `[00:00:40]` |\n"
+        "| 2 | **注册顺序**确认为：基本信息 → 五个问题 | `[00:00:45 — 00:01:00]` |\n"
+        "| 3 | 无 | |\n"
+        "\n## 行动项\n\n| # | 行动项 | Owner |\n|---|---|---|\n| 1 | 走查 | 甲 |\n"
+    )
+    assert [(item.text, item.start_ms, item.end_ms) for item in parsed.items] == [
+        ("五个问题排在知情同意书之前", 40_000, None),
+        ("注册顺序确认为：基本信息 → 五个问题", 45_000, 60_000),
+    ]
+    assert parsed.note is None
+    # 表头叫法不一：编号 / 内容 / 锚点；议题列进 detail，时间点只在锚点列
+    other = decisions.parse_decisions(
+        "## 决议\n| 编号 | 议题 | 内容 | 锚点 |\n|:--:|---|---|---|\n| 一 | 报价 | 总价下调五个点 | [12:34] |\n"
+    )
+    assert [(item.text, item.detail, item.start_ms) for item in other.items] == [("总价下调五个点", "报价", 754_000)]
+    # 认不出正文列的表格不硬拆
+    assert decisions.parse_decisions("## 决议\n| 甲 | 乙 |\n|---|---|\n| 1 | 2 |\n").note == "empty"
 
 
 def test_parse_anchor_reads_single_times_and_ranges():

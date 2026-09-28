@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from meeting_workbench import cli, material_previews, ocr_trial
+from meeting_workbench import cli, material_previews, ocr_engines, ocr_trial
 from meeting_workbench.config import Settings
 from meeting_workbench.material_helpers import HelperTimeout
 from meeting_workbench.ocr_engines import (
@@ -29,6 +29,12 @@ from meeting_workbench.ocr_engines import (
 from meeting_workbench.vision_helper import SWIFT_SOURCE, VisionBuild, find_swiftc
 
 from .test_material_content import contents, index, put, setup
+
+
+@pytest.fixture(autouse=True)
+def no_homebrew_tools(monkeypatch):
+    """程序在不在全由各用例的假 which 决定；不让本机 Homebrew 里真装着的 tesseract 混进来。"""
+    monkeypatch.setattr(ocr_engines, "HOMEBREW_BINS", ())
 
 
 def png(width: int, height: int, *, padding: int = 0) -> bytes:

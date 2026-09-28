@@ -186,10 +186,14 @@ def _all_common(text: str) -> bool:
 # 对规格的补充：除了 glossary._EXPAND_STOP_CHARS，这几个介词、指代字打头结尾的片段也不要（由北辰科研仓、
 # 由项目组统一配置、该系统）
 _SEED_EDGE_STOPS = frozenset("由将于该此各每")
+# glossary._EXPAND_STOP_CHARS 是给「别名扩展」用的，宁可少扩也不多扩，所以把「请」这类动词字也当成
+# 虚字挡在边界外；但种子挖的是正经名词，「请」常是词尾（申请、邀请），照搬那份表会把「用药申请」卡死
+# 在「用药申」——三个字都不是虚字，长一个字反而被当成扩展过头挡掉，覆盖不到它，永远留不下整词
+_SEED_STOP_CHARS = glossary._EXPAND_STOP_CHARS - frozenset("请")
 
 
 def _han_ok(fragment: str) -> bool:
-    if fragment[0] in glossary._EXPAND_STOP_CHARS or fragment[-1] in glossary._EXPAND_STOP_CHARS:
+    if fragment[0] in _SEED_STOP_CHARS or fragment[-1] in _SEED_STOP_CHARS:
         return False
     if fragment[0] in _SEED_EDGE_STOPS or fragment[-1] in _SEED_EDGE_STOPS:
         return False
@@ -209,6 +213,11 @@ def latin_ok(token: str) -> bool:
     if not letters:
         return False
     if token.casefold() in LATIN_STOP:
+        return False
+    # 「V1.4.0.txt」「V1.0.2-phase3.txt」这类版本号／阶段名带扩展名的文件名：_VERSION 只认整串是
+    # 版本号，带扩展名或「-phase3」这类后缀就对不上；扩展名单独是停用词时，不管前半长什么样都不要
+    _stem, _dot, ext = token.rpartition(".")
+    if _dot and _stem and ext.casefold() in LATIN_STOP:
         return False
     if _UUID.fullmatch(token) or _VERSION.fullmatch(token):
         return False
@@ -994,10 +1003,13 @@ def _compute(
             continue
         if wrong in term_names or norm_key(wrong) in decided or light_key(wrong) in answered:
             continue
+        # 换的是的、了这类虚字时不算：这条要对每一个 wrong 都查，不能只在这个 base 头一次
+        # 建组时查一遍——头一个 wrong 不是虚字、后面几个才是虚字时，之前只查一次会把它们放过
+        # （「人脸识别白」先配到「人脸识别一」建了组，「人脸识别了」「人脸识别的」跟着混进来）
+        if pair.base in sub_set and _changed_char(pair.base, wrong) in glossary._EXPAND_STOP_CHARS:
+            continue
         item = found.get(pair.base)
         if item is None and pair.base in sub_set:
-            if _changed_char(pair.base, wrong) in glossary._EXPAND_STOP_CHARS:
-                continue
             parent = found[parents[pair.base]]
             places = list(_occurrences(transcript.text, pair.base))
             item = found.setdefault(
