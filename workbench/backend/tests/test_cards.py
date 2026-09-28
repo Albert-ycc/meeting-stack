@@ -173,6 +173,9 @@ def test_card_is_written_to_the_spec(tmp_path):
     index = (root / CARDS / "00 索引.md").read_text(encoding="utf-8")
     assert "- 整理初审阈值对照表 · 我 · 进行中 · 来自 [初审规则沟通](<260926 初审规则沟通.md>)" in index
     assert "- 2026-09-26 14:30 · [初审规则沟通](<260926 初审规则沟通.md>) · AI 自动归属" in index
+    # 4h 的索引 v2：需求一节
+    assert "\n## 需求\n" in index and "\n### 初审规则 V2\n" in index
+    assert "- 文件夹：`需求/初审规则`" in index
     # 只建了「声档会议记录/逐字稿」两层，没有留下临时文件，你自己的文件一个没动
     assert sorted(p.relative_to(root).as_posix() for p in root.rglob("*")) == [
         "声档会议记录",
@@ -658,6 +661,8 @@ def test_retire_all_recycles_untouched_cards_and_lists_edited_ones(tmp_path):
     assert not (root / CARDS / "00 索引.md").exists()
     writer.reconcile()
     assert _card_files(root) == ["260927 周会.md"]
+    # 改过的卡片还在原处，索引也不会被下一轮写回来（4h 第 1 个毛病）
+    assert not (root / CARDS / "00 索引.md").exists()
     with db.autocommit() as connection:
         assert writer.meeting_card(connection, MEETING)["reason"] == "disabled"
 
@@ -677,8 +682,9 @@ def test_first_card_notice_and_dont_write(tmp_path):
 
     result = writer.pause_project(project_id)
 
-    assert result["retired"] == 1
+    assert result["retired"] == 1  # 只数卡片，索引不计
     assert _card_files(root) == []
+    assert not (root / CARDS / "00 索引.md").exists()
     with db.autocommit() as connection:
         assert writer.notices(connection) == []
         assert writer.meeting_card(connection, MEETING)["reason"] == "paused"

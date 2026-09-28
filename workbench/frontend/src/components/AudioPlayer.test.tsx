@@ -82,4 +82,18 @@ describe("AudioPlayer", () => {
       "audio-console--sticky",
     );
   });
+
+  it("在 <audio> 的 play、pause、ended 上报在不在放（4d）", () => {
+    const onPlayingChange = vi.fn();
+    render(<AudioPlayer durationMs={10_000} mediaUrl="/api/media/1" onPlayingChange={onPlayingChange} onTimeChange={vi.fn()} />);
+    const audio = screen.getByLabelText("录音播放器");
+    fireEvent.play(audio);
+    expect(onPlayingChange).toHaveBeenLastCalledWith(true);
+    fireEvent.pause(audio);
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false);
+    fireEvent.play(audio);
+    fireEvent.ended(audio);
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false);
+    expect(onPlayingChange).toHaveBeenCalledTimes(4);
+  });
 });

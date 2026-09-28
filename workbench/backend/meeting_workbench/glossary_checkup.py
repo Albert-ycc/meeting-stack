@@ -500,8 +500,14 @@ def run_pending(
     return stats
 
 
-def meeting_glossary(db: Database, meeting_id: str) -> dict[str, Any] | None:
-    """会议页「词典」小节要的全部东西。还没体检过（或没有纪要）时返回 None。"""
+def meeting_glossary(
+    db: Database, meeting_id: str, *, material_pairs: bool = False
+) -> dict[str, Any] | None:
+    """会议页「词典」小节要的全部东西。还没体检过（或没有纪要）时返回 None。
+
+    4h：material_pairs 为真时（links_enabled 和 glossary_mining_enabled 都开）带上这场会里听错的、待认的
+    写法（glossary_mining.meeting_pairs，最多 2 个）；关着时是空列表。"""
+    pairs: list[dict[str, Any]] = []
     with db.autocommit() as connection:
         check = _check_row(connection, meeting_id)
         meeting = connection.execute(
@@ -536,6 +542,10 @@ def meeting_glossary(db: Database, meeting_id: str) -> dict[str, Any] | None:
                  FROM meeting_glossary_hits WHERE meeting_id = ? ORDER BY id""",
             (meeting_id,),
         ).fetchall()
+        if material_pairs:
+            from .glossary_mining import meeting_pairs
+
+            pairs = meeting_pairs(connection, meeting_id)
     current = meeting["current_minutes_version_id"]
     meeting_project = (
         {"id": meeting["project_id"], "name": meeting["project_name"], "color": meeting["project_color"]}
@@ -562,4 +572,5 @@ def meeting_glossary(db: Database, meeting_id: str) -> dict[str, Any] | None:
         "corrected": [dict(row) for row in hits if row["kind"] == "corrected"],
         "missed": [dict(row) for row in hits if row["kind"] == "missed"],
         "applied": applied,
+        "material_pairs": pairs,
     }

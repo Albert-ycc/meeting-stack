@@ -22,6 +22,7 @@ from urllib.error import HTTPError, URLError
 from .config import Settings
 from .db import Database, escape_like_pattern, utc_now
 from .glossary import rewrite_snapshot
+from .llm import llm_ready
 from .material_graph import decorate_deliverables
 from .materials import annotate_root, replace_material_roots
 from .notify import LarkNotifier
@@ -145,14 +146,6 @@ def _stall_info(
 
 class LLMUnavailable(RuntimeError):
     """LLM API key 缺失或不可用；抽取跳过但不计为失败重试。"""
-
-
-def llm_ready(settings: Settings) -> bool:
-    key_file = settings.llm_api_key_file.expanduser()
-    try:
-        return key_file.is_file() and bool(key_file.read_text(encoding="utf-8").strip())
-    except OSError:
-        return False
 
 
 def call_llm(settings: Settings, prompt: str, *, system: str) -> str:
@@ -293,6 +286,66 @@ def resolve_requirement_and_project(
 
     resolved_project_id = project_id if project_id_given else current_project_id
     return current_requirement_id, resolved_project_id, None
+
+
+def _insert_deliverable(
+    connection: Any,
+    task_id: str,
+    *,
+    name: str,
+    content_key: str | None,
+    root_id: int | None,
+    rel_path: str | None,
+    now: str,
+    kind: str = "file",
+    url: str | None = None,
+    note: str = "",
+) -> int:
+    """登记一个交付物（调用方负责开事务），返回新行 id。写 deliverables、deliverable_files（有 root_id
+    时）和 deliverable_added 事件；文件交付物没给 url 时按 root_id 查根目录拼出完整路径。
+    add_deliverable 和产出的［是］（relations.answer，同一个事务里）共用，写出的行一样。"""
+    if url is None:
+        root = connection.execute(
+            "SELECT path FROM project_material_roots WHERE id = ?", (root_id,)
+        ).fetchone()
+        if root is None:
+            raise NotFoundError("文件不在索引里（可能已经挪走或删掉了）")
+        url = f"{str(root['path']).rstrip('/')}/{rel_path}"
+    cursor = connection.execute(
+        """INSERT INTO deliverables(task_id, kind, url, title, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (task_id, kind, url, name.strip(), note.strip(), now),
+    )
+    deliverable_id = int(cursor.lastrowid)
+    if root_id is not None:
+        connection.execute(
+            "INSERT INTO deliverable_files(deliverable_id, content_key, root_id, rel_path) VALUES (?, ?, ?, ?)",
+            (deliverable_id, content_key, root_id, rel_path),
+        )
+    connection.execute(
+        "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_added', ?, ?)",
+        (task_id, f"登记交付物：{kind} {url}", now),
+    )
+    return deliverable_id
+
+
+def _delete_deliverable(connection: Any, task_id: str, deliverable_id: int, now: str) -> None:
+    """删一个交付物（调用方负责开事务）：删 deliverable_files、deliverables，记 deliverable_removed，
+    更新任务的 updated_at。不属于这个任务的抛 NotFoundError。remove_deliverable 和产出［是］的撤销
+    （relations.undo，同一个事务里）共用。"""
+    row = connection.execute(
+        "SELECT kind, url FROM deliverables WHERE id = ? AND task_id = ?",
+        (deliverable_id, task_id),
+    ).fetchone()
+    if row is None:
+        raise NotFoundError("交付物不存在")
+    connection.execute("DELETE FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,))
+    connection.execute("DELETE FROM deliverables WHERE id = ?", (deliverable_id,))
+    connection.execute(
+        "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_removed', ?, ?)",
+        (task_id, f"撤下交付物：{row['kind']} {row['url']}", now),
+    )
+    connection.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, task_id))
 
 
 class TaskService:
@@ -483,9 +536,14 @@ class TaskService:
             ).fetchall()
             # 3g：file 类交付物带上 file_id、name、gone
             deliverable_items = decorate_deliverables(connection, [dict(row) for row in deliverables])
+            # 4e：在问的产出（「是这条任务的交付物吗？」），一条 SELECT
+            from .relation_read import task_questions
+
+            suggestions = task_questions(connection, task_id)
         summary = self.task_summary(task)
         summary["events"] = [dict(row) for row in events]
         summary["deliverables"] = deliverable_items
+        summary["suggestions"] = suggestions
         return summary
 
     def create_task(
@@ -936,20 +994,17 @@ class TaskService:
             raise ValueError("交付物链接不能为空")
         with self.db.transaction() as connection:
             self._row(connection, task_id)
-            cursor = connection.execute(
-                """INSERT INTO deliverables(task_id, kind, url, title, note, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (task_id, kind, url, title.strip(), note.strip(), utc_now()),
-            )
-            deliverable_id = int(cursor.lastrowid)
-            if link is not None:
-                connection.execute(
-                    "INSERT INTO deliverable_files(deliverable_id, content_key, root_id, rel_path) VALUES (?, ?, ?, ?)",
-                    (deliverable_id, link["content_key"], link["root_id"], link["rel_path"]),
-                )
-            connection.execute(
-                "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_added', ?, ?)",
-                (task_id, f"登记交付物：{kind} {url}", utc_now()),
+            deliverable_id = _insert_deliverable(
+                connection,
+                task_id,
+                name=title,
+                content_key=link["content_key"] if link else None,
+                root_id=link["root_id"] if link else None,
+                rel_path=link["rel_path"] if link else None,
+                now=utc_now(),
+                kind=kind,
+                url=url,
+                note=note,
             )
             if mark_done:
                 task = self._row(connection, task_id)
@@ -1000,20 +1055,7 @@ class TaskService:
         """删一个交付物（［撤销］用），记一条 deliverable_removed。不属于这个任务的回 404。"""
         with self.db.transaction() as connection:
             self._row(connection, task_id)
-            row = connection.execute(
-                "SELECT kind, url FROM deliverables WHERE id = ? AND task_id = ?",
-                (deliverable_id, task_id),
-            ).fetchone()
-            if row is None:
-                raise NotFoundError("交付物不存在")
-            connection.execute("DELETE FROM deliverable_files WHERE deliverable_id = ?", (deliverable_id,))
-            connection.execute("DELETE FROM deliverables WHERE id = ?", (deliverable_id,))
-            now = utc_now()
-            connection.execute(
-                "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'deliverable_removed', ?, ?)",
-                (task_id, f"撤下交付物：{row['kind']} {row['url']}", now),
-            )
-            connection.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, task_id))
+            _delete_deliverable(connection, task_id, deliverable_id, utc_now())
         return self.get_task(task_id)
 
     # ------------------------------------------------------------------ 项目聚合与看板
@@ -1418,7 +1460,14 @@ class TaskService:
         首次运行（台账为空）时，把当时已存在的全部纪要标记为 skipped 终态：
         存量历史会议不自动抽取，避免 v7 迁移上线后全量回填抽取＋逐场飞书
         通知轰炸。需要抽历史会议时在会议详情手动「重新抽取」。
+
+        只让新生成、过期后重新生成和导入的纪要（generated、stale_generated、imported，和重判项目归属
+        同一个口径 project_linking.RELINK_MINUTES_KINDS）进队列：保存、回滚、词典「替换」生成的草稿
+        版本不再重新发给 AI（第四期问题 3 的默认）。［重新抽取］对任何版本照旧能用。
         """
+        from .project_linking import RELINK_MINUTES_KINDS  # 函数内导入：project_linking 导入了本模块
+
+        kinds = ", ".join("?" for _ in RELINK_MINUTES_KINDS)
         with self.db.transaction() as connection:
             empty = connection.execute(
                 "SELECT 1 FROM task_extractions LIMIT 1"
@@ -1436,12 +1485,13 @@ class TaskService:
                 )
                 return 0
             cursor = connection.execute(
-                """INSERT OR IGNORE INTO task_extractions
+                f"""INSERT OR IGNORE INTO task_extractions
                        (meeting_id, minutes_version_id, supplement, created_at)
                    SELECT m.id, m.current_minutes_version_id, '', ?
                      FROM meetings m
-                    WHERE m.current_minutes_version_id IS NOT NULL""",
-                (utc_now(),),
+                     JOIN minutes_versions mv
+                       ON mv.id = m.current_minutes_version_id AND mv.kind IN ({kinds})""",
+                (utc_now(), *RELINK_MINUTES_KINDS),
             )
             return max(0, cursor.rowcount)
 

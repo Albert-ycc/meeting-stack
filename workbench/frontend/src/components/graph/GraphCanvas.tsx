@@ -13,11 +13,13 @@ import {
 
 import type { DiskState, GraphEdge, GraphMeeting, GraphPayload, GraphRootsPayload } from "./graphTypes";
 import { fileMark } from "./graphFiles";
+import { drawableEdges, drawnEdges, drawnNeighbours, edgeStyleKind, meetingAges } from "./drawnEdges";
 import { readHintSeen, writeHintSeen } from "./graphPrefs";
 import {
   DIRECTION_NAMES,
   DIRECTION_ORDER,
   NODE_H,
+  amberNote,
   fitText,
   ghostNote,
   meetingDateLabel,
@@ -32,12 +34,11 @@ import {
   type StarLayout,
 } from "./layout";
 import { useGraphViewport } from "./useGraphViewport";
+import { edgeKindName } from "./GraphPanel";
 import "./GraphCanvas.css";
 
 const BASE_FONT = 13;
 const PANEL_W = 400;
-/** 超过这么多条讨论线就只在选中时画 */
-const DISCUSSION_ALWAYS_MAX = 30;
 
 export type LabelDetail = "full" | "short" | "summary";
 
@@ -128,32 +129,39 @@ interface GraphCanvasProps {
   /** 双击会议：展开这场会；双击需求：打开需求页 */
   onExpandMeeting?: (meetingId: string) => void;
   onOpenRequirement?: (requirementId: string) => void;
+  /** 4f：［提到］关着时藏起提到线（文件节点和版面不动） */
+  hideMentions?: boolean;
+  /** 4f：双击文件节点进以它为中心的局部图（只在电脑上、新后台时传） */
+  onOpenFileLocal?: (fileId: number) => void;
 }
 
-function neighbours(edges: GraphEdge[], id: string): Set<string> {
-  const result = new Set<string>([id]);
-  for (const edge of edges) {
-    if (edge.from === id) result.add(edge.to);
-    if (edge.to === id) result.add(edge.from);
-  }
-  return result;
+/** 线上原话的时刻：00:05:10 */
+function clockOf(ms: number | null | undefined): string {
+  const total = Math.max(0, Math.floor((ms ?? 0) / 1000));
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(Math.floor(total / 3600))}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`;
 }
 
-function edgeVisible(edge: GraphEdge, focus: string | null, discussionCount: number, selectedEdge: string | null) {
-  if (edge.id === selectedEdge) return true;
-  const touches = focus !== null && (edge.from === focus || edge.to === focus);
-  switch (edge.kind) {
-    case "folder":
-    case "cross":
-    // 「像是新需求」的虚线、会上提到文件的线默认画出（后者淡色，每场会最多 3 条）
-    case "suggested":
-    case "mentioned":
-      return true;
-    case "discussion":
-      return discussionCount <= DISCUSSION_ALWAYS_MAX || touches;
-    default:
-      return touches;
+/** 悬停卡片的第二、三行：有原话时「『原话，最多 40 字』· 00:05:10」；相关是会上、材料两行 */
+export function edgeCardLines(edge: GraphEdge): string[] {
+  const short = (text: string) => (text.length > 40 ? `${text.slice(0, 39)}…` : text);
+  if (edge.kind === "related") {
+    const lines = [];
+    if (edge.quote) lines.push(`会上：『${short(edge.quote)}』· ${clockOf(edge.at_ms)}`);
+    if (edge.passage?.text) {
+      lines.push(`材料：『${short(edge.passage.text)}』${edge.passage.loc ? ` · ${edge.passage.loc}` : ""}`);
+    }
+    return lines;
   }
+  if (edge.quote && edge.at_ms !== undefined && edge.at_ms !== null) return [`『${short(edge.quote)}』· ${clockOf(edge.at_ms)}`];
+  if (edge.quote) return [`『${short(edge.quote)}』`];
+  return [];
+}
+
+/** 从左边的会、需求绕到右边文件的第四期线：两端分在中心两侧时用 mentionCurve */
+function curvesAround(kind: string, from: { x: number }, to: { x: number }) {
+  if (kind === "mentioned" || kind === "related") return true;
+  return (kind === "produced" || kind === "affects" || kind === "deliverable") && from.x < 0 && to.x > 0;
 }
 
 /** 「提到」线离中心的项目圆至少留这么远（项目圆半高 44） */
@@ -186,8 +194,16 @@ function edgePath(from: LaidNode, to: LaidNode, kind: GraphEdge["kind"]): string
   const y1 = from.y;
   const x2 = to.x;
   const y2 = to.y;
-  if (kind === "mentioned") return mentionCurve(from, to).path;
-  if (kind === "discussion" || kind === "cue" || kind === "cross" || kind === "suggested") {
+  if (curvesAround(kind, from, to)) return mentionCurve(from, to).path;
+  if (
+    kind === "discussion" ||
+    kind === "cue" ||
+    kind === "cross" ||
+    kind === "suggested" ||
+    kind === "produced" ||
+    kind === "affects" ||
+    kind === "deliverable"
+  ) {
     const mx = (x1 + x2) / 2;
     const my = (y1 + y2) / 2;
     const dx = x2 - x1;
@@ -246,6 +262,8 @@ export function GraphCanvas({
   onNothingToDo,
   onExpandMeeting,
   onOpenRequirement,
+  hideMentions = false,
+  onOpenFileLocal,
 }: GraphCanvasProps) {
   // 平移缩放和全部项目概览共用一个 hook；视角按项目记住，进对象页再回来，选中和视角都还在
   const { viewportRef, transform, fitView, zoomBy, reveal, toWorld } = useGraphViewport({
@@ -271,15 +289,21 @@ export function GraphCanvas({
   const selectedNode = selectedId ? layout.byId.get(selectedId) ?? null : null;
   const selectedEdge = selectedId && !selectedNode ? selectedId : null;
   const focusId = hoverId ?? selectedNode?.id ?? null;
+  // 4f：两端都在图上的线里取要画的（碰焦点最多 12 条，全图最多 150 条），邻居只看画出来的
+  const drawable = useMemo(
+    () => drawableEdges(graph.edges, (id) => layout.byId.has(id), hideMentions),
+    [graph.edges, hideMentions, layout],
+  );
+  const ages = useMemo(() => meetingAges(graph.meetings), [graph.meetings]);
+  const drawn = useMemo(
+    () => drawnEdges(drawable, focusId, selectedEdge, { meetingAge: ages }).drawn,
+    [ages, drawable, focusId, selectedEdge],
+  );
   const dimSet = useMemo(() => {
     if (highlight) return highlight;
-    if (hoverId) return neighbours(graph.edges, hoverId);
+    if (hoverId) return drawnNeighbours(drawn, hoverId);
     return null;
-  }, [graph.edges, highlight, hoverId]);
-  const discussionCount = useMemo(
-    () => graph.edges.filter((edge) => edge.kind === "discussion").length,
-    [graph.edges],
-  );
+  }, [drawn, highlight, hoverId]);
 
   // 选中的节点在屏幕外或被面板挡住时，平移到看得见的地方（深链进来、「← 上一个」、面板里点别的节点都会遇到）
   useEffect(() => {
@@ -483,6 +507,7 @@ export function GraphCanvas({
         if (node.kind === "project") fitView(layout.focusBounds, true);
         if (node.kind === "meeting") onExpandMeeting?.(node.data.meeting_id);
         if (node.kind === "requirement") onOpenRequirement?.(node.data.requirement_id);
+        if (node.kind === "file") onOpenFileLocal?.(node.data.file_id);
       },
       onMouseEnter: () => {
         if (dragRef.current?.active) {
@@ -660,7 +685,9 @@ export function GraphCanvas({
       case "file": {
         const file = node.data;
         // 3g：读到哪一步的小标记（最近改过的、从面板点出来的文件才有 state）
-        const mark = fileMark(file.state, diskState(roots, file.folder) === "volume_offline");
+        const mark = fileMark(file.state, diskState(roots, file.folder) === "volume_offline", file);
+        // 4f：琥珀色文件名字下面小字「可能过时」「交付物？」
+        const note = node.note ?? amberNote(file);
         return positioned(
           node,
           {},
@@ -676,10 +703,11 @@ export function GraphCanvas({
             {detail !== "summary" && (
               <span className="graph-node__label" title={mark ? `${file.rel_path || file.name}（${mark.text}）` : file.rel_path || file.name}>
                 {detail === "full" ? node.text : file.name.slice(0, 6)}
+                {note && detail === "full" && <small className="graph-file__note">{note}</small>}
               </span>
             )}
           </>,
-          `graph-node--right${file.extra || file.recent ? " graph-node--extra" : ""}`,
+          `graph-node--right${file.extra || file.recent || file.related ? " graph-node--extra" : ""}${note ? " graph-node--amber" : ""}`,
           -10,
         );
       }
@@ -797,34 +825,34 @@ export function GraphCanvas({
     }
   };
 
-  const edges = graph.edges
+  const edges = drawn
     .map((edge) => ({ edge, from: layout.byId.get(edge.from), to: layout.byId.get(edge.to) }))
-    .filter(
-      (item): item is { edge: GraphEdge; from: LaidNode; to: LaidNode } =>
-        Boolean(item.from && item.to) && edgeVisible(item.edge, focusId, discussionCount, selectedEdge),
-    );
+    .filter((item): item is { edge: GraphEdge; from: LaidNode; to: LaidNode } => Boolean(item.from && item.to));
 
   // 同一时刻亮起的几条线，字挨得太近时朝远离中心的方向错开一行；不压中心的项目圆和正在看的节点
-  const edgeLabels: Array<{ id: string; text: string; review: boolean; x: number; y: number }> = [];
+  const edgeLabels: Array<{ id: string; text: string; review: boolean; x: number; y: number; lines: string[] }> = [];
   const placed: Box[] = [layout.byId.get("project"), focusId ? layout.byId.get(focusId) : undefined]
     .filter((node): node is LaidNode => Boolean(node))
     .map((node) => node.box);
+  // 4f：任何一种线悬停都点亮（今天只有提到）
   const isLit = (edge: GraphEdge) =>
-    edge.id === selectedEdge ||
-    focusId === edge.from ||
-    focusId === edge.to ||
-    (edge.kind === "mentioned" && edge.id === hoverEdge);
+    edge.id === selectedEdge || focusId === edge.from || focusId === edge.to || edge.id === hoverEdge;
+  const midOf = (edge: GraphEdge, from: LaidNode, to: LaidNode) =>
+    curvesAround(edge.kind, from, to) ? mentionCurve(from, to).mid : edgeMid(from, to);
   for (const { edge, from, to } of edges) {
     const lit = isLit(edge);
     if (!lit || !edge.label) continue;
     const text = edge.state === "review" ? `? ${edge.label}` : edge.label;
-    const mid = edge.kind === "mentioned" ? mentionCurve(from, to).mid : edgeMid(from, to);
-    const w = textWidth(text, 11) + 16;
-    const box: Box = { x: mid.x - w / 2, y: mid.y - 10, w, h: 20 };
+    // 悬停的那一条是一张卡片：第一行线上的字，有原话时再加一两行
+    const lines = edge.id === hoverEdge ? edgeCardLines(edge) : [];
+    const mid = midOf(edge, from, to);
+    const w = Math.max(textWidth(text, 11), ...lines.map((line) => textWidth(line, 11))) + 16;
+    const h = 20 + lines.length * 16;
+    const box: Box = { x: mid.x - w / 2, y: mid.y - 10, w, h };
     const step = mid.y < 0 ? -22 : 22;
     for (let guard = 0; guard < 6 && placed.some((other) => overlaps(other, box)); guard += 1) box.y += step;
     placed.push(box);
-    edgeLabels.push({ id: edge.id, text, review: edge.state === "review", x: mid.x, y: box.y + 10 });
+    edgeLabels.push({ id: edge.id, text, review: edge.state === "review", x: mid.x, y: box.y + 10, lines });
   }
 
   const summaries = DIRECTION_ORDER.filter((direction) => direction !== "center").map((direction) => {
@@ -878,6 +906,15 @@ export function GraphCanvas({
           </text>
         </svg>
         <svg className="graph-edges" height="1" width="1">
+          <defs>
+            {/* 4f：交付物、产出、可能过时的线在文件一端带箭头 */}
+            <marker className="graph-arrow" id="graph-arrow" markerHeight="7" markerWidth="7" orient="auto" refX="8" refY="4" viewBox="0 0 8 8">
+              <path d="M0,0 L8,4 L0,8 z" />
+            </marker>
+            <marker className="graph-arrow graph-arrow--ask" id="graph-arrow-ask" markerHeight="7" markerWidth="7" orient="auto" refX="8" refY="4" viewBox="0 0 8 8">
+              <path d="M0,0 L8,4 L0,8 z" />
+            </marker>
+          </defs>
           {dragging && layout.byId.get(dragging.nodeId) && (
             <line
               className="graph-drag-line"
@@ -888,34 +925,51 @@ export function GraphCanvas({
             />
           )}
           {edges.map(({ edge, from, to }) => {
-            const path = edgePath(from, to, edge.kind);
+            // 认不出的新种类（后台比页面新）按讨论线的样子画
+            const kind = edgeStyleKind(edge.kind);
+            const path = edgePath(from, to, kind);
             const lit = isLit(edge);
             const width =
-              edge.kind === "cue" ? (edge.count && edge.count >= 6 ? 2.6 : edge.count && edge.count >= 3 ? 1.8 : 1.1) : undefined;
+              kind === "cue" ? (edge.count && edge.count >= 6 ? 2.6 : edge.count && edge.count >= 3 ? 1.8 : 1.1) : undefined;
             // 「提到」线中段的引号小图标；线亮起时线上的字盖在它上面
-            const quote = edge.kind === "mentioned" && !lit ? mentionCurve(from, to).mid : null;
+            const quote = kind === "mentioned" && !lit ? mentionCurve(from, to).mid : null;
+            // 4f：在问的产出中点一个 14 像素的圆里写「?」
+            const ask = kind === "produced" && edge.state === "ask" && !lit ? midOf(edge, from, to) : null;
+            const arrow =
+              kind === "deliverable" ? "url(#graph-arrow)" : kind === "produced" || kind === "affects" ? "url(#graph-arrow-ask)" : undefined;
             return (
               <g
-                className={`graph-edge graph-edge--${edge.kind}${edge.state ? ` graph-edge--${edge.state}` : ""}${lit ? " is-lit" : ""}${
+                className={`graph-edge graph-edge--${kind}${edge.state ? ` graph-edge--${edge.state}` : ""}${lit ? " is-lit" : ""}${
                   dimSet && !lit && !(dimSet.has(edge.from) && dimSet.has(edge.to)) ? " is-dim" : ""
                 }`}
                 key={edge.id}
               >
-                <path className="graph-edge__line" d={path} style={width ? { strokeWidth: width } : undefined} />
+                <path
+                  className="graph-edge__line"
+                  d={path}
+                  markerEnd={arrow}
+                  style={width ? { strokeWidth: width } : undefined}
+                />
                 {quote && (
                   <g className="graph-edge__quote" transform={`translate(${quote.x} ${quote.y})`}>
                     <circle r={6.5} />
                     <text dy="0.36em">”</text>
                   </g>
                 )}
+                {ask && (
+                  <g className="graph-edge__quote graph-edge__ask" transform={`translate(${ask.x} ${ask.y})`}>
+                    <circle r={7} />
+                    <text dy="0.36em">?</text>
+                  </g>
+                )}
                 <path
-                  aria-label={`连线：${edge.label || (edge.kind === "suggested" && edge.name ? `像是新需求『${edge.name}』` : edge.kind)}`}
+                  aria-label={`连线：${edge.label || (edge.kind === "suggested" && edge.name ? `像是新需求『${edge.name}』` : edgeKindName(edge.kind))}`}
                   className="graph-edge__hit"
                   d={path}
                   onClick={() => onSelect(edge.id === selectedEdge ? null : edge.id)}
                   onMouseEnter={() => {
                     setHoverId(null);
-                    if (edge.kind === "mentioned") setHoverEdge(edge.id);
+                    setHoverEdge(edge.id);
                   }}
                   onMouseLeave={() => setHoverEdge((current) => (current === edge.id ? null : current))}
                   role="button"
@@ -938,11 +992,14 @@ export function GraphCanvas({
           edgeLabels.map((item) => (
             <span
               aria-hidden="true"
-              className={`graph-edge__label${item.review ? " graph-edge__label--review" : ""}`}
+              className={`graph-edge__label${item.review ? " graph-edge__label--review" : ""}${item.lines.length ? " graph-edge__label--card" : ""}`}
               key={`label-${item.id}`}
               style={{ left: item.x, top: item.y }}
             >
               {item.text}
+              {item.lines.map((line) => (
+                <small key={line}>{line}</small>
+              ))}
             </span>
           ))}
         {detail === "summary" &&

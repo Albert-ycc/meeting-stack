@@ -12,6 +12,10 @@ from .config import Settings
 from .db import Database, utc_now
 
 
+# 后台编码每批最多几条（每批拿一次 encode_lock）
+BACKGROUND_BATCH = 32
+
+
 class Embedder(Protocol):
     def encode(self, texts: list[str], **kwargs: Any) -> Any: ...
 
@@ -43,6 +47,9 @@ class SemanticIndex:
         # 默认只看进程列表和库（命令行 semantic-index 用）；服务里传完整的 busy.BusySignal。
         self.busy_check = busy_check if busy_check is not None else BusySignal(db)
         self._rebuild_lock = threading.Lock()
+        # 第四期 4a：后台编码（材料向量、会议段落重建、4d 的相关窗口）每批最多 32 条拿一次这把锁，
+        # 轮流用模型；用户搜索的 encode_query 不拿锁，不会被后台卡住。
+        self.encode_lock = threading.Lock()
 
     def _model(self) -> Embedder:
         if self._embedder is None:
@@ -77,8 +84,24 @@ class SemanticIndex:
         vectors = self._normalize(self._model().encode(texts, show_progress_bar=False))
         return vectors.tolist()
 
-    def encode_texts(self, texts: list[str], *, batch_size: int = 32) -> np.ndarray:
-        """材料片段的向量（3f 向量循环用）：归一化的 float32，一行一段。"""
+    def encode_texts(
+        self, texts: list[str], *, background: bool = True, batch_size: int = BACKGROUND_BATCH
+    ) -> np.ndarray:
+        """材料片段的向量（3f 向量循环用）：归一化的 float32，一行一段。
+
+        background=True（后台编码）时按 batch_size（最多 32）条一批，每批拿一次 encode_lock。"""
+        if not texts:
+            return np.zeros((0, 0), dtype=np.float32)
+        if not background:
+            return self._encode(texts, batch_size)
+        size = max(1, min(int(batch_size), BACKGROUND_BATCH))
+        parts: list[np.ndarray] = []
+        for start in range(0, len(texts), size):
+            with self.encode_lock:
+                parts.append(self._encode(texts[start : start + size], size))
+        return np.vstack(parts)
+
+    def _encode(self, texts: list[str], batch_size: int) -> np.ndarray:
         return self._normalize(
             self._model().encode(
                 texts, batch_size=batch_size, show_progress_bar=False, normalize_embeddings=False
@@ -131,14 +154,8 @@ class SemanticIndex:
         )
         if not rows:
             return 0
-        vectors = self._normalize(
-            self._model().encode(
-                [row["text"] for row in rows],
-                batch_size=32,
-                show_progress_bar=False,
-                normalize_embeddings=False,
-            )
-        )
+        # 32 条一批、每批拿一次编码锁，和材料向量、相关窗口轮流用模型
+        vectors = self.encode_texts([row["text"] for row in rows], background=True)
         with self.db.transaction() as connection:
             for row, vector in zip(rows, vectors, strict=True):
                 connection.execute(

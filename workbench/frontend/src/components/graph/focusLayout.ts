@@ -37,7 +37,7 @@ const TAG_FONT = 11;
 export type FocusSide = -1 | 1;
 
 export interface FocusItem {
-  /** dec:<在 decisions 里的下标> 或 task:<任务 id> */
+  /** dec:<决议 id>（台账落后时是 dec:<在 decisions 里的下标>）或 task:<任务 id> */
   id: string;
   kind: "decision" | "task";
   side: FocusSide;
@@ -59,8 +59,10 @@ export interface FocusTag {
   ext: string;
   /** 截短后的文件名 */
   label: string;
-  /** 另外还有几个文件交付物 */
+  /** 另外还有几个文件交付物（已登记的） */
   more: number;
+  /** 4e：这是在问的产出（「是这条任务的交付物吗？」）：引线琥珀色虚线、不带箭头，文件名前加「?」 */
+  ask?: boolean;
   box: Box;
 }
 
@@ -124,11 +126,20 @@ function extOf(name: string) {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
-/** 任务的交付物里能打开的文件（有 file_id、没找不到）：画最近标的那一个，其余记个数 */
-export function deliverableTag(task: FocusTask): Omit<FocusTag, "box" | "label"> | undefined {
+/**
+ * 任务的交付物里能打开的文件（有 file_id、没找不到）：画最近标的那一个，其余记个数。
+ * 4e：有在问的产出（asks）时先显示在问的那一份（ask 为真），「+N」数已登记的。
+ */
+export function deliverableTag(task: FocusTask, withAsks = false): Omit<FocusTag, "box" | "label"> | undefined {
   const files = (task.deliverables ?? []).filter(
     (item) => item.kind === "file" && typeof item.file_id === "number" && !item.gone,
   );
+  // 在问的那一份只在新后台画（useLinksFlags() 不为 null，和「1 个文件可能过时」一样）
+  const asking = withAsks ? (task.asks ?? [])[0] : undefined;
+  if (asking) {
+    const name = asking.name || "文件";
+    return { fileId: asking.file_id, name, ext: asking.ext || extOf(name), more: files.length, ask: true };
+  }
   const last = files[files.length - 1];
   if (!last || typeof last.file_id !== "number") return undefined;
   const name = last.name || last.url.split("/").pop() || last.title || "文件";
@@ -138,7 +149,7 @@ export function deliverableTag(task: FocusTask): Omit<FocusTag, "box" | "label">
 /** 小签的字和宽度：图标、截短的文件名、「+N」，合起来不超过 80 像素 */
 function tagMetrics(tag: Omit<FocusTag, "box" | "label">) {
   const moreW = tag.more > 0 ? textWidth(`+${tag.more}`, TAG_FONT) + 4 : 0;
-  const label = fitText(tag.name, Math.max(12, TAG_MAX_W - TAG_ICON_W - 8 - moreW), TAG_FONT);
+  const label = fitText(tag.ask ? `?${tag.name}` : tag.name, Math.max(12, TAG_MAX_W - TAG_ICON_W - 8 - moreW), TAG_FONT);
   const w = Math.min(TAG_MAX_W, TAG_ICON_W + 8 + textWidth(label, TAG_FONT) + moreW);
   return { label, w };
 }
@@ -244,10 +255,16 @@ function placeOuter(
   }
 }
 
+/** 决议节点的 id：有台账 id 时用它，改稿调顺序也选得回同一条；没有时用下标 */
+export function decisionNodeId(decision: { id?: string | null }, index: number): string {
+  return `dec:${decision.id ?? index}`;
+}
+
 /** 决议挑时间最早的 4 个（有时间点的在前）；任务先挑没做完的，再挑有时间点的，最多 6 个 */
-export function layoutMeetingFocus(focus: MeetingFocus, barW = BAR_W): FocusLayout {
+/** options.asks：画不画在问的交付物（调用方按 useLinksFlags() 给；旧后台为假） */
+export function layoutMeetingFocus(focus: MeetingFocus, barW = BAR_W, options: { asks?: boolean } = {}): FocusLayout {
   const decisions: Pending[] = focus.decisions.map((item, index) => ({
-    id: `dec:${index}`,
+    id: decisionNodeId(item, index),
     kind: "decision",
     text: item.text,
     atMs: item.start_ms,
@@ -258,7 +275,7 @@ export function layoutMeetingFocus(focus: MeetingFocus, barW = BAR_W): FocusLayo
     text: task.title,
     atMs: task.anchor_ms,
     status: task.status,
-    tag: deliverableTag(task),
+    tag: deliverableTag(task, Boolean(options.asks)),
   }));
   const byTime = (a: Pending, b: Pending) =>
     (a.atMs === null ? 1 : 0) - (b.atMs === null ? 1 : 0) || (a.atMs ?? 0) - (b.atMs ?? 0);

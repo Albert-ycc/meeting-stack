@@ -101,6 +101,22 @@ class Settings(BaseSettings):
     material_image_timeout_s: float = 60.0
     material_pdf_idle_timeout_s: float = 60.0
     material_media_segment_timeout_s: float = 900.0
+    # —— 深度关联（第四期）——
+    # 关掉后第四期的两个循环都不启动；links_llm_enabled 关掉只跑本机的活，后台不调 AI。
+    links_enabled: bool = True
+    links_llm_enabled: bool = True
+    # 补做多少天以内的旧会，0 表示只做新会
+    links_backfill_days: int = 180
+    # 后台 AI 调用每天的上限（所有后台调用共用），0 表示后台不调
+    links_llm_daily_calls: int = 200
+    # 问答每天的上限，0 表示问答关闭；一次问答的超时
+    qa_daily_questions: int = 100
+    qa_timeout_seconds: float = 90.0
+    # 相关的最低门槛和比门槛多出的余量，都进台账的签名
+    related_floor: float = 0.60
+    related_margin: float = 0.05
+    # 从材料里挖词
+    glossary_mining_enabled: bool = True
 
     def model_post_init(self, __context: object) -> None:
         positive_values = {
@@ -159,6 +175,15 @@ class Settings(BaseSettings):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} 必须大于 0")
+        for name in ("links_backfill_days", "links_llm_daily_calls", "qa_daily_questions"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} 不能小于 0")
+        if not math.isfinite(self.qa_timeout_seconds) or self.qa_timeout_seconds <= 0:
+            raise ValueError("qa_timeout_seconds 必须大于 0")
+        if not (math.isfinite(self.related_floor) and 0.3 <= self.related_floor <= 0.95):
+            raise ValueError("related_floor 必须在 0.3 到 0.95 之间")
+        if not (math.isfinite(self.related_margin) and 0 <= self.related_margin <= 0.3):
+            raise ValueError("related_margin 必须在 0 到 0.3 之间")
         if self.database_path is None:
             self.database_path = self.data_dir / "workbench.sqlite3"
         else:

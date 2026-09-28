@@ -32,6 +32,7 @@ from .material_rules import (
     truncated_text,
     unreadable_text,
 )
+from . import relation_read
 from .materials import ROOT_ONLINE, volume_state
 
 UNREADABLE_PAGE = 100
@@ -476,35 +477,28 @@ def file_preview_block(
 def file_mentions_for_preview(
     connection: Any, file_id: int, *, quotes: Callable[[str, list[int]], dict[int, str]] | None = None
 ) -> list[dict[str, Any]]:
-    """在哪几场会上被提到（沿用 2d 文件面板的查法，只要有效的），带那场会的录音地址。"""
-    rows = connection.execute(
-        """SELECT fm.meeting_id, fm.count, fm.first_ms, fm.source, m.title, m.recording_date, m.created_at,
-                  (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
-                    ORDER BY CASE a.source_root
-                      WHEN 'archive' THEN 0 WHEN 'draft' THEN 1 WHEN 'staging' THEN 2 ELSE 3 END,
-                      a.role DESC, a.path LIMIT 1) AS audio_id
-             FROM meeting_file_mentions fm
-             JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
-            WHERE fm.file_id = ? AND fm.status = 'active'
-            ORDER BY COALESCE(m.recording_date, m.created_at) DESC, m.id
-            LIMIT 40""",
-        (file_id,),
-    ).fetchall()
+    """在哪几场会上被提到（有效的字面和放宽的提到，relation_read 读），新的 40 场，带那场会的录音地址。
+    场数另用 relation_read.file_mention_counts 数（预览的 mentioned_meetings）。"""
+    rows = relation_read.file_mention_meetings(connection, file_id, audio=True)
     result = []
     for row in rows:
         first_ms = row["first_ms"]
         quote = ""
-        if quotes is not None and row["source"] == "transcript" and first_ms is not None:
+        if row.get("relation_id") is not None and row.get("quote"):
+            quote = row["quote"]  # 放宽行（4b）存着那句原话
+        elif quotes is not None and row["source"] == "transcript" and first_ms is not None:
             quote = quotes(row["meeting_id"], [int(first_ms)]).get(int(first_ms), "")
         result.append(
             {
                 "meeting_id": row["meeting_id"],
                 "title": row["title"],
-                "date": str(row["recording_date"] or row["created_at"] or "")[:10],
+                "date": row["date"],
                 "count": int(row["count"]),
                 "first_ms": first_ms,
                 "quote": quote,
                 "audio_url": f"/api/media/{row['audio_id']}" if row["audio_id"] else None,
+                # 4b：放宽行的 relation_id、说法和对上的方式（字面行都是 None）
+                **relation_read.loose_fields(row),
             }
         )
     return result
@@ -559,8 +553,14 @@ def file_preview(
     quotes: Callable[[str, list[int]], dict[int, str]] | None = None,
     parts: str | None = None,
     can_reveal: bool = False,
+    passage_key: str | None = None,
+    passage_ordinal: int | None = None,
 ) -> dict[str, Any] | None:
-    """GET /api/materials/files/{id}/preview。文件不在索引里回 None。"""
+    """GET /api/materials/files/{id}/preview。文件不在索引里回 None。4d：给了 passage_ordinal 时加 passage
+    （parts=preview 时也加；不给时键不变）；完整结果另加 related_meetings 和 file.can_open。4e：完整结果
+    另加 questions（在问的可能过时和产出），parts=preview 时不给。"""
+    from . import related_read
+
     row = file_row(connection, file_id)
     if row is None:
         return None
@@ -587,12 +587,26 @@ def file_preview(
         "state": file_state(connection, row, content, online=online, paused=paused, engines=engines),
         "preview": file_preview_block(connection, row, content, online=online),
     }
+    if passage_ordinal is not None:
+        result["passage"] = related_read.passage(connection, row, passage_key, passage_ordinal)
     if parts == "preview":
         return result
+    # 4d：［用本机应用打开］只在本机、白名单里的扩展名、文件没有不见时出现（前端只看这个字段）
+    result["file"]["can_open"] = related_read.can_open(row["ext"], local=can_reveal, gone=row["gone_at"] is not None)
+    result["related_meetings"] = related_read.related_meetings(connection, file_id)
     result["mentions"] = file_mentions_for_preview(connection, file_id, quotes=quotes)
+    # 先数再取：列表最多 40 场，场数不受它限制（抽屉标题用它）
+    result["mentioned_meetings"] = relation_read.file_mention_counts(connection, [file_id]).get(file_id, 0)
     result["deliverables"] = file_deliverables(connection, row)
+    # 4e：在问的可能过时和产出，放在交付物后面；有在问的影响时 stat 一次，文件变了就先不给影响的问题
+    from .affects import guarded_questions
+
+    result["questions"] = guarded_questions(relation_read.file_questions(connection, file_id), row, state_of)
     result["can_reveal"] = can_reveal
     return result
+
+
+PACKAGE_DIR_EXTS = frozenset({"key", "pages", "numbers"})
 
 
 def resolve_file(connection: Any, file_id: int, *, state_of: Callable[[str], str] = volume_state) -> tuple[str, Any]:
@@ -607,7 +621,8 @@ def resolve_file(connection: Any, file_id: int, *, state_of: Callable[[str], str
     target = os.path.realpath(os.path.join(str(row["root_path"]), *str(row["rel_path"]).split("/")))
     if os.path.commonpath([root_real, target]) != root_real:
         return "outside", row
-    if not os.path.isfile(target):
+    # 4d：key、pages、numbers 可能是目录形式的包
+    if not (os.path.isfile(target) or (str(row["ext"] or "").lower() in PACKAGE_DIR_EXTS and os.path.isdir(target))):
         return "missing", row
     row["real_path"] = target
     return "ok", row

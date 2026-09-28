@@ -25,6 +25,8 @@ export interface NoticeState {
 }
 
 export const NOTICE_AUTO_HIDE_MS = 5000;
+/** 带［撤销］的提示多停一会儿（10 秒）：关系图、会议页、需求页、项目页的每条回答提示都用它作 durationMs */
+export const UNDO_NOTICE_MS = 10_000;
 
 export function useNotice() {
   const [state, setState] = useState<NoticeState | null>(null);

@@ -13,9 +13,11 @@ import type {
   GlossaryTarget,
   GlossaryTerm,
   LoadState,
+  MaterialWord,
   MeetingSummary,
   Project,
 } from "../types";
+import { MaterialWords } from "./MaterialWords";
 
 import { LegacyGroupsNote } from "./LegacyGroupsNote";
 import "./GlossaryPage.css";
@@ -33,6 +35,8 @@ interface GlossaryPageProps {
   /** 从项目详情页「在词典中查看」跳转过来时预选中的项目 chip；只在首次挂载生效一次。 */
   initialProjectId?: string | null;
   onPendingChange?: () => void;
+  /** 4h：待认词里的时间点，打开那场会并从那里放 */
+  onOpenMeeting?: (meetingId: string, seekMs: number) => void;
 }
 
 const SUGGESTION_TABS: Array<{ key: SuggestionStatus; label: string }> = [
@@ -126,6 +130,7 @@ export function GlossaryPage({
   projects,
   initialProjectId,
   onPendingChange,
+  onOpenMeeting,
 }: GlossaryPageProps) {
   const [activeTab, setActiveTab] = usePersistentState<TabKey>("glossary.activeTab", "terms");
   const { notice, setNotice, dismissNotice } = useNotice();
@@ -246,6 +251,31 @@ export function GlossaryPage({
 
   const activeChip = chips.find((chip) => chipKey(chip) === activeChipKey) ?? null;
   const needle = search.trim().toLowerCase();
+
+  // 4h：选中某个项目的 chip 时取这个项目的全部待认词。和术语一样用请求序号：切换 chip 时旧请求的结果不串进来；
+  // 接口不在（旧后台）或出错时整块静默不出。
+  const candidatesSeqRef = useRef(0);
+  const [candidates, setCandidates] = useState<{ projectId: string; items: MaterialWord[] } | null>(null);
+  const candidateProjectId = activeChip?.kind === "project" ? activeChip.key : null;
+  const loadCandidates = useCallback(async () => {
+    const seq = ++candidatesSeqRef.current;
+    if (!candidateProjectId || typeof apiClient.glossaryCandidates !== "function") {
+      setCandidates(null);
+      return;
+    }
+    try {
+      const result = await apiClient.glossaryCandidates(candidateProjectId);
+      if (seq !== candidatesSeqRef.current) return;
+      setCandidates(Array.isArray(result?.items) ? { projectId: candidateProjectId, items: result.items } : null);
+    } catch {
+      if (seq !== candidatesSeqRef.current) return;
+      setCandidates(null);
+    }
+  }, [apiClient, candidateProjectId]);
+  useEffect(() => {
+    setCandidates(null);
+    void loadCandidates();
+  }, [loadCandidates]);
 
   const run = async (action: () => Promise<void>) => {
     if (busyRef.current) return;
@@ -654,6 +684,20 @@ export function GlossaryPage({
             </div>
           </div>
 
+          {activeChip?.kind === "project" && candidates?.projectId === activeChip.key && (
+            <MaterialWords
+              apiClient={apiClient}
+              canWrite={canWrite}
+              items={candidates.items}
+              onAnswered={async () => {
+                await Promise.all([loadTerms(), loadScopes(), loadCandidates()]);
+              }}
+              onOpenMeeting={onOpenMeeting}
+              projectId={activeChip.key}
+              projectName={activeChip.label}
+              variant="page"
+            />
+          )}
           {termsBody()}
         </>
       )}

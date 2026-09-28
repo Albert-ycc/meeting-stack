@@ -38,7 +38,11 @@ export type GraphNoticeUndo =
   /** ［不是这份文件］：撤销就改回有效（restore） */
   | { kind: "mention"; meetingId: string; stemKey: string; name: string; until: string }
   /** ［标为交付物］（3g）：撤销就删掉刚登记的那一条 */
-  | { kind: "deliverable"; taskId: string; deliverableId: number; taskTitle: string; name: string; until: string };
+  | { kind: "deliverable"; taskId: string; deliverableId: number; taskTitle: string; name: string; until: string }
+  /** 回答了一条关联（第四期）：撤销调 undoRelation；until 用服务器给的 undo_until */
+  | { kind: "relation"; relationId: number; label: string; until: string }
+  /** 文件面板一次把几场会的放宽行［换成这份］：一个［撤销］逐条调 undoRelation；until 取最早的 undo_until */
+  | { kind: "relations"; relationIds: number[]; label: string; until: string };
 
 /** 前端自己记的撤销（关联需求、搬任务）也只留 10 分钟 */
 export const LOCAL_UNDO_MS = 10 * 60_000;

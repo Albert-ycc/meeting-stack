@@ -25,8 +25,21 @@ from .material_fts import mark_for_rebuild
 # 第三期 3f：材料的全文表和向量也不进备份（片段本身留着：重新认字、转写要几个小时，还要资料盘插着）。
 # 全文表是外部内容表，用 'delete-all' 清空（普通 DELETE 反而让备份变大），同一个事务里在副本写
 # material_fts_rebuild，恢复后由后台任务补回；向量由向量循环慢慢补。
+# 第四期：相关的窗口向量、每窗的候选段落和它们的台账也不进备份（能从逐字稿和材料片段重算，台账清空
+# 后每场会都算「该算了」）；同一个事务里删掉 related_chunk_mark，恢复后按那时已有的向量重新记。
 FTS_TABLE = "material_chunks_fts"
-DERIVED_TABLES: tuple[str, ...] = ("embeddings", FTS_TABLE, "material_chunk_vectors")
+RELATED_TABLES: tuple[str, ...] = (
+    "meeting_windows",
+    "meeting_window_passages",
+    "meeting_related_scan",
+)
+RELATED_MARK_KEY = "related_chunk_mark"
+DERIVED_TABLES: tuple[str, ...] = (
+    "embeddings",
+    FTS_TABLE,
+    "material_chunk_vectors",
+    *RELATED_TABLES,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +200,9 @@ class BackupManager:
                     mark_for_rebuild(connection)
                 else:
                     connection.execute(f'DELETE FROM "{table}"')
+            if set(cleared) & set(RELATED_TABLES):
+                # 材料向量也清掉了：相关看过的最大向量 id 一起删，恢复后第一次算相关时重新记
+                connection.execute("DELETE FROM app_state WHERE key = ?", (RELATED_MARK_KEY,))
             connection.commit()
         except sqlite3.DatabaseError:
             with suppress(sqlite3.DatabaseError):

@@ -383,6 +383,11 @@ def merge_project(connection: Any, src_id: str, dst_id: str) -> dict[str, Any]:
     if src is None or dst is None:
         raise NotFoundError("项目不存在")
     now = utc_now()
+    # v16：关联、字面提到和候选词先搬到 dst，会议改项目时两个离开项目的触发器就不删它们（你的回答、
+    # 「不是这份文件」和换过的 picked=1 都留得住）。relations 经 tasks 引用本模块，这里晚一点再引。
+    from .relations import repoint_project
+
+    repoint_project(connection, src_id, dst_id, now)
     meetings = connection.execute(
         "UPDATE meetings SET project_id=?, updated_at=? WHERE project_id=?", (dst_id, now, src_id)
     ).rowcount

@@ -4,6 +4,7 @@ import json
 from meeting_workbench import graph, overview
 from meeting_workbench.db import utc_now
 
+from .helpers import count_reads
 from .test_graph import (
     TODAY,
     add_link,
@@ -196,7 +197,7 @@ def test_project_graph_shows_suggested_requirements_and_pending_folder(tmp_path)
     # 只有待补建的文件夹时，不画卡片和散放文件（那些只看真正的根目录）
     assert not any(folder["kind"] in ("cards", "root") for folder in body["folders"])
     assert body["loose"] is None
-    assert graph.GRAPH_API_VERSION == 3
+    assert graph.GRAPH_API_VERSION == 4
 
 
 def test_project_graph_sql_count_unchanged_with_hints(tmp_path):
@@ -204,13 +205,7 @@ def test_project_graph_sql_count_unchanged_with_hints(tmp_path):
     add_project(db, "p", "云图AI")
 
     def count():
-        statements = []
-        with db.autocommit() as connection:
-            connection.set_trace_callback(
-                lambda sql: statements.append(sql) if sql.lstrip().upper().startswith("SELECT") else None
-            )
-            graph.project_graph(connection, "p", today=TODAY)
-        return len(statements)
+        return count_reads(db, lambda connection: graph.project_graph(connection, "p", today=TODAY))
 
     before = count()
     for index in range(5):

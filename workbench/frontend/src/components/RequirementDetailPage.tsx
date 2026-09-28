@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ApiClient } from "../api";
+import { isOldBackend, type ApiClient } from "../api";
 import { formatBytes, formatDurationText, formatMonthDay, formatMonthDayClock } from "../format";
 import type {
   MaterialFolderStat,
   Project,
+  RequirementContext,
   RequirementDetail,
   RequirementFile,
   RequirementFolder,
@@ -22,6 +23,9 @@ import { useToast } from "./Toast";
 import "./RequirementDetailPage.css";
 import { copyText } from "../clipboard";
 import { NoticeBanner, useNotice } from "./Notice";
+import { DecisionLogCard } from "./decisions/DecisionLogCard";
+import { MentionedBadge } from "./files/MentionedBadge";
+import { useMentionedCounts } from "./files/useMentionedCounts";
 
 interface RequirementDetailPageProps {
   apiClient: ApiClient;
@@ -39,6 +43,8 @@ interface RequirementDetailPageProps {
   backLabel?: string;
   /** 「在关系图里看」：打开所属项目的关系图并选中这个需求；关系图只画进行中的需求 */
   onOpenInGraph?: (projectId: string, requirementId: string) => void;
+  /** 4d：材料文件夹的小签打开预览抽屉；没传时小签不可点 */
+  onOpenPreview?: (fileId: number) => void;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -118,6 +124,7 @@ export function RequirementDetailPage({
   reloadKey = 0,
   backLabel = "需求池",
   onOpenInGraph,
+  onOpenPreview,
 }: RequirementDetailPageProps) {
   const { toastNode, showToast } = useToast();
   // 成功用轻提示一闪而过；失败用不会自己消失的红色提示条，原因看得清。
@@ -132,12 +139,47 @@ export function RequirementDetailPage({
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [expandedFiles, setExpandedFiles] = useState<Map<number, { items: RequirementFile[]; capped: boolean }>>(new Map());
   const [expandLoading, setExpandLoading] = useState<Set<number>>(new Set());
+  // 4d：材料文件夹文件行的小签「3 场会提到」，一个列表一次请求
+  const mentioned = useMentionedCounts(
+    apiClient,
+    (detail?.folders ?? []).flatMap((folder) =>
+      (expandedFiles.get(folder.id)?.items ?? folder.preview_files).map((file) => file.file_id),
+    ),
+    String(reloadKey),
+  );
+
+  // 4h：［复制给 Claude Code］的背景和详情一起取。点击时同步复制已经拿到的 Markdown（WebKit 只许在用户手势里
+  // 同步写剪贴板），还没拿到时按钮写「正在准备…」；旧后台（old）和取失败（failed）时退回旧的路径清单。
+  const [context, setContext] = useState<
+    { state: "loading" } | { state: "ready"; data: RequirementContext } | { state: "old" } | { state: "failed" }
+  >({ state: "loading" });
+  const contextSeqRef = useRef(0);
+  const loadContext = useCallback(
+    async (silent: boolean) => {
+      const seq = ++contextSeqRef.current;
+      if (typeof apiClient.requirementContext !== "function") {
+        setContext({ state: "old" });
+        return;
+      }
+      if (!silent) setContext({ state: "loading" });
+      try {
+        const data = await apiClient.requirementContext(requirementId);
+        if (seq !== contextSeqRef.current) return;
+        setContext(typeof data?.markdown === "string" ? { state: "ready", data } : { state: "failed" });
+      } catch (error) {
+        if (seq !== contextSeqRef.current) return;
+        setContext({ state: isOldBackend(error) ? "old" : "failed" });
+      }
+    },
+    [apiClient, requirementId],
+  );
 
   // 已经有这条需求的数据时静默刷新：留着页面只换数据，不整页闪成「正在读取」。
   const loadedIdRef = useRef<string | null>(null);
   const load = useCallback(async () => {
     const silent = loadedIdRef.current === requirementId;
     if (!silent) setState("loading");
+    void loadContext(silent);
     try {
       const payload = await apiClient.requirement(requirementId);
       loadedIdRef.current = requirementId;
@@ -149,7 +191,7 @@ export function RequirementDetailPage({
     }
     // showToast 每次渲染都是新函数，放进依赖会让 load 反复变化、页面循环刷新。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiClient, requirementId]);
+  }, [apiClient, requirementId, loadContext]);
 
   useEffect(() => {
     void load();
@@ -186,9 +228,24 @@ export function RequirementDetailPage({
     ...loaded.folders.map((folder) => folder.path),
   ];
 
-  const copyAllMaterials = () => {
+  const copyForClaudeCode = () => {
     if (!detail) return;
+    if (context.state === "ready") {
+      const missing = context.data.cards_missing;
+      void copyPath(
+        context.data.markdown,
+        missing > 0
+          ? `已复制；有 ${missing} 场会的纪要不在项目文件夹里，带的是归档文件夹`
+          : "已复制，粘给 Claude Code 就行",
+      );
+      return;
+    }
+    // 旧后台或背景没取到：退回旧的路径清单
     const paths = materialPaths(detail);
+    if (paths.length === 0) {
+      setNotice("这个需求还没有可复制的路径", "warning");
+      return;
+    }
     void copyPath(paths.join("\n"), `已复制 ${paths.length} 条路径`);
   };
 
@@ -273,12 +330,12 @@ export function RequirementDetailPage({
           <div className="requirement-detail__actions">
             <button
               className="requirement-detail__copy"
-              disabled={materialPaths(detail).length === 0}
-              onClick={copyAllMaterials}
+              disabled={context.state === "loading"}
+              onClick={copyForClaudeCode}
               type="button"
             >
               <CopyIcon />
-              复制材料清单
+              {context.state === "loading" ? "正在准备…" : "复制给 Claude Code"}
             </button>
             {canWrite && (
               <button className="requirement-detail__edit" onClick={() => setEditing(true)} type="button">编辑需求</button>
@@ -350,6 +407,17 @@ export function RequirementDetailPage({
         )}
       </section>
 
+      {/* 4c：「决议」卡在「关联会议」和「材料文件夹」之间；旧后台时不画 */}
+      <DecisionLogCard
+        apiClient={apiClient}
+        canWrite={canWrite}
+        onOpenMeeting={onOpenMeeting}
+        onOpenPreview={onOpenPreview}
+        // 关联、移除会议以后跟着重读
+        reloadKey={`${reloadKey}|${detail.meetings.map((meeting) => meeting.id).join(",")}`}
+        requirementId={requirementId}
+      />
+
       <section className="requirement-detail__card">
         <header className="requirement-detail__card-head">
           <strong>材料文件夹</strong>
@@ -402,7 +470,15 @@ export function RequirementDetailPage({
                         {file.relative_path}
                       </span>
                       <span>{formatBytes(file.size_bytes)}</span>
-                      <span>{formatMonthDay(file.modified_at)}</span>
+                      <span>
+                        {formatMonthDay(file.modified_at)}
+                        {mentioned && file.file_id !== undefined && (
+                          <MentionedBadge
+                            count={mentioned.get(file.file_id)}
+                            onClick={onOpenPreview ? () => onOpenPreview(file.file_id!) : undefined}
+                          />
+                        )}
+                      </span>
                       <span />
                     </div>
                   ))}

@@ -75,7 +75,7 @@ export type LaidNode =
   | (BaseNode & { kind: "folder"; data: GraphFolder })
   | (BaseNode & { kind: "folder_more"; data: NonNullable<GraphPayload["folders_more"]> })
   | (BaseNode & { kind: "loose"; data: NonNullable<GraphPayload["loose"]> })
-  | (BaseNode & { kind: "file"; data: GraphFile; text: string })
+  | (BaseNode & { kind: "file"; data: GraphFile; text: string; note?: string })
   | (BaseNode & { kind: "file_more"; data: NonNullable<GraphPayload["files_more"]> })
   | (BaseNode & { kind: "cue"; data: GraphCue; fontSize: number })
   | (BaseNode & { kind: "beacon"; data: GraphBeacon })
@@ -250,6 +250,20 @@ function leftLabelBox(x: number, y: number, width: number): Box {
 
 function rightLabelBox(x: number, y: number, width: number): Box {
   return { x: x - 6, y: y - NODE_H / 2, w: width + DOT_GAP + 6, h: NODE_H };
+}
+
+/** 4f：琥珀色文件名字下面的小字：「可能过时」或「交付物？」，两样都有写「可能过时」；不在问时为 null */
+export function amberNote(file: Pick<GraphFile, "stale" | "asks_deliverable">): string | null {
+  if (file.stale) return "可能过时";
+  if (file.asks_deliverable) return "交付物？";
+  return null;
+}
+
+/** 4f：文件节点的读屏名后缀：「，可能过时」或「，等你认交付物」 */
+export function amberSuffix(file: Pick<GraphFile, "stale" | "asks_deliverable">): string {
+  if (file.stale) return "，可能过时";
+  if (file.asks_deliverable) return "，等你认交付物";
+  return "";
 }
 
 function cueFontSize(total: number): number {
@@ -581,6 +595,10 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
     const place = placeMaterialNear(anchor.ring, anchor.y);
     if (place === null) return;
     const text = fitText(file.name, FILE_NAME_MAX);
+    // 4f：琥珀色文件两行（名字下面小字「可能过时」「交付物？」），框和待补建的文件夹一样高
+    const note = amberNote(file);
+    const width = FILE_ICON_W + Math.max(textWidth(text), note ? textWidth(note, 11) : 0);
+    const box = rightLabelBox(place.x, place.y, width);
     add({
       id: file.id,
       kind: "file",
@@ -588,14 +606,16 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
       ring: place.ring,
       x: place.x,
       y: place.y,
-      box: rightLabelBox(place.x, place.y, FILE_ICON_W + textWidth(text)),
-      label: file.recent ? `最近改过的文件：${file.name}` : `文件：${file.name}`,
+      box: note ? { ...box, y: place.y - 18, h: 36 } : box,
+      label: `${file.recent ? `最近改过的文件：${file.name}` : `文件：${file.name}`}${amberSuffix(file)}`,
       data: file,
       text,
+      ...(note ? { note } : {}),
     });
   };
   const files = graph.files ?? [];
-  files.filter((file) => !file.extra && !file.recent && !file.pinned).forEach(placeFile);
+  // 后端的 files[] 先放琥珀色文件（在问的可能过时、产出），照顺序先占材料槽
+  files.filter((file) => !file.extra && !file.recent && !file.pinned && !file.related).forEach(placeFile);
   if (graph.files_more) {
     const more = graph.files_more;
     const anchor = fileAnchor(files[0]?.folder ?? "");
@@ -636,6 +656,8 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
   files.filter((file) => file.extra).forEach(placeFile);
   // 3g：从面板点出来的那一个文件、再是最近改过的文件，各单独一轮：会上提到的优先，最近的可能让位
   files.filter((file) => file.pinned).forEach(placeFile);
+  // 4f：只因相关线上图的文件单独一轮，在 pinned 之后、recent 之前：开关［相关］不挪已有节点
+  files.filter((file) => file.related && !file.pinned).forEach(placeFile);
   files.filter((file) => file.recent).forEach(placeFile);
 
   // 线索词：下方一排，次数多的在前，字号三档
@@ -697,8 +719,10 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
 /**
  * N 键的顺序：当前画布里要你处理的节点，门口的会、待复核的会、有待确认任务的会、卡片停了的会、
  * 有待确认任务的需求，各自从上往下（需求从左往右）。不跨项目，不排成队列，只是依次跳。
+ * 4f：需求之后走在问的文件（askFileIds，按状态句的 node_ids：先可能过时，后等你认交付物），
+ * 不在图上的也列上（画布走到时由 ProjectGraph 一次钉一个）。
  */
-export function attentionOrder(layout: StarLayout): string[] {
+export function attentionOrder(layout: StarLayout, askFileIds: string[] = []): string[] {
   const byY = (a: LaidNode, b: LaidNode) => a.y - b.y || a.x - b.x;
   const doorstep = layout.nodes.filter((node) => node.kind === "doorstep").sort(byY);
   const meetings = layout.nodes
@@ -711,7 +735,14 @@ export function attentionOrder(layout: StarLayout): string[] {
   const requirements = layout.nodes
     .filter((node) => node.kind === "requirement" && node.data.pending_tasks > 0)
     .sort((a, b) => a.y - b.y || a.x - b.x);
-  return [...doorstep, ...meetings, ...requirements].map((node) => node.id);
+  const ids = [...doorstep, ...meetings, ...requirements].map((node) => node.id);
+  const seen = new Set(ids);
+  for (const id of askFileIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
 }
 
 /** 两个框是否相交（贴边不算）。 */
@@ -752,8 +783,21 @@ export const DIRECTION_NAMES: Record<Direction, string> = {
   bottom: "线索词",
 };
 
-/** 「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」。和后端 mention_label 一致 */
-export function mentionLabel(item: { needle: string; count: number; first_ms: number | null; source: string }): string {
+/**
+ * 「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」。
+ * 4b 放宽的提到（relation_id 不为空）：会上说『上周那版报价单』· 00:12:34，两处以上「等 N 处」。和后端 mention_label 一致
+ */
+export function mentionLabel(item: {
+  needle: string;
+  count: number;
+  first_ms: number | null;
+  source: string;
+  relation_id?: number | null;
+}): string {
   if (item.source === "minutes") return `纪要里写到『${item.needle}』`;
-  return `会上说『${item.needle}』${item.count} 次 · ${formatTime(item.first_ms, true)}`;
+  const clock = formatTime(item.first_ms, true);
+  if (item.relation_id !== undefined && item.relation_id !== null) {
+    return `会上说『${item.needle}』${item.count >= 2 ? `等 ${item.count} 处 ` : ""}· ${clock}`;
+  }
+  return `会上说『${item.needle}』${item.count} 次 · ${clock}`;
 }

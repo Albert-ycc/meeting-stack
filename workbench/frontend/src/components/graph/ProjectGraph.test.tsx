@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../../api";
+import { ApiError, type ApiClient, type LinksState, type RelationQuestion } from "../../api";
+import { LinksFlagsContext } from "../links/LinksFlagsContext";
 import type { Project } from "../../types";
 import type { MaterialFilePreview, Task } from "../../types";
 import type {
@@ -16,6 +17,7 @@ import type {
   MeetingBrief,
   RecentFile,
 } from "./graphTypes";
+import { forgetAskStore, hasDraft, setDraft as setAskDraft } from "../ask/askStore";
 import { ProjectGraph, forgetGraphCache, shortHash } from "./ProjectGraph";
 import { day, focusPayload, focusTask, meeting, payload, requirement } from "./testFixtures";
 
@@ -501,6 +503,72 @@ describe("ProjectGraph 展开一场会", () => {
     const anchor = (await within(detail).findByText("初审规则就按新口径")).closest("li");
     expect(anchor).toHaveClass("is-anchor");
     expect(within(detail).getByText("王工：")).toBeInTheDocument();
+  });
+
+  it("决议带台账 id（4a）时按 id 选中：面板里还是那一条", async () => {
+    const withIds = focusPayload({
+      decisions: [
+        { id: "dec-00aa11bb22cc33dd", text: "没写时间的决议", start_ms: null },
+        { id: "dec-3f2a9c0b1d4e5f60", text: "初审规则按新口径执行", start_ms: 60_000, detail: "初审规则按新口径执行，旧口径下月停用" },
+      ],
+    });
+    const apiClient = focusClient({ graphMeetingFocus: vi.fn(async () => withIds) });
+    const view = await expandMeetingA(apiClient);
+    await userEvent.click(await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" }));
+    const detail = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(detail).getByText("初审规则按新口径执行，旧口径下月停用")).toBeInTheDocument();
+  });
+
+  it("4c：决议下面画标记行，［不是一回事］进画布的撤销栈", async () => {
+    const later = {
+      relation_id: 17, decision_id: "dec-b", meeting: { id: "b", title: "周会", date: "2026-09-28" },
+      text: "初审规则改回旧口径", start_ms: 30_000, quote: "改回旧口径", audio_url: "/api/media/9",
+    };
+    const withMarks = focusPayload({
+      decisions: [
+        { id: "dec-3f2a9c0b1d4e5f60", text: "初审规则按新口径执行", start_ms: 60_000, detail: "初审规则按新口径执行",
+          later: [later], earlier: [] },
+      ],
+    });
+    const apiClient = focusClient({
+      graphMeetingFocus: vi.fn(async () => withMarks),
+      answerRelation: vi.fn(async () => ({ relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString() })),
+      undoRelation: vi.fn(async () => ({ relation: {}, removed_deliverable_id: null })),
+    });
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: true, llmConfigured: true }}>
+        <Harness apiClient={apiClient} />
+      </LinksFlagsContext.Provider>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    const view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    await userEvent.click(await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" }));
+    const detail = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(detail).getByText("后来改了：9月28日 周会『初审规则改回旧口径』")).toBeInTheDocument();
+    await userEvent.click(within(detail).getByRole("button", { name: "从 00:30 听这条" }));
+
+    await userEvent.click(within(detail).getByRole("button", { name: "不是一回事" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(17, { answer: "no" });
+    expect(await screen.findByText("已去掉这条『后来改了』")).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledWith(17));
+  });
+
+  it("4c：简报「定了什么」有后来改了时接「· 9月28日后来改了」", async () => {
+    const apiClient = makeClient(payload(), {
+      meetingBrief: vi.fn(async (meetingId: string) => ({
+        ...brief(meetingId),
+        decisions: [
+          { id: "dec-1", text: "初审规则按新口径执行", start_ms: 60_000,
+            later: { date: "2026-09-28", meeting_title: "周会", text: "改回旧口径" } },
+          { id: "dec-2", text: "没有后来的决议", start_ms: null, later: null },
+        ],
+      })),
+    });
+    render(<Harness apiClient={apiClient} initial="m:a" />);
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(await within(panel).findByText("· 9月28日后来改了")).toBeInTheDocument();
+    expect(within(panel).getAllByText(/后来改了/)).toHaveLength(1);
   });
 
   it("任务：确认、编辑后 ⌘Z 改回原样、不要；「+N」列出全部", async () => {
@@ -1551,5 +1619,1173 @@ describe("ProjectGraph 关系图里的文件（3g）", () => {
     await userEvent.click(within(panel).getByRole("button", { name: "定稿.pdf" }));
     expect(onOpenPreview).toHaveBeenCalledTimes(2);
     expect(within(panel).getByText(/找不到这个文件了/)).toBeInTheDocument();
+  });
+
+  it("4e：在问的交付物小签只在新后台（有 linksFlags）画，旧后台照旧画已登记的", async () => {
+    const deliverables = [
+      { id: 1, kind: "file", url: "/材料/云图AI/交付/定稿.pdf", title: "", file_id: 71, name: "定稿.pdf", gone: false },
+    ];
+    const asks = [{ relation_id: 61, file_id: 930, name: "方案.key", ext: "key" }];
+    const focus = focusPayload({ tasks: [focusTask("t1", 300_000, { deliverables, asks })] });
+    const onOpenPreview = vi.fn();
+    const old = render(<Harness apiClient={focusClient({ graphMeetingFocus: vi.fn(async () => focus) })} handlers={{ onOpenPreview }} />);
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    let view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    expect(await within(view).findByRole("button", { name: "交付物 · 你标的：定稿.pdf，点了预览" })).toBeInTheDocument();
+    expect(within(view).queryByRole("button", { name: /^交付物？/ })).not.toBeInTheDocument();
+    old.unmount();
+
+    render(
+      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: true, llmConfigured: true }}>
+        <Harness apiClient={focusClient({ graphMeetingFocus: vi.fn(async () => focus) })} handlers={{ onOpenPreview }} />
+      </LinksFlagsContext.Provider>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    await userEvent.click(
+      await within(view).findByRole("button", { name: "交付物？：方案.key，等你认交付物，另有 1 个已登记，点了预览" }),
+    );
+    expect(onOpenPreview).toHaveBeenCalledWith(930);
+  });
+});
+
+// ------------------------------------------------------------------ 第四期 4b：放宽的提到（会上换了叫法的文件）
+
+const LOOSE_FILE = briefFile(7, "报价单v2.xlsx", {
+  count: 2,
+  first_ms: 754_000,
+  needle: "上周那版报价单",
+  relation_id: 11,
+  phrase: "上周那版报价单",
+  via: "time_hint",
+});
+
+const LINKS_FLAGS = { linksEnabled: true, semanticEnabled: true, llmConfigured: true };
+
+function looseDetail(status: "active" | "rejected" = "active"): GraphFileDetail {
+  const base = fileDetail();
+  return {
+    ...base,
+    meetings: [
+      { ...base.meetings[0], needle: "上周那版报价单", count: 2, status, relation_id: 11, phrase: "上周那版报价单", via: "time_hint" },
+      base.meetings[1],
+    ],
+    active_meetings: status === "active" ? 2 : 1,
+  };
+}
+
+function looseClient(overrides: Record<string, unknown> = {}) {
+  const undoUntil = new Date(Date.now() + 600_000).toISOString();
+  const relation = { id: 11, kind: "mention", status: "rejected", by_you: true, meeting_id: "a", at_ms: 754_000 };
+  return fileClient(withFiles({ edges: [] }), {
+    meetingBrief: vi.fn(async (meetingId: string) => ({
+      ...brief(meetingId),
+      files: meetingId === "a" ? [LOOSE_FILE] : [],
+      files_state: "done",
+      loose_state: null,
+    })),
+    getGraphFile: vi.fn(async () => looseDetail()),
+    answerRelation: vi.fn(async () => ({ relation, undo_until: undoUntil })),
+    undoRelation: vi.fn(async () => ({ relation: { ...relation, status: "shown" }, removed_deliverable_id: null })),
+    retryLinks: vi.fn(async () => ({ requeued: 1 })),
+    ...overrides,
+  });
+}
+
+function WithFlags({ children }: { children: ReactNode }) {
+  return <LinksFlagsContext.Provider value={LINKS_FLAGS}>{children}</LinksFlagsContext.Provider>;
+}
+
+async function openFileFromMeeting() {
+  await userEvent.click(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+  let panel = screen.getByRole("complementary", { name: "详情面板" });
+  await userEvent.click(await within(panel).findByRole("button", { name: "报价单v2.xlsx" }));
+  panel = screen.getByRole("complementary", { name: "详情面板" });
+  await within(panel).findByText("报价单下周发给甲方");
+  return panel;
+}
+
+describe("ProjectGraph 放宽的提到（4b）", () => {
+  it("会议面板：放宽行写「说的是『…』」，补出的线写「会上说『…』等 N 处」", async () => {
+    render(<Harness apiClient={looseClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    const list = await within(panel).findByRole("list", { name: "会上提到的文件" });
+    expect(within(list).getByText("说的是『上周那版报价单』")).toBeInTheDocument();
+    expect(within(list).queryByText(/次$/)).toBeNull();
+    expect(await screen.findByRole("button", { name: "连线：会上说『上周那版报价单』等 2 处 · 00:12:34" })).toBeInTheDocument();
+  });
+
+  it("会议面板的状态句：七种说法，最多一个按钮；［现在重试］放回排队后重取", async () => {
+    const texts = [
+      "会上换了叫法的文件还在整理",
+      "没配置 AI，会上换了叫法的文件先不整理",
+      "AI 的 key 不对，会上换了叫法的文件先不整理",
+      "今天的 AI 用量到上限了，明天接着整理",
+      "AI 账户余额不足，会上换了叫法的文件先不整理",
+      "AI 连不上，过一会儿自动再试",
+      "这场会的 AI 整理没做成",
+    ];
+    for (const text of texts) {
+      forgetGraphCache();
+      const failed = text === "这场会的 AI 整理没做成";
+      const state: LinksState = {
+        kind: text === texts[0] ? "waiting" : "stopped",
+        text,
+        action: failed ? { kind: "retry", label: "现在重试" } : null,
+      };
+      const apiClient = looseClient({
+        meetingBrief: vi.fn(async (meetingId: string) => ({ ...brief(meetingId), files: [], files_state: "done", loose_state: state })),
+      });
+      const view = render(
+        <WithFlags>
+          <Harness apiClient={apiClient} initial="m:a" />
+        </WithFlags>,
+      );
+      const panel = await screen.findByRole("complementary", { name: "详情面板" });
+      const line = (await within(panel).findByText(text)).closest("p")!;
+      expect(within(line).queryAllByRole("button")).toHaveLength(failed ? 1 : 0);
+      expect(screen.queryByRole("alert")).toBeNull();
+      if (failed) {
+        await userEvent.click(within(line).getByRole("button", { name: "现在重试" }));
+        expect(apiClient.retryLinks).toHaveBeenCalledTimes(1);
+      }
+      view.unmount();
+    }
+  });
+
+  it("还在整理时 30 秒的刷新重取这场会的简报；离开那场会后不再重取", async () => {
+    const intervals: Array<() => void> = [];
+    const realSetInterval = window.setInterval.bind(window);
+    const spy = vi.spyOn(window, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+      if (timeout === 30_000 && typeof handler === "function") intervals.push(handler as () => void);
+      return realSetInterval(handler, timeout);
+    }) as typeof window.setInterval);
+    try {
+      const waiting: LinksState = { kind: "waiting", text: "会上换了叫法的文件还在整理", action: null };
+      const apiClient = looseClient({
+        meetingBrief: vi.fn(async (meetingId: string) => ({ ...brief(meetingId), files: [], files_state: "done", loose_state: waiting })),
+      });
+      render(
+        <WithFlags>
+          <Harness apiClient={apiClient} />
+        </WithFlags>,
+      );
+      await userEvent.click(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+      const panel = screen.getByRole("complementary", { name: "详情面板" });
+      await within(panel).findByText("会上换了叫法的文件还在整理");
+      const tick = () => act(() => intervals.forEach((handler) => handler()));
+      const briefCalls = () => vi.mocked(apiClient.meetingBrief).mock.calls.filter(([id]) => id === "a").length;
+      expect(intervals.length).toBeGreaterThan(0);
+
+      // 选着这场会：刷新顺带重取
+      let before = briefCalls();
+      await tick();
+      await waitFor(() => expect(briefCalls()).toBeGreaterThan(before));
+
+      // 离开这场会：刷新不再重取，回来时用的是缓存
+      fireEvent.keyDown(within(panel).getByRole("button", { name: "关闭面板" }), { key: "Escape" });
+      await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(""));
+      before = briefCalls();
+      await tick();
+      await tick();
+      await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ }));
+      await within(screen.getByRole("complementary", { name: "详情面板" })).findByText("会上换了叫法的文件还在整理");
+      expect(briefCalls()).toBe(before);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("「提到」线：文件详情读到之前［不是这份文件］按不了，读到后放宽行走 answerRelation", async () => {
+    let release: (value: GraphFileDetail) => void = () => {};
+    const apiClient = looseClient({
+      getGraphFile: vi.fn(() => new Promise<GraphFileDetail>((resolve) => (release = resolve))),
+    });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "连线：会上说『上周那版报价单』等 2 处 · 00:12:34" }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    const button = within(panel).getByRole("button", { name: "不是这份文件" });
+    expect(button).toBeDisabled();
+    await userEvent.click(button);
+    expect(apiClient.rejectFileMention).not.toHaveBeenCalled();
+    expect(apiClient.answerRelation).not.toHaveBeenCalled();
+
+    await act(async () => release(looseDetail()));
+    await waitFor(() => expect(within(panel).getByRole("button", { name: "不是这份文件" })).toBeEnabled());
+    await userEvent.click(within(panel).getByRole("button", { name: "不是这份文件" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(11, { answer: "no" });
+    expect(apiClient.rejectFileMention).not.toHaveBeenCalled();
+  });
+
+  it("旧后台：简报没有 loose_state、行里没有 relation_id 时照第二期显示", async () => {
+    const apiClient = fileClient();
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} initial="m:a" />
+      </WithFlags>,
+    );
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    const list = await within(panel).findByRole("list", { name: "会上提到的文件" });
+    expect(within(list).getByText("会上说『报价单』3 次")).toBeInTheDocument();
+    expect(within(panel).queryByText(/说的是/)).toBeNull();
+    expect(within(panel).queryByText(/会上换了叫法/)).toBeNull();
+  });
+
+  it("文件面板：放宽行［不是这份文件］走 answerRelation，提示进撤销栈，［撤销］调 undoRelation", async () => {
+    const apiClient = looseClient();
+    render(<Harness apiClient={apiClient} />);
+    const panel = await openFileFromMeeting();
+    expect(within(panel).getByText("说的是『上周那版报价单』")).toBeInTheDocument();
+    expect(within(panel).getByText("1 次")).toBeInTheDocument(); // 字面那一行照旧
+
+    await userEvent.click(within(panel).getByRole("button", { name: "不是这份文件" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(11, { answer: "no" });
+    expect(apiClient.rejectFileMention).not.toHaveBeenCalled();
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("已记下：『上周那版报价单』不是这份文件");
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledWith(11));
+    expect(apiClient.restoreFileMention).not.toHaveBeenCalled();
+  });
+
+  it("文件面板：放宽行［换成这份］发 pick，⌘Z 能撤；标过的放宽行从「你标过…」发 restore", async () => {
+    const apiClient = looseClient();
+    render(<Harness apiClient={apiClient} />);
+    let panel = await openFileFromMeeting();
+    await userEvent.click(within(panel).getByRole("button", { name: "换成这份" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(11, { answer: "pick", file_id: 6 });
+    expect(apiClient.pickFileMention).not.toHaveBeenCalled();
+    expect(await screen.findByText("已换成「报价单v1.xlsx」")).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledWith(11));
+
+    vi.mocked(apiClient.getGraphFile).mockImplementation(async () => looseDetail("rejected"));
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    panel = screen.getByRole("complementary", { name: "详情面板" });
+    const row = (await within(panel).findByText("你标过「初审规则沟通 a」说的不是这份文件")).closest("li")!;
+    await userEvent.click(within(row).getByRole("button", { name: "撤销" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(11, { answer: "restore" });
+    expect(apiClient.restoreFileMention).not.toHaveBeenCalled();
+  });
+
+  function twoLooseDetail(): GraphFileDetail {
+    const base = looseDetail();
+    return {
+      ...base,
+      meetings: [
+        base.meetings[0],
+        { ...base.meetings[1], needle: "那版报价", status: "active", relation_id: 12, phrase: "那版报价", via: "time_hint" },
+      ],
+    };
+  }
+
+  it("文件面板：一次把几场会的放宽行［换成这份］，提示带一个［撤销］，点了逐条撤", async () => {
+    const apiClient = looseClient({ getGraphFile: vi.fn(async () => twoLooseDetail()) });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "换成这份" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(11, { answer: "pick", file_id: 6 });
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(12, { answer: "pick", file_id: 6 });
+    expect(apiClient.pickFileMention).not.toHaveBeenCalled();
+    const notice = (await screen.findByText("已把 2 场会换成「报价单v1.xlsx」")).closest("[role='status']") as HTMLElement;
+    // 一句话、一个［撤销］（另一个是提示条自带的关闭）
+    expect(within(notice).getAllByRole("button", { name: "撤销" })).toHaveLength(1);
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledTimes(2));
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(11);
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(12);
+    expect(await screen.findByText("已撤销")).toBeInTheDocument();
+  });
+
+  it("文件面板：一批［换成这份］中途有一条出错，已经换过的撤回，提示出错那一句", async () => {
+    const undoUntil = new Date(Date.now() + 600_000).toISOString();
+    const apiClient = looseClient({
+      getGraphFile: vi.fn(async () => twoLooseDetail()),
+      answerRelation: vi.fn(async (relationId: number) => {
+        if (relationId === 12) throw new ApiError("这条已经处理过了", 409, { detail: "这条已经处理过了" });
+        return { relation: { id: relationId }, undo_until: undoUntil };
+      }),
+    });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "换成这份" }));
+    expect(await screen.findByText("这条已经处理过了")).toBeInTheDocument();
+    expect(apiClient.undoRelation).toHaveBeenCalledTimes(1);
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(11);
+    expect(screen.queryByText(/场会换成/)).toBeNull();
+    // 撤回过了，⌘Z 不再有这一批
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    expect(await screen.findByText("没有能撤销的操作了（只保留 10 分钟内的）")).toBeInTheDocument();
+    expect(apiClient.undoRelation).toHaveBeenCalledTimes(1);
+  });
+
+  it("旧后台回答放宽行时写「后台还是旧版本，重启声档后再试」", async () => {
+    const apiClient = looseClient({
+      answerRelation: vi.fn(async () => {
+        throw new ApiError("Not Found", 404, { detail: "Not Found" });
+      }),
+    });
+    render(<Harness apiClient={apiClient} />);
+    const panel = await openFileFromMeeting();
+    await userEvent.click(within(panel).getByRole("button", { name: "不是这份文件" }));
+    expect(await screen.findByText("后台还是旧版本，重启声档后再试")).toBeInTheDocument();
+  });
+});
+
+// ------------------------------------------------------------------ 第四期 4g：问这个项目
+
+describe("ProjectGraph 问这个项目（4g）", () => {
+  const askSource = {
+    id: "T1",
+    kind: "meeting" as const,
+    meeting_id: "b",
+    title: "初审规则沟通 b",
+    date: "2026-09-24",
+    start_ms: 60_000,
+    audio_url: null,
+    text: "原话",
+    quote: "原话",
+  };
+
+  function askClient() {
+    return makeClient(payload(), {
+      askPrepare: vi.fn(async () => ({
+        plan_id: "plan-1",
+        expires_in: 600,
+        question: "定了什么？",
+        counts: { meetings: 1, materials: 0 },
+        confirm: null,
+        local_model: false,
+        llm: "ok",
+        highlight: [],
+        sources: [askSource],
+        notes: [],
+        unattributed_meetings: 0,
+      })),
+      ask: vi.fn(async () => ({ job_id: "job-1", state: "waiting", text: "在等 AI 回答" })),
+      askJob: vi.fn(async () => ({
+        state: "done",
+        answer: { text: "定了新口径[T1]。", cited: ["T1"], found: true, no_evidence: false, truncated: false },
+        sent: { meetings: 1, materials: 0 },
+        sources: [{ ...askSource, sent: true }],
+        notes: [],
+        local_model: false,
+      })),
+    });
+  }
+
+  beforeEach(() => {
+    forgetAskStore();
+  });
+
+  it("［问这个项目］在右侧面板的位置打开，Esc 关掉（焦点在输入框里时不关），不占 sel=", async () => {
+    render(<Harness apiClient={askClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "问这个项目" }));
+    const input = screen.getByRole("textbox", { name: "问题" });
+    expect(screen.getByTestId("selection")).toHaveTextContent("");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.getByRole("textbox", { name: "问题" })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("heading", { name: "问这个项目" }), { key: "Escape" });
+    expect(screen.queryByRole("textbox", { name: "问题" })).toBeNull();
+    expect(screen.queryByText("要看的节点不在当前的图上，换个时间窗试试")).toBeNull();
+  });
+
+  it("回答显示期间出处里的会点亮、其余变暗；点节点换成那个节点的面板", async () => {
+    const apiClient = askClient();
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "问这个项目" }));
+    const input = screen.getByRole("textbox", { name: "问题" });
+    fireEvent.change(input, { target: { value: "定了什么？" } });
+    fireEvent.submit(input.closest("form")!);
+    await screen.findByText("定了新口径", { exact: false }, { timeout: 3_000 });
+    expect(apiClient.ask).toHaveBeenCalledWith("p", "plan-1", false);
+    // 点亮在回答画出来以后的下一次渲染里到（出处列表的 effect 调 onHighlight），机器忙时晚一拍
+    await waitFor(() => expect(screen.getByRole("button", { name: /^会议：初审规则沟通 b/ })).toHaveClass("is-lit"));
+    expect(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ })).toHaveClass("is-dim");
+    await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    expect(await screen.findByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "问题" })).toBeNull();
+    expect(screen.getByTestId("selection")).toHaveTextContent("m:a");
+    expect(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ })).not.toHaveClass("is-dim");
+  });
+
+  it("搜索页交过来的问题：打开关系图时问答面板展开、输入框填好，不自动发", async () => {
+    const apiClient = askClient();
+    setAskDraft("p", "报价定了多少？");
+    render(<Harness apiClient={apiClient} />);
+    await screen.findByRole("textbox", { name: "问题" });
+    // 草稿在 ProjectAsk 的 effect 里填进去
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "问题" })).toHaveValue("报价定了多少？"));
+    expect(screen.getByRole("button", { name: "问这个项目" })).toHaveAttribute("aria-pressed", "true");
+    expect(apiClient.askPrepare).not.toHaveBeenCalled();
+    expect(hasDraft("p")).toBe(false);
+  });
+
+  it("没有草稿时问答面板不展开", async () => {
+    render(<Harness apiClient={askClient()} />);
+    await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ });
+    expect(screen.queryByRole("textbox", { name: "问题" })).toBeNull();
+  });
+
+  it("没有 askPrepare 的客户端不出按钮", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ });
+    expect(screen.queryByRole("button", { name: "问这个项目" })).toBeNull();
+  });
+});
+
+describe("ProjectGraph 文件面板的问题块（4e）", () => {
+  const AFFECTS_Q: RelationQuestion = {
+    relation_id: 57,
+    kind: "affects",
+    text: "可能过时：9/21 决议『总价下调 5%』",
+    decision: {
+      id: "dec-3f2a9c0b1d4e5f60",
+      text: "总价下调 5%",
+      date: "2026-09-21",
+      meeting_id: "a",
+      meeting_title: "报价沟通",
+      start_ms: 754_000,
+      audio_url: "/api/media/412",
+    },
+    passage: { loc: "第 2 页", text: "…总价在原基础上下调 3%，含税…" },
+    file: { id: 7, name: "报价单v2.xlsx", folder: "商务/" },
+    answers: ["updated", "no"],
+  };
+  const PRODUCED_Q: RelationQuestion = {
+    relation_id: 61,
+    kind: "produced",
+    text: "会后 3 天新增在『商务/』",
+    ask: "是任务『写一版方案』的交付物吗？",
+    task: { id: "t-new", title: "写一版方案", status: "in_progress" },
+    file: { id: 7, name: "报价单v2.xlsx", folder: "商务/" },
+    words: [],
+    answers: ["yes", "no"],
+  };
+
+  function questionClient(overrides: Record<string, unknown> = {}) {
+    return materialClient(withFiles(), {
+      getGraphFile: vi.fn(async () => fileDetail({ deliverables: [], questions: [PRODUCED_Q, AFFECTS_Q].reverse() })),
+      answerRelation: vi.fn(async () => ({ relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString(), deliverable_id: null })),
+      undoRelation: vi.fn(async () => ({ relation: {}, removed_deliverable_id: null })),
+      ...overrides,
+    });
+  }
+
+  async function openFilePanel() {
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    await within(panel).findByText("报价单第一行：初审规则服务费");
+    return panel;
+  }
+
+  it("问题在预览之后、「在 N 场会上被提到」之前，可能过时在前", async () => {
+    render(
+      <WithFlags>
+        <Harness apiClient={questionClient()} />
+      </WithFlags>,
+    );
+    const panel = await openFilePanel();
+    const affects = await within(panel).findByRole("group", { name: AFFECTS_Q.text });
+    const produced = within(panel).getByRole("group", { name: PRODUCED_Q.text });
+    const preview = within(panel).getByText("报价单第一行：初审规则服务费");
+    const mentioned = within(panel).getByRole("heading", { name: "在 2 场会上被提到" });
+    expect(preview.compareDocumentPosition(affects) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(affects.compareDocumentPosition(produced) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(produced.compareDocumentPosition(mentioned) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(affects).getByText("第 2 页：『…总价在原基础上下调 3%，含税…』")).toBeInTheDocument();
+    expect(within(produced).getByText("是任务『写一版方案』的交付物吗？")).toBeInTheDocument();
+    expect(within(produced).getByText("会后 3 天新增在『商务/』")).toBeInTheDocument();
+  });
+
+  it("［已更新］发请求并出带［撤销］的提示；⌘Z 走画布的撤销栈调 undoRelation", async () => {
+    const apiClient = questionClient();
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    const panel = await openFilePanel();
+    const affects = await within(panel).findByRole("group", { name: AFFECTS_Q.text });
+    await userEvent.click(within(affects).getByRole("button", { name: "已更新" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(57, { answer: "updated" });
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("已标为更新过");
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(57);
+    expect(await screen.findByText("已撤销")).toBeInTheDocument();
+
+    const produced = await within(screen.getByRole("complementary", { name: "详情面板" })).findByRole("group", {
+      name: PRODUCED_Q.text,
+    });
+    await userEvent.click(within(produced).getByRole("button", { name: "是" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(61, { answer: "yes" });
+    expect(await screen.findByRole("status")).toHaveTextContent("已登记为『写一版方案』的交付物");
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledWith(61));
+  });
+
+  it("undoRelation 回 409 时原样显示服务端那句，横幅是 role=status，不是 alert", async () => {
+    const apiClient = questionClient({
+      undoRelation: vi.fn(async () => {
+        throw new ApiError("已超过撤销时间，请直接改回", 409, { detail: "已超过撤销时间，请直接改回" });
+      }),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    const panel = await openFilePanel();
+    await userEvent.click(within(await within(panel).findByRole("group", { name: AFFECTS_Q.text })).getByRole("button", { name: "不相关" }));
+    await userEvent.click(within(await screen.findByRole("status")).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已超过撤销时间，请直接改回"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(57);
+  });
+
+  it("旧后台：没有 linksFlags、没有 answerRelation 或数据里没有 questions 时不画", async () => {
+    const plain = render(<Harness apiClient={questionClient()} />);
+    let panel = await openFilePanel();
+    expect(within(panel).queryByRole("group", { name: AFFECTS_Q.text })).toBeNull();
+    plain.unmount();
+
+    forgetGraphCache();
+    const noAnswer = render(
+      <WithFlags>
+        <Harness apiClient={questionClient({ answerRelation: undefined })} />
+      </WithFlags>,
+    );
+    panel = await openFilePanel();
+    expect(within(panel).queryByRole("group", { name: AFFECTS_Q.text })).toBeNull();
+    noAnswer.unmount();
+
+    forgetGraphCache();
+    render(
+      <WithFlags>
+        <Harness apiClient={questionClient({ getGraphFile: vi.fn(async () => fileDetail({ deliverables: [] })) })} />
+      </WithFlags>,
+    );
+    panel = await openFilePanel();
+    expect(within(panel).queryByRole("group", { name: AFFECTS_Q.text })).toBeNull();
+    expect(within(panel).queryByRole("group", { name: PRODUCED_Q.text })).toBeNull();
+  });
+
+  it("展开一场会：有 stale 的决议卡加小签「1 个文件可能过时」，点了打开第一份文件的预览抽屉", async () => {
+    const onOpenPreview = vi.fn();
+    const withStale = focusPayload({
+      decisions: [
+        { id: "dec-3f2a9c0b1d4e5f60", text: "初审规则按新口径执行", start_ms: 60_000, detail: "初审规则按新口径执行",
+          later: [], earlier: [], stale: [{ relation_id: 57, file_id: 812, name: "报价单 v3.xlsx" }] },
+      ],
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={focusClient({ graphMeetingFocus: vi.fn(async () => withStale) })} handlers={{ onOpenPreview }} />
+      </WithFlags>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    const view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    await userEvent.click(await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" }));
+    const detail = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(within(detail).getByRole("button", { name: "1 个文件可能过时" }));
+    expect(onOpenPreview).toHaveBeenCalledWith(812);
+  });
+});
+
+describe("ProjectGraph 第四期的线和局部图", () => {
+  const AFF_LABEL = "9/21 定的『总价下调 5%』，报价单 v3 之后没改过";
+  const PROD_LABEL = "会后 3 天新增在『商务/』，是任务『写一版方案』的交付物吗？";
+  const AFFECTS: RelationQuestion = {
+    relation_id: 57,
+    kind: "affects",
+    text: "可能过时：9/21 决议『总价下调 5%』",
+    decision: {
+      id: "dec-3f2a9c0b1d4e5f60",
+      text: "总价下调 5%",
+      date: "2026-09-21",
+      meeting_id: "a",
+      meeting_title: "报价沟通",
+      start_ms: 754_000,
+      audio_url: "/api/media/412",
+    },
+    passage: { loc: "第 2 页", text: "…总价在原基础上下调 3%，含税…" },
+    file: { id: 7, name: "报价单v2.xlsx", folder: "商务/" },
+    answers: ["updated", "no"],
+  };
+  const PRODUCED: RelationQuestion = {
+    relation_id: 61,
+    kind: "produced",
+    text: "会后 3 天新增在『商务/』",
+    ask: "是任务『写一版方案』的交付物吗？",
+    task: { id: "t-new", title: "写一版方案", status: "in_progress" },
+    file: { id: 7, name: "报价单v2.xlsx", folder: "商务/" },
+    words: [],
+    answers: ["yes", "no"],
+  };
+
+  function amberGraph(extra: Partial<GraphPayload> = {}): GraphPayload {
+    const base = withFiles();
+    return {
+      ...base,
+      requirements: [requirement("r1", { pending_tasks: 1 })],
+      files: [{ ...base.files[0], stale: true, asks_deliverable: true }],
+      edges: [
+        ...base.edges,
+        {
+          id: "e:aff:57", kind: "affects", from: "m:a", to: "file:7", state: "ask", label: AFF_LABEL, relation_id: 57,
+          decision_id: "dec-3f2a9c0b1d4e5f60", meeting_id: "a", at_ms: 754_000, quote: "总价下调 5%", file_id: 7,
+        },
+        {
+          id: "e:prod:61", kind: "produced", from: "r:r1", to: "file:7", state: "ask", label: PROD_LABEL, relation_id: 61,
+          relation_ids: [61], task_id: "t-new", meeting_id: "a", at_ms: 310_000, quote: "写一版方案", file_id: 7,
+        },
+      ],
+      status: { ok: [], waiting: [{ text: "1 个文件可能过时", node_ids: ["file:7"] }], stopped: [], note: null },
+      ...extra,
+    };
+  }
+
+  function lineClient(graph: GraphPayload = amberGraph(), overrides: Record<string, unknown> = {}) {
+    return materialClient(graph, {
+      getGraphFile: vi.fn(async () => fileDetail({ deliverables: [], questions: [AFFECTS, PRODUCED] })),
+      answerRelation: vi.fn(async () => ({ relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString(), deliverable_id: null })),
+      undoRelation: vi.fn(async () => ({ relation: {}, removed_deliverable_id: null })),
+      ...overrides,
+    });
+  }
+
+  it("琥珀色文件写「可能过时」，标记位画「?」；线的读屏名是线上的字", async () => {
+    render(
+      <WithFlags>
+        <Harness apiClient={lineClient()} />
+      </WithFlags>,
+    );
+    const node = await screen.findByRole("button", { name: "文件：报价单v2.xlsx，可能过时" });
+    expect(node).toHaveTextContent("可能过时");
+    expect(node.querySelector(".graph-file__mark")).toHaveTextContent("?");
+    const hit = screen.getByRole("button", { name: `连线：${AFF_LABEL}` });
+    expect(hit.closest(".graph-edge")).toHaveClass("graph-edge--affects", "graph-edge--ask");
+    const produced = screen.getByRole("button", { name: `连线：${PROD_LABEL}` }).closest(".graph-edge")!;
+    expect(produced.querySelector(".graph-edge__ask")).toHaveTextContent("?");
+  });
+
+  it("点产出线：面板标题「连线 · 产出」，这条线的问题排第一；［是］以后选中挪到新的交付物线", async () => {
+    let current = amberGraph();
+    const apiClient = lineClient(undefined, {
+      graph: vi.fn(async () => current),
+      answerRelation: vi.fn(async () => {
+        current = amberGraph({
+          files: [{ ...amberGraph().files[0], stale: true, asks_deliverable: undefined }],
+          edges: [
+            ...amberGraph().edges.filter((edge) => edge.id !== "e:prod:61"),
+            { id: "e:dlv:31", kind: "deliverable", from: "r:r1", to: "file:7", state: "ok", label: "任务『写一版方案』的交付物 · 你标的", deliverable_id: 31, task_id: "t-new", meeting_id: "a", at_ms: 310_000, quote: "写一版方案", file_id: 7 },
+          ],
+        });
+        return { relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString(), deliverable_id: 31 };
+      }),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: `连线：${PROD_LABEL}` }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(panel).getByText("连线 · 产出")).toBeInTheDocument();
+    const produced = await within(panel).findByRole("group", { name: PRODUCED.text });
+    const affects = within(panel).getByRole("group", { name: AFFECTS.text });
+    expect(produced.compareDocumentPosition(affects) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(within(produced).getByRole("button", { name: "是" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(61, { answer: "yes" });
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("e:dlv:31"));
+    expect(await screen.findByText("连线 · 交付物")).toBeInTheDocument();
+  });
+
+  it("点可能过时的线：［已更新］［不相关］排第一；［已更新］发请求、提示带［撤销］，⌘Z 调 undoRelation", async () => {
+    const apiClient = lineClient(undefined, {
+      getGraphFile: vi.fn(async () => fileDetail({ deliverables: [], questions: [PRODUCED, AFFECTS] })),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: `连线：${AFF_LABEL}` }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(panel).getByText("连线 · 可能过时")).toBeInTheDocument();
+    const affects = await within(panel).findByRole("group", { name: AFFECTS.text });
+    const produced = within(panel).getByRole("group", { name: PRODUCED.text });
+    expect(affects.compareDocumentPosition(produced) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(affects).getAllByRole("button").map((button) => button.textContent)).toContain("已更新");
+    await userEvent.click(within(affects).getByRole("button", { name: "已更新" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(57, { answer: "updated" });
+    const notice = await screen.findByRole("status");
+    expect(within(notice).getByRole("button", { name: "撤销" })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledWith(57));
+  });
+
+  it("［相关］默认关、不取相关线；打开后取、出点线、按项目记住；相关 404 时写旧后台那一句", async () => {
+    const graphRelated = vi.fn(async () => ({
+      etag: 'W/"related-1-28d"',
+      related: {
+        rev: 1,
+        files: { "9": { file_id: 9, name: "接口文档.docx", ext: "docx", rel_path: "接口文档.docx", root_id: 1 } },
+        edges: [{ id: "e:rel:5", relation_id: 5, meeting_id: "b", file_id: 9, rank: 1, words: ["报价单", "驻场"], at_ms: 1000, quote: "报价单再看一下", passage: { content_key: "k", ordinal: 0, loc: "第 1 页", text: "报价单的驻场部分" } }],
+      },
+    }));
+    const first = render(
+      <WithFlags>
+        <Harness apiClient={lineClient(undefined, { graphRelated })} />
+      </WithFlags>,
+    );
+    const related = await screen.findByRole("button", { name: "相关" });
+    expect(related).toHaveAttribute("aria-pressed", "false");
+    expect(related).toHaveAttribute("title", "打开后每个节点最多 3 条");
+    expect(screen.getByRole("button", { name: "提到" })).toHaveAttribute("aria-pressed", "true");
+    expect(graphRelated).not.toHaveBeenCalled();
+    await userEvent.click(related);
+    await waitFor(() => expect(graphRelated).toHaveBeenCalledWith("p", "28d", null));
+    const line = await screen.findByRole("button", { name: "连线：共同词：报价单、驻场" });
+    expect(line.closest(".graph-edge")).toHaveClass("graph-edge--related");
+    expect(JSON.parse(window.localStorage.getItem("meeting-workbench:graph:lines.p") ?? "{}")).toEqual({ mention: true, related: true });
+    // 悬停：会上、材料两处原话
+    fireEvent.mouseEnter(line);
+    expect(await screen.findByText("会上：『报价单再看一下』· 00:00:01")).toBeInTheDocument();
+    expect(screen.getByText("材料：『报价单的驻场部分』 · 第 1 页")).toBeInTheDocument();
+    first.unmount();
+
+    forgetGraphCache();
+    render(
+      <WithFlags>
+        <Harness
+          apiClient={lineClient(undefined, {
+            graphRelated: vi.fn(async () => {
+              throw new ApiError("Not Found", 404, { detail: "Not Found" });
+            }),
+          })}
+        />
+      </WithFlags>,
+    );
+    expect(await screen.findByRole("button", { name: "相关" })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByText("后台还是旧版本，重启声档后再试")).toBeInTheDocument();
+  });
+
+  it("［提到］关掉只藏提到线，文件节点还在；没有 linksFlags 时不出［相关］", async () => {
+    const plain = render(<Harness apiClient={lineClient(undefined, { graphRelated: vi.fn() })} />);
+    await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ });
+    expect(screen.queryByRole("button", { name: "相关" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "提到" }));
+    expect(screen.queryByRole("button", { name: "连线：会上说『报价单』3 次 · 00:12:34" })).toBeNull();
+    expect(screen.getByRole("button", { name: /^文件：报价单v2.xlsx/ })).toBeInTheDocument();
+    plain.unmount();
+  });
+
+  it("悬停讨论线出字；选中有 15 条线的节点只画 12 条，面板写「还有 3 条线没画出来」，点一行选中那条线", async () => {
+    const meetings = Array.from({ length: 15 }, (_, index) => meeting(`q${String(index).padStart(2, "0")}`, index % 20));
+    const edges = meetings.map((item) => ({
+      id: `e:disc:r1:${item.meeting_id}`,
+      kind: "discussion" as const,
+      from: item.id,
+      to: "r:r1",
+      label: `你关联的 ${item.meeting_id}`,
+      meeting_id: item.meeting_id,
+      requirement_id: "r1",
+    }));
+    render(
+      <WithFlags>
+        <Harness apiClient={makeClient(payload({ meetings, edges }))} />
+      </WithFlags>,
+    );
+    const hit = await screen.findByRole("button", { name: "连线：你关联的 q00" });
+    fireEvent.mouseEnter(hit);
+    expect(await screen.findByText("你关联的 q00")).toBeInTheDocument();
+    fireEvent.mouseLeave(hit);
+    await userEvent.click(screen.getByRole("button", { name: /^需求：需求 r1/ }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(document.querySelectorAll(".graph-edge--discussion")).toHaveLength(12);
+    const section = within(panel).getByRole("heading", { name: "还有 3 条线没画出来" }).closest("section")!;
+    const rows = within(section).getAllByRole("button");
+    expect(rows).toHaveLength(3);
+    await userEvent.click(rows[0]);
+    expect(screen.getByTestId("selection").textContent).toMatch(/^e:disc:r1:q1[234]$/);
+  });
+
+  it("［图例］点开小窗，Esc 关掉", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "图例" }));
+    const dialog = screen.getByRole("dialog", { name: "图例" });
+    expect(within(dialog).getByText("琥珀色虚线：在等你回答的产出和可能过时")).toBeInTheDocument();
+    expect(within(dialog).getAllByRole("listitem")).toHaveLength(9);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "图例" })).toBeNull());
+  });
+
+  it("点状态句：在问的文件不在图上时钉上第一个并选中它；N 键在需求之后走到琥珀色文件", async () => {
+    const graph = amberGraph({
+      status: { ok: [], waiting: [{ text: "2 个文件可能过时", node_ids: ["file:900", "file:7"] }], stopped: [], note: null },
+    });
+    const apiClient = lineClient(graph, {
+      getGraphFile: vi.fn(async (fileId: number) =>
+        fileDetail({ deliverables: [], file: { ...fileDetail().file, id: fileId, name: fileId === 900 ? "报价单v9.xlsx" : "报价单v2.xlsx", rel_path: "x.xlsx" } }),
+      ),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    const canvas = await screen.findByRole("application", { name: "云图AI 关系图" });
+    fireEvent.keyDown(canvas, { key: "n" });
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("r:r1"));
+    fireEvent.keyDown(canvas, { key: "n" });
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("file:900"));
+    expect(apiClient.getGraphFile).toHaveBeenCalledWith(900);
+    expect(await screen.findByRole("button", { name: "文件：报价单v9.xlsx，可能过时" })).toBeInTheDocument();
+  });
+
+  it("状态句里的文件一个都不在图上：点了钉上第一个", async () => {
+    const graph = amberGraph({
+      status: { ok: [], waiting: [{ text: "1 个新文件等你认交付物", node_ids: ["file:901"] }], stopped: [], note: null },
+    });
+    const apiClient = lineClient(graph, {
+      getGraphFile: vi.fn(async () => fileDetail({ deliverables: [], file: { ...fileDetail().file, id: 901, name: "方案.key", rel_path: "方案.key" } })),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "1 个新文件等你认交付物" }));
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("file:901"));
+    expect(await screen.findByRole("button", { name: "文件：方案.key，等你认交付物" })).toBeInTheDocument();
+  });
+
+  const MAP = {
+    center: { id: "file:7", kind: "file" as const, file_id: 7, name: "报价单v2.xlsx", ext: "xlsx", at: "2026-09-18T10:00:00+08:00", gone: false, copies: [], folder: "商务" },
+    nodes: [
+      { id: "m:a", kind: "meeting" as const, title: "初审规则沟通 a", at: "2026-09-21T10:00:00+08:00", audio_url: "/api/media/1", caption: "9/21 初审规则沟通 a" },
+      { id: "dec:dec-1", kind: "decision" as const, text: "总价下调 5%", meeting_id: "a", meeting_caption: "9/21 初审规则沟通 a", start_ms: 754_000, at: "2026-09-21T10:12:34+08:00", audio_url: "/api/media/1" },
+    ],
+    edges: [
+      { id: "e:file:7:a", kind: "mentioned" as const, from: "m:a", to: "file:7", label: "会上说『报价单』3 次 · 00:12:34", meeting_id: "a", at_ms: 754_000, quote: "报价单发给甲方" },
+      { id: "e:aff:57", kind: "affects" as const, from: "dec:dec-1", to: "file:7", state: "ask", label: AFF_LABEL, relation_id: 57 },
+      { id: "e:in:dec-1", kind: "in_meeting" as const, from: "m:a", to: "dec:dec-1", label: "" },
+    ],
+    hidden: [{ edge_id: "e:file:7:m-40", label: "会上说『报价单』2 次", node_id: "m:m-40", node_label: "7/30 周会" }],
+    hidden_count: 1,
+  };
+
+  it("［以它为中心看］进局部图舞台：标题、节点、「还有 N 个没画出来」；［回到关系图］回来", async () => {
+    const apiClient = lineClient(undefined, {
+      graphFileMap: vi.fn(async () => MAP),
+      graphTrace: vi.fn(async () => ({})),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "以它为中心看" }));
+    expect(await screen.findByRole("heading", { name: "以『报价单v2.xlsx』为中心" })).toBeInTheDocument();
+    expect(apiClient.graphFileMap).toHaveBeenCalledWith(7, { related: false });
+    expect(screen.getByRole("button", { name: "决议：总价下调 5%" })).toBeInTheDocument();
+    expect(await screen.findByText("7/30 周会 · 会上说『报价单』2 次")).toBeInTheDocument();
+    // 局部图里文件面板没有［以它为中心看］（它就是中心），有［来龙去脉］
+    const localPanel = screen.getByRole("complementary", { name: "详情面板" });
+    expect(await within(localPanel).findByRole("button", { name: "来龙去脉" })).toBeInTheDocument();
+    expect(within(localPanel).queryByRole("button", { name: "以它为中心看" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "决议：总价下调 5%" }));
+    expect(await within(screen.getByRole("complementary", { name: "详情面板" })).findByText("9/21 初审规则沟通 a 定的")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "回到关系图" }));
+    expect(await screen.findByRole("application", { name: "云图AI 关系图" })).toBeInTheDocument();
+  });
+
+  it("挪过位置：换成新 id（替换，不压历史），写「这份文件挪到了『2026』文件夹里」", async () => {
+    const onLocalChange = vi.fn();
+    const moved = { ...MAP, center: { ...MAP.center, id: "file:8", file_id: 8, moved_from: 7, folder: "2026" } };
+    const apiClient = lineClient(undefined, { graphFileMap: vi.fn(async () => moved), graphTrace: vi.fn() });
+    function LocalHarness() {
+      const [local, setLocal] = useState<{ kind: "file"; fileId: number } | null>({ kind: "file", fileId: 7 });
+      return (
+        <ProjectGraph
+          apiClient={apiClient}
+          local={local}
+          onBack={() => {}}
+          onLocalChange={(next, options) => {
+            onLocalChange(next, options);
+            setLocal(next as { kind: "file"; fileId: number } | null);
+          }}
+          onOpenGlossary={() => {}}
+          onOpenMeeting={() => {}}
+          onOpenProject={() => {}}
+          onOpenRequirement={() => {}}
+          onSelectionChange={() => {}}
+          projectId="p"
+          projects={PROJECTS}
+          selection={null}
+        />
+      );
+    }
+    render(
+      <WithFlags>
+        <LocalHarness />
+      </WithFlags>,
+    );
+    await waitFor(() => expect(onLocalChange).toHaveBeenCalledWith({ kind: "file", fileId: 8 }, { replace: true }));
+    expect(await screen.findByText("这份文件挪到了『2026』文件夹里")).toBeInTheDocument();
+  });
+
+  it("［来龙去脉］画链，到了上限写那一句；旧后台（404 Not Found）写旧后台那一句", async () => {
+    const trace = {
+      center: { id: "file:7", kind: "file" as const, file_id: 7, name: "报价单v2.xlsx", at: "2026-09-18T10:00:00+08:00" },
+      nodes: [
+        { id: "task:t-19", kind: "task" as const, title: "写一版方案", status: "in_progress", meeting_id: "a", at: "2026-09-14T10:05:00+08:00" },
+        { id: "m:a", kind: "meeting" as const, title: "初审规则沟通 a", at: "2026-09-21T10:00:00+08:00", audio_url: "/api/media/1" },
+      ],
+      edges: [
+        { id: "e:dlv:31", kind: "deliverable" as const, from: "task:t-19", to: "file:7", label: "任务『写一版方案』的交付物 · 你标的", on_chain: true },
+        { id: "e:file:7:a", kind: "mentioned" as const, from: "m:a", to: "file:7", label: "会上说『报价单』· 00:12:34", at_ms: 754_000, on_chain: true },
+      ],
+      chain: ["task:t-19", "file:7", "m:a"],
+      center_index: 1,
+      cut: { back: false, forward: true },
+    };
+    const apiClient = lineClient(undefined, { graphFileMap: vi.fn(async () => MAP), graphTrace: vi.fn(async () => trace) });
+    const first = render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "来龙去脉" }));
+    expect(await screen.findByRole("heading", { name: "『报价单v2.xlsx』的来龙去脉" })).toBeInTheDocument();
+    expect(apiClient.graphTrace).toHaveBeenCalledWith("file:7");
+    expect(screen.getByText("往后走到 3 步为止，更晚的没展开")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "任务：写一版方案" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".local-edge--chain")).toHaveLength(2);
+    first.unmount();
+
+    forgetGraphCache();
+    const old = lineClient(undefined, {
+      graphFileMap: vi.fn(async () => {
+        throw new ApiError("Not Found", 404, { detail: "Not Found" });
+      }),
+      graphTrace: vi.fn(),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={old} />
+      </WithFlags>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ }));
+    expect(await screen.findByText("后台还是旧版本，重启声档后再试")).toBeInTheDocument();
+  });
+
+  it("悬停可能过时的线：卡片第一行线上的字，下面一行原话和时刻", async () => {
+    render(
+      <WithFlags>
+        <Harness apiClient={lineClient()} />
+      </WithFlags>,
+    );
+    fireEvent.mouseEnter(await screen.findByRole("button", { name: `连线：${AFF_LABEL}` }));
+    expect(await screen.findByText("『总价下调 5%』· 00:12:34")).toBeInTheDocument();
+  });
+
+  it("相关线的面板：会上、材料两处原话，［不相关］以后选中挪到那份文件并钉住", async () => {
+    let relatedEdges = [
+      { id: "e:rel:5", relation_id: 5, meeting_id: "a", file_id: 9, rank: 1, words: ["报价单", "驻场"], at_ms: 1000, quote: "报价单再看一下", passage: { content_key: "k", ordinal: 0, loc: "第 1 页", text: "报价单的驻场部分" } },
+    ];
+    const graphRelated = vi.fn(async () => ({
+      etag: `W/"related-${relatedEdges.length}"`,
+      related: {
+        rev: relatedEdges.length,
+        files: relatedEdges.length ? { "9": { file_id: 9, name: "接口文档.docx", ext: "docx", rel_path: "接口文档.docx", root_id: 1 } } : {},
+        edges: relatedEdges,
+      },
+    }));
+    const apiClient = lineClient(undefined, {
+      // 每次重取都是新的一份（和真的接口一样），相关线跟着重取
+      graph: vi.fn(async () => amberGraph()),
+      graphRelated,
+      getGraphFile: vi.fn(async () => fileDetail({ deliverables: [], file: { ...fileDetail().file, id: 9, name: "接口文档.docx", rel_path: "接口文档.docx" } })),
+      answerRelation: vi.fn(async () => {
+        relatedEdges = [];
+        return { relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString(), deliverable_id: null };
+      }),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "相关" }));
+    await userEvent.click(await screen.findByRole("button", { name: "连线：共同词：报价单、驻场" }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(within(panel).getByText("连线 · 相关")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "从 00:00:01 播放" }).closest("p")).toHaveTextContent("『报价单再看一下』");
+    expect(within(panel).getByRole("button", { name: "材料：第 1 页" }).closest("p")).toHaveTextContent("『报价单的驻场部分』");
+    await userEvent.click(within(panel).getByRole("button", { name: "不相关" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(5, { answer: "no" });
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("file:9"));
+    await waitFor(() => expect(graphRelated.mock.calls.length).toBeGreaterThan(1));
+    // 相关线收回以后那份文件不在相关里了，仍钉在图上、面板还在
+    expect(await screen.findByRole("button", { name: /^文件：接口文档.docx/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "连线：共同词：报价单、驻场" })).toBeNull();
+  });
+
+  it("回答以后用户换了选中：新数据到了也不再把选中挪到交付物线", async () => {
+    let current = amberGraph();
+    let hold = false;
+    const pending: Array<() => void> = [];
+    const apiClient = lineClient(undefined, {
+      graph: vi.fn(() =>
+        hold ? new Promise<GraphPayload>((resolve) => pending.push(() => resolve(current))) : Promise.resolve(current),
+      ),
+      answerRelation: vi.fn(async () => {
+        current = amberGraph({
+          edges: [
+            ...amberGraph().edges.filter((edge) => edge.id !== "e:prod:61"),
+            { id: "e:dlv:31", kind: "deliverable", from: "r:r1", to: "file:7", state: "ok", label: "任务『写一版方案』的交付物 · 你标的", deliverable_id: 31, task_id: "t-new", meeting_id: "a", at_ms: 310_000, quote: "写一版方案", file_id: 7 },
+          ],
+        });
+        hold = true;
+        return { relation: {}, undo_until: new Date(Date.now() + 600_000).toISOString(), deliverable_id: 31 };
+      }),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: `连线：${PROD_LABEL}` }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    const produced = await within(panel).findByRole("group", { name: PRODUCED.text });
+    await userEvent.click(within(produced).getByRole("button", { name: "是" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(61, { answer: "yes" });
+    await waitFor(() => expect(pending.length).toBeGreaterThan(0));
+    // 重取还没回来，用户点了一场会
+    await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    expect(screen.getByTestId("selection")).toHaveTextContent("m:a");
+    hold = false;
+    act(() => pending.splice(0).forEach((resolve) => resolve()));
+    await waitFor(() => expect(screen.queryByRole("button", { name: `连线：${PROD_LABEL}` })).toBeNull());
+    expect(screen.getByTestId("selection")).toHaveTextContent("m:a");
+  });
+
+  it("局部图里在线上回答、⌘Z 撤销：舞台都整张重取；会议到决议的线读屏名是「这场会定的」", async () => {
+    const graphFileMap = vi.fn(async () => MAP);
+    const apiClient = lineClient(undefined, { graphFileMap, graphTrace: vi.fn() });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ }));
+    expect(await screen.findByRole("heading", { name: "以『报价单v2.xlsx』为中心" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "连线：这场会定的" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: `连线：${AFF_LABEL}` }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    const affects = await within(panel).findByRole("group", { name: AFFECTS.text });
+    await userEvent.click(within(affects).getByRole("button", { name: "已更新" }));
+    await waitFor(() => expect(graphFileMap.mock.calls.length).toBeGreaterThan(1));
+    // 回答以后的重取都落定了再撤销
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    const before = graphFileMap.mock.calls.length;
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledWith(57));
+    await waitFor(() => expect(graphFileMap).toHaveBeenCalledTimes(before + 1));
+  });
+
+  it("「还有 N 个没画出来」：会议打开它的面板，文件以它为中心，旧后台的决议行走它的来龙去脉", async () => {
+    const withHidden = {
+      ...MAP,
+      hidden: [
+        {
+          edge_id: "e:file:7:m-40",
+          label: "会上说『报价单』2 次",
+          node_id: "m:m-40",
+          node_label: "7/30 周会",
+          node: { id: "m:m-40", kind: "meeting" as const, meeting_id: "m-40", title: "周会", caption: "7/30 周会", at: "2026-07-30T10:00:00+08:00", audio_url: "/api/media/40" },
+          edge: { id: "e:file:7:m-40", kind: "mentioned" as const, from: "m:m-40", to: "file:7", label: "会上说『报价单』2 次", meeting_id: "m-40", at_ms: 60_000, quote: "报价单再核一下" },
+        },
+        { edge_id: "e:aff:99", label: "7/1 定的『先按旧价』", node_id: "dec:dec-9", node_label: "决议『先按旧价』" },
+        { edge_id: "e:same:12:7", label: "同属『报价单』", node_id: "file:12", node_label: "报价单 v1.xlsx",
+          node: { id: "file:12", kind: "file" as const, file_id: 12, name: "报价单 v1.xlsx", at: "2026-07-01T10:00:00+08:00" } },
+      ],
+      hidden_count: 3,
+    };
+    const onOpenMeeting = vi.fn();
+    const graphFileMap = vi.fn(async () => withHidden);
+    const graphTrace = vi.fn(async () => ({
+      center: { id: "dec:dec-9", kind: "decision" as const, text: "先按旧价", at: "2026-07-01T10:00:00+08:00" },
+      nodes: [], edges: [], chain: ["dec:dec-9"], center_index: 0, cut: { back: false, forward: false },
+    }));
+    render(
+      <WithFlags>
+        <Harness apiClient={lineClient(undefined, { graphFileMap, graphTrace })} handlers={{ onOpenMeeting }} />
+      </WithFlags>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "7/30 周会 · 会上说『报价单』2 次" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    expect(within(panel).getByRole("heading", { name: "周会" })).toBeInTheDocument();
+    expect(within(panel).getByText("会上说『报价单』2 次")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "打开会议页 →" })).toBeInTheDocument();
+    expect(onOpenMeeting).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "以『报价单v2.xlsx』为中心" })).toBeInTheDocument();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "← 回到中心" }));
+    await userEvent.click(await screen.findByRole("button", { name: "报价单 v1.xlsx · 同属『报价单』" }));
+    await waitFor(() => expect(graphFileMap).toHaveBeenLastCalledWith(12, { related: false }));
+
+    await userEvent.click(await screen.findByRole("button", { name: "决议『先按旧价』 · 7/1 定的『先按旧价』" }));
+    await waitFor(() => expect(graphTrace).toHaveBeenCalledWith("dec:dec-9"));
+  });
+
+  it("状态只写一句：找不到活文件时不再另写「还没有会提到」；挪位置换 id 时舞台留着，不先闪「正在取」", async () => {
+    const lonely = { ...MAP, center: { ...MAP.center, gone: true }, nodes: [], edges: [], hidden: [], hidden_count: 0 };
+    const first = render(
+      <WithFlags>
+        <Harness apiClient={lineClient(undefined, { graphFileMap: vi.fn(async () => lonely), graphTrace: vi.fn() })} />
+      </WithFlags>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ }));
+    expect(await screen.findByText("这份文件已经不在资料盘里了，下面是它还在时的关系")).toBeInTheDocument();
+    expect(screen.queryByText("还没有会提到这份文件，也没有任务或决议连到它")).toBeNull();
+    expect(screen.getAllByRole("status").filter((node) => node.classList.contains("local-stage__note"))).toHaveLength(1);
+    first.unmount();
+
+    forgetGraphCache();
+    const moved = { ...MAP, center: { ...MAP.center, id: "file:8", file_id: 8, moved_from: 7, folder: "2026" } };
+    // 新 id 那次重取一直不回来：舞台仍是挪过位置那份数据
+    const graphFileMap = vi.fn((fileId: number) => (fileId === 7 ? Promise.resolve(moved) : new Promise<never>(() => {})));
+    render(
+      <WithFlags>
+        <Harness apiClient={lineClient(undefined, { graphFileMap, graphTrace: vi.fn() })} />
+      </WithFlags>,
+    );
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ }));
+    expect(await screen.findByText("这份文件挪到了『2026』文件夹里")).toBeInTheDocument();
+    await waitFor(() => expect(graphFileMap).toHaveBeenCalledWith(8, { related: false }));
+    expect(screen.queryByText("正在取这份文件的关系")).toBeNull();
+    expect(screen.getByRole("button", { name: "决议：总价下调 5%" })).toBeInTheDocument();
+  });
+
+  it("旧后台：没有 linksFlags 或客户端没有 graphFileMap 时不出［以它为中心看］［来龙去脉］", async () => {
+    render(<Harness apiClient={lineClient(undefined, { graphFileMap: vi.fn(), graphTrace: vi.fn() })} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await within(panel).findByText("报价单第一行：初审规则服务费");
+    expect(within(panel).queryByRole("button", { name: "以它为中心看" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "来龙去脉" })).toBeNull();
   });
 });

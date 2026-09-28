@@ -1,3 +1,5 @@
+import type { RelationQuestion } from "./api";
+
 export type HealthLevel = "healthy" | "degraded" | "failed" | "unknown";
 
 export interface BootstrapPayload {
@@ -8,6 +10,9 @@ export interface BootstrapPayload {
   pending_confirm_count: number;
   /** 本机打开声档时才有［在访达中显示］［打开文件夹］（3e） */
   can_reveal?: boolean;
+  /** 第四期（4a）：不是布尔值就是旧后台，第四期的控件一律不画 */
+  links_enabled?: boolean;
+  llm_configured?: boolean;
 }
 
 export interface HealthPayload {
@@ -687,6 +692,8 @@ export interface MeetingGlossary {
   corrected: MeetingGlossaryHit[];
   missed: MeetingGlossaryHit[];
   applied: { by: "auto" | "user"; count: number; at: string; can_undo: boolean } | null;
+  /** 4h：这场会听错的、材料里有正确写法的词，最多 2 个（旧后台没有这个字段，不出那两行） */
+  material_pairs?: MaterialPair[];
 }
 
 export interface MeetingDetail extends MeetingSummary {
@@ -847,6 +854,8 @@ export interface MaterialHit {
   start_ms: number | null;
   text: string;
   matched: string;
+  /** 4d：段号，［预览］定位到那一段；旧后台没有 */
+  ordinal?: number | null;
 }
 
 export interface MaterialSearchItem {
@@ -1030,6 +1039,8 @@ export interface TaskDetail extends Task {
   deliverables: Deliverable[];
   /** 3g：POST 交付物时回刚登记的那一条，［撤销］用 */
   deliverable_id?: number;
+  /** 4e：在问的产出（「是这条任务的交付物吗？」）；旧后台没有 */
+  suggestions?: RelationQuestion[];
 }
 
 export interface TaskFilters {
@@ -1101,6 +1112,74 @@ export interface ProjectBoard extends Project {
   public_glossary_count?: number;
   profile?: ProjectRecognitionProfile;
   cards?: ProjectCardsSummary;
+  /** 4h：从材料里找到的词，前 6 项（旧后台没有这个字段，块不出） */
+  glossary_candidates?: MaterialWord[];
+  glossary_candidate_total?: number;
+}
+
+// ---------------------------------------------------------------------------
+// 4h：从材料里找到的词（等你认；没有分数）
+// ---------------------------------------------------------------------------
+
+export interface MaterialWordHeard {
+  meeting: { id: string; title: string; date: string };
+  start_ms: number;
+  /** 会上的原话（逐字稿里那一段的前后几个字） */
+  quote: string;
+  audio_url: string | null;
+}
+
+export interface MaterialWord {
+  /** 按 (项目, key) 回答 */
+  key: string;
+  term: string;
+  /** 原词是已有词条时：［记到『…』］只给那条加错写 */
+  existing_term: { id: string; term: string } | null;
+  /** 会上可能听成的写法，最多 3 个 */
+  wrongs: { text: string; meetings: number }[];
+  /** 正文里出现的文件数 */
+  files: number;
+  /** 会上说过几次 */
+  spoken: number;
+  heard: MaterialWordHeard[];
+  file_names: { file_id: number; name: string }[];
+  /** 只在会上没说过时给：词前后共 40 字 */
+  file_quote: { file_id: number; quote: string } | null;
+}
+
+export interface MaterialWordsList {
+  items: MaterialWord[];
+  total: number;
+}
+
+/** 会议页词典小节：这场会听错的、待认的写法 */
+export interface MaterialPair {
+  key: string;
+  term: string;
+  wrong: string;
+  start_ms: number;
+  quote: string;
+  project: { id: string; name: string };
+}
+
+export interface MaterialWordAcceptResult {
+  term: { id: string; term: string; aliases: string[]; is_cue: boolean };
+  created: boolean;
+  added_aliases: string[];
+  skipped_aliases: string[];
+  already: boolean;
+  text: string;
+  undo_until: string;
+}
+
+export interface MaterialWordRejectResult {
+  text: string;
+  undo_until: string;
+}
+
+export interface MaterialWordUndoResult {
+  status: "pending";
+  text: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1341,6 +1420,8 @@ export interface MaterialFileInfo {
   project_name: string;
   root_online: boolean;
   gone: boolean;
+  /** 4d：［用本机应用打开］出不出（只在这台 Mac 上、只开文档图片音视频）；旧后台没有 */
+  can_open?: boolean;
 }
 
 export interface MaterialMention {
@@ -1351,6 +1432,11 @@ export interface MaterialMention {
   first_ms: number | null;
   quote: string;
   audio_url: string | null;
+  /** 4b 放宽的提到才有（字面行为 null，旧后台没有） */
+  relation_id?: number | null;
+  /** 4b：会上的那句说法，小字写「说的是『…』」代替「N 次」 */
+  phrase?: string | null;
+  via?: "stem" | "alias" | "time_hint" | null;
 }
 
 export interface MaterialDeliverable {
@@ -1366,8 +1452,36 @@ export interface MaterialFilePreview {
   state: MaterialFileState;
   preview: MaterialPreviewContent;
   mentions?: MaterialMention[];
+  /** 在几场会上被提到（先数再取，不受 mentions 最多 40 条限制）；旧后台没有 */
+  mentioned_meetings?: number;
   deliverables?: MaterialDeliverable[];
   can_reveal?: boolean;
+  /** 4d：定位的那一段（只在请求时给了段号时有；null 是找不到了） */
+  passage?: MaterialPassage | null;
+  /** 4d：「内容相关的会」最多 5 条 */
+  related_meetings?: RelatedMeeting[];
+  /** 4e：在问的可能过时和产出（影响在前）；parts=preview 和旧后台没有 */
+  questions?: RelationQuestion[];
+}
+
+/** 4d：预览定位到的那一段；stale 是文件后来改过、这是改之前读到的那段 */
+export interface MaterialPassage {
+  loc: string | null;
+  start_ms: number | null;
+  text: string;
+  stale: boolean;
+}
+
+/** 4d：「内容相关的会」的一行（这里的行有 relation_id，［不相关］走 answerRelation） */
+export interface RelatedMeeting {
+  meeting_id: string;
+  title: string;
+  date: string;
+  at_ms: number | null;
+  quote: string;
+  words: string[];
+  audio_url: string | null;
+  relation_id: number;
 }
 
 /** 冷启动：还没挂文件夹的项目找到的同名（默认勾选）或相近（默认不勾）文件夹 */
@@ -1490,6 +1604,15 @@ export interface RequirementMeeting {
   canonical_dir: string | null;
 }
 
+/** 4h：需求页［复制给 Claude Code］复制的背景（Markdown 一律绝对路径，只进剪贴板，不在界面上显示） */
+export interface RequirementContext {
+  markdown: string;
+  /** 旧［复制材料清单］的全部路径，加上卡片和交付物的路径 */
+  paths: string[];
+  /** 关联的会里，纪要卡片不在项目文件夹里的场数 */
+  cards_missing: number;
+}
+
 export interface RequirementDetail extends RequirementSummary {
   folders: RequirementFolder[];
   /** 按 recording_date 倒序 */
@@ -1535,3 +1658,89 @@ export interface ProjectMeetingRow {
   canonical_dir: string | null;
   requirements: RequirementRef[];
 }
+
+/** 4d：预览抽屉打开哪份文件；passage 定位到那一段（from 只决定那一块的标题，默认 related） */
+export interface PreviewPassage {
+  contentKey: string;
+  ordinal: number;
+  from?: "related" | "search" | "answer";
+  /** 加亮的词（共同词、搜的词） */
+  words?: string[];
+}
+
+export interface PreviewTarget {
+  fileId: number;
+  startMs?: number;
+  passage?: PreviewPassage;
+}
+
+// ---------------------------------------------------------------- 4g 项目内问答（都没有分数字段）
+
+/** 说明：busy、fts_rebuilding、materials_pending、partial、local_model，页面最多显示 2 条 */
+export interface AskNote {
+  kind: string;
+  text: string;
+}
+
+/** 一段原文。D 决议、N 纪要里的一行、T 会上原话、M 材料段落；name、loc 只给页面，不发给 AI */
+export interface AskSource {
+  id: string;
+  kind: "decision" | "minutes" | "meeting" | "material";
+  text: string;
+  quote: string;
+  start_ms: number | null;
+  meeting_id?: string;
+  decision_id?: string;
+  title?: string | null;
+  date?: string;
+  end_ms?: number;
+  audio_url?: string | null;
+  speaker?: string | null;
+  later_changed?: { date: string; decision_id: string } | null;
+  file_id?: number;
+  name?: string;
+  content_key?: string;
+  ordinal?: number;
+  loc?: string | null;
+  playable?: boolean;
+  root_online?: boolean;
+  /** 任务返回时才有：这段发出去了没有 */
+  sent?: boolean;
+}
+
+export type AskLlmState = "ok" | "no_key" | "off" | "capped";
+
+/** prepare 的返回：这一步什么都不发；confirm 不为空时［发送］正上方写它 */
+export interface AskPlan {
+  plan_id: string;
+  expires_in: number;
+  question: string;
+  counts: { meetings: number; materials: number };
+  confirm: { text: string; host: string } | null;
+  local_model: boolean;
+  llm: AskLlmState;
+  highlight: string[];
+  sources: AskSource[];
+  notes: AskNote[];
+  unattributed_meetings: number;
+}
+
+export interface AskAnswer {
+  text: string;
+  cited: string[];
+  found: boolean;
+  no_evidence: boolean;
+  truncated: boolean;
+}
+
+export type AskJob =
+  | { state: "waiting"; text: string }
+  | {
+      state: "done";
+      answer: AskAnswer;
+      sent: { meetings: number; materials: number };
+      sources: AskSource[];
+      notes: AskNote[];
+      local_model: boolean;
+    }
+  | { state: "stopped"; reason: string; text: string; retry: boolean; sources: AskSource[] };

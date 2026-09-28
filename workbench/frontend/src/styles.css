@@ -1721,6 +1721,8 @@ textarea {
 .detail-tabs button[aria-selected="true"]::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; content: ""; background: var(--signal); }
 
 .detail-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 280px; }
+/* 4d：窗口至少 1,200 像素宽时右栏（相关材料栏在最上面）从 280 加到 320 像素；要排在上一条后面才生效 */
+@media (min-width: 1200px) { .detail-workspace { grid-template-columns: minmax(0, 1fr) 320px; } }
 .editor-main { min-width: 0; padding: 20px 28px 40px 40px; }
 .engine-bar { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 13px; }
 .engine-switch { display: flex; padding: 3px; background: var(--stage); border-radius: 8px; }

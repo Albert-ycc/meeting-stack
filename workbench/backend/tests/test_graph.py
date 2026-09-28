@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from meeting_workbench import graph
 from meeting_workbench.db import Database, utc_now
 
+from .helpers import count_reads
 from .test_tasks_api import make_client, write_headers
 
 TODAY = date(2026, 9, 26)
@@ -305,6 +306,9 @@ def test_visible_nodes_stay_within_budget_under_pressure(tmp_path):
         + (1 if body["loose"] else 0)
         + len(body["cues"])
         + len(body["beacons"])
+        # 4f：文件节点（含琥珀色的固定一项）和「更多文件」
+        + len(body["files"])
+        + (1 if body["files_more"] else 0)
     )
     assert visible <= graph.VISIBLE_BUDGET
     assert len([m for m in body["meetings"] if m["ring"] == "inner"]) == graph.INNER_CAP
@@ -318,13 +322,7 @@ def test_sql_statement_count_does_not_grow_with_meetings(tmp_path):
     add_project(db, "q", "数据中台")
 
     def count_statements():
-        statements = []
-        with db.autocommit() as connection:
-            connection.set_trace_callback(
-                lambda sql: statements.append(sql) if sql.lstrip().upper().startswith("SELECT") else None
-            )
-            graph.project_graph(connection, "p", today=TODAY)
-        return len(statements)
+        return count_reads(db, lambda connection: graph.project_graph(connection, "p", today=TODAY))
 
     for index in range(10):
         add_meeting(db, f"m-{index}", ago=index, project_id="p", origin="ai")
@@ -333,6 +331,21 @@ def test_sql_statement_count_does_not_grow_with_meetings(tmp_path):
     for index in range(10, 200):
         add_meeting(db, f"m-{index}", ago=index % 120, project_id="p" if index % 3 else None)
         add_task(db, f"t-{index}", meeting_id=f"m-{index}", project_id="p")
+    # 4f：大的一轮再加上关联行、决议和交付物（⑫ 仍是一条 WITH … UNION ALL）
+    root_id = db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/材料/云图AI', ?)",
+        (utc_now(),),
+    )
+    rows = []
+    for index in range(10, 60):
+        file_id = _file(db, root_id, f"文件{index}.docx", f"k-{index}")
+        _decision(db, f"dec-{index}", f"m-{index}", f"决议{index}")
+        if index % 3:
+            rows.append(_affects(f"dec-{index}", f"m-{index}", file_id, f"k-{index}"))
+            db.execute("UPDATE tasks SET status = 'confirmed' WHERE id = ?", (f"t-{index}",))
+            rows.append(_produced(f"t-{index}", file_id, f"k-{index}"))
+            _deliver(db, f"t-{index}", root_id, f"文件{index}.docx", f"k-{index}")
+    _upsert(db, rows)
     large = count_statements()
 
     assert small == large
@@ -462,9 +475,10 @@ def test_meeting_brief_is_small_and_carries_decisions_with_times(tmp_path):
 
     assert len(response.content) < 20_000
     assert body["summary"] == "这次定了初审阈值先按 0.8 执行，月总牵头对接数理学会。"
+    # 测试里 links 循环关着，决议当场解析：id 为 null，later 到 4c 才有
     assert body["decisions"] == [
-        {"text": "阈值先按 0.8 执行", "start_ms": 754_000},
-        {"text": "驻场排班下周起改成两班", "start_ms": 1_200_000},
+        {"id": None, "text": "阈值先按 0.8 执行", "start_ms": 754_000, "later": None},
+        {"id": None, "text": "驻场排班下周起改成两班", "start_ms": 1_200_000, "later": None},
     ]
     assert body["decisions_note"] is None
     assert [task["id"] for task in body["tasks"]] == ["t-2", "t-1"]  # 待确认的排前面
@@ -573,3 +587,350 @@ def test_roots_cache_reports_disk_state_and_loose_files(tmp_path):
     assert body["loose"]["count"] == 2
     assert sorted(item["name"] for item in body["loose"]["recent"]) == ["报价单 v3.xlsx", "纪要.docx"]
     assert body["checking"] is False
+
+
+# ---------------------------------------------------------------------- 4f：第四期的线
+
+
+def _phase4(tmp_path):
+    """第四期的样本：项目 p、一个根目录、一场一天前的会 m（test_relations.setup）。延后导入，免得和
+    test_relations 互相导入。"""
+    from .test_relations import setup
+
+    return setup(tmp_path)
+
+
+def _file(db, root_id, rel, key=None, day="2026-09-01"):
+    from .test_file_mentions import add_file
+
+    file_id = add_file(db, root_id, rel, day=day)
+    if key:
+        db.execute("UPDATE material_files SET content_key = ? WHERE id = ?", (key, file_id))
+    return file_id
+
+
+def _upsert(db, rows):
+    from .test_relations import upsert
+
+    upsert(db, rows)
+
+
+def _row(**overrides):
+    from .test_relations import system_row
+
+    return system_row(**overrides)
+
+
+def _decision(db, decision_id, meeting_id, text, start_ms=754_000, ordinal=0):
+    db.execute(
+        """INSERT INTO decisions(id, meeting_id, ordinal, text, text_key, start_ms, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (decision_id, meeting_id, ordinal, text, text, start_ms, utc_now(), utc_now()),
+    )
+
+
+def _affects(decision_id, meeting_id, file_id, key):
+    return _row(kind="affects", ident=f"{decision_id}|{key}", status="suggested", origin="rule",
+                meeting_id=meeting_id, decision_id=decision_id, stem_key=None, file_id=file_id, content_key=key,
+                quote="", evidence={"rule": "value", "terms": ["总价"]})
+
+
+def _produced(task_id, file_id, key, folder="能耗看板/"):
+    return _row(kind="produced", ident=f"{task_id}|{key}", status="suggested", origin="rule", meeting_id=None,
+                task_id=task_id, stem_key=None, file_id=file_id, content_key=key, quote="",
+                evidence={"days": 3, "ref": "meeting", "folder": folder, "event_kind": "added"})
+
+
+def _deliver(db, task_id, root_id, rel_path, key, created_at=None):
+    deliverable_id = db.execute(
+        "INSERT INTO deliverables(task_id, kind, url, title, created_at) VALUES (?, 'file', 'x', 'x', ?)",
+        (task_id, created_at or utc_now()),
+    )
+    db.execute(
+        "INSERT INTO deliverable_files(deliverable_id, content_key, root_id, rel_path) VALUES (?, ?, ?, ?)",
+        (deliverable_id, key, root_id, rel_path),
+    )
+    return deliverable_id
+
+
+def _keys(value):
+    if isinstance(value, dict):
+        return set(value) | {key for item in value.values() for key in _keys(item)}
+    if isinstance(value, list):
+        return {key for item in value for key in _keys(item)}
+    return set()
+
+
+def test_project_graph_carries_phase_four_edges(tmp_path):
+    from .test_relation_read import literal, loose
+
+    db, root_id = _phase4(tmp_path)
+    quote = _file(db, root_id, "报价单.xlsx", "k-q")
+    plan = _file(db, root_id, "方案.docx", "k-plan")
+    stale = _file(db, root_id, "报价/报价单 v3.xlsx", "k-v3")
+    fresh = _file(db, root_id, "能耗看板/能耗看板方案.key", "k-key")
+    done = _file(db, root_id, "接口清单.xlsx", "k-api")
+    add_meeting(db, "m-2", ago=2, project_id="p")
+    literal(db, "m", "报价单", quote, count=3)
+    loose(db, "m-2", "方案", plan)
+    add_requirement(db, "r-2", "p", "能耗看板")
+    add_task(db, "t-19", meeting_id="m", project_id="p", status="confirmed", requirement_id="r-2")
+    add_task(db, "t-12", meeting_id="m-2", project_id="p", status="in_progress")
+    db.execute("UPDATE tasks SET title = '写一版方案', anchor_ms = 310000, anchor_quote = '写一版方案，周五前给' WHERE id = 't-19'")
+    db.execute("UPDATE tasks SET title = '整理接口清单', anchor_ms = 95000, anchor_quote = '接口清单这周整理出来' WHERE id = 't-12'")
+    _decision(db, "dec-a", "m", "总价下调 5%")
+    _upsert(db, [_affects("dec-a", "m", stale, "k-v3"), _produced("t-19", fresh, "k-key")])
+    deliverable_id = _deliver(db, "t-12", root_id, "接口清单.xlsx", "k-api")
+
+    assert count_reads(db, lambda connection: graph.project_graph(connection, "p", today=TODAY)) == 12
+    body = build(db, "p")
+    edges = {edge["id"]: edge for edge in body["edges"]}
+    rid = {row["kind"]: row["id"] for row in db.query_all("SELECT id, kind FROM relations")}
+    assert f"e:file:{quote}:m" in edges and f"e:file:{plan}:m-2" in edges
+    produced = edges[f"e:prod:{rid['produced']}"]
+    affects = edges[f"e:aff:{rid['affects']}"]
+    delivered = edges[f"e:dlv:{deliverable_id}"]
+    assert (produced["state"], affects["state"], delivered["state"]) == ("ask", "ask", "ok")
+    assert produced["from"] == "r:r-2" and produced["relation_ids"] == [rid["produced"]]
+    assert produced["label"] == "会后 3 天新增在『能耗看板/』，是任务『写一版方案』的交付物吗？"
+    assert (produced["meeting_id"], produced["at_ms"], produced["quote"]) == ("m", 310000, "写一版方案，周五前给")
+    assert affects["from"] == "m:m" and affects["label"].endswith("定的『总价下调 5%』，报价单 v3 之后没改过")
+    assert delivered["label"] == "任务『整理接口清单』的交付物 · 你标的" and delivered["from"] == "m:m-2"
+    assert delivered["to"] == f"file:{done}"
+    loose_edge = edges[f"e:file:{plan}:m-2"]
+    assert loose_edge["origin"] == "llm" and loose_edge["relation_id"] is not None
+    for edge in (produced, affects, delivered, loose_edge):
+        assert {"meeting_id", "at_ms", "quote"} <= set(edge)
+    assert "score" not in _keys(body)
+    files = {item["file_id"]: item for item in body["files"]}
+    assert [item["file_id"] for item in body["files"][:2]] == [stale, fresh]
+    assert files[stale]["stale"] is True and "asks_deliverable" not in files[stale]
+    assert files[fresh]["asks_deliverable"] is True and "stale" not in files[fresh]
+    assert "stale" not in files[quote]
+    waiting = {item["text"]: item["node_ids"] for item in body["status"]["waiting"]}
+    assert waiting["1 个文件可能过时"] == [f"file:{stale}"]
+    assert waiting["1 个新文件等你认交付物"] == [f"file:{fresh}"]
+
+
+def test_loose_mention_shadowing(tmp_path):
+    from .test_relation_read import literal, loose
+
+    db, root_id = _phase4(tmp_path)
+    quote = _file(db, root_id, "报价单.xlsx")
+    other = _file(db, root_id, "报价/报价单 v2.xlsx")
+    literal(db, "m", "报价单", quote)
+    relation_id = loose(db, "m", "报价单", quote)
+    mentioned = [edge for edge in build(db, "p")["edges"] if edge["kind"] == "mentioned"]
+    assert [(edge["to"], "origin" in edge) for edge in mentioned] == [(f"file:{quote}", False)]
+    db.execute("UPDATE relations SET origin = 'manual', file_id = ? WHERE id = ?", (other, relation_id))
+    mentioned = [edge for edge in build(db, "p")["edges"] if edge["kind"] == "mentioned"]
+    assert [(edge["to"], edge.get("origin")) for edge in mentioned] == [(f"file:{other}", "manual")]
+    db.execute("UPDATE relations SET status = 'rejected' WHERE id = ?", (relation_id,))
+    assert [edge for edge in build(db, "p")["edges"] if edge["kind"] == "mentioned"] == []
+
+
+def test_related_rows_never_reach_the_project_graph(tmp_path):
+    db, root_id = _phase4(tmp_path)
+    quote = _file(db, root_id, "报价单.xlsx", "k-q")
+    with db.autocommit() as connection:
+        before = graph.graph_etag(connection, "p", None, None, TODAY)
+    now = utc_now()
+    with db.transaction() as connection:
+        connection.executemany(
+        """INSERT INTO relations(kind, project_id, ident, status, origin, meeting_id, content_key, file_id, quote,
+               evidence_json, score, created_at, updated_at)
+           VALUES ('related', 'p', ?, 'shown', 'vector', 'm', 'k-q', ?, '', '{}', 0.9, ?, ?)""",
+        [(f"m|k-{index}", quote, now, now) for index in range(1000)],
+    )
+    body = build(db, "p")
+    assert "related" not in {edge["kind"] for edge in body["edges"]}
+    assert body["files"] == []
+    with db.autocommit() as connection:
+        assert graph.graph_etag(connection, "p", None, None, TODAY) == before
+
+
+def test_produced_proxy_end(tmp_path):
+    db, root_id = _phase4(tmp_path)
+    add_requirement(db, "r-shown", "p", "能耗看板", "P0")
+    for index in range(graph.REQUIREMENT_CAP):
+        add_requirement(db, f"r-{index}", "p", f"需求{index}", "P0")
+    add_requirement(db, "r-folded", "p", "老报表", "P3", updated_ago=60)
+    add_requirement(db, "r-done", "p", "旧需求", status="done")
+    add_requirement(db, "r-paused", "p", "搁着的需求", status="shelved")
+    add_meeting(db, "m-old", ago=200, project_id="p")
+    tasks = {
+        "t-req": dict(meeting_id="m", requirement_id="r-shown"),
+        "t-fold": dict(meeting_id="m", requirement_id="r-folded"),
+        # 需求已结束、暂停（不在图上也没折起来）：退到任务的会，不给一个图上没有的 r:more
+        "t-done": dict(meeting_id="m", requirement_id="r-done"),
+        "t-paused": dict(meeting_id="m", requirement_id="r-paused"),
+        "t-meet": dict(meeting_id="m", requirement_id=None),
+        "t-old": dict(meeting_id="m-old", requirement_id=None),
+        "t-none": dict(meeting_id=None, requirement_id=None),
+    }
+    rows = []
+    files = {}
+    for task_id, extra in tasks.items():
+        add_task(db, task_id, project_id="p", status="confirmed", **extra)
+        files[task_id] = _file(db, root_id, f"{task_id}.docx", f"k-{task_id}")
+        rows.append(_produced(task_id, files[task_id], f"k-{task_id}"))
+    _upsert(db, rows)
+    body = build(db, "p", window="28d")
+    ends = {edge["task_id"]: edge for edge in body["edges"] if edge["kind"] == "produced"}
+    assert ends["t-req"]["from"] == "r:r-shown"
+    assert ends["t-fold"]["from"] == "r:more"
+    assert "r-done" not in body["requirements_more"]["requirement_ids"]
+    assert ends["t-done"]["from"] == "m:m" and ends["t-paused"]["from"] == "m:m"
+    assert ends["t-meet"]["from"] == "m:m" and ends["t-meet"]["meeting_id"] == "m"
+    older = next(group for group in body["collapsed"] if "m-old" in group["meeting_ids"])
+    assert ends["t-old"]["from"] == older["id"] and ends["t-old"]["meeting_id"] == "m-old"
+    assert "t-none" not in ends
+    shown = {item["file_id"]: item for item in body["files"]}
+    assert shown[files["t-none"]]["asks_deliverable"] is True
+
+
+def test_amber_files_always_shown_up_to_cap(tmp_path):
+    from .test_relation_read import literal
+
+    db, root_id = _phase4(tmp_path)
+    for index in range(40):
+        add_term(db, f"t-{index}", f"线索词{index:02d}", "p")
+    for index in range(30):
+        meeting_id = f"m-{index}"
+        add_meeting(db, meeting_id, ago=index % 27, project_id="p", origin="ai")
+        add_link(db, meeting_id, project_id="p", evidence=[cue("p", f"线索词{index:02d}", 3, term_id=f"t-{index}")])
+    for index in range(14):
+        add_requirement(db, f"r-{index}", "p", f"需求{index}", f"P{index % 4}", updated_ago=index % 6)
+    rows = []
+    for index in range(10):
+        file_id = _file(db, root_id, f"过时/报价{index:02d}.xlsx", f"k-s{index}")
+        _decision(db, f"dec-{index}", "m", f"决议{index}", start_ms=index * 60_000, ordinal=index)
+        rows.append(_affects(f"dec-{index}", "m", file_id, f"k-s{index}"))
+    _upsert(db, rows)
+    for index in range(12):
+        file_id = _file(db, root_id, f"提到/文件{index:02d}.docx")
+        literal(db, f"m-{index}", f"文件{index:02d}", file_id, count=5)
+    body = build(db, "p")
+    stale_ids = [
+        int(row["file_id"]) for row in db.query_all(
+            "SELECT r.file_id FROM relations r JOIN decisions d ON d.id = r.decision_id ORDER BY d.start_ms DESC"
+        )
+    ]
+    assert [item["file_id"] for item in body["files"][:graph.AMBER_FILE_CAP]] == stale_ids[:8]
+    assert all(item["stale"] for item in body["files"][:8])
+    assert body["files_more"]["file_ids"][:2] == stale_ids[8:]
+    waiting = {item["text"]: item["node_ids"] for item in body["status"]["waiting"]}
+    assert waiting["10 个文件可能过时"] == [f"file:{file_id}" for file_id in stale_ids]
+    visible = (
+        1 + len(body["meetings"]) + len(body["collapsed"]) + len(body["doorstep"]) + len(body["requirements"])
+        + (1 if body["requirements_more"] else 0) + len(body["folders"]) + (1 if body["folders_more"] else 0)
+        + (1 if body["loose"] else 0) + len(body["cues"]) + len(body["beacons"])
+        + len(body["files"]) + (1 if body["files_more"] else 0)
+    )
+    assert visible <= graph.VISIBLE_BUDGET
+    assert len(body["files"]) <= graph.FILE_CAP + graph.AMBER_FILE_CAP
+
+
+def test_deliverable_edges_cap_and_moves(tmp_path):
+    db, root_id = _phase4(tmp_path)
+    add_task(db, "t", meeting_id="m", project_id="p", status="in_progress")
+    ids = []
+    for index in range(25):
+        _file(db, root_id, f"交付/清单{index:02d}.xlsx", f"k-{index}")
+        ids.append(_deliver(db, "t", root_id, f"交付/清单{index:02d}.xlsx", f"k-{index}", created_at=f"2026-09-2{index % 5}T0{index % 10}:00:00+00:00"))
+    edges = [edge for edge in build(db, "p")["edges"] if edge["kind"] == "deliverable"]
+    assert len(edges) == graph.DELIVERABLE_EDGE_CAP
+    target = edges[0]
+    old_id = target["file_id"]
+    db.execute("UPDATE material_files SET gone_at = ? WHERE id = ?", (utc_now(), old_id))
+    key = db.query_one("SELECT content_key FROM material_files WHERE id = ?", (old_id,))["content_key"]
+    new_id = _file(db, root_id, "挪过去/清单.xlsx", key)
+    moved = {edge["id"]: edge for edge in build(db, "p")["edges"] if edge["kind"] == "deliverable"}
+    assert moved[target["id"]]["to"] == f"file:{new_id}"
+    # 任务做完了：只留在时间窗里登记的
+    db.execute("UPDATE tasks SET status = 'done' WHERE id = 't'")
+    db.execute("UPDATE deliverables SET created_at = '2025-01-01T00:00:00+00:00' WHERE id != ?", (ids[0],))
+    db.execute("UPDATE deliverables SET created_at = ? WHERE id = ?", (f"{TODAY.isoformat()}T01:00:00+00:00", ids[0]))
+    assert [edge["id"] for edge in build(db, "p", window="28d")["edges"] if edge["kind"] == "deliverable"] == [f"e:dlv:{ids[0]}"]
+
+
+def test_affects_one_line_per_file_newest_decision(tmp_path):
+    db, root_id = _phase4(tmp_path)
+    add_meeting(db, "m-old", ago=6, project_id="p")
+    stale = _file(db, root_id, "报价单 v3.xlsx", "k-v3")
+    _decision(db, "dec-old", "m-old", "总价下调 3%")
+    _decision(db, "dec-new", "m", "总价下调 5%")
+    _decision(db, "dec-gone", "m", "总价不变", ordinal=1, start_ms=900_000)
+    _upsert(db, [_affects("dec-old", "m-old", stale, "k-v3"), _affects("dec-new", "m", stale, "k-v3"),
+                 _affects("dec-gone", "m", stale, "k-v3")])
+    db.execute("UPDATE decisions SET gone_at = ? WHERE id = 'dec-gone'", (utc_now(),))
+    body = build(db, "p")
+    [line] = [edge for edge in body["edges"] if edge["kind"] == "affects"]
+    assert line["decision_id"] == "dec-new" and line["from"] == "m:m"
+    assert "『总价下调 5%』" in line["label"]
+    waiting = {item["text"] for item in body["status"]["waiting"]}
+    assert "1 个文件可能过时" in waiting
+
+
+def test_phase_four_labels_vocabulary(tmp_path):
+    from .test_copy_vocabulary import problems
+    from .test_relation_questions import world
+
+    w = world(tmp_path)
+    body = w.client.get("/api/graph/projects/p").json()
+    labels = [edge["label"] for edge in body["edges"] if edge["kind"] in ("produced", "affects", "deliverable", "mentioned")]
+    labels += [item["text"] for item in body["status"]["waiting"]]
+    assert any(edge["kind"] == "affects" for edge in body["edges"])
+    assert [label for label in labels if problems(label)] == []
+    for sample in (
+        graph.affects_label("总价下调 5%", "报价单 v3.xlsx", TODAY, TODAY),
+        graph.produced_label('{"days": 3, "folder": "能耗看板/"}', "写一版方案"),
+        graph.deliverable_label("整理接口清单"),
+    ):
+        assert problems(sample) == []
+
+
+def test_project_graph_timing_with_all_kinds(tmp_path):
+    """200 场会、2 万个文件、四类线都有：语句数正好 12 是硬断言；p95 超过 80 毫秒只提醒（Mac 上看 M4）。"""
+    import warnings
+
+    from .test_relation_read import literal
+
+    db, root_id = _phase4(tmp_path)
+    now = utc_now()
+    with db.transaction() as connection:
+        connection.executemany(
+        """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns, zone,
+               seen_at, content_key)
+           VALUES (?, ?, ?, ?, ?, ?, 'xlsx', 1, ?, 'normal', ?, ?)""",
+        [(root_id, f"d{index % 50}/文件{index}.xlsx", f"d{index % 50}", f"文件{index}.xlsx", f"文件{index}",
+          f"文件{index}", 1_700_000_000_000_000_000 + index, now, f"k-{index}") for index in range(20_000)],
+    )
+    add_requirement(db, "r", "p", "能耗看板")
+    rows = []
+    for index in range(200):
+        meeting_id = f"m-{index}"
+        add_meeting(db, meeting_id, ago=index % 150, project_id="p")
+        literal(db, meeting_id, f"文件{index}", index + 1, count=2)
+        _decision(db, f"dec-{index}", meeting_id, f"决议{index}")
+        if index % 4 == 0:
+            add_task(db, f"t-{index}", meeting_id=meeting_id, project_id="p", status="confirmed", requirement_id="r")
+            rows.append(_produced(f"t-{index}", index + 300, f"k-{index + 299}"))
+            _deliver(db, f"t-{index}", root_id, f"d{(index + 600) % 50}/文件{index + 600}.xlsx", f"k-{index + 600}")
+        if index % 3 == 0:
+            rows.append(_affects(f"dec-{index}", meeting_id, index + 1000, f"k-{index + 999}"))
+        rows.append(_row(ident=f"{meeting_id}|松{index}", meeting_id=meeting_id, stem_key=f"松{index}",
+                         file_id=index + 2000, content_key=f"k-{index + 1999}"))
+    _upsert(db, rows)
+    assert count_reads(db, lambda connection: graph.project_graph(connection, "p", today=TODAY)) == 12
+    body = build(db, "p")
+    kinds = {edge["kind"] for edge in body["edges"]}
+    assert {"mentioned", "produced", "affects", "deliverable"} <= kinds
+    timings = []
+    for _ in range(20):
+        started = time.perf_counter()
+        build(db, "p")
+        timings.append((time.perf_counter() - started) * 1000)
+    p95 = sorted(timings)[18]
+    if p95 > 80:
+        warnings.warn(f"project_graph p95 {p95:.1f} 毫秒，超过 80 毫秒（Mac 上再看 M4）", stacklevel=1)

@@ -155,6 +155,44 @@
   stroke-width: 1.1;
 }
 
+/* 4f：在问的产出、可能过时：琥珀色虚线 6 5，宽 1.5，没有动画（不用 review 的流动） */
+.graph-edge--ask .graph-edge__line {
+  stroke: var(--warn);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+  animation: none;
+}
+
+/* 4f：交付物：实线带箭头 */
+.graph-edge--deliverable .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.45);
+  stroke-width: 1.4;
+}
+
+/* 4f：相关：浅灰点线 1 5，圆头 */
+.graph-edge--related .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.32);
+  stroke-width: 1.6;
+  stroke-dasharray: 1 5;
+  stroke-linecap: round;
+}
+
+.graph-arrow path {
+  fill: rgb(var(--fg-rgb) / 0.45);
+}
+
+.graph-arrow--ask path {
+  fill: var(--warn);
+}
+
+.graph-edge__ask circle {
+  stroke: var(--warn);
+}
+
+.graph-edge__ask text {
+  fill: var(--warn);
+}
+
 .graph-edge__quote circle {
   fill: var(--stage);
   stroke: rgb(var(--fg-rgb) / 0.18);
@@ -204,6 +242,37 @@
   box-shadow: 0 4px 12px rgb(0 0 0 / calc(0.18 * var(--shadow-k)));
   transform: translate(-50%, -50%);
   pointer-events: none;
+}
+
+/* 4f：悬停一条线时的卡片：第一行线上的字，下面一两行原话 */
+.graph-edge__label--card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 9px;
+  line-height: 1.2;
+  border-radius: var(--r-sm, 6px);
+}
+
+.graph-edge__label--card small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.graph-edge--ask.is-lit .graph-edge__line {
+  stroke: var(--warn);
+}
+
+.graph-edge--related.is-lit .graph-edge__line,
+.graph-edge--deliverable.is-lit .graph-edge__line {
+  stroke: rgb(var(--fg-rgb) / 0.6);
+}
+
+/* 4f：琥珀色文件：名字下面一行小字 */
+.graph-file__note {
+  display: block;
+  color: var(--warn);
+  font-size: 11px;
 }
 
 .graph-edge__label--review {

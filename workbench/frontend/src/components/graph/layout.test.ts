@@ -334,4 +334,78 @@ describe("layoutStarMap 第二期的新节点", () => {
     expect(mentionLabel({ needle: "报价单", count: 3, first_ms: 754_000, source: "transcript" })).toBe("会上说『报价单』3 次 · 00:12:34");
     expect(mentionLabel({ needle: "报价单", count: 0, first_ms: null, source: "minutes" })).toBe("纪要里写到『报价单』");
   });
+
+  it("放宽的提到（4b）：会上说『说法』· 时间，两处以上「等 N 处」，和后端 mention_label 一致", () => {
+    const loose = { needle: "上周那版报价单", first_ms: 754_000, source: "transcript", relation_id: 11 };
+    expect(mentionLabel({ ...loose, count: 1 })).toBe("会上说『上周那版报价单』· 00:12:34");
+    expect(mentionLabel({ ...loose, count: 2 })).toBe("会上说『上周那版报价单』等 2 处 · 00:12:34");
+    // 字面行（relation_id 为 null）照旧写「N 次」
+    expect(mentionLabel({ ...loose, count: 2, relation_id: null })).toBe("会上说『上周那版报价单』2 次 · 00:12:34");
+  });
+});
+
+describe("layoutStarMap 第四期的琥珀色文件和相关文件", () => {
+  function file(id: number, extra: Partial<GraphFile> = {}): GraphFile {
+    return { id: `file:${id}`, kind: "file", file_id: id, name: `文件${id}.xlsx`, ext: "xlsx", rel_path: `文件${id}.xlsx`, root_id: 1, folder: "root:1", ...extra };
+  }
+  const placed = (graph: GraphPayload) => new Set(layoutStarMap(graph).nodes.map((node) => node.id));
+
+  it("琥珀色文件照 files[] 顺序先占材料槽，名字下面写「可能过时」「交付物？」，读屏名带后缀，两行框不压邻居", () => {
+    const amber = Array.from({ length: 8 }, (_, index) => file(100 + index, index < 5 ? { stale: true } : { asks_deliverable: true }));
+    const graph = payload({ files: [...amber, file(1), file(2)] });
+    const layout = layoutStarMap(graph);
+    for (const item of amber) expect(layout.byId.has(item.id)).toBe(true);
+    const stale = layout.byId.get("file:100");
+    const ask = layout.byId.get("file:107");
+    expect(stale?.kind === "file" && stale.note).toBe("可能过时");
+    expect(ask?.kind === "file" && ask.note).toBe("交付物？");
+    expect(stale?.label).toBe("文件：文件100.xlsx，可能过时");
+    expect(ask?.label).toBe("文件：文件107.xlsx，等你认交付物");
+    expect(stale?.box.h).toBe(36);
+    for (const a of layout.nodes) {
+      for (const b of layout.nodes) {
+        if (a.id !== b.id && (a.id.startsWith("file:") || b.id.startsWith("file:"))) {
+          expect(overlaps(a.box, b.box), `${a.id} × ${b.id}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("槽满时先被跳过的是排在后面的普通文件、pinned、recent，不是琥珀色的", () => {
+    const amber = Array.from({ length: 8 }, (_, index) => file(100 + index, { stale: true }));
+    const plain = Array.from({ length: 30 }, (_, index) => file(200 + index));
+    const graph = payload({
+      files: [...amber, ...plain, file(300, { pinned: true }), file(301, { recent: true })],
+      files_more: { id: "file:more", count: 3, file_ids: [1, 2, 3] },
+    });
+    const ids = placed(graph);
+    for (const item of amber) expect(ids.has(item.id)).toBe(true);
+    expect(ids.has("file:229")).toBe(false);
+    expect(ids.has("file:301")).toBe(false);
+  });
+
+  it("相关文件单独一轮在 pinned 之后、recent 之前：只剩 1 个槽时 pinned 上图、相关的不上；开关［相关］不挪别的节点", () => {
+    // 根目录在内圈：文件只能放中圈 8 个、外圈 11 个（散放占掉外圈一个），18 个普通文件以后只剩 1 个槽
+    const plain = Array.from({ length: 17 }, (_, index) => file(200 + index));
+    const base = payload({ files: [...plain, file(300, { pinned: true })] });
+    const withRelated = payload({ files: [...plain, file(300, { pinned: true }), file(400, { related: true }), file(401, { related: true })] });
+    const before = layoutStarMap(base);
+    const after = layoutStarMap(withRelated);
+    expect(after.byId.has("file:300")).toBe(true);
+    expect(after.byId.has("file:400")).toBe(false);
+    for (const node of before.nodes) {
+      const moved = after.byId.get(node.id);
+      expect(moved && [moved.x, moved.y], node.id).toEqual([node.x, node.y]);
+    }
+  });
+
+  it("N 的顺序：需求之后走在问的文件，不在图上的也列上，已经在的去重", () => {
+    const graph = payload({
+      requirements: [requirement("r1", { pending_tasks: 1 })],
+      files: [file(100, { stale: true })],
+    });
+    const layout = layoutStarMap(graph);
+    expect(attentionOrder(layout, ["file:100", "file:999", "file:100"])).toEqual(["r:r1", "file:100", "file:999"]);
+    expect(attentionOrder(layout)).toEqual(["r:r1"]);
+  });
 });

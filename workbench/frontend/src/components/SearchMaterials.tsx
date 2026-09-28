@@ -1,6 +1,6 @@
 import { copyText } from "../clipboard";
 import { formatDate, formatTime } from "../format";
-import type { MaterialHitKind, MaterialSearchItem } from "../types";
+import type { MaterialHitKind, MaterialSearchItem, PreviewPassage } from "../types";
 
 const HIT_LABELS: Record<MaterialHitKind, string> = {
   text: "正文命中",
@@ -34,7 +34,8 @@ interface SearchMaterialsProps {
   query: string;
   /** 意思相近的：不高亮，标「材料」 */
   similar?: boolean;
-  onOpenMaterial?: (fileId: number, startMs?: number) => void;
+  /** passage：4d 起［预览］带上命中的段号，抽屉打开在「搜到的这段」 */
+  onOpenMaterial?: (fileId: number, startMs?: number, passage?: PreviewPassage) => void;
   onNotice?: (text: string) => void;
 }
 
@@ -103,7 +104,19 @@ export function SearchMaterials({ items, query, similar = false, onOpenMaterial,
                 <button
                   aria-describedby={titleId}
                   className="time-anchor"
-                  onClick={() => onOpenMaterial(item.file_id)}
+                  onClick={() => {
+                    const first = item.hits.find((hit) => typeof hit.ordinal === "number");
+                    if (first && item.content_key && typeof first.ordinal === "number") {
+                      onOpenMaterial(item.file_id, undefined, {
+                        contentKey: item.content_key,
+                        ordinal: first.ordinal,
+                        from: "search",
+                        words: [first.matched || query].filter(Boolean),
+                      });
+                    } else {
+                      onOpenMaterial(item.file_id);
+                    }
+                  }}
                   type="button"
                 >
                   预览

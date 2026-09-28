@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../api";
 import type { MeetingGlossary, MeetingGlossaryHit } from "../types";
+import { MaterialWords } from "./MaterialWords";
 import "./MeetingGlossaryPanel.css";
 
 interface MeetingGlossaryPanelProps {
@@ -13,6 +14,8 @@ interface MeetingGlossaryPanelProps {
   /** 不能改时按钮上的说明；手机上不传，直接不出改纪要的按钮 */
   editBlockedReason?: string;
   isMobile: boolean;
+  /** 4h：能不能记入从材料里找到的词（手机上按 canWriteTasks）；不传当不能 */
+  canWrite?: boolean;
   /** 纪要被改过或撤销以后：提示一句并重新载入会议 */
   onMinutesChanged: (message: string) => Promise<void>;
 }
@@ -55,6 +58,7 @@ export function MeetingGlossaryPanel({
   canEdit,
   editBlockedReason,
   isMobile,
+  canWrite = false,
   onMinutesChanged,
 }: MeetingGlossaryPanelProps) {
   const [view, setView] = useState(glossary);
@@ -88,6 +92,16 @@ export function MeetingGlossaryPanel({
     }
   };
 
+  // 记入以后重查一遍（沿用上次按哪个项目查的），「可能漏纠」接着出来
+  const recheckQuietly = async () => {
+    try {
+      const result = await apiClient.checkMeetingGlossary(meetingId);
+      if (result.glossary) setView(result.glossary);
+    } catch {
+      // 重查失败不影响已经记入的词
+    }
+  };
+
   const recheck = (projectId: string | null) =>
     void run(async () => {
       const result = await apiClient.checkMeetingGlossary(meetingId, projectId);
@@ -114,8 +128,22 @@ export function MeetingGlossaryPanel({
   const editTitle = canEdit ? undefined : editBlockedReason;
   const quiet = corrected.length === 0 && missed.length === 0 && !applied;
 
+  const pairProject = view.material_pairs?.[0]?.project ?? view.meeting_project;
+
   return (
     <section aria-label="词典" className="meeting-glossary">
+      {/* 4h：这场会听错的写法，放在「按哪个项目查的」那一行上面；记入后重查，接着就是「可能漏纠」 */}
+      {pairProject && (
+        <MaterialWords
+          apiClient={apiClient}
+          canWrite={canWrite}
+          onAnswered={() => recheckQuietly()}
+          pairs={view.material_pairs}
+          projectId={pairProject.id}
+          projectName={pairProject.name ?? ""}
+          variant="meeting"
+        />
+      )}
       <p className="meeting-glossary__lead">
         <strong>词典</strong>
         <span>{basisLine(view)}</span>

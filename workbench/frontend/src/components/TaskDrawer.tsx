@@ -10,7 +10,13 @@ import { PriorityBadge } from "./RequirementBadges";
 import { isComposingKeydown } from "../keyboard";
 import "./TaskDrawer.css";
 import { useDialogFocus } from "./useDialog";
-import { NoticeBanner, useNotice } from "./Notice";
+import { NoticeBanner, UNDO_NOTICE_MS, useNotice } from "./Notice";
+import type { NoticeFn } from "./graph/panelParts";
+import { RelationQuestion } from "./links/RelationQuestion";
+import { useRelationAnswer, type RelationAnswering } from "./links/useRelationAnswer";
+
+/** 4e：任务抽屉里产出问题的问法 */
+export const TASK_ASK = "是这条任务的交付物吗？";
 
 interface TaskDrawerProps {
   apiClient: ApiClient;
@@ -72,6 +78,28 @@ export function TaskDrawer({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 4e：「是这条任务的交付物吗？」回答以后重取，提示里的［撤销］接到 useRelationAnswer 的 undo()
+  const answeringRef = useRef<RelationAnswering | null>(null);
+  const drawerNotice: NoticeFn = (message, undo, tone) =>
+    setNotice(
+      message,
+      tone ?? "success",
+      undo ? UNDO_NOTICE_MS : undefined,
+      undo?.kind === "relation"
+        ? [{ label: "撤销", onClick: () => void answeringRef.current?.undo(undo.relationId) }]
+        : undefined,
+    );
+  const answering = useRelationAnswer({
+    apiClient,
+    scope: { taskId },
+    onNotice: drawerNotice,
+    onChanged: async () => {
+      await load();
+      onChanged();
+    },
+  });
+  answeringRef.current = answering;
 
   // 关闭交互：点遮罩、按 Esc。背景滚动锁定与焦点进出由 useDialogFocus 负责。
   useEffect(() => {
@@ -234,6 +262,17 @@ export function TaskDrawer({
                     </button>
                   )}
                 </div>
+                {/* 4e：在问的产出，每个一块，在交付物列表上面 */}
+                <RelationQuestion
+                  answering={answering}
+                  apiClient={apiClient}
+                  ask={TASK_ASK}
+                  canWrite={canWrite}
+                  onNotice={drawerNotice}
+                  onOpenFile={onOpenPreview}
+                  questions={task.suggestions}
+                  scope={{ taskId }}
+                />
                 {task.deliverables.length > 0 ? (
                   <ul className="task-drawer__deliverables">
                     {task.deliverables.map((deliverable) => (

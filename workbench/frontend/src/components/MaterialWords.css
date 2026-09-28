@@ -1,0 +1,99 @@
+/* 4h：从材料里找到的词（项目页词典块、词典页、会议页词典小节） */
+.material-words {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.material-words--meeting {
+  margin: 0 0 8px;
+}
+
+.material-words__title {
+  font-size: 13px;
+}
+
+.material-words__list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.material-words__list li {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.material-words__head,
+.material-words__pair,
+.material-words__hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.material-words__buttons {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.material-words__wrongs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.material-words__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.material-words__chip button {
+  padding: 0 2px;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.material-words__heard,
+.material-words__files,
+.material-words__foot {
+  margin: 0;
+  color: var(--muted);
+}
+
+.material-words__foot {
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .material-words__buttons {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+
+  .material-words__buttons button {
+    flex: 1 1 50%;
+    min-height: 44px;
+  }
+}

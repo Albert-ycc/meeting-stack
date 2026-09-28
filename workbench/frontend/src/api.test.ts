@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api, setCsrfToken } from "./api";
+import { ApiError, api, isOldBackend, setCsrfToken } from "./api";
 
 describe("API write protection", () => {
   afterEach(() => {
@@ -465,5 +465,125 @@ describe("API write protection", () => {
     ]);
     expect(JSON.parse(String(calls[7][1].body))).toMatchObject({ source_name: "云图数据看板", meeting_ids: ["vm-1"] });
   });
+
+  it("深度关联（4a）：回答、撤销、重试、决议归需求都走带 CSRF 的 JSON 写接口", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("links-token");
+
+    await api.answerRelation(57, { answer: "updated" });
+    await api.answerRelation(61, { answer: "pick", file_id: 812 });
+    await api.undoRelation(57);
+    await api.retryLinks();
+    await api.placeDecision("dec-3f2a9c0b1d4e5f60", { placement: "picked", requirement_id: "r1" });
+    await api.placeDecision("dec-3f2a9c0b1d4e5f60", { placement: null, requirement_id: null });
+
+    const calls = fetchMock.mock.calls as [string, RequestInit][];
+    expect(calls.map(([url]) => url)).toEqual([
+      "/api/relations/57/answer",
+      "/api/relations/61/answer",
+      "/api/relations/57/undo",
+      "/api/links/retry",
+      "/api/decisions/dec-3f2a9c0b1d4e5f60/placement",
+      "/api/decisions/dec-3f2a9c0b1d4e5f60/placement",
+    ]);
+    for (const [, init] of calls) {
+      expect(init).toMatchObject({
+        method: "POST",
+        headers: expect.objectContaining({ "Content-Type": "application/json", "X-CSRF-Token": "links-token" }),
+      });
+    }
+    expect(calls.map(([, init]) => init.body)).toEqual([
+      JSON.stringify({ answer: "updated" }),
+      JSON.stringify({ answer: "pick", file_id: 812 }),
+      "{}",
+      "{}",
+      JSON.stringify({ placement: "picked", requirement_id: "r1" }),
+      JSON.stringify({ placement: null, requirement_id: null }),
+    ]);
+  });
+
+  it("决议日志和时间线（4c）：读接口的地址和查询串", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.requirementDecisions("req 1");
+    await api.projectTimeline("project-1");
+    await api.projectTimeline("project-1", { kind: "decisions", days: 7 });
+    await api.projectTimeline("project-1", { kind: "all", days: 7, before: "2026-09-20" });
+    await api.projectTimeline("project-1", { before: null });
+
+    const calls = fetchMock.mock.calls as [string, RequestInit | undefined][];
+    expect(calls.map(([url]) => url)).toEqual([
+      "/api/requirements/req%201/decisions",
+      "/api/projects/project-1/timeline",
+      "/api/projects/project-1/timeline?days=7&kind=decisions",
+      "/api/projects/project-1/timeline?before=2026-09-20&days=7&kind=all",
+      "/api/projects/project-1/timeline",
+    ]);
+    for (const [, init] of calls) expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("isOldBackend：FastAPI 的 404 \"Not Found\" 和 405 算旧后台，中文 detail 的 404 是正式回答", async () => {
+    const respond = (status: number, detail: string) =>
+      new Response(JSON.stringify({ detail }), { status, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(respond(404, "这条关联已经不在了"))
+        .mockResolvedValueOnce(respond(404, "Not Found"))
+        .mockResolvedValueOnce(respond(405, "Method Not Allowed")),
+    );
+
+    const answered = await api.answerRelation(57, { answer: "no" }).catch((reason: unknown) => reason);
+    const missing = await api.answerRelation(57, { answer: "no" }).catch((reason: unknown) => reason);
+    const notAllowed = await api.undoRelation(57).catch((reason: unknown) => reason);
+
+    expect(answered).toBeInstanceOf(ApiError);
+    expect((answered as ApiError).message).toBe("这条关联已经不在了");
+    expect(isOldBackend(answered)).toBe(false);
+    expect(isOldBackend(missing)).toBe(true);
+    expect(isOldBackend(notAllowed)).toBe(true);
+    // 别的错误都不算
+    expect(isOldBackend(new ApiError("这条已经处理过了", 409, { detail: "这条已经处理过了" }))).toBe(false);
+    expect(isOldBackend(new Error("Not Found"))).toBe(false);
+  });
 });
 
+
+describe("项目内问答的三个接口（4g）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setCsrfToken("");
+  });
+
+  it("问题只在请求体里：askPrepare、ask 是 POST，网址里没有「?」也没有问题；askJob GET 任务号", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("t");
+
+    await api.askPrepare("p1", "报价最后定了多少？");
+    await api.ask("p1", "plan-1", false);
+    await api.askJob("job-1");
+
+    const [prepareUrl, prepareInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(prepareUrl).toBe("/api/projects/p1/ask/prepare");
+    expect(prepareUrl).not.toContain("?");
+    expect(decodeURIComponent(prepareUrl)).not.toContain("报价");
+    expect(prepareInit.method).toBe("POST");
+    expect(JSON.parse(prepareInit.body as string)).toEqual({ question: "报价最后定了多少？" });
+    const [askUrl, askInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(askUrl).toBe("/api/projects/p1/ask");
+    expect(JSON.parse(askInit.body as string)).toEqual({ plan_id: "plan-1", with_materials: false });
+    const [jobUrl, jobInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(jobUrl).toBe("/api/ask/job-1");
+    expect(jobInit.method ?? "GET").toBe("GET");
+  });
+});

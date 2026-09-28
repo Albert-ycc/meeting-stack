@@ -75,3 +75,25 @@ DERIVED_TABLES: tuple[str, ...] = ("embeddings", "material_chunks_fts", "materia
 
 材料读出的文字本身（`material_contents`、`material_chunks`）和转写断点（`material_media_jobs`）**不剥**：
 它们能重算，但要重新认字、重新转写几个小时，还要资料盘插着，不符合「重启就能自动补齐」这条判据。
+
+## 深度关联（第四期）
+
+schema v16 起白名单再多三张表，都用普通 `DELETE` 清：
+
+```python
+DERIVED_TABLES: tuple[str, ...] = (
+    "embeddings", "material_chunks_fts", "material_chunk_vectors",
+    "meeting_windows", "meeting_window_passages", "meeting_related_scan",
+)
+```
+
+- `meeting_windows`：逐字稿每个 90 秒窗口的向量（约 40MB），由关联整理的后台循环从逐字稿重算。
+- `meeting_window_passages`：每个窗口对得上的材料段落，从窗口向量和材料片段重算。
+- `meeting_related_scan`：「相关」的台账。和上面两张一起清空，恢复后每场会都算「该算了」，后台循环自己补。
+- 同一个事务里删掉 `app_state` 的 `related_chunk_mark`（「相关」已经看过的最大材料向量 id）：材料向量也被清掉了，
+  要边补边算。恢复后第一次算「相关」时按那时已有的最大向量 id 重新记这个键，之后补回来的向量 id 更大，
+  走增量补上。副本里没有这三张表时不删这个键。
+
+第四期别的新表都**不剥**：`relations` 和 `glossary_candidates` 里有你的回答；`decisions`、`decision_scan`
+是决议的历史和归需求的决定；`mention_extractions` 是花钱调 AI 得来的；`material_file_events` 是过去的文件动静，
+没法重建；`glossary_mining_scan`、`glossary_mining_seeds` 很小，清掉的话每次恢复都要全部重挖。

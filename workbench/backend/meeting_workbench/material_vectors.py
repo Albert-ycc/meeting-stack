@@ -12,13 +12,18 @@
 - 片段被删时只在内存里记成作废（搜索结果连回片段时查不到的），打分时跳过；作废超过 20% 或距上次重建
   满 1 小时才整个重建，重建时先建好新的再换掉旧的。
 - 打分分块转成 float32 算（每块不超过 48MB 临时内存），范围过滤用在分数上，不给矩阵做下标。
+- 第四期 4a：_lock 只短暂拿。refresh() 在锁里只判断要不要重建、置 _rebuilding；整份重建（读最多
+  40 万行）在锁外做，同一时间只有一个重建，其余调用方照用旧矩阵；建好后在锁里整个换上。增量补的行也在
+  锁外读、锁里追加。snapshot() 在锁里取 (vectors, ids, codes, valid, n, dim) 就放开，不刷新、不复制；
+  之后追加的行落在 n 之外，扩容时旧数组留给拿着快照的一方。搜索和 4d 的相关都按快照打分。
 """
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -36,6 +41,19 @@ REBUILD_INVALID_RATIO = 0.2
 REBUILD_EVERY_SECONDS = 3600
 BLOCK_BYTES = 48 * 1024 * 1024
 FETCH = 60
+
+
+@dataclass(frozen=True)
+class MatrixSnapshot:
+    """snapshot() 交出去的一份：只看前 n 行。code_of 是内容标识到 codes 编号的对照（只增不改）。"""
+
+    vectors: np.ndarray
+    ids: np.ndarray
+    codes: np.ndarray
+    valid: np.ndarray
+    n: int
+    dim: int
+    code_of: dict[str, int]
 
 
 class _Matrix:
@@ -112,6 +130,7 @@ class MaterialVectors:
         self._lock = threading.Lock()
         self._matrix: _Matrix | None = None
         self._built_at: float | None = None
+        self._rebuilding = False
 
     @property
     def model(self) -> str:
@@ -147,7 +166,8 @@ class MaterialVectors:
                 # id 只增不复用：新片段的 id 总比游标大，游标不用回头
                 stats["ended"] = "done"
                 return stats
-            vectors = self.semantic.encode_texts([row["text"] for row in rows])
+            # 后台编码：32 条一批拿 SemanticIndex.encode_lock，和别的后台编码轮流来
+            vectors = self.semantic.encode_texts([row["text"] for row in rows], background=True)
             now = utc_now()
             with self.db.transaction() as connection:
                 for row, vector in zip(rows, vectors, strict=True):
@@ -165,9 +185,20 @@ class MaterialVectors:
             self._cursor = int(rows[-1]["id"])
             stats["embedded"] += len(rows)
 
+    def background_round(self) -> dict[str, Any]:
+        """material_embed_loop 的一轮：补向量，再顺手补内存矩阵；会议在转写时不补矩阵（整份重建时
+        内存会翻倍，把内存和 CPU 还给转写）。"""
+        stats = self.embed_round()
+        busy = stats.get("ended") == "busy" or (self.busy_check is not None and self.busy_check())
+        if not busy:
+            self.refresh()
+        stats["refreshed"] = not busy
+        return stats
+
     # ------------------------------------------------------------------ 内存矩阵
 
-    def _load(self, matrix: _Matrix | None, *, after: int, limit: int | None, recent_first: bool) -> _Matrix | None:
+    def _fetch(self, *, after: int, limit: int | None, recent_first: bool) -> Iterator[list[Any]]:
+        """按批读向量行（chunk_id、vector、content_key），不拿 _lock。"""
         if recent_first:
             sql = """SELECT v.chunk_id, v.vector, c.content_key
                        FROM material_chunk_vectors v
@@ -196,38 +227,56 @@ class MaterialVectors:
                 rows = cursor.fetchmany(4096)
                 if not rows:
                     break
-                if matrix is None:
-                    matrix = _Matrix(len(rows[0]["vector"]) // 2)
-                width = matrix.dim * 2
-                rows = [row for row in rows if len(row["vector"]) == width]
-                if not rows:
-                    continue
-                vectors = np.frombuffer(b"".join(row["vector"] for row in rows), dtype=np.float16)
-                matrix.extend(
-                    [int(row["chunk_id"]) for row in rows],
-                    [str(row["content_key"]) for row in rows],
-                    vectors.reshape(len(rows), matrix.dim),
-                )
+                yield rows
         finally:
             connection.close()
+
+    @staticmethod
+    def _append(matrix: _Matrix | None, rows: list[Any], *, only_newer: bool) -> _Matrix | None:
+        """把一批行追加进矩阵（matrix 为 None 时新建）。only_newer：增量补时只要比矩阵里都新的行，
+        两个刷新同时补同一段时不会重复。"""
+        if not rows:
+            return matrix
+        if matrix is None:
+            matrix = _Matrix(len(rows[0]["vector"]) // 2)
+        width = matrix.dim * 2
+        floor = matrix.max_id if only_newer else -1
+        rows = [row for row in rows if len(row["vector"]) == width and int(row["chunk_id"]) > floor]
+        if not rows:
+            return matrix
+        vectors = np.frombuffer(b"".join(row["vector"] for row in rows), dtype=np.float16)
+        matrix.extend(
+            [int(row["chunk_id"]) for row in rows],
+            [str(row["content_key"]) for row in rows],
+            vectors.reshape(len(rows), matrix.dim),
+        )
+        return matrix
+
+    def _load(self, *, limit: int | None, recent_first: bool) -> _Matrix | None:
+        """建一份新矩阵。不拿 _lock。"""
+        matrix: _Matrix | None = None
+        for rows in self._fetch(after=0, limit=limit, recent_first=recent_first):
+            matrix = self._append(matrix, rows, only_newer=False)
         return matrix
 
     def _rebuild(self) -> _Matrix | None:
+        """整份重建，在锁外做（读最多 40 万行）。"""
         total = int((self.db.query_one(
             "SELECT COUNT(*) AS n FROM material_chunk_vectors WHERE model = ?", (self.model,)
         ) or {"n": 0})["n"])
         if total > self.max_rows:
             logger.warning("材料向量有 %d 个片段，内存里只放最近修改的 %d 个，少放了 %d 个", total, self.max_rows, total - self.max_rows)
-            matrix = self._load(None, after=0, limit=self.max_rows, recent_first=True)
+            matrix = self._load(limit=self.max_rows, recent_first=True)
             if matrix is not None:
                 # 之后只补比现在所有片段都新的
                 top = self.db.query_one("SELECT COALESCE(MAX(chunk_id), 0) AS m FROM material_chunk_vectors WHERE model = ?", (self.model,))
                 matrix.max_id = max(matrix.max_id, int((top or {"m": 0})["m"]))
             return matrix
-        return self._load(None, after=0, limit=None, recent_first=False)
+        return self._load(limit=None, recent_first=False)
 
     def refresh(self) -> _Matrix | None:
-        """作废超过 20% 或满 1 小时整个重建（先建好新的再换）；否则只补 id 比上次大的。"""
+        """作废超过 20% 或满 1 小时整个重建（在锁外建好新的再换上）；否则只补 id 比上次大的。
+        别人正在重建时直接返回现在的矩阵。"""
         with self._lock:
             matrix = self._matrix
             now = self.clock()
@@ -237,15 +286,53 @@ class MaterialVectors:
                 or now - self._built_at >= REBUILD_EVERY_SECONDS
                 or (matrix.n > 0 and matrix.invalid / matrix.n > REBUILD_INVALID_RATIO)
             )
+            if self._rebuilding:
+                return matrix
             if stale:
-                matrix = self._rebuild()
-                self._built_at = now
+                self._rebuilding = True
             else:
+                assert matrix is not None
                 room = self.max_rows - matrix.n
-                if room > 0:
-                    matrix = self._load(matrix, after=matrix.max_id, limit=room, recent_first=False)
-            self._matrix = matrix
+                after = matrix.max_id
+        if stale:
+            try:
+                fresh = self._rebuild()
+            except BaseException:
+                with self._lock:
+                    self._rebuilding = False
+                raise
+            with self._lock:
+                self._matrix = fresh
+                self._built_at = now
+                self._rebuilding = False
+            return fresh
+        if room <= 0:
             return matrix
+        # 增量：锁外读，锁里追加（追加写在 n 之外，拿着快照的一方看不到也不受影响）
+        for rows in self._fetch(after=after, limit=room, recent_first=False):
+            with self._lock:
+                if self._matrix is not matrix:
+                    # 读的时候别人换上了新矩阵：这些行新矩阵里已经有了，或者下次再补
+                    return self._matrix
+                self._append(matrix, rows, only_newer=True)
+        return matrix
+
+    def snapshot(self) -> MatrixSnapshot | None:
+        """现在这份矩阵的快照：只在 _lock 里取几个引用就放开，不刷新、不复制。还没建过时回 None，
+        调用方当作向量没准备好（4d 的相关记 waiting；问答只按原词找）。"""
+        with self._lock:
+            matrix = self._matrix
+            if matrix is None:
+                return None
+            return MatrixSnapshot(
+                vectors=matrix.vectors,
+                ids=matrix.ids,
+                codes=matrix.codes,
+                valid=matrix.valid,
+                n=matrix.n,
+                dim=matrix.dim,
+                code_of=matrix.code_of,
+            )
 
     def forget(self, chunk_ids: list[int]) -> None:
         """搜索结果连回片段时查不到的：记成作废，打分时跳过。"""
@@ -257,36 +344,36 @@ class MaterialVectors:
 
     def search(self, query_vector: np.ndarray, *, allowed: set[str] | None, fetch: int = FETCH) -> list[tuple[int, float]]:
         """分数最高的 fetch 个片段 (id, 分数)。allowed：范围里的内容标识，None 表示不限。"""
-        matrix = self.refresh()
-        if matrix is None or matrix.n == 0:
+        self.refresh()
+        snap = self.snapshot()
+        if snap is None or snap.n == 0:
             return []
         query = np.asarray(query_vector, dtype=np.float32).reshape(-1)
-        if query.shape[0] != matrix.dim:
+        if query.shape[0] != snap.dim:
             return []
-        with self._lock:
-            n = matrix.n
-            allowed_codes = None
-            if allowed is not None:
-                allowed_codes = np.fromiter(
-                    (matrix.code_of[key] for key in allowed if key in matrix.code_of), dtype=np.int32
-                )
-                if allowed_codes.size == 0:
-                    return []
-            block = max(1024, self.block_bytes // (matrix.dim * 4))
-            best_ids: list[np.ndarray] = []
-            best_scores: list[np.ndarray] = []
-            for start in range(0, n, block):
-                end = min(n, start + block)
-                scores = matrix.vectors[start:end].astype(np.float32) @ query
-                mask = matrix.valid[start:end].copy()
-                if allowed_codes is not None:
-                    mask &= np.isin(matrix.codes[start:end], allowed_codes)
-                scores[~mask] = -np.inf
-                keep = min(fetch, end - start)
-                top = np.argpartition(-scores, keep - 1)[:keep]
-                top = top[np.isfinite(scores[top])]
-                best_ids.append(matrix.ids[start:end][top])
-                best_scores.append(scores[top])
+        n = snap.n
+        allowed_codes = None
+        if allowed is not None:
+            allowed_codes = np.fromiter(
+                (snap.code_of[key] for key in allowed if key in snap.code_of), dtype=np.int32
+            )
+            if allowed_codes.size == 0:
+                return []
+        block = max(1024, self.block_bytes // (snap.dim * 4))
+        best_ids: list[np.ndarray] = []
+        best_scores: list[np.ndarray] = []
+        for start in range(0, n, block):
+            end = min(n, start + block)
+            scores = snap.vectors[start:end].astype(np.float32) @ query
+            mask = snap.valid[start:end].copy()
+            if allowed_codes is not None:
+                mask &= np.isin(snap.codes[start:end], allowed_codes)
+            scores[~mask] = -np.inf
+            keep = min(fetch, end - start)
+            top = np.argpartition(-scores, keep - 1)[:keep]
+            top = top[np.isfinite(scores[top])]
+            best_ids.append(snap.ids[start:end][top])
+            best_scores.append(scores[top])
         if not best_ids:
             return []
         ids = np.concatenate(best_ids)

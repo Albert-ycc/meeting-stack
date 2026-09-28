@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 
 TRANSCRIPTS_DIR_NAME = "逐字稿"
 INDEX_NAME = "00 索引.md"
+# 声档自己在项目文件夹里写的文件名：4e 的 L4 不把它们当新文件，4h 的关键文件不列它们
+APP_FILE_NAMES = frozenset({INDEX_NAME})
 NOTES_HEADING = "## 我的笔记（这一行以下不会被自动覆盖）"
 _NOTES_PREFIX = "## 我的笔记"
 GENERATED_BY = "shengdang"
@@ -95,6 +97,15 @@ BACKFILL_SNOOZE_KEY = "cards_backfill_snoozed_until"
 PAUSED_KEY = "cards_paused_projects"
 NOTICES_KEY = "cards_notices"
 RETIRE_QUEUE_KEY = "cards_retire_queue"
+# 声档写过的每一份 00 索引.md：{"绝对路径": "project_id"}，只在增删时写（4h）
+INDEX_PATHS_KEY = "card_index_paths"
+
+# _write_index 的结果：盘上是声档写的这一份 / 你删掉了 generated_by，归你 / 这次写不了（盘不在、没有卡片目录）
+INDEX_OURS = "ours"
+INDEX_THEIRS = "theirs"
+INDEX_SKIPPED = "skipped"
+# 签名没变时索引不重渲；每一对（项目，根目录）最多隔这么久强制渲染一次兜底（写盘照旧先比内容）
+INDEX_FORCE_S = 600.0
 
 TASK_STATUS_LABELS = {
     "pending_confirm": "待确认",
@@ -143,6 +154,16 @@ def _json_state(connection: Any, key: str) -> list[Any]:
     except json.JSONDecodeError:
         return []
     return value if isinstance(value, list) else []
+
+
+def _index_paths_state(value: str | None) -> dict[str, str]:
+    try:
+        data = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(path): str(project_id or "") for path, project_id in data.items() if path}
 
 
 def paused_projects(connection: Any) -> set[str]:
@@ -513,11 +534,12 @@ class _Snapshot:
 
 
 class CardWriter:
-    def __init__(self, db: Database, settings: Settings):
+    def __init__(self, db: Database, settings: Settings, *, clock: Any = time.monotonic):
         self.db = db
         self.settings = settings
-        # 00 索引.md 最近一次写入的内容指纹，避免每轮都读文件比对
-        self._index_fps: dict[str, str] = {}
+        self.clock = clock
+        # 00 索引.md：（项目，根目录）→（签名，渲染时刻，结果）。签名没变、没过 10 分钟就不渲染。
+        self._index_sigs: dict[tuple[str, str], tuple[str, float, str]] = {}
 
     # ------------------------------------------------------------ 入口
 
@@ -1382,114 +1404,141 @@ class CardWriter:
 
     # ------------------------------------------------------------ 00 索引.md
 
-    def _refresh_indexes(self, round_: _Round, *, every_project: bool = False) -> None:
-        pairs = set(round_.touched)
-        if every_project:
-            with self.db.autocommit() as connection:
-                pairs |= {
-                    (row["project_id"], row["root_path"])
-                    for row in connection.execute(
-                        """SELECT DISTINCT project_id, root_path FROM meeting_cards
-                            WHERE rel_path IS NOT NULL AND state IN ('synced', 'user_edited')"""
-                    ).fetchall()
-                }
-        for project_id, root in sorted(pairs):
-            if not project_id or not root:
+    def _refresh_indexes(
+        self,
+        round_: _Round,
+        *,
+        every_project: bool = False,
+        projects: set[str] | frozenset[str] = frozenset(),
+    ) -> None:
+        """更新 00 索引.md，并收掉不再要的索引（4h 修的四个毛病）。
+
+        要写的只来自「开着卡片、没暂停的项目 → 它的第一个根目录」（_index_targets），不再看盘上
+        还有没有卡片：关掉卡片时一份都不写（毛病 1），暂停的项目不写（毛病 2），根目录最后一张卡片
+        走了以后索引照样跟着任务和需求更新（毛病 3）。every_project 时全部重渲，否则只渲这一轮碰过的
+        根目录和 projects 里点名的项目。app_state 里记着写过的每一份（毛病 4）：不再要的，根目录在线
+        就移进回收区（只动还带 generated_by 的），不在线的留着，插回来再处理。
+        """
+        with self.db.autocommit() as connection:
+            enabled = cards_enabled(connection)
+            targets = self._index_targets(connection) if enabled else {}
+            raw = read_state(connection, INDEX_PATHS_KEY)
+            known = _index_paths_state(raw)
+            if raw is None:
+                # 第一次用到：认领升级前写过的索引（它们只记在内存里），交给下面的清理
+                for row in connection.execute(
+                    """SELECT path AS root, project_id FROM project_material_roots
+                       UNION SELECT DISTINCT root_path, project_id FROM meeting_cards
+                        WHERE root_path IS NOT NULL"""
+                ).fetchall():
+                    known.setdefault(_index_path(row["root"]), row["project_id"] or "")
+        before = dict(known)
+        touched_roots = {root for _project_id, root in round_.touched if root}
+        wanted = {_index_path(root): project_id for root, project_id in targets.items()}
+        for root, project_id in sorted(targets.items()):
+            if not (every_project or root in touched_roots or project_id in projects):
                 continue
+            path = _index_path(root)
             try:
-                self._write_index(project_id, Path(root), round_)
+                outcome = self._write_index(project_id, Path(root), round_)
             except (OSError, CardWriteError) as error:
                 logger.warning("会议卡片索引写入失败 %s：%s", root, error)
+                continue
+            if outcome == INDEX_OURS:
+                known[path] = project_id
+            elif outcome == INDEX_THEIRS:
+                known.pop(path, None)  # 删掉了 generated_by 那一行：文件归你，不再记
+        # 这一轮碰过的根目录也看一眼：升级前留下、又没被认领的索引
+        candidates = set(known) | {_index_path(root) for root in touched_roots}
+        for path in sorted(candidates - set(wanted)):
+            if self._retire_index(Path(path), round_):
+                known.pop(path, None)
+        if raw is None or known != before:
+            with self.db.transaction() as connection:
+                write_state(connection, INDEX_PATHS_KEY, json.dumps(known, ensure_ascii=False, sort_keys=True))
 
-    def _write_index(self, project_id: str, root: Path, round_: _Round) -> None:
+    def _index_targets(self, connection: Any) -> dict[str, str]:
+        """要写索引的根目录 → 项目：每个没暂停的项目取第一个根目录（按 created_at, id，和卡片的算法
+        一样），这个根目录归它（_root_owner）才写，一个根目录只写一次。调用方已确认卡片开着。"""
+        paused = paused_projects(connection)
+        targets: dict[str, str] = {}
+        for row in connection.execute(
+            """SELECT p.id AS project_id,
+                      (SELECT r.path FROM project_material_roots r WHERE r.project_id = p.id
+                        ORDER BY r.created_at, r.id LIMIT 1) AS root
+                 FROM projects p ORDER BY p.created_at, p.id"""
+        ).fetchall():
+            project_id, root = row["project_id"], row["root"]
+            if not root or project_id in paused or root in targets:
+                continue
+            if _root_owner(connection, root) == project_id:
+                targets[root] = project_id
+        return targets
+
+    def _retire_index(self, path: Path, round_: _Round) -> bool:
+        """收掉一份不再要的索引；返回能不能从记录里去掉（根目录不在线、找不到或不让写时留着，
+        插回来、挂载回来再处理）。"""
+        if path.name != INDEX_NAME or path.parent.name != CARDS_DIR_NAME:
+            return True  # 记录坏了：不是声档写的位置，不碰
+        root = path.parent.parent
+        state = self._root_state(str(root), round_)
+        if state in (ROOT_OFFLINE, ROOT_REFUSED, ROOT_MISSING):
+            # 找不到的根目录也留着：网络盘、挂载点掉线时看起来就是文件夹没了，回来后要能收走旧索引
+            return False
+        if state != ROOT_ONLINE:
+            return True
+        for key in [key for key in self._index_sigs if key[1] == str(root)]:
+            self._index_sigs.pop(key, None)
+        try:
+            if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+                return True
+            if not _written_by_us(path):
+                return True  # 删掉了 generated_by 那一行：归你，不碰
+            self._retire_file(path, "index")
+        except (OSError, CardWriteError) as error:
+            logger.warning("撤下会议卡片索引失败 %s：%s", path, error)
+            return False
+        return True
+
+    def _write_index(self, project_id: str, root: Path, round_: _Round) -> str:
+        """写一份索引；返回 ours（盘上是声档写的这一份）、theirs（你接手了，不碰）、skipped（这次写不了）。
+
+        先比签名（card_index.index_signature）：没变、离上次渲染不到 10 分钟就照上次的结果，不渲染；
+        渲染了也先和盘上比，一样就不写。
+        """
+        from . import card_index  # card_index 引用本模块，这里晚一点再引
+
         cards_dir = root / CARDS_DIR_NAME
         if self._root_state(str(root), round_) != ROOT_ONLINE or not cards_dir.is_dir():
-            return
+            return INDEX_SKIPPED
+        key = (project_id, str(root))
+        with self.db.autocommit() as connection:
+            sig = card_index.index_signature(connection, project_id, str(root))
+        now = self.clock()
+        cached = self._index_sigs.get(key)
+        if cached is not None and cached[0] == sig and now - cached[1] < INDEX_FORCE_S:
+            return cached[2]
         text = self.render_index(project_id, str(root))
-        fp = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        key = str(cards_dir / INDEX_NAME)
         target = cards_dir / INDEX_NAME
-        if self._index_fps.get(key) == fp and target.is_file():
-            return
+        outcome = INDEX_OURS
+        current = None
         if target.is_file():
             current = target.read_text(encoding="utf-8", errors="replace")
-            if current == text:
-                self._index_fps[key] = fp
-                return
             front, _body = split_frontmatter(current)
             if not any(line.strip() == f"generated_by: {GENERATED_BY}" for line in front or []):
-                return  # 不是声档写的，不碰
-        self._atomic_write(root, cards_dir, INDEX_NAME, text)
-        self._index_fps[key] = fp
+                outcome = INDEX_THEIRS  # 不是声档写的，不碰
+        if outcome == INDEX_OURS and current != text:
+            self._atomic_write(root, cards_dir, INDEX_NAME, text)
+        self._index_sigs[key] = (sig, now, outcome)
+        return outcome
 
     def render_index(self, project_id: str, root: str) -> str:
+        """00 索引.md 的全文（v2，card_index.py）。"""
+        from . import card_index
+
         with self.db.autocommit() as connection:
-            project = connection.execute("SELECT name FROM projects WHERE id=?", (project_id,)).fetchone()
-            cards = [
-                dict(row)
-                for row in connection.execute(
-                    """SELECT c.meeting_id, c.rel_path, c.state, m.title, m.recording_date,
-                              m.created_at, m.project_origin
-                         FROM meeting_cards c JOIN meetings m ON m.id = c.meeting_id
-                        WHERE c.project_id=? AND c.root_path=? AND c.rel_path IS NOT NULL
-                          AND c.state IN ('synced', 'user_edited')""",
-                    (project_id, root),
-                ).fetchall()
-            ]
-            tasks = [
-                dict(row)
-                for row in connection.execute(
-                    """SELECT title, status, assignee, meeting_id FROM tasks
-                        WHERE project_id=? AND status IN ('confirmed', 'in_progress')
-                        ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, created_at, id""",
-                    (project_id,),
-                ).fetchall()
-            ]
-        name = str(project["name"]) if project else ""
-        by_meeting = {card["meeting_id"]: card for card in cards}
-        cards.sort(key=lambda card: (_local_start(card | {"id": card["meeting_id"]}), card["meeting_id"]), reverse=True)
-
-        def link(card: dict[str, Any]) -> str:
-            file_name = Path(card["rel_path"]).name
-            title = _one_line(card["title"]) or Path(file_name).stem
-            return f"[{title}](<{file_name}>)"
-
-        lines = [
-            "---",
-            f"project: {_yaml(name)}",
-            f"generated_by: {GENERATED_BY}",
-            "---",
-            "",
-            "> 本文件由声档自动维护，请勿手改。把这个项目文件夹交给 Claude Code 时，先让它读这一份。",
-            "",
-            f"# {_one_line(name)} · 会议记录索引",
-            "",
-            "## 进行中的行动项",
-            "",
-        ]
-        if tasks:
-            for task in tasks:
-                parts = [
-                    _one_line(task["title"]),
-                    ASSIGNEE_LABELS.get(task.get("assignee") or "", "我"),
-                    TASK_STATUS_LABELS.get(task["status"], task["status"]),
-                ]
-                source = by_meeting.get(task.get("meeting_id") or "")
-                if source:
-                    parts.append(f"来自 {link(source)}")
-                lines.append("- " + " · ".join(parts))
-        else:
-            lines.append("暂无进行中的行动项。")
-        lines += ["", "## 会议（按时间倒序）", ""]
-        if cards:
-            for card in cards:
-                start = _local_start(card | {"id": card["meeting_id"]})
-                extra = " · AI 自动归属" if card.get("project_origin") == "ai" else ""
-                edited = " · 你改过这张卡" if card["state"] == USER_EDITED else ""
-                lines.append(f"- {start:%Y-%m-%d %H:%M} · {link(card)}{extra}{edited}")
-        else:
-            lines.append("这个项目还没有会议卡片。")
-        return "\n".join(lines) + "\n"
+            data = card_index.load_index_data(connection, project_id, root)
+        return card_index.render(data)
 
     # ------------------------------------------------------------ 查询
 
@@ -1631,14 +1680,17 @@ class CardWriter:
             return self.meeting_card(connection, meeting_id)
 
     def pause_project(self, project_id: str) -> dict[str, Any]:
-        """［不要写］：这个项目停止写卡片，已写的没改过的卡片移进回收区，改过的留在原处。"""
+        """［不要写］：这个项目停止写卡片，已写的没改过的卡片移进回收区，改过的留在原处。
+
+        这个项目的 00 索引.md 也撤下（不计进 retired），暂停期间不再写。
+        """
         self._pause(project_id)
         result = self._retire_where("c.project_id=?", (project_id,), PAUSED)
         self.dismiss_notice(project_id)
         return result
 
     def resume_project(self, project_id: str) -> dict[str, Any]:
-        """［恢复写入］：从暂停名单里拿掉，文件已经不在的卡片按新卡片重写。"""
+        """［恢复写入］：从暂停名单里拿掉，文件已经不在的卡片按新卡片重写，索引重新写。"""
         with _LOCK:
             with self.db.transaction() as connection:
                 paused = paused_projects(connection)
@@ -1667,10 +1719,15 @@ class CardWriter:
                             WHERE meeting_id=?""",
                         (utc_now(), row["meeting_id"]),
                     )
+            # 暂停时撤下的索引当场写回来（卡片目录还在时）；卡片由接着的 reconcile_project 补写
+            self._refresh_indexes(_Round(), projects={project_id})
         return {"ok": True}
 
     def retire_all(self) -> dict[str, Any]:
-        """回滚第一步：关掉卡片，没改过的移进回收区，改过的留在原处并列出来。"""
+        """回滚第一步：关掉卡片，没改过的移进回收区，改过的留在原处并列出来。
+
+        记着的 00 索引.md 只要还带 generated_by 就全部撤下；之后 reconcile 不再写索引。
+        """
         with _LOCK:
             with self.db.transaction() as connection:
                 write_state(connection, ENABLED_KEY, "0")
@@ -1784,16 +1841,9 @@ class CardWriter:
                             WHERE meeting_id=?""",
                         (reason, notes or None, 1 if forget_sync else 0, utc_now(), card.meeting_id),
                     )
-            for _project_id, root in round_.touched:
-                index = Path(root) / CARDS_DIR_NAME / INDEX_NAME
-                if reason == DISABLED and index.is_file():
-                    try:
-                        self._retire_file(index, "index")
-                    except OSError:
-                        pass
-                    self._index_fps.pop(str(index), None)
-            if reason != DISABLED:
-                self._refresh_indexes(round_)
+            # 关掉卡片时撤下记着的全部索引，暂停时撤下这个项目的索引（都不计进 retired，那是卡片数）；
+            # 其余情况更新碰过的根目录的索引。
+            self._refresh_indexes(round_)
         return {"retired": retired, "kept": kept, "skipped": skipped}
 
     # ------------------------------------------------------------ 历史补写
@@ -1925,6 +1975,18 @@ def _root_owner(connection: Any, root: str) -> str | None:
         (root,),
     ).fetchone()
     return row["project_id"] if row else None
+
+
+def _index_path(root: str) -> str:
+    return str(Path(root) / CARDS_DIR_NAME / INDEX_NAME)
+
+
+def _written_by_us(path: Path) -> bool:
+    """frontmatter 里还有 generated_by: shengdang。删掉这一行，文件就归你，声档不再碰它。"""
+    with path.open("rb") as handle:
+        head = handle.read(4096).decode("utf-8", errors="ignore")
+    front, _body = split_frontmatter(head)
+    return any(line.strip() == f"generated_by: {GENERATED_BY}" for line in front or [])
 
 
 def _safe_part(value: str) -> str:

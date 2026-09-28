@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { BAR_W, FOCUS_DECISIONS_MAX, FOCUS_TASKS_MAX, layoutMeetingFocus } from "./focusLayout";
+import { BAR_W, FOCUS_DECISIONS_MAX, FOCUS_TASKS_MAX, decisionNodeId, layoutMeetingFocus } from "./focusLayout";
 import { overlaps } from "./layout";
 import { focusPayload, focusTask as task } from "./testFixtures";
 
@@ -26,6 +26,27 @@ describe("layoutMeetingFocus", () => {
     expect(untimedDecision.y).toBeLessThan(layout.items.find((item) => item.id === "dec:0")!.y);
     expect(untimedTask.y).toBeGreaterThan(layout.items.find((item) => item.id === "task:t1")!.y);
     expect(layout.untimedLabels.map((label) => label.side).sort()).toEqual([-1, 1]);
+  });
+
+  it("决议带台账 id（4a）时节点 id 是 dec:<决议 id>，调了顺序也不变；台账落后时 id 为 null，退回下标", () => {
+    const decisions = [
+      { id: "dec-3f2a9c0b1d4e5f60", text: "初审规则按新口径执行", start_ms: 60_000, end_ms: 95_000 },
+      { id: null, text: "台账还没轮到的决议", start_ms: 120_000 },
+      { id: "dec-00aa11bb22cc33dd", text: "没写时间的决议", start_ms: null },
+    ];
+    const layout = layoutMeetingFocus(focusPayload({ decisions }));
+    expect(layout.items.filter((item) => item.kind === "decision").map((item) => item.id).sort()).toEqual([
+      "dec:1",
+      "dec:dec-00aa11bb22cc33dd",
+      "dec:dec-3f2a9c0b1d4e5f60",
+    ]);
+    const anchored = layout.items.find((item) => item.id === "dec:dec-3f2a9c0b1d4e5f60")!;
+    expect(anchored.anchorX).toBe(BAR_W * 0.1);
+
+    // 改稿调了顺序：同一条决议的节点 id 不变
+    const reordered = layoutMeetingFocus(focusPayload({ decisions: [decisions[2], decisions[0], decisions[1]] }));
+    expect(reordered.items.find((item) => item.id === "dec:dec-3f2a9c0b1d4e5f60")?.text).toBe("初审规则按新口径执行");
+    expect(decisionNodeId({ id: undefined }, 3)).toBe("dec:3");
   });
 
   it("决议最多 4 个、任务最多 6 个，其余进「+N」；任务先挑没做完的", () => {
@@ -115,5 +136,57 @@ describe("交付物小签（3g）", () => {
     // 范围包进了小签
     const right = Math.max(...boxes.map((box) => box.x + box.w));
     expect(one.bounds.x + one.bounds.w).toBeGreaterThanOrEqual(right);
+  });
+});
+
+describe("交付物小签的在问的产出（4e）", () => {
+  const file = (id: number, name: string) => ({
+    id,
+    kind: "file",
+    url: `/材料/云图AI/交付/${name}`,
+    title: "",
+    file_id: id,
+    name,
+    gone: false,
+  });
+
+  it("有 asks 的任务先显示在问的那一份：tag.ask 为真，文件名前加「?」，+N 数已登记的", () => {
+    const tasks = [
+      task("t1", 100_000, {
+        deliverables: [file(1, "旧稿.pdf"), file(2, "定稿.pdf")],
+        asks: [{ relation_id: 61, file_id: 930, name: "方案.key", ext: "key" }],
+      }),
+      task("t2", 300_000, { asks: [{ relation_id: 62, file_id: 931, name: "排期.xlsx", ext: "xlsx" }] }),
+    ];
+    const layout = layoutMeetingFocus(focusPayload({ tasks }), BAR_W, { asks: true });
+    const first = layout.items.find((item) => item.id === "task:t1")!;
+    expect(first.tag).toMatchObject({ fileId: 930, name: "方案.key", ext: "key", more: 2, ask: true });
+    expect(first.tag!.label.startsWith("?")).toBe(true);
+    const second = layout.items.find((item) => item.id === "task:t2")!;
+    expect(second.tag).toMatchObject({ fileId: 931, more: 0, ask: true });
+  });
+
+  it("没有 linksFlags（旧后台）时不画在问的那一份，小签照旧是已登记的", () => {
+    const tasks = [
+      task("t1", 100_000, {
+        deliverables: [file(1, "旧稿.pdf"), file(2, "定稿.pdf")],
+        asks: [{ relation_id: 61, file_id: 930, name: "方案.key", ext: "key" }],
+      }),
+    ];
+    for (const layout of [
+      layoutMeetingFocus(focusPayload({ tasks })),
+      layoutMeetingFocus(focusPayload({ tasks }), BAR_W, { asks: false }),
+    ]) {
+      const tag = layout.items.find((item) => item.id === "task:t1")!.tag!;
+      expect(tag).toMatchObject({ fileId: 2, name: "定稿.pdf", more: 1 });
+      expect(tag.ask).toBeUndefined();
+    }
+  });
+
+  it("没有 asks（旧后台、样本）时小签不变", () => {
+    const tasks = [task("t1", 100_000, { deliverables: [file(1, "定稿.pdf")] })];
+    const tag = layoutMeetingFocus(focusPayload({ tasks })).items.find((item) => item.id === "task:t1")!.tag!;
+    expect(tag.ask).toBeUndefined();
+    expect(tag.label.startsWith("?")).toBe(false);
   });
 });

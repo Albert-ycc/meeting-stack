@@ -13,6 +13,7 @@ import {
 } from "react";
 
 import { formatTime } from "../../format";
+import { useLinksFlags } from "../links/LinksFlagsContext";
 import { BAR_H, CARD_H, layoutMeetingFocus, msToX, xToMs, type FocusItem } from "./focusLayout";
 import type { MeetingFocus } from "./graphTypes";
 import { meetingDateLabel } from "./layout";
@@ -86,9 +87,11 @@ export function MeetingFocusView({
   // 录音条按视口宽度排，按 40px 取整，拖窗口时不每一帧重排
   const [viewWidth, setViewWidth] = useState(1000);
   const barW = Math.max(MIN_BAR_W, Math.floor((viewWidth - SIDE_PAD * 2) / 40) * 40);
+  // 4e：在问的交付物和「1 个文件可能过时」一样，只在新后台（有 linksFlags）画
+  const withAsks = useLinksFlags() !== null;
   const layout = useMemo(
-    () => (focus && focus.meeting.id === meetingId ? layoutMeetingFocus(focus, barW) : null),
-    [barW, focus, meetingId],
+    () => (focus && focus.meeting.id === meetingId ? layoutMeetingFocus(focus, barW, { asks: withAsks }) : null),
+    [barW, focus, meetingId, withAsks],
   );
   const audio = focus?.meeting.audio_url ?? null;
   const title = focus?.meeting.title ?? "";
@@ -274,9 +277,10 @@ export function MeetingFocusView({
           {layout.items.map((item) =>
             item.tag ? (
               <line
-                className="meeting-focus__deliverable"
+                // 4e：在问的产出画琥珀色虚线、不带箭头
+                className={`meeting-focus__deliverable${item.tag.ask ? " is-ask" : ""}`}
                 key={`deliverable-${item.id}`}
-                markerEnd="url(#meeting-focus-arrow)"
+                markerEnd={item.tag.ask ? undefined : "url(#meeting-focus-arrow)"}
                 x1={item.box.x + item.box.w}
                 x2={item.tag.box.x - 2}
                 y1={item.y}
@@ -382,11 +386,14 @@ export function MeetingFocusView({
             </>
           );
           const style = { left: tag.box.x, top: tag.box.y, width: tag.box.w, height: tag.box.h };
-          const label = `交付物 · 你标的：${tag.name}${tag.more > 0 ? `，另有 ${tag.more} 个` : ""}`;
+          const label = tag.ask
+            ? `交付物？：${tag.name}，等你认交付物${tag.more > 0 ? `，另有 ${tag.more} 个已登记` : ""}`
+            : `交付物 · 你标的：${tag.name}${tag.more > 0 ? `，另有 ${tag.more} 个` : ""}`;
+          const tagClass = `meeting-focus__tag${tag.ask ? " is-ask" : ""}`;
           return onOpenPreview ? (
             <button
               aria-label={`${label}，点了预览`}
-              className="meeting-focus__tag"
+              className={tagClass}
               key={`tag-${item.id}`}
               onClick={() => onOpenPreview(tag.fileId)}
               style={style}
@@ -396,7 +403,7 @@ export function MeetingFocusView({
               {content}
             </button>
           ) : (
-            <span aria-label={label} className="meeting-focus__tag" key={`tag-${item.id}`} role="img" style={style} title={tag.name}>
+            <span aria-label={label} className={tagClass} key={`tag-${item.id}`} role="img" style={style} title={tag.name}>
               {content}
             </span>
           );

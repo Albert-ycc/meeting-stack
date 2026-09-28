@@ -28,8 +28,10 @@ from urllib.parse import urlsplit
 from .attribution import ATTRIBUTION_STATE_SQL, LATEST_LINK_JOIN
 from .cards import BLOCKED, MISSING, STOP_REASONS, SYNCED, USER_EDITED
 from .db import GRAPH_REV_KEY
+from . import decisions as decisions_module
 from . import file_mentions
 from . import folder_scan
+from . import relation_read
 from .materials import (
     CARDS_DIR_NAME,
     ROOT_MISSING,
@@ -44,11 +46,7 @@ from .project_linking import DRAFT_TASK_STATUSES
 from .project_profile import light_key
 from .notify import (
     _ANCHOR,
-    _DECISION_SECTION,
-    _LIST_ITEM,
-    _SUBHEADING,
     _SUMMARY_SECTION,
-    _clean_item,
     _section_body,
     _truncate,
 )
@@ -57,7 +55,7 @@ from .tasks import OPEN_TASK_STATUSES, UNDO_WINDOW_SECONDS
 logger = logging.getLogger(__name__)
 
 # 前端缓存按这个版本失效：接口字段改了就加一，免得浏览器拿旧 ETag 命中旧结构。
-GRAPH_API_VERSION = 3
+GRAPH_API_VERSION = 4
 
 WINDOWS: dict[str, int | None] = {"7d": 7, "28d": 28, "90d": 90, "all": None}
 DEFAULT_WINDOW = "28d"
@@ -90,6 +88,9 @@ FILES_PER_MEETING = 3
 FILE_CAP = 12
 FILE_MIN = 3
 VISIBLE_BUDGET = 40
+# 4f：琥珀色文件（在问的影响、产出）最多占几个文件节点；交付物线最多几条
+AMBER_FILE_CAP = 8
+DELIVERABLE_EDGE_CAP = 20
 WEEKS = 12
 
 _OPEN = ", ".join(f"'{status}'" for status in OPEN_TASK_STATUSES)
@@ -552,20 +553,9 @@ def project_graph(
         ).fetchall()
     }
 
-    # ⑫ 会上提到的文件（不按窗口过滤：通用词干要按本项目全部的会算）
-    mention_rows = [
-        dict(row)
-        for row in connection.execute(
-            """SELECT fm.meeting_id, fm.stem_key, fm.needle, fm.count, fm.first_ms, fm.anchors_json,
-                      fm.minutes_count, fm.source,
-                      f.id AS file_id, f.name, f.ext, f.rel_path, f.root_id
-                 FROM meeting_file_mentions fm
-                 JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
-                 JOIN material_files f ON f.id = fm.file_id AND f.gone_at IS NULL
-                WHERE fm.project_id = ? AND fm.status = 'active'""",
-            (project_id,),
-        ).fetchall()
-    ]
+    # ⑫ 会上提到的文件（不按窗口过滤：通用词干要按本项目全部的会算）。v16：字面和放宽的提到一条
+    # WITH … UNION ALL 语句（relation_read.project_edges），仍算 1 条
+    mention_rows = relation_read.project_edges(connection, project_id)
 
     return _assemble(
         project=project,
@@ -605,9 +595,15 @@ def _clock_hms(ms: int | None) -> str:
 
 
 def mention_label(row: dict[str, Any]) -> str:
-    """「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」。"""
+    """「提到」线上的字：会上说『报价单』3 次 · 00:12:34；只在纪要里写到的是「纪要里写到『报价单』」；
+    放宽的提到（4b）是「会上说『上周那版报价单』· 00:12:34」，两处以上「会上说『…』等 2 处 · 00:12:34」。"""
     if row["source"] == "minutes":
         return f"纪要里写到『{row['needle']}』"
+    if row.get("relation_id") is not None:
+        # 4b 放宽的提到：needle 是会上的那句说法，「等 N 处」数的是命中处数
+        count = int(row.get("count") or 1)
+        more = f"等 {count} 处 " if count >= 2 else ""
+        return f"会上说『{row['needle']}』{more}· {_clock_hms(row['first_ms'])}"
     return f"会上说『{row['needle']}』{row['count']} 次 · {_clock_hms(row['first_ms'])}"
 
 
@@ -634,7 +630,9 @@ def _assemble(
     now: datetime,
 ) -> dict[str, Any]:
     project_id = project["id"]
-    mention_rows = mention_rows or []
+    # ⑫ 的行：提到（字面和放宽的）和 4f 的在问的产出、影响、交付物
+    ask_rows = [row for row in mention_rows or [] if row.get("kind", "mention") != "mention"]
+    mention_rows = [row for row in mention_rows or [] if row.get("kind", "mention") == "mention"]
 
     # ---- 会议：本地日期、年龄
     for row in meeting_rows:
@@ -858,7 +856,12 @@ def _assemble(
         if row["stem_key"] not in generic_stems:
             top_mentions.setdefault(row["meeting_id"], []).append(row)
     for rows in top_mentions.values():
-        rows.sort(key=lambda row: (-int(row["count"]), -int(row["minutes_count"]), row["name"]))
+        # 次数和纪要次数都相同时放宽的排在字面的后面
+        rows.sort(
+            key=lambda row: (
+                -int(row["count"]), -int(row["minutes_count"]), row.get("relation_id") is not None, row["name"]
+            )
+        )
         del rows[FILES_PER_MEETING:]
 
     def mentioned_files(meeting_ids: list[str]) -> list[int]:
@@ -869,7 +872,37 @@ def _assemble(
                 score[row["file_id"]] = (meetings + 1, count + int(row["count"]), name)
         return sorted(score, key=lambda file_id: (-score[file_id][0], -score[file_id][1], score[file_id][2], file_id))
 
-    # ---- 可见节点预算：先收会上提到的文件，再收中圈的会、线索词、需求、文件夹
+    # ---- 琥珀色文件（4f）：在问的影响每份文件只留最新的一条决议（决议没了的丢掉），按决议时刻从新到旧；
+    # 然后是在问的产出，按 created_at 从新到旧。前 AMBER_FILE_CAP 个固定画在图上，其余进 files_more；
+    # 状态句数的是全部在问的文件。
+    def decision_key(row: dict[str, Any]) -> tuple[float, int]:
+        meeting = by_meeting.get(row["decision_meeting_id"] or row["meeting_id"] or "")
+        moment = decisions_module.decision_moment(meeting, row["decision_ms"]) if meeting else None
+        return (moment.timestamp() if moment else float("-inf"), int(row["relation_id"] or 0))
+
+    affects_by_file: dict[int, dict[str, Any]] = {}
+    for row in ask_rows:
+        if row["kind"] != "affects" or row["decision_text"] is None:
+            continue
+        kept = affects_by_file.get(row["file_id"])
+        if kept is None or decision_key(row) > decision_key(kept):
+            affects_by_file[row["file_id"]] = row
+    stale_order = sorted(affects_by_file, key=lambda file_id: decision_key(affects_by_file[file_id]), reverse=True)
+    produced_rows = sorted(
+        (row for row in ask_rows if row["kind"] == "produced"),
+        key=lambda row: (row["created_at"], int(row["relation_id"] or 0)),
+        reverse=True,
+    )
+    ask_order = list(dict.fromkeys(row["file_id"] for row in produced_rows))
+    amber_all = list(dict.fromkeys(stale_order + ask_order))
+    amber_ids = amber_all[:AMBER_FILE_CAP]
+    amber_more = amber_all[AMBER_FILE_CAP:]
+    amber_set = set(amber_ids)
+    stale_set = set(stale_order)
+    ask_set = set(ask_order)
+
+    # ---- 可见节点预算：先收会上提到的文件，再收中圈的会、线索词、需求、文件夹（琥珀色文件是固定的一项，
+    # 只挤提到的文件）
     requirement_cap = REQUIREMENT_CAP
     folder_cap = FOLDER_CAP
     file_cap = FILE_CAP
@@ -895,12 +928,16 @@ def _assemble(
             + min(len(cues_all), cue_cap)
             + len(beacons)
             + len(suggested_requirements)
+            + len(amber_ids)
             + file_nodes(middle_cap)
         )
 
     def file_nodes(cap: int) -> int:
-        shown = mentioned_files([row["id"] for row in inner + middle[:cap]])
-        return min(len(shown), file_cap) + (1 if len(shown) > file_cap else 0)
+        shown = [
+            file_id for file_id in mentioned_files([row["id"] for row in inner + middle[:cap]])
+            if file_id not in amber_set
+        ]
+        return min(len(shown), file_cap) + (1 if len(shown) > file_cap or amber_more else 0)
 
     while visible_count() > VISIBLE_BUDGET and file_cap > FILE_MIN:
         file_cap -= 1
@@ -1106,28 +1143,44 @@ def _assemble(
                 }
             )
 
-    ranked_files = mentioned_files([row["id"] for row in visible_meetings])
-    shown_file_ids = ranked_files[:file_cap]
-    hidden_file_ids = ranked_files[file_cap:]
-    file_rows = {row["file_id"]: row for row in mention_rows}
+    # 文件：先放琥珀色的，再放提到的（多出来的琥珀色文件也被提到时照样能按提到上图，带着琥珀色标记）
+    ranked_files = [
+        file_id for file_id in mentioned_files([row["id"] for row in visible_meetings]) if file_id not in amber_set
+    ]
+    shown_file_ids = amber_ids + ranked_files[:file_cap]
+    shown_file_set = set(shown_file_ids)
+    hidden_file_ids = list(
+        dict.fromkeys(
+            [file_id for file_id in amber_more if file_id not in shown_file_set] + ranked_files[file_cap:]
+        )
+    )
+    file_rows = {row["file_id"]: row for row in ask_rows}
+    file_rows.update({row["file_id"]: row for row in mention_rows})
     file_meetings: dict[int, set[str]] = {}
     for row in mention_rows:
         file_meetings.setdefault(row["file_id"], set()).add(row["meeting_id"])
-    file_nodes_out = [
-        {
+
+    def file_node(file_id: int) -> dict[str, Any]:
+        row = file_rows[file_id]
+        node: dict[str, Any] = {
             "id": f"file:{file_id}",
             "kind": "file",
             "file_id": file_id,
-            "name": file_rows[file_id]["name"],
-            "ext": file_rows[file_id]["ext"],
-            "rel_path": file_rows[file_id]["rel_path"],
-            "root_id": file_rows[file_id]["root_id"],
-            "folder": f"root:{file_rows[file_id]['root_id']}",
-            "meeting_count": len(file_meetings[file_id]),
+            "name": row["name"],
+            "ext": row["ext"],
+            "rel_path": row["rel_path"],
+            "root_id": row["root_id"],
+            "folder": f"root:{row['root_id']}",
+            "meeting_count": len(file_meetings.get(file_id, ())),
         }
-        for file_id in shown_file_ids
-    ]
-    shown_file_set = set(shown_file_ids)
+        # 为假时不写这两个键（旧页面看不到也不会画琥珀色）
+        if file_id in stale_set:
+            node["stale"] = True
+        if file_id in ask_set:
+            node["asks_deliverable"] = True
+        return node
+
+    file_nodes_out = [file_node(file_id) for file_id in shown_file_ids]
     for row in visible_meetings:
         for mention in top_mentions.get(row["id"], []):
             if mention["file_id"] not in shown_file_set:
@@ -1145,8 +1198,26 @@ def _assemble(
                     "stem_key": mention["stem_key"],
                     "meeting_id": row["id"],
                     "anchors_ms": _json_list(mention["anchors_json"]),
+                    "at_ms": mention["first_ms"],
+                    **_loose_edge_fields(mention),
                 }
             )
+    edges.extend(
+        _ask_edges(
+            produced_rows=produced_rows,
+            affects_by_file=affects_by_file,
+            stale_order=stale_order,
+            deliverable_rows=[row for row in ask_rows if row["kind"] == "deliverable"],
+            by_meeting=by_meeting,
+            project_id=project_id,
+            visible_ids=visible_ids,
+            collapsed_of=collapsed_of,
+            shown_requirement_ids=shown_requirement_ids,
+            folded_requirement_ids={item["requirement_id"] for item in hidden_requirements},
+            days=days,
+            today=today,
+        )
+    )
 
     # ---- 状态句
     status = _status_sentence(
@@ -1158,6 +1229,8 @@ def _assemble(
         collapsed_of=collapsed_of,
         cards_on=cards_on,
         pending_attribution=pending_attribution,
+        stale_files=[f"file:{file_id}" for file_id in stale_order],
+        ask_files=[f"file:{file_id}" for file_id in ask_order],
     )
 
     # ---- 每周会数（滚动 7 天一桶，最右是最近 7 天）
@@ -1239,6 +1312,176 @@ def _assemble(
         "weekly": weekly,
         "moved_out": moved_out,
     }
+
+
+def _loose_edge_fields(mention: dict[str, Any]) -> dict[str, Any]:
+    """放宽的提到（4b 的数据）在线上多带的几项；字面行不带。"""
+    if mention.get("relation_id") is None:
+        return {}
+    return {
+        "origin": "manual" if mention.get("via") == "manual" else "llm",
+        "relation_id": mention["relation_id"],
+        "quote": relation_read._short(mention.get("quote") or "", relation_read.QUOTE_CHARS),
+    }
+
+
+def month_day(day: date, today: date) -> str:
+    return f"{day.month}/{day.day}" if day.year == today.year else f"{day.year}/{day.month}/{day.day}"
+
+
+def file_stem(name: str) -> str:
+    """线上的字里用的文件名（去掉扩展名）：「报价单 v3」。"""
+    head, dot, _tail = str(name or "").rpartition(".")
+    return head if dot and head else str(name or "")
+
+
+def affects_label(decision_text: str, file_name: str, day: date | None, today: date) -> str:
+    """可能过时线上的字：「9/21 定的『总价下调 5%』，报价单 v3 之后没改过」。"""
+    when = f"{month_day(day, today)} " if day else ""
+    quote = relation_read._short(decision_text, relation_read.QUOTE_CHARS)
+    return f"{when}定的『{quote}』，{file_stem(file_name)} 之后没改过"
+
+
+def produced_label(evidence_json: str | None, task_title: str | None) -> str:
+    """产出线上的字：证据加「，是任务『写一版方案』的交付物吗？」。"""
+    text = relation_read.produced_evidence_text(relation_read.public_evidence(evidence_json))
+    return f"{text}，是任务『{task_title or ''}』的交付物吗？"
+
+
+def deliverable_label(task_title: str | None) -> str:
+    return f"任务『{task_title or ''}』的交付物 · 你标的"
+
+
+def _created_day(stamp: str) -> date | None:
+    try:
+        moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone().date()
+
+
+def _ask_edges(
+    *,
+    produced_rows: list[dict[str, Any]],
+    affects_by_file: dict[int, dict[str, Any]],
+    stale_order: list[int],
+    deliverable_rows: list[dict[str, Any]],
+    by_meeting: dict[str, dict[str, Any]],
+    project_id: str,
+    visible_ids: set[str],
+    collapsed_of: dict[str, str],
+    shown_requirement_ids: set[str],
+    folded_requirement_ids: set[str],
+    days: int | None,
+    today: date,
+) -> list[dict[str, Any]]:
+    """4f 的三类线：在问的产出（e:prod:）、在问的影响（e:aff:）、交付物（e:dlv:）。起点用 _local_end：
+    需求在图上用 r:<id>，折起来用 r:more，没有需求（或需求已结束、暂停，不在图上也没折起来）用任务的
+    会或它的折叠组；都没有就不画线（不退到项目节点），文件照样是琥珀色。文件不在图上的线也给，前端
+    两端都在时才画（钉住以后就画出来）。"""
+    edges: list[dict[str, Any]] = []
+    known_requirements = shown_requirement_ids | folded_requirement_ids
+
+    def task_end(row: dict[str, Any]) -> str | None:
+        # 需求不在图上的进行中需求里（结束了、暂停了）就当没有需求，退到任务的会
+        requirement_id = row["requirement_id"] if row["requirement_id"] in known_requirements else None
+        item = {
+            "requirement_id": requirement_id,
+            "requirement_project_id": row["requirement_project_id"],
+            "meeting_id": row["meeting_id"],
+        }
+        return _local_end(item, project_id, visible_ids, collapsed_of, shown_requirement_ids)
+
+    # 产出：同一对端点留最新的一条，另给 relation_ids（produced_rows 已按新到旧排）
+    produced: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in produced_rows:
+        # 产出行的 relations.meeting_id 是空的：用任务的会
+        row = {**row, "meeting_id": row["meeting_id"] or row["task_meeting_id"]}
+        source = task_end(row)
+        if source is None:
+            continue
+        kept = produced.get((source, row["file_id"]))
+        if kept is not None:
+            kept["relation_ids"].append(row["relation_id"])
+            continue
+        produced[(source, row["file_id"])] = {
+            "id": f"e:prod:{row['relation_id']}",
+            "kind": "produced",
+            "from": source,
+            "to": f"file:{row['file_id']}",
+            "state": "ask",
+            "label": produced_label(row["evidence_json"], row["task_title"]),
+            "relation_id": row["relation_id"],
+            "relation_ids": [row["relation_id"]],
+            "task_id": row["task_id"],
+            "meeting_id": row["meeting_id"],
+            "at_ms": row["task_anchor_ms"],
+            "quote": relation_read._short(row["task_quote"], relation_read.QUOTE_CHARS),
+            "file_id": row["file_id"],
+        }
+    edges.extend(produced.values())
+
+    # 可能过时：每份文件一条（最新的决议），一端在决议所在的会或它的折叠组
+    for file_id in stale_order:
+        row = affects_by_file[file_id]
+        meeting_id = row["decision_meeting_id"] or row["meeting_id"]
+        source = _meeting_node_id(meeting_id, visible_ids, collapsed_of) if meeting_id else None
+        if source is None:
+            continue
+        meeting = by_meeting.get(meeting_id)
+        edges.append(
+            {
+                "id": f"e:aff:{row['relation_id']}",
+                "kind": "affects",
+                "from": source,
+                "to": f"file:{file_id}",
+                "state": "ask",
+                "label": affects_label(row["decision_text"], row["name"], meeting["day"] if meeting else None, today),
+                "relation_id": row["relation_id"],
+                "decision_id": row["decision_id"],
+                "meeting_id": meeting_id,
+                "at_ms": row["decision_ms"] if row["decision_ms"] is not None else row["at_ms"],
+                "quote": relation_read._short(row["decision_text"], relation_read.QUOTE_CHARS),
+                "file_id": file_id,
+            }
+        )
+
+    # 交付物：任务还没做完的，或在时间窗里登记的，最多 DELIVERABLE_EDGE_CAP 条（⑫ 已按新到旧取）
+    count = 0
+    seen: set[int] = set()
+    for row in deliverable_rows:
+        if count >= DELIVERABLE_EDGE_CAP:
+            break
+        if row["deliverable_id"] in seen:
+            continue
+        if row["task_status"] == "done":
+            day = _created_day(row["created_at"])
+            if day is None or not _in_window(_age(day, today), days):
+                continue
+        source = task_end(row)
+        if source is None:
+            continue
+        seen.add(row["deliverable_id"])
+        count += 1
+        edges.append(
+            {
+                "id": f"e:dlv:{row['deliverable_id']}",
+                "kind": "deliverable",
+                "from": source,
+                "to": f"file:{row['file_id']}",
+                "state": "ok",
+                "label": deliverable_label(row["task_title"]),
+                "deliverable_id": row["deliverable_id"],
+                "task_id": row["task_id"],
+                "meeting_id": row["meeting_id"],
+                "at_ms": row["at_ms"],
+                "quote": relation_read._short(row["quote"], relation_read.QUOTE_CHARS),
+                "file_id": row["file_id"],
+            }
+        )
+    return edges
 
 
 def _meeting_node_id(
@@ -1484,8 +1727,11 @@ def _status_sentence(
     collapsed_of: dict[str, str],
     cards_on: bool,
     pending_attribution: int,
+    stale_files: list[str] | None = None,
+    ask_files: list[str] | None = None,
 ) -> dict[str, Any]:
-    """顶部状态句的三类短语，每条带要点亮的节点。"""
+    """顶部状态句的三类短语，每条带要点亮的节点。4f：在问的文件数的是全部（不只是画出来的 8 个），
+    node_ids 也是全部，前端点这一句时钉上不在图上的第一个。"""
 
     def node_ids(meeting_ids: Iterable[str]) -> list[str]:
         ids: list[str] = []
@@ -1526,6 +1772,10 @@ def _status_sentence(
                 ),
             }
         )
+    if stale_files:
+        waiting.append({"text": f"{len(stale_files)} 个文件可能过时", "node_ids": list(stale_files)})
+    if ask_files:
+        waiting.append({"text": f"{len(ask_files)} 个新文件等你认交付物", "node_ids": list(ask_files)})
     if cards_on:
         stopped_cards = [row["id"] for row in meeting_rows if card_category(row)[0] == "stopped"]
         if stopped_cards:
@@ -1590,18 +1840,33 @@ _BRIEF_TASKS = 20
 _BRIEF_DECISIONS = 8
 _BRIEF_QUOTES = 3
 _QUOTE_CHARS = 120
-_HHMMSS = re.compile(r"\[(\d{2}):(\d{2})(?::(\d{2}))?")
+_DETAIL_CHARS = 600
 
 
 def _anchor_ms(raw: str) -> int | None:
-    match = _HHMMSS.search(raw)
-    if match is None:
-        return None
-    hours, minutes, seconds = match.group(1), match.group(2), match.group(3)
-    if seconds is None:
-        # [MM:SS]
-        return (int(hours) * 60 + int(minutes)) * 1000
-    return ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000
+    return decisions_module.parse_anchor(raw)[0]
+
+
+def _decision_entry(item: Any, *, chars: int, detail: bool) -> dict[str, Any]:
+    """简报每条 {id, text, start_ms, later}；展开一场会每条再带 end_ms、detail、earlier（4c 填）。
+
+    id 在台账跟上时是 dec-…，当场解析的为 null。存的时候不截断，显示时再截。
+    """
+    entry: dict[str, Any] = {
+        "id": item["id"],
+        "text": _truncate(item["text"], chars),
+        "start_ms": item["start_ms"],
+    }
+    if not detail:
+        entry["later"] = None
+        return entry
+    entry.update(
+        end_ms=item["end_ms"],
+        detail=_truncate(item["detail"] or "", _DETAIL_CHARS),
+        later=[],
+        earlier=[],
+    )
+    return entry
 
 
 def minutes_outline(
@@ -1609,7 +1874,8 @@ def minutes_outline(
 ) -> dict[str, Any]:
     """「一分钟摘要」和「定了什么」（带时间点）。老纪要没有决议段时明写，不说「没有决议」。
 
-    detail=True 时每条决议另带 detail：老六段式「### 决议 1 · …」下面的正文（展开一场会的面板用）。
+    决议由 decisions.parse_decisions 当场解析（id 为 null）；detail=True 时每条另带 detail 和
+    end_ms（展开一场会的面板用）。
     """
     text = markdown or ""
     summary = ""
@@ -1624,39 +1890,73 @@ def minutes_outline(
             "",
         )
         summary = _truncate(_ANCHOR.sub("", paragraph).replace("**", "").strip(), 240)
-    header = _DECISION_SECTION.search(text)
-    decision_body = _section_body(text, header)
-    items: list[dict[str, Any]] = []
-    raw_items: list[str] = []
-    if decision_body:
-        sub = list(_SUBHEADING.finditer(decision_body))
-        if sub:
-            # 老六段式：「### 决议 1 · xxx」，时间点可能写在下面的正文里
-            for index, match in enumerate(sub):
-                end = sub[index + 1].start() if index + 1 < len(sub) else len(decision_body)
-                raw_items.append(match.group(1) + " " + decision_body[match.end():end])
-        else:
-            raw_items = _LIST_ITEM.findall(decision_body)
-    for raw in raw_items:
-        lines = raw.strip().split("\n")
-        item = _clean_item(lines[0])
-        if not item or any(existing["text"] == _truncate(item, chars) for existing in items):
-            continue
-        entry: dict[str, Any] = {"text": _truncate(item, chars), "start_ms": _anchor_ms(raw)}
+    parsed = decisions_module.parse_safely(text)
+    items = [
+        _decision_entry({"id": None, **vars(item)}, chars=chars, detail=detail)
+        for item in parsed.items[:limit]
+    ]
+    return {
+        "summary": summary,
+        "decisions": items,
+        "decisions_note": decisions_module.NOTE_TEXT.get(parsed.note or ""),
+    }
+
+
+def _ledger_outline(
+    connection: Any, meeting: dict[str, Any], outline: dict[str, Any], *, limit: int, chars: int, detail: bool
+) -> dict[str, Any]:
+    """4a：台账跟上当前纪要版本时决议从 decisions 表读（带 id）；落后或 links 关着时用当场解析的。"""
+    ledger = decisions_module.ledger_decisions(connection, meeting["id"], meeting["minutes_version_id"])
+    if ledger is None:
+        return outline
+    rows, note = ledger
+    entries = [_decision_entry(row, chars=chars, detail=detail) for row in rows[:limit]]
+    if entries:
+        _fill_later(connection, meeting["id"], entries, detail=detail)
+    return {
+        **outline,
+        "decisions": entries,
+        "decisions_note": decisions_module.NOTE_TEXT.get(note or ""),
+    }
+
+
+_LATER_CHARS = 40
+
+
+def _fill_later(connection: Any, meeting_id: str, entries: list[dict[str, Any]], *, detail: bool) -> None:
+    """4c：简报每条决议填 later（最新一条 shown 的「后来改了」{date, meeting_title, text ≤ 40 字}）；展开一场会
+    填 later、earlier 的 LinkRef（带 audio_url）。多一条语句：决议连 relations 再连另一头的决议和会。"""
+    mine = "SELECT id FROM decisions WHERE meeting_id = :mid"
+    rows = connection.execute(
+        decisions_module._pair_rows_sql(
+            f"r.kind = 'later_changed' AND r.status = 'shown' "
+            f"AND (r.decision_id IN ({mine}) OR r.to_decision_id IN ({mine}))"
+        ),
+        {"mid": meeting_id},
+    ).fetchall()
+    by_id = {entry["id"]: entry for entry in entries if entry.get("id")}
+    for row in rows:
+        early = by_id.get(row["decision_id"])
+        late = by_id.get(row["to_decision_id"])
         if detail:
-            rest = " ".join(
-                cleaned
-                for cleaned in (_clean_item(line) for line in lines[1:])
-                if cleaned and not cleaned.startswith(("#", ">"))
-            )
-            entry["detail"] = _truncate(rest, 600)
-        items.append(entry)
-    note = None
-    if header is None:
-        note = "这场纪要没有决议段"
-    elif not items:
-        note = "决议段是空的"
-    return {"summary": summary, "decisions": items[:limit], "decisions_note": note}
+            if early is not None:
+                early["later"].append(decisions_module.link_ref(row, "b"))
+            if late is not None:
+                late["earlier"].append(decisions_module.link_ref(row, "a"))
+            continue
+        if early is None:
+            continue
+        end = decisions_module._end(row, "b")
+        current = early.get("_later_order")
+        if current is None or end["order"] > current:
+            early["_later_order"] = end["order"]
+            early["later"] = {
+                "date": end["meeting"]["date"],
+                "meeting_title": end["meeting"]["title"],
+                "text": _truncate(end["text"] or "", _LATER_CHARS),
+            }
+    for entry in entries:
+        entry.pop("_later_order", None)
 
 
 def meeting_brief(
@@ -1670,6 +1970,7 @@ def meeting_brief(
     meeting = connection.execute(
         """SELECT m.id, m.title, m.recording_date, m.created_at, m.duration_ms, m.project_id,
                   p.name AS project_name, p.color AS project_color,
+                  m.current_minutes_version_id AS minutes_version_id,
                   mv.markdown AS minutes_markdown,
                   (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
                     ORDER BY CASE a.source_root
@@ -1685,10 +1986,15 @@ def meeting_brief(
         raise GraphNotFound("会议不存在")
     meeting = dict(meeting)
     day = local_day(meeting["recording_date"], meeting["created_at"])
-    outline = (
+    outline = _ledger_outline(
+        connection,
+        meeting,
         minutes_outline(meeting["minutes_markdown"])
         if meeting["minutes_markdown"]
-        else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"}
+        else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"},
+        limit=_BRIEF_DECISIONS,
+        chars=90,
+        detail=False,
     )
 
     evidence_quotes: list[dict[str, Any]] = []
@@ -1775,7 +2081,8 @@ _FOCUS_TASKS = 60
 
 
 def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
-    """展开一场会：录音长度、全部决议和任务（带时间点和全文）、关联的需求、同项目的前后场。
+    """展开一场会：录音长度、全部决议和任务（带时间点和全文）、关联的需求、同项目的前后场。4e：决议带
+    stale（在问的可能过时），任务带 asks（在问的产出，最多 2 个），多 1 条 SELECT。
 
     决议和任务按时间点对齐到录音条上，画几个由前端定（决议 4 个、任务 6 个，其余「+N」）；
     这里给全量，面板里的「+N」直接列出来，不再请求。
@@ -1784,6 +2091,7 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
         """SELECT m.id, m.title, m.recording_date, m.created_at, m.duration_ms, m.project_id,
                   m.current_transcript_version_id AS transcript_version_id,
                   p.name AS project_name, p.color AS project_color,
+                  m.current_minutes_version_id AS minutes_version_id,
                   mv.markdown AS minutes_markdown,
                   (SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
                     ORDER BY CASE a.source_root
@@ -1799,12 +2107,17 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
         raise GraphNotFound("会议不存在")
     meeting = dict(meeting)
     day = local_day(meeting["recording_date"], meeting["created_at"])
-    outline = (
+    outline = _ledger_outline(
+        connection,
+        meeting,
         minutes_outline(
             meeting["minutes_markdown"], limit=_FOCUS_DECISIONS, chars=400, detail=True
         )
         if meeting["minutes_markdown"]
-        else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"}
+        else {"summary": "", "decisions": [], "decisions_note": "纪要还没写好"},
+        limit=_FOCUS_DECISIONS,
+        chars=400,
+        detail=True,
     )
 
     duration = meeting["duration_ms"]
@@ -1842,11 +2155,18 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
     # 3g：file 类交付物带上 file_id、name、gone
     for items in deliverables.values():
         decorate_deliverables(connection, items)
+    # 4e：决议在问的可能过时（stale）和任务在问的产出（asks，最多 2 个），一条 SELECT
+    stale, asks = _focus_questions(connection, meeting_id)
+    for entry in outline["decisions"]:
+        # 现读兜底（id 为 null）的决议没有关联，形状不变
+        if entry.get("id"):
+            entry["stale"] = stale.get(entry["id"], [])
     for task in tasks:
         task["title"] = _truncate(task["title"] or "", 200)
         task["detail"] = _truncate(task["detail"] or "", 600)
         task["anchor_quote"] = _truncate(task["anchor_quote"] or "", 240)
         task["deliverables"] = deliverables.get(task["id"], [])
+        task["asks"] = asks.get(task["id"], [])[:_FOCUS_ASKS]
 
     requirements = [
         dict(row)
@@ -1904,6 +2224,39 @@ def meeting_focus(connection: Any, meeting_id: str) -> dict[str, Any]:
         "previous": previous,
         "next": following,
     }
+
+
+_FOCUS_ASKS = 2
+
+
+def _focus_questions(
+    connection: Any, meeting_id: str
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    """4e：展开一场会时，这场会的决议在问的可能过时 {决议 id: [{relation_id, file_id, name}]} 和任务在问的
+    产出 {任务 id: [{relation_id, file_id, name, ext}]}（新的在前），一条语句，活文件按来历规则找。"""
+    from .relation_read import LIVE_ID_SQL
+
+    stale: dict[str, list[dict[str, Any]]] = {}
+    asks: dict[str, list[dict[str, Any]]] = {}
+    for row in connection.execute(
+        f"""SELECT r.id, r.kind, r.decision_id, r.task_id, f.id AS file_id, f.name, f.ext
+              FROM relations r
+              JOIN material_files f ON f.id = {LIVE_ID_SQL} AND f.gone_at IS NULL
+             WHERE r.status = 'suggested'
+               AND ((r.kind = 'affects' AND r.decision_id IN (SELECT id FROM decisions WHERE meeting_id = :mid))
+                    OR (r.kind = 'produced' AND r.task_id IN (SELECT id FROM tasks WHERE meeting_id = :mid)))
+             ORDER BY r.created_at DESC, r.id DESC""",
+        {"mid": meeting_id},
+    ).fetchall():
+        if row["kind"] == "affects":
+            stale.setdefault(str(row["decision_id"]), []).append(
+                {"relation_id": row["id"], "file_id": row["file_id"], "name": row["name"]}
+            )
+        else:
+            asks.setdefault(str(row["task_id"]), []).append(
+                {"relation_id": row["id"], "file_id": row["file_id"], "name": row["name"], "ext": row["ext"]}
+            )
+    return stale, asks
 
 
 def _segments_at(connection: Any, meeting_id: str, starts: list[int]) -> dict[int, str]:
@@ -2619,6 +2972,17 @@ def reveal_command(path: Path) -> list[str] | None:
     if opener is None:
         return None
     return [opener, str(path if path.is_dir() else path.parent)]
+
+
+def open_command(path: str) -> list[str] | None:
+    """4d：用本机应用打开这个文件（调用方已经查过白名单和 realpath）。macOS 用 open，别的系统用 xdg-open，
+    都没有回 None。"""
+    if sys.platform == "darwin":
+        return ["open", str(path)]
+    opener = shutil.which("xdg-open")
+    if opener is None:
+        return None
+    return [opener, str(path)]
 
 
 def reveal(path: Path, *, run: Any = None) -> None:

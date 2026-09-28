@@ -6,10 +6,11 @@ import hashlib
 import json
 import logging
 import secrets
+import sqlite3
 import threading
 import time
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -59,7 +60,21 @@ from . import search as search_module
 from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
 from . import overview as overview_module
+from . import decisions as decisions_module
+from . import decision_pairs
+from . import timeline as timeline_module
+from . import deep_links
+from . import glossary_mining
+from . import links_llm as links_llm_module
 from . import file_mentions
+from . import loose_mentions
+from . import relations as relations_module
+from . import related as related_module
+from . import related_read
+from . import graph_local
+from . import asks as asks_module
+from . import affects as affects_module
+from . import relation_read
 from .material_index import LOOP_SECONDS as MATERIAL_INDEX_SECONDS, MaterialIndexer, index_status
 from . import material_content as material_content_module
 from . import material_media as material_media_module
@@ -471,6 +486,74 @@ class FileMentionPickInput(BaseModel):
     file_id: int = Field(ge=1)
 
 
+# 4d：相关材料栏的［不相关］：身份是（会，文件内容）
+CONTENT_KEY_PATTERN = r"^[a-z0-9]{1,8}:[0-9a-f]{16,64}$"
+
+
+class RelatedRejectInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content_key: str = Field(pattern=CONTENT_KEY_PATTERN, max_length=80)
+    file_id: int = Field(ge=1)
+
+
+class EmptyInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AskPrepareInput(BaseModel):
+    """4g：问题只在请求体里（不进网址）；长短不在这里限（pydantic 的 422 会把整个问题带回去），
+    2 到 300 个字由 asks 自己查，回中文的一句话、不回显问题。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str
+
+
+class AskInput(BaseModel):
+    """4g：问题只在计划里，不再传一次；with_materials 必须明说（不给默认值）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str = Field(min_length=1, max_length=64)
+    with_materials: bool
+
+
+class CandidateKeyInput(BaseModel):
+    """4h：候选词按（项目，term_key）折成一项来回答。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=80)
+
+
+class CandidateAcceptInput(CandidateKeyInput):
+    """not_wrong：你在记入前去掉的听错写法（chip 上的 ×），这几行记 rejected。
+    only_wrong：会议页一行只显示一个写法，只记这个写法（和词本身），别的写法不跟着记。"""
+
+    not_wrong: list[str] = Field(default_factory=list, max_length=10)
+    only_wrong: str | None = Field(default=None, min_length=1, max_length=40)
+
+
+class RelationAnswerInput(BaseModel):
+    """answer 是 yes、no、updated、pick、restore 之一（和这类关联对不上时 relations.answer 回 422）；
+    file_id 只在 pick 时给。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = Field(max_length=16)
+    file_id: int | None = Field(default=None, ge=1)
+
+
+class DecisionPlacementInput(BaseModel):
+    """placement 是 none、picked、ai（只用于撤销时原样发回）或 null（回到自动）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    placement: Literal["none", "picked", "ai"] | None
+    requirement_id: str | None = Field(default=None, max_length=200)
+
+
 class TaskStatusInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -584,6 +667,7 @@ def _meeting_detail(
     *,
     ai_configured: bool = False,
     cards: CardWriter | None = None,
+    material_pairs: bool = False,
 ) -> dict[str, Any] | None:
     meeting = db.query_one(
         """SELECT m.*, p.name AS project_name, p.color AS project_color
@@ -672,7 +756,7 @@ def _meeting_detail(
         )
         if cards is not None:
             meeting["card"] = cards.meeting_card(connection, meeting_id)
-    meeting["glossary"] = glossary_checkup.meeting_glossary(db, meeting_id)
+    meeting["glossary"] = glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=material_pairs)
     return meeting
 
 
@@ -723,6 +807,10 @@ def create_app(
     )
     project_linker = ProjectLinker(db, settings)
     card_writer = CardWriter(db, settings)
+
+    def mining_on() -> bool:
+        """4h：links_enabled 和 glossary_mining_enabled 都开时才挖词、才显示待认词。"""
+        return glossary_mining.enabled(settings)
     roots_cache = graph_module.RootsCache(db, settings=settings)
     material_indexer = MaterialIndexer(db, settings, busy_check=busy)
     material_stop = StopFlag()
@@ -745,6 +833,35 @@ def create_app(
     )
     material_vectors = material_vectors_module.MaterialVectors(
         db, settings, semantic, busy_check=busy, stop=material_stop
+    )
+    # 第四期（4a）：两个循环各有自己的停止标记；worker 常在（问答的用量计数、健康检查的快照都用它们），
+    # 循环只在 links_enabled 开着时启动。
+    links_stop = StopFlag()
+    # 4b：放宽的提到放进 AI 循环（最近 7 天的会、回补两种顺序）；4c 的决议对比按 TASK_ORDER 排在中间
+    links_llm_worker = links_llm_module.LinksLLMWorker(
+        db,
+        settings,
+        stop=links_stop,
+        tasks=links_llm_module.ordered(
+            [
+                loose_mentions.LooseMentionTask(settings, loose_mentions.TASK_RECENT),
+                decision_pairs.DecisionPairTask(settings),
+                loose_mentions.LooseMentionTask(settings, loose_mentions.TASK_BACKFILL),
+            ]
+        ),
+    )
+    links_worker = deep_links.LinksWorker(
+        db,
+        settings,
+        busy=busy,
+        semantic=semantic,
+        vectors=material_vectors,
+        stop=links_stop,
+        llm=links_llm_worker,
+    )
+    # 4g：项目内问答的计划和任务（只在内存里），用量走 links_llm_worker 的 charge("qa")
+    asks_service = asks_module.AskService(
+        db, settings, worker=links_llm_worker, semantic=semantic, vectors=material_vectors, busy=busy
     )
     pending_worker = project_folders.PendingFolders(db, settings)
     uploads = UploadManager(settings)
@@ -1187,12 +1304,12 @@ def create_app(
 
     async def material_embed_loop() -> None:
         """材料片段的向量（3f）：第一轮前等 5 秒，每 30 秒一轮、每轮最多 30 秒；语义检索关着时不跑。
-        每轮之后顺手补内存矩阵，搜索时不用现建。不改 semantic_status。"""
+        每轮之后顺手补内存矩阵，搜索时不用现建；会议在转写时不补（4a：整份重建时内存会翻倍，把内存和
+        CPU 还给转写）。不改 semantic_status。"""
         await asyncio.sleep(material_vectors_module.FIRST_DELAY_SECONDS)
         while not material_stop.is_set():
             try:
-                await asyncio.to_thread(material_vectors.embed_round)
-                await asyncio.to_thread(material_vectors.refresh)
+                await asyncio.to_thread(material_vectors.background_round)
             except asyncio.CancelledError:
                 raise
             except SemanticUnavailable:
@@ -1299,11 +1416,35 @@ def create_app(
                 embed_worker = asyncio.create_task(
                     material_embed_loop(), name="meeting-workbench-material-embed"
                 )
+        # 第四期的两个循环：在材料向量和语义索引建好之后启动；links_enabled 关着时都不启动
+        links_task: asyncio.Task[None] | None = None
+        links_llm_task: asyncio.Task[None] | None = None
+        if settings.links_enabled:
+            links_stop.clear()
+            links_task = asyncio.create_task(
+                deep_links.links_loop(links_worker, links_stop), name="meeting-workbench-links"
+            )
+            if settings.links_llm_enabled:
+                links_llm_task = asyncio.create_task(
+                    links_llm_module.links_llm_loop(links_llm_worker, links_stop),
+                    name="meeting-workbench-links-llm",
+                )
         try:
             yield
         finally:
             # 先置停止标记（同时杀掉读取、认字、转写进程），再取消循环、等线程返回
             material_stop.set()
+            links_stop.set()
+            # 4g：在跑的问答线程让它自己结束，结果丢掉
+            asks_service.close()
+            # 正在进行的 AI 调用不等（在守护线程里，它的认领下次回收）；本机这一轮最多等 5 秒
+            for worker in (links_task, links_llm_task):
+                if worker is not None:
+                    worker.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await worker
+            if links_task is not None:
+                await asyncio.to_thread(links_worker.wait_idle, 5.0)
             for worker in (embed_worker, fts_worker):
                 if worker is not None:
                     worker.cancel()
@@ -1352,6 +1493,9 @@ def create_app(
     app.state.material_media = material_media
     app.state.material_vectors = material_vectors
     app.state.material_stop = material_stop
+    app.state.links_worker = links_worker
+    app.state.links_llm_worker = links_llm_worker
+    app.state.asks = asks_service
     app.state.waveforms = waveforms
     app.state.relay = relay
     app.state.uploads = uploads
@@ -1497,6 +1641,11 @@ def create_app(
                 )["total"],
                 # 「在访达中显示」「打开文件夹」只在本机打开声档时出现（和关系图 roots 接口同一个算法）
                 "can_reveal": local_request(request),
+                # 第四期（4a）：前端存进 linksFlags；links_enabled 不是布尔值时当旧后台
+                "llm_configured": llm_ready(settings),
+                "links_enabled": bool(settings.links_enabled),
+                # 4g：问答关着时页面不用先问一次就知道
+                "ask_enabled": int(settings.qa_daily_questions) > 0,
             }
         )
         response.set_cookie(
@@ -1752,6 +1901,8 @@ def create_app(
                 },
                 "backup": backup_details,
                 "materials": materials_progress,
+                # 第四期（4a）：从两个循环内存里上一轮的快照拼，不查库；不进 services、不改 status
+                "links": links_worker.snapshot(),
             },
         }
 
@@ -1860,14 +2011,58 @@ def create_app(
             )
         return {"items": rows, "limit": limit, "offset": offset, "total": total}
 
+    def prioritize_related(meeting_id: str) -> None:
+        """4d：会议页打开时，这场会的相关到期就在内存里排到 H3 最前面并唤醒循环；GET 不写库。"""
+        if not related_module.enabled(settings):
+            return
+        try:
+            with db.autocommit() as connection:
+                due = related_module.is_due(connection, settings, meeting_id)
+        except sqlite3.OperationalError:
+            return
+        if due:
+            links_worker.prioritize(meeting_id)
+
     @app.get("/api/meetings/{meeting_id}")
     def get_meeting(meeting_id: str):
         detail = _meeting_detail(
-            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer,
+            material_pairs=mining_on(),
         )
         if not detail:
             raise HTTPException(404, "会议不存在")
+        prioritize_related(meeting_id)
         return detail
+
+    # 4d：会议页右侧的「相关材料」栏；GET 不写库，到期时顺手在内存里 prioritize
+    @app.get("/api/meetings/{meeting_id}/related-materials")
+    def related_materials(meeting_id: str, request: Request):
+        with db.autocommit() as connection:
+            payload = related_read.panel(
+                connection, meeting_id, worker=links_worker, settings=settings, local=local_request(request)
+            )
+        if payload is None:
+            raise HTTPException(404, "会议不存在")
+        prioritize_related(meeting_id)
+        return payload
+
+    @app.get("/api/meetings/{meeting_id}/related-materials/rejected")
+    def related_materials_rejected(meeting_id: str):
+        with db.autocommit() as connection:
+            payload = related_read.rejected_items(connection, meeting_id)
+        if payload is None:
+            raise HTTPException(404, "会议不存在")
+        return payload
+
+    @app.post("/api/meetings/{meeting_id}/related-materials/reject")
+    def reject_related_material(meeting_id: str, body: RelatedRejectInput):
+        try:
+            with db.transaction() as connection:
+                return relations_module.reject_related(
+                    connection, meeting_id, content_key=body.content_key, file_id=body.file_id, now=utc_now()
+                )
+        except relations_module.RelationError as error:
+            raise HTTPException(error.status, str(error)) from error
 
     @app.get("/api/meetings/{meeting_id}/minutes-evidence")
     def minutes_evidence(meeting_id: str):
@@ -2526,7 +2721,7 @@ def create_app(
 
     @app.get("/api/meetings/{meeting_id}/glossary")
     def meeting_glossary(meeting_id: str):
-        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=mining_on())}
 
     @app.post("/api/meetings/{meeting_id}/glossary/check")
     def check_meeting_glossary(meeting_id: str, body: GlossaryCheckInput):
@@ -2541,7 +2736,7 @@ def create_app(
         else:
             # 不带 project_id：纪要改过以后重查一遍，沿用上次按哪个项目查的。
             glossary_checkup.check_meeting(db, meeting_id)
-        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+        return {"glossary": glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=mining_on())}
 
     @app.post("/api/meetings/{meeting_id}/glossary/apply")
     def apply_meeting_glossary(meeting_id: str, body: GlossaryApplyInput):
@@ -2549,13 +2744,13 @@ def create_app(
             db, service, meeting_id, expected_version_id=body.base_version_id
         )
         notify_relay_draft_modified(meeting_id)
-        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=mining_on())}
 
     @app.post("/api/meetings/{meeting_id}/glossary/undo")
     def undo_meeting_glossary(meeting_id: str, _body: dict[str, Any] | None = None):
         result = glossary_checkup.undo_applied(db, service, meeting_id)
         notify_relay_draft_modified(meeting_id)
-        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id)}
+        return {**result, "glossary": glossary_checkup.meeting_glossary(db, meeting_id, material_pairs=mining_on())}
 
     def preferred_audio_path(meeting_id: str) -> Path | None:
         artifact = db.query_one(
@@ -3144,7 +3339,8 @@ def create_app(
             payload={"action": action, "conflict_id": conflict_id},
         )
         detail = _meeting_detail(
-            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer,
+            material_pairs=mining_on(),
         )
         assert detail is not None
         return detail
@@ -3235,7 +3431,8 @@ def create_app(
         )
         card_effect = sync_card(meeting_id) if "project_id" in changed_fields else None
         detail = _meeting_detail(
-            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer,
+            material_pairs=mining_on(),
         )
         if effects is not None and detail is not None:
             detail["effects"] = {
@@ -3274,7 +3471,8 @@ def create_app(
             result = undo_reassign(connection, meeting_id)
         card_effect = sync_card(meeting_id)
         detail = _meeting_detail(
-            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer
+            db, meeting_id, ai_configured=llm_ready(settings), cards=card_writer,
+            material_pairs=mining_on(),
         )
         if detail is not None:
             detail["effects"] = {"tasks_restored": result["tasks_restored"]}
@@ -3521,7 +3719,55 @@ def create_app(
         with db.autocommit() as connection:
             board["profile"] = recognition_profile(connection, project_id)
             board["cards"] = card_writer.project_cards(connection, project_id)
+            # 4h：从材料里找到的词，前 6 项和总数（关着时是空的）
+            words = (
+                glossary_mining.list_candidates(connection, project_id, limit=glossary_mining.SHOWN_ON_BOARD)
+                if mining_on()
+                else {"items": [], "total": 0}
+            )
+        board["glossary_candidates"] = words["items"]
+        board["glossary_candidate_total"] = words["total"]
         return board
+
+    # ---------------------------------------------------------------- 4h 从材料里找到的词
+    def candidate_call(fn: Any) -> Any:
+        try:
+            return fn()
+        except glossary_mining.CandidateError as error:
+            raise HTTPException(error.status, error.text) from None
+
+    def require_project(project_id: str) -> None:
+        if db.query_one("SELECT 1 FROM projects WHERE id = ?", (project_id,)) is None:
+            raise HTTPException(404, glossary_mining.PROJECT_MISSING)
+
+    @app.get("/api/projects/{project_id}/glossary-candidates")
+    def glossary_candidates(project_id: str):
+        require_project(project_id)
+        if not mining_on():
+            return {"items": [], "total": 0}
+        with db.autocommit() as connection:
+            return glossary_mining.list_candidates(connection, project_id)
+
+    @app.post("/api/projects/{project_id}/glossary-candidates/accept")
+    def accept_glossary_candidate(project_id: str, body: CandidateAcceptInput):
+        return candidate_call(
+            lambda: glossary_mining.accept(
+                db, project_id, body.key, body.not_wrong, only_wrong=body.only_wrong,
+                snapshot_path=settings.data_dir / "glossary-snapshot.json",
+            )
+        )
+
+    @app.post("/api/projects/{project_id}/glossary-candidates/reject")
+    def reject_glossary_candidate(project_id: str, body: CandidateKeyInput):
+        return candidate_call(lambda: glossary_mining.reject(db, project_id, body.key))
+
+    @app.post("/api/projects/{project_id}/glossary-candidates/undo")
+    def undo_glossary_candidate(project_id: str, body: CandidateKeyInput):
+        return candidate_call(
+            lambda: glossary_mining.undo(
+                db, project_id, body.key, snapshot_path=settings.data_dir / "glossary-snapshot.json"
+            )
+        )
 
     # ------------------------------------------------------------ 关系图（1g）
 
@@ -3542,6 +3788,44 @@ def create_app(
                     connection, project_id, window=window, focus=focus, today=today
                 )
             except graph_module.GraphNotFound as error:
+                raise HTTPException(404, str(error)) from error
+        return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
+    # ---------------------------------------------------------------- 4g 项目内问答
+    def ask_call(fn: Any) -> Any:
+        try:
+            return fn()
+        except asks_module.AskError as error:
+            raise HTTPException(error.status, error.text) from None
+
+    @app.post("/api/projects/{project_id}/ask/prepare")
+    def ask_prepare(project_id: str, body: AskPrepareInput):
+        """在本机找原文，从不调 AI；问题在请求体里，不进网址。"""
+        return ask_call(lambda: asks_service.prepare(project_id, body.question))
+
+    @app.post("/api/projects/{project_id}/ask", status_code=202)
+    def ask_send(project_id: str, body: AskInput):
+        return ask_call(lambda: asks_service.ask(project_id, body.plan_id, body.with_materials))
+
+    @app.get("/api/ask/{job_id}")
+    def ask_job(job_id: str):
+        return ask_call(lambda: asks_service.job(job_id))
+
+    # 4d：关系图「相关」线的数据（4f 画）；自己的 ETag（related_rev），不和 graph_rev 混
+    @app.get("/api/graph/projects/{project_id}/related")
+    def project_graph_related(
+        project_id: str,
+        request: Request,
+        window: Literal["7d", "28d", "90d", "all"] = "28d",
+    ):
+        today = datetime.now().astimezone().date()
+        with db.autocommit() as connection:
+            etag = related_read.related_etag(connection, window, today)
+            if request.headers.get("if-none-match") == etag:
+                return Response(status_code=304, headers={"ETag": etag})
+            try:
+                payload = related_read.project_related(connection, project_id, window=window, today=today)
+            except related_read.ProjectNotFound as error:
                 raise HTTPException(404, str(error)) from error
         return JSONResponse(payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
@@ -3670,6 +3954,65 @@ def create_app(
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
 
+    @app.post("/api/decisions/{decision_id}/placement")
+    def place_decision(decision_id: str, body: DecisionPlacementInput):
+        # 4a：只改这条决议放在哪个需求下，不把会挂到需求上；返回 undo 原样发回就是撤销
+        with db.transaction() as connection:
+            try:
+                return decisions_module.place(
+                    connection, decision_id, body.placement, body.requirement_id
+                )
+            except decisions_module.DecisionNotFound as error:
+                raise HTTPException(404, str(error)) from error
+            except decisions_module.DecisionGone as error:
+                raise HTTPException(409, str(error)) from error
+            except decisions_module.PlacementRejected as error:
+                raise HTTPException(422, str(error)) from error
+
+    # 4c：需求页「决议」卡。台账落后或 links_enabled 关着时这场会按纪要现读，没有标记和按钮
+    # 4h：需求页［复制给 Claude Code］的背景（只读，不写盘）
+    @app.get("/api/requirements/{requirement_id}/context")
+    def requirement_context_endpoint(requirement_id: str):
+        from . import card_index
+
+        with db.autocommit() as connection:
+            try:
+                return card_index.requirement_context(connection, requirement_id)
+            except card_index.RequirementMissing as error:
+                raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/requirements/{requirement_id}/decisions")
+    def requirement_decisions(requirement_id: str):
+        with db.autocommit() as connection:
+            try:
+                return decisions_module.requirement_log(
+                    connection, requirement_id, worker=links_worker, settings=settings
+                )
+            except decisions_module.RequirementNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
+    # 4c：项目时间线，按有动静的天翻页；days 夹在 1 到 31 之间（超出不报错）
+    @app.get("/api/projects/{project_id}/timeline")
+    def project_timeline(
+        project_id: str,
+        before: date | None = None,
+        days: int = timeline_module.DAYS_DEFAULT,
+        kind: Literal["all", "decisions", "tasks", "files"] = "all",
+    ):
+        with db.autocommit() as connection:
+            try:
+                return timeline_module.project_timeline(
+                    connection,
+                    project_id,
+                    before=before,
+                    days=days,
+                    kind=kind,
+                    worker=links_worker,
+                    settings=settings,
+                )
+            except timeline_module.TimelineNotFound as error:
+                raise HTTPException(404, str(error)) from error
+
     @app.get("/api/meetings/{meeting_id}/brief")
     def meeting_brief_endpoint(meeting_id: str):
         with db.autocommit() as connection:
@@ -3679,9 +4022,18 @@ def create_app(
             if attribution is None:
                 raise HTTPException(404, "会议不存在")
             card = card_writer.meeting_card(connection, meeting_id)
-            return graph_module.meeting_brief(
+            brief = graph_module.meeting_brief(
                 connection, meeting_id, attribution=attribution, card=card
             )
+            # 4b：会上换了叫法的文件整理到哪了（一句话或 null），只读快照和台账，不写库
+            brief["loose_state"] = loose_mentions.brief_state(
+                connection,
+                meeting_id,
+                brief["meeting"]["project_id"],
+                links_worker,
+                settings,
+            )
+            return brief
 
     @app.get("/api/graph/files/{file_id}")
     def graph_file_detail(file_id: int):
@@ -3701,7 +4053,28 @@ def create_app(
                     connection, row, engines=ocr, paused=material_paused()
                 )
                 result["deliverables"] = material_status.file_deliverables(connection, row)
+            # 4e：在问的可能过时和产出（影响在前）；有在问的影响时 stat 一次这个文件，变了就先不给
+            result["questions"] = affects_module.guarded_questions(
+                relation_read.file_questions(connection, file_id), row, materials.volume_state
+            )
             return result
+
+    # 4f：以文件为中心的局部图和来龙去脉。只查库、不读盘、不写库；不设 ETag（挪位置不动 graph_rev）
+    def _local_call(fn: Any) -> JSONResponse:
+        with db.autocommit() as connection:
+            try:
+                payload = fn(connection)
+            except graph_local.LocalError as error:
+                raise HTTPException(error.status, error.text) from None
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/graph/files/{file_id}/map")
+    def graph_file_map(file_id: int, related: int = Query(default=0, ge=0, le=1)):
+        return _local_call(lambda connection: graph_local.file_map(connection, file_id, related_on=bool(related)))
+
+    @app.get("/api/graph/trace")
+    def graph_trace(node: str = Query(..., max_length=80, pattern=graph_local.NODE_PATTERN)):
+        return _local_call(lambda connection: graph_local.trace(connection, node))
 
     def _mention_action(action: Any, *args: Any) -> dict[str, Any]:
         try:
@@ -3722,6 +4095,31 @@ def create_app(
     @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/pick")
     def pick_file_mention(meeting_id: str, stem_key: str, body: FileMentionPickInput):
         return _mention_action(file_mentions.pick_mention_file, meeting_id, stem_key, body.file_id)
+
+    # 4a：［现在重试］。failed 的放宽提到和决议对比放回 pending、次数清零，同时清掉 AI 循环的整体停下和退避
+    @app.post("/api/links/retry")
+    def retry_links():
+        with db.transaction() as connection:
+            requeued = links_llm_module.requeue_failed(connection)
+        links_llm_worker.clear_pause()
+        return {"requeued": requeued}
+
+    # v16 / 4a：回答一条关联和 600 秒内撤销；关联行的状态和交付物在同一个事务里，要么都写上、要么都不写
+    @app.post("/api/relations/{relation_id}/answer")
+    def answer_relation(relation_id: int, body: RelationAnswerInput):
+        try:
+            with db.transaction() as connection:
+                return relations_module.answer(connection, relation_id, body.model_dump(), utc_now())
+        except relations_module.RelationError as error:
+            raise HTTPException(error.status, str(error)) from error
+
+    @app.post("/api/relations/{relation_id}/undo")
+    def undo_relation(relation_id: int):
+        try:
+            with db.transaction() as connection:
+                return relations_module.undo(connection, relation_id, utc_now())
+        except relations_module.RelationError as error:
+            raise HTTPException(error.status, str(error)) from error
 
     @app.get("/api/materials/index-status")
     def material_index_status(project_id: str | None = Query(default=None, max_length=200)):
@@ -3746,7 +4144,14 @@ def create_app(
             )
 
     @app.get("/api/materials/files/{file_id}/preview")
-    def material_file_preview(file_id: int, request: Request, parts: Literal["preview"] | None = None):
+    def material_file_preview(
+        file_id: int,
+        request: Request,
+        parts: Literal["preview"] | None = None,
+        # 4d：定位到那一段（相关材料、搜索、问答的出处）
+        passage_key: str | None = Query(default=None, pattern=CONTENT_KEY_PATTERN, max_length=80),
+        passage_ordinal: int | None = Query(default=None, ge=0),
+    ):
         with db.autocommit() as connection:
             result = material_status.file_preview(
                 connection,
@@ -3756,10 +4161,32 @@ def create_app(
                 quotes=lambda meeting_id, starts: graph_module._segments_at(connection, meeting_id, starts),
                 parts=parts,
                 can_reveal=local_request(request),
+                passage_key=passage_key,
+                passage_ordinal=passage_ordinal,
             )
         if result is None:
             raise HTTPException(404, "文件不在索引里（可能已经挪走或删掉了）")
         return result
+
+    # 4d：列表里的小签「3 场会提到」：一个列表一次请求
+    @app.get("/api/materials/mentioned-counts")
+    def material_mentioned_counts(file_ids: str = Query(default="", max_length=4000)):
+        try:
+            ids = related_read.parse_file_ids(file_ids)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        with db.autocommit() as connection:
+            return {"counts": related_read.mentioned_counts(connection, ids)}
+
+    # 4d：［用本机应用打开］只在这台电脑上；扩展名白名单；传给打开程序的是 realpath
+    @app.post("/api/materials/files/{file_id}/open")
+    def open_material_file(file_id: int, body: EmptyInput, request: Request):
+        try:
+            with db.autocommit() as connection:
+                related_read.open_material(connection, file_id, local=local_request(request))
+        except related_read.RelatedError as error:
+            raise HTTPException(error.status, str(error)) from error
+        return {"ok": True}
 
     def checked_material_file(file_id: int) -> dict[str, Any]:
         """读盘的三个接口：按 file_id 找，realpath 必须还在根目录里；盘不在回 503。"""

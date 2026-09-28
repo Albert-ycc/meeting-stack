@@ -1,0 +1,254 @@
+/* 4d：会议页的相关材料栏（电脑上右栏最上面一节，手机上一条收起的横条） */
+
+/* 窗口至少 1,200 像素宽时右栏加到 320 像素：这条写在 styles.css 的 .detail-workspace 紧后面，
+   写在这里打包后会排在 280 像素那条前面、不生效 */
+
+.related-materials {
+  gap: 6px;
+}
+
+.related-materials__body {
+  display: grid;
+  gap: 8px;
+  min-height: 180px;
+  max-height: 460px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.related-materials--collapsed {
+  gap: 0;
+}
+
+.related-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.related-head h2 {
+  margin: 2px 0 0;
+}
+
+.related-head h2 small,
+.related-head__summary {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.inspector-section .related-head button,
+.inspector-section .related-item button,
+.inspector-section .related-state button,
+.inspector-section .related-copy button,
+.inspector-section .related-rejected button,
+.inspector-section .related-time {
+  width: auto;
+}
+
+.related-state,
+.related-copy,
+.related-empty p,
+.related-rejected p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.related-state .text-button,
+.related-copy .text-button,
+.related-rejected .text-button {
+  margin-left: 6px;
+}
+
+.related-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.related-item {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.related-item__open {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.related-item__file {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.related-item__name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.related-item__file small,
+.related-item__words {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.related-item__text {
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.related-item__text mark {
+  padding: 0 1px;
+  border-radius: 3px;
+}
+
+.related-item__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ［不相关］［用本机应用打开］在悬停或聚焦时出现（用透明度，键盘还能 Tab 到） */
+.related-item__actions {
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+}
+
+.related-item:hover .related-item__actions,
+.related-item:focus-within .related-item__actions,
+.related-bar .related-item__actions {
+  opacity: 1;
+}
+
+.related-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.related-time {
+  padding: 1px 6px;
+  font-size: 11px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.related-rejected ul {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+/* 手机：标签页和逐字稿之间一条收起的横条 */
+.related-bar {
+  margin: 8px 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.related-bar__toggle {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.related-bar__body {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+@media (max-width: 480px) {
+  .related-item__text {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
+/* 「内容相关的会」（文件面板、预览抽屉） */
+.related-meetings h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.related-meetings ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.related-meetings li {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.related-meetings small,
+.related-meetings__quote {
+  color: var(--ink-soft);
+}
+
+.related-meetings li > .text-button {
+  justify-self: start;
+}
+
+/* 小签「3 场会提到」 */
+.mentioned-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.mentioned-badge--button {
+  cursor: pointer;
+}

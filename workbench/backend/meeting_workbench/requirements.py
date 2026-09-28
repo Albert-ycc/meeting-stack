@@ -193,12 +193,24 @@ def _requirement_summary(db: Database, requirement: dict[str, Any]) -> dict[str,
     }
 
 
-def _folder_detail(folder_row: dict[str, Any]) -> dict[str, Any]:
+def _folder_detail(folder_row: dict[str, Any], *, db: Database | None = None, project_id: str | None = None) -> dict[str, Any]:
     path = Path(folder_row["path"])
     stat = folder_stat(path)
-    preview_files: list[dict[str, Any]] = []
-    if stat["exists"]:
-        preview_files = list_folder_files(path, limit=FOLDER_PREVIEW_LIMIT)["items"]
+    preview_files: list[dict[str, Any]] | None = None
+    # 4d：前 6 个先试查库（根目录在线、文件名收完时），行里带 file_id，小签用；不行再照旧读盘
+    if db is not None and project_id:
+        from .material_graph import folder_files_from_index
+
+        with db.autocommit() as connection:
+            indexed = folder_files_from_index(
+                connection, project_id, str(folder_row["path"]), limit=FOLDER_PREVIEW_LIMIT, offset=0
+            )
+        if indexed is not None:
+            preview_files = indexed["items"]
+    if preview_files is None:
+        preview_files = []
+        if stat["exists"]:
+            preview_files = list_folder_files(path, limit=FOLDER_PREVIEW_LIMIT)["items"]
     return {
         "id": folder_row["id"],
         "name": path.name,
@@ -218,7 +230,9 @@ def get_requirement(task_service: TaskService, requirement_id: str) -> dict[str,
         "SELECT * FROM requirement_folders WHERE requirement_id=? ORDER BY created_at",
         (requirement_id,),
     )
-    detail["folders"] = [_folder_detail(folder_row) for folder_row in folder_rows]
+    detail["folders"] = [
+        _folder_detail(folder_row, db=db, project_id=row.get("project_id")) for folder_row in folder_rows
+    ]
     detail["meetings"] = db.query_all(
         """SELECT m.id, m.title, m.recording_date, m.duration_ms, m.canonical_dir
              FROM requirement_meetings rm JOIN meetings m ON m.id=rm.meeting_id

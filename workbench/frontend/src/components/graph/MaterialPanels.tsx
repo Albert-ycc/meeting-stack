@@ -11,6 +11,8 @@ import type { PinnedFile } from "./graphFiles";
 import type { CardsFilesPayload, DiskState, ExpandPayload, GraphBeacon, GraphBeaconItem, RecentFile } from "./graphTypes";
 import { pendingNote } from "./layout";
 import { CopyPath, Section, localUndoUntil } from "./panelParts";
+import { MentionedBadge } from "../files/MentionedBadge";
+import { useMentionedCounts } from "../files/useMentionedCounts";
 
 const COUNT_FORMAT = new Intl.NumberFormat("en-US");
 /** 需求文件夹面板里最多列这么多个文件，多的去需求页看 */
@@ -42,6 +44,8 @@ export function RecentFilesSection({
   rootId: number | null | undefined;
   folder: string;
 }) {
+  // 4f：小签「3 场会提到」，一个列表一次批量请求；0 时不画（hook 要在 return 之前）
+  const mentioned = useMentionedCounts(props.apiClient, (files ?? []).map((file) => file.file_id), String(props.version));
   if (!files?.length || rootId === null || rootId === undefined) return null;
   return (
     <Section title="最近改过的文件">
@@ -61,6 +65,7 @@ export function RecentFilesSection({
             <small>
               {file.mtime ? `${shortDate(file.mtime)} 改过` : ""}
               {RECENT_STATE_TEXT[file.state] ? ` · ${RECENT_STATE_TEXT[file.state]}` : ""}
+              {mentioned && <MentionedBadge count={mentioned.get(file.file_id)} />}
             </small>
           </li>
         ))}
@@ -224,6 +229,7 @@ export function FolderBrowser({
   const error = state.key === key ? state.error : "";
   const canReveal = Boolean(props.roots?.can_reveal);
   const recent = props.roots?.roots.find((item) => item.root_id === rootId)?.recent_files;
+  const mentioned = useMentionedCounts(props.apiClient, (payload?.files ?? []).map((file) => file.file_id), String(props.version));
 
   return (
     <>
@@ -295,6 +301,7 @@ export function FolderBrowser({
                     )}{" "}
                     <small>
                       {shortDate(file.mtime)} · {formatBytes(file.size)}
+                      {mentioned && file.file_id ? <MentionedBadge count={mentioned.get(file.file_id)} /> : null}
                     </small>
                   </li>
                 ))}
@@ -413,6 +420,7 @@ export function RequirementFolderBody({
   const error = state.key === key ? state.error : "";
   const rootId = entry?.root_id;
   const relative = rootId ? relativeTo(props, rootId, path) : null;
+  const mentioned = useMentionedCounts(props.apiClient, (payload?.items ?? []).map((item) => item.file_id), String(props.version));
   return (
     <>
       <RecentFilesSection files={entry?.recent_files} folder={graphId} props={props} rootId={rootId} />
@@ -448,6 +456,7 @@ export function RequirementFolderBody({
                     )}{" "}
                     <small>
                       {shortDate(item.modified_at)} · {formatBytes(item.size_bytes)}
+                      {mentioned && item.file_id ? <MentionedBadge count={mentioned.get(item.file_id)} /> : null}
                     </small>
                   </li>
                 );
@@ -530,6 +539,7 @@ function looseFile(roots: NonNullable<GraphPanelProps["roots"]>, path: string, f
 
 export function LoosePanelBody({ props }: { props: GraphPanelProps }) {
   const { roots } = props;
+  const mentioned = useMentionedCounts(props.apiClient, (roots?.loose.recent ?? []).map((file) => file.file_id), String(props.version));
   if (!roots) return <p className="graph-panel__muted">正在读资料盘…</p>;
   const canReveal = Boolean(roots.can_reveal);
   return (
@@ -546,6 +556,7 @@ export function LoosePanelBody({ props }: { props: GraphPanelProps }) {
               )}{" "}
               <small>
                 {shortDate(file.mtime)} · {formatBytes(file.size)}
+                {mentioned && file.file_id ? <MentionedBadge count={mentioned.get(file.file_id)} /> : null}
               </small>
             </span>
             <span className="graph-panel__path-actions">

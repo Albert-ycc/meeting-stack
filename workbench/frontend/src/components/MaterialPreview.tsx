@@ -3,9 +3,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { materialMediaUrl, type ApiClient } from "../api";
 import { copyText } from "../clipboard";
 import { formatBytes, formatDate, formatTime } from "../format";
-import type { MaterialFilePreview, MaterialPreviewContent } from "../types";
+import type { MaterialFilePreview, MaterialPreviewContent, PreviewPassage } from "../types";
 import { AsyncState } from "./AsyncState";
+import { looseId, looseSaid } from "./links/looseMention";
+import { RelatedMeetings } from "./links/RelatedMeetings";
+import { highlightWords } from "./links/RelatedMaterials";
+import { RelationQuestion } from "./links/RelationQuestion";
+import { useLinksFlags } from "./links/LinksFlagsContext";
+import { TraceList } from "./links/TraceList";
+import { useRelationAnswer, type RelationAnswering } from "./links/useRelationAnswer";
 import type { MiniPlayerHandle, PlayOptions } from "./graph/MiniPlayer";
+import type { NoticeFn } from "./graph/panelParts";
+import { NoticeBanner, UNDO_NOTICE_MS, useNotice } from "./Notice";
 import { claimSound } from "./soundFocus";
 import { useDialogFocus } from "./useDialog";
 import "./MaterialPreview.css";
@@ -268,9 +277,66 @@ export function useDrawerPlayer() {
   return { handle, node };
 }
 
+/** 定位那一块的标题（按来路） */
+export const PASSAGE_TITLES = {
+  related: "和会上相关的这段",
+  search: "搜到的这段",
+  answer: "回答引用的这段",
+} as const;
+export const PASSAGE_STALE = "文件后来改过，这是改之前读到的那段";
+export const PASSAGE_MISSING = "这段在文件里找不到了（文件可能改过）";
+
+/** 4d：抽屉里 PreviewBlock 上面那一块：定位到的那一段，共同词加亮；媒体片段给 ▶，不自动放 */
+export function PassageBlock({
+  target,
+  data,
+  fileId,
+  playable,
+  player,
+}: {
+  target: PreviewPassage;
+  data: MaterialFilePreview;
+  fileId: number;
+  playable: boolean;
+  player: MiniPlayerHandle;
+}) {
+  const passage = data.passage;
+  const title = PASSAGE_TITLES[target.from ?? "related"];
+  return (
+    <section className="material-drawer__section material-passage">
+      <h3>{title}</h3>
+      {!passage ? (
+        <p className="material-preview__muted">{PASSAGE_MISSING}</p>
+      ) : (
+        <>
+          {passage.stale && <p className="material-preview__muted">{PASSAGE_STALE}</p>}
+          <p className="material-passage__text">
+            {playable && passage.start_ms !== null && (
+              <button
+                aria-label={`从 ${formatTime(passage.start_ms)} 播放这段`}
+                className="material-preview__seek"
+                onClick={() => player.play(materialMediaUrl(fileId), passage.start_ms ?? 0, "", { clip: false })}
+                type="button"
+              >
+                ▶ {formatTime(passage.start_ms)}
+              </button>
+            )}
+            {passage.loc && <span className="material-hit__loc">{passage.loc}</span>}
+            {highlightWords(passage.text, target.words ?? [])}
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
 interface MaterialPreviewDrawerProps {
   apiClient: ApiClient;
   fileId: number;
+  /** 4d：定位到那一段（相关材料栏、搜索、问答的出处） */
+  passage?: PreviewPassage;
+  /** 4d：回答按钮看它（App 传 !isMobile || mobileTaskWrite） */
+  canWrite?: boolean;
   /** 从搜索的 ▶ 进来：不等预览数据，直接从这个时间放 */
   startMs?: number | null;
   canReveal: boolean;
@@ -280,12 +346,16 @@ interface MaterialPreviewDrawerProps {
   onOpenMeeting: (meetingId: string, seekMs?: number) => void;
   onOpenTask?: (taskId: string) => void;
   onOpenInGraph?: (projectId: string, fileId: number) => void;
+  /** 4f：来龙去脉列表底部的［在关系图上看 →］（只在电脑上） */
+  onOpenTrace?: (projectId: string, node: string) => void;
 }
 
 /** 材料预览抽屉：像任务抽屉那样挂在 App 根部。手机上也能打开，只读。 */
 export function MaterialPreviewDrawer({
   apiClient,
   fileId,
+  passage,
+  canWrite = false,
   startMs = null,
   canReveal,
   isMobile,
@@ -293,24 +363,64 @@ export function MaterialPreviewDrawer({
   onOpenMeeting,
   onOpenTask,
   onOpenInGraph,
+  onOpenTrace,
 }: MaterialPreviewDrawerProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
   useDialogFocus(drawerRef);
   const [data, setData] = useState<MaterialFilePreview | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
-  const [notice, setNotice] = useState("");
+  // 4f：按了［来龙去脉］才取；要 v16 的表（useLinksFlags 不为 null）和 graphTrace 接口
+  const [traceOpen, setTraceOpen] = useState(false);
+  const canTrace = useLinksFlags() !== null && typeof apiClient.graphTrace === "function";
+  const { notice, setNotice, dismissNotice } = useNotice();
   const player = useDrawerPlayer();
   const { play } = player.handle;
+  const passageKey = passage?.contentKey;
+  const passageOrdinal = passage?.ordinal;
 
-  const load = useCallback(async () => {
-    setState("loading");
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setState("loading");
+      try {
+        setData(
+          passageKey !== undefined && passageOrdinal !== undefined
+            ? await apiClient.getMaterialPreview(fileId, undefined, { contentKey: passageKey, ordinal: passageOrdinal })
+            : await apiClient.getMaterialPreview(fileId),
+        );
+        setState("ready");
+      } catch {
+        if (!silent) setState("error");
+      }
+    },
+    [apiClient, fileId, passageKey, passageOrdinal],
+  );
+
+  // 4d：「内容相关的会」的［不相关］和撤销；提示用抽屉自己的 NoticeBanner（放得下［撤销］）
+  const answeringRef = useRef<RelationAnswering | null>(null);
+  const drawerNotice: NoticeFn = (message, undo, tone) =>
+    setNotice(
+      message,
+      tone ?? "success",
+      undo ? UNDO_NOTICE_MS : undefined,
+      undo?.kind === "relation"
+        ? [{ label: "撤销", onClick: () => void answeringRef.current?.undo(undo.relationId) }]
+        : undefined,
+    );
+  const answering = useRelationAnswer({
+    apiClient,
+    scope: { fileId },
+    onNotice: drawerNotice,
+    onChanged: () => load(true),
+  });
+  answeringRef.current = answering;
+
+  const openFile = async () => {
     try {
-      setData(await apiClient.getMaterialPreview(fileId));
-      setState("ready");
-    } catch {
-      setState("error");
+      await apiClient.openMaterialFile(fileId);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "打开文件失败", "warning");
     }
-  }, [apiClient, fileId]);
+  };
 
   useEffect(() => {
     void load();
@@ -334,7 +444,7 @@ export function MaterialPreviewDrawer({
       await copyText(data.file.path);
       setNotice("路径已复制");
     } catch {
-      setNotice("复制失败，请手动选中路径");
+      setNotice("复制失败，请手动选中路径", "error");
     }
   };
 
@@ -344,7 +454,7 @@ export function MaterialPreviewDrawer({
       await apiClient.revealMaterial(data.file.path);
       setNotice("");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "打不开访达");
+      setNotice(error instanceof Error ? error.message : "打不开访达", "error");
     }
   };
 
@@ -385,10 +495,39 @@ export function MaterialPreviewDrawer({
                 {data.file.modified_at && <span>修改于 {formatDate(data.file.modified_at)}</span>}
                 {data.file.size !== null && <span>{formatBytes(data.file.size)}</span>}
               </p>
+              {/* 4e：在问的可能过时和产出，放在位置那一行之后，不用往下翻就看得到 */}
+              <RelationQuestion
+                answering={answering}
+                apiClient={apiClient}
+                canWrite={canWrite}
+                onNotice={drawerNotice}
+                onPlay={(url, atMs, label) => play(url, atMs, label, { clip: true })}
+                questions={data.questions}
+                scope={{ fileId }}
+              />
+              {passage && (
+                <PassageBlock
+                  data={data}
+                  fileId={fileId}
+                  playable={Boolean(data.preview && data.preview.kind === "media")}
+                  player={player.handle}
+                  target={passage}
+                />
+              )}
               <PreviewBlock data={data} onOpenMeeting={(id) => onOpenMeeting(id)} player={player.handle} />
+              {traceOpen && canTrace && (
+                <TraceList
+                  apiClient={apiClient}
+                  node={`file:${data.file.id}`}
+                  onOpenInGraph={
+                    !isMobile && onOpenTrace ? () => onOpenTrace(data.file.project_id, `file:${data.file.id}`) : undefined
+                  }
+                  onPlay={(url, atMs, label) => play(url, atMs, label, { clip: true })}
+                />
+              )}
               {mentions.length > 0 && (
                 <section className="material-drawer__section">
-                  <h3>在 {mentions.length} 场会上被提到</h3>
+                  <h3>在 {data.mentioned_meetings ?? mentions.length} 场会上被提到</h3>
                   <ul className="material-drawer__mentions">
                     {mentions.map((item) => (
                       <li key={item.meeting_id}>
@@ -400,7 +539,7 @@ export function MaterialPreviewDrawer({
                           {item.title}
                         </button>
                         <span className="material-preview__muted">
-                          {item.date} · {item.count} 次
+                          {item.date} · {looseId(item) !== null && item.phrase ? looseSaid(item.phrase) : `${item.count} 次`}
                         </span>
                         {item.quote && (
                           <span className="material-drawer__quote">
@@ -422,6 +561,17 @@ export function MaterialPreviewDrawer({
                   </ul>
                 </section>
               )}
+              <RelatedMeetings
+                answering={answering}
+                apiClient={apiClient}
+                canWrite={canWrite}
+                fileId={fileId}
+                fileName={data.file.name}
+                onNotice={drawerNotice}
+                onOpenMeeting={(meetingId, atMs) => onOpenMeeting(meetingId, atMs)}
+                onPlay={(url, atMs, label) => play(url, atMs, label, { clip: true })}
+                rows={data.related_meetings}
+              />
               {deliverables.length > 0 && (
                 <section className="material-drawer__section">
                   <h3>交付物</h3>
@@ -440,11 +590,7 @@ export function MaterialPreviewDrawer({
                   </ul>
                 </section>
               )}
-              {notice && (
-                <p className="material-preview__muted" role="status">
-                  {notice}
-                </p>
-              )}
+              <NoticeBanner notice={notice} onDismiss={dismissNotice} />
             </>
           )}
         </div>
@@ -458,9 +604,19 @@ export function MaterialPreviewDrawer({
                 在访达中显示
               </button>
             )}
+            {canTrace && (
+              <button aria-pressed={traceOpen} onClick={() => setTraceOpen((open) => !open)} type="button">
+                来龙去脉
+              </button>
+            )}
             {!isMobile && onOpenInGraph && (
               <button onClick={() => onOpenInGraph(data.file.project_id, data.file.id)} type="button">
                 在关系图里看
+              </button>
+            )}
+            {!isMobile && data.file.can_open === true && typeof apiClient.openMaterialFile === "function" && (
+              <button onClick={() => void openFile()} type="button">
+                用本机应用打开
               </button>
             )}
           </footer>

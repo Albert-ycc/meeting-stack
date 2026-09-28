@@ -308,6 +308,14 @@
   white-space: pre-wrap;
 }
 
+/* 4e：决议卡上的小签「1 个文件可能过时」 */
+.focus-panel__stale {
+  margin: 6px 0 0;
+  padding-left: 8px;
+  border-left: 3px solid var(--warn);
+  font-size: 12px;
+}
+
 .focus-panel__source {
   display: flex;
   flex-wrap: wrap;
@@ -380,6 +388,13 @@
   stroke-width: 1.2;
 }
 
+/* 4e：在问的产出：琥珀色虚线，不带箭头 */
+.meeting-focus__deliverable.is-ask {
+  stroke: var(--warn);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+}
+
 .meeting-focus__arrow-head {
   fill: var(--line-strong);
 }
@@ -400,6 +415,13 @@
   font-size: 11px;
   line-height: 1;
   white-space: nowrap;
+}
+
+/* 4e：在问的产出：琥珀色（「在等你」的颜色） */
+.meeting-focus__tag.is-ask {
+  border-color: var(--warn);
+  border-style: dashed;
+  background: var(--warn-bg);
 }
 
 button.meeting-focus__tag {

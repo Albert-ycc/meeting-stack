@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -955,6 +955,383 @@ CREATE TABLE IF NOT EXISTS deliverable_files (
     rel_path TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_deliverable_files_content ON deliverable_files(content_key);
+
+-- v16 / 4a：第四期（深度关联）。全部新表、触发器和索引在这一段一次建好，后面几步不再改库结构。
+
+-- 纪要决议段里的一条是一行。id 是 dec- 加 16 位十六进制，跨纪要版本不变；纪要里没了记 gone_at，
+-- 不删。text_key 是统一全半角、大小写，去掉标点和空白后的文字。placement 为空表示自动归到需求，
+-- ai 是 AI 放的，picked 是你放的，none 是你说它不属于具体需求。版本记在 decision_scan。
+CREATE TABLE IF NOT EXISTS decisions (
+    id TEXT PRIMARY KEY,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    text_key TEXT NOT NULL,
+    start_ms INTEGER,
+    end_ms INTEGER,
+    placement TEXT CHECK (placement IS NULL OR placement IN ('ai', 'picked', 'none')),
+    requirement_id TEXT REFERENCES requirements(id) ON DELETE SET NULL,
+    placed_at TEXT,
+    gone_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_meeting ON decisions(meeting_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_decisions_requirement ON decisions(requirement_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_text_key ON decisions(text_key);
+
+-- 每场会一行台账：入库（纪要版本、项目、解析器、决议段哈希、note）、对比（pair_*）、影响
+-- （affects_*）三件事共用。note：no_minutes / no_section / empty。pair_after 是失败后的下次时间。
+CREATE TABLE IF NOT EXISTS decision_scan (
+    meeting_id TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+    minutes_version_id TEXT,
+    project_id TEXT,
+    parser INTEGER NOT NULL DEFAULT 0,
+    section_hash TEXT,
+    note TEXT CHECK (note IS NULL OR note IN ('no_minutes', 'no_section', 'empty')),
+    scanned_at TEXT,
+    pair_hash TEXT,
+    pair_state TEXT NOT NULL DEFAULT 'idle'
+        CHECK (pair_state IN ('idle', 'pending', 'running', 'done', 'failed')),
+    pair_attempts INTEGER NOT NULL DEFAULT 0,
+    pair_claimed_at TEXT,
+    pair_after TEXT,
+    pair_error TEXT,
+    affects_hash TEXT,
+    affects_chunk_mark INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_decision_scan_pair ON decision_scan(pair_state)
+    WHERE pair_state IN ('pending', 'running');
+
+-- 放宽的提到、相关、产出、影响，决议之间的「后来改了」「后来又提到」，以及你对它们的回答。
+-- 字面的提到仍在 meeting_file_mentions，确认过的产出仍在 deliverables。ident 只用稳定的部分拼，
+-- 写入时定下、之后不改；file_id 只是当前活文件的缓存。score 只用来排序和过门槛，从不返回。
+-- 每个外键子列都有索引（删根目录时连带的关联行才删得快）。
+CREATE TABLE IF NOT EXISTS relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL
+        CHECK (kind IN ('mention', 'related', 'produced', 'affects', 'later_changed', 'restated')),
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    ident TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('shown', 'suggested', 'confirmed', 'rejected', 'resolved', 'cleared')),
+    origin TEXT NOT NULL CHECK (origin IN ('rule', 'llm', 'vector', 'manual')),
+    meeting_id TEXT REFERENCES meetings(id) ON DELETE CASCADE,
+    at_ms INTEGER,
+    task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+    decision_id TEXT REFERENCES decisions(id) ON DELETE CASCADE,
+    to_decision_id TEXT REFERENCES decisions(id) ON DELETE CASCADE,
+    content_key TEXT,
+    root_id INTEGER,
+    rel_path TEXT,
+    stem_key TEXT,
+    file_id INTEGER REFERENCES material_files(id) ON DELETE SET NULL,
+    quote TEXT NOT NULL DEFAULT '',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    score REAL,
+    deliverable_id INTEGER REFERENCES deliverables(id) ON DELETE SET NULL,
+    prev_json TEXT,
+    decided_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (kind, project_id, ident)
+);
+CREATE INDEX IF NOT EXISTS idx_relations_project ON relations(project_id, kind, status);
+CREATE INDEX IF NOT EXISTS idx_relations_meeting ON relations(meeting_id, kind)
+    WHERE meeting_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_relations_task ON relations(task_id) WHERE task_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_relations_decision ON relations(decision_id)
+    WHERE decision_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_relations_to_decision ON relations(to_decision_id)
+    WHERE to_decision_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_relations_file ON relations(file_id) WHERE file_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_relations_content ON relations(content_key)
+    WHERE content_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_relations_deliverable ON relations(deliverable_id)
+    WHERE deliverable_id IS NOT NULL;
+
+-- 会议离开项目：只删它在旧项目里的系统行（origin 不是 manual 的 shown、suggested、cleared），
+-- 包括通过它的决议连着的两类标记；你回答过的行和你［换成这份］过的行留着。产出的行 meeting_id
+-- 为空，不归这里管。
+CREATE TRIGGER IF NOT EXISTS relations_leave_project
+AFTER UPDATE OF project_id ON meetings
+WHEN NEW.project_id IS NOT OLD.project_id
+BEGIN
+    DELETE FROM relations
+     WHERE project_id IS NOT NEW.project_id
+       AND status IN ('shown', 'suggested', 'cleared') AND origin != 'manual'
+       AND (meeting_id = NEW.id
+            OR decision_id IN (SELECT id FROM decisions WHERE meeting_id = NEW.id)
+            OR to_decision_id IN (SELECT id FROM decisions WHERE meeting_id = NEW.id));
+END;
+
+-- relations 不进 GRAPH_REV_TABLES：相关（kind='related'）只给自己的 related_rev 加一，其余给
+-- graph_rev 加一。相关每次重算都可能写，不能让星图和总览的缓存跟着失效。
+CREATE TRIGGER IF NOT EXISTS graph_rev_relations_insert
+AFTER INSERT ON relations
+WHEN NEW.kind != 'related'
+BEGIN
+    INSERT INTO app_state(key, value, updated_at)
+    VALUES ('graph_rev', '1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(key) DO UPDATE
+        SET value = CAST(app_state.value AS INTEGER) + 1, updated_at = excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS graph_rev_relations_update
+AFTER UPDATE ON relations
+WHEN NEW.kind != 'related'
+BEGIN
+    INSERT INTO app_state(key, value, updated_at)
+    VALUES ('graph_rev', '1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(key) DO UPDATE
+        SET value = CAST(app_state.value AS INTEGER) + 1, updated_at = excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS graph_rev_relations_delete
+AFTER DELETE ON relations
+WHEN OLD.kind != 'related'
+BEGIN
+    INSERT INTO app_state(key, value, updated_at)
+    VALUES ('graph_rev', '1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(key) DO UPDATE
+        SET value = CAST(app_state.value AS INTEGER) + 1, updated_at = excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS related_rev_relations_insert
+AFTER INSERT ON relations
+WHEN NEW.kind = 'related'
+BEGIN
+    INSERT INTO app_state(key, value, updated_at)
+    VALUES ('related_rev', '1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(key) DO UPDATE
+        SET value = CAST(app_state.value AS INTEGER) + 1, updated_at = excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS related_rev_relations_update
+AFTER UPDATE ON relations
+WHEN NEW.kind = 'related'
+BEGIN
+    INSERT INTO app_state(key, value, updated_at)
+    VALUES ('related_rev', '1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(key) DO UPDATE
+        SET value = CAST(app_state.value AS INTEGER) + 1, updated_at = excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS related_rev_relations_delete
+AFTER DELETE ON relations
+WHEN OLD.kind = 'related'
+BEGIN
+    INSERT INTO app_state(key, value, updated_at)
+    VALUES ('related_rev', '1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(key) DO UPDATE
+        SET value = CAST(app_state.value AS INTEGER) + 1, updated_at = excluded.updated_at;
+END;
+
+-- 4b 的 AI 结果：按逐字稿版本存从逐字稿里挑出的说法、原话和时间点，和本机对文件名的结果分开。
+-- hints_json 是给 2d 比对用的提示；resolved_sig 记上次对文件名时的签名，变了才重对。
+CREATE TABLE IF NOT EXISTS mention_extractions (
+    meeting_id TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+    version_id TEXT NOT NULL,
+    text_sha TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending', 'running', 'done', 'failed')),
+    parts INTEGER NOT NULL DEFAULT 1,
+    parts_done INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    phrases_json TEXT NOT NULL DEFAULT '[]',
+    hints_json TEXT NOT NULL DEFAULT '{}',
+    resolved_sig TEXT,
+    error TEXT,
+    claimed_at TEXT,
+    finished_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mention_extractions_state ON mention_extractions(state)
+    WHERE state IN ('pending', 'running');
+
+-- 相关（4d）的台账。dirty 是计数，和 meeting_file_scan 一样防丢更新。copies_json 记这场会自己的
+-- 纪要、逐字稿被导出到资料盘的那几份内容。note：no_project / no_transcript / no_roots。
+CREATE TABLE IF NOT EXISTS meeting_related_scan (
+    meeting_id TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+    sig TEXT NOT NULL DEFAULT '',
+    dirty INTEGER NOT NULL DEFAULT 1,
+    chunk_mark INTEGER NOT NULL DEFAULT 0,
+    windows INTEGER NOT NULL DEFAULT 0,
+    passages INTEGER NOT NULL DEFAULT 0,
+    copies_json TEXT NOT NULL DEFAULT '[]',
+    partial INTEGER NOT NULL DEFAULT 0,
+    note TEXT CHECK (note IS NULL OR note IN ('no_project', 'no_transcript', 'no_roots')),
+    scanned_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_related_scan_dirty ON meeting_related_scan(dirty)
+    WHERE dirty > 0;
+-- 换项目、换逐字稿版本，或原地改逐字稿（拆句、合并、保存草稿不换版本号）时记一笔要重算。
+CREATE TRIGGER IF NOT EXISTS meeting_related_scan_dirty_meeting
+AFTER UPDATE OF project_id, current_transcript_version_id ON meetings
+WHEN NEW.project_id IS NOT OLD.project_id
+    OR NEW.current_transcript_version_id IS NOT OLD.current_transcript_version_id
+BEGIN
+    INSERT INTO meeting_related_scan(meeting_id, dirty) VALUES (NEW.id, 1)
+    ON CONFLICT(meeting_id) DO UPDATE SET dirty = dirty + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_related_scan_dirty_edit
+AFTER INSERT ON events
+WHEN NEW.meeting_id IS NOT NULL AND NEW.event_type IN (
+    'segment_split', 'segments_merged', 'transcript_draft_saved')
+BEGIN
+    INSERT INTO meeting_related_scan(meeting_id, dirty)
+    SELECT id, 1 FROM meetings WHERE id = NEW.meeting_id
+    ON CONFLICT(meeting_id) DO UPDATE SET dirty = dirty + 1;
+END;
+
+-- 逐字稿按 90 秒一窗、每 45 秒一窗，每窗一个向量（float16）和它自己的门槛 bar。能重算，不进备份。
+CREATE TABLE IF NOT EXISTS meeting_windows (
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    text_sha TEXT NOT NULL,
+    chars INTEGER NOT NULL,
+    bar REAL NOT NULL,
+    vector BLOB NOT NULL,
+    PRIMARY KEY (meeting_id, model, start_ms)
+);
+
+-- 每窗最多 3 段对得上的材料。chunk_id 只用来级联删除和取文字，对外的锚点是 (content_key, ordinal)；
+-- words 是最多 3 个共同词，seg_ms 是第一个共同词在会上说到的那一句。能重算，不进备份。
+CREATE TABLE IF NOT EXISTS meeting_window_passages (
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    start_ms INTEGER NOT NULL,
+    rank INTEGER NOT NULL,
+    chunk_id INTEGER NOT NULL REFERENCES material_chunks(id) ON DELETE CASCADE,
+    content_key TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    score REAL NOT NULL,
+    words TEXT NOT NULL DEFAULT '[]',
+    seg_ms INTEGER NOT NULL,
+    PRIMARY KEY (meeting_id, start_ms, rank)
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_window_passages_chunk ON meeting_window_passages(chunk_id);
+CREATE INDEX IF NOT EXISTS idx_meeting_window_passages_content
+    ON meeting_window_passages(content_key, meeting_id);
+
+-- 离开项目的触发器、时间线、决议对比都按项目找会；决议归需求、决议日志都按会找需求。
+CREATE INDEX IF NOT EXISTS idx_meetings_project ON meetings(project_id);
+CREATE INDEX IF NOT EXISTS idx_requirement_meetings_meeting ON requirement_meetings(meeting_id);
+
+-- 文件新增、修改、不见的流水，只追加，由 material_files 上的两个触发器写。file_id 不设外键：
+-- 文件行删掉以后流水还在，判断挪位置要用。day 是本机日期，at 是 UTC 时刻。
+-- (root_id, size, mtime_ns) 给挪位置配对；changed 同一个文件同一天只一行。
+CREATE TABLE IF NOT EXISTS material_file_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_id INTEGER NOT NULL REFERENCES project_material_roots(id) ON DELETE CASCADE,
+    file_id INTEGER NOT NULL,
+    rel_path TEXT NOT NULL,
+    dir_rel TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('added', 'changed', 'gone')),
+    content_key TEXT,
+    size INTEGER,
+    mtime_ns INTEGER,
+    day TEXT NOT NULL,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_material_file_events_root ON material_file_events(root_id, at);
+CREATE INDEX IF NOT EXISTS idx_material_file_events_file ON material_file_events(file_id);
+CREATE INDEX IF NOT EXISTS idx_material_file_events_day ON material_file_events(root_id, day);
+CREATE INDEX IF NOT EXISTS idx_material_file_events_sig
+    ON material_file_events(root_id, size, mtime_ns);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_material_file_events_changed_day
+    ON material_file_events(file_id, day) WHERE kind = 'changed';
+
+-- 只记 normal 区，和 package 区里的 key、pages、numbers；这个根目录第一次整轮（last_full_at 为空，
+-- 换了路径以后也会清空）一行都不记。比较一律用 IS：包的 size 是空的。
+CREATE TRIGGER IF NOT EXISTS material_file_events_insert
+AFTER INSERT ON material_files
+WHEN (NEW.zone = 'normal' OR (NEW.zone = 'package' AND NEW.ext IN ('key', 'pages', 'numbers')))
+    AND NEW.gone_at IS NULL
+    AND EXISTS (SELECT 1 FROM material_index_state s
+                 WHERE s.root_id = NEW.root_id AND s.last_full_at IS NOT NULL)
+BEGIN
+    INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
+                                     size, mtime_ns, day, at)
+    VALUES (NEW.root_id, NEW.id, NEW.rel_path, NEW.dir_rel, 'added', NULL, NEW.size, NEW.mtime_ns,
+            date('now', 'localtime'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+-- 只看 size、mtime_ns、gone_at 三列（只填 content_key 不记）。gone_at 从空变有记 gone（带原来的
+-- size、mtime 和 content_key），从有变空记 added（又出现了）；活文件的 size 或 mtime 变了记
+-- changed（带变之前的 content_key），同一天只一行、保留当天第一次的旧标识。changed 的 day 在 mtime
+-- 落在过去 2 天到未来 5 分钟之间时取 mtime 的本机日期。exFAT、FAT 盘换时区会让整盘的修改时间一起
+-- 挪整刻钟：大小没变、mtime 差正好是 15 分钟的整数倍时不记。
+CREATE TRIGGER IF NOT EXISTS material_file_events_update
+AFTER UPDATE OF size, mtime_ns, gone_at ON material_files
+WHEN (NEW.zone = 'normal' OR (NEW.zone = 'package' AND NEW.ext IN ('key', 'pages', 'numbers')))
+    AND (NEW.size IS NOT OLD.size OR NEW.mtime_ns IS NOT OLD.mtime_ns
+         OR NEW.gone_at IS NOT OLD.gone_at)
+    AND EXISTS (SELECT 1 FROM material_index_state s
+                 WHERE s.root_id = NEW.root_id AND s.last_full_at IS NOT NULL)
+BEGIN
+    INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
+                                     size, mtime_ns, day, at)
+    SELECT NEW.root_id, NEW.id, NEW.rel_path, NEW.dir_rel,
+           CASE WHEN NEW.gone_at IS NOT NULL THEN 'gone' ELSE 'added' END,
+           CASE WHEN NEW.gone_at IS NOT NULL THEN OLD.content_key END,
+           CASE WHEN NEW.gone_at IS NOT NULL THEN OLD.size ELSE NEW.size END,
+           CASE WHEN NEW.gone_at IS NOT NULL THEN OLD.mtime_ns ELSE NEW.mtime_ns END,
+           date('now', 'localtime'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE (OLD.gone_at IS NULL) != (NEW.gone_at IS NULL);
+    INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
+                                     size, mtime_ns, day, at)
+    SELECT NEW.root_id, NEW.id, NEW.rel_path, NEW.dir_rel, 'changed', OLD.content_key,
+           NEW.size, NEW.mtime_ns,
+           CASE WHEN NEW.mtime_ns IS NOT NULL
+                 AND NEW.mtime_ns / 1000000000
+                     BETWEEN CAST(strftime('%s', 'now') AS INTEGER) - 172800
+                         AND CAST(strftime('%s', 'now') AS INTEGER) + 300
+                THEN date(NEW.mtime_ns / 1000000000, 'unixepoch', 'localtime')
+                ELSE date('now', 'localtime') END,
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE OLD.gone_at IS NULL AND NEW.gone_at IS NULL
+       AND NOT (NEW.size IS OLD.size AND NEW.mtime_ns IS NOT NULL AND OLD.mtime_ns IS NOT NULL
+                AND (NEW.mtime_ns - OLD.mtime_ns) % 900000000000 = 0)
+    ON CONFLICT(file_id, day) WHERE kind = 'changed'
+    DO UPDATE SET size = excluded.size, mtime_ns = excluded.mtime_ns, at = excluded.at;
+END;
+
+-- 4h 从材料里挖出来、等你确认的词。不写进 glossary_terms 当未确认词；［记入］以后才复制过去，
+-- term_id 和 undo_json 给 600 秒内撤销用。evidence_json 只存位置和次数。dropped 是证据没了。
+CREATE TABLE IF NOT EXISTS glossary_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    term TEXT NOT NULL,
+    term_key TEXT NOT NULL,
+    wrong TEXT NOT NULL DEFAULT '',
+    files INTEGER NOT NULL DEFAULT 0,
+    spoken INTEGER NOT NULL DEFAULT 0,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'accepted', 'rejected', 'dropped')),
+    term_id TEXT,
+    undo_json TEXT,
+    decided_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (project_id, term_key, wrong)
+);
+CREATE INDEX IF NOT EXISTS idx_glossary_candidates_status ON glossary_candidates(status);
+
+-- 每个项目上次挖词时的签名，变了才重挖。
+CREATE TABLE IF NOT EXISTS glossary_mining_scan (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    sig TEXT NOT NULL,
+    mined_at TEXT NOT NULL
+);
+
+-- 每份材料内容挖出的候选词（最多 24 个，带次数），只在本机；内容被回收时跟着删。
+CREATE TABLE IF NOT EXISTS glossary_mining_seeds (
+    content_key TEXT PRIMARY KEY REFERENCES material_contents(content_key) ON DELETE CASCADE,
+    miner INTEGER NOT NULL,
+    source_sig TEXT NOT NULL,
+    terms_json TEXT NOT NULL,
+    mined_at TEXT NOT NULL
+);
 """
 
 # 1g：关系图的持久版本号。这些表每次增删改都给 app_state 里的 graph_rev 加一，图接口拿它
@@ -977,6 +1354,11 @@ GRAPH_REV_TABLES = (
     "pending_project_folders",
     # 2d：会上提到的文件。文件名索引那几张表不进，否则后台每扫一轮都会让关系图缓存失效。
     "meeting_file_mentions",
+    # v16：决议画在关系图上；交付物就是确认过的产出线（以前不在这里，标交付物后缓存不失效）。
+    # relations 用上面手写的触发器，不放进来。
+    "decisions",
+    "deliverables",
+    "deliverable_files",
 )
 SCHEMA += "".join(
     f"""
@@ -1340,6 +1722,18 @@ class Database:
             connection.execute(
                 """INSERT OR IGNORE INTO app_state(key, value, updated_at)
                    VALUES ('ocr_engine', 'auto', ?)""",
+                (now,),
+            )
+            # v16：表和触发器都在 SCHEMA 里，不回填，积压由两个循环慢慢补；这里只写两个键。
+            # links_since 是第一次用上第四期的时间，写一次、之后不改；related_rev 是相关自己的版本号。
+            connection.execute(
+                """INSERT OR IGNORE INTO app_state(key, value, updated_at)
+                   VALUES ('links_since', ?, ?)""",
+                (now, now),
+            )
+            connection.execute(
+                """INSERT OR IGNORE INTO app_state(key, value, updated_at)
+                   VALUES ('related_rev', '0', ?)""",
                 (now,),
             )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

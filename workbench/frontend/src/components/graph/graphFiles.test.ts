@@ -1,9 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { RECENT_MAX, VISIBLE_BUDGET, fileMark, visibleCount, withRecentFiles, type PinnedFile } from "./graphFiles";
-import type { GraphFile, GraphFolder, GraphPayload, GraphRootsPayload, RecentFile } from "./graphTypes";
+import {
+  RECENT_MAX,
+  RELATED_DRAW_MAX,
+  RELATED_FILES_MAX,
+  VISIBLE_BUDGET,
+  fileMark,
+  visibleCount,
+  withRecentFiles,
+  withRelatedEdges,
+  type PinnedFile,
+} from "./graphFiles";
+import type { GraphFile, GraphFolder, GraphPayload, GraphRootsPayload, RecentFile, RelatedEdges } from "./graphTypes";
 import { layoutStarMap } from "./layout";
-import { payload } from "./testFixtures";
+import { meeting as meetingNode, payload } from "./testFixtures";
 
 function recent(fileId: number, name = `文件${fileId}.docx`, state: RecentFile["state"] = "done"): RecentFile {
   return { file_id: fileId, name, ext: "docx", dir_rel: "方案", mtime: "2026-09-25T10:00:00+00:00", state };
@@ -149,5 +159,73 @@ describe("fileMark", () => {
     expect(fileMark("done")).toBeNull();
     expect(fileMark("names_only")).toBeNull();
     expect(fileMark(undefined)).toBeNull();
+  });
+});
+
+describe("withRelatedEdges（4f）", () => {
+  function related(edges: Array<Partial<RelatedEdges["edges"][number]> & { meeting_id: string; file_id: number }>): RelatedEdges {
+    const files: RelatedEdges["files"] = {};
+    for (const item of edges) {
+      files[String(item.file_id)] = { file_id: item.file_id, name: `相关${item.file_id}.docx`, ext: "docx", rel_path: "x", root_id: 1 };
+    }
+    return {
+      rev: 1,
+      files,
+      edges: edges.map((item, index) => ({
+        id: `e:rel:${index + 1}`,
+        relation_id: index + 1,
+        rank: index + 1,
+        words: ["报价单", "驻场"],
+        at_ms: 1000,
+        quote: "报价单再看一下",
+        passage: { content_key: "k", ordinal: 0, loc: "第 1 页" },
+        ...item,
+      })),
+    };
+  }
+
+  it("有提到线的一对跳过；新文件带 related；线上写共同词", () => {
+    const graph = payload({
+      files: [mentioned(1)],
+      edges: [{ id: "e:file:1:a", kind: "mentioned", from: "m:a", to: "file:1", label: "" }],
+    });
+    const next = withRelatedEdges(graph, related([{ meeting_id: "a", file_id: 1 }, { meeting_id: "a", file_id: 2 }]));
+    const lines = next.edges.filter((edge) => edge.kind === "related");
+    expect(lines.map((edge) => edge.to)).toEqual(["file:2"]);
+    expect(lines[0]).toMatchObject({ id: "e:rel:2", from: "m:a", label: "共同词：报价单、驻场", relation_id: 2 });
+    expect(next.files?.find((file) => file.file_id === 2)).toMatchObject({ related: true, folder: "root:1" });
+  });
+
+  it("每个节点（含折叠组）最多 3 条，折叠的会对到组；全图最多 36 条；新文件最多 6 个且不超过空位", () => {
+    const graph = payload({
+      files: Array.from({ length: 10 }, (_, index) => mentioned(100 + index)),
+      collapsed: [{ id: "c:older", kind: "older", label: "更早 2 场", count: 2, from: "2026-01-01", to: "2026-02-01", meeting_ids: ["x", "y"], ring: "outer" }],
+    });
+    const rows = [
+      ...Array.from({ length: 5 }, (_, index) => ({ meeting_id: "a", file_id: 100 + index })),
+      ...Array.from({ length: 4 }, (_, index) => ({ meeting_id: index % 2 ? "x" : "y", file_id: 105 + index })),
+      ...Array.from({ length: 10 }, (_, index) => ({ meeting_id: "b", file_id: 500 + index })),
+    ];
+    const next = withRelatedEdges(graph, related(rows));
+    const lines = next.edges.filter((edge) => edge.kind === "related");
+    const per = (id: string) => lines.filter((edge) => edge.from === id || edge.to === id).length;
+    expect(per("m:a")).toBe(3);
+    expect(per("c:older")).toBe(3);
+    expect(per("m:b")).toBe(3);
+    expect(lines.length).toBeLessThanOrEqual(RELATED_DRAW_MAX);
+    const added = (next.files ?? []).filter((file) => file.related);
+    expect(added.length).toBeLessThanOrEqual(RELATED_FILES_MAX);
+    expect(visibleCount(next)).toBeLessThanOrEqual(VISIBLE_BUDGET);
+    expect(withRelatedEdges(graph, null)).toBe(graph);
+  });
+
+  it("全图最多 36 条", () => {
+    const meetings = Array.from({ length: 16 }, (_, index) => meetingNode(`q${index}`, index));
+    const graph = payload({ meetings, files: Array.from({ length: 20 }, (_, index) => mentioned(700 + index)) });
+    const rows = meetings.flatMap((item, index) =>
+      [0, 1, 2].map((slot) => ({ meeting_id: item.meeting_id, file_id: 700 + ((index + slot * 7) % 20) })),
+    );
+    const next = withRelatedEdges(graph, related(rows));
+    expect(next.edges.filter((edge) => edge.kind === "related").length).toBeLessThanOrEqual(RELATED_DRAW_MAX);
   });
 });

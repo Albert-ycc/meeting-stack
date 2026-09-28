@@ -2,13 +2,17 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import type { ApiClient } from "../../api";
 import { formatTime } from "../../format";
-import type { FocusDecision, FocusTask, MeetingFocus, QuotesPayload } from "./graphTypes";
+import { decisionNodeId } from "./focusLayout";
+import type { FocusDecision, FocusTask, MeetingFocus } from "./graphTypes";
+import { Quotes } from "./quotes";
+import { DecisionMarks } from "../decisions/DecisionRow";
+import { markQuestion } from "../decisions/markQuestion";
+import { useLinksFlags } from "../links/LinksFlagsContext";
+import { useRelationAnswer } from "../links/useRelationAnswer";
 import { PlayButton, Section, TASK_STATUS, localUndoUntil, type GraphNoticeUndo, type NoticeFn } from "./panelParts";
 import type { MiniPlayerHandle } from "./MiniPlayer";
 import "./GraphPanel.css";
 import "./MeetingFocus.css";
-
-type Segment = QuotesPayload["quotes"][number]["segments"][number];
 
 export interface FocusPanelProps {
   apiClient: ApiClient;
@@ -20,54 +24,23 @@ export interface FocusPanelProps {
   onChanged: () => void | Promise<void>;
   onNotice: NoticeFn;
   onOpenRequirement: (requirementId: string) => void;
+  /** 4f：决议面板的［来龙去脉］（dec:<id>）；旧后台、手机上不传 */
+  onTrace?: (node: string) => void;
   /** 3g：交付物里的文件点了打开预览抽屉 */
   onOpenPreview?: (fileId: number) => void;
 }
 
-/** 前后各 20 秒的原话；换一条决议或任务时重读 */
-function useWideQuotes(apiClient: ApiClient, meetingId: string, atMs: number | null) {
-  const [state, setState] = useState<{ at: number | null; segments: Segment[] | null; error: string }>({
-    at: null,
-    segments: null,
-    error: "",
-  });
-  useEffect(() => {
-    if (atMs === null) return;
-    let active = true;
-    setState({ at: atMs, segments: null, error: "" });
-    apiClient
-      .meetingQuotes(meetingId, [atMs], "wide")
-      .then((payload) => active && setState({ at: atMs, segments: payload.quotes[0]?.segments ?? [], error: "" }))
-      .catch(
-        (reason: unknown) =>
-          active && setState({ at: atMs, segments: [], error: reason instanceof Error ? reason.message : "原话读取失败" }),
-      );
-    return () => {
-      active = false;
-    };
-  }, [apiClient, atMs, meetingId]);
-  return state.at === atMs ? state : { at: atMs, segments: null, error: "" };
-}
-
-function Quotes({ props, atMs }: { props: FocusPanelProps; atMs: number | null }) {
+function FocusQuotes({ props, atMs }: { props: FocusPanelProps; atMs: number | null }) {
   const { focus, player } = props;
-  const { segments, error } = useWideQuotes(props.apiClient, focus.meeting.id, atMs);
-  if (atMs === null) return <p className="graph-panel__muted">没有时间点，找不到原话</p>;
-  if (error) return <p className="graph-panel__error">{error}</p>;
-  if (!segments) return <p className="graph-panel__muted">正在读原话…</p>;
-  if (!segments.length) return <p className="graph-panel__muted">这段时间没有逐字稿</p>;
   return (
-    <ul className="focus-panel__quotes">
-      {segments.map((segment) => (
-        <li className={segment.start_ms <= atMs && atMs < segment.end_ms ? "is-anchor" : ""} key={segment.segment_id}>
-          <PlayButton atMs={segment.start_ms} audioUrl={focus.meeting.audio_url} label={focus.meeting.title} player={player} />
-          <span>
-            {segment.speaker && <small>{segment.speaker}：</small>}
-            {segment.text}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <Quotes
+      apiClient={props.apiClient}
+      atMs={atMs}
+      audioUrl={focus.meeting.audio_url}
+      label={focus.meeting.title}
+      meetingId={focus.meeting.id}
+      player={player}
+    />
   );
 }
 
@@ -87,18 +60,81 @@ function Source({ props, atMs }: { props: FocusPanelProps; atMs: number | null }
   );
 }
 
+/**
+ * 4c：决议下面和需求卡一样的标记行。［不是一回事］走 useRelationAnswer，提示交给画布的 showNotice，
+ * 撤销进画布的撤销栈（{kind: "relation", relationId, label, until}，until 是服务端的 undo_until）。
+ */
+function FocusDecisionMarks({ props, decision }: { props: FocusPanelProps; decision: FocusDecision }) {
+  const flags = useLinksFlags();
+  const decisionId = decision.id ?? null;
+  const answering = useRelationAnswer({
+    apiClient: props.apiClient,
+    scope: { decisionIds: decisionId ? [decisionId] : [] },
+    onNotice: props.onNotice,
+    onChanged: props.onChanged,
+  });
+  if (!decisionId) return null;
+  const later = (decision.later ?? []).filter((ref) => !answering.gone.has(ref.relation_id));
+  const earlier = (decision.earlier ?? []).filter((ref) => !answering.gone.has(ref.relation_id));
+  const canAnswer = flags !== null && typeof props.apiClient.answerRelation === "function" && !answering.oldBackend;
+  return (
+    <DecisionMarks
+      busy={answering.sending !== null}
+      dismissed={[]}
+      earlier={earlier}
+      later={later}
+      onDismiss={
+        canAnswer
+          ? (relationId, kind) => void answering.answer(markQuestion(relationId, kind, decisionId), "no")
+          : undefined
+      }
+      player={props.player}
+      restated={[]}
+    />
+  );
+}
+
+/** 4e：「1 个文件可能过时」：点了打开第一份文件的预览抽屉；旧后台（没有 stale、没有 linksFlags）不画 */
+export function staleTagText(count: number): string {
+  return `${count} 个文件可能过时`;
+}
+
+function StaleTag({ props, decision }: { props: FocusPanelProps; decision: FocusDecision }) {
+  const flags = useLinksFlags();
+  const stale = decision.stale;
+  if (!flags || !Array.isArray(stale) || !stale.length) return null;
+  const text = staleTagText(stale.length);
+  if (!props.onOpenPreview) return <p className="focus-panel__stale">{text}</p>;
+  return (
+    <p className="focus-panel__stale">
+      <button className="text-button" onClick={() => props.onOpenPreview?.(stale[0].file_id)} title={stale[0].name} type="button">
+        {text}
+      </button>
+    </p>
+  );
+}
+
 function DecisionBody({ props, decision }: { props: FocusPanelProps; decision: FocusDecision }) {
   return (
     <>
       <Section title="全文">
         <p className="focus-panel__full">{decision.detail || decision.text}</p>
+        <StaleTag decision={decision} props={props} />
+        <FocusDecisionMarks decision={decision} props={props} />
       </Section>
       <Section title="来源">
         <Source atMs={decision.start_ms} props={props} />
       </Section>
       <Section title="前后 20 秒的原话">
-        <Quotes atMs={decision.start_ms} props={props} />
+        <FocusQuotes atMs={decision.start_ms} props={props} />
       </Section>
+      {props.onTrace && decision.id && (
+        <div className="graph-panel__actions graph-panel__actions--start">
+          <button className="ghost-button" onClick={() => props.onTrace?.(`dec:${decision.id}`)} type="button">
+            来龙去脉
+          </button>
+        </div>
+      )}
     </>
   );
 }
@@ -213,7 +249,7 @@ function TaskBody({ props, task }: { props: FocusPanelProps; task: FocusTask }) 
         </Section>
       )}
       <Section title="前后 20 秒的原话">
-        <Quotes atMs={task.anchor_ms} props={props} />
+        <FocusQuotes atMs={task.anchor_ms} props={props} />
       </Section>
       {task.status !== "done" && !editing && (
         <div className="focus-panel__row graph-panel__section">
@@ -268,7 +304,7 @@ function AllDecisions({ props }: { props: FocusPanelProps }) {
       {focus.decisions.map((item, index) => (
         <li key={`${index}-${item.text}`}>
           <PlayButton atMs={item.start_ms} audioUrl={focus.meeting.audio_url} label={focus.meeting.title} player={player} />
-          <button className="text-button" onClick={() => props.onSelect(`dec:${index}`)} type="button">
+          <button className="text-button" onClick={() => props.onSelect(decisionNodeId(item, index))} type="button">
             {item.text}
           </button>
         </li>
@@ -302,7 +338,7 @@ export function FocusPanel(props: FocusPanelProps) {
   let heading = "";
   let body: ReactNode = null;
   if (selectedId.startsWith("dec:")) {
-    const decision = focus.decisions[Number(selectedId.slice(4))];
+    const decision = focus.decisions.find((item, index) => decisionNodeId(item, index) === selectedId);
     if (decision) {
       kind = "决议";
       heading = decision.text;

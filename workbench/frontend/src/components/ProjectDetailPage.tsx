@@ -10,6 +10,7 @@ import type {
   MaterialRoot,
   MaterialUnreadableItem,
   MaterialRootRepoint,
+  PreviewTarget,
   Project,
   ProjectBoard,
   ProjectMeetingRow,
@@ -39,6 +40,8 @@ import { copyText } from "../clipboard";
 import { NoticeBanner, useNotice } from "./Notice";
 import { ProjectGlossary } from "./ProjectGlossary";
 import { usePersistentState } from "../viewState";
+import { ProjectTimeline } from "./decisions/ProjectTimeline";
+import { ProjectAsk } from "./ask/ProjectAsk";
 
 interface ProjectDetailPageProps {
   apiClient: ApiClient;
@@ -46,7 +49,8 @@ interface ProjectDetailPageProps {
   canWrite: boolean;
   onBack: () => void;
   onOpenGlossary: (projectId: string) => void;
-  onOpenMeeting: (meetingId: string) => void;
+  /** 4c：时间线里点决议从那里放、「还有 N 条」打开纪要，所以放宽成 (meetingId, seekMs?, tab?) */
+  onOpenMeeting: (meetingId: string, seekMs?: number, tab?: "transcript" | "minutes") => void;
   onOpenTask: (taskId: string) => void;
   /** 读不了的列表里点［预览］打开 App 根部的材料预览抽屉（3e） */
   onOpenPreview?: (fileId: number) => void;
@@ -64,6 +68,10 @@ interface ProjectDetailPageProps {
   onOpenProject?: (projectId: string) => void;
   /** 标题行右侧的［关系图｜清单］（手机端没有关系图，不传） */
   modeToggle?: ReactNode;
+  /** 4g：问答出处里的材料打开预览抽屉到「回答引用的这段」；不传时退回 onOpenPreview(文件 id) */
+  onOpenPreviewTarget?: (target: PreviewTarget) => void;
+  /** 4g：手机上问答卡占满宽度 */
+  isMobile?: boolean;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -288,6 +296,8 @@ export function ProjectDetailPage({
   onProjectsChanged,
   onOpenProject,
   modeToggle,
+  onOpenPreviewTarget,
+  isMobile = false,
 }: ProjectDetailPageProps) {
   const [board, setBoard] = useState<ProjectBoard | null>(null);
   const [boardState, setBoardState] = useState<LoadState>("loading");
@@ -639,6 +649,29 @@ export function ProjectDetailPage({
             </div>
           )}
 
+          {/* 4g：「问这个项目」卡在「AI 自动建的项目」提示之后、时间线之上（手机上也有）；没有 askPrepare 时不画 */}
+          <ProjectAsk
+            apiClient={apiClient}
+            isMobile={isMobile}
+            onOpenMeeting={onOpenMeeting}
+            onOpenPreview={(target) =>
+              onOpenPreviewTarget ? onOpenPreviewTarget(target) : onOpenPreview?.(target.fileId)
+            }
+            projectId={projectId}
+            projectName={board.name}
+            variant="card"
+          />
+
+          {/* 4c：时间线在「AI 自动建的项目」提示之后、「材料根目录」卡之前 */}
+          <ProjectTimeline
+            apiClient={apiClient}
+            canWrite={canWrite}
+            onAttachRoot={canManageFolders ? openAddRoot : undefined}
+            onOpenMeeting={onOpenMeeting}
+            projectId={projectId}
+            reloadKey={reloadKey}
+          />
+
           <section className="detail-card">
             <header className="detail-card__head">
               <h2>材料根目录</h2>
@@ -970,6 +1003,10 @@ export function ProjectDetailPage({
             publicCount={board.public_glossary_count ?? 0}
             terms={board.glossary_terms ?? []}
             total={board.glossary_count ?? 0}
+            candidates={board.glossary_candidates}
+            candidateTotal={board.glossary_candidate_total}
+            onOpenMeeting={(meetingId, seekMs) => onOpenMeeting(meetingId, seekMs)}
+            onReload={loadBoard}
           />
         </>
       )}

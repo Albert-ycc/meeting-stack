@@ -1,0 +1,169 @@
+/* 第四期共用的问题块、收成的一行、一句话状态 */
+
+.relation-questions {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 问题块：左边一道琥珀色竖线（「在等你」的颜色）；块自己按宽度换行 */
+.relation-question {
+  container: relation-question / inline-size;
+  min-width: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--warn);
+  border-radius: 0 8px 8px 0;
+  background: var(--warn-bg);
+}
+
+.relation-question__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px 10px;
+}
+
+.relation-question__lines {
+  min-width: 0;
+}
+
+.relation-question__text,
+.relation-question__passage,
+.relation-question__ask {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.relation-question__text {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 片段最多 2 行，灰字 */
+.relation-question__passage,
+.relation-question__ask {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.relation-question__play {
+  margin-left: 6px;
+  padding: 0 4px;
+  color: var(--ink-2);
+  font-size: 11px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* 4e：文件名（任务抽屉的产出、需求卡的可能过时）点了打开预览抽屉 */
+.relation-question__file {
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.relation-question__file:hover,
+.relation-question__file:focus-visible {
+  text-decoration-color: currentColor;
+}
+
+.relation-question__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.relation-question__actions .ghost-button:disabled {
+  opacity: 0.5;
+}
+
+/* 宽度小于 480 像素时按钮换到下一行 */
+@container relation-question (max-width: 479px) {
+  .relation-question__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 回答以后收成的一行灰字，留到撤销期结束 */
+.relation-recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* 一句话状态：不用红色 */
+.links-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.links-state--stopped {
+  color: var(--ink-2);
+}
+
+/* 4f：［来龙去脉］的列表：从早到晚，中心那一行加粗，行和行之间一行小字 */
+.trace-list__rows {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trace-list__rows li {
+  display: grid;
+  gap: 2px;
+}
+
+.trace-list__row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.trace-list__step,
+.trace-list__cut,
+.trace-list__state {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trace-list__step {
+  padding-left: 8px;
+}
+
+.trace-list__graph {
+  margin-top: 6px;
+}

@@ -52,6 +52,11 @@ import type {
   CardsBanner,
   MeetingCard,
   MeetingGlossary,
+  MaterialWordAcceptResult,
+  MaterialWordRejectResult,
+  MaterialWordUndoResult,
+  MaterialWordsList,
+  RequirementContext,
   MeetingCardEffect,
   ProjectCardsSummary,
   ProjectParentStatus,
@@ -66,6 +71,8 @@ import type {
   MaterialFilePreview,
   MaterialIndexStatus,
   MaterialUnreadablePage,
+  AskJob,
+  AskPlan,
 } from "./types";
 import type {
   CardsFilesPayload,
@@ -78,9 +85,12 @@ import type {
   GraphPayload,
   GraphRootsPayload,
   GraphWindow,
+  LocalGraph,
   MeetingBrief,
   MeetingFocus,
   QuotesPayload,
+  RelatedEdges,
+  TracePayload,
 } from "./components/graph/graphTypes";
 import type { GraphOverview, GraphOverviewFetch, OverviewFolders } from "./components/graph/overviewTypes";
 
@@ -131,6 +141,291 @@ export class ApiError extends Error {
     this.status = status;
     this.data = data;
   }
+}
+
+/**
+ * 第四期的新接口在旧后台上不存在：FastAPI 的 404 "Not Found" 或 405。
+ * 404 的 detail 是中文（「这条关联已经不在了」）时是正式回答，不算旧后台。
+ */
+export function isOldBackend(e: unknown): boolean {
+  return (
+    e instanceof ApiError &&
+    (e.status === 405 || (e.status === 404 && (e.data as { detail?: unknown } | null)?.detail === "Not Found"))
+  );
+}
+
+// ---------------------------------------------------------------- 深度关联（4a）
+
+/** 关联的类：提到、相关、产出、影响、后来改了、后来又提到 */
+export type RelationKind = "mention" | "related" | "produced" | "affects" | "later_changed" | "restated";
+
+/** 回答：pick 要带 file_id；restore 只对 rejected、resolved */
+export type RelationAnswer = "yes" | "no" | "updated" | "pick" | "restore";
+
+/** 关联行（服务端白名单输出，不带分数和原样的证据） */
+export interface Relation {
+  id: number;
+  kind: RelationKind;
+  status: string;
+  by_you: boolean;
+  meeting_id: string | null;
+  at_ms: number | null;
+  task_id: string | null;
+  decision_id: string | null;
+  to_decision_id: string | null;
+  file: { id: number; name: string } | null;
+  quote: string | null;
+  evidence: unknown;
+  decided_at: string | null;
+}
+
+/** 一个待回答的问题：文件面板、预览抽屉、任务抽屉、需求卡共用 */
+export interface RelationQuestion {
+  relation_id: number;
+  kind: RelationKind;
+  text: string;
+  ask?: string | null;
+  decision?: {
+    id: string;
+    text: string;
+    date: string;
+    meeting_id: string;
+    meeting_title: string;
+    start_ms: number | null;
+    audio_url: string | null;
+  } | null;
+  task?: { id: string; title: string; status: string } | null;
+  file: { id: number; name: string; folder?: string | null };
+  /** 材料位置加现取的片段，最多 60 字；片段被回收时为 null */
+  passage?: { loc: string; text: string } | null;
+  words?: string[];
+  answers: RelationAnswer[];
+}
+
+/** 各页面的一句话状态；action 为 retry 时就是［现在重试］（POST /api/links/retry） */
+export interface LinksState {
+  kind: "ok" | "waiting" | "stopped";
+  text: string;
+  action: { kind: string; label: string } | null;
+}
+
+// ---------------------------------------------------------------- 相关材料栏（4d）
+
+/** 栏的状态：一句话、最多一个按钮；text 为 null 表示不写 */
+export interface RelatedState {
+  kind: "ok" | "waiting" | "stopped";
+  text: string | null;
+  action: { kind: "open_project"; label: string; project_id: string } | null;
+}
+
+/** 栏里用到的文件，按内容标识 */
+export interface RelatedFile {
+  file_id: number;
+  name: string;
+  ext: string;
+  root_online: boolean;
+  /** 音视频材料 */
+  playable: boolean;
+  /** ［用本机应用打开］出不出，前端只看它 */
+  can_open: boolean;
+  state_text: string;
+}
+
+/** 一条相关的材料片段（不带分数、名次和关联 id） */
+export interface RelatedItem {
+  content_key: string;
+  ordinal: number;
+  loc: string | null;
+  /** 音视频材料的时间点 */
+  start_ms: number | null;
+  /** 以第一个共同词为中心，最多 120 字 */
+  text: string;
+  words: string[];
+  /** ▶ 从会上这里放 */
+  at_ms: number;
+}
+
+export interface RelatedWindow {
+  start_ms: number;
+  end_ms: number;
+  items: RelatedItem[];
+}
+
+export interface RelatedMaterials {
+  state: RelatedState;
+  files: Record<string, RelatedFile>;
+  /** 这场会自己的另一份记录（逐字稿导出到资料盘） */
+  copies: Array<{ file_id: number; name: string }>;
+  windows: RelatedWindow[];
+  /** 标过不相关的份数 */
+  rejected: number;
+}
+
+export interface RelatedRejected {
+  items: Array<{ relation_id: number; name: string; decided_at: string }>;
+}
+
+export interface RelationAnswerResult {
+  relation: Relation;
+  /** 撤销期以它为准（回答时间加 600 秒） */
+  undo_until: string;
+  deliverable_id?: number | null;
+}
+
+export interface RelationUndoResult {
+  relation: Relation;
+  removed_deliverable_id: number | null;
+}
+
+/** null 表示回到自动；ai 只用于撤销时把原值原样发回 */
+export type DecisionPlacement = "none" | "picked" | "ai" | null;
+
+export interface DecisionPlacementResult {
+  decision: { id: string; placement: DecisionPlacement; requirement_id: string | null } & Record<string, unknown>;
+  /** 撤销时原样发回 */
+  undo: { placement: DecisionPlacement; requirement_id: string | null };
+  undo_until: string;
+}
+
+// ---------------------------------------------------------------- 决议日志和时间线（4c）
+
+/** 另一条决议（后来改了、这次改了的那一头）：需求卡和展开一场会同一个样子 */
+export interface DecisionLinkRef {
+  relation_id: number;
+  decision_id: string;
+  meeting: { id: string; title: string; date: string };
+  text: string;
+  start_ms: number | null;
+  quote: string;
+  /** 那场会的录音；没有录音时为 null，这时不出 ▶ */
+  audio_url: string | null;
+}
+
+/** 后来又提到：挂在一组里最早那条下面，每个后来的会一行 */
+export interface DecisionRestatedRef {
+  relation_id: number | null;
+  decision_id: string;
+  meeting: { id: string; title: string; date: string };
+  start_ms: number | null;
+  audio_url: string | null;
+}
+
+/** 你标过［不是一回事］的：过了 600 秒也能从这里改回（restore） */
+export interface DecisionDismissed {
+  relation_id: number;
+  kind: "later_changed" | "restated";
+  other: { date: string; meeting_title: string; text: string };
+  decided_at: string | null;
+}
+
+/** only 只关联一个需求；title 需求名对上；ai AI 放的；picked 你放的；unplaced 没归到具体需求 */
+export type DecisionPlacementHow = "only" | "title" | "ai" | "picked" | "unplaced";
+
+export interface DecisionLogEntry {
+  /** 台账落后或关联整理关着时为 null：按纪要现读，没有标记和按钮 */
+  id: string | null;
+  text: string;
+  detail: string;
+  start_ms: number | null;
+  end_ms: number | null;
+  placement: { how: DecisionPlacementHow; requirement_id: string | null };
+  later: DecisionLinkRef[];
+  earlier: DecisionLinkRef[];
+  restated: DecisionRestatedRef[];
+  dismissed: DecisionDismissed[];
+  /** 4e 起有内容 */
+  stale_files?: RelationQuestion[];
+}
+
+export interface DecisionLogMeeting {
+  meeting: { id: string; title: string; date: string; audio_url: string | null };
+  /** 「这场纪要没有决议段」这类说法，有决议时为 null */
+  note: string | null;
+  decisions: DecisionLogEntry[];
+  unplaced: DecisionLogEntry[];
+}
+
+export interface RequirementDecisionLog {
+  requirement: { id: string; title: string };
+  counts: { decisions: number; later_changed: number; unplaced: number };
+  state: LinksState | { kind: "ok"; text: null; action: null };
+  meetings: DecisionLogMeeting[];
+}
+
+export type TimelineKind = "all" | "decisions" | "tasks" | "files";
+
+export interface TimelineDecision {
+  id: string;
+  text: string;
+  start_ms: number | null;
+  end_ms?: number | null;
+  detail?: string;
+  later: { date: string; text: string } | null;
+}
+
+export type TimelineItem =
+  | {
+      type: "meeting";
+      at: string | null;
+      time: string | null;
+      meeting: { id: string; title: string; duration_sec: number | null; audio_url: string | null };
+      decisions: TimelineDecision[];
+      decisions_more: number;
+    }
+  | {
+      type: "tasks";
+      event: "confirmed" | "done";
+      at: string | null;
+      time: string | null;
+      tasks: Array<{ id: string; title: string }>;
+      more: number;
+    }
+  | {
+      type: "deliverable";
+      at: string | null;
+      time: string | null;
+      task: { id: string; title: string };
+      deliverable: { id: number; name: string };
+    }
+  | {
+      type: "files";
+      at: string | null;
+      time: string | null;
+      root_id: number;
+      /** 文件夹只给最后一段；根目录本身为空 */
+      folder: string;
+      added: number;
+      changed: number;
+      /** 记录开始前按修改时间归到这天的文件个数 */
+      count?: number;
+      names: string[];
+      prelog: boolean;
+    }
+  | {
+      type: "decision";
+      at: string | null;
+      time: string | null;
+      decision: TimelineDecision;
+      meeting: { id: string; title: string; audio_url: string | null };
+      requirement: { id: string; title: string; how: DecisionPlacementHow } | null;
+      how: DecisionPlacementHow | "project" | "none";
+      linked_requirement_ids: string[];
+    };
+
+export interface TimelineDay {
+  day: string;
+  label: string;
+  items: TimelineItem[];
+  more_dirs: number;
+}
+
+export interface ProjectTimelinePayload {
+  kind: TimelineKind;
+  days: TimelineDay[];
+  requirements: Array<{ id: string; title: string }>;
+  next_before: string | null;
+  file_log_since: string | null;
+  state: { kind: "ok" | "waiting" | "stopped"; reason: string | null; text: string | null; action: { kind: string; label: string } | null };
 }
 
 /** 新建、改词条撞上已有词条时，从 409 里取出那条词条；别的错误返回 null。 */
@@ -303,6 +598,31 @@ export const api = {
     read<GraphPayload>(
       `/api/graph/projects/${encodeURIComponent(projectId)}${queryString({ window, focus })}`,
     ),
+  /**
+   * 4f：关系图的相关线（4d 的接口）。带上次的 etag 时发 If-None-Match：没变是 304，返回 related: null，
+   * 照旧用手上的那份。只在［相关］开着时取。
+   */
+  graphRelated: async (
+    projectId: string,
+    window: GraphWindow,
+    etag?: string | null,
+  ): Promise<{ related: RelatedEdges | null; etag: string | null }> => {
+    const response = await fetch(
+      `/api/graph/projects/${encodeURIComponent(projectId)}/related${queryString({ window })}`,
+      {
+        credentials: "same-origin",
+        headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
+      },
+    );
+    if (response.status === 304) return { related: null, etag: response.headers.get("etag") ?? etag ?? null };
+    const related = await parseResponse<RelatedEdges>(response);
+    return { related, etag: response.headers.get("etag") };
+  },
+  /** 4f：以一份文件为中心的局部图（只查库，不缓存）；related 只在关系图的［相关］开着时为 true */
+  graphFileMap: (fileId: number, options?: { related?: boolean }) =>
+    read<LocalGraph>(`/api/graph/files/${fileId}/map${queryString({ related: options?.related ? 1 : 0 })}`),
+  /** 4f：来龙去脉；node 是 file:、m:、dec:、task: 开头的 id */
+  graphTrace: (node: string) => read<TracePayload>(`/api/graph/trace${queryString({ node })}`),
   graphRoots: (projectId: string) =>
     read<GraphRootsPayload>(`/api/graph/projects/${encodeURIComponent(projectId)}/roots`),
   graphCollapsed: (projectId: string, group: string, window?: GraphWindow) =>
@@ -389,9 +709,40 @@ export const api = {
     read<MaterialUnreadablePage>(
       `/api/materials/unreadable${queryString({ project_id: projectId, root_id: rootId, offset })}`,
     ),
-  /** 预览抽屉的数据；parts=preview 只要状态和预览（关系图文件面板用） */
-  getMaterialPreview: (fileId: number, parts?: "preview") =>
-    read<MaterialFilePreview>(`/api/materials/files/${fileId}/preview${parts ? `?parts=${parts}` : ""}`),
+  /** 预览抽屉的数据；parts=preview 只要状态和预览（关系图文件面板用）；passage 定位到那一段（4d） */
+  getMaterialPreview: (
+    fileId: number,
+    parts?: "preview",
+    passage?: { contentKey: string; ordinal: number } | null,
+  ) =>
+    read<MaterialFilePreview>(
+      `/api/materials/files/${fileId}/preview${queryString({
+        parts,
+        passage_key: passage?.contentKey,
+        passage_ordinal: passage?.ordinal,
+      })}`,
+    ),
+  // ---------------------------------------------------------------- 相关材料栏（4d）
+  /** 会议页的相关材料栏；打开时服务端顺手把这场会排到前面（只在内存里） */
+  relatedMaterials: (meetingId: string) =>
+    read<RelatedMaterials>(`/api/meetings/${encodeURIComponent(meetingId)}/related-materials`),
+  /** 标过不相关的；［改回相关］用 answerRelation(id, {answer: "restore"}) */
+  relatedRejected: (meetingId: string) =>
+    read<RelatedRejected>(`/api/meetings/${encodeURIComponent(meetingId)}/related-materials/rejected`),
+  /** 栏里的［不相关］：没连成线的也能标（服务端建一行） */
+  rejectRelatedMaterial: (meetingId: string, body: { content_key: string; file_id: number }) =>
+    write<RelationAnswerResult>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/related-materials/reject`,
+      "POST",
+      body,
+    ),
+  /** 列表里的小签「3 场会提到」：一个列表一次请求，最多 200 个 */
+  mentionedCounts: (fileIds: number[]) =>
+    read<{ counts: Record<string, number> }>(
+      `/api/materials/mentioned-counts${queryString({ file_ids: fileIds.join(",") })}`,
+    ),
+  /** ［用本机应用打开］：只在这台 Mac 上 */
+  openMaterialFile: (fileId: number) => write<{ ok: boolean }>(`/api/materials/files/${fileId}/open`, "POST", {}),
   projects: () => read<Project[]>("/api/projects"),
   tags: () => read<Tag[]>("/api/tags"),
   createProject: (name: string, color: string, materialRoots?: string[]) =>
@@ -936,7 +1287,85 @@ export const api = {
       "POST",
       {},
     ),
-
+  /** 4h：需求页［复制给 Claude Code］的背景；和需求详情一起取 */
+  requirementContext: (requirementId: string) =>
+    read<RequirementContext>(`/api/requirements/${encodeURIComponent(requirementId)}/context`),
+  // ---------------------------------------------------------------- 4h 从材料里找到的词
+  /** 词典页：这个项目全部待认的词（最多 30 项） */
+  glossaryCandidates: (projectId: string) =>
+    read<MaterialWordsList>(`/api/projects/${encodeURIComponent(projectId)}/glossary-candidates`),
+  /** ［记入］：not_wrong 是去掉的听错写法；only_wrong 是会议页这一行的写法（只记它，别的写法不跟着记） */
+  acceptGlossaryCandidate: (
+    projectId: string,
+    body: { key: string; not_wrong?: string[]; only_wrong?: string },
+  ) =>
+    write<MaterialWordAcceptResult>(
+      `/api/projects/${encodeURIComponent(projectId)}/glossary-candidates/accept`,
+      "POST",
+      body,
+    ),
+  /** ［不是］：这个项目里不再提 */
+  rejectGlossaryCandidate: (projectId: string, body: { key: string }) =>
+    write<MaterialWordRejectResult>(
+      `/api/projects/${encodeURIComponent(projectId)}/glossary-candidates/reject`,
+      "POST",
+      body,
+    ),
+  /** ［撤销］：600 秒内 */
+  undoGlossaryCandidate: (projectId: string, body: { key: string }) =>
+    write<MaterialWordUndoResult>(
+      `/api/projects/${encodeURIComponent(projectId)}/glossary-candidates/undo`,
+      "POST",
+      body,
+    ),
+  // ---------------------------------------------------------------- 深度关联（4a）
+  /** 回答一条关联；file_id 只在 pick 时给。409、422 的 detail 原样显示 */
+  answerRelation: (relationId: number, body: { answer: RelationAnswer; file_id?: number }) =>
+    write<RelationAnswerResult>(`/api/relations/${relationId}/answer`, "POST", body),
+  /** 撤销上一次回答：600 秒内一次，第二次 409 */
+  undoRelation: (relationId: number) =>
+    write<RelationUndoResult>(`/api/relations/${relationId}/undo`, "POST", {}),
+  /** ［现在重试］：失败的放回排队，清掉 AI 循环的暂停 */
+  retryLinks: () => write<{ requeued: number }>("/api/links/retry", "POST", {}),
+  /** 决议归需求；撤销时把返回的 undo 原样发回 */
+  placeDecision: (
+    decisionId: string,
+    body: { placement: DecisionPlacement; requirement_id: string | null },
+  ) =>
+    write<DecisionPlacementResult>(
+      `/api/decisions/${encodeURIComponent(decisionId)}/placement`,
+      "POST",
+      body,
+    ),
+  // ---------------------------------------------------------------- 决议日志和时间线（4c）
+  /** 需求页「决议」卡；404「需求不存在」，旧后台是 FastAPI 的 404 Not Found */
+  requirementDecisions: (requirementId: string) =>
+    read<RequirementDecisionLog>(`/api/requirements/${encodeURIComponent(requirementId)}/decisions`),
+  /** 项目时间线：按有动静的天翻页，before 是上一页给的 next_before */
+  projectTimeline: (
+    projectId: string,
+    options: { before?: string | null; days?: number; kind?: TimelineKind } = {},
+  ) =>
+    read<ProjectTimelinePayload>(
+      `/api/projects/${encodeURIComponent(projectId)}/timeline${queryString({
+        before: options.before ?? undefined,
+        days: options.days,
+        kind: options.kind,
+      })}`,
+    ),
+  // ---------------------------------------------------------------- 项目内问答（4g）
+  /** 在本机找原文，从不调 AI；问题只在请求体里，从不进网址 */
+  askPrepare: (projectId: string, question: string) =>
+    write<AskPlan>(`/api/projects/${encodeURIComponent(projectId)}/ask/prepare`, "POST", { question }),
+  /** 按计划号把这几段发出去；withMaterials 为假时不发任何材料原文。回 202 和任务号 */
+  ask: (projectId: string, planId: string, withMaterials: boolean) =>
+    write<{ job_id: string; state: "waiting"; text: string }>(
+      `/api/projects/${encodeURIComponent(projectId)}/ask`,
+      "POST",
+      { plan_id: planId, with_materials: withMaterials },
+    ),
+  /** 轮询任务：网址里只有随机的任务号 */
+  askJob: (jobId: string) => read<AskJob>(`/api/ask/${encodeURIComponent(jobId)}`),
 };
 
 export type ApiClient = typeof api;

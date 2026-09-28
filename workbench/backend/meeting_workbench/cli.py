@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+from datetime import UTC, datetime
 import json
 import os
 import shutil
@@ -100,6 +101,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     engine.add_argument(
         "engine", nargs="?", choices=["auto", "vision", "tesseract", "off"], help="不给就只看现在用的是哪套"
+    )
+    links_cmd = subcommands.add_parser(
+        "links", help="深度关联：各步在等几个、AI 用量、现在重试、看一场会解析出的决议"
+    )
+    links_sub = links_cmd.add_subparsers(dest="links_command", required=True)
+    links_status = links_sub.add_parser(
+        "status",
+        help="各步在等几个、上一轮的时间、AI 状态、今天调了几次和上限（直接查库，服务没开也能看）",
+    )
+    links_status.add_argument("--json", action="store_true", help="输出 JSON")
+    links_sub.add_parser(
+        "retry", help="把没做成的 AI 整理和决议对比放回队列、次数清零，清掉 AI 循环的暂停（和页面上的［现在重试］一样）"
+    )
+    links_decisions = links_sub.add_parser(
+        "decisions", help="打印一场会解析出的决议：id、原文、时间点、note，和对比时会发的提示词（只读，不发送）"
+    )
+    links_decisions.add_argument("--meeting", required=True, help="会议 id")
+    links_decisions.add_argument("--json", action="store_true", help="输出 JSON")
+    # 4d：相关的校准输出（开发工具，唯一印分数的地方）
+    links_related = links_sub.add_parser(
+        "related", help="看一场会每段找到的相关材料：分数、门槛、共同词、被刷掉的原因"
+    )
+    links_related.add_argument("--meeting", help="会议 id")
+    links_related.add_argument("--project", help="项目 id（和 --stats 或 --rebuild 一起用）")
+    links_related.add_argument("--at", help="只看这个时刻所在的窗，比如 12:30 或 1:02:30")
+    links_related.add_argument("--floor", type=float, help="临时换一个最低门槛（不改设置）")
+    links_related.add_argument("--margin", type=float, help="临时换一个门槛余量（不改设置）")
+    links_related.add_argument("--encode", action="store_true", help="重新编码窗（不写库）；默认用存下的窗")
+    links_related.add_argument("--stats", action="store_true", help="这个项目的相关统计")
+    links_related.add_argument("--rebuild", action="store_true", help="标记重算：只把 dirty 加一，不当场算")
+    links_related.add_argument("--json", action="store_true", help="输出 JSON")
+    # 4g：问答试跑。问题从标准输入读，不放进命令行参数（免得出现在 ps 和 shell 历史里）；从不调 AI
+    links_ask = links_sub.add_parser(
+        "ask", help="问答试跑：问题从标准输入读，列出会找到的原话、要发几段、发给谁；不发送"
+    )
+    links_ask.add_argument("--project", required=True, help="项目 id")
+    # 4h：从材料里挖出的词（手工验收看准头用）
+    links_words = links_sub.add_parser(
+        "words", help="这个项目从材料里找到的词：排好序，每个一行，带次数和一处证据"
+    )
+    links_words.add_argument("--project", required=True, help="项目 id")
+    links_words.add_argument(
+        "--dry-run", action="store_true", help="当场给这个项目的内容挖一遍，什么都不写；不带就真做一遍项目汇总"
     )
     return parser
 
@@ -314,6 +358,478 @@ def _materials(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def _read_only(settings: Settings) -> sqlite3.Connection:
+    assert settings.database_path is not None
+    if not settings.database_path.exists():
+        raise SystemExit(f"找不到声档数据库：{settings.database_path}")
+    connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _server_url(settings: Settings, path: str) -> str:
+    return f"http://127.0.0.1:{settings.port}{path}"
+
+
+def _server_json(settings: Settings, path: str, *, post: bool = False) -> dict[str, Any] | None:
+    """服务开着时问它（GET，或带 CSRF 的 POST）；连不上回 None。只连本机。"""
+    import urllib.error
+    import urllib.request
+
+    try:
+        if not post:
+            with urllib.request.urlopen(_server_url(settings, path), timeout=3) as response:
+                return json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(_server_url(settings, "/api/bootstrap"), timeout=3) as response:
+            token = json.loads(response.read().decode("utf-8"))["csrf_token"]
+        request = urllib.request.Request(
+            _server_url(settings, path),
+            data=b"{}",
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": f"http://127.0.0.1:{settings.port}",
+                "X-CSRF-Token": token,
+                "Cookie": f"{settings.csrf_cookie_name}={token}",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # 服务开着、但拒绝了这次请求：照实报，不能当成「服务没开」再去直接写库
+        error.close()
+        return {"http_error": int(error.code)} if post else None
+    except (OSError, urllib.error.URLError, ValueError, KeyError):
+        return None
+
+
+LINKS_PHASE_LABELS = {
+    "decisions": "决议入库",
+    "resolve": "重找文件",
+    "stale": "影响自动收回",
+    "produced": "产出建议",
+    "mentions": "放宽的提到",
+    "affects": "影响匹配",
+    "related": "相关",
+    "terms": "挖词",
+}
+LINKS_LLM_LABELS = {
+    "ok": "正常",
+    "off": "关着",
+    "no_key": "没配置 key",
+    "auth": "key 不对，停下了（换了 key 或 links retry 后恢复）",
+    "balance": "账户余额不足，停下了（充值后 links retry）",
+    "capped": "今天的用量到上限了",
+    "backoff": "连不上，在退避，会自己再试",
+    "failing": "连续几次连不上",
+}
+
+
+def _links_status(args: argparse.Namespace, settings: Settings) -> int:
+    """links status：各步在等几个、今天的用量直接查库；上一轮的时间和 AI 的暂停只在服务内存里，服务开着
+    时顺便问一下它的健康检查。"""
+    from . import decisions
+    from .links_llm import read_usage
+    from .llm import destination, llm_ready
+
+    connection = _read_only(settings)
+    try:
+        today = datetime.now().date().isoformat()
+        waiting = {
+            "decisions": decisions.pending_count(connection),
+            "mentions": connection.execute(
+                "SELECT COUNT(*) FROM mention_extractions WHERE state IN ('pending', 'running')"
+            ).fetchone()[0],
+            "pairs": connection.execute(
+                "SELECT COUNT(*) FROM decision_scan WHERE pair_state IN ('pending', 'running')"
+            ).fetchone()[0],
+        }
+        # 4d：到期的会，另数材料太多、没比全的会（只在这里计数）
+        from . import related
+
+        waiting["related"] = related.due_count(connection, settings)
+        related_partial = connection.execute(
+            "SELECT COUNT(*) FROM meeting_related_scan WHERE partial = 1"
+        ).fetchone()[0]
+        # 4e：可能过时（H2）到期的会
+        from . import affects
+
+        waiting["affects"] = affects.due_count(connection, datetime.now(UTC))
+        failed = {
+            "mentions": connection.execute(
+                "SELECT COUNT(*) FROM mention_extractions WHERE state = 'failed'"
+            ).fetchone()[0],
+            "pairs": connection.execute(
+                "SELECT COUNT(*) FROM decision_scan WHERE pair_state = 'failed'"
+            ).fetchone()[0],
+        }
+        opened = {
+            kind: connection.execute(
+                "SELECT COUNT(*) FROM relations WHERE kind = ? AND status = 'suggested'", (kind,)
+            ).fetchone()[0]
+            for kind in ("produced", "affects")
+        }
+        usage = read_usage(connection, today)
+        housekeeping = connection.execute(
+            "SELECT value FROM app_state WHERE key = 'links_housekeeping_at'"
+        ).fetchone()
+    except sqlite3.OperationalError as error:
+        raise SystemExit(f"数据库还没升到 v16（先启动一次服务）：{error}") from None
+    finally:
+        connection.close()
+    health = _server_json(settings, "/api/health")
+    live = ((health or {}).get("details") or {}).get("links") if health else None
+    if live and "llm" in live:
+        llm_state = str(live["llm"])
+    elif not (settings.links_enabled and settings.links_llm_enabled) or settings.links_llm_daily_calls <= 0:
+        llm_state = "off"
+    elif not llm_ready(settings):
+        llm_state = "no_key"
+    elif usage["background"] >= settings.links_llm_daily_calls:
+        llm_state = "capped"
+    else:
+        llm_state = "ok"
+    result = {
+        "enabled": settings.links_enabled,
+        "server": live is not None,
+        "last_round_at": (live or {}).get("last_round_at"),
+        "paused": (live or {}).get("paused"),
+        "phases": (live or {}).get("phases") or {},
+        "waiting": waiting,
+        "related_partial": related_partial,
+        "failed": failed,
+        "open": opened,
+        "housekeeping_at": housekeeping["value"] if housekeeping else None,
+        "llm": llm_state,
+        "llm_host": destination(settings).host,
+        "calls_today": {"background": usage["background"], "qa": usage["qa"]},
+        "limits": {"background": settings.links_llm_daily_calls, "qa": settings.qa_daily_questions},
+    }
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    print("关联整理：" + ("开着" if settings.links_enabled else "关着（MEETING_WORKBENCH_LINKS_ENABLED）"))
+    if live is None:
+        print("服务没开（或连不上）：上一轮的时间和各步的情况要服务开着才看得到")
+    else:
+        print(f"上一轮：{result['last_round_at'] or '还没跑过'}" + ("，会议在转写，重活先停" if result["paused"] == "busy" else ""))
+        for name, status in result["phases"].items():
+            print(f"  {LINKS_PHASE_LABELS.get(name, name)}：{status}")
+    print(
+        f"在等：决议入库 {waiting['decisions']} 场，放宽的提到 {waiting['mentions']} 场"
+        f"（没做成 {failed['mentions']} 场），决议对比 {waiting['pairs']} 场（没对比成 {failed['pairs']} 场）"
+    )
+    print(f"相关：{waiting['related']} 场会到期，{related_partial} 场材料太多、没比全")
+    print(
+        f"在问你：产出 {opened['produced']} 条，可能过时 {opened['affects']} 条"
+        f"（可能过时还有 {waiting['affects']} 场会到期没配）"
+    )
+    print(f"上次清理：{result['housekeeping_at'] or '还没清理过'}")
+    print(f"AI（{result['llm_host']}）：{LINKS_LLM_LABELS.get(llm_state, llm_state)}")
+    print(
+        f"今天调了：后台 {usage['background']} / {settings.links_llm_daily_calls} 次，"
+        f"问答 {usage['qa']} / {settings.qa_daily_questions} 次"
+    )
+    return 0
+
+
+def _links_retry(settings: Settings) -> int:
+    """links retry：服务开着时走 POST /api/links/retry（连 AI 循环内存里的暂停一起清）；没开时直接改库
+    （暂停只在服务内存里，下次启动本来就没有）。"""
+    from .links_llm import requeue_failed
+
+    answer = _server_json(settings, "/api/links/retry", post=True)
+    if answer is not None and "http_error" in answer:
+        print(f"服务开着，但没接受这次重试（HTTP {answer['http_error']}），什么都没改")
+        return 1
+    if answer is not None and "requeued" in answer:
+        print(f"已放回 {answer['requeued']} 场，AI 循环的暂停和退避已清掉")
+        return 0
+    db = _database(settings)
+    with db.transaction() as connection:
+        requeued = requeue_failed(connection)
+    print(f"已放回 {requeued} 场（服务没开，下次启动时接着做）")
+    return 0
+
+
+def _hhmmss(ms: int | None) -> str:
+    if ms is None:
+        return "--:--:--"
+    seconds = int(ms) // 1000
+    return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+
+
+def _links_decisions(args: argparse.Namespace, settings: Settings) -> int:
+    """links decisions --meeting：台账跟上当前纪要时从表里读（带 id）；落后时当场解析（id 为空）。只读。
+    4c 起再打印对比时会发的提示词，只打印，从不发送。"""
+    from . import decisions
+
+    connection = _read_only(settings)
+    try:
+        meeting = connection.execute(
+            "SELECT id, title, current_minutes_version_id FROM meetings WHERE id = ?", (args.meeting,)
+        ).fetchone()
+        if meeting is None:
+            raise SystemExit(f"没有这场会：{args.meeting}")
+        try:
+            ledger = decisions.ledger_decisions(connection, meeting["id"], meeting["current_minutes_version_id"])
+        except sqlite3.OperationalError:
+            ledger = None
+        if ledger is not None:
+            items, note = ledger
+            source = "table"
+        else:
+            row = connection.execute(
+                "SELECT markdown FROM minutes_versions WHERE id = ?", (meeting["current_minutes_version_id"],)
+            ).fetchone()
+            parsed = decisions.parse_safely(row["markdown"] if row else None)
+            items = [
+                {"id": None, "text": item.text, "detail": item.detail, "start_ms": item.start_ms, "end_ms": item.end_ms}
+                for item in parsed.items
+            ]
+            note = parsed.note
+            source = "parsed"
+        # 4c：对比时会发的提示词（只读、只打印，从不发送）；台账落后或库还是旧版本时没有
+        prompt = None
+        if source == "table":
+            from .decision_pairs import prompt_preview
+
+            try:
+                prompt = prompt_preview(connection, meeting["id"])
+            except sqlite3.OperationalError:
+                prompt = None
+    finally:
+        connection.close()
+    if args.json:
+        print(json.dumps({"meeting_id": meeting["id"], "source": source, "note": note, "decisions": items,
+                          "prompt": prompt}, ensure_ascii=False, indent=2))
+        return 0
+    print(f"{meeting['title'] or meeting['id']}（{meeting['id']}）")
+    if source == "parsed":
+        print("台账还没跟上这版纪要：下面是当场解析的，还没有 id")
+    if note:
+        print(f"note：{note}（{decisions.NOTE_TEXT.get(note, note)}）")
+    for item in items:
+        span = _hhmmss(item["start_ms"])
+        if item.get("end_ms") is not None:
+            span += f"-{_hhmmss(item['end_ms'])}"
+        print(f"{item['id'] or '（还没有 id）'}  [{span}]  {item['text']}")
+        if item.get("detail"):
+            for line in str(item["detail"]).splitlines():
+                print(f"    {line}")
+    if prompt is not None:
+        print()
+        if prompt["needs_call"]:
+            print(f"对比时会发的提示词（这一场 {prompt['this']} 条、之前的 {prompt['others']} 条；只打印，不发送）：")
+        else:
+            print("初筛后没有要对比的决议，也没有要放的决议：这场会不用调用 AI。下面是按现在的数据拼出的提示词（不发送）：")
+        print("---- system ----")
+        print(prompt["system"])
+        print("---- user ----")
+        print(prompt["user"])
+    return 0
+
+
+def _links_related(args: argparse.Namespace, settings: Settings) -> int:
+    """links related：--meeting 印每个窗的 bar、前 6 个的得分、共同词和刷掉的原因（用存下的窗，片段向量从
+    库里流式读，不用内存矩阵）；--project --stats 印项目的统计；--rebuild 只把 dirty 加一。"""
+    from . import related
+
+    if args.rebuild:
+        if not (args.meeting or args.project):
+            raise SystemExit("--rebuild 要配 --meeting 或 --project")
+        db = _database(settings)
+        with db.transaction() as connection:
+            count = related.mark_dirty(connection, meeting_id=args.meeting, project_id=args.project)
+        print(f"已标记 {count} 场会重算（服务开着时下一轮 H3 接着算，会议在转写时照样让路）")
+        return 0
+    connection = _read_only(settings)
+    try:
+        if args.stats:
+            if not args.project:
+                raise SystemExit("--stats 要配 --project")
+            stats = related.project_stats(connection, settings, args.project)
+            if args.json:
+                print(json.dumps(stats, ensure_ascii=False, indent=2))
+                return 0
+            print(f"窗 {stats['windows']} 个，每窗 {stats['passages_per_window']} 段")
+            print("相关线：" + ("、".join(f"{k} {v}" for k, v in stats["links"].items()) or "没有"))
+            print("到处都相关：" + ("、".join(stats["hubs"]) or "没有"))
+            print("副本：" + ("、".join(stats["copies"]) or "没有"))
+            print(f"材料太多、没比全的会：{stats['partial_meetings']} 场")
+            bar = stats["bar"]
+            print(f"bar：p10 {bar['p10']}，p50 {bar['p50']}，p90 {bar['p90']}")
+            return 0
+        if not args.meeting:
+            raise SystemExit("要给 --meeting（或 --project --stats、--rebuild）")
+        encode = None
+        if args.encode:
+            from .semantic import SemanticIndex
+
+            index = SemanticIndex(None, settings, busy_check=lambda: False)  # type: ignore[arg-type]
+            encode = lambda texts: index.encode_texts(texts, background=False)  # noqa: E731
+        try:
+            result = related.explain_meeting(
+                connection, settings, args.meeting, at=args.at, floor=args.floor, margin=args.margin, encode=encode
+            )
+        except LookupError:
+            raise SystemExit(f"没有这场会：{args.meeting}") from None
+    except sqlite3.OperationalError as error:
+        raise SystemExit(f"数据库还没升到 v16（先启动一次服务）：{error}") from None
+    finally:
+        connection.close()
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    print(f"{result['title'] or result['meeting_id']}（{result['meeting_id']}）")
+    if result.get("note"):
+        print(f"note：{result['note']}")
+    if result.get("copies"):
+        print("这场会的副本：" + "、".join(result["copies"]))
+    if result.get("hubs"):
+        print("到处都相关：" + "、".join(result["hubs"]))
+    if not result["windows"]:
+        print("没有存下的窗（还没算过，或加 --encode 当场编码）")
+    for window in result["windows"]:
+        print(f"[{_hhmmss(window['start_ms'])}] bar {window['bar']:.3f}  {window['text']}")
+        for item in window["candidates"]:
+            words = "、".join(item.get("words") or []) or "-"
+            reason = item.get("reason") or "留下"
+            print(f"    {item['score']:.3f}  {item.get('content_key', '?')}#{item.get('ordinal', '?')}  {words}  {reason}")
+    return 0
+
+
+def _links_ask(args: argparse.Namespace, settings: Settings) -> int:
+    """links ask --project：问题从标准输入读，跑一遍 retrieve，每个来源打印类、会名或文件名、时间或位置和前
+    60 个字；只读，从不调 AI。"""
+    from . import ask_retrieval, llm
+    from .asks import NOTE_TEXTS
+
+    question = sys.stdin.read()
+    try:
+        text = ask_retrieval.clean_question(question)
+    except ask_retrieval.QuestionError as error:
+        print(error.text, file=sys.stderr)
+        return 2
+    semantic = vectors = None
+    if settings.semantic_enabled:
+        try:
+            from .material_vectors import MaterialVectors
+            from .semantic import SemanticIndex
+
+            db = Database(settings.database_path)
+            semantic = SemanticIndex(db, settings)
+            vectors = MaterialVectors(db, settings, semantic)
+            vectors.refresh()
+        except Exception as error:  # noqa: BLE001  模型没装好时只按原词找
+            print(f"这次只按原词找（{type(error).__name__}）")
+            semantic = vectors = None
+    connection = _read_only(settings)
+    try:
+        plan = ask_retrieval.retrieve(
+            connection, args.project, text, settings=settings, semantic=semantic, vectors=vectors
+        )
+    except ask_retrieval.ProjectMissing:
+        raise SystemExit(f"没有这个项目：{args.project}") from None
+    finally:
+        connection.close()
+    counts = plan.counts
+    print(f"取的词：{'、'.join(plan.terms.phrases + plan.terms.needles) or '（没有）'}")
+    print(f"找到会议里的 {counts['meetings']} 段、材料里的 {counts['materials']} 段")
+    if counts["materials"]:
+        print(f"发送时会写：将发送 {counts['materials']} 段材料原文给 {llm.destination(settings).host}")
+    for kind in plan.notes:
+        print(NOTE_TEXTS.get(kind, kind))
+    if plan.unattributed:
+        print(f"另有 {plan.unattributed} 场没归项目的会也说到这些词，这次没用上")
+    for source in plan.sources:
+        if source["kind"] == "material":
+            name, where = source["name"], source.get("loc") or ""
+        else:
+            name = f"{source.get('date', '')} {source.get('title') or ''}".strip()
+            where = ask_retrieval.clock_text(source.get("start_ms"))
+        label = ask_retrieval.KIND_NAMES[source["id"][0]]
+        print(f"[{source['id']}] {label} · {name}{' · ' + where if where else ''}")
+        print(f"    {source['text'][:60]}")
+    return 0
+
+
+def _links_words(args: argparse.Namespace, settings: Settings) -> int:
+    """links words --project：打印这个项目排好序的词。--dry-run 当场挖、只读；不带就真做一遍项目汇总。"""
+    from datetime import UTC, datetime
+
+    from . import glossary_mining
+
+    if args.dry_run:
+        connection = _read_only(settings)  # 只读打开：什么都写不进去
+        try:
+            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (args.project,)).fetchone() is None:
+                raise SystemExit(f"没有这个项目：{args.project}")
+            stats = glossary_mining.dry_run(connection, args.project)
+        finally:
+            connection.close()
+    else:
+        db = Database(settings.database_path)
+        with db.autocommit() as connection:
+            if connection.execute("SELECT 1 FROM projects WHERE id = ?", (args.project,)).fetchone() is None:
+                raise SystemExit(f"没有这个项目：{args.project}")
+            stats = glossary_mining.project_pass(connection, args.project, datetime.now(UTC))
+    if stats.stale:
+        print("算的时候库变了，这次没写；再跑一次")
+    for rank, item in enumerate(stats.items, start=1):
+        mark = "" if rank <= glossary_mining.PENDING_CAP else "（排在 30 以后，不显示）"
+        print(f"{rank:>3}. {glossary_mining.describe(item)}{mark}")
+    if not stats.items:
+        print("这个项目还没找到词")
+    return 0
+
+
+def _links(args: argparse.Namespace, settings: Settings) -> int:
+    if args.links_command == "words":
+        return _links_words(args, settings)
+    if args.links_command == "ask":
+        return _links_ask(args, settings)
+    if args.links_command == "status":
+        return _links_status(args, settings)
+    if args.links_command == "retry":
+        return _links_retry(settings)
+    if args.links_command == "related":
+        return _links_related(args, settings)
+    return _links_decisions(args, settings)
+
+
+def _links_doctor(db: Database, settings: Settings) -> dict[str, Any]:
+    """doctor 的 links 一项：开没开、key 文件的路径、key 能不能用、AI 的主机名。只报告，不进 required。
+    路径只在 doctor 和 README 里出现，页面上不写。"""
+    from .links_llm import read_usage
+    from .llm import destination, llm_ready
+
+    ready = llm_ready(settings)
+    try:
+        with db.autocommit() as connection:
+            usage = read_usage(connection, datetime.now().date().isoformat())
+    except sqlite3.Error:
+        usage = {"background": None, "qa": None}
+    if not settings.links_enabled:
+        note = "关联整理关着（MEETING_WORKBENCH_LINKS_ENABLED=0），两个循环都不启动"
+    elif not settings.links_llm_enabled:
+        note = "后台不调 AI（MEETING_WORKBENCH_LINKS_LLM_ENABLED=0），只跑本机的活"
+    elif not ready:
+        note = f"没有 key：把 key 写进 {settings.llm_api_key_file.expanduser()}（只放 key 一行）"
+    else:
+        note = "ok"
+    return {
+        "enabled": settings.links_enabled,
+        "llm_enabled": settings.links_llm_enabled,
+        "key_file": str(settings.llm_api_key_file.expanduser()),
+        "key_ready": ready,
+        "host": destination(settings).host,
+        "daily_calls": settings.links_llm_daily_calls,
+        "calls_today": {"background": usage["background"], "qa": usage["qa"]},
+        "note": note,
+    }
+
+
 def _database(settings: Settings) -> Database:
     assert settings.database_path is not None
     db = Database(settings.database_path)
@@ -348,6 +864,8 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings()
     if args.command == "materials":
         return _materials(args, settings)
+    if args.command == "links":
+        return _links(args, settings)
     if args.command == "serve":
         _raise_open_file_limit()
         if settings.host not in {"127.0.0.1", "::1", "localhost"}:
@@ -486,6 +1004,8 @@ def main(argv: list[str] | None = None) -> int:
             "materials": tools_report(settings),
             # 3f：材料全文表和片段对得上（恢复备份后还没补完时写 rebuilding）
             "material_fts": _material_fts_check(db),
+            # 第四期：关联整理开没开、key 在哪、能不能用、AI 的主机名（只报告，不进 required）
+            "links": _links_doctor(db, settings),
         }
         print(json.dumps(checks, ensure_ascii=False))
         required = (checks["database"], checks["archive"], checks["staging"], checks["loopback"])

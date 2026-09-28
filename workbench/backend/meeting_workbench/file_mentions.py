@@ -11,6 +11,11 @@
   在同名文件里找回（3a），同名文件的标识还没算完就原样保留，找不回才换。
 - rejected（不是这份文件）永远不会被改回 active，只挡同一场会、同一个项目。
 - 通用词干（被本项目一半以上、至少 4 场会提到）照样存，读的时候标 generic。
+- 4b（MATCH_VERSION 4b-1）：已确认词条（本项目的或通用的）的本名等于某个能用的词干时，它的 aliases、
+  also 也当针，指向这个词干（能不能用按这个叫法本身算，两个字的要说两次）；这一行全是别名命中时
+  needle 写说得最多的那个叫法。词干命中前后 8 个字以内的口头版本号（「第三版」「V3版」「3.0版」，
+  中文数字到二十）和全名针并列计入 versions（组里有这一版才算）；「终版」「定稿」、final 在组里恰好
+  一份文件名带这类字样时选那一份。都没有时先看 L5 写的 hints_json（pick_by_hint），再用 _pick_by_date。
 """
 from __future__ import annotations
 
@@ -19,9 +24,10 @@ import json
 import re
 import time
 from collections import Counter
-from datetime import datetime, time as day_time
+from datetime import date as date_type, datetime, time as day_time, timedelta
 from typing import Any, Callable
 
+from . import relation_read
 from .db import Database, utc_now
 from .file_stems import STEM_NO, STEM_TWICE, STEM_YES, stem_usability
 from .material_content import key_file_now
@@ -30,7 +36,7 @@ from .project_names import also_entries
 from .project_profile import MAX_ANCHORS, light_key, norm_key
 from .text_scan import FormScanner
 
-MATCH_VERSION = "2d-1"
+MATCH_VERSION = "4b-1"
 PER_MEETING = 20
 GENERIC_MIN_MEETINGS = 4
 MINUTES_MIN_CHARS = 3
@@ -39,6 +45,24 @@ ROUND_SECONDS = 5.0
 _VERSION_TAG = re.compile(r"(?<![a-z])v\d{1,3}(?:\.\d{1,3}){0,2}(?![\d.]*\d)", re.IGNORECASE)
 _HHMMSS = re.compile(r"\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]")
 _ZONES_SQL = ", ".join(f"'{zone}'" for zone in MATCH_ZONES)
+# 4b：词干命中前后看几个字找口头版本号和「终版」
+NEAR_CHARS = 8
+_CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_NUM = r"[一二两三四五六七八九十]{1,3}|\d{1,2}"
+# 「第三版」「第3版」「三版」「V3版」「版本三」「3.0版」。光杆「N版」最容易误判：「上一版」「这一版」
+# 「下一版」「新一版」「这两版」「改了三版」说的不是第几版，所以前面是这些字（或数字本身的一部分）时不认；
+# 光杆的「一版」「两版」多半是在数版数（「出一版」「做了两版」），也不认（「第一版」「版本一」照认）。
+_BARE_NOT_AFTER = "上下这那前后新旧同每哪几各某本此该头首末好多了过出" "一二两三四五六七八九十"
+_ORAL_VERSION = re.compile(
+    rf"第\s*(?P<a>{_NUM})\s*版"
+    rf"|(?P<e>\d{{1,2}})\.0\s*版"
+    rf"|[vV]\s*(?P<c>\d{{1,2}})\s*版"
+    rf"|版本\s*(?P<d>{_NUM})"
+    rf"|(?<![{_BARE_NOT_AFTER}\d.vV第])(?![一两]\s*版)(?P<b>{_NUM})\s*版(?!本)"
+)
+_FINAL = re.compile(r"最终版|终版|定稿|(?<![a-z])final(?![a-z])", re.IGNORECASE)
+# L5 留给 2d 的时间提示（hints_json 里的 rel），和 loose_mentions 的 when.rel 同一组
+HINT_RELS = ("last_week", "this_week", "yesterday", "today", "last_meeting", "latest", "previous")
 
 
 class MentionError(ValueError):
@@ -86,11 +110,156 @@ def project_sigs(connection: Any) -> dict[str, str]:
 # ---------------------------------------------------------------------- 项目上下文
 
 
+def _json_list(raw: Any) -> list[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(item) for item in value if isinstance(item, str) and item.strip()] if isinstance(value, list) else []
+
+
 def version_tag(name: str) -> str | None:
     """文件名里的版本号（v3、V1.2），全名比对用。"""
     base = name.rpartition(".")[0] or name
     found = _VERSION_TAG.findall(base)
     return light_key(found[-1]) if found else None
+
+
+def cn_number(text: str) -> int | None:
+    """「三」「十二」「二十」「3」→ 数字；认不出或超出 1 到 20 时回 None。"""
+    text = (text or "").strip()
+    if text.isdigit():
+        value = int(text)
+    elif text == "十":
+        value = 10
+    elif len(text) == 1 and text in _CN_DIGITS:
+        value = _CN_DIGITS[text]
+    elif len(text) == 2 and text[0] == "十" and text[1] in _CN_DIGITS:
+        value = 10 + _CN_DIGITS[text[1]]
+    elif len(text) == 2 and text[1] == "十" and text[0] in _CN_DIGITS:
+        value = _CN_DIGITS[text[0]] * 10
+    else:
+        return None
+    return value if 1 <= value <= 20 else None
+
+
+def spoken_version(text: str) -> int | None:
+    """一段话里的口头版本号（「第三版」「V3版」「版本三」「3.0版」），没有回 None。"""
+    for match in _ORAL_VERSION.finditer(text or ""):
+        raw = next((value for value in match.groupdict().values() if value), "")
+        number = cn_number(raw)
+        if number is not None:
+            return number
+    return None
+
+
+def _near(text: str, start: int, end: int) -> tuple[str, str]:
+    return text[max(0, start - NEAR_CHARS) : start], text[end : end + NEAR_CHARS]
+
+
+def near_version(text: str, start: int, end: int) -> int | None:
+    """词干命中前后 8 个字以内的口头版本号（后面的先看）。"""
+    before, after = _near(text, start, end)
+    found = spoken_version(after)
+    return found if found is not None else spoken_version(before)
+
+
+def near_final(text: str, start: int, end: int) -> bool:
+    before, after = _near(text, start, end)
+    return bool(_FINAL.search(before) or _FINAL.search(after))
+
+
+def version_number(name: str) -> tuple[int, ...] | None:
+    """文件名里的版本号拆成数字：v3 → (3,)，V1.2 → (1, 2)。"""
+    tag = version_tag(name)
+    if not tag:
+        return None
+    try:
+        return tuple(int(part) for part in tag[1:].split("."))
+    except ValueError:
+        return None
+
+
+def is_version(name: str, number: int) -> bool:
+    """文件名的版本号就是口头说的那一版：v3、v3.0、v3.0.0 都算第三版。"""
+    parts = version_number(name)
+    return bool(parts) and parts[0] == number and all(part == 0 for part in parts[1:])
+
+
+def final_files(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in group if _FINAL.search(row["name"] or "")]
+
+
+def _mtime(row: dict[str, Any]) -> int:
+    return int(row["mtime_ns"] or 0)
+
+
+def _latest(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return max(rows, key=lambda row: (_mtime(row), row["id"])) if rows else None
+
+
+def _local(ns: int) -> datetime:
+    return datetime.fromtimestamp(ns / 1_000_000_000).astimezone()
+
+
+def _day_start_ns(day: date_type) -> int:
+    return int(datetime.combine(day, day_time(0, 0)).astimezone().timestamp() * 1_000_000_000)
+
+
+def pick_by_hint(
+    group: list[dict[str, Any]], hint: dict[str, Any] | None, meeting_ns: int | None, previous_ns: int | None = None
+) -> dict[str, Any] | None:
+    """按提示在词干组里挑一份（4b，2d 和 L5 同一套）：{"version": 3} 挑那一版；{"rel": …} 以会议当天
+    （本机时区，一周从周一开始）为准：上周是上一个周一到周日之间修改时间最新的；这周是本周到开会时为止
+    最新的；昨天、今天是那一天里最新的（今天要早于开会）；上次开会是不晚于同项目上一场会的最新一份；
+    最新是不晚于开会的最新一份；上一版是不晚于开会的第二新一份。找不到回 None（调用方再用 _pick_by_date）。"""
+    if not hint or not group:
+        return None
+    number = hint.get("version")
+    if isinstance(number, int) and not isinstance(number, bool):
+        return _latest([row for row in group if is_version(row["name"] or "", number)])
+    rel = hint.get("rel")
+    if rel not in HINT_RELS:
+        return None
+    if rel == "last_meeting":
+        if previous_ns is None:
+            return None
+        return _latest([row for row in group if _mtime(row) <= previous_ns])
+    if meeting_ns is None:
+        return None
+    before = [row for row in group if _mtime(row) <= meeting_ns]
+    if rel == "latest":
+        return _latest(before)
+    if rel == "previous":
+        ranked = sorted(before, key=lambda row: (_mtime(row), row["id"]), reverse=True)
+        return ranked[1] if len(ranked) > 1 else None
+    day = _local(meeting_ns).date()
+    if rel == "today":
+        low, high = _day_start_ns(day), meeting_ns
+    elif rel == "yesterday":
+        low, high = _day_start_ns(day - timedelta(days=1)), _day_start_ns(day) - 1
+    else:
+        monday = day - timedelta(days=day.weekday())
+        if rel == "this_week":
+            low, high = _day_start_ns(monday), meeting_ns
+        else:  # last_week
+            low, high = _day_start_ns(monday - timedelta(days=7)), _day_start_ns(monday) - 1
+    return _latest([row for row in group if low <= _mtime(row) <= high])
+
+
+def previous_meeting_ns(connection: Any, meeting_id: str, project_id: str, meeting_ns: int | None) -> int | None:
+    """同项目上一场会的时间（「上次开会那版」用）。"""
+    if meeting_ns is None:
+        return None
+    best: int | None = None
+    for row in connection.execute(
+        "SELECT id, recording_date, created_at FROM meetings WHERE project_id = ? AND id != ?",
+        (project_id, meeting_id),
+    ).fetchall():
+        ns = _meeting_ns(row["recording_date"], row["created_at"])
+        if ns is not None and ns < meeting_ns and (best is None or ns > best):
+            best = ns
+    return best
 
 
 class ProjectContext:
@@ -143,12 +312,46 @@ class ProjectContext:
                         self.needles.setdefault(key + tag, (key, row["id"]))
         # 挡板：项目名、也叫、词条（本项目和通用的）。落在它们里面的出现不算。
         blockers = [*names]
-        for row in connection.execute(
-            "SELECT term FROM glossary_terms WHERE project_id = ? OR project_id IS NULL", (project_id,)
-        ).fetchall():
+        terms = [
+            dict(row)
+            for row in connection.execute(
+                """SELECT term, aliases, also, confirmed FROM glossary_terms
+                    WHERE project_id = ? OR project_id IS NULL ORDER BY term""",
+                (project_id,),
+            ).fetchall()
+        ]
+        # 4b：已确认词条的本名等于某个能用的词干时，别名（aliases、also）也当针：{叫法的键: (词干, 原样写法, 能用性)}；
+        # term_forms 是全部叫法到词条本名的键（L5 的 T3 用）
+        self.aliases: dict[str, tuple[str, str, str]] = {}
+        self.term_forms: dict[str, str] = {}
+        for row in terms:
             blockers.append(row["term"])
-        forms = list(self.needles)
-        forms += [light_key(text) for text in blockers if light_key(text) and light_key(text) not in self.needles]
+            if not row["confirmed"]:
+                continue
+            term_key = light_key(row["term"])
+            forms_of_term = [row["term"], *_json_list(row["aliases"]), *_json_list(row["also"])]
+            for form in forms_of_term:
+                form_key = light_key(form)
+                if form_key:
+                    self.term_forms.setdefault(form_key, term_key)
+            if term_key not in self.groups:
+                continue
+            for form in forms_of_term[1:]:
+                form_key = light_key(form)
+                if not form_key or form_key in self.needles or form_key in self.aliases:
+                    continue
+                if norm_key(form_key) in excluded:
+                    continue
+                usable = stem_usability(form_key)
+                if usable == STEM_NO:
+                    continue
+                self.aliases[form_key] = (term_key, form, usable)
+        forms = [*self.needles, *self.aliases]
+        forms += [
+            light_key(text)
+            for text in blockers
+            if light_key(text) and light_key(text) not in self.needles and light_key(text) not in self.aliases
+        ]
         self.scanner = FormScanner(forms) if self.needles else None
         self.files_by_id = {row["id"]: row for group in self.groups.values() for row in group}
 
@@ -225,11 +428,17 @@ def compute_mentions(
     minutes: str,
     meeting_ns: int | None,
     existing: dict[str, dict[str, Any]],
+    hints: dict[str, dict[str, Any]] | None = None,
+    previous_ns: int | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """这场会在本项目的提到：{stem_key: 行}。existing 是本项目已有的行（按 stem_key）。"""
+    """这场会在本项目的提到：{stem_key: 行}。existing 是本项目已有的行（按 stem_key）；hints 是 L5 写的
+    {stem_key: {"version": 3} 或 {"rel": "last_week"}}，没有版本依据时先按它挑；previous_ns 是同项目
+    上一场会的时间（「上次开会」的提示用）。"""
     if context.scanner is None:
         return {}
-    spoken: dict[str, dict[str, Any]] = {}
+    hints = hints or {}
+    # 每个词干的每一处命中：(start_ms, 别名的原样写法或 None, 全名针指向的文件, 口头版本号, 带不带终版)
+    hits: dict[str, list[tuple[int, str | None, int | None, int | None, bool]]] = {}
     for segment in segments:
         text = str(segment.get("text") or "")
         if not text:
@@ -237,17 +446,58 @@ def compute_mentions(
         start_ms = int(segment.get("start_ms") or 0)
         for needle, _start, _end in context.scanner.matches(text):
             target = context.needles.get(needle)
-            if target is None:
+            alias = context.aliases.get(needle) if target is None else None
+            if target is None and alias is None:
                 continue  # 挡板
-            key, file_id = target
+            if target is not None:
+                key, file_id = target
+                form = None
+            else:
+                key, form, _usable = alias
+                file_id = None
             if file_id is not None and _continues_number(text, _end):
                 file_id = None  # 说的是「报价单 v30」，不是 v3 那一份
-            entry = spoken.setdefault(key, {"count": 0, "first_ms": start_ms, "anchors": [], "versions": Counter()})
-            entry["count"] += 1
-            if (not entry["anchors"] or entry["anchors"][-1] != start_ms) and len(entry["anchors"]) < MAX_ANCHORS:
-                entry["anchors"].append(start_ms)
+            hits.setdefault(key, []).append(
+                (start_ms, form, file_id, near_version(text, _start, _end), near_final(text, _start, _end))
+            )
+    spoken: dict[str, dict[str, Any]] = {}
+    for key, found in hits.items():
+        usable = context.usability.get(key, STEM_NO)
+        stem_hits = [hit for hit in found if hit[1] is None]
+        alias_counts = Counter(hit[1] for hit in found if hit[1] is not None)
+        stem_ok = usable == STEM_YES or (usable == STEM_TWICE and len(stem_hits) >= 2)
+        # 两个字的别名要说到两次才连（能不能用按这个叫法本身算）
+        forms_ok = {
+            form
+            for form, times in alias_counts.items()
+            if context.aliases[light_key(form)][2] == STEM_YES
+            or (context.aliases[light_key(form)][2] == STEM_TWICE and times >= 2)
+        }
+        counted = [hit for hit in found if (hit[1] is None and stem_ok) or (hit[1] is not None and hit[1] in forms_ok)]
+        if not counted:
+            continue
+        anchors: list[int] = []
+        versions: Counter[int] = Counter()
+        group = context.groups[key]
+        for start_ms, _form, file_id, oral, _final in counted:
+            if (not anchors or anchors[-1] != start_ms) and len(anchors) < MAX_ANCHORS:
+                anchors.append(start_ms)
             if file_id is not None:
-                entry["versions"][file_id] += 1
+                versions[file_id] += 1
+            elif oral is not None:
+                for row in group:
+                    if is_version(row["name"] or "", oral):
+                        versions[row["id"]] += 1
+        aliases_said = Counter(hit[1] for hit in counted if hit[1] is not None)
+        spoken[key] = {
+            "count": len(counted),
+            "first_ms": counted[0][0],
+            "anchors": anchors,
+            "versions": versions,
+            "finals": sum(1 for hit in counted if hit[4]),
+            # 这一行的命中全来自别名时，线上的字写说得最多的那个叫法
+            "alias": aliases_said.most_common(1)[0][0] if aliases_said and not any(hit[1] is None for hit in counted) else None,
+        }
     written: dict[str, dict[str, Any]] = {}
     for line in (minutes or "").splitlines():
         if not line.strip():
@@ -255,7 +505,7 @@ def compute_mentions(
         for needle, _start, _end in context.scanner.matches(line):
             target = context.needles.get(needle)
             if target is None:
-                continue
+                continue  # 挡板和别名（纪要里只认词干本身）
             key, file_id = target
             if file_id is not None and _continues_number(line, _end):
                 file_id = None
@@ -269,10 +519,14 @@ def compute_mentions(
         usable = context.usability.get(key, STEM_NO)
         said = spoken.get(key)
         wrote = written.get(key)
-        if said is not None and (usable == STEM_YES or (usable == STEM_TWICE and said["count"] >= 2)):
+        finals = 0
+        alias_needle = None
+        if said is not None:
             source, count, first_ms, anchors = "transcript", said["count"], said["first_ms"], said["anchors"]
             versions = said["versions"]
-        elif said is None and wrote is not None and usable == STEM_YES and len(key) >= MINUTES_MIN_CHARS:
+            finals = said["finals"]
+            alias_needle = said["alias"]
+        elif wrote is not None and usable == STEM_YES and len(key) >= MINUTES_MIN_CHARS:
             source, count, first_ms = "minutes", 0, wrote["first_ms"]
             anchors = [first_ms] if first_ms is not None else []
             versions = wrote["versions"]
@@ -301,6 +555,8 @@ def compute_mentions(
                 "picked": 1,
             }
             continue
+        finals_in_group = final_files(group) if finals else []
+        hinted = None
         if previous is not None and previous["picked"] and previous["file_id"] in context.files_by_id:
             chosen = context.files_by_id[previous["file_id"]]
             picked = 1
@@ -312,12 +568,16 @@ def compute_mentions(
                 (context.files_by_id[file_id] for file_id in versions),
                 key=lambda row: (versions[row["id"]], int(row["mtime_ns"] or 0), row["id"]),
             )
+        elif len(finals_in_group) == 1:
+            chosen = finals_in_group[0]  # 说了「终版」，组里恰好一份文件名带终版这类字样
+        elif (hinted := pick_by_hint(group, hints.get(key), meeting_ns, previous_ns)) is not None:
+            chosen = hinted  # 大模型一层留下的提示（「上周那版」「第 3 版」）
         else:
             chosen = _pick_by_date(group, meeting_ns)
         result[key] = {
             "stem_key": key,
             "file_id": chosen["id"],
-            "needle": chosen["stem"],
+            "needle": alias_needle or chosen["stem"],
             "count": count,
             "first_ms": first_ms,
             "anchors_json": json.dumps(anchors),
@@ -396,6 +656,20 @@ def _pending(connection: Any) -> list[dict[str, Any]]:
     return todo
 
 
+def read_hints(connection: Any, meeting_id: str) -> dict[str, dict[str, Any]]:
+    """mention_extractions.hints_json：{stem_key: {"version": 3} 或 {"rel": "last_week"}}。"""
+    row = connection.execute("SELECT hints_json FROM mention_extractions WHERE meeting_id = ?", (meeting_id,)).fetchone()
+    if row is None:
+        return {}
+    try:
+        value = json.loads(row["hints_json"] or "{}")
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): hint for key, hint in value.items() if isinstance(hint, dict)}
+
+
 def match_meeting(db: Database, row: dict[str, Any], contexts: dict[str, ProjectContext]) -> bool:
     """比对一场会；比对期间会被改过（dirty 变了）就不写，留给下一轮。返回是否写了。"""
     meeting_id = row["id"]
@@ -429,13 +703,23 @@ def match_meeting(db: Database, row: dict[str, Any], contexts: dict[str, Project
                 (meeting_id,),
             ).fetchall()
         ]
+        # 4b：L5 留下的提示（「上周那版」「第 3 版」），没有版本依据时先按它挑
+        hints = read_hints(connection, meeting_id)
+        meeting_ns = _meeting_ns(row["recording_date"], row["created_at"])
+        previous_ns = (
+            previous_meeting_ns(connection, meeting_id, project_id, meeting_ns)
+            if any(hint.get("rel") == "last_meeting" for hint in hints.values())
+            else None
+        )
     existing = {item["stem_key"]: item for item in existing_all if item["project_id"] == project_id}
     result = compute_mentions(
         context,
         segments=segments,
         minutes=minutes_row["markdown"] if minutes_row else "",
-        meeting_ns=_meeting_ns(row["recording_date"], row["created_at"]),
+        meeting_ns=meeting_ns,
         existing=existing,
+        hints=hints,
+        previous_ns=previous_ns,
     )
     with db.transaction() as connection:
         if row["dirty"] is None:
@@ -538,15 +822,8 @@ def meeting_files(connection: Any, meeting_id: str, project_id: str | None) -> d
     if not project_id:
         return {"files": [], "files_state": state}
     generic = generic_keys(connection, project_id)
-    rows = connection.execute(
-        f"""SELECT fm.stem_key, fm.needle, fm.count, fm.first_ms, fm.minutes_count, fm.source, fm.picked,
-                   f.id AS file_id, f.name, f.rel_path, f.root_id
-              FROM meeting_file_mentions fm
-              JOIN material_files f ON f.id = fm.file_id AND f.gone_at IS NULL
-             WHERE fm.meeting_id = ? AND fm.project_id = ? AND fm.status = 'active'
-               AND f.zone IN ({_ZONES_SQL})""",
-        (meeting_id, project_id),
-    ).fetchall()
+    # v16：字面和放宽的提到一起读（relation_read 管两处互相遮盖）
+    rows = relation_read.meeting_mentions(connection, meeting_id, project_id)
     files = [
         {
             "file_id": row["file_id"],
@@ -561,6 +838,8 @@ def meeting_files(connection: Any, meeting_id: str, project_id: str | None) -> d
             "source": row["source"],
             "picked": bool(row["picked"]),
             "generic": row["stem_key"] in generic,
+            # 4b：放宽行的 relation_id、说法和对上的方式（字面行都是 None）
+            **relation_read.loose_fields(row),
         }
         for row in rows
     ]
@@ -570,6 +849,8 @@ def meeting_files(connection: Any, meeting_id: str, project_id: str | None) -> d
 
 def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[int]], dict[int, str]]) -> dict[str, Any]:
     """GET /api/graph/files/{id}：文件信息、同名的其他文件、在哪几场会上被提到。只查库。"""
+    from . import related_read  # related_read 引 graph，graph 引本模块
+
     row = connection.execute(
         """SELECT f.*, r.path AS root_path, r.project_id, p.name AS project_name
              FROM material_files f
@@ -599,28 +880,27 @@ def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[in
             (row["project_id"], row["stem_key"], file_id),
         ).fetchall()
     ]
-    mention_rows = connection.execute(
-        """SELECT fm.meeting_id, fm.stem_key, fm.needle, fm.count, fm.first_ms, fm.anchors_json,
-                  fm.minutes_count, fm.source, fm.status, fm.picked,
-                  m.title, m.recording_date, m.created_at
-             FROM meeting_file_mentions fm
-             JOIN meetings m ON m.id = fm.meeting_id AND m.project_id = fm.project_id
-            WHERE fm.file_id = ?
-            ORDER BY COALESCE(m.recording_date, m.created_at) DESC, m.id
-            LIMIT 40""",
-        (file_id,),
-    ).fetchall()
+    # v16：先数再取。有效的提到（字面和放宽的）列新的 40 场，你标过「不是这份文件」的另列；
+    # 「在 N 场会上被提到」的 N 另数，不受列表长度限制
+    # 4b：标过「不是这份文件」的放宽行和字面行进同一个列表
+    mention_rows = (
+        [{**item, "status": "active"} for item in relation_read.file_mention_meetings(connection, file_id)]
+        + [{**item, "status": "rejected"} for item in relation_read.rejected_file_mentions(connection, file_id)]
+        + [{**item, "status": "rejected"} for item in relation_read.rejected_loose_mentions(connection, file_id)]
+    )
     meetings = []
     for item in mention_rows:
         first_ms = item["first_ms"]
         quote = ""
-        if item["source"] == "transcript" and first_ms is not None:
+        if item.get("relation_id") is not None and item.get("quote"):
+            quote = item["quote"]  # 放宽行存着那句原话
+        elif item["source"] == "transcript" and first_ms is not None:
             quote = quotes(item["meeting_id"], [int(first_ms)]).get(int(first_ms), "")
         meetings.append(
             {
                 "meeting_id": item["meeting_id"],
                 "title": item["title"],
-                "date": str(item["recording_date"] or item["created_at"] or "")[:10],
+                "date": item["date"],
                 "stem_key": item["stem_key"],
                 "needle": item["needle"],
                 "count": int(item["count"]),
@@ -631,6 +911,7 @@ def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[in
                 "status": item["status"],
                 "picked": bool(item["picked"]),
                 "quote": quote,
+                **relation_read.loose_fields(item),
             }
         )
     return {
@@ -654,7 +935,9 @@ def file_detail(connection: Any, file_id: int, *, quotes: Callable[[str, list[in
         },
         "siblings": siblings,
         "meetings": meetings,
-        "active_meetings": sum(1 for item in meetings if item["status"] == "active"),
+        "active_meetings": relation_read.file_mention_counts(connection, [file_id]).get(file_id, 0),
+        # 4d：「内容相关的会」最多 5 条（不算进上面的 N）
+        "related_meetings": related_read.related_meetings(connection, file_id),
     }
 
 

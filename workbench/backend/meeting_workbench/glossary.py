@@ -120,9 +120,9 @@ def normalize_also(values: list[str], *, term: str | None = None) -> list[str]:
     return normalized
 
 
-def _term_conflict(db: Database, term_row: dict[str, Any]) -> dict[str, Any]:
+def _term_conflict(connection: Any, term_row: dict[str, Any]) -> dict[str, Any]:
     project = (
-        db.query_one("SELECT name FROM projects WHERE id=?", (term_row["project_id"],))
+        connection.execute("SELECT name FROM projects WHERE id=?", (term_row["project_id"],)).fetchone()
         if term_row.get("project_id")
         else None
     )
@@ -136,17 +136,18 @@ def _term_conflict(db: Database, term_row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _raise_duplicate(db: Database, term: str) -> None:
-    row = db.query_one("SELECT * FROM glossary_terms WHERE term=?", (term,))
+def _raise_duplicate(connection: Any, term: str) -> None:
+    """正确写法已是另一条词条时抛 DuplicateTermError。connection 可以在 db.transaction() 里。"""
+    row = connection.execute("SELECT * FROM glossary_terms WHERE term=?", (term,)).fetchone()
     if row is None:
         return
-    conflict = _term_conflict(db, row)
+    conflict = _term_conflict(connection, dict(row))
     where = f"{conflict['project_name']} 项目" if conflict["project_name"] else "公共 词典"
     raise DuplicateTermError(f"「{term}」已在 {where}", conflict)
 
 
 def _check_names(
-    db: Database,
+    connection: Any,
     *,
     term: str,
     aliases: list[str],
@@ -162,7 +163,7 @@ def _check_names(
         raise GlossaryError("错写不能和正确写法相同")
     if not also or not check_others:
         return
-    for row in db.query_all("SELECT id, term, aliases, also FROM glossary_terms"):
+    for row in connection.execute("SELECT id, term, aliases, also FROM glossary_terms").fetchall():
         if row["id"] == exclude_term_id:
             continue
         taken = {row["term"], *json.loads(row["aliases"] or "[]"), *json.loads(row["also"] or "[]")}
@@ -642,6 +643,23 @@ def _resolve_target(
     return row["id"], row["name"]
 
 
+def _append_aliases(
+    connection: Any, term_id: str, aliases: list[str], *, now: str | None = None
+) -> list[str]:
+    """给词条追加错写（已有的跳过），返回这次真加上的；有加才改 updated_at。调用方负责开事务。"""
+    row = connection.execute("SELECT aliases FROM glossary_terms WHERE id=?", (term_id,)).fetchone()
+    if row is None:
+        return []
+    current = json.loads(row["aliases"] or "[]")
+    added = [alias for alias in dict.fromkeys(aliases) if alias not in current]
+    if added:
+        connection.execute(
+            "UPDATE glossary_terms SET aliases=?, updated_at=? WHERE id=?",
+            (json.dumps(current + added, ensure_ascii=False), now or utc_now(), term_id),
+        )
+    return added
+
+
 def confirm_suggestion(
     db: Database,
     suggestion_id: str,
@@ -675,14 +693,8 @@ def confirm_suggestion(
         recorded_wrong: str | None = None
         if existing:
             term_id = existing["id"]
-            aliases = json.loads(existing["aliases"] or "[]")
-            if wrong not in aliases:
-                aliases.append(wrong)
+            if _append_aliases(connection, term_id, [wrong], now=now):
                 recorded_wrong = wrong
-                connection.execute(
-                    "UPDATE glossary_terms SET aliases=?, updated_at=? WHERE id=?",
-                    (json.dumps(aliases, ensure_ascii=False), now, term_id),
-                )
         else:
             project_id, scope = _resolve_target(connection, target, row["meeting_id"])
             term_id = f"gt-{uuid.uuid4().hex}"
@@ -912,13 +924,46 @@ def create_term(
     if category not in CATEGORIES:
         raise GlossaryError(f"分类必须是 {CATEGORIES}")
     scope = str(scope or "").strip() or "通用"
-    _raise_duplicate(db, term)
-    _check_names(
-        db, term=term, aliases=normalized_aliases, also=normalized_also, exclude_term_id=None
-    )
-    now = utc_now()
+    with db.transaction() as connection:
+        _raise_duplicate(connection, term)
+        _check_names(
+            connection, term=term, aliases=normalized_aliases, also=normalized_also, exclude_term_id=None
+        )
+        term_id = _insert_term(
+            connection,
+            term=term,
+            aliases=normalized_aliases,
+            scope=scope,
+            category=category,
+            source=source,
+            confirmed=confirmed,
+            project_id=project_id,
+            is_cue=is_cue,
+            also=normalized_also,
+        )
+    if snapshot_path is not None:
+        rewrite_snapshot(db, snapshot_path)
+    return get_term(db, term_id)
+
+
+def _insert_term(
+    connection: Any,
+    *,
+    term: str,
+    aliases: list[str],
+    scope: str,
+    category: str,
+    source: str,
+    confirmed: bool,
+    project_id: str | None,
+    is_cue: bool,
+    also: list[str],
+    now: str | None = None,
+) -> str:
+    """写一条词条（已经校验过），返回 id。调用方负责开事务。"""
+    now = now or utc_now()
     term_id = f"gt-{uuid.uuid4().hex}"
-    db.execute(
+    connection.execute(
         """INSERT INTO glossary_terms
            (id, term, aliases, scope, category, source, confirmed, hit_count,
             project_id, is_cue, also, created_at, updated_at)
@@ -926,21 +971,19 @@ def create_term(
         (
             term_id,
             term,
-            json.dumps(normalized_aliases, ensure_ascii=False),
+            json.dumps(aliases, ensure_ascii=False),
             scope,
             category,
             source,
             int(bool(confirmed)),
             project_id,
             int(bool(is_cue)),
-            json.dumps(normalized_also, ensure_ascii=False),
+            json.dumps(also, ensure_ascii=False),
             now,
             now,
         ),
     )
-    if snapshot_path is not None:
-        rewrite_snapshot(db, snapshot_path)
-    return get_term(db, term_id)
+    return term_id
 
 
 # update_term 的 project_id 需要区分「本次不改」与「本次改成 None（解绑）」，
@@ -972,7 +1015,8 @@ def update_term(
     if term is not None:
         term = validate_term_text(term, what="术语")
         if term != existing["term"]:
-            _raise_duplicate(db, term)
+            with db.autocommit() as connection:
+                _raise_duplicate(connection, term)
         fields.append("term=?")
         params.append(term)
         final_term = term
@@ -987,14 +1031,15 @@ def update_term(
         fields.append("also=?")
         params.append(json.dumps(final_also, ensure_ascii=False))
     if term is not None or aliases is not None or also is not None:
-        _check_names(
-            db,
-            term=final_term,
-            aliases=final_aliases,
-            also=final_also,
-            exclude_term_id=term_id,
-            check_others=also is not None,
-        )
+        with db.autocommit() as connection:
+            _check_names(
+                connection,
+                term=final_term,
+                aliases=final_aliases,
+                also=final_also,
+                exclude_term_id=term_id,
+                check_others=also is not None,
+            )
     if scope is not None:
         scope = str(scope or "").strip() or "通用"
         fields.append("scope=?")

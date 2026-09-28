@@ -1,0 +1,196 @@
+/* 4g：「问这个项目」卡片（项目页，手机上也有）和关系图右侧的问答面板 */
+
+.ask {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+}
+
+.ask--panel {
+  padding: 14px 16px;
+  overflow-y: auto;
+  max-height: 100%;
+}
+
+.ask__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ask__head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.ask__form {
+  display: flex;
+  gap: 8px;
+}
+
+.ask__form input {
+  flex: 1;
+  min-width: 0;
+}
+
+.ask__hint,
+.ask-muted {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.ask__answer {
+  display: grid;
+  gap: 8px;
+}
+
+.ask-status,
+.ask-question {
+  margin: 0;
+}
+
+.ask-status .text-button {
+  margin-left: 8px;
+}
+
+.ask-question {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.ask-confirm {
+  display: grid;
+  gap: 6px;
+}
+
+/* 那一行就在［发送］正上方 */
+.ask-confirm__line {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: 6px;
+}
+
+.ask-confirm__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ask-answer__text {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.ask-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 2px;
+  vertical-align: baseline;
+  flex-wrap: wrap;
+}
+
+.ask-chip__open,
+.ask-chip__play {
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+/* 长英文文件名在手机上折行，不撑出横向滚动 */
+.ask-chip__open {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.ask-chip.is-offline .ask-chip__open {
+  color: var(--faint);
+  cursor: default;
+}
+
+.ask-chip__later {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.ask-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.ask-sources {
+  display: grid;
+  gap: 8px;
+}
+
+.ask-sources__group h4,
+.ask-cited h3 {
+  margin: 0 0 4px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ask-sources ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ask-sources__quote {
+  margin: 2px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.ask-history summary {
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.ask-history__turn {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.ask-old {
+  margin: 0 0 12px;
+  color: var(--ink-soft);
+}
+
+.ask__player {
+  position: sticky;
+  top: 0;
+}
+
+/* 手机：占满宽度，出处小块换行，列表竖排 */
+.ask--mobile {
+  padding: 12px;
+}
+
+.ask--mobile .ask-confirm__actions {
+  flex-direction: column;
+  align-items: stretch;
+}

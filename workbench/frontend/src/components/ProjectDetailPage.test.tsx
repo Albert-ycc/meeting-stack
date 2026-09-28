@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { INDEX_POLL_MS, ProjectDetailPage } from "./ProjectDetailPage";
-import { ApiError, type ApiClient } from "../api";
+import { ApiError, type ApiClient, type ProjectTimelinePayload } from "../api";
+import { LinksFlagsContext } from "./links/LinksFlagsContext";
 import type {
   MaterialCoverageRoot,
   MaterialIndexRoot,
@@ -502,11 +503,12 @@ describe("ProjectDetailPage 文件夹改名后找回", () => {
       renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(missingBoard), renameCandidates }) });
 
       expect(await screen.findByText("找不到该目录")).toBeInTheDocument();
-      expect(renameCandidates).toHaveBeenCalledTimes(1);
+      // 「找不到该目录」可能先于第一次询问画出来，等询问真的发出去再推时间
+      await waitFor(() => expect(renameCandidates).toHaveBeenCalledTimes(1));
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2000);
       });
-      expect(renameCandidates).toHaveBeenCalledTimes(2);
+      await waitFor(() => expect(renameCandidates).toHaveBeenCalledTimes(2));
       expect(await screen.findByText(/是不是改名成了『云图2026』？（里面 12 个子文件夹有 11 个对得上）/)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -970,5 +972,359 @@ describe("ProjectDetailPage 材料内容进度（3e）", () => {
       await screen.findByText("已认得 1,500 个文件名 · 刚刚（node_modules、.git 等 3 个文件夹只记了个数）"),
     ).toBeInTheDocument();
     expect(document.querySelector(".material-root-row__content")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------- 4c：时间线
+
+function timelinePayload(overrides: Partial<ProjectTimelinePayload> = {}): ProjectTimelinePayload {
+  return {
+    kind: "all",
+    days: [
+      {
+        day: "2026-09-27",
+        label: "今天",
+        items: [
+          { type: "meeting", at: "2026-09-27T06:30:00+00:00", time: "14:30",
+            meeting: { id: "m1", title: "初审规则沟通", duration_sec: 2880, audio_url: "/api/media/412" },
+            decisions: [{ id: "dec-1", text: "阈值先按 0.8 执行", start_ms: 754_000, later: { date: "2026-09-28", text: "阈值改成 0.7" } }],
+            decisions_more: 5 },
+          { type: "tasks", event: "confirmed", at: null, time: "15:02", tasks: [{ id: "t1", title: "写一版方案" }], more: 0 },
+          { type: "tasks", event: "done", at: null, time: "15:30",
+            tasks: [{ id: "t2", title: "甲" }, { id: "t3", title: "乙" }, { id: "t4", title: "丙" }], more: 1 },
+          { type: "deliverable", at: null, time: "16:10", task: { id: "t2", title: "整理报价单" },
+            deliverable: { id: 5, name: "报价单_v3.xlsx" } },
+          { type: "files", at: null, time: "17:45", root_id: 1, folder: "能耗看板", added: 5, changed: 2,
+            names: ["报价单_v3.xlsx", "排期表.xlsx"], prelog: false },
+          { type: "files", at: null, time: "18:00", root_id: 1, folder: "", added: 2, changed: 0,
+            names: ["a.docx", "b.docx"], prelog: false },
+        ],
+        more_dirs: 4,
+      },
+    ],
+    requirements: [],
+    next_before: "2026-09-27",
+    file_log_since: "2026-09-27",
+    state: { kind: "ok", reason: null, text: null, action: null },
+    ...overrides,
+  };
+}
+
+const LINKS_ON = { linksEnabled: true, semanticEnabled: true, llmConfigured: true };
+
+function renderTimeline(api: Partial<ApiClient>, props: Partial<Parameters<typeof ProjectDetailPage>[0]> = {}) {
+  return render(
+    <LinksFlagsContext.Provider value={LINKS_ON}>
+      <ProjectDetailPage
+        apiClient={client({ meetingQuotes: vi.fn().mockResolvedValue({ quotes: [] }), ...api } as Partial<ApiClient>)}
+        canPickFolders
+        canWrite
+        onBack={vi.fn()}
+        onOpenGlossary={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenRequirement={vi.fn()}
+        onOpenTask={vi.fn()}
+        projectId="project-1"
+        projects={[]}
+        {...props}
+      />
+    </LinksFlagsContext.Provider>,
+  );
+}
+
+describe("ProjectDetailPage 的时间线（4c）", () => {
+  it("在「AI 自动建的项目」提示之后、「材料根目录」之前，条目的字照规格", async () => {
+    const projectTimeline = vi.fn().mockResolvedValue(timelinePayload());
+    renderTimeline({
+      projectTimeline,
+      projectBoard: vi.fn().mockResolvedValue({ ...baseBoard, origin: "ai", material_roots: [] }),
+    } as Partial<ApiClient>);
+
+    const card = await screen.findByRole("region", { name: "时间线" });
+    const hint = screen.getByText(/这个项目是 AI 自动建的/);
+    const roots = screen.getByRole("heading", { name: "材料根目录" });
+    expect(hint.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(roots) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(projectTimeline).toHaveBeenCalledWith("project-1", { kind: "all", days: 7 });
+
+    const inCard = within(card);
+    expect(await inCard.findByText("今天")).toBeInTheDocument();
+    expect(inCard.getByRole("button", { name: "14:30 会议『初审规则沟通』· 48 分钟" })).toBeInTheDocument();
+    expect(inCard.getByText("定了：阈值先按 0.8 执行 · 9月28日后来改了")).toBeInTheDocument();
+    expect(inCard.getByRole("button", { name: "还有 5 条" })).toBeInTheDocument();
+    expect(inCard.getByText("15:02 确认了任务：写一版方案")).toBeInTheDocument();
+    expect(inCard.getByText("15:30 完成了 4 条任务：甲、乙、丙、…")).toBeInTheDocument();
+    expect(inCard.getByText("16:10 『整理报价单』的产出：报价单_v3.xlsx")).toBeInTheDocument();
+    expect(inCard.getByText("17:45 『能耗看板』里新增 5 个、改了 2 个：报价单_v3.xlsx、排期表.xlsx 等")).toBeInTheDocument();
+    expect(inCard.getByText("18:00 项目文件夹里新增 2 个：a.docx、b.docx")).toBeInTheDocument();
+    expect(inCard.getByText("另有 4 个文件夹有变化")).toBeInTheDocument();
+  });
+
+  it("筛选、［更早］和跨过记录起点的页脚", async () => {
+    const projectTimeline = vi
+      .fn()
+      .mockResolvedValueOnce(timelinePayload())
+      .mockResolvedValueOnce(timelinePayload({
+        days: [{ day: "2026-09-20", label: "9月20日 周日", more_dirs: 0, items: [
+          { type: "files", at: null, time: null, root_id: 1, folder: "能耗看板", added: 0, changed: 0, count: 3,
+            names: ["方案.docx", "清单.xlsx", "排期.xlsx"], prelog: true },
+        ] }],
+        next_before: null,
+      }))
+      .mockResolvedValue(timelinePayload({ kind: "decisions", days: [], next_before: null }));
+    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+
+    const card = await screen.findByRole("region", { name: "时间线" });
+    await within(card).findByText("今天");
+    expect(within(card).queryByText(/起记录/)).not.toBeInTheDocument();
+    await userEvent.click(within(card).getByRole("button", { name: "更早" }));
+    expect(projectTimeline).toHaveBeenLastCalledWith("project-1", { kind: "all", days: 7, before: "2026-09-27" });
+    expect(await within(card).findByText("『能耗看板』里 3 个文件最后一次修改在这天：方案.docx、清单.xlsx、排期.xlsx")).toBeInTheDocument();
+    expect(within(card).getByText("文件从 9月27日 起记录")).toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: "更早" })).not.toBeInTheDocument();
+
+    await userEvent.click(within(card).getByRole("button", { name: "决议" }));
+    expect(projectTimeline).toHaveBeenLastCalledWith("project-1", { kind: "decisions", days: 7 });
+    expect(await within(card).findByText("这个项目的会还没有列出决议")).toBeInTheDocument();
+  });
+
+  it("三种状态：没挂根目录时［挂上文件夹］走现有流程；在等时 15 秒重取", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const noRoots = timelinePayload({
+        state: { kind: "stopped", reason: "no_roots", text: "这个项目还没挂材料文件夹，时间线里只有会议和任务",
+                 action: { kind: "attach_root", label: "挂上文件夹" } },
+      });
+      const waiting = timelinePayload({
+        state: { kind: "waiting", reason: "offline", text: "资料盘未连接，插上后接着记文件的变化", action: null },
+      });
+      const projectTimeline = vi.fn().mockResolvedValueOnce(waiting).mockResolvedValue(noRoots);
+      renderTimeline({ projectTimeline } as Partial<ApiClient>);
+      const card = await screen.findByRole("region", { name: "时间线" });
+      expect(await within(card).findByText("资料盘未连接，插上后接着记文件的变化")).toBeInTheDocument();
+      await act(async () => {
+        vi.advanceTimersByTime(15_100);
+      });
+      expect(await within(card).findByText("这个项目还没挂材料文件夹，时间线里只有会议和任务")).toBeInTheDocument();
+      expect(projectTimeline).toHaveBeenCalledTimes(2);
+      expect(within(card).getByRole("button", { name: "挂上文件夹" })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("手机上（不能挑文件夹）没有［挂上文件夹］", async () => {
+    const projectTimeline = vi.fn().mockResolvedValue(timelinePayload({
+      state: { kind: "stopped", reason: "no_roots", text: "这个项目还没挂材料文件夹，时间线里只有会议和任务",
+               action: { kind: "attach_root", label: "挂上文件夹" } },
+    }));
+    renderTimeline({ projectTimeline } as Partial<ApiClient>, { canPickFolders: false });
+    const card = await screen.findByRole("region", { name: "时间线" });
+    await within(card).findByText("这个项目还没挂材料文件夹，时间线里只有会议和任务");
+    expect(within(card).queryByRole("button", { name: "挂上文件夹" })).not.toBeInTheDocument();
+  });
+
+  it("［决议］：［放到需求 ▾］先列这场会关联的需求，打开会议带时间", async () => {
+    const decisions = timelinePayload({
+      kind: "decisions",
+      requirements: [{ id: "r1", title: "初审规则 V2" }, { id: "r2", title: "驻场排班" }],
+      days: [{ day: "2026-09-27", label: "今天", more_dirs: 0, items: [
+        { type: "decision", at: null, time: "14:30",
+          decision: { id: "dec-u", text: "下周起统一口径", start_ms: 60_000, later: null },
+          meeting: { id: "m1", title: "初审规则沟通", audio_url: null },
+          requirement: null, how: "unplaced", linked_requirement_ids: ["r2"] },
+        { type: "decision", at: null, time: "14:30",
+          decision: { id: "dec-p", text: "阈值先按 0.8 执行", start_ms: 754_000, later: null },
+          meeting: { id: "m1", title: "初审规则沟通", audio_url: null },
+          requirement: { id: "r1", title: "初审规则 V2", how: "title" }, how: "title", linked_requirement_ids: ["r1", "r2"] },
+      ] }],
+    });
+    const projectTimeline = vi.fn().mockResolvedValueOnce(timelinePayload()).mockResolvedValue(decisions);
+    const placeDecision = vi.fn().mockResolvedValue({ decision: {}, undo: { placement: null, requirement_id: null }, undo_until: "2099-01-01T00:00:00Z" });
+    const onOpenMeeting = vi.fn();
+    renderTimeline({ projectTimeline, placeDecision } as Partial<ApiClient>, { onOpenMeeting });
+
+    const card = await screen.findByRole("region", { name: "时间线" });
+    await within(card).findByText("今天");
+    await userEvent.click(within(card).getByRole("button", { name: "决议" }));
+    expect(await within(card).findByText("初审规则 V2")).toBeInTheDocument();
+    expect(within(card).getByText(/没归到具体需求/)).toBeInTheDocument();
+    await userEvent.click(within(card).getByRole("button", { name: "放到需求 ▾" }));
+    const options = within(card).getAllByRole("menuitem").map((item) => item.textContent);
+    expect(options).toEqual(["驻场排班", "初审规则 V2"]);
+    await userEvent.click(within(card).getByRole("menuitem", { name: "驻场排班" }));
+    expect(placeDecision).toHaveBeenCalledWith("dec-u", { placement: "picked", requirement_id: "r2" });
+    expect(await within(card).findByText("已放到『驻场排班』")).toBeInTheDocument();
+
+    await userEvent.click(within(card).getAllByRole("button", { name: "打开会议" })[1]);
+    expect(onOpenMeeting).toHaveBeenCalledWith("m1", 754_000);
+  });
+
+  it("在等时 15 秒静默重取只换第一页那几天，［更早］翻出来的天和翻页起点留着", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const waiting = { kind: "waiting" as const, reason: "offline" as const, text: "资料盘未连接，插上后接着记文件的变化", action: null };
+      const older = timelinePayload({
+        state: waiting,
+        days: [{ day: "2026-09-20", label: "9月20日 周日", more_dirs: 0, items: [
+          { type: "tasks", event: "confirmed", at: null, time: "09:00", tasks: [{ id: "t9", title: "旧任务" }], more: 0 },
+        ] }],
+        next_before: "2026-09-13",
+      });
+      const refreshed = timelinePayload({
+        state: waiting,
+        days: [{ day: "2026-09-27", label: "今天", more_dirs: 0, items: [
+          { type: "tasks", event: "confirmed", at: null, time: "19:00", tasks: [{ id: "t8", title: "新任务" }], more: 0 },
+        ] }],
+      });
+      const projectTimeline = vi
+        .fn()
+        .mockResolvedValueOnce(timelinePayload({ state: waiting }))
+        .mockResolvedValueOnce(older)
+        .mockResolvedValue(refreshed);
+      renderTimeline({ projectTimeline } as Partial<ApiClient>);
+      const card = await screen.findByRole("region", { name: "时间线" });
+      await within(card).findByText("今天");
+      fireEvent.click(within(card).getByRole("button", { name: "更早" }));
+      expect(await within(card).findByText("09:00 确认了任务：旧任务")).toBeInTheDocument();
+
+      await act(async () => {
+        vi.advanceTimersByTime(15_100);
+      });
+      expect(await within(card).findByText("19:00 确认了任务：新任务")).toBeInTheDocument();
+      // 第一页那天换成了新的，更早那天还在
+      expect(within(card).queryByText("15:02 确认了任务：写一版方案")).not.toBeInTheDocument();
+      expect(within(card).getByText("09:00 确认了任务：旧任务")).toBeInTheDocument();
+      // 翻页起点还是翻出来那一页给的
+      fireEvent.click(within(card).getByRole("button", { name: "更早" }));
+      await waitFor(() =>
+        expect(projectTimeline).toHaveBeenLastCalledWith("project-1", { kind: "all", days: 7, before: "2026-09-13" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("一页的天全被滤掉时自动往前取，不写「还没有…」", async () => {
+    const empty = timelinePayload({ days: [], next_before: "2026-09-20" });
+    const projectTimeline = vi
+      .fn()
+      .mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce(timelinePayload({
+        days: [{ day: "2026-09-18", label: "9月18日 周五", more_dirs: 0, items: [
+          { type: "tasks", event: "done", at: null, time: "10:00", tasks: [{ id: "t1", title: "写一版方案" }], more: 0 },
+        ] }],
+        next_before: null,
+      }));
+    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    const card = await screen.findByRole("region", { name: "时间线" });
+    expect(await within(card).findByText("10:00 完成了任务：写一版方案")).toBeInTheDocument();
+    expect(projectTimeline).toHaveBeenLastCalledWith("project-1", { kind: "all", days: 7, before: "2026-09-20" });
+    expect(within(card).queryByText("这个项目还没有会议、任务和文件的变化")).not.toBeInTheDocument();
+  });
+
+  it("往前取了几页仍是空的：只留［更早］，不写「还没有…」", async () => {
+    const projectTimeline = vi.fn().mockResolvedValue(timelinePayload({ days: [], next_before: "2026-09-01" }));
+    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    const card = await screen.findByRole("region", { name: "时间线" });
+    expect(await within(card).findByRole("button", { name: "更早" })).toBeInTheDocument();
+    expect(projectTimeline).toHaveBeenCalledTimes(4);
+    expect(within(card).queryByText("这个项目还没有会议、任务和文件的变化")).not.toBeInTheDocument();
+  });
+
+  it("［更早］还在路上时换了筛选：回来的旧页丢掉", async () => {
+    let resolveMore: (payload: ProjectTimelinePayload) => void = () => undefined;
+    const pending = new Promise<ProjectTimelinePayload>((resolve) => {
+      resolveMore = resolve;
+    });
+    const projectTimeline = vi
+      .fn()
+      .mockResolvedValueOnce(timelinePayload())
+      .mockReturnValueOnce(pending)
+      .mockResolvedValue(timelinePayload({ kind: "tasks", days: [], next_before: null }));
+    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    const card = await screen.findByRole("region", { name: "时间线" });
+    await within(card).findByText("今天");
+    await userEvent.click(within(card).getByRole("button", { name: "更早" }));
+    await userEvent.click(within(card).getByRole("button", { name: "任务" }));
+    expect(await within(card).findByText("还没有确认或完成的任务")).toBeInTheDocument();
+    await act(async () => {
+      resolveMore(timelinePayload({
+        days: [{ day: "2026-09-20", label: "9月20日 周日", more_dirs: 0, items: [
+          { type: "tasks", event: "confirmed", at: null, time: "09:00", tasks: [{ id: "t9", title: "旧筛选的" }], more: 0 },
+        ] }],
+        next_before: "2026-09-13",
+      }));
+    });
+    expect(within(card).queryByText(/旧筛选的/)).not.toBeInTheDocument();
+    expect(within(card).getByText("还没有确认或完成的任务")).toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: "更早" })).not.toBeInTheDocument();
+  });
+
+  it("［决议］：你说不属于需求的（none）和会没关联需求的（project）都写「没归到具体需求」", async () => {
+    const decisionItem = (id: string, how: "none" | "project") => ({
+      type: "decision" as const, at: null, time: "14:30",
+      decision: { id, text: `决议${id}`, start_ms: null, later: null },
+      meeting: { id: "m1", title: "初审规则沟通", audio_url: null },
+      requirement: null, how, linked_requirement_ids: [],
+    });
+    const projectTimeline = vi.fn().mockResolvedValueOnce(timelinePayload()).mockResolvedValue(timelinePayload({
+      kind: "decisions",
+      requirements: [{ id: "r1", title: "初审规则 V2" }],
+      days: [{ day: "2026-09-27", label: "今天", more_dirs: 0, items: [decisionItem("dec-n", "none"), decisionItem("dec-p", "project")] }],
+    }));
+    renderTimeline({ projectTimeline, placeDecision: vi.fn() } as Partial<ApiClient>);
+    const card = await screen.findByRole("region", { name: "时间线" });
+    await within(card).findByText("今天");
+    await userEvent.click(within(card).getByRole("button", { name: "决议" }));
+    await within(card).findByText("决议dec-n");
+    for (const text of ["决议dec-n", "决议dec-p"]) {
+      const row = within(card).getByText(text).closest(".decision-row") as HTMLElement;
+      expect(within(row).getByText(/没归到具体需求/)).toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: "放到需求 ▾" })).toBeInTheDocument();
+    }
+    expect(within(card).queryByText("初审规则 V2")).not.toBeInTheDocument();
+  });
+
+  it("「还有 N 条」打开纪要；旧后台没有方法时不画时间线", async () => {
+    const onOpenMeeting = vi.fn();
+    renderTimeline({ projectTimeline: vi.fn().mockResolvedValue(timelinePayload()) } as Partial<ApiClient>, { onOpenMeeting });
+    const card = await screen.findByRole("region", { name: "时间线" });
+    await userEvent.click(await within(card).findByRole("button", { name: "还有 5 条" }));
+    expect(onOpenMeeting).toHaveBeenCalledWith("m1", undefined, "minutes");
+  });
+
+  it("旧后台：没有 projectTimeline 或接口 404 时不画", async () => {
+    const { unmount } = renderTimeline({});
+    await screen.findByRole("heading", { name: "材料根目录" });
+    expect(screen.queryByRole("region", { name: "时间线" })).not.toBeInTheDocument();
+    unmount();
+    const projectTimeline = vi.fn().mockRejectedValue(new ApiError("Not Found", 404, { detail: "Not Found" }));
+    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    await screen.findByRole("heading", { name: "材料根目录" });
+    await waitFor(() => expect(projectTimeline).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole("region", { name: "时间线" })).not.toBeInTheDocument());
+  });
+});
+
+describe("ProjectDetailPage 的问答卡（4g）", () => {
+  it("有 askPrepare 时「问这个项目」卡在时间线上面；材料出处交给 onOpenPreviewTarget", async () => {
+    const projectTimeline = vi.fn().mockResolvedValue(timelinePayload());
+    const askPrepare = vi.fn();
+    renderTimeline({ projectTimeline, askPrepare, ask: vi.fn(), askJob: vi.fn() } as Partial<ApiClient>, {
+      onOpenPreviewTarget: vi.fn(),
+      isMobile: true,
+    });
+    const timeline = await screen.findByRole("region", { name: "时间线" });
+    const card = screen.getByRole("region", { name: "问这个项目" });
+    expect(card.compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(card).getByText("只在『云图科研用药』的会和材料里找；要把材料原文发出去时会先告诉你")).toBeInTheDocument();
+    expect(askPrepare).not.toHaveBeenCalled();
+  });
+
+  it("没有 askPrepare（旧后台）时不画问答卡", async () => {
+    renderTimeline({ projectTimeline: vi.fn().mockResolvedValue(timelinePayload()) } as Partial<ApiClient>);
+    await screen.findByRole("region", { name: "时间线" });
+    expect(screen.queryByRole("region", { name: "问这个项目" })).toBeNull();
   });
 });
