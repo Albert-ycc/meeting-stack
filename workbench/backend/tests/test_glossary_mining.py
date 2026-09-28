@@ -526,7 +526,8 @@ def test_head_of_a_long_word_pairs_only_with_a_real_misheard_form(tmp_path):
 
 def test_sub_base_pair_rejects_particle_wrong_even_after_a_real_one(tmp_path):
     """同一个头几个字的 base 配出好几种写法：头一个不是的、了这类虚字收尾、后面几个是的时候，
-    后面几个也要照样挡掉——不能因为这个 base 已经被头一个立住了，就不再查后面的。"""
+    后面几个也要照样挡掉——不能因为这个 base 已经被头一个立住了，就不再查后面的。「要」和「药」
+    拼音都是 yào，读音相近，过读音判断；「了」「的」走虚字判断，两条判断各管各的、互不替代。"""
     db = gm_db(tmp_path)
     add_project(db, "p", "云图AI")
     root = add_root(db, "p", tmp_path / "云图目录")
@@ -539,11 +540,11 @@ def test_sub_base_pair_rejects_particle_wrong_even_after_a_real_one(tmp_path):
         date="2026-09-20T10:00:00",
         project_id="p",
         segments=[
-            "受试者用一次就够",
-            "受试者用一遍看看",
+            "受试者用要次就够",
+            "受试者用要遍看看",
             "受试者用了才知道",
             "受试者用了没反应",
-            "受试者用的时候要注意",
+            "受试者用的时候多注意",
             "受试者用的效果不错",
         ],
     )
@@ -551,7 +552,7 @@ def test_sub_base_pair_rejects_particle_wrong_even_after_a_real_one(tmp_path):
     paired = {
         item.term: sorted(pair.wrong for pair in item.pairs) for item in stats.items if item.pairs
     }
-    assert paired == {"受试者用药": ["受试者用一"]}
+    assert paired == {"受试者用药": ["受试者用要"]}
 
 
 def _face_whitelist_world(tmp_path, segments):
@@ -567,14 +568,13 @@ def _face_whitelist_world(tmp_path, segments):
     return db
 
 
-def test_sub_base_drops_when_covered_and_multiple_wrong_forms(tmp_path):
-    """「人脸识别白名单」材料里从不单独出现「人脸识别白」；会上「人脸识别一」「人脸识别应」两种
-    写法都被听到 2 次以上——不是同一个词被听错成一种写法，是「人脸识别」后面接哪个字都算，这是
-    位置本身不稳定（sub 就是截断的伪影）的信号，「人脸识别白」不该冒出来当候选词（D6 原始样例）。"""
-    db = _face_whitelist_world(
-        tmp_path,
-        ["人脸识别一开关", "人脸识别一还没配", "人脸识别应该怎么弄", "人脸识别应用范围"],
-    )
+def test_sub_base_drops_when_covered_and_wrong_form_sounds_nothing_alike(tmp_path):
+    """线上真实样例（D6）：「人脸识别白名单」材料里从不单独出现「人脸识别白」；会上只听到一种写法
+    「人脸识别应」（其实是「人脸识别应该」「人脸识别应用」被截到「应」，跟材料截断处接了个正常字
+    一样，不是听错）。「白」bái 和「应」yīng 读音完全不挨着——不能靠「凑够几种写法」判断（线上
+    就只有这一种写法也要挡），得直接查读音：不相近的写法作废，写法全部作废又没独立说过原词的，
+    整条连同证据一起丢。"""
+    db = _face_whitelist_world(tmp_path, ["人脸识别应该怎么弄", "人脸识别应用范围"])
     stats = mine(db)
     terms_found = {item.term: [pair.wrong for pair in item.pairs] for item in stats.items}
     assert "人脸识别白" not in terms_found
@@ -582,21 +582,17 @@ def test_sub_base_drops_when_covered_and_multiple_wrong_forms(tmp_path):
 
 
 def test_sub_base_survives_when_the_original_word_was_independently_spoken(tmp_path):
-    """同样两种听错写法都出现，但会上也真独立说过一次「人脸识别白」（后面跟的不是「名」）——
-    这次不是伪影，是真有这个说法，不能被截断判断收掉（反例：证明独立说过优先于「多种写法」信号）。"""
+    """同样只有「人脸识别应」这一种写法、读音也不相近，会被过滤掉；但会上也真独立说过一次
+    「人脸识别白」（后面跟的不是「名」）——候选本身要留着（听错写法清空，显示成普通候选），
+    不能被整条丢掉（反例：证明独立说过原词优先于读音判断，只影响「听错写法」要不要挂，不影响
+    候选本身留不留）。"""
     db = _face_whitelist_world(
         tmp_path,
-        [
-            "人脸识别一开关",
-            "人脸识别一还没配",
-            "人脸识别应该怎么弄",
-            "人脸识别应用范围",
-            "这个人脸识别白要不要单独测",
-        ],
+        ["人脸识别应该怎么弄", "人脸识别应用范围", "这个人脸识别白要不要单独测"],
     )
     stats = mine(db)
     terms_found = {item.term: sorted(pair.wrong for pair in item.pairs) for item in stats.items}
-    assert terms_found.get("人脸识别白") == ["人脸识别一", "人脸识别应"]
+    assert terms_found.get("人脸识别白") == []
 
 
 def test_three_char_words_get_no_pairs():

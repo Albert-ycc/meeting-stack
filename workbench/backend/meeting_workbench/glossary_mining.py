@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from pypinyin import Style, lazy_pinyin
+
 from . import glossary
 from .db import Database
 from .file_stems import COMMON_TWO_CHAR, STOPWORDS
@@ -1436,19 +1438,31 @@ def _compute(
         item.pairs.append(pair)
         item.pair_heard[wrong] = _heard(transcript, pair.positions)
         item.pair_meetings[wrong] = transcript.meeting_count(pair.positions)
-    # 截断伪影兜底：长词头尾切出来的 sub 本身就是截断（几乎全是 parent 的一截，见 _sub_base_coverage），
-    # 又配出两种以上不同的「听错写法」——真的特定误听通常只有一种写法反复被听到（「司美格鲁肽」只有
-    # 「司美格鲁太」一种、「受试者用药」过滤虚字后也只剩一种）；「后面接哪个字都算听错」（「人脸识别白名单」
-    # 被切成「人脸识别白」，「人脸识别一」「人脸识别应」两种写法都对上）才是位置本身不稳定、base 不是真
-    # 独立词的信号，整条连同它的听错写法一起丢——原词真独立说过的（_independently_spoken）不受影响。
+    # 截断伪影兜底：长词头尾切出来的 sub 本身就是截断（几乎全是 parent 的一截，见 _sub_base_coverage）时，
+    # 配出来的每个「听错写法」额外要求换的字和原字读音相近（_sounds_alike）——真听错是读音相近（司美格鲁
+    # 肽→司美格鲁太，tài=tài）；「人脸识别白名单」被切成「人脸识别白」，「人脸识别一/了/的/应」这类写法
+    # 是材料截断处 ASR 随手接的字，和「白」读音完全不挨着，不是真被听错（D6 原始样例：线上只剩「人脸识别
+    # 应」一种写法也照样要挡，不能靠「凑够几种写法」判断——原来按「两种写法以上」判的版本会漏掉只剩一种
+    # 写法的情况，复查后改成直接查读音）。读音不相近的写法逐个作废；写法全部作废、又没有独立说过原词的
+    # （_independently_spoken），整条连同证据一起丢；独立说过原词的，写法清空但候选本身照旧留着。
     checkpoint()
     for sub in sub_created:
         item = found.get(sub)
-        if item is None or len(item.pairs) < 2:
+        if item is None or not item.pairs:
             continue
         q["sub_coverage"] += 1
         ratio, front_chars, back_chars = _sub_base_coverage(conn, sub, found[parents[sub]].term)
         if ratio < COVER_RATIO:
+            continue
+        kept_pairs = [pair for pair in item.pairs if _sounds_alike(*_diff_chars(sub, pair.wrong))]
+        if len(kept_pairs) == len(item.pairs):
+            continue
+        dropped_wrongs = {pair.wrong for pair in item.pairs} - {pair.wrong for pair in kept_pairs}
+        item.pairs = kept_pairs
+        for wrong in dropped_wrongs:
+            item.pair_heard.pop(wrong, None)
+            item.pair_meetings.pop(wrong, None)
+        if item.pairs:
             continue
         places = list(_occurrences(transcript.text, sub))
         if places and _independently_spoken(transcript.text, sub, places, front_chars, back_chars):
@@ -1565,6 +1579,58 @@ def _sub_base_coverage(
 def _changed_char(base: str, wrong: str) -> str:
     """听错的写法里换掉的那个字。"""
     return next((char for char, other in zip(wrong, base, strict=False) if char != other), "")
+
+
+def _diff_chars(base: str, wrong: str) -> tuple[str, str]:
+    """base 和 wrong 只差的那一个位置：(base 原来那个字, wrong 换成的那个字)。"""
+    return next(
+        (
+            (original, changed)
+            for original, changed in zip(base, wrong, strict=False)
+            if original != changed
+        ),
+        ("", ""),
+    )
+
+
+# 常见混淆：前后鼻音、平翘舌、n/l、f/h——同一组内的读音算「相近」，不同组之间不算
+_CONFUSABLE_INITIALS = (
+    frozenset({"z", "zh"}),
+    frozenset({"c", "ch"}),
+    frozenset({"s", "sh"}),
+    frozenset({"n", "l"}),
+    frozenset({"f", "h"}),
+)
+_CONFUSABLE_FINALS = (frozenset({"an", "ang"}), frozenset({"en", "eng"}), frozenset({"in", "ing"}))
+
+
+def _pinyin_parts(char: str) -> tuple[str, str]:
+    """一个汉字的声母、韵母（都不带声调）。"""
+    initial = lazy_pinyin(char, style=Style.INITIALS, strict=False)
+    final = lazy_pinyin(char, style=Style.FINALS, strict=False)
+    return (initial[0] if initial else "", final[0] if final else "")
+
+
+def _close_enough(a: str, b: str, groups: tuple[frozenset[str], ...]) -> bool:
+    if a == b:
+        return True
+    return any(a in group and b in group for group in groups)
+
+
+def _sounds_alike(base_char: str, wrong_char: str) -> bool:
+    """两个字读音是不是相近：去声调拼音一样，或者只差前后鼻音／平翘舌／n-l／f-h 这几种常见混淆
+    （第四期 4h 复查，D6 原始样例）。真听错是读音相近（司美格鲁肽→司美格鲁太，tài=tài）；「人脸
+    识别白名单」被切成「人脸识别白」时，材料截断处 ASR 随手接的「应/一/了/的」和「白」（bái）
+    读音完全不挨着——不是听错，是截断的伪影，靠这条挡住。没识别出拼音（非汉字）时不算相近。"""
+    if not base_char or not wrong_char:
+        return False
+    base_initial, base_final = _pinyin_parts(base_char)
+    wrong_initial, wrong_final = _pinyin_parts(wrong_char)
+    if not base_final or not wrong_final:
+        return False
+    return _close_enough(base_initial, wrong_initial, _CONFUSABLE_INITIALS) and _close_enough(
+        base_final, wrong_final, _CONFUSABLE_FINALS
+    )
 
 
 def _heard(transcript: Transcript, positions: Iterable[int]) -> list[dict[str, Any]]:
