@@ -352,19 +352,49 @@ export function FilePanelBody({
     run(async () => {
       const text =
         pickTargets.length > 1 ? `已把 ${pickTargets.length} 场会换成「${sibling.name}」` : `已换成「${sibling.name}」`;
-      let undo: GraphNoticeUndo | undefined;
-      for (const row of pickTargets) {
-        const loose = looseOf(row);
-        if (loose) {
+      // 放宽行先发（出错时能整批撤回），字面行照第二期在后面
+      const looseRows = pickTargets.filter((row) => looseOf(row) !== null);
+      const literalRows = pickTargets.filter((row) => looseOf(row) === null);
+      const answered: { relationId: number; until: string }[] = [];
+      let literalDone = 0;
+      try {
+        for (const row of looseRows) {
           // 4b：放宽行发 pick，仍是 shown、origin 改 manual；撤销换回原文件
-          const result = await props.apiClient.answerRelation(loose.relationId, { answer: "pick", file_id: sibling.id });
-          undo = { kind: "relation", relationId: loose.relationId, label: text, until: result.undo_until };
-        } else {
-          await props.apiClient.pickFileMention(row.meeting_id, row.stem_key, sibling.id);
+          const relationId = looseOf(row)!.relationId;
+          const result = await props.apiClient.answerRelation(relationId, { answer: "pick", file_id: sibling.id });
+          answered.push({ relationId, until: result.undo_until });
         }
+        for (const row of literalRows) {
+          await props.apiClient.pickFileMention(row.meeting_id, row.stem_key, sibling.id);
+          literalDone += 1;
+        }
+      } catch (reason) {
+        // 中途出错：已经换过的放宽行撤回去，不留换了一半的样子；提示走 run 里出错那一句
+        for (const item of answered) {
+          try {
+            await props.apiClient.undoRelation(item.relationId);
+          } catch {
+            // 撤不回的这条留着，重取后面板上看得到
+          }
+        }
+        if (answered.length || literalDone) {
+          try {
+            await props.onChanged();
+          } catch {
+            // 重取失败由宿主自己说
+          }
+        }
+        throw reason;
       }
-      // 只换了一场放宽行时提示带［撤销］（和第二期同一句）
-      props.onNotice(text, pickTargets.length === 1 ? undo : undefined);
+      // 换了放宽行就带一个［撤销］（进画布的撤销栈，⌘Z 也能撤）；一场时和第二期同一句
+      let undo: GraphNoticeUndo | undefined;
+      if (answered.length === 1) {
+        undo = { kind: "relation", relationId: answered[0].relationId, label: text, until: answered[0].until };
+      } else if (answered.length > 1) {
+        const until = answered.map((item) => item.until).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+        undo = { kind: "relations", relationIds: answered.map((item) => item.relationId), label: text, until };
+      }
+      props.onNotice(text, undo);
       // 这份文件可能不再有会提到；回到那场会看换好的列表
       const back = pickTargets.length === 1 ? pickTargets[0].meeting_id : null;
       if (back && props.layout.byId.has(`m:${back}`)) props.onSelect(`m:${back}`);

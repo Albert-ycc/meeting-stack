@@ -266,6 +266,7 @@ function sameUndo(a: GraphNoticeUndo, b: GraphNoticeUndo) {
   if (a.kind === "mention" && b.kind === "mention") return a.meetingId === b.meetingId && a.stemKey === b.stemKey;
   if (a.kind === "deliverable" && b.kind === "deliverable") return a.deliverableId === b.deliverableId;
   if (a.kind === "relation" && b.kind === "relation") return a.relationId === b.relationId;
+  if (a.kind === "relations" && b.kind === "relations") return a.relationIds.join(",") === b.relationIds.join(",");
   return false;
 }
 
@@ -1032,6 +1033,24 @@ export function ProjectGraph({
         await apiClient.undoRelation(entry.relationId);
         recentAnswers?.drop(entry.relationId);
         showNotice("已撤销");
+      } else if (entry.kind === "relations") {
+        // 一批换成这份：逐条撤，某条撤不了也接着撤后面的，最后说第一条出错的那句
+        let failure: unknown = null;
+        for (const relationId of entry.relationIds) {
+          try {
+            await apiClient.undoRelation(relationId);
+            recentAnswers?.drop(relationId);
+          } catch (reason) {
+            if (reason instanceof ApiError && reason.status === 409) recentAnswers?.drop(relationId);
+            failure ??= reason;
+          }
+        }
+        if (failure) {
+          // 撤了一部分：先重取，再说出错那一句
+          await changed().catch(() => undefined);
+          throw failure;
+        }
+        showNotice("已撤销");
       } else if (entry.kind === "task") {
         await apiClient.updateTask(entry.taskId, entry.before);
         clearBriefCache();
@@ -1047,7 +1066,7 @@ export function ProjectGraph({
     } catch (reason) {
       // 关联的撤销过期、已撤销过：原样显示服务端那句，用 warning（role="status"）
       const status = reason instanceof ApiError ? reason.status : 0;
-      const told = entry.kind === "relation" && (status === 409 || status === 422);
+      const told = (entry.kind === "relation" || entry.kind === "relations") && (status === 409 || status === 422);
       // 过了撤销期、已经撤销过：收成的那一行也撤不了了
       if (entry.kind === "relation" && status === 409) recentAnswers?.drop(entry.relationId);
       showNotice(errorText(reason, "撤销失败"), undefined, told ? "warning" : "error");

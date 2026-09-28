@@ -44,6 +44,15 @@ PHASE_FOUR_MODULES = (
     "graph_local.py",
     "card_index.py",
     "glossary_mining.py",
+    # 第四期改过、含界面文字的老模块：检查方式和新模块一样（只查字符串常量，不查注释、文档字符串、
+    # logger 参数）。加进来时整模块查过一遍，前三期的老文案也没有禁词，所以不设豁免。
+    "graph.py",
+    "file_mentions.py",
+    "main.py",
+    "tasks.py",
+    "cards.py",
+    "glossary.py",
+    "material_vectors.py",
 )
 
 # 4a：relation_read.links_state 的状态句（第 3 节「状态和提示」，每种一句话、最多一个按钮）

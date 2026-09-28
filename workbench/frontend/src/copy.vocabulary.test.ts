@@ -49,6 +49,10 @@ const SOURCES = import.meta.glob(
     "./components/MeetingGlossaryPanel.tsx",
     // 4h：需求页的［复制给 Claude Code］和它的提示
     "./components/RequirementDetailPage.tsx",
+    // 第四期改过、含界面文字的老组件：整份源码照同一套查（前三期的老文案加进来时也没有禁词，不设豁免）
+    "./components/ProjectCardsRow.tsx",
+    "./components/ProjectDetailPage.tsx",
+    "./App.tsx",
   ],
   {
     query: "?raw",
@@ -338,6 +342,10 @@ describe("第四期界面的用词", () => {
   it("第四期新组件的源码里没有不许出现的词", () => {
     const files = Object.keys(SOURCES);
     expect(files.length).toBeGreaterThan(0);
+    // 老组件真的读到了（路径写错时 glob 不报错，只是少查）
+    expect(files).toEqual(
+      expect.arrayContaining(["./components/ProjectCardsRow.tsx", "./components/ProjectDetailPage.tsx", "./App.tsx"]),
+    );
     const problems = files.flatMap((file) =>
       uiStrings(SOURCES[file]).flatMap((text) => violations(text).map((word) => `${file}：「${text}」里有「${word}」`)),
     );

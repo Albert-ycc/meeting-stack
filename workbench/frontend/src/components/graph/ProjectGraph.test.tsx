@@ -1870,6 +1870,59 @@ describe("ProjectGraph 放宽的提到（4b）", () => {
     expect(apiClient.restoreFileMention).not.toHaveBeenCalled();
   });
 
+  function twoLooseDetail(): GraphFileDetail {
+    const base = looseDetail();
+    return {
+      ...base,
+      meetings: [
+        base.meetings[0],
+        { ...base.meetings[1], needle: "那版报价", status: "active", relation_id: 12, phrase: "那版报价", via: "time_hint" },
+      ],
+    };
+  }
+
+  it("文件面板：一次把几场会的放宽行［换成这份］，提示带一个［撤销］，点了逐条撤", async () => {
+    const apiClient = looseClient({ getGraphFile: vi.fn(async () => twoLooseDetail()) });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "换成这份" }));
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(11, { answer: "pick", file_id: 6 });
+    expect(apiClient.answerRelation).toHaveBeenCalledWith(12, { answer: "pick", file_id: 6 });
+    expect(apiClient.pickFileMention).not.toHaveBeenCalled();
+    const notice = (await screen.findByText("已把 2 场会换成「报价单v1.xlsx」")).closest("[role='status']") as HTMLElement;
+    // 一句话、一个［撤销］（另一个是提示条自带的关闭）
+    expect(within(notice).getAllByRole("button", { name: "撤销" })).toHaveLength(1);
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(apiClient.undoRelation).toHaveBeenCalledTimes(2));
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(11);
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(12);
+    expect(await screen.findByText("已撤销")).toBeInTheDocument();
+  });
+
+  it("文件面板：一批［换成这份］中途有一条出错，已经换过的撤回，提示出错那一句", async () => {
+    const undoUntil = new Date(Date.now() + 600_000).toISOString();
+    const apiClient = looseClient({
+      getGraphFile: vi.fn(async () => twoLooseDetail()),
+      answerRelation: vi.fn(async (relationId: number) => {
+        if (relationId === 12) throw new ApiError("这条已经处理过了", 409, { detail: "这条已经处理过了" });
+        return { relation: { id: relationId }, undo_until: undoUntil };
+      }),
+    });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "换成这份" }));
+    expect(await screen.findByText("这条已经处理过了")).toBeInTheDocument();
+    expect(apiClient.undoRelation).toHaveBeenCalledTimes(1);
+    expect(apiClient.undoRelation).toHaveBeenCalledWith(11);
+    expect(screen.queryByText(/场会换成/)).toBeNull();
+    // 撤回过了，⌘Z 不再有这一批
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    expect(await screen.findByText("没有能撤销的操作了（只保留 10 分钟内的）")).toBeInTheDocument();
+    expect(apiClient.undoRelation).toHaveBeenCalledTimes(1);
+  });
+
   it("旧后台回答放宽行时写「后台还是旧版本，重启声档后再试」", async () => {
     const apiClient = looseClient({
       answerRelation: vi.fn(async () => {
