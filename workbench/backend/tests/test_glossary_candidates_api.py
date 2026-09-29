@@ -95,6 +95,19 @@ def test_switched_off_hides_pending_words(api):
     assert board["glossary_candidates"] == [] and board["glossary_candidate_total"] == 0
 
 
+def test_all_projects_inbox_matches_the_project_lists(api):
+    """词典页左栏的收件箱：每个有待认词的项目一组，内容和项目接口一致，待认多的在前。"""
+    client, settings, _db, _headers = api
+    inbox = client.get("/api/glossary/candidates").json()
+    per_project = client.get("/api/projects/p/glossary-candidates").json()
+    assert inbox["total"] == per_project["total"] == 2
+    [group] = inbox["projects"]
+    assert group["project_id"] == "p" and group["project_name"] and "project_color" in group
+    assert group["items"] == per_project["items"] and group["total"] == per_project["total"]
+    settings.glossary_mining_enabled = False
+    assert client.get("/api/glossary/candidates").json() == {"projects": [], "total": 0}
+
+
 def test_evidence_is_found_again_after_reread_and_retranscribe(api):
     client, _settings, db, _headers = api
     # 重读：片段 id 变了，(content_key, ordinal) 没变

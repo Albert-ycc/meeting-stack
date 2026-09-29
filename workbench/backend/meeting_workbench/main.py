@@ -3822,6 +3822,32 @@ def create_app(
         with db.autocommit() as connection:
             return glossary_mining.list_candidates(connection, project_id)
 
+    @app.get("/api/glossary/candidates")
+    def all_glossary_candidates():
+        """词典页左栏的「待认词」收件箱：有待认词的项目逐个按项目接口取，待认多的项目在前。"""
+        if not mining_on():
+            return {"projects": [], "total": 0}
+        with db.autocommit() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT p.id, p.name, p.color FROM glossary_candidates c
+                     JOIN projects p ON p.id = c.project_id
+                    WHERE c.status = 'pending'"""
+            ).fetchall()
+            projects = []
+            for row in rows:
+                listed = glossary_mining.list_candidates(connection, row["id"])
+                if listed["total"]:
+                    projects.append(
+                        {
+                            "project_id": row["id"],
+                            "project_name": row["name"],
+                            "project_color": row["color"],
+                            **listed,
+                        }
+                    )
+        projects.sort(key=lambda item: (-item["total"], item["project_name"]))
+        return {"projects": projects, "total": sum(item["total"] for item in projects)}
+
     @app.post("/api/projects/{project_id}/glossary-candidates/accept")
     def accept_glossary_candidate(project_id: str, body: CandidateAcceptInput):
         return candidate_call(
