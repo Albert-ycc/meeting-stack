@@ -72,8 +72,11 @@ def _term_groups(db: Database, project_id: Scope) -> list[list[str]]:
             continue
         members: list[str] = []
         seen: set[str] = set()
-        for value in [row["term"], *_strip(json.loads(row["aliases"] or "[]")),
-                      *_strip(json.loads(row["also"] or "[]"))]:
+        for value in [
+            row["term"],
+            *_strip(json.loads(row["aliases"] or "[]")),
+            *_strip(json.loads(row["also"] or "[]")),
+        ]:
             key = fold(value.strip())
             if len(key) < 2 or key in seen:
                 continue
@@ -209,7 +212,9 @@ def _title_rows(db: Database, needle: str, scope: Scope, fetch: int) -> list[dic
     )
 
 
-def _minutes_candidates(db: Database, needle: str, scope: Scope, fetch: int) -> list[dict[str, Any]]:
+def _minutes_candidates(
+    db: Database, needle: str, scope: Scope, fetch: int
+) -> list[dict[str, Any]]:
     clause, params = _scope_clause(scope)
     select = f"""SELECT m.id AS meeting_id, {_MEETING_FIELDS}, mv.markdown
                    FROM meetings m
@@ -355,7 +360,9 @@ def literal_search(
             entry["segments"].append((row["ordinal"], _public_item(row, needle)))
 
     items: list[dict[str, Any]] = []
-    for _meeting_id, entry in sorted(meetings.items(), key=lambda pair: pair[1]["sort"], reverse=True):
+    for _meeting_id, entry in sorted(
+        meetings.items(), key=lambda pair: pair[1]["sort"], reverse=True
+    ):
         ordered = [entry["title"]] if entry["title"] else []
         ordered += entry["minutes"]
         ordered += [item for _ordinal, item in sorted(entry["segments"], key=lambda pair: pair[0])]
@@ -364,4 +371,3 @@ def literal_search(
                 return items
             items.append(item)
     return items
-

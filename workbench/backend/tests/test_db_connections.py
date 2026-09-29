@@ -68,7 +68,9 @@ def test_package_source_has_no_unclosed_connect_pattern():
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if UNCLOSED_PATTERN.search(line):
                 offenders.append(f"{path.name}:{number}: {line.strip()}")
-    assert offenders == [], "用 closing(...) 或 Database.autocommit() 代替：\n" + "\n".join(offenders)
+    assert offenders == [], "用 closing(...) 或 Database.autocommit() 代替：\n" + "\n".join(
+        offenders
+    )
 
 
 def test_serve_raises_soft_open_file_limit(monkeypatch):

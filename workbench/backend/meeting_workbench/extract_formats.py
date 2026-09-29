@@ -5,6 +5,7 @@
 io_error。上限都在这里执行：读到 20 万字就停；压缩包成员声明超过 64MB 的不读、实际最多读 50MB；
 表格每格 200 字、每行 200 列、每个表 2 万行。
 """
+
 from __future__ import annotations
 
 import codecs
@@ -93,7 +94,9 @@ def sniff(path: Path, ext: str) -> str:
     rtfd、pdf、iwork、binary。"""
     ext = ext.lower()
     if path.is_dir():
-        return "rtfd" if ext == "rtfd" else "iwork" if ext in {"key", "pages", "numbers"} else "binary"
+        return (
+            "rtfd" if ext == "rtfd" else "iwork" if ext in {"key", "pages", "numbers"} else "binary"
+        )
     with path.open("rb") as handle:
         head = handle.read(8192)
     stripped = head.lstrip(b"\xef\xbb\xbf").lstrip()
@@ -111,19 +114,42 @@ def sniff(path: Path, ext: str) -> str:
     if head.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE, codecs.BOM_UTF8)):
         return _text_kind(ext)
     if lower.startswith((b"<html", b"<!doctype html", b"<?xml")) and ext in {
-        "doc", "xls", "html", "htm", "wps", "et", "mht", "mhtml",
+        "doc",
+        "xls",
+        "html",
+        "htm",
+        "wps",
+        "et",
+        "mht",
+        "mhtml",
     }:
         if b"<html" in lower or b"<!doctype html" in lower:
             return "html"
     if lower.startswith((b"<html", b"<!doctype html")):
         return "html" if ext not in {"xml", "svg"} else _text_kind(ext)
-    if lower.startswith(b"mime-version:") or (ext in {"mht", "mhtml", "eml"} and b"content-type:" in lower):
+    if lower.startswith(b"mime-version:") or (
+        ext in {"mht", "mhtml", "eml"} and b"content-type:" in lower
+    ):
         return "email"
     if b"\x00" in head:
         return "binary"
     if ext in {"xls", "xlt", "et"}:
         return "csv"  # 网上系统导出的「其实是制表符文本的 .xls」
-    if ext in {"doc", "dot", "wps", "ppt", "pps", "dps", "docx", "xlsx", "pptx", "odt", "ods", "odp", "epub"}:
+    if ext in {
+        "doc",
+        "dot",
+        "wps",
+        "ppt",
+        "pps",
+        "dps",
+        "docx",
+        "xlsx",
+        "pptx",
+        "odt",
+        "ods",
+        "odp",
+        "epub",
+    }:
         return "plain"
     return _text_kind(ext)
 
@@ -152,7 +178,9 @@ def decode_bytes(data: bytes, *, cut: bool = False) -> str:
         (codecs.BOM_UTF16_BE, "utf-16"),
     ):
         if data.startswith(bom):
-            return codecs.getincrementaldecoder(encoding)(errors="replace").decode(data, final=not cut)
+            return codecs.getincrementaldecoder(encoding)(errors="replace").decode(
+                data, final=not cut
+            )
     for encoding in ("utf-8", "gb18030"):
         try:
             return codecs.getincrementaldecoder(encoding)().decode(data, final=not cut)
@@ -196,7 +224,11 @@ def read_csv(path: Path, out: Collector, *, ext: str) -> None:
         out.truncated = True
     text = decode_bytes(data, cut=cut)
     sample = text[:4096]
-    delimiter = "\t" if ext in {"tsv", "xls", "xlt", "et"} or sample.count("\t") > sample.count(",") else ","
+    delimiter = (
+        "\t"
+        if ext in {"tsv", "xls", "xlt", "et"} or sample.count("\t") > sample.count(",")
+        else ","
+    )
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     rows: list[str] = []
     try:
@@ -235,8 +267,25 @@ def read_ipynb(path: Path, out: Collector) -> None:
 
 class _HTMLText(HTMLParser):
     SKIP = {"script", "style", "noscript", "template", "head"}
-    BREAK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
-             "table", "blockquote", "pre", "title"}
+    BREAK = {
+        "p",
+        "div",
+        "br",
+        "li",
+        "tr",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "section",
+        "article",
+        "table",
+        "blockquote",
+        "pre",
+        "title",
+    }
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -404,7 +453,9 @@ class Package:
                 self.out.truncated = True
             return data
 
-    def iterparse(self, name: str, events: tuple[str, ...] = ("end",)) -> Iterator[tuple[str, ET.Element]]:
+    def iterparse(
+        self, name: str, events: tuple[str, ...] = ("end",)
+    ) -> Iterator[tuple[str, ET.Element]]:
         info = self.names.get(name)
         if info is None:
             return
@@ -439,7 +490,11 @@ def _rels(package: Package, part: str) -> dict[str, str]:
         target = element.get("Target") or ""
         if element.get("TargetMode") == "External":
             continue
-        resolved = posixpath.normpath(posixpath.join(folder, target)) if not target.startswith("/") else target[1:]
+        resolved = (
+            posixpath.normpath(posixpath.join(folder, target))
+            if not target.startswith("/")
+            else target[1:]
+        )
         result[element.get("Id") or ""] = resolved
     return result
 
@@ -466,7 +521,9 @@ def _word_paragraphs(package: Package, part: str) -> Iterator[str]:
 
 
 def read_docx(package: Package, out: Collector) -> None:
-    main = next((name for name in ("word/document.xml", "word/document2.xml") if package.has(name)), None)
+    main = next(
+        (name for name in ("word/document.xml", "word/document2.xml") if package.has(name)), None
+    )
     if main is None:
         raise Unreadable(CORRUPT, "缺主文件")
     for text in _word_paragraphs(package, main):
@@ -478,7 +535,11 @@ def read_docx(package: Package, out: Collector) -> None:
         loc = "页眉" if "header" in name else "页脚"
         for text in _word_paragraphs(package, name):
             out.add(text, loc)
-    for name, loc in (("word/footnotes.xml", "脚注"), ("word/endnotes.xml", "尾注"), ("word/comments.xml", "批注")):
+    for name, loc in (
+        ("word/footnotes.xml", "脚注"),
+        ("word/endnotes.xml", "尾注"),
+        ("word/comments.xml", "批注"),
+    ):
         if package.has(name):
             for text in _word_paragraphs(package, name):
                 out.add(text, loc)
@@ -507,7 +568,10 @@ class SheetWriter:
         if self.rows >= SHEET_ROWS:
             self.out.truncated = True
             return False
-        cells = [cell.replace("\t", " ").replace("\n", " ").strip()[:CELL_CHARS] for cell in cells[:ROW_COLUMNS]]
+        cells = [
+            cell.replace("\t", " ").replace("\n", " ").strip()[:CELL_CHARS]
+            for cell in cells[:ROW_COLUMNS]
+        ]
         while cells and not cells[-1]:
             cells.pop()
         if not any(cells):
@@ -576,7 +640,9 @@ def read_xlsx(package: Package, out: Collector) -> None:
                 kind = cell.get("t")
                 value = ""
                 if kind == "inlineStr":
-                    value = "".join(node.text or "" for node in cell.iter() if _local(node.tag) == "t")
+                    value = "".join(
+                        node.text or "" for node in cell.iter() if _local(node.tag) == "t"
+                    )
                 else:
                     raw = next((node.text for node in cell if _local(node.tag) == "v"), None)
                     if raw is None:
@@ -613,7 +679,14 @@ def read_pptx(package: Package, out: Collector) -> None:
     order: list[str] = []
     for element in ET.fromstring(package.read("ppt/presentation.xml") or b"<x/>").iter():
         if _local(element.tag) == "sldId":
-            rid = next((value for key, value in element.attrib.items() if _local(key) == "id" and key != "id"), "")
+            rid = next(
+                (
+                    value
+                    for key, value in element.attrib.items()
+                    if _local(key) == "id" and key != "id"
+                ),
+                "",
+            )
             if rid in rels:
                 order.append(rels[rid])
     if not order:
@@ -626,15 +699,21 @@ def read_pptx(package: Package, out: Collector) -> None:
         loc = f"第 {number} 页"
         lines = list(_drawing_paragraphs(package, slide))
         out.add("\n".join(lines), loc)
-        notes = next((target for target in _rels(package, slide).values() if "notesSlide" in target), None)
+        notes = next(
+            (target for target in _rels(package, slide).values() if "notesSlide" in target), None
+        )
         if notes:
-            note_lines = [line for line in _drawing_paragraphs(package, notes) if not line.strip().isdigit()]
+            note_lines = [
+                line for line in _drawing_paragraphs(package, notes) if not line.strip().isdigit()
+            ]
             out.add("\n".join(note_lines), f"{loc} 备注")
 
 
 def _drawing_paragraphs(package: Package, part: str) -> Iterator[str]:
     for _event, element in package.iterparse(part):
-        if _local(element.tag) != "p" or not element.tag.startswith("{http://schemas.openxmlformats.org/drawingml"):
+        if _local(element.tag) != "p" or not element.tag.startswith(
+            "{http://schemas.openxmlformats.org/drawingml"
+        ):
             continue
         pieces = []
         for node in element.iter():
@@ -701,7 +780,9 @@ def read_odf(package: Package, out: Collector) -> None:
                 if _local(cell.tag) not in {"table-cell", "covered-table-cell"}:
                     continue
                 text = "\n".join(_odf_text(p) for p in cell if _local(p.tag) in {"p", "h"})
-                repeat = min(int(cell.get(f"{{{ODF_TABLE}}}number-columns-repeated") or 1), ROW_COLUMNS)
+                repeat = min(
+                    int(cell.get(f"{{{ODF_TABLE}}}number-columns-repeated") or 1), ROW_COLUMNS
+                )
                 cells.extend([text] * (repeat if text else min(repeat, 1)))
             sheet.row(cells)
             element.clear()
@@ -731,14 +812,23 @@ def read_epub(package: Package, out: Collector) -> None:
             for element in ET.fromstring(encryption).iter()
             if _local(element.tag) == "EncryptionMethod"
         ]
-        font_only = all("embedding" in algorithm or "font" in algorithm.lower() for algorithm in algorithms)
-        if any(uri.lower().endswith((".xhtml", ".html", ".htm", ".xml")) for uri in protected) and not font_only:
+        font_only = all(
+            "embedding" in algorithm or "font" in algorithm.lower() for algorithm in algorithms
+        )
+        if (
+            any(uri.lower().endswith((".xhtml", ".html", ".htm", ".xml")) for uri in protected)
+            and not font_only
+        ):
             raise Unreadable(PASSWORD, "EPUB 加密")
     container = package.read("META-INF/container.xml")
     if not container:
         raise Unreadable(CORRUPT, "缺主文件")
     rootfile = next(
-        (element.get("full-path") for element in ET.fromstring(container).iter() if _local(element.tag) == "rootfile"),
+        (
+            element.get("full-path")
+            for element in ET.fromstring(container).iter()
+            if _local(element.tag) == "rootfile"
+        ),
         None,
     )
     opf = package.read(rootfile or "") if rootfile else None
@@ -778,13 +868,31 @@ def read_zip(path: Path, out: Collector, *, ext: str) -> None:
                 raise Unreadable(CORRUPT, "缺主文件")
             return
         mimetype = (package.read("mimetype") or b"").decode("ascii", errors="ignore").strip()
-        if mimetype.startswith("application/vnd.oasis.opendocument") or ext in {"odt", "ods", "odp"}:
+        if mimetype.startswith("application/vnd.oasis.opendocument") or ext in {
+            "odt",
+            "ods",
+            "odp",
+        }:
             read_odf(package, out)
             return
         if mimetype == "application/epub+zip" or ext == "epub":
             read_epub(package, out)
             return
-        if ext in {"docx", "docm", "dotx", "xlsx", "xlsm", "xltx", "pptx", "pptm", "ppsx", "potx", "wps", "et", "dps"}:
+        if ext in {
+            "docx",
+            "docm",
+            "dotx",
+            "xlsx",
+            "xlsm",
+            "xltx",
+            "pptx",
+            "pptm",
+            "ppsx",
+            "potx",
+            "wps",
+            "et",
+            "dps",
+        }:
             raise Unreadable(CORRUPT, "缺主文件")
         raise Unreadable(UNSUPPORTED, "不认识的压缩包")
     finally:
@@ -1130,7 +1238,9 @@ def read_xls(document: CompoundFile, out: Collector) -> None:
             value = format_number(_rk_value(struct.unpack_from("<I", body, 6)[0]))
         elif kind == 0x00BD and len(body) >= 12:  # MULRK
             last = struct.unpack_from("<H", body, len(body) - 2)[0]
-            for offset, col in zip(range(4, len(body) - 2, 6), range(column, last + 1), strict=False):
+            for offset, col in zip(
+                range(4, len(body) - 2, 6), range(column, last + 1), strict=False
+            ):
                 if col < ROW_COLUMNS:
                     raw = struct.unpack_from("<I", body, offset + 2)[0]
                     cells.setdefault(row, {})[col] = format_number(_rk_value(raw))
@@ -1181,7 +1291,9 @@ def read_ppt(document: CompoundFile, out: Collector) -> None:
                     notes.append("")
                 elif kind in (0x0FA0, 0x0FA8):  # TextCharsAtom / TextBytesAtom
                     raw = data[body_start:body_end]
-                    text = raw.decode("utf-16-le" if kind == 0x0FA0 else "latin-1", errors="replace")
+                    text = raw.decode(
+                        "utf-16-le" if kind == 0x0FA0 else "latin-1", errors="replace"
+                    )
                     text = text.replace("\r", "\n").replace("\x0b", "\n")
                     if context == "slides" and slides:
                         slides[-1].append(text)
@@ -1205,7 +1317,9 @@ def read_ppt(document: CompoundFile, out: Collector) -> None:
         out.add(text, "备注")
 
 
-def read_cfb(path: Path, out: Collector, *, ext: str, textutil: Callable[[Path, str], str] | None) -> None:
+def read_cfb(
+    path: Path, out: Collector, *, ext: str, textutil: Callable[[Path, str], str] | None
+) -> None:
     document, handle = open_cfb(path)
     try:
         kind = cfb_kind(document)
@@ -1249,7 +1363,17 @@ def run_textutil(path: Path, fmt: str) -> str:
         raise EngineMissing("textutil")
     try:
         result = subprocess.run(
-            [command, "-format", fmt, "-convert", "txt", "-stdout", "-encoding", "UTF-8", str(path)],
+            [
+                command,
+                "-format",
+                fmt,
+                "-convert",
+                "txt",
+                "-stdout",
+                "-encoding",
+                "UTF-8",
+                str(path),
+            ],
             capture_output=True,
             timeout=TEXTUTIL_TIMEOUT,
             check=False,

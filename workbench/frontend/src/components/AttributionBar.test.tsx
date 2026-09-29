@@ -121,7 +121,7 @@ describe("AttributionBar 自动归属", () => {
       origin: "manual",
     });
     expect(onNotice).toHaveBeenCalledWith(
-      "已改到 数据中台：3 条任务一起移过去",
+      "已改到 数据中台：3 条待确认/过期的任务一起移过去",
       "2099-01-01T00:00:00+00:00",
     );
     expect(onProjectsChanged).toHaveBeenCalled();

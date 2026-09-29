@@ -3,6 +3,7 @@
 背景：747 条 AI 任务里待确认积压 383 条（205 条超过 7 天），两周无人处理；
 任务池前端只拉 500 条自己数，「已完成」页签显示 0 而库里有 73 条。
 """
+
 from datetime import UTC, datetime, timedelta
 
 from meeting_workbench import tasks as tasks_module
@@ -14,8 +15,15 @@ from .test_tasks_api import make_client, seed_minutes, write_headers
 
 
 def insert_task(
-    db, task_id, status, *,
-    changed_at=None, project_id=None, meeting_id=None, requirement_id=None, assignee="ai",
+    db,
+    task_id,
+    status,
+    *,
+    changed_at=None,
+    project_id=None,
+    meeting_id=None,
+    requirement_id=None,
+    assignee="ai",
 ):
     stamp = changed_at or utc_now()
     db.execute(
@@ -24,8 +32,16 @@ def insert_task(
             status_changed_at, created_at, updated_at)
            VALUES (?, ?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?)""",
         (
-            task_id, f"任务 {task_id}", status, assignee, project_id, meeting_id,
-            requirement_id, stamp, stamp, utc_now(),
+            task_id,
+            f"任务 {task_id}",
+            status,
+            assignee,
+            project_id,
+            meeting_id,
+            requirement_id,
+            stamp,
+            stamp,
+            utc_now(),
         ),
     )
 
@@ -90,8 +106,13 @@ def test_expired_draft_can_be_confirmed_or_rejected_directly(tmp_path):
     insert_task(db, "a", "expired")
     insert_task(db, "b", "expired")
 
-    assert client.post("/api/tasks/a/confirm", json={}, headers=headers).json()["status"] == "confirmed"
-    assert client.post("/api/tasks/b/reject", json={}, headers=headers).json()["status"] == "cancelled"
+    assert (
+        client.post("/api/tasks/a/confirm", json={}, headers=headers).json()["status"]
+        == "confirmed"
+    )
+    assert (
+        client.post("/api/tasks/b/reject", json={}, headers=headers).json()["status"] == "cancelled"
+    )
 
 
 def test_expired_cannot_jump_to_done(tmp_path):
@@ -233,7 +254,10 @@ def test_undo_restores_recent_confirm_and_reject(tmp_path):
     assert result == {"reverted": ["p1", "p2"], "failed": []}
     assert task_status(db, "p1") == "pending_confirm"
     assert task_status(db, "p2") == "pending_confirm"
-    kinds = [row["kind"] for row in db.query_all("SELECT kind FROM task_events WHERE task_id='p1' ORDER BY id")]
+    kinds = [
+        row["kind"]
+        for row in db.query_all("SELECT kind FROM task_events WHERE task_id='p1' ORDER BY id")
+    ]
     assert kinds == ["confirmed", "reverted"]
 
 
@@ -259,7 +283,9 @@ def test_undo_after_confirm_with_requirement_change_keeps_requirement_id(tmp_pat
     assert confirmed["project_id"] == project_id
     assert [event["kind"] for event in confirmed["events"]][-1] == "confirmed"
 
-    result = client.post("/api/tasks/undo-review", json={"task_ids": ["p1"]}, headers=headers).json()
+    result = client.post(
+        "/api/tasks/undo-review", json={"task_ids": ["p1"]}, headers=headers
+    ).json()
     assert result == {"reverted": ["p1"], "failed": []}
     assert task_status(db, "p1") == "pending_confirm"
 
@@ -276,7 +302,9 @@ def test_undo_refuses_when_task_moved_on(tmp_path):
     client.post("/api/tasks/p1/confirm", json={}, headers=headers)
     client.post("/api/tasks/p1/status", json={"status": "in_progress"}, headers=headers)
 
-    result = client.post("/api/tasks/undo-review", json={"task_ids": ["p1"]}, headers=headers).json()
+    result = client.post(
+        "/api/tasks/undo-review", json={"task_ids": ["p1"]}, headers=headers
+    ).json()
 
     assert result["reverted"] == []
     assert result["failed"][0]["task_id"] == "p1"
@@ -320,7 +348,9 @@ def test_extraction_is_capped_and_scoped_to_me(tmp_path, monkeypatch):
 
     monkeypatch.setattr(TaskService, "_call_llm", fake_llm)
     result = client.post(
-        "/api/meetings/vm-20260102-101500/tasks/re-extract", json={"supplement": ""}, headers=headers
+        "/api/meetings/vm-20260102-101500/tasks/re-extract",
+        json={"supplement": ""},
+        headers=headers,
     ).json()
 
     assert result["status"] == "done"
@@ -342,10 +372,14 @@ def test_re_extract_replaces_expired_drafts_of_that_meeting(tmp_path, monkeypatc
     monkeypatch.setattr(
         TaskService,
         "_call_llm",
-        lambda self, prompt: '{"tasks":[{"title":"新草稿","anchor_quote":"","assignee_suggestion":"ai"}]}',
+        lambda self, prompt: (
+            '{"tasks":[{"title":"新草稿","anchor_quote":"","assignee_suggestion":"ai"}]}'
+        ),
     )
     client.post(
-        "/api/meetings/vm-20260102-101500/tasks/re-extract", json={"supplement": ""}, headers=headers
+        "/api/meetings/vm-20260102-101500/tasks/re-extract",
+        json={"supplement": ""},
+        headers=headers,
     )
 
     ids = {row["id"] for row in db.query_all("SELECT id FROM tasks")}
@@ -382,7 +416,9 @@ def test_repeat_confirm_with_edits_only_records_edit(tmp_path):
 
     row = db.query_one("SELECT title, status_changed_at FROM tasks WHERE id='old'")
     assert row == {"title": "改过的标题", "status_changed_at": old}
-    kinds = [event["kind"] for event in db.query_all("SELECT kind FROM task_events WHERE task_id='old'")]
+    kinds = [
+        event["kind"] for event in db.query_all("SELECT kind FROM task_events WHERE task_id='old'")
+    ]
     assert kinds == ["edited"]
 
 
@@ -394,9 +430,14 @@ def test_repeat_reject_is_noop_and_cannot_undo(tmp_path):
     insert_task(db, "gone", "cancelled", changed_at=old)
 
     client.post("/api/tasks/gone/reject", json={}, headers=headers)
-    undo = client.post("/api/tasks/undo-review", json={"task_ids": ["gone"]}, headers=headers).json()
+    undo = client.post(
+        "/api/tasks/undo-review", json={"task_ids": ["gone"]}, headers=headers
+    ).json()
 
-    assert db.query_one("SELECT status_changed_at FROM tasks WHERE id='gone'")["status_changed_at"] == old
+    assert (
+        db.query_one("SELECT status_changed_at FROM tasks WHERE id='gone'")["status_changed_at"]
+        == old
+    )
     assert undo["reverted"] == []
     assert task_status(db, "gone") == "cancelled"
 
@@ -410,7 +451,10 @@ def test_same_status_set_writes_nothing(tmp_path):
 
     client.post("/api/tasks/doing/status", json={"status": "in_progress"}, headers=headers)
 
-    assert db.query_one("SELECT status_changed_at FROM tasks WHERE id='doing'")["status_changed_at"] == old
+    assert (
+        db.query_one("SELECT status_changed_at FROM tasks WHERE id='doing'")["status_changed_at"]
+        == old
+    )
     assert db.query_all("SELECT kind FROM task_events WHERE task_id='doing'") == []
 
 
@@ -430,5 +474,8 @@ def test_concurrent_batch_confirm_claims_each_task_once(tmp_path):
     claimed = [task_id for result in results for task_id in result["confirmed"]]
     assert sorted(claimed) == sorted(ids)
     for task_id in ids:
-        kinds = [row["kind"] for row in db.query_all("SELECT kind FROM task_events WHERE task_id=?", (task_id,))]
+        kinds = [
+            row["kind"]
+            for row in db.query_all("SELECT kind FROM task_events WHERE task_id=?", (task_id,))
+        ]
         assert kinds == ["confirmed"]

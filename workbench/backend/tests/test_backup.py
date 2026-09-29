@@ -256,7 +256,9 @@ def test_backup_survives_when_derived_table_is_absent(tmp_path):
     )
     db = Database(settings.database_path)
     db.initialize()
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-noemb', '无向量表', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-noemb', '无向量表', 'published')"
+    )
     db.execute("DROP TABLE embeddings")
     db.execute("DROP TABLE material_chunk_vectors")
     db.execute("DROP TABLE material_chunks_fts")
@@ -299,7 +301,9 @@ def test_backup_strips_related_windows_and_their_mark(tmp_path):
         """INSERT INTO material_contents(content_key, layer, created_at, updated_at)
            VALUES ('q2:a', 'text', 'x', 'x')"""
     )
-    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 0, '报价单')")
+    db.execute(
+        "INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 0, '报价单')"
+    )
     db.execute(
         """INSERT INTO meeting_windows(meeting_id, model, start_ms, end_ms, text_sha, chars, bar, vector)
            VALUES ('m', 'bge', 0, 90000, 's', 10, 0.6, ?)""",
@@ -342,7 +346,10 @@ def test_backup_strips_related_windows_and_their_mark(tmp_path):
             is None
         )
         for table in (
-            "relations", "material_file_events", "glossary_mining_seeds", "material_chunks"
+            "relations",
+            "material_file_events",
+            "glossary_mining_seeds",
+            "material_chunks",
         ):
             assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

@@ -14,6 +14,7 @@ notifications 台账幂等，失败只记日志不重试排队，靠扫描周期
   ③ 任务待确认 —— 本模块 task_draft，逐条确认/驳回。
 每条通知都要答完三个问题：发生了什么、要不要我动手、动手去哪。
 """
+
 from __future__ import annotations
 
 import json
@@ -94,7 +95,7 @@ def _section_body(text: str, header: re.Match[str] | None) -> str:
     if header is None:
         return ""
     tail = _SECTION_START.search(text, header.end())
-    return text[header.end(): tail.start() if tail else len(text)]
+    return text[header.end() : tail.start() if tail else len(text)]
 
 
 def _clean_item(raw: str) -> str:
@@ -370,9 +371,7 @@ def _task_text_block(task: dict[str, Any], index: int) -> dict[str, Any]:
     if meta:
         inner.append({"tag": "markdown", "content": "　".join(meta)})
     if quote:
-        inner.append(
-            {"tag": "markdown", "content": f"**📌 会上原话**\n{_escape_markdown(quote)}"}
-        )
+        inner.append({"tag": "markdown", "content": f"**📌 会上原话**\n{_escape_markdown(quote)}"})
     return {
         "tag": "column_set",
         "flex_mode": "none",
@@ -405,9 +404,7 @@ def _state_line(task: dict[str, Any], index: int) -> dict[str, Any]:
         inner.append({"tag": "markdown", "content": "　".join(meta)})
     quote = (task.get("anchor_quote") or "").strip()
     if quote:
-        inner.append(
-            {"tag": "markdown", "content": f"📌 会上原话：{_escape_markdown(quote)}"}
-        )
+        inner.append({"tag": "markdown", "content": f"📌 会上原话：{_escape_markdown(quote)}"})
     return {
         "tag": "column_set",
         "flex_mode": "none",
@@ -498,7 +495,9 @@ def build_task_status_card(
     lead = f"来自「{meeting_title or '这场会'}」"
     lead += "，都处理完了。" if all_done else f"，还剩 {pending} 条等你拿主意。"
     if project_name is None:
-        project_name = next((task["project_name"] for task in tasks if task.get("project_name")), None)
+        project_name = next(
+            (task["project_name"] for task in tasks if task.get("project_name")), None
+        )
     elements: list[dict[str, Any]] = [
         {"tag": "markdown", "content": lead},
         {"tag": "markdown", "content": _project_line(project_name)},
@@ -517,7 +516,12 @@ def build_task_status_card(
             "content": f"会后任务 · {len(tasks)} 条" + ("，已全部确认 ✅" if all_done else ""),
         },
     }
-    return {"schema": "2.0", "config": {"wide_screen_mode": True}, "header": header, "body": {"elements": elements}}
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": header,
+        "body": {"elements": elements},
+    }
 
 
 def _card(
@@ -527,9 +531,7 @@ def _card(
     button_label: str | None = None,
     button_url: str | None = None,
 ) -> dict[str, Any]:
-    elements: list[dict[str, Any]] = [
-        {"tag": "div", "text": {"tag": "lark_md", "content": text}}
-    ]
+    elements: list[dict[str, Any]] = [{"tag": "div", "text": {"tag": "lark_md", "content": text}}]
     if button_label and button_url:
         elements.append(
             {
@@ -685,10 +687,16 @@ class LarkNotifier:
         try:
             result = subprocess.run(
                 [
-                    self.lark_cli_bin, "api", "POST", "/open-apis/im/v1/messages",
-                    "--as", "bot",
-                    "--params", '{"receive_id_type":"chat_id"}',
-                    "--data", data,
+                    self.lark_cli_bin,
+                    "api",
+                    "POST",
+                    "/open-apis/im/v1/messages",
+                    "--as",
+                    "bot",
+                    "--params",
+                    '{"receive_id_type":"chat_id"}',
+                    "--data",
+                    data,
                 ],
                 capture_output=True,
                 text=True,
@@ -910,7 +918,7 @@ class LarkNotifier:
             "export LARK_CLI_NO_PROXY=1; "
             f"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin "
             f"{shlex.quote(self.lark_cli_bin)} api POST /open-apis/im/v1/messages "
-            "--as bot --params '{\"receive_id_type\":\"chat_id\"}' "
+            '--as bot --params \'{"receive_id_type":"chat_id"}\' '
             f"--data {shlex.quote(payload)} > {shlex.quote(str(log_path))} 2>&1"
         )
         try:
@@ -970,11 +978,15 @@ class LarkNotifier:
             return False
         parts: list[str] = []
         if int(stats.get("total") or 0):
-            parts.append(f"· 待确认 {stats['pending']} 条" + (
-                f"，都来自「{stats['pending_sources'][0]}」" if stats["pending_sources"] else ""
-            ) + "，确认后 AI 才会开工。")
+            parts.append(
+                f"· 待确认 {stats['pending']} 条"
+                + (f"，都来自「{stats['pending_sources'][0]}」" if stats["pending_sources"] else "")
+                + "，确认后 AI 才会开工。"
+            )
         if stats["stalled"]:
-            parts.append(f"· 停滞点名：{stats['stalled_titles'][0]}（{stats['stalled_days'][0]} 天没动了）。")
+            parts.append(
+                f"· 停滞点名：{stats['stalled_titles'][0]}（{stats['stalled_days'][0]} 天没动了）。"
+            )
         if stats["done_today"]:
             parts.append(f"· 今天完成 {len(stats['done_today'])} 条：{stats['done_today'][0]}。")
         if auto or review:

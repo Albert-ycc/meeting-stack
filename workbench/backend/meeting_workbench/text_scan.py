@@ -5,6 +5,7 @@
 - 叫法开头或结尾是字母时，原文里它前后的字不能也是字母（「ai」不算「said」里的）。
 - 每段逐字稿单独扫，不跨段拼接。
 """
+
 from __future__ import annotations
 
 import unicodedata
@@ -103,7 +104,9 @@ class FormScanner:
                 continue
             start_ms = int(segment.get("start_ms") or 0)
             for form, _start, _end in self._matches(text):
-                entry = result.setdefault(form, {"count": 0, "first_ms": start_ms, "anchors_ms": []})
+                entry = result.setdefault(
+                    form, {"count": 0, "first_ms": start_ms, "anchors_ms": []}
+                )
                 entry["count"] += 1
                 anchors = entry["anchors_ms"]
                 if (not anchors or anchors[-1] != start_ms) and len(anchors) < MAX_ANCHORS:

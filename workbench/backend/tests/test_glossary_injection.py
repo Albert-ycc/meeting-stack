@@ -1,4 +1,5 @@
 """1d-2 按这场会挑词：快照里的项目线索、relay 回执入库、纪要体检。"""
+
 import importlib.util
 import json
 from pathlib import Path
@@ -53,7 +54,9 @@ def test_snapshot_exports_projects_with_recognition_cues(tmp_path):
            VALUES ('p-yt', '/Volumes/work/云图AI 资料', ?)""",
         (utc_now(),),
     )
-    create_term(db, term="初审规则", aliases=["出审规则"], project_id="p-yt", scope="云图AI", is_cue=True)
+    create_term(
+        db, term="初审规则", aliases=["出审规则"], project_id="p-yt", scope="云图AI", is_cue=True
+    )
     create_term(
         db, term="数理协会", aliases=["树立协会"], project_id="p-yt", scope="云图AI", is_cue=False
     )
@@ -140,7 +143,17 @@ def add_meeting(db, meeting_id, *, project_id=None, status="completed_unreviewed
     )
 
 
-def add_minutes(db, meeting_id, version_id, markdown, *, kind="generated", job_id=None, attempt=None, version_no=1):
+def add_minutes(
+    db,
+    meeting_id,
+    version_id,
+    markdown,
+    *,
+    kind="generated",
+    job_id=None,
+    attempt=None,
+    version_no=1,
+):
     db.execute(
         """INSERT INTO minutes_versions
                (id, meeting_id, version_no, markdown, html, kind, published,
@@ -148,7 +161,9 @@ def add_minutes(db, meeting_id, version_id, markdown, *, kind="generated", job_i
            VALUES (?, ?, ?, ?, '', ?, 0, ?, ?, ?)""",
         (version_id, meeting_id, version_no, markdown, kind, job_id, attempt, utc_now()),
     )
-    db.execute("UPDATE meetings SET current_minutes_version_id=? WHERE id=?", (version_id, meeting_id))
+    db.execute(
+        "UPDATE meetings SET current_minutes_version_id=? WHERE id=?", (version_id, meeting_id)
+    )
 
 
 def add_artifact(db, meeting_id, path):
@@ -157,7 +172,13 @@ def add_artifact(db, meeting_id, path):
     db.execute(
         """INSERT INTO artifacts (meeting_id, kind, role, source_root, path, sha256, size_bytes, created_at)
            VALUES (?, 'glossary_injection', 'source', 'archive', ?, ?, ?, ?)""",
-        (meeting_id, str(path), hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_size, utc_now()),
+        (
+            meeting_id,
+            str(path),
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            path.stat().st_size,
+            utc_now(),
+        ),
     )
 
 
@@ -179,10 +200,23 @@ def test_receipts_are_ingested_once_and_matched_to_the_minutes_version(tmp_path)
     snapshot = {
         "schema_version": 1,
         "terms": [
-            {"term": "数理协会", "aliases": ["树立协会"], "scope": "云图AI", "category": "机构", "project_id": "p-yt"},
+            {
+                "term": "数理协会",
+                "aliases": ["树立协会"],
+                "scope": "云图AI",
+                "category": "机构",
+                "project_id": "p-yt",
+            },
             {"term": "随访", "aliases": ["随方"], "scope": "通用", "category": "术语"},
         ],
-        "projects": [{"id": "p-yt", "name": "云图AI", "also": [], "cues": [{"text": "云图AI", "kind": "name"}]}],
+        "projects": [
+            {
+                "id": "p-yt",
+                "name": "云图AI",
+                "also": [],
+                "cues": [{"text": "云图AI", "kind": "name"}],
+            }
+        ],
     }
     receipt = injection.select_injection(snapshot, "云图AI 的树立协会，云图AI 随方", None)
     receipt.update(job_id="job-1", attempt=2)
@@ -198,7 +232,9 @@ def test_receipts_are_ingested_once_and_matched_to_the_minutes_version(tmp_path)
     assert glossary_checkup.ingest_receipts(db) == 0
 
     with db.autocommit() as connection:
-        minutes = dict(connection.execute("SELECT * FROM minutes_versions WHERE id='mv-1'").fetchone())
+        minutes = dict(
+            connection.execute("SELECT * FROM minutes_versions WHERE id='mv-1'").fetchone()
+        )
         found = glossary_checkup.receipt_for_minutes(connection, "vm-1", minutes)
         other = glossary_checkup.receipt_for_minutes(
             connection, "vm-1", {**minutes, "source_attempt": 1}
@@ -233,12 +269,20 @@ def add_transcript(db, meeting_id, lines):
     )
 
 
-def add_receipt(db, meeting_id, *, job_id, attempt, project_id, project_name, source="hint", cues=()):
+def add_receipt(
+    db, meeting_id, *, job_id, attempt, project_id, project_name, source="hint", cues=()
+):
     import hashlib
 
     payload = {
         "schema_version": 1,
-        "project": {"id": project_id, "name": project_name, "source": source, "score": 3, "cues": list(cues)},
+        "project": {
+            "id": project_id,
+            "name": project_name,
+            "source": source,
+            "score": 3,
+            "cues": list(cues),
+        },
         "counts": {"project": 1, "public": 1},
         "terms": [{"term": "数理协会"}, {"term": "随访"}],
         "job_id": job_id,
@@ -250,8 +294,17 @@ def add_receipt(db, meeting_id, *, job_id, attempt, project_id, project_name, so
                (meeting_id, job_id, attempt, sha256, project_id, project_name, project_source,
                 term_count, payload, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, 2, ?, ?)""",
-        (meeting_id, job_id, attempt, hashlib.sha256(raw.encode()).hexdigest(), project_id,
-         project_name, source, raw, utc_now()),
+        (
+            meeting_id,
+            job_id,
+            attempt,
+            hashlib.sha256(raw.encode()).hexdigest(),
+            project_id,
+            project_name,
+            source,
+            raw,
+            utc_now(),
+        ),
     )
 
 
@@ -259,7 +312,9 @@ def seed_glossary(db):
     add_project(db, "p-yt", "云图AI")
     add_project(db, "p-zt", "数据中台")
     create_term(db, term="数理协会", aliases=["树立协会"], project_id="p-yt", scope="云图AI")
-    create_term(db, term="云图AI", aliases=["云图"], project_id="p-yt", scope="云图AI", is_cue=False)
+    create_term(
+        db, term="云图AI", aliases=["云图"], project_id="p-yt", scope="云图AI", is_cue=False
+    )
     create_term(db, term="主数据", aliases=["珠数据"], project_id="p-zt", scope="数据中台")
     create_term(db, term="随访", aliases=["随方"])
     create_term(db, term="儿保科", aliases=["儿宝科"], scope="儿科")
@@ -292,7 +347,10 @@ def test_compute_hits_and_replacement_rules():
     transcript = "云图的树立协会下周随方"
     minutes = "云图AI 项目：数理协会下周回复。云图 那边要树立协会的名单；随访照常。"
     hits = glossary_checkup.compute_hits(terms, transcript, minutes)
-    assert [(h["wrong"], h["minutes_count"]) for h in hits["missed"]] == [("云图", 1), ("树立协会", 1)]
+    assert [(h["wrong"], h["minutes_count"]) for h in hits["missed"]] == [
+        ("云图", 1),
+        ("树立协会", 1),
+    ]
     assert [(h["wrong"], h["transcript_count"]) for h in hits["corrected"]] == [("随方", 1)]
 
     fixed, count = glossary_checkup.replace_missed(
@@ -348,7 +406,9 @@ def _auto_setup(tmp_path, *, status="completed_unreviewed", with_receipt=True):
     seed_glossary(db)
     add_meeting(db, "vm-1", project_id="p-yt", status=status)
     add_transcript(db, "vm-1", ["树立协会下周随方"])
-    add_minutes(db, "vm-1", "mv-1", "# 纪要\n树立协会下周回复，随访照常。", job_id="job-1", attempt=1)
+    add_minutes(
+        db, "vm-1", "mv-1", "# 纪要\n树立协会下周回复，随访照常。", job_id="job-1", attempt=1
+    )
     if with_receipt:
         add_receipt(db, "vm-1", job_id="job-1", attempt=1, project_id="p-yt", project_name="云图AI")
     return db, MeetingService(db)
@@ -362,22 +422,34 @@ def test_unreviewed_minutes_from_the_new_relay_are_fixed_automatically_and_can_b
     stats = glossary_checkup.run_pending(db, service, on_minutes_changed=changed.append)
     assert (stats["checked"], stats["auto_applied"]) == (1, 1)
     assert changed == ["vm-1"]
-    meeting = db.query_one("SELECT status, current_minutes_version_id FROM meetings WHERE id='vm-1'")
+    meeting = db.query_one(
+        "SELECT status, current_minutes_version_id FROM meetings WHERE id='vm-1'"
+    )
     assert meeting["status"] == "draft_modified"
-    current = db.query_one("SELECT markdown, kind FROM minutes_versions WHERE id=?", (meeting["current_minutes_version_id"],))
+    current = db.query_one(
+        "SELECT markdown, kind FROM minutes_versions WHERE id=?",
+        (meeting["current_minutes_version_id"],),
+    )
     assert current["markdown"] == "# 纪要\n数理协会下周回复，随访照常。"
     assert current["kind"] == "draft"
     assert db.query_one("SELECT COUNT(*) AS n FROM glossary_suggestions")["n"] == 0
     view = glossary_checkup.meeting_glossary(db, "vm-1")
     assert view["missed"] == []
     assert [h["wrong"] for h in view["corrected"]] == ["树立协会", "随方"]
-    assert view["applied"] == {"by": "auto", "count": 1, "at": view["applied"]["at"], "can_undo": True}
+    assert view["applied"] == {
+        "by": "auto",
+        "count": 1,
+        "at": view["applied"]["at"],
+        "can_undo": True,
+    }
 
     assert glossary_checkup.run_pending(db, service)["auto_applied"] == 0
 
     glossary_checkup.undo_applied(db, service, "vm-1")
     meeting = db.query_one("SELECT current_minutes_version_id FROM meetings WHERE id='vm-1'")
-    restored = db.query_one("SELECT markdown FROM minutes_versions WHERE id=?", (meeting["current_minutes_version_id"],))
+    restored = db.query_one(
+        "SELECT markdown FROM minutes_versions WHERE id=?", (meeting["current_minutes_version_id"],)
+    )
     assert restored["markdown"] == "# 纪要\n树立协会下周回复，随访照常。"
     view = glossary_checkup.meeting_glossary(db, "vm-1")
     assert view["applied"] is None
@@ -408,7 +480,9 @@ def test_new_term_rechecks_but_never_auto_fixes_an_already_checked_version(tmp_p
     create_term(db, term="数理协会", aliases=["树立协会"], project_id="p-yt", scope="云图AI")
     stats = glossary_checkup.run_pending(db, service)
     assert (stats["checked"], stats["auto_applied"]) == (1, 0)
-    assert [h["wrong"] for h in glossary_checkup.meeting_glossary(db, "vm-1")["missed"]] == ["树立协会"]
+    assert [h["wrong"] for h in glossary_checkup.meeting_glossary(db, "vm-1")["missed"]] == [
+        "树立协会"
+    ]
 
 
 def test_meeting_glossary_api_check_apply_and_undo(tmp_path):
@@ -424,14 +498,25 @@ def test_meeting_glossary_api_check_apply_and_undo(tmp_path):
     checked = client.post("/api/meetings/vm-1/glossary/check", json={}, headers=headers)
     assert checked.status_code == 200, checked.text
     assert [h["wrong"] for h in checked.json()["glossary"]["missed"]] == ["珠数据"]
-    other = client.post("/api/meetings/vm-1/glossary/check", json={"project_id": "p-yt"}, headers=headers)
+    other = client.post(
+        "/api/meetings/vm-1/glossary/check", json={"project_id": "p-yt"}, headers=headers
+    )
     glossary = other.json()["glossary"]
-    assert (glossary["basis"], glossary["project"]["name"], glossary["mismatch"]) == ("chosen", "云图AI", True)
+    assert (glossary["basis"], glossary["project"]["name"], glossary["mismatch"]) == (
+        "chosen",
+        "云图AI",
+        True,
+    )
     assert [h["wrong"] for h in glossary["missed"]] == ["树立协会"]
-    assert client.post(
-        "/api/meetings/vm-1/glossary/check", json={"project_id": "p-gone"}, headers=headers
-    ).status_code == 404
-    kept = client.post("/api/meetings/vm-1/glossary/check", json={}, headers=headers).json()["glossary"]
+    assert (
+        client.post(
+            "/api/meetings/vm-1/glossary/check", json={"project_id": "p-gone"}, headers=headers
+        ).status_code
+        == 404
+    )
+    kept = client.post("/api/meetings/vm-1/glossary/check", json={}, headers=headers).json()[
+        "glossary"
+    ]
     assert (kept["basis"], kept["project"]["id"]) == ("chosen", "p-yt")
     reset = client.post(
         "/api/meetings/vm-1/glossary/check", json={"project_id": None}, headers=headers
@@ -439,9 +524,13 @@ def test_meeting_glossary_api_check_apply_and_undo(tmp_path):
     assert (reset["basis"], reset["project"]["id"]) == ("meeting", "p-zt")
     client.post("/api/meetings/vm-1/glossary/check", json={"project_id": "p-yt"}, headers=headers)
 
-    stale = client.post("/api/meetings/vm-1/glossary/apply", json={"base_version_id": "mv-0"}, headers=headers)
+    stale = client.post(
+        "/api/meetings/vm-1/glossary/apply", json={"base_version_id": "mv-0"}, headers=headers
+    )
     assert stale.status_code == 409
-    applied = client.post("/api/meetings/vm-1/glossary/apply", json={"base_version_id": "mv-1"}, headers=headers)
+    applied = client.post(
+        "/api/meetings/vm-1/glossary/apply", json={"base_version_id": "mv-1"}, headers=headers
+    )
     assert applied.status_code == 200, applied.text
     assert applied.json()["replaced"] == 1
     assert applied.json()["glossary"]["applied"]["by"] == "user"
@@ -455,7 +544,9 @@ def test_meeting_glossary_api_check_apply_and_undo(tmp_path):
     undone = client.post("/api/meetings/vm-1/glossary/undo", json={}, headers=headers)
     assert undone.status_code == 200, undone.text
     assert undone.json()["glossary"]["applied"] is None
-    assert client.post("/api/meetings/vm-1/glossary/undo", json={}, headers=headers).status_code == 409
+    assert (
+        client.post("/api/meetings/vm-1/glossary/undo", json={}, headers=headers).status_code == 409
+    )
 
 
 def test_relay_selected_project_counts_as_literal_evidence(tmp_path):
@@ -476,15 +567,25 @@ def test_relay_selected_project_counts_as_literal_evidence(tmp_path):
     add_meeting(db, "vm-1")
     add_minutes(db, "vm-1", "mv-1", "# 纪要\n聊了进度。", job_id="job-1", attempt=1)
     add_receipt(
-        db, "vm-1", job_id="job-1", attempt=1, project_id="p-yt", project_name="云图智能",
-        source="transcript", cues=["云图AI"],
+        db,
+        "vm-1",
+        job_id="job-1",
+        attempt=1,
+        project_id="p-yt",
+        project_name="云图智能",
+        source="transcript",
+        cues=["云图AI"],
     )
-    result = ProjectLinker(db, settings)._classify(meeting_id="vm-1", title="周会", minutes_markdown="聊了进度。")
+    result = ProjectLinker(db, settings)._classify(
+        meeting_id="vm-1", title="周会", minutes_markdown="聊了进度。"
+    )
     assert result["literal"] == {"p-yt": 1}
     entry = next(e for e in result["evidence"] if e.get("source") == "injection")
     assert (entry["cue"], entry["count"], entry["where"]["transcript"]) == ("云图AI", 3, 3)
     assert result["decision"] == "needs_review"
 
     db.execute("UPDATE meeting_glossary_receipts SET project_source='hint'")
-    hinted = ProjectLinker(db, settings)._classify(meeting_id="vm-1", title="周会", minutes_markdown="聊了进度。")
+    hinted = ProjectLinker(db, settings)._classify(
+        meeting_id="vm-1", title="周会", minutes_markdown="聊了进度。"
+    )
     assert hinted["literal"] == {}

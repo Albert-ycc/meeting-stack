@@ -584,7 +584,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
 
     expect(
       await screen.findByText(
-        "会议归档归属已保存；3 条任务一起移过去；1 条任务挂在原项目的需求上，留在原处",
+        "会议归档归属已保存；3 条待确认/过期的任务一起移过去；1 条任务挂在原项目的需求上，留在原处",
       ),
     ).toBeInTheDocument();
   });
@@ -621,7 +621,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
     await userEvent.selectOptions(screen.getByLabelText("主项目"), "project-a");
     await userEvent.click(screen.getByRole("button", { name: "保存归档归属" }));
 
-    expect(await screen.findByText("会议归档归属已保存；2 条任务和会议卡片一起移过去")).toBeInTheDocument();
+    expect(await screen.findByText("会议归档归属已保存；2 条待确认/过期的任务和会议卡片一起移过去")).toBeInTheDocument();
   });
 
   it("saving only tags leaves the project out of the request", async () => {
@@ -1478,7 +1478,7 @@ describe("MeetingDetailPage 归属条", () => {
     expect(onReload).not.toHaveBeenCalled();
     expect(screen.getByLabelText("主项目")).toHaveValue("project-b");
     expect(screen.queryByRole("button", { name: "保存归档归属" })).toBeDisabled();
-    expect(await screen.findByText(/已改到 数据中台：2 条任务一起移过去/)).toBeInTheDocument();
+    expect(await screen.findByText(/已改到 数据中台：2 条待确认\/过期的任务一起移过去/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "撤销" }));
     expect(undoMeetingProject).toHaveBeenCalledWith("vm-1");

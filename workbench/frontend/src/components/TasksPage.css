@@ -47,6 +47,12 @@
   font-size: 13px;
 }
 
+/* D12：标签没有下限，字段和输入框抢空间时会被压成一字一行的竖排（手机端最明显） */
+.tasks-query__field > span {
+  flex: none;
+  white-space: nowrap;
+}
+
 .tasks-query__field input,
 .tasks-query__field select {
   min-width: 130px;
@@ -234,11 +240,8 @@
   gap: 6px;
   max-width: 160px;
   padding: 0;
-  overflow: hidden;
   color: var(--ink-2);
   font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   background: transparent;
   border: 0;
 }
@@ -254,6 +257,16 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
+}
+
+/* D12：text-overflow:ellipsis 放在 flex 容器（图标+文字两个 flex 子项）上不生效，浏览器只会硬裁，
+   裁出「医米科」这种断在词中间没有省略号的结果——ellipsis 要放在只包文字的那层，且要 min-width:0 才能缩 */
+.tasks-table__project-name,
+.tasks-table__requirement-name {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tasks-table__muted {

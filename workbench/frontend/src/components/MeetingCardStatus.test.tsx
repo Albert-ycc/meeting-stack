@@ -101,7 +101,7 @@ describe("会议页卡片状态条", () => {
 describe("改归属提示里的卡片去向", () => {
   it("任务和卡片一起移过去", () => {
     const moved = { action: "moved", from: "云图AI/声档会议记录/a.md", to: "数据中台/声档会议记录/a.md", reason: null } as const;
-    expect(reassignNote(3, 0, moved)).toBe("3 条任务和会议卡片一起移过去");
+    expect(reassignNote(3, 0, moved)).toBe("3 条待确认/过期的任务和会议卡片一起移过去");
     expect(reassignNote(0, 1, moved)).toBe("会议卡片一起移过去；1 条任务挂在原项目的需求上，留在原处");
   });
 

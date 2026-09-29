@@ -3,6 +3,7 @@
 四个毛病：全部撤下后下一轮又写回来；暂停的项目索引还在更新；根目录最后一张卡片走了以后索引冻住；
 合并或移走根目录后留下孤儿。
 """
+
 import json
 import re
 import time
@@ -44,10 +45,11 @@ def _index(root):
 
 def _retired_indexes(settings):
     folder = settings.data_dir / "card-retired"
-    return sorted(
-        p.parent.name.rsplit("-", 1)[-1] + "/" + p.name
-        for p in folder.rglob(INDEX)
-    ) if folder.is_dir() else []
+    return (
+        sorted(p.parent.name.rsplit("-", 1)[-1] + "/" + p.name for p in folder.rglob(INDEX))
+        if folder.is_dir()
+        else []
+    )
 
 
 def _known(db):
@@ -144,7 +146,9 @@ def test_the_index_stays_live_after_the_last_card_leaves(tmp_path):
     project_b, root_b = _project(db, disk, "数据中台")
     _meeting(db, project_a)
     writer.reconcile()
-    db.execute("UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?", (project_b, MEETING))
+    db.execute(
+        "UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?", (project_b, MEETING)
+    )
     writer.sync_meeting(MEETING)
     assert _card_files(root_a) == []
 
@@ -298,11 +302,21 @@ def _relation(db, kind, project_id, ident, *, status="shown", origin="rule", **c
     names = ["kind", "project_id", "ident", "status", "origin", "created_at", "updated_at", *cols]
     values = [kind, project_id, ident, status, origin, now, now, *cols.values()]
     db.execute(
-        f"INSERT INTO relations({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})", values
+        f"INSERT INTO relations({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+        values,
     )
 
 
-def _requirement(db, requirement_id, project_id, title, priority, *, status="active", at="2026-09-01T00:00:00+00:00"):
+def _requirement(
+    db,
+    requirement_id,
+    project_id,
+    title,
+    priority,
+    *,
+    status="active",
+    at="2026-09-01T00:00:00+00:00",
+):
     db.execute(
         """INSERT INTO requirements(id, project_id, title, priority, status, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -317,7 +331,9 @@ def _link(db, requirement_id, meeting_id):
     )
 
 
-def _task_row(db, task_id, project_id, title, status, *, requirement_id=None, meeting_id=None, at=None):
+def _task_row(
+    db, task_id, project_id, title, status, *, requirement_id=None, meeting_id=None, at=None
+):
     now = at or utc_now()
     db.execute(
         """INSERT INTO tasks(id, title, status, origin, assignee, meeting_id, project_id, requirement_id,
@@ -352,21 +368,44 @@ def _v2_world(tmp_path, *, reverse=False):
     _mount(db, pid, old_root)
     order = (lambda items: list(reversed(items))) if reverse else list
     meetings = [
-        (WEEK_A, "周会", "2026-09-20T10:00:00", "manual", _minutes("周会", "上线定在 9 月，周报按周五发。")),
-        (MEETING, "初审规则沟通", "2026-09-26T14:30:00", "ai",
-         _minutes("初审规则沟通", "确定初审阈值先按 0.8 执行，上线改到 10 月，张三整理阈值对照表，"
-                  "另外讨论了驻场排班、快递配送的衔接和下个月的评审节奏，会后各自把材料补齐，"
-                  "下周三之前再对一次口径和上线清单，顺带确认评审人。")),
+        (
+            WEEK_A,
+            "周会",
+            "2026-09-20T10:00:00",
+            "manual",
+            _minutes("周会", "上线定在 9 月，周报按周五发。"),
+        ),
+        (
+            MEETING,
+            "初审规则沟通",
+            "2026-09-26T14:30:00",
+            "ai",
+            _minutes(
+                "初审规则沟通",
+                "确定初审阈值先按 0.8 执行，上线改到 10 月，张三整理阈值对照表，"
+                "另外讨论了驻场排班、快递配送的衔接和下个月的评审节奏，会后各自把材料补齐，"
+                "下周三之前再对一次口径和上线清单，顺带确认评审人。",
+            ),
+        ),
         (WEEKLY, "周会", "2026-09-27T09:00:00", "manual", _minutes("周会", "周会改到周二。")),
         (REVIEW, "待选的会", "2026-09-25T11:00:00", "ai", _minutes("待选的会", "待选会议的摘要。")),
-        (ELSEWHERE, "别处的会", "2026-09-24T09:00:00", "manual", _minutes("别处的会", "别处会议的摘要。")),
+        (
+            ELSEWHERE,
+            "别处的会",
+            "2026-09-24T09:00:00",
+            "manual",
+            _minutes("别处的会", "别处会议的摘要。"),
+        ),
         (HISTORY, "老会", "2026-09-23T09:00:00", "manual", _minutes("老会", "老会议的摘要。")),
     ]
     for meeting_id, title, when, origin, markdown in order(meetings):
-        _meeting(db, pid, meeting_id=meeting_id, title=title, when=when, origin=origin, markdown=markdown)
+        _meeting(
+            db, pid, meeting_id=meeting_id, title=title, when=when, origin=origin, markdown=markdown
+        )
     _needs_review(db, REVIEW)
     db.execute(
-        "UPDATE minutes_versions SET created_at='2000-01-01T00:00:00+00:00' WHERE meeting_id=?", (HISTORY,)
+        "UPDATE minutes_versions SET created_at='2000-01-01T00:00:00+00:00' WHERE meeting_id=?",
+        (HISTORY,),
     )
     decisions = [
         ("d-a1", WEEK_A, "上线定在 9 月", 60_000),
@@ -387,12 +426,30 @@ def _v2_world(tmp_path, *, reverse=False):
         for decision_id, _meeting_id, text, start_ms in by_meeting[meeting_id]:
             add_decision(db, decision_id, meeting_id, text, start_ms)
     db.execute("UPDATE decisions SET placement='none' WHERE id='d-c2'")
-    _relation(db, "later_changed", pid, "d-a1|d-b2", origin="llm", meeting_id=MEETING,
-              decision_id="d-a1", to_decision_id="d-b2")
-    _relation(db, "restated", pid, "d-a2|d-c1", meeting_id=WEEKLY, decision_id="d-a2", to_decision_id="d-c1")
+    _relation(
+        db,
+        "later_changed",
+        pid,
+        "d-a1|d-b2",
+        origin="llm",
+        meeting_id=MEETING,
+        decision_id="d-a1",
+        to_decision_id="d-b2",
+    )
+    _relation(
+        db,
+        "restated",
+        pid,
+        "d-a2|d-c1",
+        meeting_id=WEEKLY,
+        decision_id="d-a2",
+        to_decision_id="d-c1",
+    )
     _requirement(db, "r-1", pid, "初审规则 V2", "P1", at="2026-09-01T00:00:00+00:00")
     _requirement(db, "r-0", pid, "只有标题的需求", "P0", at="2026-09-05T00:00:00+00:00")
-    _requirement(db, "r-2", pid, "北辰仓快递配送", "P2", status="done", at="2026-09-02T00:00:00+00:00")
+    _requirement(
+        db, "r-2", pid, "北辰仓快递配送", "P2", status="done", at="2026-09-02T00:00:00+00:00"
+    )
     folder = root / "需求" / "初审规则"
     folder.mkdir(parents=True)
     db.execute(
@@ -401,12 +458,35 @@ def _v2_world(tmp_path, *, reverse=False):
     )
     for meeting_id in order([WEEK_A, MEETING, ELSEWHERE]):
         _link(db, "r-1", meeting_id)
-    _task_row(db, "t-1", pid, "整理初审阈值对照表", "in_progress", requirement_id="r-1", meeting_id=MEETING,
-              at="2026-09-26T07:00:00+00:00")
-    _task_row(db, "t-2", pid, "写一版方案", "confirmed", requirement_id="r-1", meeting_id=MEETING,
-              at="2026-09-26T07:01:00+00:00")
-    _task_row(db, "t-3", pid, "还没确认的任务", "pending_confirm", meeting_id=MEETING,
-              at="2026-09-26T07:02:00+00:00")
+    _task_row(
+        db,
+        "t-1",
+        pid,
+        "整理初审阈值对照表",
+        "in_progress",
+        requirement_id="r-1",
+        meeting_id=MEETING,
+        at="2026-09-26T07:00:00+00:00",
+    )
+    _task_row(
+        db,
+        "t-2",
+        pid,
+        "写一版方案",
+        "confirmed",
+        requirement_id="r-1",
+        meeting_id=MEETING,
+        at="2026-09-26T07:01:00+00:00",
+    )
+    _task_row(
+        db,
+        "t-3",
+        pid,
+        "还没确认的任务",
+        "pending_confirm",
+        meeting_id=MEETING,
+        at="2026-09-26T07:02:00+00:00",
+    )
     root_id, old_id = _root_id(db, root), _root_id(db, old_root)
     files = [
         (root_id, "需求/初审规则/方案v1.docx", "k-plan"),
@@ -425,9 +505,19 @@ def _v2_world(tmp_path, *, reverse=False):
     keyed(db, copy_id, "k-quote")
     _deliver(db, "t-2", root_id, "需求/初审规则/方案v1.docx", "k-plan")
     literal(db, WEEK_A, "报价单", ids["报价单_v3.xlsx"], project_id=pid)
-    _relation(db, "mention", pid, f"{MEETING}|报价单", origin="llm", meeting_id=MEETING, at_ms=60_000,
-              stem_key="报价单", file_id=copy_id, content_key="k-quote",
-              evidence_json=json.dumps({"phrase": "上周那版报价", "count": 1}))
+    _relation(
+        db,
+        "mention",
+        pid,
+        f"{MEETING}|报价单",
+        origin="llm",
+        meeting_id=MEETING,
+        at_ms=60_000,
+        stem_key="报价单",
+        file_id=copy_id,
+        content_key="k-quote",
+        evidence_json=json.dumps({"phrase": "上周那版报价", "count": 1}),
+    )
     literal(db, MEETING, "排期表", ids["排期表.xlsx"], project_id=pid)
     literal(db, WEEKLY, "排期表", ids["排期表.xlsx"], project_id=pid)
     literal(db, REVIEW, "只在待选会上的文件", ids["只在待选会上的文件.docx"], project_id=pid)
@@ -435,12 +525,39 @@ def _v2_world(tmp_path, *, reverse=False):
     literal(db, MEETING, "说明", ids["说明.docx"], project_id=pid)
     literal(db, WEEKLY, "说明", ids["说明.docx"], project_id=pid)
     # 不该写进去的：相关、在问的产出和影响、没记入的词、材料原文
-    _relation(db, "related", pid, f"{MEETING}|k-idle", origin="vector", meeting_id=MEETING,
-              file_id=ids["闲置文件甲.docx"], content_key="k-idle", quote="相关的原话")
-    _relation(db, "produced", pid, "t-1|k-idle", status="suggested", task_id="t-1",
-              file_id=ids["闲置文件甲.docx"], content_key="k-idle")
-    _relation(db, "affects", pid, "d-b1|k-idle", status="suggested", decision_id="d-b1",
-              meeting_id=MEETING, file_id=ids["闲置文件甲.docx"], content_key="k-idle", quote="影响的原话")
+    _relation(
+        db,
+        "related",
+        pid,
+        f"{MEETING}|k-idle",
+        origin="vector",
+        meeting_id=MEETING,
+        file_id=ids["闲置文件甲.docx"],
+        content_key="k-idle",
+        quote="相关的原话",
+    )
+    _relation(
+        db,
+        "produced",
+        pid,
+        "t-1|k-idle",
+        status="suggested",
+        task_id="t-1",
+        file_id=ids["闲置文件甲.docx"],
+        content_key="k-idle",
+    )
+    _relation(
+        db,
+        "affects",
+        pid,
+        "d-b1|k-idle",
+        status="suggested",
+        decision_id="d-b1",
+        meeting_id=MEETING,
+        file_id=ids["闲置文件甲.docx"],
+        content_key="k-idle",
+        quote="影响的原话",
+    )
     now = utc_now()
     db.execute(
         """INSERT INTO glossary_candidates(project_id, term, term_key, files, spoken, created_at, updated_at)
@@ -458,7 +575,9 @@ def _v2_world(tmp_path, *, reverse=False):
     )
     writer.reconcile()
     # 这场会的卡片记在别的根目录（比如老数据）：它不算这个根目录的会
-    db.execute("UPDATE meeting_cards SET root_path=? WHERE meeting_id=?", (str(old_root), ELSEWHERE))
+    db.execute(
+        "UPDATE meeting_cards SET root_path=? WHERE meeting_id=?", (str(old_root), ELSEWHERE)
+    )
     return db, settings, writer, pid, root, old_root
 
 
@@ -575,7 +694,10 @@ def test_v2_is_deterministic(tmp_path):
 
 def test_v2_statement_budget(tmp_path):
     db, _settings, _writer, pid, root, _old_root = _v2_world(tmp_path)
-    assert count_reads(db, lambda connection: card_index.load_index_data(connection, pid, str(root))) <= 9
+    assert (
+        count_reads(db, lambda connection: card_index.load_index_data(connection, pid, str(root)))
+        <= 9
+    )
 
 
 def test_render_budget(tmp_path):
@@ -584,13 +706,28 @@ def test_render_budget(tmp_path):
     pid, root = _project(db, disk, "云图AI")
     for index in range(100):
         meeting_id = f"vm-202609{index % 28 + 1:02d}-{index:06d}"
-        _meeting(db, pid, meeting_id=meeting_id, title=f"周会{index}",
-                 when=f"2026-09-{index % 28 + 1:02d}T{index % 10 + 8:02d}:00:00", origin="manual",
-                 markdown=_minutes(f"周会{index}", f"第 {index} 场会的摘要。"))
+        _meeting(
+            db,
+            pid,
+            meeting_id=meeting_id,
+            title=f"周会{index}",
+            when=f"2026-09-{index % 28 + 1:02d}T{index % 10 + 8:02d}:00:00",
+            origin="manual",
+            markdown=_minutes(f"周会{index}", f"第 {index} 场会的摘要。"),
+        )
         for number in range(3):
-            add_decision(db, f"d-{index}-{number}", meeting_id, f"第 {index} 场的第 {number} 条决议", number * 1000)
+            add_decision(
+                db,
+                f"d-{index}-{number}",
+                meeting_id,
+                f"第 {index} 场的第 {number} 条决议",
+                number * 1000,
+            )
     writer.reconcile()
-    assert count_reads(db, lambda connection: card_index.load_index_data(connection, pid, str(root))) <= 9
+    assert (
+        count_reads(db, lambda connection: card_index.load_index_data(connection, pid, str(root)))
+        <= 9
+    )
     started = time.perf_counter()
     text = _render(writer, pid, root)
     elapsed = time.perf_counter() - started
@@ -652,7 +789,8 @@ def test_the_signature_parts(tmp_path):
         before = card_index.index_signature(connection, project_id, str(root))
     assert before.startswith(f"{card_index.INDEX_VERSION}:")
     db.execute(
-        """INSERT INTO material_index_state(root_id, stems_rev) VALUES (?, 3)""", (_root_id(db, root),)
+        """INSERT INTO material_index_state(root_id, stems_rev) VALUES (?, 3)""",
+        (_root_id(db, root),),
     )
     with db.autocommit() as connection:
         after = card_index.index_signature(connection, project_id, str(root))

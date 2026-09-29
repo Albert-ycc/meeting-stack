@@ -137,6 +137,8 @@ def _refresh_manifest_and_indexes(db, meeting_dir: Path):
         input_transcript_sha256=_sha256(meeting_dir / "input-transcript.srt"),
         minutes_plan_sha256=_sha256(meeting_dir / "minutes-plan.json"),
     )
+
+
 def add_evidence(
     db,
     root,
@@ -156,9 +158,7 @@ def add_evidence(
     _index_artifact(db, path, "minutes_evidence", mtime_ns=mtime_ns)
     plan_path = meeting_dir / "minutes-plan.json"
     if include_plan:
-        plan_path.write_text(
-            json.dumps(plan or valid_plan(), ensure_ascii=False), encoding="utf-8"
-        )
+        plan_path.write_text(json.dumps(plan or valid_plan(), ensure_ascii=False), encoding="utf-8")
         if index_plan:
             _index_artifact(db, plan_path, "minutes_plan")
     minutes_path = meeting_dir / "meeting.md"
@@ -267,7 +267,9 @@ def valid_payload():
 def test_minutes_evidence_api_returns_only_structured_allowlisted_fields(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     path = add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -288,7 +290,9 @@ def test_minutes_evidence_api_returns_only_structured_allowlisted_fields(tmp_pat
 def test_minutes_evidence_api_reads_relay_attempt_without_writing_database(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -310,7 +314,9 @@ def test_minutes_evidence_api_reads_relay_attempt_without_writing_database(tmp_p
 def test_minutes_evidence_api_uses_404_for_missing_and_409_for_bad_or_oversized(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     assert client.get("/api/meetings/vm-evidence/minutes-evidence").status_code == 404
 
     path = add_evidence(db, client.app.state.settings.archive_root, content="{bad")
@@ -326,7 +332,9 @@ def test_minutes_evidence_api_uses_404_for_missing_and_409_for_bad_or_oversized(
 def test_minutes_evidence_api_rejects_non_finite_numbers_as_controlled_409(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     for value in (math.nan, math.inf, -math.inf):
         payload = valid_payload()
         payload["topics"][0]["start_sec"] = value
@@ -364,24 +372,18 @@ def test_minutes_evidence_api_rejects_non_finite_numbers_as_controlled_409(tmp_p
             {**payload["topics"][0], "items": [], "start_sec": 21, "end_sec": 30}
         ),
         lambda payload: payload["topics"][0]["items"][0].update({"kind": "invented"}),
-        lambda payload: payload["topics"][0]["items"][0].update(
-            {"source_start_sec": -1}
-        ),
+        lambda payload: payload["topics"][0]["items"][0].update({"source_start_sec": -1}),
         lambda payload: payload["topics"][0]["items"][0].update(
             {"source_start_sec": 13, "source_end_sec": 12}
         ),
-        lambda payload: payload["topics"][0]["items"][0].update(
-            {"source_start_sec": 9}
-        ),
+        lambda payload: payload["topics"][0]["items"][0].update({"source_start_sec": 9}),
         lambda payload: payload["topics"][0]["items"][0].pop("source_window_id"),
         lambda payload: payload["topics"][0]["items"][0].pop("source_text_sha256"),
         lambda payload: payload["topics"][0]["items"][0].update(
             {"source_text_sha256": "not-a-sha"}
         ),
         lambda payload: payload["topics"][0]["items"][0].pop("minutes_anchor"),
-        lambda payload: payload["topics"][0]["items"][0].update(
-            {"minutes_anchor": "10秒"}
-        ),
+        lambda payload: payload["topics"][0]["items"][0].update({"minutes_anchor": "10秒"}),
         lambda payload: payload["topics"][0]["items"][0].update(
             {"status": "omitted", "minutes_anchor": "", "omitted_reason": ""}
         ),
@@ -391,7 +393,9 @@ def test_minutes_evidence_api_rejects_non_finite_numbers_as_controlled_409(tmp_p
 def test_minutes_evidence_api_rejects_protocol_v3_pseudo_evidence(tmp_path, mutation):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     payload = valid_payload()
     mutation(payload)
     add_evidence(
@@ -406,7 +410,9 @@ def test_minutes_evidence_api_rejects_protocol_v3_pseudo_evidence(tmp_path, muta
 def test_minutes_evidence_api_rejects_duplicate_ids_and_out_of_order_items(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     payload = valid_payload()
     first = payload["topics"][0]["items"][0]
     payload["topics"][0]["items"] = [
@@ -424,12 +430,12 @@ def test_minutes_evidence_api_rejects_duplicate_ids_and_out_of_order_items(tmp_p
 
 
 @pytest.mark.parametrize("remove_hash", [False, True])
-def test_minutes_evidence_api_rejects_artifact_hash_mismatch_or_missing_hash(
-    tmp_path, remove_hash
-):
+def test_minutes_evidence_api_rejects_artifact_hash_mismatch_or_missing_hash(tmp_path, remove_hash):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     path = add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -448,7 +454,9 @@ def test_minutes_evidence_api_rejects_artifact_hash_mismatch_or_missing_hash(
 def test_minutes_evidence_api_requires_same_attempt_plan(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -465,7 +473,9 @@ def test_minutes_evidence_api_requires_same_attempt_plan(tmp_path):
 def test_minutes_evidence_api_reports_v2_as_unverifiable(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     payload = valid_payload()
     payload["minutes_protocol_version"] = 2
     add_evidence(
@@ -483,26 +493,18 @@ def test_minutes_evidence_api_reports_v2_as_unverifiable(tmp_path):
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda payload: payload["topics"][0]["items"][0].update(
-            {"source_window_id": "W999"}
-        ),
-        lambda payload: payload["topics"][0]["items"][0].update(
-            {"source_text_sha256": "d" * 64}
-        ),
-        lambda payload: payload["topics"][0]["items"][0].update(
-            {"source_start_sec": 10.5}
-        ),
-        lambda payload: payload["topics"][0]["items"][0].update(
-            {"minutes_anchor": "[99:99:99]"}
-        ),
+        lambda payload: payload["topics"][0]["items"][0].update({"source_window_id": "W999"}),
+        lambda payload: payload["topics"][0]["items"][0].update({"source_text_sha256": "d" * 64}),
+        lambda payload: payload["topics"][0]["items"][0].update({"source_start_sec": 10.5}),
+        lambda payload: payload["topics"][0]["items"][0].update({"minutes_anchor": "[99:99:99]"}),
     ],
 )
-def test_minutes_evidence_api_rejects_items_not_bound_to_plan_or_minutes(
-    tmp_path, mutation
-):
+def test_minutes_evidence_api_rejects_items_not_bound_to_plan_or_minutes(tmp_path, mutation):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     payload = valid_payload()
     mutation(payload)
     add_evidence(
@@ -517,7 +519,9 @@ def test_minutes_evidence_api_rejects_items_not_bound_to_plan_or_minutes(
 def test_minutes_evidence_api_requires_unique_sequential_plan_cue_indices(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     plan = valid_plan()
     plan["windows"][0]["cues"].append(
         {
@@ -541,7 +545,9 @@ def test_minutes_evidence_api_requires_unique_sequential_plan_cue_indices(tmp_pa
 def test_minutes_evidence_api_allows_repeated_source_text_at_different_times(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     repeated_srt = (
         f"1\n00:00:10,000 --> 00:00:12,000\n{SOURCE_TEXT}\n\n"
         f"2\n00:00:13,000 --> 00:00:14,000\n{SOURCE_TEXT}\n"
@@ -574,7 +580,9 @@ def test_minutes_evidence_api_allows_repeated_source_text_at_different_times(tmp
 def test_minutes_evidence_api_requires_action_owner_and_deadline(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     payload = valid_payload()
     payload["topics"][0]["items"][0]["kind"] = "action"
     add_evidence(
@@ -589,7 +597,9 @@ def test_minutes_evidence_api_requires_action_owner_and_deadline(tmp_path):
 def test_minutes_evidence_api_binds_omitted_items_to_plan(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     payload = valid_payload()
     item = payload["topics"][0]["items"][0]
     item.update(
@@ -612,7 +622,9 @@ def test_minutes_evidence_api_binds_omitted_items_to_plan(tmp_path):
 def test_minutes_evidence_api_requires_anchor_to_exist_in_corresponding_minutes(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -626,7 +638,9 @@ def test_minutes_evidence_api_requires_anchor_to_exist_in_corresponding_minutes(
 def test_minutes_evidence_api_rejects_unindexed_sibling_plan(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -640,7 +654,9 @@ def test_minutes_evidence_api_rejects_unindexed_sibling_plan(tmp_path):
 def test_minutes_evidence_api_rejects_indexed_plan_hash_mismatch(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     evidence_path = add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -654,7 +670,9 @@ def test_minutes_evidence_api_rejects_indexed_plan_hash_mismatch(tmp_path):
 def test_minutes_evidence_api_rejects_indexed_minutes_hash_mismatch(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     evidence_path = add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -673,7 +691,9 @@ def test_minutes_evidence_api_tolerates_unlisted_sidecar_files_without_using_the
     # 候选产物用上——`entries` 只认 manifest 里登记的那几条。
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     evidence_path = add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -682,9 +702,7 @@ def test_minutes_evidence_api_tolerates_unlisted_sidecar_files_without_using_the
     (evidence_path.parent / "000-fake.md").write_text(
         "# 旁置伪纪要\n[00:00:10]\n", encoding="utf-8"
     )
-    (evidence_path.parent / "000-fake.html").write_text(
-        "<!doctype html>", encoding="utf-8"
-    )
+    (evidence_path.parent / "000-fake.html").write_text("<!doctype html>", encoding="utf-8")
 
     response = client.get("/api/meetings/vm-evidence/minutes-evidence")
 
@@ -699,7 +717,9 @@ def test_minutes_evidence_api_allows_manifest_without_meeting_id_and_whisper_ref
     # whisper-ref/ 异步产物；两者都不该让本该可验证的证据链判 409。
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     evidence_path = add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -724,7 +744,9 @@ def test_minutes_evidence_api_allows_manifest_without_meeting_id_and_whisper_ref
 def test_minutes_evidence_api_rejects_long_single_window_for_long_recording(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     plan = valid_plan()
     plan["total_duration_sec"] = 3600
     plan["windows"][0]["end_sec"] = 3600
@@ -741,7 +763,9 @@ def test_minutes_evidence_api_rejects_long_single_window_for_long_recording(tmp_
 def test_minutes_evidence_api_rejects_rehashed_plan_not_matching_source_srt(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     evidence_path = add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -770,12 +794,12 @@ def test_minutes_evidence_api_rejects_rehashed_plan_not_matching_source_srt(tmp_
         ("input_transcript_sha256", "d" * 64),
     ],
 )
-def test_minutes_evidence_api_rejects_manifest_provenance_mismatch(
-    tmp_path, field, value
-):
+def test_minutes_evidence_api_rejects_manifest_provenance_mismatch(tmp_path, field, value):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     evidence_path = add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -793,7 +817,9 @@ def test_minutes_evidence_api_rejects_manifest_provenance_mismatch(
 def test_minutes_evidence_api_rejects_ambiguous_manifest_minutes_by_content_hash(tmp_path):
     client, _relay = make_client(tmp_path)
     db = Database(client.app.state.settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     evidence_path = add_evidence(
         db,
         client.app.state.settings.archive_root,
@@ -823,7 +849,9 @@ def test_minutes_evidence_api_accepts_first_pass_minutes_without_requested_stage
     client, _relay = make_client(tmp_path)
     settings = client.app.state.settings
     db = Database(settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     evidence_path = add_evidence(
         db,
         settings.archive_root,
@@ -859,7 +887,9 @@ def test_minutes_evidence_api_accepts_same_srt_under_two_names(tmp_path):
     client, _relay = make_client(tmp_path)
     settings = client.app.state.settings
     db = Database(settings.database_path)
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')")
+    db.execute(
+        "INSERT INTO meetings(id, title, status) VALUES ('vm-evidence', '证据会', 'published')"
+    )
     evidence_path = add_evidence(
         db,
         settings.archive_root,
@@ -880,3 +910,26 @@ def test_minutes_evidence_api_accepts_same_srt_under_two_names(tmp_path):
     response = client.get("/api/meetings/vm-evidence/minutes-evidence")
 
     assert response.status_code == 200, response.text
+
+
+def test_minutes_evidence_errors_do_not_show_internal_words():
+    """D10：Relay attempt、manifest、哈希、路径这些内部词只进日志，界面上是人话。"""
+    from meeting_workbench.main import _evidence_message
+    from meeting_workbench.minutes_evidence import MinutesEvidenceError
+
+    assert _evidence_message(MinutesEvidenceError("暂无可验证证据：Relay attempt 不可用")) == (
+        "暂无可验证证据：转写中转的记录暂时读不到"
+    )
+    assert "manifest" not in _evidence_message(
+        MinutesEvidenceError("暂无可验证证据：manifest 关联不唯一")
+    )
+    assert (
+        _evidence_message(MinutesEvidenceError("暂无可验证证据：仅支持 v3 证据协议"))
+        == "暂无可验证证据：仅支持 v3 证据协议"
+    )
+    for internal in ("纪要 manifest 与 Relay attempt 哈希不一致", "纪要 attempt 缺少可信哈希"):
+        assert _evidence_message(MinutesEvidenceError(internal)) == "来源证据未通过一致性复验"
+    assert (
+        _evidence_message(FileNotFoundError(2, "No such file", "/Volumes/x/a.md"))
+        == "来源证据未通过一致性复验"
+    )

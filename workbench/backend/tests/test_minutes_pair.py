@@ -39,7 +39,9 @@ def _manifest(directory, registered):
                 "schema_version": 1,
                 "job_id": "job-x",
                 "attempt": 1,
-                "artifacts": [{"path": name, "bytes": 1, "sha256": "0" * 64} for name in registered],
+                "artifacts": [
+                    {"path": name, "bytes": 1, "sha256": "0" * 64} for name in registered
+                ],
             },
             ensure_ascii=False,
         ),

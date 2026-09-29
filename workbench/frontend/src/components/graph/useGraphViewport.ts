@@ -23,6 +23,29 @@ export const VIEWPORT_MAX_ZOOM = 2.5;
 const FIT_MAX_ZOOM = 1.25;
 const FIT_PAD = 32;
 
+/**
+ * 算「把 box 装进 viewport」该用的缩放比例。
+ * fitsWhole 是让 box 完整装下所需的最大缩放；minFitZoom 只是「宽裕时别缩太小」的偏好——
+ * box 本身就大（比如 31 个项目），需要缩到比 minFitZoom 更小才能整个装下时，
+ * 必须让位给 fitsWhole，否则内容会被切在可见区外（复位后仍看不到的 bug，见 D3）。
+ * minFitZoom 只在 fitsWhole 原本就比它宽裕（即不会因此裁切）时才把画面拉近一些。
+ */
+export function calcFitZoom(
+  box: Pick<Box, "w" | "h">,
+  viewportW: number,
+  viewportH: number,
+  minFitZoom = VIEWPORT_MIN_ZOOM,
+  maxFitZoom = FIT_MAX_ZOOM,
+): number {
+  const fitsWhole = Math.min(
+    maxFitZoom,
+    (viewportW - FIT_PAD * 2) / Math.max(box.w, 1),
+    (viewportH - FIT_PAD * 2) / Math.max(box.h, 1),
+  );
+  const k = fitsWhole >= minFitZoom ? Math.max(minFitZoom, fitsWhole) : fitsWhole;
+  return Math.min(maxFitZoom, Math.max(VIEWPORT_MIN_ZOOM, k));
+}
+
 const savedViews = new Map<string, ViewTransform>();
 
 /** 测试之间清空记住的视角 */
@@ -39,6 +62,8 @@ export interface GraphViewportOptions {
   ignorePointer?: (target: HTMLElement) => boolean;
   /** 适配时不缩到比这更小（默认是缩放下限）：概览要保证项目名读得清 */
   minFitZoom?: number;
+  /** 没记住视角时，第一次挂载适配（initialBounds）也给面板让出这么多像素（见 fitView 的 rightInset） */
+  initialRightInset?: number;
 }
 
 export interface GraphViewport {
@@ -48,8 +73,8 @@ export interface GraphViewport {
   transform: ViewTransform;
   /** 事件处理里读最新的视角 */
   transformRef: RefObject<ViewTransform>;
-  /** 把一个范围放进可见区（「0」键、复位按钮） */
-  fitView: (box: Box, animate?: boolean) => void;
+  /** 把一个范围放进可见区（「0」键、复位按钮）；rightInset 时把右边留给面板，不往面板底下排内容 */
+  fitView: (box: Box, animate?: boolean, rightInset?: number) => void;
   /** 以视口中心缩放（「+」「-」键、缩放按钮） */
   zoomBy: (factor: number) => void;
   /** 让一个框露在可见区里，右边留出 rightInset 像素（面板挡着的地方）；已经看得见就不动 */
@@ -63,6 +88,7 @@ export function useGraphViewport({
   initialBounds,
   ignorePointer,
   minFitZoom = VIEWPORT_MIN_ZOOM,
+  initialRightInset = 0,
 }: GraphViewportOptions): GraphViewport {
   const viewportRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef<ZoomBehavior<HTMLDivElement, unknown> | null>(null);
@@ -74,17 +100,17 @@ export function useGraphViewport({
   const reduceMotion = useReducedMotion();
 
   const fitView = useCallback(
-    (box: Box, animate = false) => {
+    (box: Box, animate = false, rightInset = 0) => {
       const viewport = viewportRef.current;
       const behaviour = zoomRef.current;
       if (!viewport || !behaviour) return;
       const width = viewport.clientWidth || 1000;
       const height = viewport.clientHeight || 600;
-      const k = Math.max(
-        minFitZoom,
-        Math.min(FIT_MAX_ZOOM, (width - FIT_PAD * 2) / Math.max(box.w, 1), (height - FIT_PAD * 2) / Math.max(box.h, 1)),
-      );
-      const x = width / 2 - (box.x + box.w / 2) * k;
+      // 面板浮在画布上不占布局，clientWidth 量出来的还是整个视口；算缩放和居中都只用
+      // 面板让出来的那一段（usableWidth），内容就不会被摆到面板底下去（存疑 4）
+      const usableWidth = Math.max(width - rightInset, 1);
+      const k = calcFitZoom(box, usableWidth, height, minFitZoom);
+      const x = usableWidth / 2 - (box.x + box.w / 2) * k;
       const y = height / 2 - (box.y + box.h / 2) * k;
       const target = zoomIdentity.translate(x, y).scale(k);
       const selection = select(viewport);
@@ -119,7 +145,7 @@ export function useGraphViewport({
     selection.call(behaviour);
     const saved = savedViews.get(viewKey);
     if (saved) selection.call(behaviour.transform, zoomIdentity.translate(saved.x, saved.y).scale(saved.k));
-    else fitView(initialBounds);
+    else fitView(initialBounds, false, initialRightInset);
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       if (event.ctrlKey || event.metaKey) {

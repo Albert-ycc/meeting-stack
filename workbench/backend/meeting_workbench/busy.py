@@ -13,6 +13,7 @@ AI 写纪要（minutes_generating）不算忙，那时不占 CPU 转写。
 两个版本：服务里用的完整版本（传 relay_state，三个来源都看）；不传 relay_state 的版本只看进程
 列表和库，是 SemanticIndex 的默认值，命令行 semantic-index 用它。
 """
+
 from __future__ import annotations
 
 import os
@@ -29,8 +30,28 @@ CACHE_SECONDS = 5.0
 BUSY_STAGES = frozenset({"stabilizing", "transcribing"})
 # 看日志、翻文件的进程：命令行里带着转写程序的名字，但它们不是转写。
 VIEWER_COMMANDS = frozenset(
-    {"tail", "less", "more", "grep", "egrep", "fgrep", "rg", "cat", "head", "vi", "vim", "nano",
-     "open", "pgrep", "pkill", "ps", "lsof", "watch", "sed", "awk"}
+    {
+        "tail",
+        "less",
+        "more",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "cat",
+        "head",
+        "vi",
+        "vim",
+        "nano",
+        "open",
+        "pgrep",
+        "pkill",
+        "ps",
+        "lsof",
+        "watch",
+        "sed",
+        "awk",
+    }
 )
 
 REASON_RELAY = "relay"
@@ -163,13 +184,17 @@ class BusySignal:
             listing = self.process_list()
         except (OSError, subprocess.SubprocessError, ValueError):
             return REASON_PS_FAILED
-        return REASON_PROCESS if transcribing_processes(listing, exclude_groups=own_groups()) else None
+        return (
+            REASON_PROCESS if transcribing_processes(listing, exclude_groups=own_groups()) else None
+        )
 
     def _qwen_reason(self) -> str | None:
         if self.db is None:
             return None
         try:
-            row = self.db.query_one("SELECT 1 AS busy FROM asr_shadow_runs WHERE state='running' LIMIT 1")
+            row = self.db.query_one(
+                "SELECT 1 AS busy FROM asr_shadow_runs WHERE state='running' LIMIT 1"
+            )
         except Exception:  # noqa: BLE001
             return None
         return REASON_QWEN if row else None

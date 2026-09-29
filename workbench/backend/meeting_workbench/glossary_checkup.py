@@ -15,6 +15,7 @@ relay 出纪要前按这场会挑词，把挑中的词写成 glossary-injection.
 漏纠只在这一版纪要是 relay 刚按本场词典出的、会还没人看过（completed_unreviewed）时
 自动改过来，并且只在这一版第一次体检时改；其余情况只给按钮。改过的都能撤销。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -97,7 +98,9 @@ def ingest_receipts(db: Database) -> int:
     return stored
 
 
-def receipt_for_minutes(connection: Any, meeting_id: str, minutes: dict[str, Any] | None) -> dict[str, Any] | None:
+def receipt_for_minutes(
+    connection: Any, meeting_id: str, minutes: dict[str, Any] | None
+) -> dict[str, Any] | None:
     """这一版纪要出的时候用的回执：按纪要记着的 relay 任务和 attempt 对；手改的草稿沿用来源版本的。"""
     if not minutes or not minutes.get("source_job_id"):
         return None
@@ -198,7 +201,9 @@ def _outside_positions(text: str, needle: str, shield_forms: list[str]) -> list[
     return positions
 
 
-def compute_hits(terms: list[dict[str, Any]], transcript: str, minutes: str) -> dict[str, list[dict[str, Any]]]:
+def compute_hits(
+    terms: list[dict[str, Any]], transcript: str, minutes: str
+) -> dict[str, list[dict[str, Any]]]:
     forms = _shield_forms(terms)
     corrected: list[dict[str, Any]] = []
     missed: list[dict[str, Any]] = []
@@ -225,7 +230,9 @@ def compute_hits(terms: list[dict[str, Any]], transcript: str, minutes: str) -> 
     return {"corrected": corrected, "missed": missed}
 
 
-def replace_missed(markdown: str, terms: list[dict[str, Any]], pairs: list[tuple[str, str]]) -> tuple[str, int]:
+def replace_missed(
+    markdown: str, terms: list[dict[str, Any]], pairs: list[tuple[str, str]]
+) -> tuple[str, int]:
     """把纪要里的错写换成正确写法；长的错写先换，落在正确写法里面的不动。"""
     forms = _shield_forms(terms)
     text = markdown
@@ -233,7 +240,7 @@ def replace_missed(markdown: str, terms: list[dict[str, Any]], pairs: list[tuple
     for wrong, correct in sorted(pairs, key=lambda pair: len(pair[0]), reverse=True):
         positions = _outside_positions(text, wrong, forms)
         for start in reversed(positions):
-            text = text[:start] + correct + text[start + len(wrong):]
+            text = text[:start] + correct + text[start + len(wrong) :]
         total += len(positions)
     return text, total
 
@@ -245,7 +252,9 @@ def _check_row(connection: Any, meeting_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def check_meeting(db: Database, meeting_id: str, *, project_id: Any = _AUTO) -> dict[str, Any] | None:
+def check_meeting(
+    db: Database, meeting_id: str, *, project_id: Any = _AUTO
+) -> dict[str, Any] | None:
     """按词典查当前这一版纪要，结果写进 meeting_glossary_checks / meeting_glossary_hits。
 
     project_id 不传：沿用你上次指定的项目；没指定过就按回执、会议当前项目、公共词的顺序。
@@ -269,8 +278,12 @@ def check_meeting(db: Database, meeting_id: str, *, project_id: Any = _AUTO) -> 
         )
         previous = _check_row(connection, meeting_id)
         if minutes is None:
-            connection.execute("DELETE FROM meeting_glossary_hits WHERE meeting_id = ?", (meeting_id,))
-            connection.execute("DELETE FROM meeting_glossary_checks WHERE meeting_id = ?", (meeting_id,))
+            connection.execute(
+                "DELETE FROM meeting_glossary_hits WHERE meeting_id = ?", (meeting_id,)
+            )
+            connection.execute(
+                "DELETE FROM meeting_glossary_checks WHERE meeting_id = ?", (meeting_id,)
+            )
             return None
         minutes = dict(minutes)
         receipt = receipt_for_minutes(connection, meeting_id, minutes)
@@ -373,12 +386,18 @@ def apply_missed(
     """把体检发现的漏纠错写改过来，存成一版新纪要；返回新版本和改了几处。"""
     from .service import ConflictError, NotFoundError
 
-    check = db.query_one("SELECT * FROM meeting_glossary_checks WHERE meeting_id = ?", (meeting_id,))
-    meeting = db.query_one("SELECT current_minutes_version_id FROM meetings WHERE id = ?", (meeting_id,))
+    check = db.query_one(
+        "SELECT * FROM meeting_glossary_checks WHERE meeting_id = ?", (meeting_id,)
+    )
+    meeting = db.query_one(
+        "SELECT current_minutes_version_id FROM meetings WHERE id = ?", (meeting_id,)
+    )
     if meeting is None:
         raise NotFoundError("会议不存在")
-    if meeting["current_minutes_version_id"] != expected_version_id or check is None or (
-        check["minutes_version_id"] != expected_version_id
+    if (
+        meeting["current_minutes_version_id"] != expected_version_id
+        or check is None
+        or (check["minutes_version_id"] != expected_version_id)
     ):
         raise ConflictError("纪要已经变了，请刷新后再改")
     missed = db.query_all(
@@ -387,7 +406,9 @@ def apply_missed(
     )
     if not missed:
         raise ConflictError("没有要改的错写")
-    minutes = db.query_one("SELECT markdown FROM minutes_versions WHERE id = ?", (expected_version_id,))
+    minutes = db.query_one(
+        "SELECT markdown FROM minutes_versions WHERE id = ?", (expected_version_id,)
+    )
     with db.autocommit() as connection:
         terms = dictionary_terms(connection, check["project_id"])
     markdown, count = replace_missed(
@@ -431,8 +452,12 @@ def undo_applied(db: Database, service: Any, meeting_id: str) -> dict[str, Any]:
     """撤销体检替换：纪要回到替换前那一版（以新版本的方式，历史都留着）。"""
     from .service import ConflictError
 
-    check = db.query_one("SELECT * FROM meeting_glossary_checks WHERE meeting_id = ?", (meeting_id,))
-    meeting = db.query_one("SELECT current_minutes_version_id FROM meetings WHERE id = ?", (meeting_id,))
+    check = db.query_one(
+        "SELECT * FROM meeting_glossary_checks WHERE meeting_id = ?", (meeting_id,)
+    )
+    meeting = db.query_one(
+        "SELECT current_minutes_version_id FROM meetings WHERE id = ?", (meeting_id,)
+    )
     if (
         check is None
         or meeting is None
@@ -535,7 +560,11 @@ def meeting_glossary(
             project = (
                 {"id": row["id"], "name": row["name"], "color": row["color"]}
                 if row
-                else {"id": check["project_id"], "name": receipt["project_name"] if receipt else None, "color": None}
+                else {
+                    "id": check["project_id"],
+                    "name": receipt["project_name"] if receipt else None,
+                    "color": None,
+                }
             )
         hits = connection.execute(
             """SELECT kind, term, wrong, term_project_id, transcript_count, minutes_count
@@ -548,7 +577,11 @@ def meeting_glossary(
             pairs = meeting_pairs(connection, meeting_id)
     current = meeting["current_minutes_version_id"]
     meeting_project = (
-        {"id": meeting["project_id"], "name": meeting["project_name"], "color": meeting["project_color"]}
+        {
+            "id": meeting["project_id"],
+            "name": meeting["project_name"],
+            "color": meeting["project_color"],
+        }
         if meeting["project_id"]
         else None
     )

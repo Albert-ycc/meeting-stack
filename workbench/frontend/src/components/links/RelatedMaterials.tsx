@@ -35,6 +35,11 @@ type RelatedApi = Partial<
 export interface RelatedMaterialsProps {
   apiClient: RelatedApi;
   meetingId: string;
+  /**
+   * 这场会当前所属的项目（没归项目时 null）。相关材料只在项目文件夹里找，接口返回的
+   * 内容跟着项目走；只当依赖项用来触发重取（见下面存疑 1 的说明），取数本身不用它。
+   */
+  projectId?: string | null;
   currentMs: number;
   /** 用户自己滚逐字稿时读到的那一行；null 时跟播放位置 */
   viewMs: number | null;
@@ -71,6 +76,7 @@ function failureText(reason: unknown, fallback: string): [string, NoticeTone] {
 export function RelatedMaterials({
   apiClient,
   meetingId,
+  projectId,
   currentMs,
   viewMs,
   isMobile,
@@ -104,7 +110,9 @@ export function RelatedMaterials({
     }
   }, [apiClient, meetingId]);
 
-  // 换会：清掉旧的，重新取
+  // 换会、或这场会改了归属项目：清掉旧的，重新取。
+  // 存疑 1：改归属没让这里重取过，右栏会一直留着旧项目的材料统计——projectId 变了但
+  // meetingId 没变，load 本身也不读 projectId，所以单靠 [load] 触发不了，要显式带上它。
   useEffect(() => {
     setData(null);
     setFailed(false);
@@ -115,7 +123,7 @@ export function RelatedMaterials({
     return () => {
       requestRef.current += 1;
     };
-  }, [load]);
+  }, [load, projectId]);
 
   // waiting 时每 15 秒重取；页面隐藏时不取，回来立刻取一次；ok、stopped、失败都停
   const waiting = !failed && data?.state.kind === "waiting";

@@ -7,6 +7,7 @@
 线索是纯字面匹配，不调模型：没配 LLM key 时靠它兜底，配了 key 时用来核对模型的结论
 （模型说是 A，而 B 的线索明显更多，就不自动归属，交给用户选）。
 """
+
 from __future__ import annotations
 
 import json

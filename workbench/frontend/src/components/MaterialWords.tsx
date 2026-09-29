@@ -35,12 +35,12 @@ export function acceptLabel(item: { existing_term?: { term: string } | null }, p
   return item.existing_term ? `记到『${item.existing_term.term}』` : `记入 ${shortName(projectName)}`;
 }
 
-function monthDay(date: string): string {
+export function monthDay(date: string): string {
   const [, month, day] = date.split("-");
   return month && day ? `${Number(month)}/${Number(day)}` : date;
 }
 
-function answerFailure(reason: unknown): string {
+export function answerFailure(reason: unknown): string {
   if (isOldBackend(reason)) return OLD_BACKEND_TEXT;
   if (reason instanceof ApiError && reason.message) return reason.message;
   return reason instanceof Error && reason.message ? reason.message : "没办成，稍后再试";

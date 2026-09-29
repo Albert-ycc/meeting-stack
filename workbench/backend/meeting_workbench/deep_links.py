@@ -14,6 +14,7 @@
 - 4a 里 L1、L2 和清理是实的，4b 填了 L5，4d 填了 H3（related.RelatedPass），4e 填了 L3、L4（produced）和
   H2（affects），4h 填了 H4（glossary_mining.mine_round）。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -267,7 +268,9 @@ class LinksWorker:
         with self._state_lock:
             self._state["paused"] = "busy" if busy else None
             self._state["last_round_at"] = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            self._state["phases"] = {name: status for name, status in phases.items() if name != PHASE_HOUSEKEEPING}
+            self._state["phases"] = {
+                name: status for name, status in phases.items() if name != PHASE_HOUSEKEEPING
+            }
             if waiting is not None:
                 self._state["waiting"] = waiting
             if opened is not None:
@@ -523,31 +526,39 @@ class LinksWorker:
         model = str(getattr(ctx.settings, "semantic_model", "") or "")
         jobs: tuple[Callable[[sqlite3.Connection], int], ...] = (
             lambda connection: file_events.prune(connection, today=today, limit=HOUSEKEEPING_BATCH),
-            lambda connection: connection.execute(
-                """DELETE FROM relations WHERE id IN (
+            lambda connection: (
+                connection.execute(
+                    """DELETE FROM relations WHERE id IN (
                        SELECT id FROM relations
                         WHERE status = 'cleared' AND origin != 'manual' AND updated_at < ?
                         ORDER BY id LIMIT ?)""",
-                (cleared_before, HOUSEKEEPING_BATCH),
-            ).rowcount,
-            lambda connection: connection.execute(
-                """DELETE FROM glossary_candidates WHERE id IN (
+                    (cleared_before, HOUSEKEEPING_BATCH),
+                ).rowcount
+            ),
+            lambda connection: (
+                connection.execute(
+                    """DELETE FROM glossary_candidates WHERE id IN (
                        SELECT id FROM glossary_candidates
                         WHERE status = 'dropped' AND updated_at < ? ORDER BY id LIMIT ?)""",
-                (dropped_before, HOUSEKEEPING_BATCH),
-            ).rowcount,
-            lambda connection: connection.execute(
-                """DELETE FROM meeting_windows WHERE rowid IN (
+                    (dropped_before, HOUSEKEEPING_BATCH),
+                ).rowcount
+            ),
+            lambda connection: (
+                connection.execute(
+                    """DELETE FROM meeting_windows WHERE rowid IN (
                        SELECT rowid FROM meeting_windows WHERE model != ? LIMIT ?)""",
-                (model, HOUSEKEEPING_BATCH),
-            ).rowcount,
-            lambda connection: connection.execute(
-                """UPDATE glossary_candidates SET undo_json = NULL WHERE id IN (
+                    (model, HOUSEKEEPING_BATCH),
+                ).rowcount
+            ),
+            lambda connection: (
+                connection.execute(
+                    """UPDATE glossary_candidates SET undo_json = NULL WHERE id IN (
                        SELECT id FROM glossary_candidates
                         WHERE undo_json IS NOT NULL AND (decided_at IS NULL OR decided_at < ?)
                         ORDER BY id LIMIT ?)""",
-                (undo_before, HOUSEKEEPING_BATCH),
-            ).rowcount,
+                    (undo_before, HOUSEKEEPING_BATCH),
+                ).rowcount
+            ),
         )
         try:
             for job in jobs:
@@ -598,7 +609,8 @@ class LinksWorker:
                     waiting["terms"] = glossary_mining.seeds_due(connection)
                 opened = {
                     kind: connection.execute(
-                        "SELECT COUNT(*) FROM relations WHERE kind = ? AND status = 'suggested'", (kind,)
+                        "SELECT COUNT(*) FROM relations WHERE kind = ? AND status = 'suggested'",
+                        (kind,),
                     ).fetchone()[0]
                     for kind in OPEN_KEYS
                 }
@@ -647,7 +659,9 @@ async def links_loop(
         await _wait(worker, stop, next_delay(stats), sleep)
 
 
-async def _wait(worker: LinksWorker, stop: Any, seconds: float, sleep: Callable[[float], Any]) -> None:
+async def _wait(
+    worker: LinksWorker, stop: Any, seconds: float, sleep: Callable[[float], Any]
+) -> None:
     left = float(seconds)
     while left > 0 and not stop.is_set() and not worker._wake.is_set():
         step = min(0.5, left)

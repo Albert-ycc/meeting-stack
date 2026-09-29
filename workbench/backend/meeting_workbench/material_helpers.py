@@ -11,6 +11,7 @@
 - 每 200 个请求或闲 5 分钟重开一次。
 - 服务关闭时先置停止标记，再杀掉这些程序；等回答时每秒查一次停止标记和中止条件。
 """
+
 from __future__ import annotations
 
 import itertools
@@ -93,7 +94,11 @@ def kill_group(pid: int) -> None:
 def process_rss_bytes(pid: int) -> int | None:
     try:
         result = subprocess.run(
-            ["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True, timeout=2, check=False
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -263,7 +268,9 @@ class HelperProcess:
             finally:
                 lines.put(None)
 
-        threading.Thread(target=pump, args=(process.stdout,), name=f"{self.name}-stdout", daemon=True).start()
+        threading.Thread(
+            target=pump, args=(process.stdout,), name=f"{self.name}-stdout", daemon=True
+        ).start()
         self._process = process
         self._lines = lines
         self._served = 0
@@ -273,7 +280,10 @@ class HelperProcess:
     def _ensure(self) -> subprocess.Popen[str]:
         process = self._process
         if process is not None and process.poll() is None:
-            if self._served >= self.max_requests or self.clock() - self._last_used >= self.idle_restart_seconds:
+            if (
+                self._served >= self.max_requests
+                or self.clock() - self._last_used >= self.idle_restart_seconds
+            ):
                 self._close_locked()
             else:
                 return process
@@ -335,7 +345,10 @@ class HelperProcess:
         if not self._lock.acquire(blocking=False):
             return False
         try:
-            if self._process is not None and self.clock() - self._last_used >= self.idle_restart_seconds:
+            if (
+                self._process is not None
+                and self.clock() - self._last_used >= self.idle_restart_seconds
+            ):
                 self._close_locked()
                 return True
             return False
@@ -428,7 +441,9 @@ class HelperProcess:
 # ---------------------------------------------------------------------- 子进程这一侧
 
 
-def serve_json_lines(handle: Callable[[dict[str, Any]], Iterator[dict[str, Any]] | dict[str, Any]]) -> None:
+def serve_json_lines(
+    handle: Callable[[dict[str, Any]], Iterator[dict[str, Any]] | dict[str, Any]],
+) -> None:
     """子进程的主循环：stdin 一行一个请求，回答写到原来的 stdout；读到 EOF 就退出。
 
     先把 fd 1 指到 stderr，免得库里的 print 混进回答。handle 可以返回一个回答，或者逐行产出
@@ -455,7 +470,13 @@ def serve_json_lines(handle: Callable[[dict[str, Any]], Iterator[dict[str, Any]]
                 answers.flush()
         except Exception as error:  # noqa: BLE001
             answers.write(
-                json.dumps({"id": request_id, "status": "error", "error": f"{type(error).__name__}: {error}"})
+                json.dumps(
+                    {
+                        "id": request_id,
+                        "status": "error",
+                        "error": f"{type(error).__name__}: {error}",
+                    }
+                )
                 + "\n"
             )
             answers.flush()
@@ -473,7 +494,9 @@ def cleanup_leftovers(
     """服务重启时、材料循环启动前：杀掉上次留下的材料转写进程（进度保留），删掉临时目录里的残留。"""
     killed = 0
     try:
-        rows = db.query_all("SELECT content_key, pid FROM material_media_jobs WHERE pid IS NOT NULL")
+        rows = db.query_all(
+            "SELECT content_key, pid FROM material_media_jobs WHERE pid IS NOT NULL"
+        )
     except Exception:  # noqa: BLE001
         rows = []
     if rows:

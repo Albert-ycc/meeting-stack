@@ -168,9 +168,7 @@ class AudioIntegrityVerifier:
                     "actual_sha256": None,
                 }
             elif actual == expected:
-                resolved = self.db.conflicts.resolve_kind(
-                    meeting_id, "audio_integrity", "verified"
-                )
+                resolved = self.db.conflicts.resolve_kind(meeting_id, "audio_integrity", "verified")
                 if resolved:
                     self.db.add_event(
                         "audio_integrity_resolved",

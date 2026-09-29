@@ -1,4 +1,5 @@
 """会议卡片（第一期 1c）：卡片规范、指纹、安全写盘、跟着会议和你在 Finder 里的动作变。"""
+
 import json
 import os
 import re
@@ -87,8 +88,18 @@ def _task(db, project_id, status, title, *, meeting_id=MEETING, anchor_ms=None, 
            (id, title, status, origin, assignee, meeting_id, project_id, anchor_ms,
             status_changed_at, created_at, updated_at)
            VALUES (?, ?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?)""",
-        (f"t-{uuid.uuid4().hex[:8]}", title, status, assignee, meeting_id, project_id, anchor_ms,
-         now, now, now),
+        (
+            f"t-{uuid.uuid4().hex[:8]}",
+            title,
+            status,
+            assignee,
+            meeting_id,
+            project_id,
+            anchor_ms,
+            now,
+            now,
+            now,
+        ),
     )
 
 
@@ -98,7 +109,11 @@ def _card_row(db, meeting_id=MEETING):
 
 def _card_files(root):
     folder = root / CARDS
-    return sorted(p.name for p in folder.glob("*.md") if p.name != "00 索引.md") if folder.is_dir() else []
+    return (
+        sorted(p.name for p in folder.glob("*.md") if p.name != "00 索引.md")
+        if folder.is_dir()
+        else []
+    )
 
 
 def _retired(settings):
@@ -144,7 +159,9 @@ def test_card_is_written_to_the_spec(tmp_path):
     assert stats["written"] == 1
     card = root / CARDS / "260926 初审规则沟通.md"
     text = card.read_text(encoding="utf-8")
-    assert text.startswith("---\nmeeting_id: vm-20260926-143000\ntitle: 初审规则沟通\ndate: 2026-09-26\n")
+    assert text.startswith(
+        "---\nmeeting_id: vm-20260926-143000\ntitle: 初审规则沟通\ndate: 2026-09-26\n"
+    )
     assert 'start: "14:30"' in text
     assert "duration_min: 48" in text
     assert "project: 云图AI\nproject_source: ai\nparticipants: [张三]" in text
@@ -171,7 +188,10 @@ def test_card_is_written_to_the_spec(tmp_path):
         "[00:31:02] 张三：下周上线",
     ]
     index = (root / CARDS / "00 索引.md").read_text(encoding="utf-8")
-    assert "- 整理初审阈值对照表 · 我 · 进行中 · 来自 [初审规则沟通](<260926 初审规则沟通.md>)" in index
+    assert (
+        "- 整理初审阈值对照表 · 我 · 进行中 · 来自 [初审规则沟通](<260926 初审规则沟通.md>)"
+        in index
+    )
     assert "- 2026-09-26 14:30 · [初审规则沟通](<260926 初审规则沟通.md>) · AI 自动归属" in index
     # 4h 的索引 v2：需求一节
     assert "\n## 需求\n" in index and "\n### 初审规则 V2\n" in index
@@ -210,8 +230,12 @@ def test_confirming_the_project_updates_the_card_header(tmp_path):
 def test_same_day_same_title_gets_the_start_time(tmp_path):
     db, _settings, writer, disk = _env(tmp_path)
     project_id, root = _project(db, disk, "云图AI")
-    _meeting(db, project_id, meeting_id="vm-20260919-100000", title="周会", when="2026-09-19T10:00:00")
-    _meeting(db, project_id, meeting_id="vm-20260919-143000", title="周会", when="2026-09-19T14:30:00")
+    _meeting(
+        db, project_id, meeting_id="vm-20260919-100000", title="周会", when="2026-09-19T10:00:00"
+    )
+    _meeting(
+        db, project_id, meeting_id="vm-20260919-143000", title="周会", when="2026-09-19T14:30:00"
+    )
 
     writer.reconcile()
 
@@ -233,7 +257,9 @@ def test_untitled_card_is_renamed_with_its_transcript_once_titled(tmp_path):
     assert _card_files(root) == ["260926 初审规则沟通.md"]
     text = (root / CARDS / "260926 初审规则沟通.md").read_text(encoding="utf-8")
     assert text.endswith("## 我的笔记（这一行以下不会被自动覆盖）\n我的补充\n")
-    assert sorted(p.name for p in (root / CARDS / "逐字稿").iterdir()) == ["260926 初审规则沟通.txt"]
+    assert sorted(p.name for p in (root / CARDS / "逐字稿").iterdir()) == [
+        "260926 初审规则沟通.txt"
+    ]
     assert _card_row(db)["rel_path"] == f"{CARDS}/260926 初审规则沟通.md"
 
 
@@ -249,9 +275,15 @@ def test_split_merge_and_speaker_rename_refresh_the_transcript_copy(tmp_path):
     service = MeetingService(db)
 
     def segment_ids():
-        version = db.query_one("SELECT current_transcript_version_id AS v FROM meetings WHERE id=?", (MEETING,))["v"]
-        return [row["id"] for row in db.query_all(
-            "SELECT id FROM segments WHERE version_id=? ORDER BY ordinal", (version,))]
+        version = db.query_one(
+            "SELECT current_transcript_version_id AS v FROM meetings WHERE id=?", (MEETING,)
+        )["v"]
+        return [
+            row["id"]
+            for row in db.query_all(
+                "SELECT id FROM segments WHERE version_id=? ORDER BY ordinal", (version,)
+            )
+        ]
 
     before = transcript.read_text(encoding="utf-8")
     service.split_segment(MEETING, segment_ids()[0], 4)
@@ -271,7 +303,9 @@ def test_split_merge_and_speaker_rename_refresh_the_transcript_copy(tmp_path):
     assert _card_row(db)["dirty"] > 0
     writer.reconcile()
     assert transcript.read_text(encoding="utf-8").startswith("[00:00:00] 月总：")
-    assert "participants: [月总]" in (root / CARDS / "260926 初审规则沟通.md").read_text(encoding="utf-8")
+    assert "participants: [月总]" in (root / CARDS / "260926 初审规则沟通.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_editor_reformatting_is_not_treated_as_an_edit(tmp_path):
@@ -322,8 +356,12 @@ def test_editor_reformatting_is_not_treated_as_an_edit(tmp_path):
 
 
 def test_content_fp_ignores_whitespace_punctuation_and_key_order():
-    base = "---\nmeeting_id: m\ntitle: 周会\nparticipants: [张三, 李四]\n---\n\n# 周会\n\n- 甲\n- 乙\n"
-    same = "---\ntitle: 周会\nparticipants:\n- 张三\n- 李四\nmeeting_id: m\n---\n# 周会\n* 甲\n\n* 乙"
+    base = (
+        "---\nmeeting_id: m\ntitle: 周会\nparticipants: [张三, 李四]\n---\n\n# 周会\n\n- 甲\n- 乙\n"
+    )
+    same = (
+        "---\ntitle: 周会\nparticipants:\n- 张三\n- 李四\nmeeting_id: m\n---\n# 周会\n* 甲\n\n* 乙"
+    )
     assert content_fp(base) == content_fp(same)
     assert content_fp(base) != content_fp(base.replace("甲", "丙"))
     auto, notes = split_card("正文\n## 我的笔记（这一行以下不会被自动覆盖）\n想法\n")
@@ -389,7 +427,9 @@ def test_deleted_card_is_not_resurrected_but_follows_a_project_change(tmp_path):
     _touch(db)
     writer.reconcile()
 
-    db.execute("UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?", (project_b, MEETING))
+    db.execute(
+        "UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?", (project_b, MEETING)
+    )
     writer.reconcile()
     assert _card_files(root_b) == ["260926 初审规则沟通.md"]
 
@@ -448,7 +488,9 @@ def test_deleting_the_whole_folder_pauses_the_project_until_resumed(tmp_path):
     (root / CARDS).rmdir()
 
     _touch(db)
-    _meeting(db, project_id, meeting_id="vm-20260927-090000", title="周会", when="2026-09-27T09:00:00")
+    _meeting(
+        db, project_id, meeting_id="vm-20260927-090000", title="周会", when="2026-09-27T09:00:00"
+    )
     writer.reconcile()
     writer.reconcile()
 
@@ -474,7 +516,9 @@ def test_moving_to_another_project_carries_notes_and_recycles_the_old_card(tmp_p
     card_a = root_a / CARDS / "260926 初审规则沟通.md"
     card_a.write_text(card_a.read_text(encoding="utf-8") + "我的想法\n", encoding="utf-8")
 
-    db.execute("UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?", (project_b, MEETING))
+    db.execute(
+        "UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?", (project_b, MEETING)
+    )
     result = writer.sync_meeting(MEETING)
 
     assert result["action"] == "moved"
@@ -515,7 +559,9 @@ def test_unassigning_recycles_the_card_and_brings_notes_back_later(tmp_path):
     card = root / CARDS / "260926 初审规则沟通.md"
     card.write_text(card.read_text(encoding="utf-8") + "留着的笔记\n", encoding="utf-8")
 
-    db.execute("UPDATE meetings SET project_id=NULL, project_origin='manual' WHERE id=?", (MEETING,))
+    db.execute(
+        "UPDATE meetings SET project_id=NULL, project_origin='manual' WHERE id=?", (MEETING,)
+    )
     result = writer.sync_meeting(MEETING)
     assert result["action"] == "retired"
     assert _card_files(root) == []
@@ -549,7 +595,10 @@ def test_concurrent_reassign_and_reconcile_leave_one_card(tmp_path):
     for moves, (target, root_new, root_old) in enumerate(
         [(project_b, root_b, root_a), (project_a, root_a, root_b)] * 3, start=1
     ):
-        db.execute("UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?", (target, MEETING))
+        db.execute(
+            "UPDATE meetings SET project_id=?, project_origin='manual' WHERE id=?",
+            (target, MEETING),
+        )
         barrier = threading.Barrier(2)
         threads = [
             threading.Thread(target=run, args=(barrier, lambda: writer.sync_meeting(MEETING))),
@@ -597,8 +646,14 @@ def test_historical_meetings_wait_for_the_backfill_answer(tmp_path):
     project_id, root = _project(db, disk, "云图AI")
     no_folder = make_project(db, "没挂文件夹")
     _meeting(db, project_id)
-    _meeting(db, no_folder, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00",
-             origin="manual")
+    _meeting(
+        db,
+        no_folder,
+        meeting_id="vm-20260925-100000",
+        title="旧会",
+        when="2026-09-25T10:00:00",
+        origin="manual",
+    )
     _make_historical(db)
 
     writer.reconcile()
@@ -648,10 +703,14 @@ def test_retire_all_recycles_untouched_cards_and_lists_edited_ones(tmp_path):
     db, settings, writer, disk = _env(tmp_path)
     project_id, root = _project(db, disk, "云图AI")
     _meeting(db, project_id)
-    _meeting(db, project_id, meeting_id="vm-20260927-090000", title="周会", when="2026-09-27T09:00:00")
+    _meeting(
+        db, project_id, meeting_id="vm-20260927-090000", title="周会", when="2026-09-27T09:00:00"
+    )
     writer.reconcile()
     edited = root / CARDS / "260927 周会.md"
-    edited.write_text(edited.read_text(encoding="utf-8").replace("讨论了", "我改了"), encoding="utf-8")
+    edited.write_text(
+        edited.read_text(encoding="utf-8").replace("讨论了", "我改了"), encoding="utf-8"
+    )
 
     result = writer.retire_all()
 
@@ -719,7 +778,9 @@ def test_a_folder_shared_by_two_projects_only_gets_the_first_projects_cards(tmp_
     second = make_project(db, "云图看板")
     _mount(db, second, root)
     _meeting(db, first)
-    _meeting(db, second, meeting_id="vm-20260927-090000", title="看板评审", when="2026-09-27T09:00:00")
+    _meeting(
+        db, second, meeting_id="vm-20260927-090000", title="看板评审", when="2026-09-27T09:00:00"
+    )
 
     writer.reconcile()
 
@@ -793,7 +854,9 @@ def test_backfill_leaves_out_meetings_waiting_for_your_pick(tmp_path):
     db, _settings, writer, disk = _env(tmp_path)
     project_id, root = _project(db, disk, "云图AI")
     _meeting(db, project_id)
-    _meeting(db, project_id, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00")
+    _meeting(
+        db, project_id, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00"
+    )
     _needs_review(db, "vm-20260925-100000")
     _make_historical(db)
 
@@ -821,8 +884,11 @@ def test_transcript_copy_never_overwrites_another_meetings_copy(tmp_path):
     before = first_tx.read_text(encoding="utf-8")
 
     other = _meeting(db, project_id, meeting_id="vm-20260926-100000", when="2026-09-26T10:00:00")
-    db.execute("UPDATE segments SET text='另一场会的原话' WHERE version_id IN "
-               "(SELECT current_transcript_version_id FROM meetings WHERE id=?)", (other,))
+    db.execute(
+        "UPDATE segments SET text='另一场会的原话' WHERE version_id IN "
+        "(SELECT current_transcript_version_id FROM meetings WHERE id=?)",
+        (other,),
+    )
     writer.reconcile()
 
     assert first_tx.read_text(encoding="utf-8") == before
@@ -853,8 +919,12 @@ def test_transcript_copy_never_overwrites_your_own_file(tmp_path):
 def test_retiring_backfilled_cards_keeps_new_ones_and_can_be_redone(tmp_path):
     db, settings, writer, disk = _env(tmp_path)
     project_id, root = _project(db, disk, "云图AI")
-    _meeting(db, project_id, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00")
-    _meeting(db, project_id, meeting_id="vm-20260924-100000", title="旧评审", when="2026-09-24T10:00:00")
+    _meeting(
+        db, project_id, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00"
+    )
+    _meeting(
+        db, project_id, meeting_id="vm-20260924-100000", title="旧评审", when="2026-09-24T10:00:00"
+    )
     _make_historical(db)
     _meeting(db, project_id)  # 上线后的新会
     db.execute(
@@ -868,7 +938,9 @@ def test_retiring_backfilled_cards_keeps_new_ones_and_can_be_redone(tmp_path):
     with db.autocommit() as connection:
         assert writer.project_cards(connection, project_id)["backfilled"] == 2
     edited = root / CARDS / "260924 旧评审.md"
-    edited.write_text(edited.read_text(encoding="utf-8").replace("讨论了", "我改了"), encoding="utf-8")
+    edited.write_text(
+        edited.read_text(encoding="utf-8").replace("讨论了", "我改了"), encoding="utf-8"
+    )
 
     result = writer.retire_backfilled()
 
@@ -893,7 +965,9 @@ def test_retiring_backfilled_cards_keeps_new_ones_and_can_be_redone(tmp_path):
     assert _card_files(root) == ["260924 旧评审.md", "260925 旧会.md", "260926 初审规则沟通.md"]
 
 
-def test_transcript_name_on_record_for_another_card_is_not_reused_even_if_the_file_is_gone(tmp_path):
+def test_transcript_name_on_record_for_another_card_is_not_reused_even_if_the_file_is_gone(
+    tmp_path,
+):
     db, _settings, writer, disk = _env(tmp_path)
     project_id, root = _project(db, disk, "云图AI")
     _meeting(db, project_id)
@@ -927,9 +1001,13 @@ def test_deleting_a_card_recycles_its_transcript_copy_so_regenerating_keeps_the_
     assert writer.rewrite(MEETING, "regenerate")["state"] == "synced"
 
     assert _card_files(root) == ["260926 初审规则沟通.md"]
-    assert sorted(p.name for p in (root / CARDS / "逐字稿").iterdir()) == ["260926 初审规则沟通.txt"]
-    assert (root / CARDS / "逐字稿" / "260926 初审规则沟通.txt").read_text(encoding="utf-8").startswith(
-        "[00:00:00] 月总："
+    assert sorted(p.name for p in (root / CARDS / "逐字稿").iterdir()) == [
+        "260926 初审规则沟通.txt"
+    ]
+    assert (
+        (root / CARDS / "逐字稿" / "260926 初审规则沟通.txt")
+        .read_text(encoding="utf-8")
+        .startswith("[00:00:00] 月总：")
     )
 
 
@@ -956,7 +1034,9 @@ def test_retiring_backfilled_cards_also_forgets_cards_that_are_off_disk(tmp_path
     project_a, root_a = _project(db, disk, "云图AI")
     project_b, root_b = _project(db, disk, "数据中台")
     _meeting(db, project_a)
-    _meeting(db, project_b, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00")
+    _meeting(
+        db, project_b, meeting_id="vm-20260925-100000", title="旧会", when="2026-09-25T10:00:00"
+    )
     _make_historical(db)
     writer.answer_backfill("yes")
     writer.reconcile()

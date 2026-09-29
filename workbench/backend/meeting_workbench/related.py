@@ -24,6 +24,7 @@
   relations（kind='related'），只让 related_rev 加一。
 - 分数只用来排序和过门槛，任何接口都不返回；只有命令行 links related 印出来（开发工具）。
 """
+
 from __future__ import annotations
 
 import bisect
@@ -105,7 +106,9 @@ KIND_STEM = 1
 KIND_CUE = 2
 KIND_DYNAMIC = 3
 # 动态片段头尾去掉的虚字
-_EDGE_FILLERS = frozenset("的了是在我你他她它们这那和与及就也都还又把被给让对从向吗呢吧啊呀嘛哦嗯么个")
+_EDGE_FILLERS = frozenset(
+    "的了是在我你他她它们这那和与及就也都还又把被给让对从向吗呢吧啊呀嘛哦嗯么个"
+)
 _LIVE_FILE = "f.gone_at IS NULL AND f.zone != 'cards' AND f.content_key IS NOT NULL"
 
 # 命令行的刷掉原因
@@ -156,7 +159,9 @@ def meaningful(text: str) -> int:
 
 def cut_windows(segments: Sequence[tuple[int, str]]) -> list[Window]:
     """当前逐字稿的段 (start_ms, text) 切成窗；不到 60 个汉字字母数字的窗不要。"""
-    rows = sorted(((int(start), str(text or "")) for start, text in segments), key=lambda item: item[0])
+    rows = sorted(
+        ((int(start), str(text or "")) for start, text in segments), key=lambda item: item[0]
+    )
     if not rows:
         return []
     last = rows[-1][0]
@@ -164,7 +169,9 @@ def cut_windows(segments: Sequence[tuple[int, str]]) -> list[Window]:
     for k in range(last // STEP_MS + 1):
         start = k * STEP_MS
         end = start + WINDOW_MS
-        pieces = [(start_ms, text) for start_ms, text in rows if start <= start_ms < end and text.strip()]
+        pieces = [
+            (start_ms, text) for start_ms, text in rows if start <= start_ms < end and text.strip()
+        ]
         if not pieces:
             continue
         parts: list[tuple[int, int, int, str]] = []
@@ -241,7 +248,9 @@ def project_sigs(connection: Any, settings: Any) -> dict[str, str]:
     """每个项目的签名：项目 id、根目录 id、本项目已确认词条的条数和最后修改时间、项目名和也叫、两个门槛、
     模型名、RELATED_VERSION。三条语句算全部项目。"""
     roots: dict[str, list[int]] = {}
-    for row in connection.execute("SELECT project_id, id FROM project_material_roots ORDER BY id").fetchall():
+    for row in connection.execute(
+        "SELECT project_id, id FROM project_material_roots ORDER BY id"
+    ).fetchall():
         roots.setdefault(str(row["project_id"]), []).append(int(row["id"]))
     terms = {
         str(row["project_id"]): (int(row["n"]), str(row["latest"] or ""))
@@ -278,7 +287,9 @@ _DUE_WHERE = """(
     OR s.dirty > 0)"""
 
 
-def due_meetings(connection: Any, sigs: dict[str, str], *, meeting_id: str | None = None) -> list[dict[str, Any]]:
+def due_meetings(
+    connection: Any, sigs: dict[str, str], *, meeting_id: str | None = None
+) -> list[dict[str, Any]]:
     """到期的会：有项目、有当前逐字稿，并且没有台账行、dirty > 0 或签名对不上；另有离开项目、没了逐字稿
     而 dirty > 0 的（要收拾旧结果）。一条语句，按录音日期从新到旧。"""
     extra = " AND m.id = :meeting" if meeting_id is not None else ""
@@ -308,14 +319,18 @@ def is_due(connection: Any, settings: Any, meeting_id: str) -> bool:
     return bool(due_meetings(connection, project_sigs(connection, settings), meeting_id=meeting_id))
 
 
-def mark_dirty(connection: Any, *, meeting_id: str | None = None, project_id: str | None = None) -> int:
+def mark_dirty(
+    connection: Any, *, meeting_id: str | None = None, project_id: str | None = None
+) -> int:
     """links related --rebuild：只把 dirty 加一，不当场算。"""
     if meeting_id is not None:
         ids = [meeting_id]
     else:
         ids = [
             str(row[0])
-            for row in connection.execute("SELECT id FROM meetings WHERE project_id = ?", (project_id,)).fetchall()
+            for row in connection.execute(
+                "SELECT id FROM meetings WHERE project_id = ?", (project_id,)
+            ).fetchall()
         ]
     for part in _batches(ids):
         connection.execute(
@@ -347,7 +362,9 @@ class Scope:
 
 
 def load_scope(connection: Any, project_id: str) -> Scope | None:
-    project = connection.execute("SELECT id, name, also_names FROM projects WHERE id = ?", (project_id,)).fetchone()
+    project = connection.execute(
+        "SELECT id, name, also_names FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
     if project is None:
         return None
     root_ids = [
@@ -370,7 +387,14 @@ def load_scope(connection: Any, project_id: str) -> Scope | None:
         if current is None or rank > (int(current["mtime_ns"] or 0), int(current["id"])):
             files[key] = dict(row)
         mtime[key] = max(mtime.get(key, 0), int(row["mtime_ns"] or 0))
-    return Scope(project_id, str(project["name"]), also_name_list(project["also_names"]), root_ids, files, mtime)
+    return Scope(
+        project_id,
+        str(project["name"]),
+        also_name_list(project["also_names"]),
+        root_ids,
+        files,
+        mtime,
+    )
 
 
 # ---------------------------------------------------------------------- 共同词
@@ -438,7 +462,9 @@ class Words:
         spoken: dict[str, tuple[str, int, bool]] = {}  # 写法 -> (显示, 来源, 要检查)
         written: dict[str, tuple[str, int, bool]] = {}
 
-        def add(table: dict[str, tuple[str, int, bool]], form: str, shown: str, kind: int, check: bool) -> None:
+        def add(
+            table: dict[str, tuple[str, int, bool]], form: str, shown: str, kind: int, check: bool
+        ) -> None:
             form = (form or "").strip()
             if not form or light_key(form) in self.names or light_key(shown) in self.names:
                 return
@@ -496,7 +522,9 @@ class Words:
             self._written_cache[chunk_id] = cached
         return cached
 
-    def shared(self, window: Window, spoken: dict[str, Found], chunk_id: int, text: str) -> list[Found]:
+    def shared(
+        self, window: Window, spoken: dict[str, Found], chunk_id: int, text: str
+    ) -> list[Found]:
         """这个窗和这个片段的共同词，最多 3 个：词条、词干、线索词、动态片段，同类按在窗里第一次出现的位置。"""
         written = self.in_passage(chunk_id, text)
         result: list[Found] = []
@@ -516,7 +544,9 @@ class Words:
             if not self.checks.ok(self.connection, self.scope, piece):
                 continue
             at = folded_window.find(piece)
-            result.append(Found(piece, KIND_DYNAMIC, positions[at] if 0 <= at < len(positions) else 0))
+            result.append(
+                Found(piece, KIND_DYNAMIC, positions[at] if 0 <= at < len(positions) else 0)
+            )
             taken.append(key)
         result.sort(key=lambda item: (item.kind, item.position))
         return result[:MAX_WORDS]
@@ -661,7 +691,9 @@ class Scored:
     mark: int
 
 
-def _merge_top(best_ids: np.ndarray, best_scores: np.ndarray, ids: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _merge_top(
+    best_ids: np.ndarray, best_scores: np.ndarray, ids: np.ndarray, scores: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     """把一块的 (窗 × 行) 得分并进每个窗的前 6。"""
     if scores.size == 0:
         return best_ids, best_scores
@@ -693,7 +725,9 @@ def pick_sample(rows: Iterable[tuple[int, str, int]]) -> list[int]:
     return [chunk_id for _key, chunk_id in picked[:SAMPLE_MAX]]
 
 
-def window_bars(windows: np.ndarray, sample: np.ndarray | None, contents: int, floor: float, margin: float) -> np.ndarray:
+def window_bars(
+    windows: np.ndarray, sample: np.ndarray | None, contents: int, floor: float, margin: float
+) -> np.ndarray:
     """每个窗的门槛：max(floor, p95 + margin)；样本少于 200 段或 20 份内容时 floor + 0.04。"""
     count = 0 if sample is None else sample.shape[0]
     if count < SAMPLE_MIN_CHUNKS or contents < SAMPLE_MIN_CONTENTS or sample is None:
@@ -703,7 +737,9 @@ def window_bars(windows: np.ndarray, sample: np.ndarray | None, contents: int, f
     return np.maximum(floor, p95 + margin).astype(np.float32)
 
 
-def _read_vectors(connection: Any, chunk_ids: Sequence[int], model: str) -> tuple[np.ndarray, np.ndarray]:
+def _read_vectors(
+    connection: Any, chunk_ids: Sequence[int], model: str
+) -> tuple[np.ndarray, np.ndarray]:
     """按片段 id 从 material_chunk_vectors 读向量（float16 存，读成 float32）。"""
     ids: list[int] = []
     blobs: list[bytes] = []
@@ -718,7 +754,9 @@ def _read_vectors(connection: Any, chunk_ids: Sequence[int], model: str) -> tupl
         return np.zeros(0, dtype=np.int64), np.zeros((0, 0), dtype=np.float32)
     width = len(blobs[0])
     keep = [index for index, blob in enumerate(blobs) if len(blob) == width]
-    vectors = np.frombuffer(b"".join(blobs[index] for index in keep), dtype=np.float16).reshape(len(keep), width // 2)
+    vectors = np.frombuffer(b"".join(blobs[index] for index in keep), dtype=np.float16).reshape(
+        len(keep), width // 2
+    )
     return np.asarray([ids[index] for index in keep], dtype=np.int64), vectors.astype(np.float32)
 
 
@@ -736,7 +774,9 @@ def scope_chunks(connection: Any, keys: Sequence[str], model: str) -> np.ndarray
                  WHERE v.model = ? AND c.content_key IN ({_marks(part)})""",
             [model, *part],
         )
-        parts.append(np.fromiter(((row[0], order[row[1]], row[2]) for row in cursor), dtype=_SCOPE_ROW))
+        parts.append(
+            np.fromiter(((row[0], order[row[1]], row[2]) for row in cursor), dtype=_SCOPE_ROW)
+        )
     return np.concatenate(parts) if parts else np.zeros(0, dtype=_SCOPE_ROW)
 
 
@@ -761,7 +801,9 @@ class ProjectWindows:
     vectors: np.ndarray  # (窗数, 维数) float16，按原样存，打分时按切片转 float32
 
 
-def load_project_windows(connection: Any, model: str, meeting_ids: Sequence[str]) -> ProjectWindows | None:
+def load_project_windows(
+    connection: Any, model: str, meeting_ids: Sequence[str]
+) -> ProjectWindows | None:
     """先数窗，再用 fetchmany 边读边放进预先分好的数组（np.frombuffer 直接转，不建 Python float 列表）。"""
     ids = sorted(meeting_ids)
     total = 0
@@ -868,7 +910,12 @@ def judge(
     seen: set[str] = set()
     for chunk_id, score in sorted(candidates, key=lambda item: -item[1]):
         chunk = chunks.get(int(chunk_id))
-        verdict: dict[str, Any] = {"chunk_id": int(chunk_id), "score": float(score), "words": [], "reason": None}
+        verdict: dict[str, Any] = {
+            "chunk_id": int(chunk_id),
+            "score": float(score),
+            "words": [],
+            "reason": None,
+        }
         verdicts.append(verdict)
         if chunk is None:
             verdict["reason"] = REASON_DEAD_KEY
@@ -899,8 +946,14 @@ def judge(
         seg_ms, _text = window.segment_at(found[0].position)
         kept.append(
             Passage(
-                window.start_ms, int(chunk_id), str(chunk["content_key"]), int(chunk["ordinal"]), chunk.get("loc"),
-                float(score), [item.word for item in found], int(seg_ms),
+                window.start_ms,
+                int(chunk_id),
+                str(chunk["content_key"]),
+                int(chunk["ordinal"]),
+                chunk.get("loc"),
+                float(score),
+                [item.word for item in found],
+                int(seg_ms),
             )
         )
     return kept, verdicts
@@ -913,23 +966,30 @@ def copies_of(windows: int, tops: Iterable[tuple[str, float]]) -> list[str]:
         firsts.setdefault(content_key, []).append(score)
     need = max(COPY_MIN_WINDOWS, math.ceil(windows * COPY_WINDOW_SHARE))
     return sorted(
-        key for key, scores in firsts.items() if len(scores) >= need and sum(scores) / len(scores) >= COPY_MIN_SCORE
+        key
+        for key, scores in firsts.items()
+        if len(scores) >= need and sum(scores) / len(scores) >= COPY_MIN_SCORE
     )
 
 
-def hub_keys(connection: Any, project_id: str, content_keys: Iterable[str], *, extra_scanned: int = 0) -> set[str]:
+def hub_keys(
+    connection: Any, project_id: str, content_keys: Iterable[str], *, extra_scanned: int = 0
+) -> set[str]:
     """到处都相关：出现在至少 6 场会的片段里，并且超过本项目已算过的会的一半（按
     idx_meeting_window_passages_content 现查）。"""
     keys = sorted(set(content_keys))
     if not keys:
         return set()
-    scanned = int(
-        connection.execute(
-            """SELECT COUNT(*) FROM meeting_related_scan s JOIN meetings m ON m.id = s.meeting_id
+    scanned = (
+        int(
+            connection.execute(
+                """SELECT COUNT(*) FROM meeting_related_scan s JOIN meetings m ON m.id = s.meeting_id
                 WHERE m.project_id = ? AND s.scanned_at IS NOT NULL""",
-            (project_id,),
-        ).fetchone()[0]
-    ) + extra_scanned
+                (project_id,),
+            ).fetchone()[0]
+        )
+        + extra_scanned
+    )
     hubs: set[str] = set()
     for part in _batches(keys):
         for row in connection.execute(
@@ -944,7 +1004,9 @@ def hub_keys(connection: Any, project_id: str, content_keys: Iterable[str], *, e
     return hubs
 
 
-def rejected_filter(connection: Any, meeting_id: str, project_id: str) -> tuple[set[str], set[tuple[int, str]]]:
+def rejected_filter(
+    connection: Any, meeting_id: str, project_id: str
+) -> tuple[set[str], set[tuple[int, str]]]:
     """你标过不相关的：按 content_key 挡（别处的同内容副本也挡），或按 (root_id, rel_path) 挡（原地改过也挡）。"""
     keys: set[str] = set()
     places: set[tuple[int, str]] = set()
@@ -960,7 +1022,9 @@ def rejected_filter(connection: Any, meeting_id: str, project_id: str) -> tuple[
     return keys, places
 
 
-def is_blocked(content_key: str, file: dict[str, Any] | None, rejected: tuple[set[str], set[tuple[int, str]]]) -> bool:
+def is_blocked(
+    content_key: str, file: dict[str, Any] | None, rejected: tuple[set[str], set[tuple[int, str]]]
+) -> bool:
     keys, places = rejected
     if content_key in keys:
         return True
@@ -1050,7 +1114,11 @@ def link_rows(
                     "words": words,
                     "windows": count,
                     "meeting": {"at_ms": seg_ms, "quote": quote},
-                    "material": {"content_key": key, "ordinal": int(best["ordinal"]), "loc": best.get("loc")},
+                    "material": {
+                        "content_key": key,
+                        "ordinal": int(best["ordinal"]),
+                        "loc": best.get("loc"),
+                    },
                 },
             }
         )
@@ -1063,7 +1131,8 @@ def _segments(connection: Any, version_id: str | None) -> list[tuple[int, str]]:
     return [
         (int(row[0]), str(row[1] or ""))
         for row in connection.execute(
-            "SELECT start_ms, text FROM segments WHERE version_id = ? ORDER BY start_ms, ordinal", (version_id,)
+            "SELECT start_ms, text FROM segments WHERE version_id = ? ORDER BY start_ms, ordinal",
+            (version_id,),
         ).fetchall()
     ]
 
@@ -1100,11 +1169,21 @@ def write_links(
 ) -> int:
     """按表里的片段重新汇总这场会的「相关」：upsert_system 写，再 clear_missing。只动 related_rev。"""
     passages = stored_passages(connection, meeting_id)
-    hubs = hub_keys(connection, scope.project_id, [row["content_key"] for row in passages], extra_scanned=extra_scanned)
+    hubs = hub_keys(
+        connection,
+        scope.project_id,
+        [row["content_key"] for row in passages],
+        extra_scanned=extra_scanned,
+    )
     rows = link_rows(meeting_id, scope, passages, skip=set(copies) | hubs, segments=segments)
     written = relations_module.upsert_system(connection, rows, now, since=since)
     written += relations_module.clear_missing(
-        connection, "related", scope.project_id, {"meeting_id": meeting_id}, [row["ident"] for row in rows], now,
+        connection,
+        "related",
+        scope.project_id,
+        {"meeting_id": meeting_id},
+        [row["ident"] for row in rows],
+        now,
         since=since,
     )
     return written
@@ -1151,7 +1230,9 @@ class RelatedPass:
         # 矩阵重建完成（拿到的是新建的矩阵）：partial 的会 dirty 加一，重算一次
         if self._seen_matrix is not None and snap.code_of is not self._seen_matrix:
             with ctx.db.transaction() as connection:
-                connection.execute("UPDATE meeting_related_scan SET dirty = dirty + 1 WHERE partial = 1")
+                connection.execute(
+                    "UPDATE meeting_related_scan SET dirty = dirty + 1 WHERE partial = 1"
+                )
         self._seen_matrix = snap.code_of
         self._ensure_mark(ctx)
         return None, snap
@@ -1166,7 +1247,8 @@ class RelatedPass:
             return mark
         with ctx.db.transaction() as connection:
             top = connection.execute(
-                "SELECT COALESCE(MAX(chunk_id), 0) FROM material_chunk_vectors WHERE model = ?", (model,)
+                "SELECT COALESCE(MAX(chunk_id), 0) FROM material_chunk_vectors WHERE model = ?",
+                (model,),
             ).fetchone()[0]
             fresh = {"model": model, "id": int(top)}
             connection.execute(
@@ -1266,14 +1348,20 @@ class RelatedPass:
             scope = load_scope(connection, str(project_id)) if project_id else None
             segments = _segments(connection, row.get("version_id"))
         if scope is None or not row.get("version_id") or not scope.root_ids:
-            note = "no_project" if scope is None else ("no_transcript" if not row.get("version_id") else "no_roots")
+            note = (
+                "no_project"
+                if scope is None
+                else ("no_transcript" if not row.get("version_id") else "no_roots")
+            )
             self._write_empty(ctx, meeting_id, scope, dirty, note, now)
             return
         windows = cut_windows(segments)
         vectors = self._window_vectors(ctx, meeting_id, windows, model, deadline)
         with ctx.db.autocommit() as connection:
             self.checks.load_cues(connection)
-            scored = self.score(ctx, connection, snap, scope, vectors, deadline) if windows else None
+            scored = (
+                self.score(ctx, connection, snap, scope, vectors, deadline) if windows else None
+            )
             chunk_rows = self._chunks(connection, scored)
             words = Words(connection, scope, self.checks)
             kept: list[Passage] = []
@@ -1295,7 +1383,9 @@ class RelatedPass:
                 )
                 if top is not None:
                     tops.append(top)
-                passages, _verdicts = judge(window, candidates, chunk_rows, float(scored.bars[index]), scope, words)
+                passages, _verdicts = judge(
+                    window, candidates, chunk_rows, float(scored.bars[index]), scope, words
+                )
                 kept.extend(passages)
         copies = copies_of(len(windows), tops)
         seg_texts = _segment_texts(segments)
@@ -1304,7 +1394,8 @@ class RelatedPass:
             existing = {
                 int(r[0])
                 for r in connection.execute(
-                    "SELECT start_ms FROM meeting_windows WHERE meeting_id = ? AND model = ?", (meeting_id, model)
+                    "SELECT start_ms FROM meeting_windows WHERE meeting_id = ? AND model = ?",
+                    (meeting_id, model),
                 ).fetchall()
             }
             for start in existing - set(starts):
@@ -1320,30 +1411,64 @@ class RelatedPass:
                     )
             self._replace_passages(connection, meeting_id, kept)
             scanned_before = connection.execute(
-                "SELECT scanned_at IS NOT NULL FROM meeting_related_scan WHERE meeting_id = ?", (meeting_id,)
+                "SELECT scanned_at IS NOT NULL FROM meeting_related_scan WHERE meeting_id = ?",
+                (meeting_id,),
             ).fetchone()
             extra = 0 if scanned_before is not None and scanned_before[0] else 1
             write_links(
-                connection, meeting_id, scope, copies=copies, segments=seg_texts, now=now, since=ctx.since,
+                connection,
+                meeting_id,
+                scope,
+                copies=copies,
+                segments=seg_texts,
+                now=now,
+                since=ctx.since,
                 extra_scanned=extra,
             )
             self._write_scan(
-                connection, meeting_id, sig=self._sigs.get(scope.project_id, ""), dirty=dirty,
-                mark=scored.mark if scored is not None else 0, windows=len(windows), passages=len(kept),
-                copies=copies, partial=bool(scored and scored.partial), note=None, now=now,
+                connection,
+                meeting_id,
+                sig=self._sigs.get(scope.project_id, ""),
+                dirty=dirty,
+                mark=scored.mark if scored is not None else 0,
+                windows=len(windows),
+                passages=len(kept),
+                copies=copies,
+                partial=bool(scored and scored.partial),
+                note=None,
+                now=now,
             )
 
-    def _write_empty(self, ctx: Any, meeting_id: str, scope: Scope | None, dirty: int, note: str, now: str) -> None:
+    def _write_empty(
+        self, ctx: Any, meeting_id: str, scope: Scope | None, dirty: int, note: str, now: str
+    ) -> None:
         """没项目、没逐字稿、项目没挂根目录：删片段、留窗（文字没变），记 note。"""
         with ctx.db.transaction() as connection:
-            connection.execute("DELETE FROM meeting_window_passages WHERE meeting_id = ?", (meeting_id,))
+            connection.execute(
+                "DELETE FROM meeting_window_passages WHERE meeting_id = ?", (meeting_id,)
+            )
             if scope is not None:
                 relations_module.clear_missing(
-                    connection, "related", scope.project_id, {"meeting_id": meeting_id}, [], now, since=ctx.since
+                    connection,
+                    "related",
+                    scope.project_id,
+                    {"meeting_id": meeting_id},
+                    [],
+                    now,
+                    since=ctx.since,
                 )
             self._write_scan(
-                connection, meeting_id, sig=self._sigs.get(scope.project_id, "") if scope else "", dirty=dirty,
-                mark=0, windows=0, passages=0, copies=[], partial=False, note=note, now=now,
+                connection,
+                meeting_id,
+                sig=self._sigs.get(scope.project_id, "") if scope else "",
+                dirty=dirty,
+                mark=0,
+                windows=0,
+                passages=0,
+                copies=[],
+                partial=False,
+                note=note,
+                now=now,
             )
         ctx.work += 1
 
@@ -1373,15 +1498,24 @@ class RelatedPass:
                    partial = excluded.partial, note = excluded.note, scanned_at = excluded.scanned_at,
                    dirty = MAX(0, meeting_related_scan.dirty - :dirty)""",
             {
-                "meeting": meeting_id, "sig": sig, "mark": int(mark), "windows": windows, "passages": passages,
-                "copies": json.dumps(list(copies), ensure_ascii=False), "partial": int(partial), "note": note,
-                "now": now, "dirty": int(dirty),
+                "meeting": meeting_id,
+                "sig": sig,
+                "mark": int(mark),
+                "windows": windows,
+                "passages": passages,
+                "copies": json.dumps(list(copies), ensure_ascii=False),
+                "partial": int(partial),
+                "note": note,
+                "now": now,
+                "dirty": int(dirty),
             },
         )
 
     @staticmethod
     def _replace_passages(connection: Any, meeting_id: str, kept: Sequence[Passage]) -> None:
-        connection.execute("DELETE FROM meeting_window_passages WHERE meeting_id = ?", (meeting_id,))
+        connection.execute(
+            "DELETE FROM meeting_window_passages WHERE meeting_id = ?", (meeting_id,)
+        )
         ranks: dict[int, int] = {}
         for passage in kept:
             rank = ranks.get(passage.start_ms, 0)
@@ -1391,8 +1525,15 @@ class RelatedPass:
                        score, words, seg_ms)
                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM material_chunks WHERE id = ?)""",
                 (
-                    meeting_id, passage.start_ms, rank, passage.chunk_id, passage.content_key, passage.ordinal,
-                    round(passage.score, 4), json.dumps(passage.words, ensure_ascii=False), passage.seg_ms,
+                    meeting_id,
+                    passage.start_ms,
+                    rank,
+                    passage.chunk_id,
+                    passage.content_key,
+                    passage.ordinal,
+                    round(passage.score, 4),
+                    json.dumps(passage.words, ensure_ascii=False),
+                    passage.seg_ms,
                     passage.chunk_id,
                 ),
             )
@@ -1425,7 +1566,8 @@ class RelatedPass:
                 raise Stop(halt)
             batch = todo[start : start + ENCODE_BATCH]
             encoded = np.asarray(
-                ctx.semantic.encode_texts([window.text for window, _sha in batch], background=True), dtype=np.float32
+                ctx.semantic.encode_texts([window.text for window, _sha in batch], background=True),
+                dtype=np.float32,
             )
             with ctx.db.transaction() as connection:
                 for (window, sha), vector in zip(batch, encoded, strict=True):
@@ -1436,8 +1578,15 @@ class RelatedPass:
                            ON CONFLICT(meeting_id, model, start_ms) DO UPDATE SET end_ms = excluded.end_ms,
                                text_sha = excluded.text_sha, chars = excluded.chars, vector = excluded.vector""",
                         (
-                            meeting_id, model, window.start_ms, window.end_ms, sha, window.chars,
-                            old[2] if old is not None else floor, _to_f16(vector), meeting_id,
+                            meeting_id,
+                            model,
+                            window.start_ms,
+                            window.end_ms,
+                            sha,
+                            window.chars,
+                            old[2] if old is not None else floor,
+                            _to_f16(vector),
+                            meeting_id,
                         ),
                     )
                     result[window.start_ms] = _from_f16(_to_f16(vector))
@@ -1448,7 +1597,13 @@ class RelatedPass:
     # ------------------------------------------------------------ 打分
 
     def score(
-        self, ctx: Any, connection: Any, snap: Any, scope: Scope, windows: np.ndarray, deadline: float
+        self,
+        ctx: Any,
+        connection: Any,
+        snap: Any,
+        scope: Scope,
+        windows: np.ndarray,
+        deadline: float,
     ) -> Scored:
         """窗 × 本项目片段：快照里的每 16,384 行一块，矩阵外的从库里补（最多 6 万行）。每窗留前 6。"""
         model = model_of(ctx.settings)
@@ -1456,7 +1611,8 @@ class RelatedPass:
         best_ids = np.full((count, 0), -1, dtype=np.int64)
         best_scores = np.full((count, 0), -np.inf, dtype=np.float32)
         top = connection.execute(
-            "SELECT COALESCE(MAX(chunk_id), 0) FROM material_chunk_vectors WHERE model = ?", (model,)
+            "SELECT COALESCE(MAX(chunk_id), 0) FROM material_chunk_vectors WHERE model = ?",
+            (model,),
         ).fetchone()[0]
         allowed_codes = np.fromiter(
             (snap.code_of[key] for key in scope.files if key in snap.code_of), dtype=np.int32
@@ -1479,7 +1635,9 @@ class RelatedPass:
                 for offset in range(0, picked.size, EXTRA_BLOCK):
                     rows_at = picked[offset : offset + EXTRA_BLOCK]
                     rows = snap.vectors[rows_at].astype(np.float32)
-                    best_ids, best_scores = _merge_top(best_ids, best_scores, snap.ids[rows_at], windows @ rows.T)
+                    best_ids, best_scores = _merge_top(
+                        best_ids, best_scores, snap.ids[rows_at], windows @ rows.T
+                    )
                     del rows
         # 矩阵外的行：只读 id（不带向量），按内容的修改时间从新到旧，最多 6 万行
         keys = sorted(scope.files, key=lambda key: -scope.mtime.get(key, 0))
@@ -1496,7 +1654,9 @@ class RelatedPass:
             halt = self._halt(ctx, deadline)
             if halt:
                 raise Stop(halt)
-            ids, rows = _read_vectors(connection, missing[start : start + EXTRA_BLOCK].tolist(), model)
+            ids, rows = _read_vectors(
+                connection, missing[start : start + EXTRA_BLOCK].tolist(), model
+            )
             if ids.size and rows.shape[1] == windows.shape[1]:
                 best_ids, best_scores = _merge_top(best_ids, best_scores, ids, windows @ rows.T)
         mark = max(int(top), int(all_ids.max())) if all_ids.size else int(top)
@@ -1568,7 +1728,11 @@ class RelatedPass:
         return "budget" if len(rows) >= INCREMENT_CHUNKS else "done"
 
     def _increment_block(
-        self, ctx: Any, block: list[dict[str, Any]], model: str, windows: dict[str, ProjectWindows | None] | None = None
+        self,
+        ctx: Any,
+        block: list[dict[str, Any]],
+        model: str,
+        windows: dict[str, ProjectWindows | None] | None = None,
     ) -> None:
         if windows is None:
             windows = {}
@@ -1593,12 +1757,19 @@ class RelatedPass:
                 if sig is None or scope is None:
                     continue
                 chunks = [row for row in block if row["content_key"] in contents]
-                plans.extend(self._increment_project(ctx, connection, scope, sig, chunks, model, windows))
+                plans.extend(
+                    self._increment_project(ctx, connection, scope, sig, chunks, model, windows)
+                )
         with ctx.db.transaction() as connection:
             for scope, meeting_id, passages, info in plans:
                 self._merge_passages(connection, meeting_id, passages)
                 write_links(
-                    connection, meeting_id, scope, copies=info["copies"], segments=info["segments"], now=now,
+                    connection,
+                    meeting_id,
+                    scope,
+                    copies=info["copies"],
+                    segments=info["segments"],
+                    now=now,
                     since=ctx.since,
                 )
                 connection.execute(
@@ -1635,9 +1806,11 @@ class RelatedPass:
             return []
         width = len(chunks[0]["vector"])
         chunks = [row for row in chunks if len(row["vector"]) == width]
-        matrix = np.frombuffer(b"".join(row["vector"] for row in chunks), dtype=np.float16).reshape(
-            len(chunks), width // 2
-        ).astype(np.float32)
+        matrix = (
+            np.frombuffer(b"".join(row["vector"] for row in chunks), dtype=np.float16)
+            .reshape(len(chunks), width // 2)
+            .astype(np.float32)
+        )
         chunk_ids = np.asarray([int(row["chunk_id"]) for row in chunks], dtype=np.int64)
         by_id = {int(row["chunk_id"]): row for row in chunks}
         hits: dict[str, dict[int, list[tuple[int, float]]]] = {}
@@ -1648,15 +1821,21 @@ class RelatedPass:
             # 本轮读窗以后才变干净的会不在缓存里，下次完整计算会补上；已经不干净的会 mark 取最大，不算
             never = np.iinfo(np.int64).max
             per_meeting = np.fromiter(
-                (int(meetings[meeting_id]["chunk_mark"]) if meeting_id in meetings else never
-                 for meeting_id in cached.meeting_ids),
+                (
+                    int(meetings[meeting_id]["chunk_mark"]) if meeting_id in meetings else never
+                    for meeting_id in cached.meeting_ids
+                ),
                 dtype=np.int64,
                 count=len(cached.meeting_ids),
             )
             found = increment_hits(cached, per_meeting[cached.meeting], matrix, chunk_ids)
-            for window_index, chunk_index, score in zip(*(part.tolist() for part in found), strict=True):
+            for window_index, chunk_index, score in zip(
+                *(part.tolist() for part in found), strict=True
+            ):
                 meeting_id = cached.meeting_ids[cached.meeting[window_index]]
-                bucket = hits.setdefault(meeting_id, {}).setdefault(int(cached.start_ms[window_index]), [])
+                bucket = hits.setdefault(meeting_id, {}).setdefault(
+                    int(cached.start_ms[window_index]), []
+                )
                 bucket.append((int(chunk_ids[chunk_index]), float(score)))
         plans = []
         words = Words(connection, scope, self.checks) if hits else None
@@ -1672,7 +1851,8 @@ class RelatedPass:
             bars = {
                 int(row[0]): float(row[1])
                 for row in connection.execute(
-                    "SELECT start_ms, bar FROM meeting_windows WHERE meeting_id = ? AND model = ?", (meeting_id, model)
+                    "SELECT start_ms, bar FROM meeting_windows WHERE meeting_id = ? AND model = ?",
+                    (meeting_id, model),
                 ).fetchall()
             }
             merged: list[Passage] = []
@@ -1680,15 +1860,28 @@ class RelatedPass:
                 window = cut.get(start_ms)
                 if window is None:
                     continue
-                candidates = [(int(row["chunk_id"]), float(row["score"])) for row in old if int(row["start_ms"]) == start_ms]
+                candidates = [
+                    (int(row["chunk_id"]), float(row["score"]))
+                    for row in old
+                    if int(row["start_ms"]) == start_ms
+                ]
                 candidates += fresh
-                kept, _verdicts = judge(window, candidates, chunk_rows, bars.get(start_ms, 1.0), scope, words)
+                kept, _verdicts = judge(
+                    window, candidates, chunk_rows, bars.get(start_ms, 1.0), scope, words
+                )
                 merged.extend(kept)
                 if not kept:
                     merged.append(Passage(start_ms, -1, "", 0, None, 0.0, [], 0))  # 这个窗清空
             plans.append(
-                (scope, meeting_id, merged,
-                 {"copies": _json_list(info["copies_json"]), "segments": _segment_texts(segments)})
+                (
+                    scope,
+                    meeting_id,
+                    merged,
+                    {
+                        "copies": _json_list(info["copies_json"]),
+                        "segments": _segment_texts(segments),
+                    },
+                )
             )
         return plans
 
@@ -1708,7 +1901,8 @@ class RelatedPass:
         """增量：只重写有新候选的窗。"""
         for start in sorted({passage.start_ms for passage in passages}):
             connection.execute(
-                "DELETE FROM meeting_window_passages WHERE meeting_id = ? AND start_ms = ?", (meeting_id, start)
+                "DELETE FROM meeting_window_passages WHERE meeting_id = ? AND start_ms = ?",
+                (meeting_id, start),
             )
             rank = 0
             for passage in passages:
@@ -1719,8 +1913,15 @@ class RelatedPass:
                            score, words, seg_ms)
                        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM material_chunks WHERE id = ?)""",
                     (
-                        meeting_id, start, rank, passage.chunk_id, passage.content_key, passage.ordinal,
-                        round(passage.score, 4), json.dumps(passage.words, ensure_ascii=False), passage.seg_ms,
+                        meeting_id,
+                        start,
+                        rank,
+                        passage.chunk_id,
+                        passage.content_key,
+                        passage.ordinal,
+                        round(passage.score, 4),
+                        json.dumps(passage.words, ensure_ascii=False),
+                        passage.seg_ms,
                         passage.chunk_id,
                     ),
                 )
@@ -1728,7 +1929,9 @@ class RelatedPass:
 
 
 def read_mark(connection: Any) -> dict[str, Any] | None:
-    row = connection.execute("SELECT value FROM app_state WHERE key = ?", (CHUNK_MARK_KEY,)).fetchone()
+    row = connection.execute(
+        "SELECT value FROM app_state WHERE key = ?", (CHUNK_MARK_KEY,)
+    ).fetchone()
     if row is None:
         return None
     try:
@@ -1770,8 +1973,15 @@ def explain_meeting(
     if meeting is None:
         raise LookupError(meeting_id)
     model = model_of(settings)
-    result: dict[str, Any] = {"meeting_id": meeting_id, "title": meeting["title"], "windows": [], "copies": []}
-    scan = connection.execute("SELECT * FROM meeting_related_scan WHERE meeting_id = ?", (meeting_id,)).fetchone()
+    result: dict[str, Any] = {
+        "meeting_id": meeting_id,
+        "title": meeting["title"],
+        "windows": [],
+        "copies": [],
+    }
+    scan = connection.execute(
+        "SELECT * FROM meeting_related_scan WHERE meeting_id = ?", (meeting_id,)
+    ).fetchone()
     result["scan"] = dict(scan) if scan is not None else None
     if not meeting["project_id"]:
         result["note"] = "no_project"
@@ -1787,14 +1997,19 @@ def explain_meeting(
     stored = {
         int(row["start_ms"]): (row["vector"], float(row["bar"]))
         for row in connection.execute(
-            "SELECT start_ms, vector, bar FROM meeting_windows WHERE meeting_id = ? AND model = ?", (meeting_id, model)
+            "SELECT start_ms, vector, bar FROM meeting_windows WHERE meeting_id = ? AND model = ?",
+            (meeting_id, model),
         ).fetchall()
     }
     if encode is not None and windows:
         vectors = np.asarray(encode([window.text for window in windows]), dtype=np.float32)
     else:
         windows = [window for window in windows if window.start_ms in stored]
-        vectors = np.vstack([_from_f16(stored[window.start_ms][0]) for window in windows]) if windows else None
+        vectors = (
+            np.vstack([_from_f16(stored[window.start_ms][0]) for window in windows])
+            if windows
+            else None
+        )
     if not windows or vectors is None:
         return result
     best_ids = np.full((len(windows), 0), -1, dtype=np.int64)
@@ -1818,21 +2033,37 @@ def explain_meeting(
                 continue
             everything.extend((int(row[0]), str(row[2]), int(row[3])) for row in rows)
             ids = np.asarray([int(row[0]) for row in rows], dtype=np.int64)
-            matrix = np.frombuffer(b"".join(row[1] for row in rows), dtype=np.float16).reshape(len(rows), -1)
-            best_ids, best_scores = _merge_top(best_ids, best_scores, ids, vectors @ matrix.astype(np.float32).T)
-    floor_value = float(floor if floor is not None else _setting(settings, "related_floor", DEFAULT_FLOOR))
-    margin_value = float(margin if margin is not None else _setting(settings, "related_margin", DEFAULT_MARGIN))
+            matrix = np.frombuffer(b"".join(row[1] for row in rows), dtype=np.float16).reshape(
+                len(rows), -1
+            )
+            best_ids, best_scores = _merge_top(
+                best_ids, best_scores, ids, vectors @ matrix.astype(np.float32).T
+            )
+    floor_value = float(
+        floor if floor is not None else _setting(settings, "related_floor", DEFAULT_FLOOR)
+    )
+    margin_value = float(
+        margin if margin is not None else _setting(settings, "related_margin", DEFAULT_MARGIN)
+    )
     picked = pick_sample(everything)
     _ids, sample = _read_vectors(connection, picked, model) if picked else (None, None)
-    bars = window_bars(vectors, sample if sample is not None and sample.size else None,
-                       len({item[1] for item in everything}), floor_value, margin_value)
-    chunk_rows = RelatedPass._chunks_by_id(connection, [int(value) for value in best_ids.ravel() if value >= 0])
+    bars = window_bars(
+        vectors,
+        sample if sample is not None and sample.size else None,
+        len({item[1] for item in everything}),
+        floor_value,
+        margin_value,
+    )
+    chunk_rows = RelatedPass._chunks_by_id(
+        connection, [int(value) for value in best_ids.ravel() if value >= 0]
+    )
     checks = WordChecks()
     checks.load_cues(connection)
     words = Words(connection, scope, checks)
     copies = set(_json_list(scan["copies_json"])) if scan is not None else set()
     passages = connection.execute(
-        "SELECT DISTINCT content_key FROM meeting_window_passages WHERE meeting_id = ?", (meeting_id,)
+        "SELECT DISTINCT content_key FROM meeting_window_passages WHERE meeting_id = ?",
+        (meeting_id,),
     ).fetchall()
     hubs = hub_keys(connection, scope.project_id, [row[0] for row in passages])
     rejected = rejected_filter(connection, meeting_id, scope.project_id)
@@ -1927,5 +2158,3 @@ def project_stats(connection: Any, settings: Any, project_id: str) -> dict[str, 
         "partial_meetings": partial,
         "bar": {"p10": percentile(0.1), "p50": percentile(0.5), "p90": percentile(0.9)},
     }
-
-

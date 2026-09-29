@@ -1,4 +1,5 @@
 """第三期 3a：内容标识、材料内容循环、出错处理、没人引用的内容、按内容找回你选的文件。"""
+
 import errno
 import os
 import sqlite3
@@ -80,7 +81,9 @@ def index(indexer):
 def keys(db):
     return {
         row["rel_path"]: row["content_key"]
-        for row in db.query_all("SELECT rel_path, content_key FROM material_files WHERE gone_at IS NULL")
+        for row in db.query_all(
+            "SELECT rel_path, content_key FROM material_files WHERE gone_at IS NULL"
+        )
     }
 
 
@@ -388,7 +391,8 @@ def test_extraction_reads_each_content_once_and_marks_done(tmp_path):
 def test_extraction_io_errors_count_towards_corrupt_on_the_file_row(tmp_path):
     calls: list[str] = []
     db, settings, root, root_id, content, indexer, now, _state = setup(
-        tmp_path, extractors={"text": fake_extractor(calls, result=ExtractResult(status="io_error"))}
+        tmp_path,
+        extractors={"text": fake_extractor(calls, result=ExtractResult(status="io_error"))},
     )
     put(root / "纪要.md", "x")
     index(indexer)
@@ -525,9 +529,12 @@ def test_orphaned_contents_are_deleted_after_thirty_days_only_when_everything_is
     assert key not in contents(db)
     # 片段跟着级联删掉，全文索引也同步删掉
     assert db.query_one("SELECT COUNT(*) AS n FROM material_chunks")["n"] == 0
-    assert db.query_one(
-        "SELECT COUNT(*) AS n FROM material_chunks_fts WHERE material_chunks_fts MATCH '\"片段\"'"
-    )["n"] == 0
+    assert (
+        db.query_one(
+            "SELECT COUNT(*) AS n FROM material_chunks_fts WHERE material_chunks_fts MATCH '\"片段\"'"
+        )["n"]
+        == 0
+    )
 
 
 def test_orphan_that_comes_back_before_deletion_is_kept(tmp_path):
@@ -647,7 +654,10 @@ def test_a_single_unreadable_entry_does_not_mark_anything_gone(tmp_path, monkeyp
     add_root(db, root)
     indexer = MaterialIndexer(db, settings, clock=lambda: 0.0)
     run_until_done(indexer)
-    before = {row["rel_path"] for row in db.query_all("SELECT rel_path FROM material_files WHERE gone_at IS NULL")}
+    before = {
+        row["rel_path"]
+        for row in db.query_all("SELECT rel_path FROM material_files WHERE gone_at IS NULL")
+    }
 
     from meeting_workbench import material_index
 
@@ -689,15 +699,26 @@ def test_a_single_unreadable_entry_does_not_mark_anything_gone(tmp_path, monkeyp
     write(root / "方案" / "新文件.md")
     db.execute("UPDATE material_index_state SET last_full_at=NULL")
     run_until_done(indexer)
-    alive = {row["rel_path"] for row in db.query_all("SELECT rel_path FROM material_files WHERE gone_at IS NULL")}
+    alive = {
+        row["rel_path"]
+        for row in db.query_all("SELECT rel_path FROM material_files WHERE gone_at IS NULL")
+    }
     assert before | {"方案/新文件.md"} == alive
-    assert db.query_one("SELECT mtime_ns FROM material_dirs WHERE dir_rel='方案'")["mtime_ns"] is None
-    assert db.query_one("SELECT COUNT(*) AS n FROM material_dirs WHERE dir_rel='方案/子目录'")["n"] == 1
+    assert (
+        db.query_one("SELECT mtime_ns FROM material_dirs WHERE dir_rel='方案'")["mtime_ns"] is None
+    )
+    assert (
+        db.query_one("SELECT COUNT(*) AS n FROM material_dirs WHERE dir_rel='方案/子目录'")["n"]
+        == 1
+    )
 
     # 下一轮（增量）一定重读这个目录
     monkeypatch.setattr(material_index.os, "scandir", real_scandir)
     indexer.run_round()
-    assert db.query_one("SELECT mtime_ns FROM material_dirs WHERE dir_rel='方案'")["mtime_ns"] is not None
+    assert (
+        db.query_one("SELECT mtime_ns FROM material_dirs WHERE dir_rel='方案'")["mtime_ns"]
+        is not None
+    )
 
 
 def test_a_single_unreadable_entry_with_the_disk_gone_stops_the_round(tmp_path, monkeypatch):
@@ -707,7 +728,9 @@ def test_a_single_unreadable_entry_with_the_disk_gone_stops_the_round(tmp_path, 
     add_root(db, root)
     online = {"value": True}
     indexer = MaterialIndexer(
-        db, settings, clock=lambda: 0.0,
+        db,
+        settings,
+        clock=lambda: 0.0,
         state_of=lambda path: ROOT_ONLINE if online["value"] else ROOT_VOLUME_OFFLINE,
     )
     run_until_done(indexer)
@@ -745,7 +768,9 @@ def test_a_single_unreadable_entry_with_the_disk_gone_stops_the_round(tmp_path, 
     db.execute("UPDATE material_index_state SET last_full_at=NULL")
     indexer.run_round()
     assert db.query_one("SELECT state FROM material_index_state")["state"] == "offline"
-    assert db.query_one("SELECT COUNT(*) AS n FROM material_files WHERE gone_at IS NOT NULL")["n"] == 0
+    assert (
+        db.query_one("SELECT COUNT(*) AS n FROM material_files WHERE gone_at IS NOT NULL")["n"] == 0
+    )
 
 
 @pytest.mark.parametrize("missing", ["gone", "deleted"])
@@ -774,7 +799,9 @@ def test_lifespan_cleans_up_before_the_loop_and_stops_on_shutdown(tmp_path, monk
     from meeting_workbench.config import Settings
 
     calls: list[str] = []
-    monkeypatch.setattr(main_module, "cleanup_leftovers", lambda db, data_dir: calls.append("cleanup"))
+    monkeypatch.setattr(
+        main_module, "cleanup_leftovers", lambda db, data_dir: calls.append("cleanup")
+    )
     (tmp_path / "archive").mkdir()
     (tmp_path / "staging").mkdir()
     settings = Settings(

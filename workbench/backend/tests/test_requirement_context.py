@@ -1,5 +1,6 @@
 """第四期 4h：需求页［复制给 Claude Code］的背景（GET /api/requirements/{id}/context）。
 Markdown 的样子和绝对路径、cards_missing、paths 包含旧按钮的全部、材料原文不出现、404、语句数、不写盘。"""
+
 from __future__ import annotations
 
 import time
@@ -69,8 +70,12 @@ def legacy_paths(db, requirement_id="r-1"):
             WHERE rm.requirement_id = ?""",
         (requirement_id,),
     )
-    folders = db.query_all("SELECT path FROM requirement_folders WHERE requirement_id = ?", (requirement_id,))
-    return [row["canonical_dir"] for row in meetings if row["canonical_dir"]] + [row["path"] for row in folders]
+    folders = db.query_all(
+        "SELECT path FROM requirement_folders WHERE requirement_id = ?", (requirement_id,)
+    )
+    return [row["canonical_dir"] for row in meetings if row["canonical_dir"]] + [
+        row["path"] for row in folders
+    ]
 
 
 def test_markdown_uses_absolute_paths_and_writes_every_decision(tmp_path):
@@ -81,7 +86,15 @@ def test_markdown_uses_absolute_paths_and_writes_every_decision(tmp_path):
     assert result["markdown"] == EXPECTED.format(root=root, old=old_root)
     assert result["cards_missing"] == 1
     assert SENTINEL_CHUNK not in result["markdown"]
-    for absent in ("相关的原话", "影响的原话", "蓝鲸七号原料", "还没确认的任务", "又说了一次", "%", "分数"):
+    for absent in (
+        "相关的原话",
+        "影响的原话",
+        "蓝鲸七号原料",
+        "还没确认的任务",
+        "又说了一次",
+        "%",
+        "分数",
+    ):
         assert absent not in result["markdown"]
 
 
@@ -101,7 +114,9 @@ def test_empty_sections_are_left_out(tmp_path):
     db, _settings, _writer, _root, _old_root = world(tmp_path)
     result = context(db, "r-0")
     assert result == {
-        "markdown": "# 只有标题的需求（云图AI · 需求 · P0 · 进行中）\n\n" + card_index.CONTEXT_QUOTE + "\n",
+        "markdown": "# 只有标题的需求（云图AI · 需求 · P0 · 进行中）\n\n"
+        + card_index.CONTEXT_QUOTE
+        + "\n",
         "paths": [],
         "cards_missing": 0,
     }
@@ -113,8 +128,13 @@ def test_statement_budget_and_no_disk_writes(tmp_path):
     db, _settings, _writer, root, _old_root = world(tmp_path)
     before = sorted((path, path.stat().st_mtime_ns) for path in root.rglob("*") if path.is_file())
     changes = db.query_one("SELECT value FROM app_state WHERE key = 'graph_rev'")
-    assert count_reads(db, lambda connection: card_index.requirement_context(connection, "r-1")) <= 8
-    assert sorted((path, path.stat().st_mtime_ns) for path in root.rglob("*") if path.is_file()) == before
+    assert (
+        count_reads(db, lambda connection: card_index.requirement_context(connection, "r-1")) <= 8
+    )
+    assert (
+        sorted((path, path.stat().st_mtime_ns) for path in root.rglob("*") if path.is_file())
+        == before
+    )
     assert db.query_one("SELECT value FROM app_state WHERE key = 'graph_rev'") == changes
 
 
@@ -129,11 +149,19 @@ def test_fifty_meetings_timing(tmp_path):
     )
     for index in range(50):
         meeting_id = f"vm-202609{index % 28 + 1:02d}-{index:06d}"
-        _meeting(db, pid, meeting_id=meeting_id, title=f"周会{index}", when=f"2026-09-{index % 28 + 1:02d}T09:00:00")
+        _meeting(
+            db,
+            pid,
+            meeting_id=meeting_id,
+            title=f"周会{index}",
+            when=f"2026-09-{index % 28 + 1:02d}T09:00:00",
+        )
         _link(db, "r-big", meeting_id)
         add_decision(db, f"d-{index}", meeting_id, f"第 {index} 条决议", 1000)
     writer.reconcile()
-    assert count_reads(db, lambda connection: card_index.requirement_context(connection, "r-big")) <= 8
+    assert (
+        count_reads(db, lambda connection: card_index.requirement_context(connection, "r-big")) <= 8
+    )
     started = time.perf_counter()
     result = context(db, "r-big")
     elapsed = time.perf_counter() - started

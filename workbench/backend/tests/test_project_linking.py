@@ -1,4 +1,5 @@
 """会议自动归属项目测试（260905 新增；v13 第一期 1b 按字面线索 + LLM 的新规则重写）。"""
+
 import json
 import uuid
 
@@ -49,7 +50,9 @@ def seed_meeting(
            VALUES (?, ?, 1, ?, '<p></p>', 'generated', 1, ?)""",
         (version_id, meeting_id, markdown, now),
     )
-    db.execute("UPDATE meetings SET current_minutes_version_id=? WHERE id=?", (version_id, meeting_id))
+    db.execute(
+        "UPDATE meetings SET current_minutes_version_id=? WHERE id=?", (version_id, meeting_id)
+    )
     if segments:
         transcript = db.create_transcript_version(meeting_id, "funasr", published=True)
         db.replace_segments(
@@ -95,7 +98,9 @@ def make_term(db: Database, project_id: str, term: str, *, is_cue: int = 1) -> s
     return term_id
 
 
-def make_task(db: Database, meeting_id: str, project_id: str | None, status: str = "confirmed") -> None:
+def make_task(
+    db: Database, meeting_id: str, project_id: str | None, status: str = "confirmed"
+) -> None:
     now = utc_now()
     db.execute(
         """INSERT INTO tasks
@@ -134,9 +139,7 @@ def link_row(db: Database, meeting_id: str) -> dict:
 
 
 def meeting_row(db: Database, meeting_id: str) -> dict:
-    return db.query_one(
-        "SELECT project_id, project_origin FROM meetings WHERE id=?", (meeting_id,)
-    )
+    return db.query_one("SELECT project_id, project_origin FROM meetings WHERE id=?", (meeting_id,))
 
 
 def test_llm_high_without_rival_cues_is_auto_assigned_with_evidence(tmp_path, monkeypatch):
@@ -160,7 +163,10 @@ def test_llm_high_without_rival_cues_is_auto_assigned_with_evidence(tmp_path, mo
     assert term["anchors_ms"] == [1000, 61000]
     assert term["source"] == "term"
     assert link["evidence_json"][-1] == {
-        "kind": "llm", "project_id": project_id, "confidence": "high", "reason": "标题即项目名",
+        "kind": "llm",
+        "project_id": project_id,
+        "confidence": "high",
+        "reason": "标题即项目名",
     }
 
 
@@ -169,7 +175,10 @@ def test_llm_high_is_overruled_by_a_stronger_rival_and_goes_to_review(tmp_path, 
     project_a = make_project(db, "云图AI")
     project_b = make_project(db, "数据中台")
     seed_meeting(
-        db, "vm-2", "周会", "数据中台 口径；数据中台 指标；数据中台 排期",
+        db,
+        "vm-2",
+        "周会",
+        "数据中台 口径；数据中台 指标；数据中台 排期",
     )
     llm_answers(monkeypatch, HIGH.format(name="云图AI"))
 
@@ -411,7 +420,11 @@ def test_backfill_dry_run_does_not_write(tmp_path, monkeypatch):
 
     assert result["dry_run"] is True
     [item] = result["results"]
-    assert (item["decision"], item["project_id"], item["method"]) == ("auto", project_id, "llm_high")
+    assert (item["decision"], item["project_id"], item["method"]) == (
+        "auto",
+        project_id,
+        "llm_high",
+    )
     assert meeting_row(db, "vm-16")["project_id"] is None
     assert db.query_one("SELECT COUNT(*) AS n FROM project_links")["n"] == 0
 

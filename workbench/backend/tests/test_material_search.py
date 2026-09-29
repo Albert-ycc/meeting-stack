@@ -1,4 +1,5 @@
 """第三期 3f：材料进搜索、按范围的「意思相近」、材料向量循环和内存矩阵、备份清全文表和恢复后补建。"""
+
 import json
 import shutil
 import sqlite3
@@ -14,7 +15,13 @@ from meeting_workbench.backup import BackupManager
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database, utc_now
 from meeting_workbench.material_content import MaterialContent
-from meeting_workbench.material_fts import REBUILD_KEY, integrity_ok, rebuild_mark, rebuild_pending, run_rebuild
+from meeting_workbench.material_fts import (
+    REBUILD_KEY,
+    integrity_ok,
+    rebuild_mark,
+    rebuild_pending,
+    run_rebuild,
+)
 from meeting_workbench.material_media import MaterialMedia
 from meeting_workbench.material_search import CHUNK_FETCH, material_search
 from meeting_workbench.material_vectors import MaterialVectors
@@ -60,7 +67,9 @@ def add_file(db, root_id, rel_path, *, key=None, mtime=1, zone="normal", error=N
             error,
         ),
     )
-    return db.query_one("SELECT id FROM material_files WHERE root_id = ? AND rel_path = ?", (root_id, rel_path))["id"]
+    return db.query_one(
+        "SELECT id FROM material_files WHERE root_id = ? AND rel_path = ?", (root_id, rel_path)
+    )["id"]
 
 
 def add_content(db, key, chunks=(), *, layer="text", state="done", reason=None):
@@ -78,7 +87,12 @@ def add_content(db, key, chunks=(), *, layer="text", state="done", reason=None):
 
 
 def chunk_ids(db, key):
-    return [row["id"] for row in db.query_all("SELECT id FROM material_chunks WHERE content_key = ? ORDER BY ordinal", (key,))]
+    return [
+        row["id"]
+        for row in db.query_all(
+            "SELECT id FROM material_chunks WHERE content_key = ? ORDER BY ordinal", (key,)
+        )
+    ]
 
 
 @pytest.fixture
@@ -93,7 +107,9 @@ def world(tmp_path):
 
 
 def search(db, words, scope=None, **kwargs):
-    return material_search(db, words, scope=scope, state_of=kwargs.pop("state_of", lambda path: ROOT_ONLINE), **kwargs)
+    return material_search(
+        db, words, scope=scope, state_of=kwargs.pop("state_of", lambda path: ROOT_ONLINE), **kwargs
+    )
 
 
 # ---------------------------------------------------------------------- 原词命中
@@ -101,8 +117,17 @@ def search(db, words, scope=None, **kwargs):
 
 def test_body_hits_one_row_per_content_with_copies_and_two_quotes(world):
     db = world.db
-    add_content(db, "k-plan", [("第 1 页", None, "报价单下周发给客户"), ("第 2 页", None, "开场白"),
-                               ("第 3 页", None, "报价单要盖章"), ("第 4 页", None, "报价单附件")], layer="pdf")
+    add_content(
+        db,
+        "k-plan",
+        [
+            ("第 1 页", None, "报价单下周发给客户"),
+            ("第 2 页", None, "开场白"),
+            ("第 3 页", None, "报价单要盖章"),
+            ("第 4 页", None, "报价单附件"),
+        ],
+        layer="pdf",
+    )
     add_file(db, world.root, "方案/方案.pdf", key="k-plan", mtime=5)
     newest = add_file(db, world.root, "备份/方案.pdf", key="k-plan", mtime=9)
     add_content(db, "k-audio", [(None, 92_000, "报价单的事明天说")], layer="media")
@@ -111,10 +136,15 @@ def test_body_hits_one_row_per_content_with_copies_and_two_quotes(world):
     [plan, audio] = search(db, ["报价单"])["items"]
 
     assert plan["file_id"] == newest and plan["copies"] == 1 and plan["name"] == "方案.pdf"
-    assert [(hit["kind"], hit["loc"]) for hit in plan["hits"]] == [("pdf", "第 1 页"), ("pdf", "第 3 页")]
+    assert [(hit["kind"], hit["loc"]) for hit in plan["hits"]] == [
+        ("pdf", "第 1 页"),
+        ("pdf", "第 3 页"),
+    ]
     assert plan["hits"][0]["matched"] == "报价单" and plan["more_hits"] == 1
     assert plan["project_name"] == "云图AI" and plan["project_color"] == "#123456"
-    assert plan["path"].endswith("云图AI/备份/方案.pdf") and plan["folder_path"].endswith("云图AI/备份")
+    assert plan["path"].endswith("云图AI/备份/方案.pdf") and plan["folder_path"].endswith(
+        "云图AI/备份"
+    )
     assert audio["hits"][0]["kind"] == "media" and audio["hits"][0]["start_ms"] == 92_000
     assert audio["playable"] is True and plan["playable"] is False
     assert plan["name_hit"] is False and plan["state_text"] is None
@@ -191,14 +221,19 @@ def test_state_text_for_unreadable_offline_and_mentions(world):
     offline_path = str(world.tmp / "别的")
 
     rows = search(
-        db, ["报价单"], state_of=lambda path: ROOT_VOLUME_OFFLINE if path == offline_path else ROOT_ONLINE
+        db,
+        ["报价单"],
+        state_of=lambda path: ROOT_VOLUME_OFFLINE if path == offline_path else ROOT_ONLINE,
     )["items"]
     by_name = {row["name"]: row for row in rows}
 
     assert by_name["报价单-加密.pdf"]["state_text"] == "读不了：要密码"
     assert by_name["报价单-加密.pdf"]["mentioned_meetings"] == 1
     assert by_name["报价单-无权限.docx"]["state_text"] == "读不了：没有权限"
-    assert by_name["盘上.txt"]["state_text"] == "资料盘未连接" and by_name["盘上.txt"]["root_online"] is False
+    assert (
+        by_name["盘上.txt"]["state_text"] == "资料盘未连接"
+        and by_name["盘上.txt"]["root_online"] is False
+    )
 
 
 def test_budget_runs_out_and_returns_what_was_found_as_partial(world, monkeypatch):
@@ -253,10 +288,19 @@ def test_search_endpoint_returns_materials_and_state(tmp_path):
     assert body["material_similar"] == []
     scoped = client.get("/api/search", params={"q": "报价单", "project_id": "p"}).json()
     assert [row["name"] for row in scoped["materials"]] == ["a.txt"]
-    assert client.get("/api/search", params={"q": "报价单", "project_id": "none"}).json()["materials"] == []
+    assert (
+        client.get("/api/search", params={"q": "报价单", "project_id": "none"}).json()["materials"]
+        == []
+    )
 
-    db.execute("INSERT INTO app_state(key, value, updated_at) VALUES (?, '{}', ?)", (REBUILD_KEY, utc_now()))
-    assert client.get("/api/search", params={"q": "报价单"}).json()["material_state"]["rebuilding"] is True
+    db.execute(
+        "INSERT INTO app_state(key, value, updated_at) VALUES (?, '{}', ?)",
+        (REBUILD_KEY, utc_now()),
+    )
+    assert (
+        client.get("/api/search", params={"q": "报价单"}).json()["material_state"]["rebuilding"]
+        is True
+    )
 
 
 # ---------------------------------------------------------------------- 意思相近
@@ -272,14 +316,20 @@ def put_vector(db, chunk_id, values, model):
 
 
 def test_meeting_similar_filters_by_project_before_taking_the_top_60(tmp_path):
-    settings = Settings(data_dir=tmp_path, database_path=tmp_path / "db.sqlite3", semantic_enabled=True)
+    settings = Settings(
+        data_dir=tmp_path, database_path=tmp_path / "db.sqlite3", semantic_enabled=True
+    )
     db = Database(settings.database_path)
     db.initialize()
     add_project(db, "p", "小项目")
     add_meeting(db, "vm-small", date="2026-09-01", project_id="p", segments=["小项目的话"])
-    add_meeting(db, "vm-big", date="2026-09-02", segments=[f"别的话 {index}" for index in range(70)])
+    add_meeting(
+        db, "vm-big", date="2026-09-02", segments=[f"别的话 {index}" for index in range(70)]
+    )
     for row in db.query_all("SELECT id, meeting_id FROM segments"):
-        vector = np.array([0.8, 0.6, 0, 0] if row["meeting_id"] == "vm-small" else [1, 0, 0, 0], dtype=np.float32)
+        vector = np.array(
+            [0.8, 0.6, 0, 0] if row["meeting_id"] == "vm-small" else [1, 0, 0, 0], dtype=np.float32
+        )
         db.execute(
             "INSERT INTO embeddings(segment_id, model, dimensions, vector, created_at) VALUES (?, ?, 4, ?, ?)",
             (row["id"], settings.semantic_model, vector.tobytes(), utc_now()),
@@ -287,9 +337,15 @@ def test_meeting_similar_filters_by_project_before_taking_the_top_60(tmp_path):
     semantic = SemanticIndex(db, settings, busy_check=lambda: False)
     query = np.array([1, 0, 0, 0], dtype=np.float32)
 
-    assert [row["segment_id"] for row in semantic.search_vector(query, scope="p", limit=60)] == ["vm-small-s0"]
-    assert "vm-small-s0" not in [row["segment_id"] for row in semantic.search_vector(query, limit=60)]
-    assert all(row["project_id"] is None for row in semantic.search_vector(query, scope="none", limit=60))
+    assert [row["segment_id"] for row in semantic.search_vector(query, scope="p", limit=60)] == [
+        "vm-small-s0"
+    ]
+    assert "vm-small-s0" not in [
+        row["segment_id"] for row in semantic.search_vector(query, limit=60)
+    ]
+    assert all(
+        row["project_id"] is None for row in semantic.search_vector(query, scope="none", limit=60)
+    )
 
 
 def test_material_similar_in_scope_above_threshold_one_row_per_content(tmp_path, monkeypatch):
@@ -314,7 +370,9 @@ def test_material_similar_in_scope_above_threshold_one_row_per_content(tmp_path,
     put_vector(db, chunk_ids(db, "k-other")[0], [1, 0, 0, 0], model)
     semantic = app.state.semantic
     monkeypatch.setattr(semantic, "busy_check", lambda: False)
-    monkeypatch.setattr(semantic, "encode_query", lambda query: np.array([1, 0, 0, 0], dtype=np.float32))
+    monkeypatch.setattr(
+        semantic, "encode_query", lambda query: np.array([1, 0, 0, 0], dtype=np.float32)
+    )
     monkeypatch.setattr(semantic, "search_vector", lambda vector, *, scope=None, limit=20: [])
     client = TestClient(app)
 
@@ -322,10 +380,19 @@ def test_material_similar_in_scope_above_threshold_one_row_per_content(tmp_path,
 
     assert [row["name"] for row in body["materials"]] == ["报价单.txt"]
     [close] = body["material_similar"]
-    assert close["name"] == "近.txt" and close["score"] > 0.9 and close["hits"][0]["text"] == "交付时间往后挪"
+    assert (
+        close["name"] == "近.txt"
+        and close["score"] > 0.9
+        and close["hits"][0]["text"] == "交付时间往后挪"
+    )
     everywhere = client.get("/api/search", params={"q": "报价单"}).json()
     assert {row["name"] for row in everywhere["material_similar"]} == {"近.txt", "他.txt"}
-    assert client.get("/api/search", params={"q": "报价单", "project_id": "none"}).json()["material_similar"] == []
+    assert (
+        client.get("/api/search", params={"q": "报价单", "project_id": "none"}).json()[
+            "material_similar"
+        ]
+        == []
+    )
 
     monkeypatch.setattr(semantic, "busy_check", lambda: True)
     busy = client.get("/api/search", params={"q": "报价单"}).json()
@@ -350,7 +417,9 @@ def test_deleted_chunks_are_dropped_and_forgotten(tmp_path, monkeypatch):
     add_file(db, root, "b.txt", key="k-b")
     semantic = app.state.semantic
     monkeypatch.setattr(semantic, "busy_check", lambda: False)
-    monkeypatch.setattr(semantic, "encode_query", lambda query: np.array([1, 0, 0, 0], dtype=np.float32))
+    monkeypatch.setattr(
+        semantic, "encode_query", lambda query: np.array([1, 0, 0, 0], dtype=np.float32)
+    )
     monkeypatch.setattr(semantic, "search_vector", lambda vector, *, scope=None, limit=20: [])
     monkeypatch.setattr(vectors, "refresh", lambda: vectors._matrix)
 
@@ -391,7 +460,11 @@ def test_embed_round_goes_in_batches_of_64_and_stores_float16(world):
     assert encoder.calls == [64, 64, 2] and stats == {"embedded": 130, "ended": "done"}
     row = db.query_one("SELECT vector FROM material_chunk_vectors LIMIT 1")
     assert len(row["vector"]) == 4 * 2
-    assert vectors.embed_round() == {"embedded": 0, "ended": "done"} and encoder.calls == [64, 64, 2]
+    assert vectors.embed_round() == {"embedded": 0, "ended": "done"} and encoder.calls == [
+        64,
+        64,
+        2,
+    ]
 
 
 def test_embed_round_yields_between_batches_and_skips_when_disabled(world):
@@ -409,10 +482,14 @@ def test_chunk_deleted_while_encoding_gets_no_vector(world):
     db = world.db
     add_content(db, "k-a", ["一段", "两段"])
     [first, second] = chunk_ids(db, "k-a")
-    encoder = FakeEncoder(on_encode=lambda: db.execute("DELETE FROM material_chunks WHERE id = ?", (first,)))
+    encoder = FakeEncoder(
+        on_encode=lambda: db.execute("DELETE FROM material_chunks WHERE id = ?", (first,))
+    )
     MaterialVectors(db, vector_settings(), encoder).embed_round()
 
-    stored = [row["chunk_id"] for row in db.query_all("SELECT chunk_id FROM material_chunk_vectors")]
+    stored = [
+        row["chunk_id"] for row in db.query_all("SELECT chunk_id FROM material_chunk_vectors")
+    ]
     assert stored == [second]
 
 
@@ -447,7 +524,9 @@ def test_forgotten_chunks_are_skipped_and_many_trigger_a_rebuild(world):
     query = np.array([1, 0, 0, 0], dtype=np.float32)
     top = vectors.search(query, allowed=None, fetch=3)
     vectors.forget([top[0][0]])
-    assert top[0][0] not in [chunk_id for chunk_id, _ in vectors.search(query, allowed=None, fetch=3)]
+    assert top[0][0] not in [
+        chunk_id for chunk_id, _ in vectors.search(query, allowed=None, fetch=3)
+    ]
     before = vectors._matrix
     vectors.forget([chunk_id for chunk_id, _ in vectors.search(query, allowed=None, fetch=3)])
     vectors.search(query, allowed=None, fetch=3)
@@ -457,11 +536,17 @@ def test_forgotten_chunks_are_skipped_and_many_trigger_a_rebuild(world):
 def test_scope_filter_and_block_scoring_agree_with_one_block(world):
     db = matrix_world(world, 40)
     query = np.array([0.2, 1, 0, 0], dtype=np.float32)
-    whole = MaterialVectors(db, vector_settings(), FakeEncoder()).search(query, allowed=None, fetch=5)
-    blocks = MaterialVectors(db, vector_settings(), FakeEncoder(), block_bytes=1).search(query, allowed=None, fetch=5)
+    whole = MaterialVectors(db, vector_settings(), FakeEncoder()).search(
+        query, allowed=None, fetch=5
+    )
+    blocks = MaterialVectors(db, vector_settings(), FakeEncoder(), block_bytes=1).search(
+        query, allowed=None, fetch=5
+    )
     assert [chunk_id for chunk_id, _ in whole] == [chunk_id for chunk_id, _ in blocks]
     allowed = {"k-3", "k-4"}
-    scoped = MaterialVectors(db, vector_settings(), FakeEncoder()).search(query, allowed=allowed, fetch=5)
+    scoped = MaterialVectors(db, vector_settings(), FakeEncoder()).search(
+        query, allowed=allowed, fetch=5
+    )
     assert {chunk_ids(db, key)[0] for key in allowed} == {chunk_id for chunk_id, _ in scoped}
 
 
@@ -481,11 +566,20 @@ def backup_world(tmp_path, chunks=200):
     archive = tmp_path / "archive"
     archive.mkdir()
     settings = Settings(
-        data_dir=tmp_path / "data", database_path=tmp_path / "data" / "workbench.sqlite3", archive_root=archive
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        archive_root=archive,
     )
     db = Database(settings.database_path)
     db.initialize()
-    add_content(db, "k-big", [f"第 {index} 段：报价单、交付时间、验收标准都在这一段里写着" * 3 for index in range(chunks)])
+    add_content(
+        db,
+        "k-big",
+        [
+            f"第 {index} 段：报价单、交付时间、验收标准都在这一段里写着" * 3
+            for index in range(chunks)
+        ],
+    )
     return settings, db
 
 
@@ -496,8 +590,15 @@ def test_backup_empties_the_fts_table_and_marks_it_for_rebuild(tmp_path):
 
     with sqlite3.connect(result.local_path) as copy:
         assert copy.execute("SELECT COUNT(*) FROM material_chunks").fetchone()[0] == 200
-        assert copy.execute("SELECT COUNT(*) FROM material_chunks_fts WHERE material_chunks_fts MATCH '\"报价单\"'").fetchone()[0] == 0
-        value = copy.execute("SELECT value FROM app_state WHERE key = ?", (REBUILD_KEY,)).fetchone()[0]
+        assert (
+            copy.execute(
+                "SELECT COUNT(*) FROM material_chunks_fts WHERE material_chunks_fts MATCH '\"报价单\"'"
+            ).fetchone()[0]
+            == 0
+        )
+        value = copy.execute(
+            "SELECT value FROM app_state WHERE key = ?", (REBUILD_KEY,)
+        ).fetchone()[0]
         assert json.loads(value) == {"end": None, "done": 0}
         assert copy.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     receipt = json.loads((settings.backup_dir / "last-backup.json").read_text())
@@ -518,7 +619,9 @@ def test_backup_without_the_fts_table_gets_no_mark(tmp_path):
     result = BackupManager(db, settings).create()
 
     with sqlite3.connect(result.local_path) as copy:
-        assert copy.execute("SELECT 1 FROM app_state WHERE key = ?", (REBUILD_KEY,)).fetchone() is None
+        assert (
+            copy.execute("SELECT 1 FROM app_state WHERE key = ?", (REBUILD_KEY,)).fetchone() is None
+        )
     receipt = json.loads((settings.backup_dir / "last-backup.json").read_text())
     assert receipt["derived_tables"] == [
         "embeddings",
@@ -576,8 +679,12 @@ def test_restore_rebuilds_in_batches_resumes_after_restart_and_checks_integrity(
     assert not rebuild_pending(db)
     with db.transaction() as connection:
         assert integrity_ok(connection)
-    assert len(material_search(db, ["报价单"], state_of=lambda path: ROOT_ONLINE)["items"]) == 0  # 没有文件行
-    hits = db.query_all("SELECT rowid FROM material_chunks_fts WHERE material_chunks_fts MATCH '\"报价单\"'")
+    assert (
+        len(material_search(db, ["报价单"], state_of=lambda path: ROOT_ONLINE)["items"]) == 0
+    )  # 没有文件行
+    hits = db.query_all(
+        "SELECT rowid FROM material_chunks_fts WHERE material_chunks_fts MATCH '\"报价单\"'"
+    )
     assert len(hits) == 12
 
 
@@ -585,7 +692,10 @@ def test_rebuild_falls_back_to_a_full_rebuild_when_the_check_fails(tmp_path):
     settings, db = backup_world(tmp_path, chunks=4)
     db = restored(tmp_path, BackupManager(db, settings).create())
     # 终点记错了一个：最后一段没补进去，核对不通过
-    db.execute("UPDATE app_state SET value = ? WHERE key = ?", (json.dumps({"end": 3, "done": 0}), REBUILD_KEY))
+    db.execute(
+        "UPDATE app_state SET value = ? WHERE key = ?",
+        (json.dumps({"end": 3, "done": 0}), REBUILD_KEY),
+    )
 
     stats = run_rebuild(db, batch=10)
 
@@ -597,7 +707,9 @@ def test_rebuild_falls_back_to_a_full_rebuild_when_the_check_fails(tmp_path):
 def test_material_loops_leave_chunks_alone_until_the_rebuild_finishes(tmp_path):
     db = Database(tmp_path / "workbench.sqlite3")
     db.initialize()
-    settings = SimpleNamespace(data_dir=tmp_path / "data", archive_root=tmp_path, staging_root=tmp_path)
+    settings = SimpleNamespace(
+        data_dir=tmp_path / "data", archive_root=tmp_path, staging_root=tmp_path
+    )
     extracted = []
 
     class Extractor:
@@ -606,7 +718,11 @@ def test_material_loops_leave_chunks_alone_until_the_rebuild_finishes(tmp_path):
             raise AssertionError("不该读")
 
     content = MaterialContent(
-        db, settings, state_of=lambda path: ROOT_ONLINE, extractors={"text": Extractor()}, fts_rebuilding=lambda: True
+        db,
+        settings,
+        state_of=lambda path: ROOT_ONLINE,
+        extractors={"text": Extractor()},
+        fts_rebuilding=lambda: True,
     )
     orphan_calls = []
     content.orphan_pass = lambda **kwargs: orphan_calls.append(kwargs)
@@ -632,7 +748,10 @@ def test_doctor_reports_the_material_fts_check(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "Settings", lambda: settings)
     cli.main(["doctor"])
     assert json.loads(capsys.readouterr().out)["material_fts"] == "ok"
-    db.execute("INSERT INTO app_state(key, value, updated_at) VALUES (?, '{}', ?)", (REBUILD_KEY, utc_now()))
+    db.execute(
+        "INSERT INTO app_state(key, value, updated_at) VALUES (?, '{}', ?)",
+        (REBUILD_KEY, utc_now()),
+    )
     cli.main(["doctor"])
     assert json.loads(capsys.readouterr().out)["material_fts"] == "rebuilding"
 
@@ -644,4 +763,8 @@ def test_search_is_fast_enough_for_the_budget(world):
         add_file(db, world.root, f"{index}.txt", key=f"k-{index}", mtime=index)
     started = time.monotonic()
     result = search(db, ["报价单"])
-    assert time.monotonic() - started < 1.5 and len(result["items"]) == 20 and result["partial"] is False
+    assert (
+        time.monotonic() - started < 1.5
+        and len(result["items"]) == 20
+        and result["partial"] is False
+    )

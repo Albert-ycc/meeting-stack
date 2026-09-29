@@ -5,6 +5,7 @@ Vision 走一段很短的 Swift 程序（第一次用 swiftc 编译，需要 Xco
 tesseract 需要 brew install tesseract tesseract-lang（中文要 chi_sim 语言包）。
 哪个没装就只跑另一个，并说明怎么装。
 """
+
 from __future__ import annotations
 
 import json
@@ -89,7 +90,8 @@ def collect_images(roots: Iterable[Path]) -> list[tuple[Path, int]]:
     for root in roots:
         for current, dirs, files in os.walk(root, followlinks=False):
             dirs[:] = sorted(
-                name for name in dirs
+                name
+                for name in dirs
                 if not is_system_shadow(name)
                 and name not in NAME_ONLY_DIRS
                 and not name.startswith(".")
@@ -110,7 +112,9 @@ def collect_images(roots: Iterable[Path]) -> list[tuple[Path, int]]:
     return found
 
 
-def pick_images(images: list[tuple[Path, int]], roots: list[Path], limit: int = DEFAULT_LIMIT) -> list[Path]:
+def pick_images(
+    images: list[tuple[Path, int]], roots: list[Path], limit: int = DEFAULT_LIMIT
+) -> list[Path]:
     """尽量分散：按所在的一级文件夹分组轮流挑，同组里按路径均匀取。"""
     groups: OrderedDict[str, list[Path]] = OrderedDict()
     for path, _size in sorted(images, key=lambda item: str(item[0])):
@@ -151,7 +155,10 @@ def vision_engine(workdir: Path, *, system: str | None = None) -> tuple[Engine |
     try:
         result = subprocess.run(
             [swiftc, "-O", "-o", str(binary), str(source)],
-            capture_output=True, text=True, timeout=300, check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return None, "编译 Vision 小程序超时"
@@ -163,8 +170,11 @@ def vision_engine(workdir: Path, *, system: str | None = None) -> tuple[Engine |
         started = time.monotonic()
         try:
             completed = subprocess.run(
-                [str(binary), str(path)], capture_output=True, text=True,
-                timeout=ENGINE_TIMEOUT, check=False,
+                [str(binary), str(path)],
+                capture_output=True,
+                text=True,
+                timeout=ENGINE_TIMEOUT,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             return {"text": "", "seconds": ENGINE_TIMEOUT, "error": "处理超时"}
@@ -214,7 +224,9 @@ def tesseract_engine(workdir: Path) -> tuple[Engine | None, str | None, str | No
             try:
                 subprocess.run(
                     [sips, "-s", "format", "png", str(path), "--out", str(source)],
-                    capture_output=True, timeout=ENGINE_TIMEOUT, check=True,
+                    capture_output=True,
+                    timeout=ENGINE_TIMEOUT,
+                    check=True,
                 )
             except (subprocess.SubprocessError, OSError):
                 return {"text": "", "seconds": 0.0, "error": "HEIC 转 PNG 失败"}
@@ -222,7 +234,10 @@ def tesseract_engine(workdir: Path) -> tuple[Engine | None, str | None, str | No
         try:
             completed = subprocess.run(
                 [tesseract, str(source), "stdout", "-l", language],
-                capture_output=True, text=True, timeout=ENGINE_TIMEOUT, check=False,
+                capture_output=True,
+                text=True,
+                timeout=ENGINE_TIMEOUT,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             return {"text": "", "seconds": ENGINE_TIMEOUT, "error": "处理超时"}
@@ -231,7 +246,11 @@ def tesseract_engine(workdir: Path) -> tuple[Engine | None, str | None, str | No
                 source.unlink(missing_ok=True)
         seconds = round(time.monotonic() - started, 2)
         if completed.returncode != 0:
-            return {"text": "", "seconds": seconds, "error": (completed.stderr.strip() or "识别失败")[:200]}
+            return {
+                "text": "",
+                "seconds": seconds,
+                "error": (completed.stderr.strip() or "识别失败")[:200],
+            }
         return {"text": completed.stdout.strip(), "seconds": seconds, "error": None}
 
     return run, None, note
@@ -244,7 +263,12 @@ def _chars(text: str) -> int:
     return sum(1 for char in text if not char.isspace())
 
 
-def run_trial(images: list[Path], engines: dict[str, Engine], *, progress: Callable[[int, int], None] | None = None) -> dict[str, Any]:
+def run_trial(
+    images: list[Path],
+    engines: dict[str, Engine],
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for index, path in enumerate(images, start=1):
         try:
@@ -253,7 +277,10 @@ def run_trial(images: list[Path], engines: dict[str, Engine], *, progress: Calla
             size = 0
         pixels = image_size(path)
         row: dict[str, Any] = {
-            "path": str(path), "bytes": size, "pixels": list(pixels) if pixels else None, "engines": {},
+            "path": str(path),
+            "bytes": size,
+            "pixels": list(pixels) if pixels else None,
+            "engines": {},
         }
         for name, engine in engines.items():
             outcome = engine(path)
@@ -269,7 +296,9 @@ def run_trial(images: list[Path], engines: dict[str, Engine], *, progress: Calla
         summary[name] = {
             "images": len(outcomes),
             "succeeded": len(succeeded),
-            "avg_seconds": round(sum(item["seconds"] for item in succeeded) / len(succeeded), 2) if succeeded else None,
+            "avg_seconds": round(sum(item["seconds"] for item in succeeded) / len(succeeded), 2)
+            if succeeded
+            else None,
             "chars": sum(item["chars"] for item in succeeded),
             "empty": sum(1 for item in succeeded if item["chars"] == 0),
         }
@@ -286,7 +315,9 @@ def machine_summary() -> dict[str, str]:
     tesseract = shutil.which("tesseract")
     if tesseract:
         try:
-            result = subprocess.run([tesseract, "--version"], capture_output=True, text=True, timeout=30, check=False)
+            result = subprocess.run(
+                [tesseract, "--version"], capture_output=True, text=True, timeout=30, check=False
+            )
             lines = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()
             info["tesseract"] = lines[0] if lines else ""
         except (OSError, subprocess.SubprocessError):
@@ -296,7 +327,9 @@ def machine_summary() -> dict[str, str]:
 
 def render_markdown(report: dict[str, Any], notes: list[str]) -> str:
     lines = ["# 图片文字识别试跑", ""]
-    lines.append(f"{len(report['images'])} 张图，{report['generated_at'][:19].replace('T', ' ')}（UTC）。")
+    lines.append(
+        f"{len(report['images'])} 张图，{report['generated_at'][:19].replace('T', ' ')}（UTC）。"
+    )
     machine = report.get("machine")
     if machine:
         lines.append(
@@ -305,7 +338,11 @@ def render_markdown(report: dict[str, Any], notes: list[str]) -> str:
         )
     for note in notes:
         lines.append(f"- {note}")
-    lines += ["", "| 引擎 | 认出来的 | 平均每张 | 总字数 | 一个字也没认出 |", "| --- | --- | --- | --- | --- |"]
+    lines += [
+        "",
+        "| 引擎 | 认出来的 | 平均每张 | 总字数 | 一个字也没认出 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
     for name, item in report["summary"].items():
         average = f"{item['avg_seconds']} 秒" if item["avg_seconds"] is not None else "—"
         lines.append(
@@ -323,7 +360,9 @@ def render_markdown(report: dict[str, Any], notes: list[str]) -> str:
             lines.append(f"**{label}**：{outcome['seconds']} 秒，{outcome['chars']} 个字")
             text = outcome.get("text") or ""
             if text:
-                preview = text if len(text) <= TEXT_PREVIEW_CHARS else text[:TEXT_PREVIEW_CHARS] + "…"
+                preview = (
+                    text if len(text) <= TEXT_PREVIEW_CHARS else text[:TEXT_PREVIEW_CHARS] + "…"
+                )
                 lines += ["", "```text", preview.replace("```", "ʼʼʼ"), "```", ""]
     return "\n".join(lines).rstrip() + "\n"
 
@@ -331,7 +370,11 @@ def render_markdown(report: dict[str, Any], notes: list[str]) -> str:
 def render_summary(report: dict[str, Any], out_dir: Path) -> str:
     lines = [f"试跑了 {len(report['images'])} 张图："]
     for name, item in report["summary"].items():
-        average = f"平均每张 {item['avg_seconds']} 秒" if item["avg_seconds"] is not None else "没有认成的"
+        average = (
+            f"平均每张 {item['avg_seconds']} 秒"
+            if item["avg_seconds"] is not None
+            else "没有认成的"
+        )
         lines.append(
             f"  {ENGINE_LABELS.get(name, name)}：认出 {item['succeeded']}/{item['images']} 张，{average}，"
             f"共 {item['chars']} 个字"

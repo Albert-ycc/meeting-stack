@@ -8,6 +8,7 @@
   ⑤ 没有批次，或最新批次还在 pending/running → ai_pending
   ⑥ 其余（unresolved 等）→ none；批次里记了像新项目的名字时 → new_project
 """
+
 from __future__ import annotations
 
 import json
@@ -154,7 +155,7 @@ def _reassigned_from(
             for row in connection.execute(
                 f"""SELECT t.id, t.title, t.requirement_id, r.title AS requirement_title
                       FROM tasks t JOIN requirements r ON r.id = t.requirement_id
-                     WHERE t.id IN ({', '.join('?' for _ in left_ids)}) AND t.project_id = ?
+                     WHERE t.id IN ({", ".join("?" for _ in left_ids)}) AND t.project_id = ?
                      ORDER BY t.created_at, t.id""",
                 (*left_ids, from_id),
             ).fetchall()
@@ -258,9 +259,7 @@ def decorate_meeting_rows(connection: Any, rows: list[dict[str, Any]]) -> None:
         row["new_project_name"] = new_project_name if state == "new_project" else None
 
 
-def group_new_project_names(
-    rows: list[dict[str, Any]], taken: set[str]
-) -> list[dict[str, Any]]:
+def group_new_project_names(rows: list[dict[str, Any]], taken: set[str]) -> list[dict[str, Any]]:
     """「像新项目」按名字分组（资料库、工作台、全部项目概览共用）：norm_key 相同的算一组，
     名字用最近那场会的写法；已被占用的名字不提。按场数、再按最近排。
     rows 要带 id、recording_date、created_at、state、new_project_name。"""
@@ -285,7 +284,9 @@ def group_new_project_names(
             "norm_key": key,
             "meeting_count": len(bucket["meetings"]),
             # 最近的一场在最前（概览的幽灵岛对它打开提示）
-            "meeting_ids": [meeting_id for _when, meeting_id in sorted(bucket["meetings"], reverse=True)],
+            "meeting_ids": [
+                meeting_id for _when, meeting_id in sorted(bucket["meetings"], reverse=True)
+            ],
             "last_at": bucket["last_at"],
         }
         for key, bucket in names.items()

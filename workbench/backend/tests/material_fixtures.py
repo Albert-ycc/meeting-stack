@@ -2,6 +2,7 @@
 
 都只用标准库现场生成，不往仓库里放二进制样本。
 """
+
 from __future__ import annotations
 
 import os
@@ -50,7 +51,9 @@ def build_cfb(streams: dict[str, bytes]) -> bytes:
     minifat_start = alloc(minifat_bytes)
     big_start = {name: alloc(data) for name, data in streams.items() if name not in small}
 
-    entries = [("Root Entry", 5, len(mini))] + [(name, 2, len(data)) for name, data in streams.items()]
+    entries = [("Root Entry", 5, len(mini))] + [
+        (name, 2, len(data)) for name, data in streams.items()
+    ]
     directory = bytearray()
     for index, (name, kind, size) in enumerate(entries):
         encoded = (name + "\0").encode("utf-16-le")
@@ -132,12 +135,16 @@ def build_workbook(
         globals_ += record(0x002F, b"\x01\x00" + b"\0" * 52)
     for name, _rows in sheets:
         globals_ += record(0x0085, struct.pack("<IBB", 0, 0, 0) + _short(name))
-    sst = struct.pack("<II", len(strings), len(strings)) + b"".join(xl_string(text) for text in strings)
+    sst = struct.pack("<II", len(strings), len(strings)) + b"".join(
+        xl_string(text) for text in strings
+    )
     if split_sst_at is None:
         globals_ += record(0x00FC, sst)
     else:
         # 在某个字符串中间断开：CONTINUE 开头补一个标志字节
-        globals_ += record(0x00FC, sst[:split_sst_at]) + record(0x003C, b"\x01" + sst[split_sst_at:])
+        globals_ += record(0x00FC, sst[:split_sst_at]) + record(
+            0x003C, b"\x01" + sst[split_sst_at:]
+        )
     globals_ += record(0x000A)
     body = globals_
     for number, (_name, rows) in enumerate(sheets):
@@ -149,7 +156,9 @@ def build_workbook(
                 if value is None:
                     continue
                 if isinstance(value, str):
-                    body += record(0x00FD, struct.pack("<HHHI", row_index, column, 0, strings.index(value)))
+                    body += record(
+                        0x00FD, struct.pack("<HHHI", row_index, column, 0, strings.index(value))
+                    )
                 else:
                     body += record(0x0203, struct.pack("<HHHd", row_index, column, 0, float(value)))
         body += record(0x000A)
@@ -165,7 +174,9 @@ def _ppt_record(kind: int, body: bytes, *, version: int = 0, instance: int = 0) 
     return struct.pack("<HHI", version | (instance << 4), kind, len(body)) + body
 
 
-def build_ppt(path: Path, slides: list[list[str]], notes: list[str] = (), *, encrypted: bool = False) -> Path:
+def build_ppt(
+    path: Path, slides: list[list[str]], notes: list[str] = (), *, encrypted: bool = False
+) -> Path:
     slide_list = b"".join(
         _ppt_record(0x03F3, b"\0" * 20)
         + b"".join(_ppt_record(0x0FA0, text.encode("utf-16-le")) for text in texts)
@@ -174,7 +185,8 @@ def build_ppt(path: Path, slides: list[list[str]], notes: list[str] = (), *, enc
     body = _ppt_record(0x0FF0, slide_list, version=0x0F, instance=0)
     if notes:
         note_list = b"".join(
-            _ppt_record(0x03F3, b"\0" * 20) + _ppt_record(0x0FA8, text.encode("latin-1")) for text in notes
+            _ppt_record(0x03F3, b"\0" * 20) + _ppt_record(0x0FA8, text.encode("latin-1"))
+            for text in notes
         )
         body += _ppt_record(0x0FF0, note_list, version=0x0F, instance=2)
     stream = _ppt_record(0x03E8, body, version=0x0F)
@@ -192,8 +204,12 @@ def build_doc(path: Path, *, encrypted: bool = False) -> Path:
 
 
 def build_encrypted_ooxml(path: Path) -> Path:
-    return write_bytes(path, build_cfb({"EncryptionInfo": b"\x04\x00\x04\x00" + b"\0" * 200,
-                                        "EncryptedPackage": b"\0" * 5000}))
+    return write_bytes(
+        path,
+        build_cfb(
+            {"EncryptionInfo": b"\x04\x00\x04\x00" + b"\0" * 200, "EncryptedPackage": b"\0" * 5000}
+        ),
+    )
 
 
 # ---------------------------------------------------------------------- zip 包
@@ -213,11 +229,15 @@ def write_bytes(path: Path, data: bytes) -> Path:
     return path
 
 
-def write_zip(path: Path, members: dict[str, str | bytes], *, stored_first: str | None = None) -> Path:
+def write_zip(
+    path: Path, members: dict[str, str | bytes], *, stored_first: str | None = None
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         if stored_first:
-            archive.writestr(zipfile.ZipInfo(stored_first), members[stored_first], zipfile.ZIP_STORED)
+            archive.writestr(
+                zipfile.ZipInfo(stored_first), members[stored_first], zipfile.ZIP_STORED
+            )
         for name, data in members.items():
             if name != stored_first:
                 archive.writestr(name, data)
@@ -225,11 +245,15 @@ def write_zip(path: Path, members: dict[str, str | bytes], *, stored_first: str 
 
 
 def _w_paragraphs(paragraphs: list[str]) -> str:
-    return "".join(f'<w:p><w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:p>' for text in paragraphs)
+    return "".join(
+        f'<w:p><w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:p>' for text in paragraphs
+    )
 
 
 def _rels(items: dict[str, str]) -> str:
-    body = "".join(f'<Relationship Id="{rid}" Type="x" Target="{target}"/>' for rid, target in items.items())
+    body = "".join(
+        f'<Relationship Id="{rid}" Type="x" Target="{target}"/>' for rid, target in items.items()
+    )
     return f'<Relationships xmlns="{REL}">{body}</Relationships>'
 
 
@@ -249,9 +273,13 @@ def build_docx(
     if header:
         members["word/header1.xml"] = f'<w:hdr xmlns:w="{W}">{_w_paragraphs([header])}</w:hdr>'
     if footnote:
-        members["word/footnotes.xml"] = f'<w:footnotes xmlns:w="{W}">{_w_paragraphs([footnote])}</w:footnotes>'
+        members["word/footnotes.xml"] = (
+            f'<w:footnotes xmlns:w="{W}">{_w_paragraphs([footnote])}</w:footnotes>'
+        )
     if comment:
-        members["word/comments.xml"] = f'<w:comments xmlns:w="{W}">{_w_paragraphs([comment])}</w:comments>'
+        members["word/comments.xml"] = (
+            f'<w:comments xmlns:w="{W}">{_w_paragraphs([comment])}</w:comments>'
+        )
     return write_zip(path, members)
 
 
@@ -311,7 +339,9 @@ def build_pptx(path: Path, slides: list[list[str]], notes: dict[int, str] | None
         rels[f"rId{number}"] = f"slides/slide{file_number}.xml"
         ids.append(f'<p:sldId id="{255 + number}" r:id="rId{number}"/>')
         if number in notes:
-            members[f"ppt/notesSlides/notesSlide{file_number}.xml"] = _slide([notes[number], str(number)])
+            members[f"ppt/notesSlides/notesSlide{file_number}.xml"] = _slide(
+                [notes[number], str(number)]
+            )
             members[f"ppt/slides/_rels/slide{file_number}.xml.rels"] = _rels(
                 {"rId9": f"../notesSlides/notesSlide{file_number}.xml"}
             )
@@ -330,17 +360,23 @@ ODF_NS = (
 )
 
 
-def build_odt(path: Path, paragraphs: list[str], *, encrypted: bool = False, table: list[list[str]] = ()) -> Path:
+def build_odt(
+    path: Path, paragraphs: list[str], *, encrypted: bool = False, table: list[list[str]] = ()
+) -> Path:
     body = "".join(f"<text:p>{text}</text:p>" for text in paragraphs)
     if table:
         rows = "".join(
             "<table:table-row>"
-            + "".join(f"<table:table-cell><text:p>{cell}</text:p></table:table-cell>" for cell in row)
+            + "".join(
+                f"<table:table-cell><text:p>{cell}</text:p></table:table-cell>" for cell in row
+            )
             + "</table:table-row>"
             for row in table
         )
         body += f'<table:table table:name="报价">{rows}</table:table>'
-    manifest = '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">'
+    manifest = (
+        '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">'
+    )
     if encrypted:
         manifest += '<manifest:file-entry manifest:full-path="content.xml"><manifest:encryption-data/></manifest:file-entry>'
     manifest += "</manifest:manifest>"
@@ -371,8 +407,11 @@ def build_epub(path: Path, chapters: list[str]) -> Path:
         items.append(f'<item id="c{number}" href="{name}"/>')
         spine.append(f'<itemref idref="c{number}"/>')
     members["OEBPS/content.opf"] = (
-        '<package xmlns="http://www.idpf.org/2007/opf"><manifest>' + "".join(items)
-        + "</manifest><spine>" + "".join(spine) + "</spine></package>"
+        '<package xmlns="http://www.idpf.org/2007/opf"><manifest>'
+        + "".join(items)
+        + "</manifest><spine>"
+        + "".join(spine)
+        + "</spine></package>"
     )
     return write_zip(path, members, stored_first="mimetype")
 
@@ -383,10 +422,7 @@ def fake_textutil(folder: Path, *, output: str = "", exit_code: int = 0) -> Path
     script = folder / "textutil"
     log = folder / "textutil.args"
     script.write_text(
-        "#!/bin/sh\n"
-        f'echo "$@" >> "{log}"\n'
-        f"printf '%s' '{output}'\n"
-        f"exit {exit_code}\n",
+        f"#!/bin/sh\necho \"$@\" >> \"{log}\"\nprintf '%s' '{output}'\nexit {exit_code}\n",
         encoding="utf-8",
     )
     os.chmod(script, 0o755)

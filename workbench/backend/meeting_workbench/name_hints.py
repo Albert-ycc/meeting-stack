@@ -5,6 +5,7 @@
 - 做了决定就清掉提示：settle_project_name、settle_requirement_name 返回撤销要用的东西，
   restore_settlement 照原样还回去（只在当前值仍为空时写回，决定行恢复原样而不是直接删）。
 """
+
 from __future__ import annotations
 
 import json
@@ -53,15 +54,17 @@ def json_names(raw: Any) -> list[str]:
         value = json.loads(raw) if isinstance(raw, str) else (raw or [])
     except json.JSONDecodeError:
         return []
-    return [item for item in value if isinstance(item, str) and item.strip()] if isinstance(value, list) else []
+    return (
+        [item for item in value if isinstance(item, str) and item.strip()]
+        if isinstance(value, list)
+        else []
+    )
 
 
 # ---------------------------------------------------------------------- 分类时的过滤
 
 
-def filter_spoken(
-    raw: Any, *, segments: list[dict[str, Any]], minutes: str
-) -> list[str]:
+def filter_spoken(raw: Any, *, segments: list[dict[str, Any]], minutes: str) -> list[str]:
     """AI 给的 spoken_names：2–20 字，并且在当前逐字稿或纪要里真的出现过，最多 3 个。"""
     result: list[str] = []
     seen: set[str] = set()
@@ -118,12 +121,17 @@ def accept_requirement_name(
     # 其实是别的项目的名字或也叫。
     other_key = norm_key(text)
     for row in projects:
-        if row["id"] != project_id and any(norm_key(value) == other_key for value in _project_keys(row)):
+        if row["id"] != project_id and any(
+            norm_key(value) == other_key for value in _project_keys(row)
+        ):
             return None
-    if connection.execute(
-        "SELECT 1 FROM requirement_name_decisions WHERE project_id=? AND name_key=?",
-        (project_id, light_key(text)),
-    ).fetchone() is not None:
+    if (
+        connection.execute(
+            "SELECT 1 FROM requirement_name_decisions WHERE project_id=? AND name_key=?",
+            (project_id, light_key(text)),
+        ).fetchone()
+        is not None
+    ):
         return None
     counts = FormScanner([text, *spoken]).scan_segments(segments)
     if sum(entry["count"] for entry in counts.values()) < REQUIREMENT_MIN_SPOKEN:
@@ -154,7 +162,9 @@ class HintContext:
             if projects is not None
             else [
                 dict(row)
-                for row in connection.execute("SELECT id, name, also_names FROM projects").fetchall()
+                for row in connection.execute(
+                    "SELECT id, name, also_names FROM projects"
+                ).fetchall()
             ]
         )
         self.projects = {row["id"]: row for row in rows}
@@ -220,7 +230,10 @@ class HintContext:
             own = {light_key(strip_project_suffix(value)) for value in _project_keys(project)}
             if light_key(strip_project_suffix(new_requirement_name)) in own:
                 return None
-            if any(similar_title(new_requirement_name, title) for title in self._requirement_titles(project_id)):
+            if any(
+                similar_title(new_requirement_name, title)
+                for title in self._requirement_titles(project_id)
+            ):
                 return None
             return {
                 "kind": "requirement",
@@ -281,7 +294,11 @@ def settle_project_name(
         ):
             continue
         undo["decisions"].append(
-            {"table": "name_decisions", "key": key, "previous": dict(previous) if previous else None}
+            {
+                "table": "name_decisions",
+                "key": key,
+                "previous": dict(previous) if previous else None,
+            }
         )
         connection.execute(
             """INSERT INTO name_decisions(norm_key, name, decision, target_id, decided_at)
@@ -301,7 +318,11 @@ def settle_project_name(
                     "UPDATE project_links SET new_project_name=NULL WHERE id=?", (row["id"],)
                 )
                 undo["links"].append(
-                    {"link_id": row["id"], "column": "new_project_name", "old_value": row["new_project_name"]}
+                    {
+                        "link_id": row["id"],
+                        "column": "new_project_name",
+                        "old_value": row["new_project_name"],
+                    }
                 )
     return undo
 
@@ -357,7 +378,11 @@ def settle_requirement_name(
                 "UPDATE project_links SET new_requirement_name=NULL WHERE id=?", (row["id"],)
             )
             undo["links"].append(
-                {"link_id": row["id"], "column": "new_requirement_name", "old_value": row["new_requirement_name"]}
+                {
+                    "link_id": row["id"],
+                    "column": "new_requirement_name",
+                    "old_value": row["new_requirement_name"],
+                }
             )
     return undo
 
@@ -392,8 +417,11 @@ def restore_settlement(connection: Any, undo: dict[str, Any]) -> int:
                     """INSERT OR REPLACE INTO name_decisions(norm_key, name, decision, target_id, decided_at)
                        VALUES (?, ?, ?, ?, ?)""",
                     (
-                        previous["norm_key"], previous["name"], previous["decision"],
-                        previous["target_id"], previous["decided_at"],
+                        previous["norm_key"],
+                        previous["name"],
+                        previous["decision"],
+                        previous["target_id"],
+                        previous["decided_at"],
                     ),
                 )
         elif entry.get("table") == "requirement_name_decisions":
@@ -402,16 +430,23 @@ def restore_settlement(connection: Any, undo: dict[str, Any]) -> int:
                     "DELETE FROM requirement_name_decisions WHERE project_id=? AND name_key=?",
                     (entry["project_id"], entry["key"]),
                 )
-            elif connection.execute(
-                "SELECT 1 FROM projects WHERE id=?", (previous["project_id"],)
-            ).fetchone() is not None:
+            elif (
+                connection.execute(
+                    "SELECT 1 FROM projects WHERE id=?", (previous["project_id"],)
+                ).fetchone()
+                is not None
+            ):
                 connection.execute(
                     """INSERT OR REPLACE INTO requirement_name_decisions
                            (project_id, name_key, name, decision, requirement_id, decided_at)
                        VALUES (?, ?, ?, ?, ?, ?)""",
                     (
-                        previous["project_id"], previous["name_key"], previous["name"],
-                        previous["decision"], previous["requirement_id"], previous["decided_at"],
+                        previous["project_id"],
+                        previous["name_key"],
+                        previous["name"],
+                        previous["decision"],
+                        previous["requirement_id"],
+                        previous["decided_at"],
                     ),
                 )
     return restored
@@ -448,10 +483,13 @@ def load_undoable_event(
     ).fetchone()
     if row is None:
         raise NotFoundError("没有可以撤销的改动")
-    if connection.execute(
-        """SELECT 1 FROM events WHERE event_type=? AND json_extract(payload_json, '$.event_id') = ?""",
-        (undone_type, event_id),
-    ).fetchone() is not None:
+    if (
+        connection.execute(
+            """SELECT 1 FROM events WHERE event_type=? AND json_extract(payload_json, '$.event_id') = ?""",
+            (undone_type, event_id),
+        ).fetchone()
+        is not None
+    ):
         raise ConflictError("已经撤销过了")
     if datetime.now(UTC) > datetime.fromisoformat(row["created_at"]) + timedelta(
         seconds=UNDO_WINDOW_SECONDS
@@ -461,7 +499,12 @@ def load_undoable_event(
         payload = json.loads(row["payload_json"] or "{}")
     except json.JSONDecodeError:
         payload = {}
-    return {"id": row["id"], "meeting_id": row["meeting_id"], "at": row["created_at"], "payload": payload}
+    return {
+        "id": row["id"],
+        "meeting_id": row["meeting_id"],
+        "at": row["created_at"],
+        "payload": payload,
+    }
 
 
 def decide_name(
@@ -486,9 +529,11 @@ def decide_name(
         key = norm_key(text)
     else:
         raise ValueError("kind 只能是 project 或 requirement")
-    if meeting_id is not None and connection.execute(
-        "SELECT 1 FROM meetings WHERE id=?", (meeting_id,)
-    ).fetchone() is None:
+    if (
+        meeting_id is not None
+        and connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone()
+        is None
+    ):
         meeting_id = None
     event_id, at = record_event(
         connection,

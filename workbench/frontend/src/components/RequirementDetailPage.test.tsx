@@ -341,7 +341,8 @@ describe("RequirementDetailPage 的「决议」卡（4c）", () => {
     const folders = screen.getByText("材料文件夹");
     expect(meetings.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(card.compareDocumentPosition(folders) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(requirementDecisions).toHaveBeenCalledWith("req-1");
+    // 卡片先渲染、取数的 effect 后跑：机器忙时要等一下
+    await waitFor(() => expect(requirementDecisions).toHaveBeenCalledWith("req-1"));
 
     const inCard = within(card);
     expect(await inCard.findByText("2 条 · 1 条后来改了")).toBeInTheDocument();

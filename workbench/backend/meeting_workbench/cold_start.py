@@ -6,6 +6,7 @@
   那个项目，否则归公共），词典页留一行说明，可以撤销。
 - 同名文件夹：还没挂文件夹的项目，工作台问一次要不要挂上同名文件夹；这里给候选，并记下「不挂」和「稍后」。
 """
+
 from __future__ import annotations
 
 import json
@@ -136,7 +137,8 @@ def _reevaluate_one(
     if result["decision"] == "retry":
         # LLM 一时调不通：下一轮再试；连着失败几次后 _classify 会退回只看字面线索。
         db.execute(
-            "UPDATE project_links SET attempts=COALESCE(attempts, 0)+1 WHERE id=?", (row["link_id"],)
+            "UPDATE project_links SET attempts=COALESCE(attempts, 0)+1 WHERE id=?",
+            (row["link_id"],),
         )
         return False
     original = row["project_id"]
@@ -148,15 +150,20 @@ def _reevaluate_one(
                       new_requirement_name=?, new_name_project_id=?, new_name_spoken=?
                 WHERE id=?""",
             (
-                result["method"], evidence_json, result["reason"], result["raw_response"],
-                *name_columns(result), row["link_id"],
+                result["method"],
+                evidence_json,
+                result["reason"],
+                result["raw_response"],
+                *name_columns(result),
+                row["link_id"],
             ),
         )
         return True
 
     literal = result.get("literal") or {}
     llm_pick = next(
-        (entry.get("project_id") for entry in result["evidence"] if entry.get("kind") == "llm"), None
+        (entry.get("project_id") for entry in result["evidence"] if entry.get("kind") == "llm"),
+        None,
     )
     candidates = [
         {
@@ -167,8 +174,14 @@ def _reevaluate_one(
         }
     ]
     others = (
-        [{"project_id": result["project_id"], "project_name": names.get(result["project_id"]),
-          "count": literal.get(result["project_id"], 0), "llm": llm_pick == result["project_id"]}]
+        [
+            {
+                "project_id": result["project_id"],
+                "project_name": names.get(result["project_id"]),
+                "count": literal.get(result["project_id"], 0),
+                "llm": llm_pick == result["project_id"],
+            }
+        ]
         if result["decision"] == "auto"
         else result["candidates"]
     )
@@ -187,8 +200,13 @@ def _reevaluate_one(
                       new_name_project_id=?, new_name_spoken=?, finished_at=?
                 WHERE id=?""",
             (
-                json.dumps(candidates, ensure_ascii=False), evidence_json, reason,
-                result["raw_response"], *name_columns(result), now, row["link_id"],
+                json.dumps(candidates, ensure_ascii=False),
+                evidence_json,
+                reason,
+                result["raw_response"],
+                *name_columns(result),
+                now,
+                row["link_id"],
             ),
         )
         db.add_event(
@@ -261,7 +279,9 @@ def organize_legacy_groups(db: Database, connection: Any) -> dict[str, Any]:
             }
         )
     if organized:
-        db.add_event(GROUPS_EVENT, actor="system", payload={"groups": organized}, connection=connection)
+        db.add_event(
+            GROUPS_EVENT, actor="system", payload={"groups": organized}, connection=connection
+        )
     return {
         "silent": silent,
         "organized": len(organized),

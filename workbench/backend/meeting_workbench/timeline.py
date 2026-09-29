@@ -23,6 +23,7 @@
   之前 62 天；只记 zone 为 normal 的，和 package 里的 key、pages、numbers。
 不列：需求状态的变化、AI 任务草稿、纪要改动、词条改动、挪动和删除。界面上不出现路径：文件夹只给最后一段。
 """
+
 from __future__ import annotations
 
 import json
@@ -216,7 +217,9 @@ def project_timeline(
     task_rows: list[dict[str, Any]] = []
     if want_tasks:
         task_rows = [
-            dict(row) for row in connection.execute(_TASKS_SQL, {"pid": project_id}).fetchall() if row["day"]
+            dict(row)
+            for row in connection.execute(_TASKS_SQL, {"pid": project_id}).fetchall()
+            if row["day"]
         ]
     file_days: list[date] = []
     prelog_windows = _prelog_windows(roots, boundaries)
@@ -224,7 +227,9 @@ def project_timeline(
         file_days = _file_days(connection, project_id, prelog_windows, stop, days + 1)
 
     candidates = {day for day in meeting_days if day < stop}
-    candidates.update(day for day in (date.fromisoformat(row["day"]) for row in task_rows) if day < stop)
+    candidates.update(
+        day for day in (date.fromisoformat(row["day"]) for row in task_rows) if day < stop
+    )
     candidates.update(file_days)
     ordered = sorted(candidates, reverse=True)
     page = ordered[:days]
@@ -265,10 +270,20 @@ def project_timeline(
                     linked.setdefault(row["meeting_id"], []).append(entry)
         excluded = project_names(project["name"], project["also_names"])
         for meeting in page_meetings:
-            _meeting_items(items[meeting["day"]], meeting, decisions.get(meeting["id"], []), audio.get(meeting["id"]),
-                           kind=kind, linked=linked.get(meeting["id"], []), project_id=project_id, excluded=excluded)
+            _meeting_items(
+                items[meeting["day"]],
+                meeting,
+                decisions.get(meeting["id"], []),
+                audio.get(meeting["id"]),
+                kind=kind,
+                linked=linked.get(meeting["id"], []),
+                project_id=project_id,
+                excluded=excluded,
+            )
     if want_tasks:
-        _task_items(items, [row for row in task_rows if start <= date.fromisoformat(row["day"]) < stop])
+        _task_items(
+            items, [row for row in task_rows if start <= date.fromisoformat(row["day"]) < stop]
+        )
     if want_files and roots and page:
         groups = file_events.day_groups(connection, project_id, start, before=stop, now=moment)
         prelog = _prelog_groups(connection, prelog_windows, start, stop)
@@ -283,8 +298,14 @@ def project_timeline(
         for entry in entries:
             entry.pop("_sort", None)
             entry.pop("_seq", None)
-        days_out.append({"day": day.isoformat(), "label": day_label(day, today), "items": entries,
-                         "more_dirs": more_dirs[day]})
+        days_out.append(
+            {
+                "day": day.isoformat(),
+                "label": day_label(day, today),
+                "items": entries,
+                "more_dirs": more_dirs[day],
+            }
+        )
     return {
         "kind": kind,
         "days": days_out,
@@ -298,7 +319,9 @@ def project_timeline(
 # ---------------------------------------------------------------------- 各种条目
 
 
-def _page_decisions(connection: Any, marks: str, ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+def _page_decisions(
+    connection: Any, marks: str, ids: Sequence[str]
+) -> dict[str, list[dict[str, Any]]]:
     """这一页的会还在的决议，每条带最新一条 shown 的「后来改了」（另一头也还在）。"""
     result: dict[str, list[dict[str, Any]]] = {}
     for row in connection.execute(
@@ -328,7 +351,10 @@ def _later(raw: str | None) -> dict[str, Any] | None:
         data = json.loads(raw)
     except ValueError:
         return None
-    return {"date": local_day(data.get("rec"), data.get("created")).isoformat(), "text": data.get("text") or ""}
+    return {
+        "date": local_day(data.get("rec"), data.get("created")).isoformat(),
+        "text": data.get("text") or "",
+    }
 
 
 def _meeting_items(
@@ -349,17 +375,30 @@ def _meeting_items(
         titles = {item["id"]: item["title"] for item in linked}
         for index, row in enumerate(decisions):
             chosen, how = effective_requirement(row, linked, project_id, excluded)
-            title = titles.get(chosen) or (row["requirement_title"] if chosen == row["requirement_id"] else None)
+            title = titles.get(chosen) or (
+                row["requirement_title"] if chosen == row["requirement_id"] else None
+            )
             out.append(
                 {
                     "type": "decision",
                     "at": at,
                     "time": clock,
-                    "decision": {"id": row["id"], "text": row["text"], "start_ms": row["start_ms"],
-                                 "end_ms": row["end_ms"], "detail": row["detail"] or "",
-                                 "later": _later(row["later_json"])},
-                    "meeting": {"id": meeting["id"], "title": meeting["title"], "audio_url": audio_url},
-                    "requirement": {"id": chosen, "title": title or "", "how": how} if chosen else None,
+                    "decision": {
+                        "id": row["id"],
+                        "text": row["text"],
+                        "start_ms": row["start_ms"],
+                        "end_ms": row["end_ms"],
+                        "detail": row["detail"] or "",
+                        "later": _later(row["later_json"]),
+                    },
+                    "meeting": {
+                        "id": meeting["id"],
+                        "title": meeting["title"],
+                        "audio_url": audio_url,
+                    },
+                    "requirement": {"id": chosen, "title": title or "", "how": how}
+                    if chosen
+                    else None,
                     "how": how,
                     "linked_requirement_ids": [item["id"] for item in linked],
                     "_sort": at or "",
@@ -373,10 +412,19 @@ def _meeting_items(
             "type": "meeting",
             "at": at,
             "time": clock,
-            "meeting": {"id": meeting["id"], "title": meeting["title"],
-                        "duration_sec": int(duration // 1000) if duration else None, "audio_url": audio_url},
+            "meeting": {
+                "id": meeting["id"],
+                "title": meeting["title"],
+                "duration_sec": int(duration // 1000) if duration else None,
+                "audio_url": audio_url,
+            },
             "decisions": [
-                {"id": row["id"], "text": row["text"], "start_ms": row["start_ms"], "later": _later(row["later_json"])}
+                {
+                    "id": row["id"],
+                    "text": row["text"],
+                    "start_ms": row["start_ms"],
+                    "later": _later(row["later_json"]),
+                }
                 for row in decisions[:MEETING_DECISIONS]
             ],
             "decisions_more": max(0, len(decisions) - MEETING_DECISIONS),
@@ -386,7 +434,9 @@ def _meeting_items(
 
 
 def _deliverable_name(row: Mapping[str, Any]) -> str:
-    return (row["title"] or "").strip() or _last_segment(row["rel_path"]) or _last_segment(row["url"])
+    return (
+        (row["title"] or "").strip() or _last_segment(row["rel_path"]) or _last_segment(row["url"])
+    )
 
 
 def _task_items(items: dict[date, list[dict[str, Any]]], rows: Sequence[Mapping[str, Any]]) -> None:
@@ -431,7 +481,9 @@ def _task_items(items: dict[date, list[dict[str, Any]]], rows: Sequence[Mapping[
 # ---------------------------------------------------------------------- 文件
 
 
-def _prelog_windows(roots: Sequence[Mapping[str, Any]], boundaries: Mapping[int, date]) -> list[tuple[int, date, date]]:
+def _prelog_windows(
+    roots: Sequence[Mapping[str, Any]], boundaries: Mapping[int, date]
+) -> list[tuple[int, date, date]]:
     """每个根目录记录开始前的窗口 (root_id, 起, 止)：分界之前 62 天。"""
     return [
         (root_id, boundary - timedelta(days=PRELOG_DAYS), boundary)
@@ -440,7 +492,9 @@ def _prelog_windows(roots: Sequence[Mapping[str, Any]], boundaries: Mapping[int,
     ]
 
 
-def _window_sql(windows: Sequence[tuple[int, date, date]], start: date | None, stop: date) -> tuple[str, list[Any]]:
+def _window_sql(
+    windows: Sequence[tuple[int, date, date]], start: date | None, stop: date
+) -> tuple[str, list[Any]]:
     parts: list[str] = []
     params: list[Any] = []
     for root_id, low, high in windows:
@@ -454,7 +508,11 @@ def _window_sql(windows: Sequence[tuple[int, date, date]], start: date | None, s
 
 
 def _file_days(
-    connection: Any, project_id: str, windows: Sequence[tuple[int, date, date]], stop: date, limit: int
+    connection: Any,
+    project_id: str,
+    windows: Sequence[tuple[int, date, date]],
+    stop: date,
+    limit: int,
 ) -> list[date]:
     """有文件动静的天（新的在前，最多 limit 天）：流水里的 added、changed，和记录开始前按修改时间的。"""
     prelog, prelog_params = _window_sql(windows, None, stop)
@@ -491,7 +549,15 @@ def _prelog_groups(
         moment = datetime.fromtimestamp(int(row["mtime_ns"]) / 1_000_000_000, UTC)
         key = (moment.astimezone().date(), int(row["root_id"]), str(row["dir_rel"]))
         group = groups.setdefault(
-            key, {"day": key[0], "root_id": key[1], "dir_rel": key[2], "count": 0, "names": [], "at": moment}
+            key,
+            {
+                "day": key[0],
+                "root_id": key[1],
+                "dir_rel": key[2],
+                "count": 0,
+                "names": [],
+                "at": moment,
+            },
         )
         group["count"] += 1
         if len(group["names"]) < PRELOG_NAMES:
@@ -510,7 +576,9 @@ def _file_items(
     for group in groups:
         day = date.fromisoformat(str(group["day"]))
         if day in items:
-            per_day.setdefault(day, []).append((int(group["added"]) + int(group["changed"]), False, group))
+            per_day.setdefault(day, []).append(
+                (int(group["added"]) + int(group["changed"]), False, group)
+            )
     for group in prelog:
         if group["day"] in items:
             per_day.setdefault(group["day"], []).append((int(group["count"]), True, group))
@@ -553,7 +621,12 @@ def _state(
     if kind == "tasks":
         return {"kind": "ok", "reason": None, "text": None, "action": None}
     if not roots:
-        return {"kind": "stopped", "reason": "no_roots", "text": NO_ROOTS, "action": dict(ATTACH_ROOT)}
+        return {
+            "kind": "stopped",
+            "reason": "no_roots",
+            "text": NO_ROOTS,
+            "action": dict(ATTACH_ROOT),
+        }
     if any(root.get("state") == "offline" for root in roots):
         return {"kind": "waiting", "reason": "offline", "text": ROOT_OFFLINE, "action": None}
     if any(not root.get("last_full_at") for root in roots):

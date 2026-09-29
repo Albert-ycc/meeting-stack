@@ -48,7 +48,9 @@ class QwenShadowService:
 
     def _lease_values(self) -> tuple[str, str]:
         now = datetime.now(UTC)
-        return now.isoformat(), (now + timedelta(seconds=self.settings.qwen_lease_seconds)).isoformat()
+        return now.isoformat(), (
+            now + timedelta(seconds=self.settings.qwen_lease_seconds)
+        ).isoformat()
 
     def _binary_available(self) -> bool:
         binary = self.settings.qwen_binary
@@ -183,11 +185,14 @@ class QwenShadowService:
     def _claim_next(self) -> dict[str, Any] | None:
         heartbeat_at, lease_expires_at = self._lease_values()
         with self.db.transaction() as connection:
-            if connection.execute(
-                "SELECT 1 FROM runtime_leases WHERE name='qwen_shadow'"
-            ).fetchone() or connection.execute(
-                "SELECT 1 FROM asr_shadow_runs WHERE state='running' LIMIT 1"
-            ).fetchone():
+            if (
+                connection.execute(
+                    "SELECT 1 FROM runtime_leases WHERE name='qwen_shadow'"
+                ).fetchone()
+                or connection.execute(
+                    "SELECT 1 FROM asr_shadow_runs WHERE state='running' LIMIT 1"
+                ).fetchone()
+            ):
                 return None
             candidate = connection.execute(
                 """SELECT id FROM asr_shadow_runs WHERE state='queued'
@@ -366,8 +371,7 @@ class QwenShadowService:
                 source_srt.read_text(encoding="utf-8")
                 segments = parse_srt(source_srt)
                 if not segments or any(
-                    int(segment["end_ms"]) <= int(segment["start_ms"])
-                    for segment in segments
+                    int(segment["end_ms"]) <= int(segment["start_ms"]) for segment in segments
                 ):
                     raise QwenShadowError("srt_output_empty")
                 source_sha256 = _sha256(source_srt)

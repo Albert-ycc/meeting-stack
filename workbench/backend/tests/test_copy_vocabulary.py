@@ -5,6 +5,7 @@
 工具，不查）；接口返回里 text、label、ask、title、detail 这几个键的值。前端有一份同样的
 src/copy.vocabulary.test.ts。
 """
+
 from __future__ import annotations
 
 import ast
@@ -576,7 +577,12 @@ def test_phase_four_copy_tables(table):
 
 def test_state_sentences_are_one_sentence_each():
     assert len(STATE_SENTENCES_4A) == 16
-    for text in (*STATE_SENTENCES_4A, *STATE_SENTENCES_4B, *STATE_SENTENCES_4C, *TIMELINE_SENTENCES_4C):
+    for text in (
+        *STATE_SENTENCES_4A,
+        *STATE_SENTENCES_4B,
+        *STATE_SENTENCES_4C,
+        *TIMELINE_SENTENCES_4C,
+    ):
         assert not re.search(r"[。！？!?]", text.rstrip("。")), text
 
 
@@ -607,7 +613,9 @@ def test_phase_four_get_payloads_4c(tmp_path):
     with db.autocommit() as connection:
         payloads = [decisions.requirement_log(connection, "r1", settings=LIVE)]
         for kind in timeline.KINDS:
-            payloads.append(timeline.project_timeline(connection, "p", kind=kind, before=date(2026, 9, 28)))
+            payloads.append(
+                timeline.project_timeline(connection, "p", kind=kind, before=date(2026, 9, 28))
+            )
     found = [text for payload in payloads for text in collect_copy(payload)]
     assert found, "样本什么字都没有，这个测试什么都没验证"
     assert [text for text in found if problems(text)] == []
@@ -639,7 +647,9 @@ def test_ui_strings_skip_docstrings_prompts_and_logs(tmp_path):
 def test_collect_copy_walks_nested_payloads():
     payload = {
         "relation": {"quote": "原话不查", "file": {"name": "报价单.xlsx"}},
-        "questions": [{"text": "是这条任务的交付物吗？", "ask": "看一下", "answers": ["yes", "no"]}],
+        "questions": [
+            {"text": "是这条任务的交付物吗？", "ask": "看一下", "answers": ["yes", "no"]}
+        ],
         "state": {"kind": "waiting", "text": "还有 2 场会在整理关联", "action": None},
         "detail": "这条关联已经不在了",
         "label": 3,
@@ -652,7 +662,9 @@ def test_collect_copy_walks_nested_payloads():
 def test_related_panel_sentences_match_the_module():
     from meeting_workbench import related_read
 
-    assert set(related_read.PANEL_SENTENCES) | {related_read.reading_text(3)} == set(STATE_SENTENCES_4D)
+    assert set(related_read.PANEL_SENTENCES) | {related_read.reading_text(3)} == set(
+        STATE_SENTENCES_4D
+    )
 
 
 def test_phase_four_get_payloads_4d(tmp_path):
@@ -667,12 +679,18 @@ def test_phase_four_get_payloads_4d(tmp_path):
     payloads = []
     with w.db.autocommit() as connection:
         for config in (settings(), settings(links_enabled=False), settings(semantic_enabled=False)):
-            payloads.append(related_read.panel(connection, "m", worker=None, settings=config, local=True))
+            payloads.append(
+                related_read.panel(connection, "m", worker=None, settings=config, local=True)
+            )
     worker_for(w).run_round()
     with w.db.autocommit() as connection:
-        payloads.append(related_read.panel(connection, "m", worker=None, settings=w.settings, local=True))
+        payloads.append(
+            related_read.panel(connection, "m", worker=None, settings=w.settings, local=True)
+        )
         payloads.append(related_read.rejected_items(connection, "m"))
-        payloads.append(related_read.project_related(connection, "p", window="all", today=date(2026, 9, 28)))
+        payloads.append(
+            related_read.project_related(connection, "p", window="all", today=date(2026, 9, 28))
+        )
     found = [text for payload in payloads for text in collect_copy(payload)]
     assert found, "样本什么字都没有，这个测试什么都没验证"
     assert [text for text in found if problems(text)] == []
@@ -686,8 +704,15 @@ def test_ask_texts_match_the_modules():
         ask_retrieval.TOO_SHORT_OR_LONG,
         ask_retrieval.BAD_CONTROL,
         *(text.format(seconds=90) for text, _retry in asks.STOP_TEXTS.values()),
-        asks.WAITING_TEXT, asks.PROJECT_MISSING, asks.PLAN_EXPIRED, asks.JOB_EXPIRED, asks.PROJECT_BUSY,
-        asks.NOTHING_TO_SEND, asks.CAPPED, asks.NO_KEY, asks.QA_OFF,
+        asks.WAITING_TEXT,
+        asks.PROJECT_MISSING,
+        asks.PLAN_EXPIRED,
+        asks.JOB_EXPIRED,
+        asks.PROJECT_BUSY,
+        asks.NOTHING_TO_SEND,
+        asks.CAPPED,
+        asks.NO_KEY,
+        asks.QA_OFF,
     ]
     assert set(texts) <= set(COPY_4G)
     assert len(asks.STOP_TEXTS) == 8
@@ -720,13 +745,17 @@ _QUOTED_FOLDER = re.compile(r"『([^』]*)/』")
 
 def one_level_folders(texts) -> list[str]:
     """『x/』里 x 中间还有「/」的句子（应该是空的）。"""
-    return [text for text in texts for match in _QUOTED_FOLDER.finditer(text) if "/" in match.group(1)]
+    return [
+        text for text in texts for match in _QUOTED_FOLDER.finditer(text) if "/" in match.group(1)
+    ]
 
 
 def test_4e_folders_are_one_level():
     assert any(_QUOTED_FOLDER.search(text) for text in COPY_4E)
     assert one_level_folders(COPY_4E) == []
-    assert one_level_folders(["会后 3 天新增在『交付/能耗看板/』"]) == ["会后 3 天新增在『交付/能耗看板/』"]
+    assert one_level_folders(["会后 3 天新增在『交付/能耗看板/』"]) == [
+        "会后 3 天新增在『交付/能耗看板/』"
+    ]
 
 
 def test_phase_four_payloads_4e(tmp_path):
@@ -755,11 +784,15 @@ def test_phase_four_payloads_4e(tmp_path):
     headers = write_headers(w.client)
     produced_id = w.db.query_one("SELECT id FROM relations WHERE kind = 'produced'")["id"]
     w.db.execute("UPDATE tasks SET status = 'cancelled' WHERE id = 't'")
-    refused = w.client.post(f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers).json()
+    refused = w.client.post(
+        f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers
+    ).json()
     found += collect_copy(refused)
     assert refused["detail"] in COPY_4E
     w.db.execute("UPDATE tasks SET status = 'pending_confirm' WHERE id = 't'")
-    unconfirmed = w.client.post(f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers).json()
+    unconfirmed = w.client.post(
+        f"/api/relations/{produced_id}/answer", json={"answer": "yes"}, headers=headers
+    ).json()
     found += collect_copy(unconfirmed)
     assert unconfirmed["detail"] in COPY_4E
     assert one_level_folders(found) == []
@@ -773,9 +806,16 @@ def test_phase_four_payloads_4e(tmp_path):
 def test_local_graph_errors_match_the_module():
     from meeting_workbench import graph_local
 
-    for text in (graph_local.FILE_MISSING, graph_local.FILE_NO_PROJECT, graph_local.MEETING_MISSING,
-                 graph_local.DECISION_MISSING, graph_local.TASK_MISSING, graph_local.MEETING_NO_PROJECT,
-                 graph_local.LATER_CHANGED_TEXT, graph_local.RESTATED_TEXT):
+    for text in (
+        graph_local.FILE_MISSING,
+        graph_local.FILE_NO_PROJECT,
+        graph_local.MEETING_MISSING,
+        graph_local.DECISION_MISSING,
+        graph_local.TASK_MISSING,
+        graph_local.MEETING_NO_PROJECT,
+        graph_local.LATER_CHANGED_TEXT,
+        graph_local.RESTATED_TEXT,
+    ):
         assert text in COPY_4F
 
 
@@ -795,7 +835,9 @@ def test_phase_four_payloads_4f(tmp_path):
         w.client.get("/api/graph/files/999999/map").json(),
     ]
     found = [text for payload in payloads for text in collect_copy(payload)]
-    assert any("之后没改过" in text for text in found) and any("的交付物吗？" in text for text in found)
+    assert any("之后没改过" in text for text in found) and any(
+        "的交付物吗？" in text for text in found
+    )
     quoted = {"总价下调 5%", "写一版方案"}
     found = [text for text in found if text not in quoted]
     assert [text for text in found if problems(text)] == []
@@ -818,9 +860,22 @@ def test_candidate_texts_match_the_module():
     from meeting_workbench import glossary_mining as gm
 
     module = {
-        gm.PROJECT_MISSING, gm.TERM_GONE, gm.ALREADY_DONE, gm.UNDO_EXPIRED, gm.UNDO_TWICE, gm.TERM_CHANGED,
-        gm.TERM_INVALID, gm.ACCEPTED_TEXT, gm.ACCEPTED_WRONGS_TEXT, gm.APPENDED_TEXT, gm.ALREADY_TEXT,
-        gm.SKIPPED_TEXT, gm.SKIPPED_TAIL, gm.NOTHING_ADDED_TEXT, gm.KEEP_ONE_WRONG, gm.REJECTED_TEXT,
+        gm.PROJECT_MISSING,
+        gm.TERM_GONE,
+        gm.ALREADY_DONE,
+        gm.UNDO_EXPIRED,
+        gm.UNDO_TWICE,
+        gm.TERM_CHANGED,
+        gm.TERM_INVALID,
+        gm.ACCEPTED_TEXT,
+        gm.ACCEPTED_WRONGS_TEXT,
+        gm.APPENDED_TEXT,
+        gm.ALREADY_TEXT,
+        gm.SKIPPED_TEXT,
+        gm.SKIPPED_TAIL,
+        gm.NOTHING_ADDED_TEXT,
+        gm.KEEP_ONE_WRONG,
+        gm.REJECTED_TEXT,
         gm.UNDONE_TEXT,
     }
     assert module == set(COPY_4H_WORDS)
@@ -842,11 +897,25 @@ def test_phase_four_payloads_4h(tmp_path):
     payloads = [
         client.get("/api/projects/p/glossary-candidates").json(),
         client.get("/api/projects/p/board").json().get("glossary_candidates"),
-        client.post("/api/projects/p/glossary-candidates/accept", json={"key": "司美格鲁肽"}, headers=headers).json(),
-        client.post("/api/projects/p/glossary-candidates/accept", json={"key": "司美格鲁肽"}, headers=headers).json(),
-        client.post("/api/projects/p/glossary-candidates/undo", json={"key": "司美格鲁肽"}, headers=headers).json(),
-        client.post("/api/projects/p/glossary-candidates/reject", json={"key": "驻场服务"}, headers=headers).json(),
-        client.post("/api/projects/p/glossary-candidates/reject", json={"key": "没有"}, headers=headers).json(),
+        client.post(
+            "/api/projects/p/glossary-candidates/accept",
+            json={"key": "司美格鲁肽"},
+            headers=headers,
+        ).json(),
+        client.post(
+            "/api/projects/p/glossary-candidates/accept",
+            json={"key": "司美格鲁肽"},
+            headers=headers,
+        ).json(),
+        client.post(
+            "/api/projects/p/glossary-candidates/undo", json={"key": "司美格鲁肽"}, headers=headers
+        ).json(),
+        client.post(
+            "/api/projects/p/glossary-candidates/reject", json={"key": "驻场服务"}, headers=headers
+        ).json(),
+        client.post(
+            "/api/projects/p/glossary-candidates/reject", json={"key": "没有"}, headers=headers
+        ).json(),
         client.get("/api/projects/nope/glossary-candidates").json(),
     ]
     found = [text for payload in payloads for text in collect_copy(payload)]

@@ -102,11 +102,7 @@ def is_manifest_exempt_path(relative: Path | str) -> bool:
 
 
 def _number(value: Any) -> int | float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise MinutesEvidenceError("纪要证据结构无效")
     return value
 
@@ -301,22 +297,14 @@ def _parse_source_srt(path: Path, *, expected_sha256: str) -> list[dict[str, Any
         start = _seconds_from_srt_parts(tuple(timing.groups()[:4]))
         end = _seconds_from_srt_parts(tuple(timing.groups()[4:]))
         cue_text = "\n".join(lines[2:]).strip()
-        if (
-            start is None
-            or end is None
-            or start < previous_end
-            or end <= start
-            or not cue_text
-        ):
+        if start is None or end is None or start < previous_end or end <= start or not cue_text:
             raise MinutesEvidenceError("纪要来源逐字稿结构无效")
         cues.append(
             {
                 "cue_index": sequence,
                 "source_start_sec": start,
                 "source_end_sec": end,
-                "source_text_sha256": hashlib.sha256(
-                    cue_text.encode("utf-8")
-                ).hexdigest(),
+                "source_text_sha256": hashlib.sha256(cue_text.encode("utf-8")).hexdigest(),
             }
         )
         previous_end = end
@@ -386,10 +374,7 @@ def _load_plan(
             or end_sec <= start_sec
             or end_sec > total_duration
             or not window["cues"]
-            or (
-                total_duration >= 480
-                and not 480 <= float(end_sec) - float(start_sec) <= 720
-            )
+            or (total_duration >= 480 and not 480 <= float(end_sec) - float(start_sec) <= 720)
             or (
                 total_duration < 480
                 and (
@@ -411,11 +396,15 @@ def _load_plan(
             cue_end = _number(cue.get("source_end_sec"))
             digest = cue.get("source_text_sha256")
             binding = (
-                window_id,
-                digest,
-                float(cue_start),
-                float(cue_end),
-            ) if isinstance(digest, str) else None
+                (
+                    window_id,
+                    digest,
+                    float(cue_start),
+                    float(cue_end),
+                )
+                if isinstance(digest, str)
+                else None
+            )
             if (
                 not isinstance(cue_index, int)
                 or isinstance(cue_index, bool)
@@ -439,14 +428,14 @@ def _load_plan(
                     "source_text_sha256": digest,
                 }
             )
-    if (
-        abs(previous_window_end - float(total_duration)) > 0.001
-        or cue_indices != list(range(1, plan["cue_count"] + 1))
+    if abs(previous_window_end - float(total_duration)) > 0.001 or cue_indices != list(
+        range(1, plan["cue_count"] + 1)
     ):
         raise MinutesEvidenceError("纪要计划覆盖无效")
-    if _parse_source_srt(
-        source_srt_path, expected_sha256=expected_source_srt_sha256
-    ) != planned_cues:
+    if (
+        _parse_source_srt(source_srt_path, expected_sha256=expected_source_srt_sha256)
+        != planned_cues
+    ):
         raise MinutesEvidenceError("纪要计划与来源逐字稿不一致")
     return plan, cue_bindings
 
@@ -620,9 +609,7 @@ def load_minutes_evidence(
             if status == "included":
                 minutes_anchor = item.get("minutes_anchor")
                 anchor_seconds = (
-                    _anchor_seconds(minutes_anchor)
-                    if isinstance(minutes_anchor, str)
-                    else None
+                    _anchor_seconds(minutes_anchor) if isinstance(minutes_anchor, str) else None
                 )
                 if (
                     anchor_seconds is None

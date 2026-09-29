@@ -1,4 +1,5 @@
 """第二期 2a：项目总文件夹、还没挂的文件夹、认领、盘不在时补建、文件夹改名后找回。"""
+
 import json
 import os
 import time
@@ -171,7 +172,17 @@ def test_unclaimed_folders_are_filtered_at_request_time(tmp_path):
 def test_unclaimed_rows_get_default_actions(tmp_path):
     client, _settings, headers, _db, root = _setup(tmp_path)
     parent = root / "项目"
-    _mkdirs(parent, "云图 AI", "云图ai", "北辰仓储", "北辰仓储资料", "蓝鲸云", "归档", "海豚", "别处/海豚")
+    _mkdirs(
+        parent,
+        "云图 AI",
+        "云图ai",
+        "北辰仓储",
+        "北辰仓储资料",
+        "蓝鲸云",
+        "归档",
+        "海豚",
+        "别处/海豚",
+    )
     yt = _project(client, headers, "云图AI")
     bc = _project(client, headers, "北辰仓储", also_names=["北辰"])
     hd = _project(client, headers, "海豚", material_roots=[str(parent / "别处" / "海豚")])
@@ -217,8 +228,14 @@ def test_folder_endpoints_never_read_disk(tmp_path, monkeypatch):
     monkeypatch.setattr("meeting_workbench.project_folders.volume_state", lambda _p: time.sleep(5))
     started = time.monotonic()
     assert _parent(client)["state"] == "checking"
-    assert client.get("/api/projects/folder-matches", params={"name": "云图AI"}).json()["state"] == "checking"
-    assert client.get(f"/api/projects/{project['id']}/folder-suggestions").json()["state"] == "checking"
+    assert (
+        client.get("/api/projects/folder-matches", params={"name": "云图AI"}).json()["state"]
+        == "checking"
+    )
+    assert (
+        client.get(f"/api/projects/{project['id']}/folder-suggestions").json()["state"]
+        == "checking"
+    )
     assert client.get("/api/cold-start/folders").json()["state"] == "checking"
     assert time.monotonic() - started < 2
 
@@ -299,7 +316,9 @@ def test_claiming_into_an_existing_project_reports_nested_folders(tmp_path):
 
     item = client.post(
         "/api/settings/project-parent/claim",
-        json={"items": [{"path": str(parent / "云图AI"), "action": "mount", "project_id": yt["id"]}]},
+        json={
+            "items": [{"path": str(parent / "云图AI"), "action": "mount", "project_id": yt["id"]}]
+        },
         headers=headers,
     ).json()["items"][0]
 
@@ -352,9 +371,9 @@ def test_pending_folder_is_created_and_mounted_when_the_disk_is_back(tmp_path):
 
     target = parent / "云图看板"
     assert target.is_dir()
-    assert db.query_all("SELECT path FROM project_material_roots WHERE project_id=?", (project["id"],)) == [
-        {"path": str(target.resolve())}
-    ]
+    assert db.query_all(
+        "SELECT path FROM project_material_roots WHERE project_id=?", (project["id"],)
+    ) == [{"path": str(target.resolve())}]
     assert db.query_one("SELECT COUNT(*) AS n FROM pending_project_folders") == {"n": 0}
     notices = client.get("/api/cards/banner").json()["notices"]
     assert notices[-1]["kind"] == "folder_created"
@@ -516,7 +535,10 @@ def test_renamed_folder_is_found_by_its_cards_and_repointed(tmp_path):
     assert body["path"] == str(new.resolve()) and body["id"] == root_id
     assert [item["project_name"] for item in body["moved_roots"]] == ["嵌套项目"]
     assert body["moved_folders"] == 1
-    paths = {row["project_id"]: row["path"] for row in db.query_all("SELECT project_id, path FROM project_material_roots")}
+    paths = {
+        row["project_id"]: row["path"]
+        for row in db.query_all("SELECT project_id, path FROM project_material_roots")
+    }
     assert paths[nested["id"]] == str(new.resolve() / "嵌套项目")
     # 兄弟文件夹（名字带 _，前缀相同）不动
     assert paths[sibling["id"]] == str((parent / "云图_AI二期").resolve())
@@ -527,11 +549,15 @@ def test_renamed_folder_is_found_by_its_cards_and_repointed(tmp_path):
 
 
 def test_renamed_folder_is_found_by_its_subfolders(tmp_path):
-    client, _settings, headers, db, parent, old, project, _nested, _sibling = _rename_setup(tmp_path)
+    client, _settings, headers, db, parent, old, project, _nested, _sibling = _rename_setup(
+        tmp_path
+    )
     root_id = _root_id(db, project["id"])
     _refresh(client)  # 在线时记下指纹
     fingerprint = json.loads(
-        db.query_one("SELECT child_names FROM root_fingerprints WHERE root_id=?", (root_id,))["child_names"]
+        db.query_one("SELECT child_names FROM root_fingerprints WHERE root_id=?", (root_id,))[
+            "child_names"
+        ]
     )
     assert fingerprint == ["嵌套项目", "需求A", "需求B", "需求C", "需求D"]
     os.rename(old, parent / "云图资料2026")
@@ -559,7 +585,9 @@ def test_renamed_folder_is_found_by_its_subfolders(tmp_path):
 
 
 def test_equally_strong_candidates_have_no_default(tmp_path):
-    client, _settings, _headers, db, parent, old, project, _nested, _sibling = _rename_setup(tmp_path)
+    client, _settings, _headers, db, parent, old, project, _nested, _sibling = _rename_setup(
+        tmp_path
+    )
     root_id = _root_id(db, project["id"])
     os.rename(old, parent / "云图甲")
     _card(parent / "云图甲", "m-yt")

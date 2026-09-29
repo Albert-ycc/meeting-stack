@@ -20,6 +20,7 @@
 - 连续 3 次 auth 或网络错误（30 分钟内）时，健康检查里的 llm 记 failing。
 - 不看忙信号：它只等网络，不和 FunASR 抢 CPU。发出去的只有逐字稿和决议原文，不发材料原文和文件名。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -421,7 +422,9 @@ class LinksLLMWorker:
             return "failing"
         if self._backing_off():
             return "backoff"
-        if usage.get("day") == self._day() and int(usage.get("background") or 0) >= self._limit("background"):
+        if usage.get("day") == self._day() and int(usage.get("background") or 0) >= self._limit(
+            "background"
+        ):
             return "capped"
         return "ok"
 
@@ -431,7 +434,9 @@ class LinksLLMWorker:
         same_day = usage.get("day") == self._day()
         return {
             "llm": self.status(),
-            "calls_today": {kind: int(usage.get(kind) or 0) if same_day else 0 for kind in USAGE_KINDS},
+            "calls_today": {
+                kind: int(usage.get(kind) or 0) if same_day else 0 for kind in USAGE_KINDS
+            },
         }
 
 
@@ -486,7 +491,9 @@ async def links_llm_loop(
             raise
         except Exception:  # noqa: BLE001
             logger.exception("AI 循环这一次失败")
-        await _wait(stop, CALLED_DELAY_SECONDS if result.get("called") else IDLE_DELAY_SECONDS, sleep)
+        await _wait(
+            stop, CALLED_DELAY_SECONDS if result.get("called") else IDLE_DELAY_SECONDS, sleep
+        )
 
 
 async def _wait(stop: Any, seconds: float, sleep: Callable[[float], Any]) -> None:

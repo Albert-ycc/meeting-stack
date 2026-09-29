@@ -17,6 +17,7 @@
   锁外读、锁里追加。snapshot() 在锁里取 (vectors, ids, codes, valid, n, dim) 就放开，不刷新、不复制；
   之后追加的行落在 n 之外，扩容时旧数组留给拿着快照的一方。搜索和 4d 的相关都按快照打分。
 """
+
 from __future__ import annotations
 
 import logging
@@ -91,7 +92,9 @@ class _Matrix:
         start, end = self.n, self.n + count
         self.vectors[start:end] = vectors
         self.ids[start:end] = chunk_ids
-        self.codes[start:end] = [self.code_of.setdefault(key, len(self.code_of)) for key in content_keys]
+        self.codes[start:end] = [
+            self.code_of.setdefault(key, len(self.code_of)) for key in content_keys
+        ]
         self.valid[start:end] = True
         for offset, chunk_id in enumerate(chunk_ids):
             self.row_of[chunk_id] = start + offset
@@ -138,7 +141,9 @@ class MaterialVectors:
 
     # ------------------------------------------------------------------ 补向量
 
-    def embed_round(self, *, round_seconds: float = ROUND_SECONDS, batch: int = BATCH) -> dict[str, Any]:
+    def embed_round(
+        self, *, round_seconds: float = ROUND_SECONDS, batch: int = BATCH
+    ) -> dict[str, Any]:
         """一轮：返回 {embedded, ended}。ended：disabled、stopping、busy、budget、done。"""
         stats: dict[str, Any] = {"embedded": 0, "ended": None}
         if not self.settings.semantic_enabled:
@@ -261,15 +266,29 @@ class MaterialVectors:
 
     def _rebuild(self) -> _Matrix | None:
         """整份重建，在锁外做（读最多 40 万行）。"""
-        total = int((self.db.query_one(
-            "SELECT COUNT(*) AS n FROM material_chunk_vectors WHERE model = ?", (self.model,)
-        ) or {"n": 0})["n"])
+        total = int(
+            (
+                self.db.query_one(
+                    "SELECT COUNT(*) AS n FROM material_chunk_vectors WHERE model = ?",
+                    (self.model,),
+                )
+                or {"n": 0}
+            )["n"]
+        )
         if total > self.max_rows:
-            logger.warning("材料向量有 %d 个片段，内存里只放最近修改的 %d 个，少放了 %d 个", total, self.max_rows, total - self.max_rows)
+            logger.warning(
+                "材料向量有 %d 个片段，内存里只放最近修改的 %d 个，少放了 %d 个",
+                total,
+                self.max_rows,
+                total - self.max_rows,
+            )
             matrix = self._load(limit=self.max_rows, recent_first=True)
             if matrix is not None:
                 # 之后只补比现在所有片段都新的
-                top = self.db.query_one("SELECT COALESCE(MAX(chunk_id), 0) AS m FROM material_chunk_vectors WHERE model = ?", (self.model,))
+                top = self.db.query_one(
+                    "SELECT COALESCE(MAX(chunk_id), 0) AS m FROM material_chunk_vectors WHERE model = ?",
+                    (self.model,),
+                )
                 matrix.max_id = max(matrix.max_id, int((top or {"m": 0})["m"]))
             return matrix
         return self._load(limit=None, recent_first=False)
@@ -342,7 +361,9 @@ class MaterialVectors:
             for chunk_id in chunk_ids:
                 self._matrix.forget(int(chunk_id))
 
-    def search(self, query_vector: np.ndarray, *, allowed: set[str] | None, fetch: int = FETCH) -> list[tuple[int, float]]:
+    def search(
+        self, query_vector: np.ndarray, *, allowed: set[str] | None, fetch: int = FETCH
+    ) -> list[tuple[int, float]]:
         """分数最高的 fetch 个片段 (id, 分数)。allowed：范围里的内容标识，None 表示不限。"""
         self.refresh()
         snap = self.snapshot()

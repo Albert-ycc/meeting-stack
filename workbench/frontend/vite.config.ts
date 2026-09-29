@@ -14,5 +14,7 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: "./src/test-setup.ts",
     css: true,
+    // 用例里的时间按 +08:00 写，界面按本机时区显示日期；钉住时区，别的时区的机器上跑也不差一天
+    env: { TZ: "Asia/Shanghai" },
   },
 });

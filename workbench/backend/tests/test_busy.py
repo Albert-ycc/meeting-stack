@@ -1,4 +1,5 @@
 """第三期 3a：统一的「会议在转写」信号、材料子进程的共同规矩。"""
+
 import os
 import subprocess
 import sys
@@ -32,7 +33,11 @@ LISTING = """\
 
 def test_process_patterns_and_exclusions():
     found = transcribing_processes(LISTING, exclude_groups={900})
-    assert [line.split()[0].rsplit("/", 1)[-1] for line in found] == ["python", "whisper", "mlx-qwen3-asr"]
+    assert [line.split()[0].rsplit("/", 1)[-1] for line in found] == [
+        "python",
+        "whisper",
+        "mlx-qwen3-asr",
+    ]
     assert transcribing_processes("  1 1 less funasr_transcribe.py\n") == []
     assert transcribing_processes("  1 1 /bin/zsh -c ls\n") == []
 
@@ -56,7 +61,9 @@ def test_each_source_triggers_busy(tmp_path):
     relay = {"worker": {"current_stage": None}}
     listing = {"value": ""}
     clock = Clock()
-    signal = BusySignal(db, relay_state=lambda: relay, process_list=lambda: listing["value"], clock=clock)
+    signal = BusySignal(
+        db, relay_state=lambda: relay, process_list=lambda: listing["value"], clock=clock
+    )
     assert signal() is False
 
     relay["worker"]["current_stage"] = "transcribing"
@@ -149,7 +156,11 @@ def echo_helper(tmp_path, **kwargs):
     root = os.path.dirname(os.path.dirname(os.path.abspath(busy.__file__)))
     script.write_text(ECHO.format(root=root), encoding="utf-8")
     return HelperProcess(
-        "echo", [sys.executable, str(script)], data_dir=tmp_path / "data", background=False, **kwargs
+        "echo",
+        [sys.executable, str(script)],
+        data_dir=tmp_path / "data",
+        background=False,
+        **kwargs,
     )
 
 
@@ -240,7 +251,9 @@ def test_helper_restarts_after_max_requests(tmp_path):
 def test_helper_crash_is_reported(tmp_path):
     script = tmp_path / "crash.py"
     script.write_text("import sys\nsys.stdin.readline()\nsys.exit(3)\n", encoding="utf-8")
-    helper = HelperProcess("crash", [sys.executable, str(script)], data_dir=tmp_path / "data", background=False)
+    helper = HelperProcess(
+        "crash", [sys.executable, str(script)], data_dir=tmp_path / "data", background=False
+    )
     with pytest.raises(HelperCrashed):
         helper.request({"x": 1}, timeout=20)
     helper.close()
@@ -249,7 +262,8 @@ def test_helper_crash_is_reported(tmp_path):
 def test_cleanup_leftovers_kills_old_material_asr_and_removes_temp_files(tmp_path):
     db = make_db(tmp_path)
     sleeper = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)", "funasr_material.py"], start_new_session=True
+        [sys.executable, "-c", "import time; time.sleep(60)", "funasr_material.py"],
+        start_new_session=True,
     )
     db.execute(
         """INSERT INTO material_contents(content_key, layer, created_at, updated_at)

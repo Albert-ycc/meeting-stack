@@ -11,6 +11,7 @@
 - 回答不存库：不进任何提示词、索引、词典或卡片；任务留 30 分钟后就没了。
 - 日志只记项目 id、各类来源的段数、耗时、结果代码和异常类型名；从不记问题、原文段落和回答。
 """
+
 from __future__ import annotations
 
 import secrets
@@ -220,7 +221,9 @@ class AskRegistry:
                 self._expire_locked(self._jobs[current])
             if entry.project_id in self._running:
                 return None
-            job = _Job(secrets.token_urlsafe(16), entry.project_id, entry, with_materials, self.clock())
+            job = _Job(
+                secrets.token_urlsafe(16), entry.project_id, entry, with_materials, self.clock()
+            )
             self._jobs[job.id] = job
             self._running[entry.project_id] = job.id
             self._evict_locked()
@@ -240,7 +243,9 @@ class AskRegistry:
                 del self._jobs[job_id]
         # 超过上限时先淘汰最久没用的已完成任务；在答的不淘汰
         while len(self._jobs) > self.max_jobs:
-            victim = next((job_id for job_id, job in self._jobs.items() if job.state != "waiting"), None)
+            victim = next(
+                (job_id for job_id, job in self._jobs.items() if job.state != "waiting"), None
+            )
             if victim is None:
                 break
             del self._jobs[victim]
@@ -321,7 +326,9 @@ class AskService:
         self.semantic = semantic
         self.vectors = vectors
         self.busy = busy
-        self.registry = registry or AskRegistry(call_timeout=float(settings.qa_timeout_seconds) + TIMEOUT_GRACE)
+        self.registry = registry or AskRegistry(
+            call_timeout=float(settings.qa_timeout_seconds) + TIMEOUT_GRACE
+        )
         self.chat = chat
         self.state_of = state_of
         self.clock = clock
@@ -416,7 +423,11 @@ class AskService:
             raise AskError(404, PLAN_EXPIRED)
         if self.registry.project_busy(project_id):
             raise AskError(409, PROJECT_BUSY)
-        chosen = [source for source in entry.plan.sources if with_materials or source["kind"] != "material"]
+        chosen = [
+            source
+            for source in entry.plan.sources
+            if with_materials or source["kind"] != "material"
+        ]
         if not chosen:
             raise AskError(422, NOTHING_TO_SEND)
         if not self.worker.charge("qa"):
@@ -464,7 +475,9 @@ class AskService:
             )
             parsed = parse_answer(reply.text, prompt.sent_ids, finish_reason=reply.finish_reason)
             state = "done"
-            code = "no_evidence" if parsed.no_evidence else ("found" if parsed.found else "not_found")
+            code = (
+                "no_evidence" if parsed.no_evidence else ("found" if parsed.found else "not_found")
+            )
             payload = {
                 "answer": {
                     # 说找到了却没有有效出处的回答不显示
@@ -514,7 +527,8 @@ class AskService:
             return {"state": "waiting", "text": WAITING_TEXT}
         plan = job.plan
         sources = [
-            {**source, "sent": job.with_materials or source["kind"] != "material"} for source in plan.sources
+            {**source, "sent": job.with_materials or source["kind"] != "material"}
+            for source in plan.sources
         ]
         if job.state == "done":
             return {

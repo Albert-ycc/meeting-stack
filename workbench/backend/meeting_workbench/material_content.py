@@ -13,6 +13,7 @@
 - 没人引用的内容记 orphan_since；超过 30 天、所有根目录在线、文件名索引都扫完才删。
 - 读盘、认字、转写时不拿数据库连接；每个文件的结果用一个短事务写入；数据库忙就结束这一轮。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -271,7 +272,9 @@ class MaterialContent:
             int(row["id"]): row["path"]
             for row in self.db.query_all("SELECT id, path FROM project_material_roots ORDER BY id")
         }
-        online = {root_id: path for root_id, path in roots.items() if self.state_of(path) == ROOT_ONLINE}
+        online = {
+            root_id: path for root_id, path in roots.items() if self.state_of(path) == ROOT_ONLINE
+        }
         self._offline_now: set[int] = set()
         rebuilding = self.chunks_frozen()
         try:
@@ -336,7 +339,9 @@ class MaterialContent:
         clauses = []
         for root_id, rel in folders[:50]:
             if rel:
-                clauses.append("(f.root_id = ? AND f.rel_path >= ? || '/' AND f.rel_path < ? || '0')")
+                clauses.append(
+                    "(f.root_id = ? AND f.rel_path >= ? || '/' AND f.rel_path < ? || '0')"
+                )
                 params.extend([root_id, rel, rel])
             else:
                 clauses.append("(f.root_id = ?)")
@@ -370,7 +375,9 @@ class MaterialContent:
     def _needs_key_sql(self) -> str:
         return "(f.content_key IS NULL OR f.content_size IS NOT f.size OR f.content_mtime_ns IS NOT f.mtime_ns)"
 
-    def key_candidates(self, online: dict[int, str], limit: int = KEY_BATCH) -> list[dict[str, Any]]:
+    def key_candidates(
+        self, online: dict[int, str], limit: int = KEY_BATCH
+    ) -> list[dict[str, Any]]:
         """要算标识的活文件，按优先级排好。第一档是被［换成这份］选过、又需要重找的（含只收
         文件名的文件），然后是会上提到的、需求文件夹里的、其余按修改时间从新到旧。"""
         if not online:
@@ -436,7 +443,15 @@ class MaterialContent:
                        AND f.zone != 'cards' AND (f.name = ? OR (? IS NOT NULL AND f.size = ?))
                        AND {self._needs_key_sql()} AND {retry_sql}
                      LIMIT ?""",
-                (item["project_id"], *online, name, item["size"], item["size"], *retry_params, limit),
+                (
+                    item["project_id"],
+                    *online,
+                    name,
+                    item["size"],
+                    item["size"],
+                    *retry_params,
+                    limit,
+                ),
             ):
                 found.append(dict(row))
         return found
@@ -458,7 +473,9 @@ class MaterialContent:
         ext = str(row["ext"] or "").lower()
         path = Path(root_path).joinpath(*str(row["rel_path"]).split("/"))
         if ext in IWORK_EXTS:
-            return self._mark_error(row, root_path, ERROR_UNSUPPORTED, signature=(row["size"], row["mtime_ns"]))
+            return self._mark_error(
+                row, root_path, ERROR_UNSUPPORTED, signature=(row["size"], row["mtime_ns"])
+            )
         try:
             size, mtime_ns = stat_signature(path)
         except FileNotFoundError:
@@ -486,7 +503,9 @@ class MaterialContent:
             return False  # 算的时候文件变了，留给下一轮
         return self._write_key(row, root_path, key, layer)
 
-    def _same_root(self, connection: sqlite3.Connection, row: dict[str, Any], root_path: str) -> bool:
+    def _same_root(
+        self, connection: sqlite3.Connection, row: dict[str, Any], root_path: str
+    ) -> bool:
         current = connection.execute(
             "SELECT path FROM project_material_roots WHERE id = ?", (row["root_id"],)
         ).fetchone()
@@ -523,7 +542,9 @@ class MaterialContent:
             follow_content(connection, key)
         return True
 
-    def _refresh_signature(self, row: dict[str, Any], root_path: str, size: int | None, mtime_ns: int) -> None:
+    def _refresh_signature(
+        self, row: dict[str, Any], root_path: str, size: int | None, mtime_ns: int
+    ) -> None:
         with self.db.transaction() as connection:
             if not self._same_root(connection, row, root_path):
                 return
@@ -553,8 +574,16 @@ class MaterialContent:
                       SET content_key = {"content_key" if keep_key else "NULL"}, content_error = ?,
                           content_attempts = ?, content_size = ?, content_mtime_ns = ?, content_checked_at = ?
                     WHERE id = ? AND size IS ? AND mtime_ns IS ? AND gone_at IS NULL""",
-                (error, attempts, signature[0], signature[1], _iso(self.now()), row["id"], row["size"],
-                 row["mtime_ns"]),
+                (
+                    error,
+                    attempts,
+                    signature[0],
+                    signature[1],
+                    _iso(self.now()),
+                    row["id"],
+                    row["size"],
+                    row["mtime_ns"],
+                ),
             )
         return False
 
@@ -566,18 +595,35 @@ class MaterialContent:
             raise _RootOffline(root_path)
         signature = (row["size"], row["mtime_ns"])
         if isinstance(error, PermissionError):
-            self._mark_error(row, root_path, ERROR_PERMISSION, signature=signature, keep_key=keep_key,
-                             attempts=row.get("content_attempts"))
+            self._mark_error(
+                row,
+                root_path,
+                ERROR_PERMISSION,
+                signature=signature,
+                keep_key=keep_key,
+                attempts=row.get("content_attempts"),
+            )
             return
         # 同一版文件（大小和修改时间没变）连着出 IO 错才累计；读成功一次就清零
-        same_file = row.get("content_size") == row["size"] and row.get("content_mtime_ns") == row["mtime_ns"]
+        same_file = (
+            row.get("content_size") == row["size"]
+            and row.get("content_mtime_ns") == row["mtime_ns"]
+        )
         previous = int(row.get("content_attempts") or 0) if same_file else 0
         attempts = previous + 1
         if attempts >= IO_ATTEMPTS_BEFORE_CORRUPT:
-            self._mark_error(row, root_path, ERROR_CORRUPT, signature=signature, attempts=attempts,
-                             keep_key=keep_key)
+            self._mark_error(
+                row,
+                root_path,
+                ERROR_CORRUPT,
+                signature=signature,
+                attempts=attempts,
+                keep_key=keep_key,
+            )
         else:
-            self._mark_error(row, root_path, ERROR_IO, signature=signature, attempts=attempts, keep_key=keep_key)
+            self._mark_error(
+                row, root_path, ERROR_IO, signature=signature, attempts=attempts, keep_key=keep_key
+            )
         # 资料盘刚醒来时会短暂报 EIO，这一轮到此结束
         raise _EndRound("io")
 
@@ -716,18 +762,27 @@ class MaterialContent:
             return False
         if after != expected:
             return False  # 读的途中文件被改了：结果不写到旧标识下
-        if result.status in {"password", "corrupt", "unsupported", "timeout"} and self.state_of(root_path) != ROOT_ONLINE:
+        if (
+            result.status in {"password", "corrupt", "unsupported", "timeout"}
+            and self.state_of(root_path) != ROOT_ONLINE
+        ):
             raise _RootOffline(root_path)
         with self.db.transaction() as connection:
             if not self._same_root(connection, row, root_path):
                 return False
             current = connection.execute(
-                "SELECT state, attempts FROM material_contents WHERE content_key = ?", (row["content_key"],)
+                "SELECT state, attempts FROM material_contents WHERE content_key = ?",
+                (row["content_key"],),
             ).fetchone()
             if current is None:
                 return False
-            store_result(connection, row["content_key"], result, attempts=int(current["attempts"] or 0),
-                         now=self.now())
+            store_result(
+                connection,
+                row["content_key"],
+                result,
+                attempts=int(current["attempts"] or 0),
+                now=self.now(),
+            )
             if row.get("content_attempts"):
                 connection.execute(
                     "UPDATE material_files SET content_attempts = NULL WHERE id = ? AND content_error IS NULL",
@@ -739,7 +794,10 @@ class MaterialContent:
 
     def _maybe_orphan_pass(self, roots: dict[int, str], online: dict[int, str]) -> None:
         now = self.clock()
-        if self._last_orphan_pass is not None and now - self._last_orphan_pass < ORPHAN_EVERY_SECONDS:
+        if (
+            self._last_orphan_pass is not None
+            and now - self._last_orphan_pass < ORPHAN_EVERY_SECONDS
+        ):
             return
         self._last_orphan_pass = now
         self.orphan_pass(all_online=bool(roots) and len(online) == len(roots) or not roots)
@@ -747,6 +805,8 @@ class MaterialContent:
     def orphan_pass(self, *, all_online: bool) -> dict[str, int]:
         """记下、清掉 orphan_since；超过 30 天、所有根目录在线、文件名索引都扫完才删。"""
         now = utc_now()
+        # 记 orphan_since 和下面删除时比的 30 天用同一个时钟、同一种写法
+        orphan_stamp = _iso(self.now())
         with self.db.transaction() as connection:
             # 文件行的标识在内容表里找不到（刚被清理掉）：重新插一行 pending
             revived = connection.execute(
@@ -769,7 +829,7 @@ class MaterialContent:
                     WHERE orphan_since IS NULL AND NOT EXISTS (
                         SELECT 1 FROM material_files f
                          WHERE f.content_key = material_contents.content_key AND f.gone_at IS NULL)""",
-                (now,),
+                (orphan_stamp,),
             ).rowcount
             cleared = connection.execute(
                 """UPDATE material_contents SET orphan_since = NULL
@@ -856,7 +916,10 @@ def pending_counts(
     if not rows:
         return {"pending": 0, "offline_pending": 0}
     if online is None:
-        paths = {int(row["id"]): row["path"] for row in db.query_all("SELECT id, path FROM project_material_roots")}
+        paths = {
+            int(row["id"]): row["path"]
+            for row in db.query_all("SELECT id, path FROM project_material_roots")
+        }
         online = {root_id for root_id, path in paths.items() if state_of(path) == ROOT_ONLINE}
     total = sum(int(row["n"]) for row in rows)
     offline = sum(int(row["n"]) for row in rows if int(row["root_id"]) not in online)
@@ -947,7 +1010,9 @@ def store_result(
             rows, cut = _cap_spans(result.spans)
         else:
             chunks, cut = chunk_blocks(result.blocks)
-            rows = [{"loc": loc, "start_ms": None, "end_ms": None, "text": text} for loc, text in chunks]
+            rows = [
+                {"loc": loc, "start_ms": None, "end_ms": None, "text": text} for loc, text in chunks
+            ]
         truncated = result.truncated or cut
         note = "truncated" if truncated else result.note
         connection.execute("DELETE FROM material_chunks WHERE content_key = ?", (content_key,))
@@ -955,7 +1020,14 @@ def store_result(
             """INSERT INTO material_chunks(content_key, ordinal, loc, start_ms, end_ms, text)
                VALUES (?, ?, ?, ?, ?, ?)""",
             [
-                (content_key, ordinal, row.get("loc"), row.get("start_ms"), row.get("end_ms"), row["text"])
+                (
+                    content_key,
+                    ordinal,
+                    row.get("loc"),
+                    row.get("start_ms"),
+                    row.get("end_ms"),
+                    row["text"],
+                )
                 for ordinal, row in enumerate(rows)
             ],
         )
@@ -964,8 +1036,19 @@ def store_result(
                    extractor_version = ?, chars = ?, chunks = ?, pages = ?, duration_ms = ?, attempts = 0,
                    next_try_at = NULL, sha256 = COALESCE(?, sha256), meeting_id = ?, updated_at = ?
              WHERE content_key = ?""",
-            (note, result.extractor, result.extractor_version, sum(len(row["text"]) for row in rows),
-             len(rows), result.pages, result.duration_ms, result.sha256, result.meeting_id, stamp, content_key),
+            (
+                note,
+                result.extractor,
+                result.extractor_version,
+                sum(len(row["text"]) for row in rows),
+                len(rows),
+                result.pages,
+                result.duration_ms,
+                result.sha256,
+                result.meeting_id,
+                stamp,
+                content_key,
+            ),
         )
         # 录音转完：断点行和片段同一个事务删掉，不留两份文字
         connection.execute("DELETE FROM material_media_jobs WHERE content_key = ?", (content_key,))
@@ -988,10 +1071,20 @@ def store_result(
             """UPDATE material_contents SET state = 'pending', reason = 'timeout', attempts = 1,
                    next_try_at = ?, extractor = ?, extractor_version = ?, updated_at = ?
              WHERE content_key = ?""",
-            (_iso(now + TIMEOUT_RETRY), result.extractor, result.extractor_version, stamp, content_key),
+            (
+                _iso(now + TIMEOUT_RETRY),
+                result.extractor,
+                result.extractor_version,
+                stamp,
+                content_key,
+            ),
         )
     else:
-        reason = result.status if result.status in {"password", "corrupt", "unsupported", "timeout"} else "corrupt"
+        reason = (
+            result.status
+            if result.status in {"password", "corrupt", "unsupported", "timeout"}
+            else "corrupt"
+        )
         connection.execute(
             """UPDATE material_contents SET state = 'unreadable', reason = ?, note = NULL, attempts = ?,
                    next_try_at = NULL, extractor = ?, extractor_version = ?, updated_at = ?
@@ -1001,7 +1094,9 @@ def store_result(
         connection.execute("DELETE FROM material_media_jobs WHERE content_key = ?", (content_key,))
 
 
-def _cap_spans(spans: list[dict[str, Any]], *, max_chars: int = MAX_CONTENT_CHARS) -> tuple[list[dict[str, Any]], bool]:
+def _cap_spans(
+    spans: list[dict[str, Any]], *, max_chars: int = MAX_CONTENT_CHARS
+) -> tuple[list[dict[str, Any]], bool]:
     """录音片段已经合好，只管每份内容最多 20 万字。"""
     rows: list[dict[str, Any]] = []
     total = 0
@@ -1012,8 +1107,14 @@ def _cap_spans(spans: list[dict[str, Any]], *, max_chars: int = MAX_CONTENT_CHAR
         if total + len(text) > max_chars:
             return rows, True
         total += len(text)
-        rows.append({"loc": span.get("loc"), "start_ms": span.get("start_ms"), "end_ms": span.get("end_ms"),
-                     "text": text})
+        rows.append(
+            {
+                "loc": span.get("loc"),
+                "start_ms": span.get("start_ms"),
+                "end_ms": span.get("end_ms"),
+                "text": text,
+            }
+        )
     return rows, False
 
 
@@ -1035,7 +1136,9 @@ def follow_content(connection: sqlite3.Connection, content_key: str) -> int:
     ).rowcount
 
 
-def key_file_now(db: Database, file_id: int, *, state_of: Callable[[str], str] = volume_state) -> str | None:
+def key_file_now(
+    db: Database, file_id: int, *, state_of: Callable[[str], str] = volume_state
+) -> str | None:
     """［换成这份］和标交付物时当场算标识（只收文件名的文件也算，但不建内容行）。盘不在、读不了就算了。"""
     row = db.query_one(
         """SELECT f.*, r.path AS root_path FROM material_files f
@@ -1044,7 +1147,11 @@ def key_file_now(db: Database, file_id: int, *, state_of: Callable[[str], str] =
     )
     if row is None or row["gone_at"] is not None:
         return None
-    if row["content_key"] and row["content_size"] == row["size"] and row["content_mtime_ns"] == row["mtime_ns"]:
+    if (
+        row["content_key"]
+        and row["content_size"] == row["size"]
+        and row["content_mtime_ns"] == row["mtime_ns"]
+    ):
         return str(row["content_key"])
     if state_of(row["root_path"]) != ROOT_ONLINE:
         return None

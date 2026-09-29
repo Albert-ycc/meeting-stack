@@ -122,18 +122,10 @@ def test_version_five_migration_adds_asr_quality_tables(tmp_path):
     with sqlite3.connect(database_path) as connection:
         tables = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        gold_columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(asr_gold_samples)")
-        }
-        run_columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(asr_shadow_runs)")
-        }
+        gold_columns = {row[1] for row in connection.execute("PRAGMA table_info(asr_gold_samples)")}
+        run_columns = {row[1] for row in connection.execute("PRAGMA table_info(asr_shadow_runs)")}
 
     assert {"asr_gold_samples", "asr_shadow_runs"} <= tables
     assert {
@@ -308,10 +300,17 @@ def test_version_twelve_migration_adds_requirement_tables_and_task_column(tmp_pa
         task_columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)")}
         # 存量数据原样保留，只加列不改行。
         task_row = dict(
-            connection.execute("SELECT id, title, requirement_id FROM tasks WHERE id='task-1'").fetchone()
+            connection.execute(
+                "SELECT id, title, requirement_id FROM tasks WHERE id='task-1'"
+            ).fetchone()
         )
 
-    assert {"project_material_roots", "requirements", "requirement_folders", "requirement_meetings"} <= tables
+    assert {
+        "project_material_roots",
+        "requirements",
+        "requirement_folders",
+        "requirement_meetings",
+    } <= tables
     assert "requirement_id" in task_columns
     assert task_row == {"id": "task-1", "title": "存量任务", "requirement_id": None}
     assert db.user_version() == SCHEMA_VERSION
@@ -728,17 +727,17 @@ def test_version_thirteen_migration_backfills_tasks_glossary_and_minutes_index(t
         for table in ("projects", "project_links", "glossary_terms")
     }
     assert "also_names" in columns["projects"]
-    assert {"evidence_json", "candidates_json", "new_project_name", "reason"} <= columns["project_links"]
+    assert {"evidence_json", "candidates_json", "new_project_name", "reason"} <= columns[
+        "project_links"
+    ]
     assert {"also", "is_cue"} <= columns["glossary_terms"]
-    assert db.query_one(
-        "SELECT also_names FROM projects WHERE id='p-a'"
-    ) == {"also_names": "[]"}
-    assert db.query_one(
-        "SELECT also, is_cue FROM glossary_terms WHERE id='g-orphan'"
-    ) == {"also": "[]", "is_cue": 1}
+    assert db.query_one("SELECT also_names FROM projects WHERE id='p-a'") == {"also_names": "[]"}
+    assert db.query_one("SELECT also, is_cue FROM glossary_terms WHERE id='g-orphan'") == {
+        "also": "[]",
+        "is_cue": 1,
+    }
     tasks = {
-        row["id"]: row["project_id"]
-        for row in db.query_all("SELECT id, project_id FROM tasks")
+        row["id"]: row["project_id"] for row in db.query_all("SELECT id, project_id FROM tasks")
     }
     assert tasks == {
         "t-draft": "p-a",
@@ -919,14 +918,19 @@ def test_material_chunks_keep_the_full_text_index_in_sync(tmp_path):
         """INSERT INTO material_contents(content_key, layer, created_at, updated_at)
            VALUES ('q2:a', 'text', 'x', 'x')"""
     )
-    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 0, '报价单第一版')")
-    db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 1, '排期表')")
+    db.execute(
+        "INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 0, '报价单第一版')"
+    )
+    db.execute(
+        "INSERT INTO material_chunks(content_key, ordinal, text) VALUES ('q2:a', 1, '排期表')"
+    )
 
     def hits(word):
         return [
             row["rowid"]
             for row in db.query_all(
-                "SELECT rowid FROM material_chunks_fts WHERE material_chunks_fts MATCH ?", (f'"{word}"',)
+                "SELECT rowid FROM material_chunks_fts WHERE material_chunks_fts MATCH ?",
+                (f'"{word}"',),
             )
         ]
 
@@ -974,7 +978,9 @@ def test_version_fourteen_tables_bump_the_graph_revision(tmp_path):
         "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/x/云图AI', 'x')"
     )
     after_root = rev()
-    db.execute("INSERT INTO root_fingerprints(root_id, child_names, updated_at) VALUES (1, '[]', 'x')")
+    db.execute(
+        "INSERT INTO root_fingerprints(root_id, child_names, updated_at) VALUES (1, '[]', 'x')"
+    )
     db.execute(
         "INSERT INTO folder_declines(kind, scope, path, decided_at) VALUES ('unclaimed', '', '/x/资料', 'x')"
     )
@@ -1023,7 +1029,9 @@ def test_mounting_a_folder_drops_the_pending_folder(tmp_path):
         """INSERT INTO pending_project_folders(project_id, parent, created_at)
            VALUES ('p', '/Volumes/资料盘/项目', 'x')"""
     )
-    db.execute("INSERT INTO root_fingerprints(root_id, child_names, updated_at) VALUES (1, '[]', 'x')")
+    db.execute(
+        "INSERT INTO root_fingerprints(root_id, child_names, updated_at) VALUES (1, '[]', 'x')"
+    )
     db.execute("DELETE FROM projects WHERE id='p'")
     assert db.query_one("SELECT COUNT(*) AS n FROM pending_project_folders") == {"n": 0}
     assert db.query_one("SELECT COUNT(*) AS n FROM root_fingerprints") == {"n": 0}
@@ -1081,7 +1089,9 @@ def test_version_sixteen_migration_adds_tables_and_keeps_data(tmp_path):
     assert set(V16_INDEXES) <= objects["index"] and len(V16_INDEXES) == 24
     keys = {
         row["key"]: row["value"]
-        for row in db.query_all("SELECT key, value FROM app_state WHERE key IN ('links_since', 'related_rev')")
+        for row in db.query_all(
+            "SELECT key, value FROM app_state WHERE key IN ('links_since', 'related_rev')"
+        )
     }
     assert keys["related_rev"] == "0" and keys["links_since"]
     # 不回填：老数据原样，新表都是空的
@@ -1216,9 +1226,7 @@ def test_version_sixteen_graph_rev_policy(tmp_path):
     assert revs() == (graph + 4, related)
     # 台账、派生表、文件流水、待确认的词都不加
     graph, related = revs()
-    db.execute(
-        "INSERT INTO decision_scan(meeting_id, updated_at) VALUES ('m', 'x')"
-    )
+    db.execute("INSERT INTO decision_scan(meeting_id, updated_at) VALUES ('m', 'x')")
     db.execute("UPDATE decision_scan SET pair_state='pending'")
     db.execute(
         """INSERT INTO mention_extractions(meeting_id, version_id, text_sha, created_at, updated_at)
@@ -1271,10 +1279,24 @@ def test_version_sixteen_triggers_follow_meetings(tmp_path):
         ("mention", "m|b", "shown", "manual", "m", None, None),
         ("mention", "m|c", "rejected", "llm", "m", None, None),
         ("related", "m|q2:a", "cleared", "vector", "m", None, None),
-        ("later_changed", "dec-000000000000000b|dec-000000000000000a", "shown", "llm", "m",
-         "dec-000000000000000b", "dec-000000000000000a"),
-        ("restated", "dec-000000000000000a|dec-000000000000000b", "shown", "llm", "n",
-         "dec-000000000000000a", "dec-000000000000000b"),
+        (
+            "later_changed",
+            "dec-000000000000000b|dec-000000000000000a",
+            "shown",
+            "llm",
+            "m",
+            "dec-000000000000000b",
+            "dec-000000000000000a",
+        ),
+        (
+            "restated",
+            "dec-000000000000000a|dec-000000000000000b",
+            "shown",
+            "llm",
+            "n",
+            "dec-000000000000000a",
+            "dec-000000000000000b",
+        ),
         ("mention", "n|a", "shown", "llm", "n", None, None),
     )
     for kind, ident, status, origin, meeting_id, decision_id, to_decision_id in rows:
@@ -1293,11 +1315,17 @@ def test_version_sixteen_triggers_follow_meetings(tmp_path):
         "m|c",
         "n|a",
     }
-    assert db.query_one("SELECT dirty FROM meeting_related_scan WHERE meeting_id='m'") == {"dirty": 1}
+    assert db.query_one("SELECT dirty FROM meeting_related_scan WHERE meeting_id='m'") == {
+        "dirty": 1
+    }
     db.execute("UPDATE meetings SET current_transcript_version_id='tv-2' WHERE id='m'")
     db.add_event("segment_split", meeting_id="m")
     db.add_event("minutes_saved", meeting_id="m")
-    assert db.query_one("SELECT dirty FROM meeting_related_scan WHERE meeting_id='m'") == {"dirty": 3}
+    assert db.query_one("SELECT dirty FROM meeting_related_scan WHERE meeting_id='m'") == {
+        "dirty": 3
+    }
     # 启动时改 conflict 不算
     db.execute("UPDATE meetings SET conflict=0")
-    assert db.query_one("SELECT dirty FROM meeting_related_scan WHERE meeting_id='m'") == {"dirty": 3}
+    assert db.query_one("SELECT dirty FROM meeting_related_scan WHERE meeting_id='m'") == {
+        "dirty": 3
+    }

@@ -62,6 +62,9 @@ function edgeClass(edge: LocalEdge, trace: boolean): string {
   return classes.join(" ");
 }
 
+/** 右侧面板的宽度（跟 GraphPanel.css 的 .graph-panel 一致），面板打开时要把这么多空间让出来 */
+const PANEL_W = 400;
+
 export interface LocalError {
   text: string;
   retry: boolean;
@@ -96,9 +99,17 @@ export function LocalGraphView({
 }: LocalGraphViewProps) {
   const layout = useMemo(() => (payload ? layoutLocal(payload) : null), [payload]);
   const trace = Boolean(payload && "chain" in payload);
+  // 存疑 4：数据没到齐时用一个和真实 viewKey 绝不会撞上的占位键（加 loading 前缀）。
+  // useGraphViewport 的挂载适配只在 viewKey 变化时跑一次，如果占位键和真实键长得一样，
+  // 数据到齐后不会再重新挂，第一次适配就只能用「数据还没到」时的小方框和 panelOpen=false
+  // 跑掉，面板让位（下面的 initialRightInset）永远补不上——同名的 PRD.md 会被扣在面板
+  // 底下出不来。占位键和真实键不同，数据到齐那一刻 viewKey 才会变，让挂载适配用当时已经
+  // 到位的真实 bounds 和 panelOpen 重新跑一次。
+  const viewKey = layout ? layout.viewKey : `local:loading:${local.kind === "file" ? `file:${local.fileId}` : `trace:${local.node}`}`;
   const { viewportRef, transform } = useGraphViewport({
-    viewKey: layout?.viewKey ?? `local:${local.kind === "file" ? `file:${local.fileId}` : `trace:${local.node}`}`,
+    viewKey,
     initialBounds: layout?.bounds ?? { x: -300, y: -200, w: 600, h: 400 },
+    initialRightInset: panelOpen ? PANEL_W + 24 : 0,
   });
   const [hoverEdge, setHoverEdge] = useState<string | null>(null);
   const center = payload?.center ?? null;

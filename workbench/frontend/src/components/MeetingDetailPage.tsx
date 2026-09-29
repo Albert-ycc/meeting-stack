@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 
 import { ApiError, type ApiClient, type ConflictResolutionAction } from "../api";
 import { reassignNote } from "../cardCopy";
-import { formatDate, isDoneStatus, isUntitled, statusLabel, statusTone, versionKindLabel } from "../format";
+import { formatDate, formatSpeakerLabel, isDoneStatus, isUntitled, statusLabel, statusTone, versionKindLabel } from "../format";
 import { parseHotwordsInput, validateHotwordsInput } from "../hotwords";
 import type {
   AsrGoldSample,
@@ -1212,6 +1212,7 @@ export function MeetingDetailPage({
           onOpenPreview={onOpenPreview}
           onOpenProject={onOpenProject}
           onSeek={seekFromTranscript}
+          projectId={liveProject.id}
           viewMs={null}
         />
       )}
@@ -1333,6 +1334,7 @@ export function MeetingDetailPage({
                   onOpenPreview={onOpenPreview}
                   onOpenProject={onOpenProject}
                   onSeek={seekFromTranscript}
+                  projectId={liveProject.id}
                   viewMs={engine === "funasr" ? viewMs : null}
                 />
               )}
@@ -1398,7 +1400,7 @@ export function MeetingDetailPage({
                   <p className="speaker-scope-note">切块转写的会议里，带「片段N」前缀的说话人跨片段可能是同一人，也可能不是；改名只对当前标签下的段落生效。</p>
                   <select disabled={isSaving} onChange={(event) => setSpeakerLabel(event.target.value)} value={speakerLabel}>
                     <option value="">选择说话人</option>
-                    {meeting.speakers.map((speaker) => <option key={speaker.id} value={speaker.label}>{speaker.display_name || speaker.label}</option>)}
+                    {meeting.speakers.map((speaker) => <option key={speaker.id} value={speaker.label}>{speaker.display_name || formatSpeakerLabel(speaker.label)}</option>)}
                   </select>
                   <input disabled={isSaving} onChange={(event) => setSpeakerName(event.target.value)} placeholder="新的显示名称" value={speakerName} />
                   <button

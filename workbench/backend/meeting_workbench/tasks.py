@@ -3,6 +3,7 @@
 任务以 tasks 表为唯一真相源；AI 抽取的一律先进「待确认」闸门，
 确认后才进入正式清单。状态迁移由服务层维护合法迁移表。
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -478,9 +479,9 @@ class TaskService:
                   FROM tasks t {joins} {scope_where} GROUP BY project_key, t.status""",
             tuple(scope_params),
         ):
-            project_counts.setdefault(
-                row["project_key"], {value: 0 for value in TASK_STATUSES}
-            )[row["status"]] = row["n"]
+            project_counts.setdefault(row["project_key"], {value: 0 for value in TASK_STATUSES})[
+                row["status"]
+            ] = row["n"]
         clauses = list(scope_clauses)
         params = list(scope_params)
         if project_id == "none":
@@ -535,7 +536,9 @@ class TaskService:
                 (task_id,),
             ).fetchall()
             # 3g：file 类交付物带上 file_id、name、gone
-            deliverable_items = decorate_deliverables(connection, [dict(row) for row in deliverables])
+            deliverable_items = decorate_deliverables(
+                connection, [dict(row) for row in deliverables]
+            )
             # 4e：在问的产出（「是这条任务的交付物吗？」），一条 SELECT
             from .relation_read import task_questions
 
@@ -581,8 +584,15 @@ class TaskService:
                     status_changed_at, created_at, updated_at)
                    VALUES (?, ?, ?, 'confirmed', 'manual', ?, ?, ?, ?, ?, ?)""",
                 (
-                    task_id, title, detail, assignee, resolved_project_id,
-                    resolved_requirement_id, now, now, now,
+                    task_id,
+                    title,
+                    detail,
+                    assignee,
+                    resolved_project_id,
+                    resolved_requirement_id,
+                    now,
+                    now,
+                    now,
                 ),
             )
             connection.execute(
@@ -671,9 +681,10 @@ class TaskService:
 
     @staticmethod
     def _assert_project(connection: Any, project_id: str) -> None:
-        if connection.execute(
-            "SELECT 1 FROM projects WHERE id=?", (project_id,)
-        ).fetchone() is None:
+        if (
+            connection.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone()
+            is None
+        ):
             raise NotFoundError(f"项目不存在：{project_id}")
 
     # ------------------------------------------------------------------ 状态流转
@@ -800,9 +811,7 @@ class TaskService:
                 return False
             changes += ["status='confirmed'", "status_changed_at=?", "updated_at=?"]
             values += [now, now, task_id]
-            connection.execute(
-                f"UPDATE tasks SET {', '.join(changes)} WHERE id=?", tuple(values)
-            )
+            connection.execute(f"UPDATE tasks SET {', '.join(changes)} WHERE id=?", tuple(values))
             # 需求留痕要写在「已确认」之前：undo_review 认「最后一条事件必须就是这次确认
             # 本身」，'confirmed' 必须留在最后一条，否则撤销会把这条任务判定为不可撤销（D25）。
             if requirement_event_body:
@@ -962,9 +971,7 @@ class TaskService:
                 "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'comment', ?, ?)",
                 (task_id, body, utc_now()),
             )
-            connection.execute(
-                "UPDATE tasks SET updated_at=? WHERE id=?", (utc_now(), task_id)
-            )
+            connection.execute("UPDATE tasks SET updated_at=? WHERE id=?", (utc_now(), task_id))
         return self.get_task(task_id)
 
     def add_deliverable(
@@ -1021,7 +1028,9 @@ class TaskService:
                     )
         return {**self.get_task(task_id), "deliverable_id": deliverable_id}
 
-    def _file_link(self, file_id: int, *, state_of: Callable[[str], str] | None = None) -> dict[str, Any]:
+    def _file_link(
+        self, file_id: int, *, state_of: Callable[[str], str] | None = None
+    ) -> dict[str, Any]:
         """资料盘里的一个活文件：完整路径、文件名、内容标识。还没算过标识、盘又在线时现算一个（读这一个
         文件；大文件只读头尾和几段样本）。算不出来就不记标识，之后按根目录加相对路径找。"""
         from .material_content import compute_content_key
@@ -1105,7 +1114,7 @@ class TaskService:
         open_task_rows = self.db.query_all(
             f"""SELECT project_id, COUNT(*) AS n FROM tasks
                  WHERE project_id IS NOT NULL
-                   AND status IN ({', '.join('?' for _ in OPEN_TASK_STATUSES)})
+                   AND status IN ({", ".join("?" for _ in OPEN_TASK_STATUSES)})
                  GROUP BY project_id""",
             OPEN_TASK_STATUSES,
         )
@@ -1122,9 +1131,7 @@ class TaskService:
             project["recent_at"] = detail["created_at"] if detail else None
             project["recent_body"] = detail["body"] if detail else None
             project["recent_kind"] = detail["kind"] if detail else None
-            counts = requirement_counts.get(
-                project["id"], {"active": 0, "done": 0, "shelved": 0}
-            )
+            counts = requirement_counts.get(project["id"], {"active": 0, "done": 0, "shelved": 0})
             project["requirement_counts"] = {**counts, "all": sum(counts.values())}
             project["open_task_count"] = open_task_counts.get(project["id"], 0)
             project["material_roots"] = material_roots_by_project.get(project["id"], [])
@@ -1222,9 +1229,12 @@ class TaskService:
                     replace_material_roots(connection, self.settings, project_id, roots)
                 assigned = 0
                 for meeting_id in dict.fromkeys(meeting_ids or []):
-                    if connection.execute(
-                        "SELECT 1 FROM meetings WHERE id=?", (meeting_id,)
-                    ).fetchone() is None:
+                    if (
+                        connection.execute(
+                            "SELECT 1 FROM meetings WHERE id=?", (meeting_id,)
+                        ).fetchone()
+                        is None
+                    ):
                         raise NotFoundError(f"会议不存在：{meeting_id}")
                     reassign_meeting(connection, meeting_id, project_id, actor="user")
                     assigned += 1
@@ -1232,7 +1242,10 @@ class TaskService:
                 flagged = rescan_unresolved_for_project(connection, project_id)
                 # 最终名字（人工新建时也算）和 AI 起的名字都记成「建成了这个项目」，同名提示一起清掉。
                 settle_project_name(
-                    connection, [name, *([source_name] if source_name else [])], "project", project_id
+                    connection,
+                    [name, *([source_name] if source_name else [])],
+                    "project",
+                    project_id,
                 )
                 if source_name:
                     spoken_added = add_spoken_also(
@@ -1272,9 +1285,7 @@ class TaskService:
     ) -> dict[str, Any]:
         renamed_to: str | None = None
         with self.db.transaction() as connection:
-            row = connection.execute(
-                "SELECT * FROM projects WHERE id=?", (project_id,)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
             if row is None:
                 raise NotFoundError(f"项目不存在：{project_id}")
             changes: list[str] = []
@@ -1335,8 +1346,9 @@ class TaskService:
         if row is None:
             raise NotFoundError(f"项目不存在：{project_id}")
         project = dict(row)
-        stats = self.db.query_one(
-            """SELECT COUNT(DISTINCT m.id) AS meeting_count,
+        stats = (
+            self.db.query_one(
+                """SELECT COUNT(DISTINCT m.id) AS meeting_count,
                       COUNT(DISTINCT t.id) AS task_count,
                       COUNT(DISTINCT t.id) FILTER (
                           WHERE t.status='pending_confirm') AS pending_count,
@@ -1351,8 +1363,10 @@ class TaskService:
                  LEFT JOIN deliverables d ON d.task_id=t.id
                 WHERE p.id=?
                 GROUP BY p.id""",
-            (project_id,),
-        ) or {}
+                (project_id,),
+            )
+            or {}
+        )
         project.update(stats)
         requirement_counts = {"active": 0, "done": 0, "shelved": 0}
         for row in self.db.query_all(
@@ -1360,10 +1374,13 @@ class TaskService:
             (project_id,),
         ):
             requirement_counts[row["status"]] = row["n"]
-        project["requirement_counts"] = {**requirement_counts, "all": sum(requirement_counts.values())}
+        project["requirement_counts"] = {
+            **requirement_counts,
+            "all": sum(requirement_counts.values()),
+        }
         project["open_task_count"] = self.db.query_one(
             f"""SELECT COUNT(*) AS n FROM tasks
-                 WHERE project_id=? AND status IN ({', '.join('?' for _ in OPEN_TASK_STATUSES)})""",
+                 WHERE project_id=? AND status IN ({", ".join("?" for _ in OPEN_TASK_STATUSES)})""",
             (project_id, *OPEN_TASK_STATUSES),
         )["n"]
         project["material_roots"] = [
@@ -1465,13 +1482,13 @@ class TaskService:
         同一个口径 project_linking.RELINK_MINUTES_KINDS）进队列：保存、回滚、词典「替换」生成的草稿
         版本不再重新发给 AI（第四期问题 3 的默认）。［重新抽取］对任何版本照旧能用。
         """
-        from .project_linking import RELINK_MINUTES_KINDS  # 函数内导入：project_linking 导入了本模块
+        from .project_linking import (
+            RELINK_MINUTES_KINDS,
+        )  # 函数内导入：project_linking 导入了本模块
 
         kinds = ", ".join("?" for _ in RELINK_MINUTES_KINDS)
         with self.db.transaction() as connection:
-            empty = connection.execute(
-                "SELECT 1 FROM task_extractions LIMIT 1"
-            ).fetchone() is None
+            empty = connection.execute("SELECT 1 FROM task_extractions LIMIT 1").fetchone() is None
             if empty:
                 connection.execute(
                     """INSERT OR IGNORE INTO task_extractions
@@ -1655,11 +1672,15 @@ class TaskService:
                 """INSERT INTO task_extractions
                    (meeting_id, minutes_version_id, supplement, status, created_at, claimed_at)
                    VALUES (?, ?, ?, 'running', ?, ?)""",
-                (meeting_id, meeting["current_minutes_version_id"], supplement, utc_now(), utc_now()),
+                (
+                    meeting_id,
+                    meeting["current_minutes_version_id"],
+                    supplement,
+                    utc_now(),
+                    utc_now(),
+                ),
             )
-            extraction_id = connection.execute(
-                "SELECT last_insert_rowid() AS id"
-            ).fetchone()["id"]
+            extraction_id = connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
         try:
             self._extract_one(
                 {
@@ -1730,8 +1751,10 @@ class TaskService:
                         connection, meeting_id, str(task.get("anchor_quote") or "")
                     )
                     assignee = (
-                        task.get("assignee_suggestion") or "ai"
-                    ) if task.get("assignee_suggestion") in ASSIGNEE_VALUES else "ai"
+                        (task.get("assignee_suggestion") or "ai")
+                        if task.get("assignee_suggestion") in ASSIGNEE_VALUES
+                        else "ai"
+                    )
                     task_id = f"task-{uuid.uuid4().hex}"
                     now = utc_now()
                     connection.execute(
@@ -1838,7 +1861,7 @@ class TaskService:
             "- 只抽由我负责推进的事项（我亲自去做，或我交给 AI 产出）；明确由其他参会人、客户、"
             "研发等他人负责的事项不抽。\n"
             f"- 最多 {MAX_TASKS_PER_EXTRACTION} 条，按重要性从高到低排列，超过的只保留最重要的。\n"
-            "- 每条任务必须能从纪要找到支撑；没有合适任务时返回 {\"tasks\": []}，不要编造。\n"
+            '- 每条任务必须能从纪要找到支撑；没有合适任务时返回 {"tasks": []}，不要编造。\n'
             "- anchor_quote 必须是逐字稿中的原句摘录（短、可回听定位）。\n"
             "- 执行方：产出文档/原型/方案等可交给 AI 的 assignee_suggestion=ai；"
             "需要本人线下沟通/拍板/确认的 =me。\n"
@@ -1847,8 +1870,8 @@ class TaskService:
             f"会议标题：{title}\n"
             f"{supplement_block}\n"
             "输出格式（严格 JSON，不要 Markdown 围栏）：\n"
-            "{\"tasks\":[{\"title\":\"...\",\"detail\":\"...\",\"anchor_quote\":\"...\","
-            "\"assignee_suggestion\":\"ai|me\"}]}\n"
+            '{"tasks":[{"title":"...","detail":"...","anchor_quote":"...",'
+            '"assignee_suggestion":"ai|me"}]}\n'
             "<meeting_minutes>\n"
             f"{minutes}\n"
             "</meeting_minutes>\n"
@@ -1875,9 +1898,7 @@ class TaskService:
         return "\n".join(lines)
 
     def _call_llm(self, prompt: str) -> str:
-        return call_llm(
-            self.settings, prompt, system="你是严谨的任务抽取助手，只输出合规 JSON。"
-        )
+        return call_llm(self.settings, prompt, system="你是严谨的任务抽取助手，只输出合规 JSON。")
 
     @staticmethod
     def _parse_llm_tasks(raw: str) -> dict[str, Any]:
@@ -1906,7 +1927,9 @@ class TaskService:
         if not isinstance(payload, dict):
             raise RuntimeError("任务抽取返回不是 JSON 对象")
         tasks = payload.get("tasks")
-        payload["tasks"] = [item for item in tasks if isinstance(item, dict)] if isinstance(tasks, list) else []
+        payload["tasks"] = (
+            [item for item in tasks if isinstance(item, dict)] if isinstance(tasks, list) else []
+        )
         return payload
 
     # ------------------------------------------------------------------ 通知调度
@@ -1945,14 +1968,13 @@ class TaskService:
         return (now.hour, now.minute) >= (DIGEST_HOUR, DIGEST_MINUTE)
 
     def _digest_stats(self) -> dict[str, Any]:
-        rows = self.db.query_all(
-            """SELECT t.* FROM tasks t ORDER BY t.created_at DESC"""
-        )
+        rows = self.db.query_all("""SELECT t.* FROM tasks t ORDER BY t.created_at DESC""")
         pending: list[dict[str, Any]] = []
         in_progress: list[dict[str, Any]] = []
         stalled: list[dict[str, Any]] = []
         done_today: list[str] = []
-        today = datetime.now(UTC).date()
+        # 「今天完成」按本地日算，和下面「昨天自动归属」同一口径
+        today = datetime.now().astimezone().date()
         for row in rows:
             task = self.task_summary(row)
             if task["status"] == "pending_confirm":
@@ -1963,7 +1985,7 @@ class TaskService:
                     stalled.append(task)
             elif task["status"] == "done":
                 done_at = _parse_dt(task.get("status_changed_at"))
-                if done_at and done_at.date() == today:
+                if done_at and done_at.astimezone().date() == today:
                     done_today.append(task["title"])
         pending_sources = sorted(
             {task["meeting_title"] for task in pending if task["meeting_title"]}

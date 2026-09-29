@@ -176,9 +176,7 @@ class RelayClient:
         with self._hotword_file(hotwords) as hotword_path:
             if hotword_path:
                 arguments.extend(["--hotwords", str(hotword_path)])
-            payload = self._json(
-                self._run(arguments, extra_env=self._hint_env(project_hint))
-            )
+            payload = self._json(self._run(arguments, extra_env=self._hint_env(project_hint)))
         if not isinstance(payload, dict):
             raise RelayUnavailable("relayctl retry 返回格式错误")
         return payload

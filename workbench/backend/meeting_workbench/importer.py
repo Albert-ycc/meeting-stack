@@ -61,6 +61,8 @@ def input_transcript_name(manifest: dict[str, Any]) -> str:
     if type(version) is int and version >= 3:
         return "input-transcript.srt"
     return "input-transcript.txt"
+
+
 SUPPORT_DIRECTORIES = {".obsidian", "funasr-poc-260708", "待校对"}
 DEGRADED_MARKERS = {
     "_hallucinated_backup",
@@ -269,9 +271,7 @@ def topic_minutes_pair(files: list[Path]) -> tuple[Path, Path] | None:
             continue
         if not is_registered(key):
             normalized_stem = re.sub(r"[\W_]+", "", key[1], flags=re.UNICODE)
-            if any(
-                marker.casefold() in normalized_stem for marker in NON_MINUTES_DOCUMENT_MARKERS
-            ):
+            if any(marker.casefold() in normalized_stem for marker in NON_MINUTES_DOCUMENT_MARKERS):
                 continue
         return markdown_by_stem[key], html_path
     return None
@@ -760,9 +760,7 @@ class ArchiveImporter:
             return None, "受管任务的 archive_dir 与目录不符"
         return manifest, None
 
-    def _is_committed_publish_manifest(
-        self, directory: Path, manifest: dict[str, Any]
-    ) -> bool:
+    def _is_committed_publish_manifest(self, directory: Path, manifest: dict[str, Any]) -> bool:
         if manifest.get("status") != "published":
             return False
         meeting_id = manifest.get("meeting_id")
@@ -1428,9 +1426,7 @@ class ArchiveImporter:
         if old_directory != new_directory:
             if old_directory.exists():
                 return False
-            if not self._is_managed_draft_relocation_path(
-                old_directory, new_directory
-            ):
+            if not self._is_managed_draft_relocation_path(old_directory, new_directory):
                 return False
 
         indexed_content, indexed_whisper = self._indexed_refresh_snapshots(
@@ -1441,9 +1437,7 @@ class ArchiveImporter:
             return False
         return indexed_whisper.keys() <= current_whisper.keys()
 
-    def _is_managed_draft_relocation_path(
-        self, old_directory: Path, new_directory: Path
-    ) -> bool:
+    def _is_managed_draft_relocation_path(self, old_directory: Path, new_directory: Path) -> bool:
         archive_root = self.settings.archive_root
         try:
             old_directory.relative_to(archive_root / ".workbench-drafts")

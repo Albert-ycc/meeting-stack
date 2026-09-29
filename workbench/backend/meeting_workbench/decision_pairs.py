@@ -25,6 +25,7 @@
   记 failed（纪要再变或［现在重试］才重来）；连不上、超时、5xx、429、key 的问题由 links_llm 整体退避或停下，
   不加这场会的次数。
 """
+
 from __future__ import annotations
 
 import json
@@ -84,9 +85,42 @@ RELATION_KINDS = {"changed": "later_changed", "restated": "restated"}
 # 初筛的 2 字停用表：会上常说、不说明是同一件事的词
 STOP_BIGRAMS = frozenset(
     {
-        "我们", "这个", "那个", "下周", "本周", "这周", "上周", "今天", "明天", "先按", "继续", "需要",
-        "会议", "进行", "完成", "确认", "一下", "问题", "工作", "相关", "目前", "后续", "可以", "已经",
-        "还是", "就是", "然后", "如果", "以及", "大家", "各自", "负责", "统一", "同步", "推进", "安排",
+        "我们",
+        "这个",
+        "那个",
+        "下周",
+        "本周",
+        "这周",
+        "上周",
+        "今天",
+        "明天",
+        "先按",
+        "继续",
+        "需要",
+        "会议",
+        "进行",
+        "完成",
+        "确认",
+        "一下",
+        "问题",
+        "工作",
+        "相关",
+        "目前",
+        "后续",
+        "可以",
+        "已经",
+        "还是",
+        "就是",
+        "然后",
+        "如果",
+        "以及",
+        "大家",
+        "各自",
+        "负责",
+        "统一",
+        "同步",
+        "推进",
+        "安排",
     }
 )
 _HAN_RUN = re.compile(r"[一-鿿]+")
@@ -168,7 +202,9 @@ def _day_label(recording_date: str | None, created_at: str | None, today_year: i
     return f"{day.year}年{day.month}月{day.day}日"
 
 
-def build_plan(connection: Any, meeting_id: str, *, halve: bool = False, now: datetime | None = None) -> Plan | None:
+def build_plan(
+    connection: Any, meeting_id: str, *, halve: bool = False, now: datetime | None = None
+) -> Plan | None:
     """读这场会要发的决议（只读）。会没了返回 None；没归项目时是空的计划（直接 done）。"""
     meeting = connection.execute(
         """SELECT m.id, m.title, m.recording_date, m.created_at, m.project_id,
@@ -206,7 +242,9 @@ def build_plan(connection: Any, meeting_id: str, *, halve: bool = False, now: da
         linked.setdefault(row["meeting_id"], []).append({"id": row["id"], "title": row["title"]})
     titles = {
         row["id"]: row["title"]
-        for row in connection.execute("SELECT id, title FROM requirements WHERE project_id = ?", (project_id,)).fetchall()
+        for row in connection.execute(
+            "SELECT id, title FROM requirements WHERE project_id = ?", (project_id,)
+        ).fetchall()
     }
     mine_linked = linked.get(meeting_id, [])
     plan.reqs = [{**item, "code": f"r{index + 1}"} for index, item in enumerate(mine_linked)]
@@ -225,7 +263,9 @@ def build_plan(connection: Any, meeting_id: str, *, halve: bool = False, now: da
                 "day": label,
                 "unplaced": how == "unplaced",
                 "grams": grams(row["text_key"], row["text"]),
-                "order": decision_order(meeting["recording_date"], meeting["created_at"], row["start_ms"], meeting_id),
+                "order": decision_order(
+                    meeting["recording_date"], meeting["created_at"], row["start_ms"], meeting_id
+                ),
             }
         )
     own_keys = {row["text_key"] for row in plan.live}
@@ -258,7 +298,9 @@ def build_plan(connection: Any, meeting_id: str, *, halve: bool = False, now: da
     candidates.sort(key=lambda item: (-item[0], item[1], item[2]["meeting_id"], item[2]["id"]))
     limit = OTHERS_HALVED if halve else OTHERS_LIMIT
     for index, (_score, _distance, row) in enumerate(candidates[:limit]):
-        chosen, _how = effective_requirement(row, linked.get(row["meeting_id"], []), project_id, excluded)
+        chosen, _how = effective_requirement(
+            row, linked.get(row["meeting_id"], []), project_id, excluded
+        )
         plan.others.append(
             {
                 "code": f"e{index + 1}",
@@ -270,14 +312,18 @@ def build_plan(connection: Any, meeting_id: str, *, halve: bool = False, now: da
                 "meeting_title": row["title"],
                 "day": _day_label(row["recording_date"], row["created_at"], year),
                 "requirement": titles.get(chosen) if chosen else None,
-                "order": decision_order(row["recording_date"], row["created_at"], row["start_ms"], row["meeting_id"]),
+                "order": decision_order(
+                    row["recording_date"], row["created_at"], row["start_ms"], row["meeting_id"]
+                ),
             }
         )
     return plan
 
 
 def _head(item: Mapping[str, Any]) -> str:
-    return f"{item['code']} [{item['day']} {llm.neutralise(item['meeting_title'] or '', NAME_CHARS)}]"
+    return (
+        f"{item['code']} [{item['day']} {llm.neutralise(item['meeting_title'] or '', NAME_CHARS)}]"
+    )
 
 
 def build_user(plan: Plan) -> str:
@@ -288,16 +334,28 @@ def build_user(plan: Plan) -> str:
     ]
     other_lines = [
         f"{_head(item)}"
-        + (f"[需求：{llm.neutralise(item['requirement'], NAME_CHARS)}]" if item["requirement"] else "")
+        + (
+            f"[需求：{llm.neutralise(item['requirement'], NAME_CHARS)}]"
+            if item["requirement"]
+            else ""
+        )
         + f" {item['sent']}"
         for item in plan.others
     ]
-    req_lines = [f"{item['code']} {llm.neutralise(item['title'] or '', NAME_CHARS)}" for item in plan.reqs]
+    req_lines = [
+        f"{item['code']} {llm.neutralise(item['title'] or '', NAME_CHARS)}" for item in plan.reqs
+    ]
     return "\n".join(
         [
-            "<this>", *this_lines, "</this>",
-            "<others>", *other_lines, "</others>",
-            "<reqs>", *req_lines, "</reqs>",
+            "<this>",
+            *this_lines,
+            "</this>",
+            "<others>",
+            *other_lines,
+            "</others>",
+            "<reqs>",
+            *req_lines,
+            "</reqs>",
         ]
     )
 
@@ -305,7 +363,9 @@ def build_user(plan: Plan) -> str:
 def prompt_preview(connection: Any, meeting_id: str) -> dict[str, Any] | None:
     """命令行 links decisions --meeting 用：这场会对比时会发的提示词，只读，从不发送。
     返回 {system, user, needs_call, this, others}，会没了是 None。"""
-    scan = connection.execute("SELECT pair_error FROM decision_scan WHERE meeting_id = ?", (meeting_id,)).fetchone()
+    scan = connection.execute(
+        "SELECT pair_error FROM decision_scan WHERE meeting_id = ?", (meeting_id,)
+    ).fetchone()
     plan = build_plan(connection, meeting_id, halve=bool(scan and scan["pair_error"] == LENGTH))
     if plan is None:
         return None
@@ -394,7 +454,13 @@ def validate(reply: Mapping[str, list[Any]], plan: Plan) -> Checked:
         seen.add(key)
         accepted += 1
         kept.append(
-            {"kind": kind, "early": early, "late": late, "why_earlier": early_quote, "why_later": late_quote}
+            {
+                "kind": kind,
+                "early": early,
+                "late": late,
+                "why_earlier": early_quote,
+                "why_later": late_quote,
+            }
         )
     place: list[tuple[str, str]] = []
     placed: set[str] = set()
@@ -457,11 +523,16 @@ class DecisionPairTask:
 
     def _due(self, db: Database, now: datetime, limit: int = SCAN_LIMIT) -> list[dict[str, Any]]:
         with db.autocommit() as connection:
-            return [dict(row) for row in connection.execute(_DUE_SQL, (claim_stamp(now), limit)).fetchall()]
+            return [
+                dict(row)
+                for row in connection.execute(_DUE_SQL, (claim_stamp(now), limit)).fetchall()
+            ]
 
     def _plan(self, db: Database, row: Mapping[str, Any], now: datetime) -> Plan | None:
         with db.autocommit() as connection:
-            return build_plan(connection, row["meeting_id"], halve=row["pair_error"] == LENGTH, now=now)
+            return build_plan(
+                connection, row["meeting_id"], halve=row["pair_error"] == LENGTH, now=now
+            )
 
     def _close(self, db: Database, row: Mapping[str, Any], plan: Plan, now: datetime) -> bool:
         """不用调用的会直接 done（pair_hash 照算）。只在还是 pending、版本和项目没变时写。"""
@@ -474,7 +545,13 @@ class DecisionPairTask:
                               pair_error = NULL, pair_claimed_at = NULL, updated_at = ?
                         WHERE meeting_id = ? AND pair_state = 'pending'
                           AND minutes_version_id IS ? AND project_id IS ?""",
-                    (pair_hash(plan.live), stamp, row["meeting_id"], row["minutes_version_id"], row["project_id"]),
+                    (
+                        pair_hash(plan.live),
+                        stamp,
+                        row["meeting_id"],
+                        row["minutes_version_id"],
+                        row["project_id"],
+                    ),
                 ).rowcount
             )
 
@@ -537,20 +614,32 @@ class DecisionPairTask:
         code = LENGTH if job.get("length") else code
         with db.transaction() as connection:
             row = connection.execute(
-                f"SELECT pair_attempts FROM decision_scan WHERE {self._GUARD}", (job["meeting_id"], job["claimed_at"])
+                f"SELECT pair_attempts FROM decision_scan WHERE {self._GUARD}",
+                (job["meeting_id"], job["claimed_at"]),
             ).fetchone()
             if row is None:
                 return
             attempts = int(row["pair_attempts"] or 0) + 1
             failed = attempts >= MAX_ATTEMPTS
-            after = None if failed else claim_stamp(job["now"] + RETRY_AFTER[min(attempts, len(RETRY_AFTER)) - 1])
+            after = (
+                None
+                if failed
+                else claim_stamp(job["now"] + RETRY_AFTER[min(attempts, len(RETRY_AFTER)) - 1])
+            )
             connection.execute(
                 f"""UPDATE decision_scan
                        SET pair_attempts = ?, pair_state = ?, pair_after = ?, pair_error = ?, pair_claimed_at = NULL,
                            updated_at = ?
                      WHERE {self._GUARD}""",
-                (attempts, "failed" if failed else "pending", after, code, utc_now(), job["meeting_id"],
-                 job["claimed_at"]),
+                (
+                    attempts,
+                    "failed" if failed else "pending",
+                    after,
+                    code,
+                    utc_now(),
+                    job["meeting_id"],
+                    job["claimed_at"],
+                ),
             )
 
     # ------------------------------------------------------------------ 一次调用
@@ -620,7 +709,10 @@ class DecisionPairTask:
                     "decision_id": early["id"],
                     "to_decision_id": late["id"],
                     "quote": pair["why_later"],
-                    "evidence": {"why_earlier": pair["why_earlier"], "why_later": pair["why_later"]},
+                    "evidence": {
+                        "why_earlier": pair["why_earlier"],
+                        "why_later": pair["why_later"],
+                    },
                 }
             from .decisions import _rejected_idents
 
@@ -640,9 +732,9 @@ class DecisionPairTask:
                            AND decision_id IN ({marks}) AND to_decision_id IN ({marks})""",
                     [project_id, since, *both, *both],
                 ).fetchall():
-                    crosses = (row["decision_id"] in this_ids and row["to_decision_id"] in other_ids) or (
-                        row["decision_id"] in other_ids and row["to_decision_id"] in this_ids
-                    )
+                    crosses = (
+                        row["decision_id"] in this_ids and row["to_decision_id"] in other_ids
+                    ) or (row["decision_id"] in other_ids and row["to_decision_id"] in this_ids)
                     if not crosses:
                         continue
                     kept = written.get(row["ident"])
@@ -670,4 +762,3 @@ class DecisionPairTask:
                      WHERE {self._GUARD}""",
                 (pair_hash(plan.live), utc_now(), job["meeting_id"], job["claimed_at"]),
             )
-

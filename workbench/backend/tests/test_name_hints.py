@@ -1,5 +1,6 @@
 """第二期 2b：「像是新项目 / 新需求」——AI 多给的名字、过滤、共用提示、做了决定就清掉并能撤销、
 候选名、从提示建成项目或需求。"""
+
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -71,7 +72,10 @@ def test_auto_assigned_meeting_keeps_new_requirement_name(tmp_path, monkeypatch)
     db, settings = make_db(tmp_path)
     project_id = make_project(db, "云图AI")
     seed_meeting(db, "m-1", "云图AI 周会", "# 摘要\n云图AI 要做数据看板。", segments=BOARD)
-    llm_answers(monkeypatch, _answer("云图AI", new_requirement="数据看板", spoken=["数据看板", "不存在的词"]))
+    llm_answers(
+        monkeypatch,
+        _answer("云图AI", new_requirement="数据看板", spoken=["数据看板", "不存在的词"]),
+    )
 
     ProjectLinker(db, settings).link_pending()
 
@@ -185,11 +189,20 @@ def _set_link(db, meeting_id, status, **columns):
     )
 
 
-def _requirement_hint_meeting(db, meeting_id, project_id, name="数据看板", segments=BOARD, origin="ai"):
-    seed_meeting(db, meeting_id, "云图周会", segments=segments, project_id=project_id, origin=origin)
+def _requirement_hint_meeting(
+    db, meeting_id, project_id, name="数据看板", segments=BOARD, origin="ai"
+):
+    seed_meeting(
+        db, meeting_id, "云图周会", segments=segments, project_id=project_id, origin=origin
+    )
     _set_link(
-        db, meeting_id, "done", project_id=project_id, new_requirement_name=name,
-        new_name_project_id=project_id, new_name_spoken=[name],
+        db,
+        meeting_id,
+        "done",
+        project_id=project_id,
+        new_requirement_name=name,
+        new_name_project_id=project_id,
+        new_name_spoken=[name],
     )
 
 
@@ -205,13 +218,19 @@ def test_name_hint_is_shared_by_detail_and_list(tmp_path):
     _set_link(db, "m-new", "unresolved", new_project_name="数据中台", new_name_spoken=["中台"])
     seed_meeting(db, "m-review", "沟通")
     _set_link(
-        db, "m-review", "needs_review", new_project_name="数据中台",
+        db,
+        "m-review",
+        "needs_review",
+        new_project_name="数据中台",
         candidates_json=json.dumps([{"project_id": other_id, "count": 1, "llm": False}]),
     )
 
     assert _hint(client, "m-req") == {
-        "kind": "requirement", "name": "数据看板", "spoken": ["数据看板"],
-        "project_id": project_id, "project_name": "云图AI",
+        "kind": "requirement",
+        "name": "数据看板",
+        "spoken": ["数据看板"],
+        "project_id": project_id,
+        "project_name": "云图AI",
     }
     assert _hint(client, "m-moved") is None
     assert _hint(client, "m-new") == {"kind": "project", "name": "数据中台", "spoken": ["中台"]}
@@ -236,7 +255,12 @@ def test_ignore_requirement_name_clears_only_that_project_and_can_be_undone(tmp_
 
     response = client.post(
         "/api/project-names/ignore",
-        json={"name": "云图二期", "kind": "requirement", "project_id": project_id, "meeting_id": "m-1"},
+        json={
+            "name": "云图二期",
+            "kind": "requirement",
+            "project_id": project_id,
+            "meeting_id": "m-1",
+        },
         headers=headers,
     )
 
@@ -246,12 +270,16 @@ def test_ignore_requirement_name_clears_only_that_project_and_can_be_undone(tmp_
     assert _hint(client, "m-1") is None and _hint(client, "m-2") is None
     assert _hint(client, "m-3")["name"] == "云图三期"
 
-    undone = client.post("/api/name-decisions/undo", json={"event_id": body["event_id"]}, headers=headers)
+    undone = client.post(
+        "/api/name-decisions/undo", json={"event_id": body["event_id"]}, headers=headers
+    )
     assert undone.status_code == 200, undone.text
     assert undone.json()["meetings_restored"] == 2
     assert _hint(client, "m-1")["name"] == "云图二期"
     assert db.query_one("SELECT COUNT(*) AS n FROM requirement_name_decisions")["n"] == 0
-    again = client.post("/api/name-decisions/undo", json={"event_id": body["event_id"]}, headers=headers)
+    again = client.post(
+        "/api/name-decisions/undo", json={"event_id": body["event_id"]}, headers=headers
+    )
     assert again.status_code == 409
 
 
@@ -267,23 +295,39 @@ def test_ignore_project_name_keeps_project_decision_and_restores_previous_row(tm
     )
     # 已经「建成了别的项目」的名字，「不是新项目」不覆盖那一行。
     client.post("/api/project-names/ignore", json={"name": "报价"}, headers=headers)
-    assert db.query_one("SELECT decision FROM name_decisions WHERE norm_key='报价'")["decision"] == "project"
-    response = client.post("/api/project-names/ignore", json={"name": "数据中台项目"}, headers=headers)
+    assert (
+        db.query_one("SELECT decision FROM name_decisions WHERE norm_key='报价'")["decision"]
+        == "project"
+    )
+    response = client.post(
+        "/api/project-names/ignore", json={"name": "数据中台项目"}, headers=headers
+    )
     assert response.json()["meetings_updated"] == 1
     assert _hint(client, "m-1") is None
-    client.post("/api/name-decisions/undo", json={"event_id": response.json()["event_id"]}, headers=headers)
+    client.post(
+        "/api/name-decisions/undo", json={"event_id": response.json()["event_id"]}, headers=headers
+    )
     assert _hint(client, "m-1")["name"] == "数据中台"
-    assert db.query_one("SELECT COUNT(*) AS n FROM name_decisions WHERE norm_key='数据中台'")["n"] == 0
+    assert (
+        db.query_one("SELECT COUNT(*) AS n FROM name_decisions WHERE norm_key='数据中台'")["n"] == 0
+    )
 
 
 def test_undo_window_expires(tmp_path):
     client, _settings, headers, db, _root = _api(tmp_path)
     seed_meeting(db, "m-1", "沟通")
     _set_link(db, "m-1", "unresolved", new_project_name="数据中台")
-    event_id = client.post("/api/project-names/ignore", json={"name": "数据中台"}, headers=headers).json()["event_id"]
+    event_id = client.post(
+        "/api/project-names/ignore", json={"name": "数据中台"}, headers=headers
+    ).json()["event_id"]
     old = (datetime.now(UTC) - timedelta(minutes=11)).isoformat()
     db.execute("UPDATE events SET created_at=? WHERE id=?", (old, event_id))
-    assert client.post("/api/name-decisions/undo", json={"event_id": event_id}, headers=headers).status_code == 409
+    assert (
+        client.post(
+            "/api/name-decisions/undo", json={"event_id": event_id}, headers=headers
+        ).status_code
+        == 409
+    )
 
 
 def test_summary_counts_also_names_as_taken_and_delete_clears_decisions(tmp_path):
@@ -295,9 +339,16 @@ def test_summary_counts_also_names_as_taken_and_delete_clears_decisions(tmp_path
     assert _hint(client, "m-1") is None
 
     created = client.post("/api/projects", json={"name": "智慧园区"}, headers=headers).json()
-    assert db.query_one("SELECT target_id FROM name_decisions WHERE norm_key='智慧园区'")["target_id"] == created["id"]
-    client.delete(f"/api/projects/{created['id']}", headers={**headers, "Content-Type": "application/json"})
-    assert db.query_one("SELECT COUNT(*) AS n FROM name_decisions WHERE norm_key='智慧园区'")["n"] == 0
+    assert (
+        db.query_one("SELECT target_id FROM name_decisions WHERE norm_key='智慧园区'")["target_id"]
+        == created["id"]
+    )
+    client.delete(
+        f"/api/projects/{created['id']}", headers={**headers, "Content-Type": "application/json"}
+    )
+    assert (
+        db.query_one("SELECT COUNT(*) AS n FROM name_decisions WHERE norm_key='智慧园区'")["n"] == 0
+    )
 
 
 # ---------------------------------------------------------------------- 候选名
@@ -314,7 +365,13 @@ def test_name_candidates_orders_folder_spoken_ai_and_similar(tmp_path):
     )
     segments = [(1000, "数据看版先说"), (4000, "数据看板怎么排"), (7000, "云图看板的首页")]
     seed_meeting(db, "m-1", "沟通", segments=segments)
-    _set_link(db, "m-1", "unresolved", new_project_name="云图数据看板", new_name_spoken=["云图看板", "数据看板"])
+    _set_link(
+        db,
+        "m-1",
+        "unresolved",
+        new_project_name="云图数据看板",
+        new_name_spoken=["云图看板", "数据看板"],
+    )
     seed_meeting(db, "m-2", "再沟通", segments=[(2500, "数据看板")])
     _set_link(db, "m-2", "unresolved", new_project_name="云图数据看板项目")
     client.app.state.roots_cache.refresh()
@@ -322,10 +379,25 @@ def test_name_candidates_orders_folder_spoken_ai_and_similar(tmp_path):
     body = client.get("/api/meetings/m-1/name-candidates").json()
 
     assert body["folders_state"] == "ready"
-    names = [(item["name"], bool(item["folder_path"]), item["spoken"], item["ai"], bool(item["similar_folder_path"])) for item in body["candidates"]]
+    names = [
+        (
+            item["name"],
+            bool(item["folder_path"]),
+            item["spoken"],
+            item["ai"],
+            bool(item["similar_folder_path"]),
+        )
+        for item in body["candidates"]
+    ]
     assert names == [
         ("云图看板", True, None, False, False),
-        ("数据看板", False, {"count": 2, "first_ms": 1000, "anchors_ms": [1000, 4000]}, False, False),
+        (
+            "数据看板",
+            False,
+            {"count": 2, "first_ms": 1000, "anchors_ms": [1000, 4000]},
+            False,
+            False,
+        ),
         ("云图数据看板", False, None, True, False),
         ("云图看板2026", False, None, False, True),
     ]
@@ -361,7 +433,9 @@ def test_create_project_from_hint_settles_names_and_adds_spoken_also(tmp_path):
     client, _settings, headers, db, _browse = _api(tmp_path)
     segments = [(1000, "数据看板先说"), (4000, "数据看板怎么排"), (7000, "云图看板")]
     seed_meeting(db, "m-1", "沟通", segments=segments)
-    _set_link(db, "m-1", "unresolved", new_project_name="云图数据看板", new_name_spoken=["数据看板"])
+    _set_link(
+        db, "m-1", "unresolved", new_project_name="云图数据看板", new_name_spoken=["数据看板"]
+    )
     seed_meeting(db, "m-2", "沟通", segments=[(1, "数据看板")])
     _set_link(db, "m-2", "unresolved", new_project_name="云图数据看板")
 
@@ -378,7 +452,9 @@ def test_create_project_from_hint_settles_names_and_adds_spoken_also(tmp_path):
     project = client.get(f"/api/projects/{body['id']}/board").json()
     also = project.get("also_names") or project["project"]["also_names"]
     assert {"name": "数据看板", "source": "spoken"} in also
-    keys = {row["norm_key"]: row["decision"] for row in db.query_all("SELECT * FROM name_decisions")}
+    keys = {
+        row["norm_key"]: row["decision"] for row in db.query_all("SELECT * FROM name_decisions")
+    }
     assert keys == {"云图看板": "project", "云图数据看板": "project", "数据看板": "project"}
     assert client.get("/api/attribution/summary").json()["new_project_names"] == []
 
@@ -390,14 +466,18 @@ def test_create_project_from_hint_settles_names_and_adds_spoken_also(tmp_path):
     assert undone.json() == {"ok": True, "removed": True}
     also = db.query_one("SELECT also_names FROM projects WHERE id=?", (body["id"],))["also_names"]
     assert "数据看板" not in also
-    assert db.query_one("SELECT COUNT(*) AS n FROM name_decisions WHERE norm_key='数据看板'")["n"] == 0
+    assert (
+        db.query_one("SELECT COUNT(*) AS n FROM name_decisions WHERE norm_key='数据看板'")["n"] == 0
+    )
 
 
 def test_spoken_also_is_skipped_when_not_qualified(tmp_path):
     client, _settings, headers, db, _browse = _api(tmp_path)
     make_project(db, "报价系统", also=["数据看板"])
     seed_meeting(db, "m-1", "沟通", segments=[(1, "数据看板"), (2, "数据看板")])
-    _set_link(db, "m-1", "unresolved", new_project_name="云图数据看板", new_name_spoken=["数据看板"])
+    _set_link(
+        db, "m-1", "unresolved", new_project_name="云图数据看板", new_name_spoken=["数据看板"]
+    )
 
     body = client.post(
         "/api/projects",
@@ -435,12 +515,18 @@ def test_name_as_requirement_for_unassigned_meetings_and_undo(tmp_path):
     seed_meeting(db, "m-2", "沟通")
     _set_link(db, "m-2", "unresolved", new_project_name="数据看板项目")
 
-    missing = client.post("/api/meetings/m-1/name-as-requirement", json={"title": "数据看板"}, headers=headers)
+    missing = client.post(
+        "/api/meetings/m-1/name-as-requirement", json={"title": "数据看板"}, headers=headers
+    )
     assert missing.status_code == 400
 
     response = client.post(
         "/api/meetings/m-1/name-as-requirement",
-        json={"title": "数据看板", "project_id": project["id"], "folder_path": str(root / "数据看板")},
+        json={
+            "title": "数据看板",
+            "project_id": project["id"],
+            "folder_path": str(root / "数据看板"),
+        },
         headers=headers,
     )
 
@@ -450,11 +536,18 @@ def test_name_as_requirement_for_unassigned_meetings_and_undo(tmp_path):
     assert body["meetings_assigned"] == 2 and body["meetings_linked"] == 2
     assert body["folder_attached"] == str((root / "数据看板").resolve())
     for meeting_id in ("m-1", "m-2"):
-        row = db.query_one("SELECT project_id, project_origin FROM meetings WHERE id=?", (meeting_id,))
+        row = db.query_one(
+            "SELECT project_id, project_origin FROM meetings WHERE id=?", (meeting_id,)
+        )
         assert (row["project_id"], row["project_origin"]) == (project["id"], "manual")
     requirement = db.query_one("SELECT * FROM requirements WHERE id=?", (body["requirement_id"],))
     assert requirement["priority"] == "P2"
-    assert db.query_one("SELECT name, decision FROM name_decisions WHERE norm_key='数据看板'")["decision"] == "ignored"
+    assert (
+        db.query_one("SELECT name, decision FROM name_decisions WHERE norm_key='数据看板'")[
+            "decision"
+        ]
+        == "ignored"
+    )
 
     undone = client.post("/api/meetings/m-1/name-as-requirement/undo", json={}, headers=headers)
     assert undone.status_code == 200, undone.text
@@ -463,7 +556,9 @@ def test_name_as_requirement_for_unassigned_meetings_and_undo(tmp_path):
     assert db.query_one("SELECT COUNT(*) AS n FROM requirements")["n"] == 0
     assert db.query_one("SELECT project_id FROM meetings WHERE id='m-2'")["project_id"] is None
     assert _hint(client, "m-2")["name"] == "数据看板项目"
-    assert db.query_one("SELECT COUNT(*) AS n FROM name_decisions WHERE norm_key='数据看板'")["n"] == 0
+    assert (
+        db.query_one("SELECT COUNT(*) AS n FROM name_decisions WHERE norm_key='数据看板'")["n"] == 0
+    )
 
 
 def test_name_as_requirement_links_existing_requirement_and_keeps_it_on_undo(tmp_path):
@@ -485,7 +580,9 @@ def test_name_as_requirement_links_existing_requirement_and_keeps_it_on_undo(tmp
 
     assert body["existing"] is True and body["requirement_id"] == existing
     assert body["meetings_assigned"] == 0 and body["meetings_linked"] == 1
-    undone = client.post("/api/meetings/m-1/name-as-requirement/undo", json={}, headers=headers).json()
+    undone = client.post(
+        "/api/meetings/m-1/name-as-requirement/undo", json={}, headers=headers
+    ).json()
     assert undone["requirement_deleted"] is False
     assert db.query_one("SELECT COUNT(*) AS n FROM requirements WHERE id=?", (existing,))["n"] == 1
     assert db.query_one("SELECT COUNT(*) AS n FROM requirement_meetings")["n"] == 0

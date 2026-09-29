@@ -12,6 +12,7 @@
 - 必须用 urllib.request.urlopen（按模块属性取），测试护栏（tests/conftest.py 的 _no_real_llm）才拦得到。
 - tasks.call_llm 不动，任务抽取和项目归属照旧用它。
 """
+
 from __future__ import annotations
 
 import http.client
@@ -115,7 +116,9 @@ def _not_sent(error: BaseException) -> bool:
 
 def _is_timeout(error: BaseException) -> bool:
     reason = getattr(error, "reason", error)
-    return isinstance(reason, (TimeoutError, socket.timeout)) or isinstance(error, (TimeoutError, socket.timeout))
+    return isinstance(reason, (TimeoutError, socket.timeout)) or isinstance(
+        error, (TimeoutError, socket.timeout)
+    )
 
 
 def _set_socket_timeout(response: Any, seconds: float) -> None:
@@ -241,7 +244,10 @@ def chat(
         except LLMError as error:
             any_sent = any_sent or error.sent
             logger.warning(
-                "AI 调用失败：%s（HTTP %s，用时 %.1f 秒）", error.code, error.status, clock() - started
+                "AI 调用失败：%s（HTTP %s，用时 %.1f 秒）",
+                error.code,
+                error.status,
+                clock() - started,
             )
             if error.code in NEVER_RETRY or attempt + 1 >= attempts:
                 error.sent = any_sent

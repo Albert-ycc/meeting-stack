@@ -9,6 +9,8 @@ interface GlossaryTargetButtonProps {
   defaultProjectName: string | null | undefined;
   projects: Project[];
   disabled?: boolean;
+  /** workbench：词典工作台里的深色分体按钮，样式在 GlossaryWorkbench.css */
+  variant?: "workbench";
   onConfirm: (target: GlossaryTarget, label: string) => void;
 }
 
@@ -26,6 +28,7 @@ export function GlossaryTargetButton({
   defaultProjectName,
   projects,
   disabled,
+  variant,
   onConfirm,
 }: GlossaryTargetButtonProps) {
   const [open, setOpen] = useState(false);
@@ -43,7 +46,7 @@ export function GlossaryTargetButton({
   };
 
   return (
-    <span className="glossary-target">
+    <span className={variant ? `glossary-target glossary-target--${variant}` : "glossary-target"}>
       <button
         className="glossary-target__main"
         disabled={disabled}

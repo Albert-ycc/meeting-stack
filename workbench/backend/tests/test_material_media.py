@@ -1,5 +1,6 @@
 """第三期 3d：材料里的录音和视频：会议录音查重、ffprobe、10 分钟一段、重叠去重、断点续转、让路、超时、
 合成片段；还有 transcribe/funasr_material.py 自己的规矩。"""
+
 import hashlib
 import json
 import os
@@ -48,16 +49,23 @@ class FakeRun:
 
     def __call__(self, argv, *, timeout, stop=None, **kwargs):
         self.calls.append((list(argv), timeout))
-        name = Path(argv[-1]).name if argv[0] == "ffprobe" else Path(argv[argv.index("-i") + 1]).name
+        name = (
+            Path(argv[-1]).name if argv[0] == "ffprobe" else Path(argv[argv.index("-i") + 1]).name
+        )
         info = self.files[name]
         if argv[0] == "ffprobe":
             if self.probe_error is not None:
                 if isinstance(self.probe_error, Exception):
                     raise self.probe_error
                 return subprocess.CompletedProcess(argv, 1, b"", self.probe_error.encode())
-            streams = [{"codec_type": "video"}] + ([{"codec_type": "audio"}] if info.get("audio", True) else [])
+            streams = [{"codec_type": "video"}] + (
+                [{"codec_type": "audio"}] if info.get("audio", True) else []
+            )
             duration = info.get("probe", info["seconds"])
-            payload = {"streams": streams, "format": {"duration": "N/A" if duration is None else f"{duration:.6f}"}}
+            payload = {
+                "streams": streams,
+                "format": {"duration": "N/A" if duration is None else f"{duration:.6f}"},
+            }
             return subprocess.CompletedProcess(argv, 0, json.dumps(payload).encode(), b"")
         if self.cut_error is not None:
             return subprocess.CompletedProcess(argv, 1, b"", self.cut_error.encode())
@@ -104,13 +112,19 @@ class FakeTranscriber:
 
 def default_sentences(offset):
     sentences = [
-        {"start_ms": offset + 1_000, "end_ms": offset + 20_000, "text": f"第{offset // 600_000 + 1}段开头讲报价。"},
+        {
+            "start_ms": offset + 1_000,
+            "end_ms": offset + 20_000,
+            "text": f"第{offset // 600_000 + 1}段开头讲报价。",
+        },
         {"start_ms": offset + 20_000, "end_ms": offset + 45_000, "text": "接着讲交付时间。"},
         {"start_ms": offset + 598_000, "end_ms": offset + 601_500, "text": "重叠的一句。"},
     ]
     if offset:
         # 上一段多取的 2 秒里已经有这一句
-        sentences.insert(0, {"start_ms": offset - 2_000, "end_ms": offset + 1_500, "text": "重叠的一句。"})
+        sentences.insert(
+            0, {"start_ms": offset - 2_000, "end_ms": offset + 1_500, "text": "重叠的一句。"}
+        )
     return sentences
 
 
@@ -128,8 +142,12 @@ def media_setup(tmp_path, files, *, busy=None, transcriber=None, tools=None, onl
         db,
         settings,
         content,
-        tools=tools or (lambda: Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", funasr_python="python",
-                                      media_script=str(SCRIPT))),
+        tools=tools
+        or (
+            lambda: Tools(
+                ffmpeg="ffmpeg", ffprobe="ffprobe", funasr_python="python", media_script=str(SCRIPT)
+            )
+        ),
         busy_check=busy,
         stop=stop,
         state_of=lambda path: ROOT_ONLINE if state["online"] else ROOT_VOLUME_OFFLINE,
@@ -157,7 +175,9 @@ def job(db):
 
 
 def test_audio_is_cut_into_ten_minute_segments_and_merged_into_timed_chunks(tmp_path):
-    db, settings, root, media, run, transcriber, _state = media_setup(tmp_path, {"访谈.m4a": {"seconds": 1500}})
+    db, settings, root, media, run, transcriber, _state = media_setup(
+        tmp_path, {"访谈.m4a": {"seconds": 1500}}
+    )
     assert only(db)["layer"] == "media" and only(db)["state"] == "pending"
     stats = media.run_once()
     assert stats["work"] is True
@@ -169,21 +189,32 @@ def test_audio_is_cut_into_ten_minute_segments_and_merged_into_timed_chunks(tmp_
     assert first.index("-ss") < first.index("-i") and first[first.index("-t") + 1] == "602"
     assert first[first.index("-ac") + 1] == "1" and first[first.index("-ar") + 1] == "16000"
     assert "-nostdin" in first and "-vn" in first
-    assert Path(first[-1]).parent == settings.data_dir / "material-asr" / Path(first[-1]).parent.name
-    assert [payload["offset_ms"] for payload, _timeout in transcriber.requests] == [0, 600_000, 1_200_000]
+    assert (
+        Path(first[-1]).parent == settings.data_dir / "material-asr" / Path(first[-1]).parent.name
+    )
+    assert [payload["offset_ms"] for payload, _timeout in transcriber.requests] == [
+        0,
+        600_000,
+        1_200_000,
+    ]
     # 每段超时取「音频长度 × 3」和 15 分钟的较大者
     assert [timeout for _payload, timeout in transcriber.requests] == [1806.0, 1806.0, 900.0]
 
     row = only(db)
     assert row["state"] == "done" and row["note"] is None and row["extractor"] == "funasr-material"
-    assert row["duration_ms"] == 1_500_000 and row["sha256"] == hashlib.sha256("访谈.m4a".encode() * 10).hexdigest()
+    assert (
+        row["duration_ms"] == 1_500_000
+        and row["sha256"] == hashlib.sha256("访谈.m4a".encode() * 10).hexdigest()
+    )
     texts = [chunk["text"] for chunk in chunks(db)]
     assert "".join(texts).count("重叠的一句。") == 3  # 每段交界处的重复句去掉了，各段自己的留着
     assert all(len(text) <= 400 for text in texts)
     assert all(chunk["end_ms"] - chunk["start_ms"] <= 60_000 for chunk in chunks(db))
     assert chunks(db)[0]["start_ms"] == 1_000
     assert job(db) is None  # 转完断点行和片段同一个事务删掉
-    assert not (settings.data_dir / "material-asr").exists() or not any((settings.data_dir / "material-asr").iterdir())
+    assert not (settings.data_dir / "material-asr").exists() or not any(
+        (settings.data_dir / "material-asr").iterdir()
+    )
     hits = db.query_all(
         "SELECT c.start_ms FROM material_chunks_fts JOIN material_chunks c ON c.id = material_chunks_fts.rowid "
         "WHERE material_chunks_fts MATCH ?",
@@ -198,7 +229,10 @@ def test_meeting_audio_is_recognized_by_hash_and_not_transcribed(tmp_path):
         tmp_path, {"周会.m4a": {"seconds": 1800, "data": data}}
     )
     add_meeting(db, "m1", ago=3)
-    db.execute("UPDATE meetings SET original_audio_sha256 = ? WHERE id = 'm1'", (hashlib.sha256(data).hexdigest(),))
+    db.execute(
+        "UPDATE meetings SET original_audio_sha256 = ? WHERE id = 'm1'",
+        (hashlib.sha256(data).hexdigest(),),
+    )
     media.run_once()
     row = only(db)
     assert row["state"] == "done" and row["note"] == "meeting_audio" and row["meeting_id"] == "m1"
@@ -254,7 +288,9 @@ def test_silence_is_no_speech(tmp_path):
 
 def test_only_the_first_six_hours_are_transcribed(tmp_path, monkeypatch):
     monkeypatch.setattr(material_media, "MAX_MS", 1_200_000)
-    db, _settings, _root, media, _run, transcriber, _state = media_setup(tmp_path, {"长.mp3": {"seconds": 1500}})
+    db, _settings, _root, media, _run, transcriber, _state = media_setup(
+        tmp_path, {"长.mp3": {"seconds": 1500}}
+    )
     media.run_once()
     assert len(transcriber.requests) == 2
     row = only(db)
@@ -262,11 +298,15 @@ def test_only_the_first_six_hours_are_transcribed(tmp_path, monkeypatch):
 
 
 def test_probe_timeout_retries_later_and_bad_output_is_corrupt(tmp_path):
-    db, _settings, _root, media, run, _transcriber, _state = media_setup(tmp_path, {"坏.m4a": {"seconds": 60}})
+    db, _settings, _root, media, run, _transcriber, _state = media_setup(
+        tmp_path, {"坏.m4a": {"seconds": 60}}
+    )
     run.probe_error = HelperTimeout("ffprobe 超过 15 秒")
     media.run_once()
     row = only(db)
-    assert row["state"] == "pending" and row["reason"] == "timeout" and row["next_try_at"] is not None
+    assert (
+        row["state"] == "pending" and row["reason"] == "timeout" and row["next_try_at"] is not None
+    )
     assert run.calls[0][1] == 15.0
 
     db.execute("UPDATE material_contents SET next_try_at = NULL")
@@ -276,14 +316,18 @@ def test_probe_timeout_retries_later_and_bad_output_is_corrupt(tmp_path):
 
 
 def test_encrypted_media_is_unsupported(tmp_path):
-    db, _settings, _root, media, run, _transcriber, _state = media_setup(tmp_path, {"加密.m4a": {"seconds": 60}})
+    db, _settings, _root, media, run, _transcriber, _state = media_setup(
+        tmp_path, {"加密.m4a": {"seconds": 60}}
+    )
     run.probe_error = "[mov,mp4] stream 0: encrypted (DRM) stream"
     media.run_once()
     assert only(db)["state"] == "unreadable" and only(db)["reason"] == "unsupported"
 
 
 def test_errors_with_the_disk_gone_write_nothing(tmp_path):
-    db, _settings, _root, media, run, _transcriber, state = media_setup(tmp_path, {"盘.m4a": {"seconds": 60}})
+    db, _settings, _root, media, run, _transcriber, state = media_setup(
+        tmp_path, {"盘.m4a": {"seconds": 60}}
+    )
     run.probe_error = "Invalid data found when processing input"
 
     def unplug(*args, **kwargs):
@@ -323,7 +367,12 @@ def test_busy_meeting_kills_the_transcriber_and_resumes_from_done_ms(tmp_path):
     busy["on"] = False
     transcriber.during = None
     media.run_once()
-    assert [payload["offset_ms"] for payload, _t in transcriber.requests] == [0, 600_000, 600_000, 1_200_000]
+    assert [payload["offset_ms"] for payload, _t in transcriber.requests] == [
+        0,
+        600_000,
+        600_000,
+        1_200_000,
+    ]
     assert only(db)["state"] == "done" and job(db) is None
     assert media.progress["paused"] is None
 
@@ -408,7 +457,9 @@ def test_missing_programs_mark_media_waiting(tmp_path):
 
 
 def test_idle_transcriber_is_closed_between_rounds(tmp_path):
-    db, _settings, _root, media, _run, transcriber, _state = media_setup(tmp_path, {"访谈.m4a": {"seconds": 60}})
+    db, _settings, _root, media, _run, transcriber, _state = media_setup(
+        tmp_path, {"访谈.m4a": {"seconds": 60}}
+    )
     media.run_once()
     assert only(db)["state"] == "done"
     assert media.run_once()["work"] is False
@@ -416,7 +467,9 @@ def test_idle_transcriber_is_closed_between_rounds(tmp_path):
 
 
 def test_stop_ends_the_round_without_writing(tmp_path):
-    db, _settings, _root, media, _run, transcriber, _state = media_setup(tmp_path, {"访谈.m4a": {"seconds": 60}})
+    db, _settings, _root, media, _run, transcriber, _state = media_setup(
+        tmp_path, {"访谈.m4a": {"seconds": 60}}
+    )
     media.stop.set()
     assert media.run_once()["ended"] == "stopping"
     assert transcriber.requests == [] and only(db)["state"] == "pending"
@@ -426,24 +479,45 @@ def test_stop_ends_the_round_without_writing(tmp_path):
 
 
 def test_merge_sentences_into_30_to_60_second_chunks_under_400_chars():
-    sentences = [{"start_ms": i * 10_000, "end_ms": i * 10_000 + 9_000, "text": f"第{i}句。"} for i in range(9)]
+    sentences = [
+        {"start_ms": i * 10_000, "end_ms": i * 10_000 + 9_000, "text": f"第{i}句。"}
+        for i in range(9)
+    ]
     spans = merge_sentences(sentences)
-    assert [(span["start_ms"], span["end_ms"]) for span in spans] == [(0, 39_000), (40_000, 79_000), (80_000, 89_000)]
+    assert [(span["start_ms"], span["end_ms"]) for span in spans] == [
+        (0, 39_000),
+        (40_000, 79_000),
+        (80_000, 89_000),
+    ]
     assert spans[0]["text"] == "第0句。第1句。第2句。第3句。"
 
-    wordy = [{"start_ms": i * 1_000, "end_ms": i * 1_000 + 900, "text": "字" * 150} for i in range(4)]
+    wordy = [
+        {"start_ms": i * 1_000, "end_ms": i * 1_000 + 900, "text": "字" * 150} for i in range(4)
+    ]
     assert [len(span["text"]) for span in merge_sentences(wordy)] == [300, 300]
 
-    long_gap = [{"start_ms": 0, "end_ms": 5_000, "text": "开头。"}, {"start_ms": 70_000, "end_ms": 75_000, "text": "很久以后。"}]
+    long_gap = [
+        {"start_ms": 0, "end_ms": 5_000, "text": "开头。"},
+        {"start_ms": 70_000, "end_ms": 75_000, "text": "很久以后。"},
+    ]
     assert len(merge_sentences(long_gap)) == 2
 
-    english = [{"start_ms": 0, "end_ms": 1_000, "text": "Hello world."}, {"start_ms": 1_000, "end_ms": 2_000, "text": "Next one"}]
+    english = [
+        {"start_ms": 0, "end_ms": 1_000, "text": "Hello world."},
+        {"start_ms": 1_000, "end_ms": 2_000, "text": "Next one"},
+    ]
     assert merge_sentences(english)[0]["text"] == "Hello world. Next one"
 
 
 def test_probe_parsing_and_error_classes(tmp_path):
-    assert parse_probe(b'{"streams":[{"codec_type":"audio"}],"format":{"duration":"61.5"}}') == (61_500, True)
-    assert parse_probe(b'{"streams":[{"codec_type":"audio"}],"format":{"duration":"N/A"}}') == (None, True)
+    assert parse_probe(b'{"streams":[{"codec_type":"audio"}],"format":{"duration":"61.5"}}') == (
+        61_500,
+        True,
+    )
+    assert parse_probe(b'{"streams":[{"codec_type":"audio"}],"format":{"duration":"N/A"}}') == (
+        None,
+        True,
+    )
     assert parse_probe(b'{"streams":[{"codec_type":"video"}],"format":{}}') == (None, False)
     for bad in (b"not json", b"[]"):
         try:
@@ -467,8 +541,13 @@ def test_probe_parsing_and_error_classes(tmp_path):
 def test_media_layer_readiness_needs_the_transcriber_script(tmp_path):
     from meeting_workbench.ocr_engines import probe_tools
 
-    settings = type("S", (), {"funasr_python": sys.executable, "material_transcriber": tmp_path / "none.py"})()
-    assert probe_tools(settings, system="linux", which=lambda name: f"/usr/bin/{name}").media_script is None
+    settings = type(
+        "S", (), {"funasr_python": sys.executable, "material_transcriber": tmp_path / "none.py"}
+    )()
+    assert (
+        probe_tools(settings, system="linux", which=lambda name: f"/usr/bin/{name}").media_script
+        is None
+    )
     settings.material_transcriber = SCRIPT
     tools = probe_tools(settings, system="linux", which=lambda name: f"/usr/bin/{name}")
     assert tools.media_script == str(SCRIPT) and media_missing(tools) == []
@@ -476,7 +555,12 @@ def test_media_layer_readiness_needs_the_transcriber_script(tmp_path):
 
 def test_default_transcriber_is_a_background_helper(tmp_path):
     db, settings, *_rest = setup(tmp_path)
-    tools = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", funasr_python="/venv/bin/python", media_script=str(SCRIPT))
+    tools = Tools(
+        ffmpeg="ffmpeg",
+        ffprobe="ffprobe",
+        funasr_python="/venv/bin/python",
+        media_script=str(SCRIPT),
+    )
     stop = StopFlag()
     media = MaterialMedia(db, settings, _rest[2], tools=lambda: tools, stop=stop)
     helper = media.helper(tools)
@@ -490,7 +574,7 @@ def test_default_transcriber_is_a_background_helper(tmp_path):
 # ---------------------------------------------------------------------- 转写程序本身
 
 
-FAKE_FUNASR = '''
+FAKE_FUNASR = """
 import sys
 print("funasr 在 import 的时候乱打印")
 
@@ -512,16 +596,16 @@ class AutoModel:
             {"start": 100, "end": 900, "text": "你好。"},
             {"start": 1000, "end": 1800, "text": "再见。"},
         ]}]
-'''
+"""
 
-FAKE_TORCH = '''
+FAKE_TORCH = """
 import os
 import sys
 
 
 def set_num_threads(n):
     sys.stderr.write(f"THREADS {n} OMP {os.environ.get('OMP_NUM_THREADS')}\\n")
-'''
+"""
 
 
 def test_transcriber_script_answers_only_on_stdout(tmp_path):
@@ -540,18 +624,31 @@ def test_transcriber_script_answers_only_on_stdout(tmp_path):
     )
     env = {**os.environ, "PYTHONPATH": str(fake), "OMP_NUM_THREADS": "16"}
     result = subprocess.run(
-        [sys.executable, str(SCRIPT)], input=requests + "\n", capture_output=True, text=True, env=env, timeout=60
+        [sys.executable, str(SCRIPT)],
+        input=requests + "\n",
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr
     answers = [json.loads(line) for line in result.stdout.splitlines()]
-    assert answers[0] == {"id": "a", "ok": True, "sentences": [
-        {"start_ms": 600_100, "end_ms": 600_900, "text": "你好。"},
-        {"start_ms": 601_000, "end_ms": 601_800, "text": "再见。"},
-    ]}
+    assert answers[0] == {
+        "id": "a",
+        "ok": True,
+        "sentences": [
+            {"start_ms": 600_100, "end_ms": 600_900, "text": "你好。"},
+            {"start_ms": 601_000, "end_ms": 601_800, "text": "再见。"},
+        ],
+    }
     assert answers[1] == {"id": "b", "ok": True, "sentences": []}
-    assert answers[2]["id"] == "c" and answers[2]["ok"] is False and "解码失败" in answers[2]["error"]
+    assert (
+        answers[2]["id"] == "c" and answers[2]["ok"] is False and "解码失败" in answers[2]["error"]
+    )
     # 库里的 print 都进了 stderr；不加载 cam++；每段显式要句子时间戳；4 个线程
     assert "乱打印" in result.stderr and "generate 里也打印" in result.stderr
     assert "spk_model" not in result.stderr and "'punc_model'" in result.stderr
-    assert "('sentence_timestamp', True)" in result.stderr and "('batch_size_s', 60)" in result.stderr
+    assert (
+        "('sentence_timestamp', True)" in result.stderr and "('batch_size_s', 60)" in result.stderr
+    )
     assert "THREADS 4 OMP 4" in result.stderr

@@ -9,6 +9,7 @@
 - 栏的状态一句话、最多一个按钮（kind 是 ok、waiting、stopped）；项目里没读完的材料数和项目页覆盖率同一套
   数（没读完的文件加上已读但向量还在补的），每个项目缓存 30 秒。
 """
+
 from __future__ import annotations
 
 import json
@@ -39,8 +40,31 @@ MENTIONED_IDS_MAX = 200
 # ［用本机应用打开］只开文档、图片和音视频；代码、网页和脚本一律不开，材料里的文件永远不会被执行
 OPEN_EXTS = frozenset(
     {
-        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "key", "pages", "numbers", "rtf", "txt", "md", "csv",
-        "png", "jpg", "jpeg", "heic", "gif", "webp", "mp3", "m4a", "wav", "mp4", "mov",
+        "pdf",
+        "doc",
+        "docx",
+        "xls",
+        "xlsx",
+        "ppt",
+        "pptx",
+        "key",
+        "pages",
+        "numbers",
+        "rtf",
+        "txt",
+        "md",
+        "csv",
+        "png",
+        "jpg",
+        "jpeg",
+        "heic",
+        "gif",
+        "webp",
+        "mp3",
+        "m4a",
+        "wav",
+        "mp4",
+        "mov",
     }
 )
 # 可能是目录形式的包
@@ -63,8 +87,19 @@ READING_SOME = "这个项目的材料还没读完，读完会接着找"
 OPEN_PROJECT_LABEL = "去项目页"
 OFFLINE_TEXT = "资料盘未连接"
 PANEL_SENTENCES = (
-    EMPTY, PARTIAL, FINDING, THIS_TRANSCRIBING, OTHER_TRANSCRIBING, NO_PROJECT, NO_ROOTS, NO_TRANSCRIPT,
-    NO_MODEL, SEMANTIC_OFF, CONTENT_OFF, LINKS_OFF, READING_SOME,
+    EMPTY,
+    PARTIAL,
+    FINDING,
+    THIS_TRANSCRIBING,
+    OTHER_TRANSCRIBING,
+    NO_PROJECT,
+    NO_ROOTS,
+    NO_TRANSCRIPT,
+    NO_MODEL,
+    SEMANTIC_OFF,
+    CONTENT_OFF,
+    LINKS_OFF,
+    READING_SOME,
 )
 
 # ［用本机应用打开］的错误
@@ -87,7 +122,9 @@ class RelatedError(ValueError):
         self.status = status
 
 
-def _state(kind: str, text: str | None = None, action: dict[str, Any] | None = None) -> dict[str, Any]:
+def _state(
+    kind: str, text: str | None = None, action: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return {"kind": kind, "text": text, "action": action}
 
 
@@ -151,7 +188,8 @@ def _files_for(connection: Any, project_id: str, keys: list[str]) -> dict[str, d
             key = str(row["content_key"])
             current = result.get(key)
             if current is None or (int(row["mtime_ns"] or 0), int(row["id"])) > (
-                int(current["mtime_ns"] or 0), int(current["id"])
+                int(current["mtime_ns"] or 0),
+                int(current["id"]),
             ):
                 result[key] = dict(row)
     return result
@@ -192,7 +230,13 @@ def panel(
     ).fetchone()
     if meeting is None:
         return None
-    result: dict[str, Any] = {"state": _state("ok"), "files": {}, "copies": [], "windows": [], "rejected": 0}
+    result: dict[str, Any] = {
+        "state": _state("ok"),
+        "files": {},
+        "copies": [],
+        "windows": [],
+        "rejected": 0,
+    }
     snap = _snapshot(worker)
     busy = snap.get("paused") == "busy"
     stopped = _stopped(settings, worker)
@@ -208,14 +252,19 @@ def panel(
     ).fetchone()[0]
     if not roots:
         result["state"] = _state(
-            "stopped", NO_ROOTS, {"kind": "open_project", "label": OPEN_PROJECT_LABEL, "project_id": project_id}
+            "stopped",
+            NO_ROOTS,
+            {"kind": "open_project", "label": OPEN_PROJECT_LABEL, "project_id": project_id},
         )
         return result
     if not meeting["version_id"]:
-        result["state"] = _state("waiting", THIS_TRANSCRIBING) if busy else _state("stopped", NO_TRANSCRIPT)
+        result["state"] = (
+            _state("waiting", THIS_TRANSCRIBING) if busy else _state("stopped", NO_TRANSCRIPT)
+        )
         return result
     scan = connection.execute(
-        "SELECT copies_json, partial, scanned_at FROM meeting_related_scan WHERE meeting_id = ?", (meeting_id,)
+        "SELECT copies_json, partial, scanned_at FROM meeting_related_scan WHERE meeting_id = ?",
+        (meeting_id,),
     ).fetchone()
     passages = connection.execute(
         """SELECT p.start_ms, p.rank, p.content_key, p.ordinal, p.words, p.seg_ms, c.loc, c.start_ms AS chunk_ms,
@@ -269,12 +318,18 @@ def panel(
         used.add(key)
     ordered = [(start, items) for start, items in sorted(windows.items()) if items][:PANEL_WINDOWS]
     result["windows"] = [
-        {"start_ms": start, "end_ms": start + related.WINDOW_MS, "items": items} for start, items in ordered
+        {"start_ms": start, "end_ms": start + related.WINDOW_MS, "items": items}
+        for start, items in ordered
     ]
     kept = {item["content_key"] for _start, items in ordered for item in items}
-    result["files"] = {key: _file_info(files[key], local=local, online=is_online(files[key])) for key in sorted(kept)}
+    result["files"] = {
+        key: _file_info(files[key], local=local, online=is_online(files[key]))
+        for key in sorted(kept)
+    }
     result["copies"] = [
-        {"file_id": int(files[key]["id"]), "name": files[key]["name"]} for key in copies if key in files
+        {"file_id": int(files[key]["id"]), "name": files[key]["name"]}
+        for key in copies
+        if key in files
     ]
     computed = scan is not None and scan["scanned_at"] is not None
     unread_now = unread.get(connection, project_id, related.model_of(settings))
@@ -321,7 +376,9 @@ def _stopped(settings: Any, worker: Any) -> dict[str, Any] | None:
 
 def rejected_items(connection: Any, meeting_id: str) -> dict[str, Any] | None:
     """GET /api/meetings/{id}/related-materials/rejected：［改回相关］用 4a 的 restore。"""
-    meeting = connection.execute("SELECT id, project_id FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+    meeting = connection.execute(
+        "SELECT id, project_id FROM meetings WHERE id = ?", (meeting_id,)
+    ).fetchone()
     if meeting is None:
         return None
     rows = connection.execute(
@@ -338,7 +395,9 @@ def rejected_items(connection: Any, meeting_id: str) -> dict[str, Any] | None:
         "items": [
             {
                 "relation_id": int(row["id"]),
-                "name": row["live_name"] or row["file_name"] or str(row["rel_path"] or "").rpartition("/")[2],
+                "name": row["live_name"]
+                or row["file_name"]
+                or str(row["rel_path"] or "").rpartition("/")[2],
                 "decided_at": row["decided_at"] or row["updated_at"],
             }
             for row in rows
@@ -365,7 +424,9 @@ class ProjectNotFound(LookupError):
     pass
 
 
-def project_related(connection: Any, project_id: str, *, window: str, today: date) -> dict[str, Any]:
+def project_related(
+    connection: Any, project_id: str, *, window: str, today: date
+) -> dict[str, Any]:
     """GET /api/graph/projects/{id}/related：按窗口筛会，再按确定的贪心每个节点最多 3 条；rank 只是顺序；
     边 id 用 e:rel:<relation_id>；没有活文件的跳过；files 列出边里用到的每份文件。"""
     from .relation_read import LIVE_ID_SQL
@@ -384,7 +445,9 @@ def project_related(connection: Any, project_id: str, *, window: str, today: dat
     days = WINDOWS.get(window)
     if days is not None:
         cutoff = today - timedelta(days=days)
-        rows = [row for row in rows if local_day(row["recording_date"], row["created_at"]) >= cutoff]
+        rows = [
+            row for row in rows if local_day(row["recording_date"], row["created_at"]) >= cutoff
+        ]
     hubs = related.hub_keys(connection, project_id, [str(row["content_key"]) for row in rows])
     ranked = []
     for row in rows:
@@ -392,24 +455,46 @@ def project_related(connection: Any, project_id: str, *, window: str, today: dat
             continue
         evidence = related._json_obj(row["evidence_json"])
         words = [str(word) for word in evidence.get("words") or []]
-        ranked.append((-int(evidence.get("windows") or 0), -len(words), -float(row["score"] or 0), int(row["id"]), row, evidence, words))
+        ranked.append(
+            (
+                -int(evidence.get("windows") or 0),
+                -len(words),
+                -float(row["score"] or 0),
+                int(row["id"]),
+                row,
+                evidence,
+                words,
+            )
+        )
     ranked.sort(key=lambda item: item[:4])
     per_meeting: dict[str, int] = {}
     per_file: dict[int, int] = {}
     chosen = []
     for *_order, row, evidence, words in ranked:
         meeting, file_id = str(row["meeting_id"]), int(row["file_id"])
-        if per_meeting.get(meeting, 0) >= GRAPH_EDGES_PER_NODE or per_file.get(file_id, 0) >= GRAPH_EDGES_PER_NODE:
+        if (
+            per_meeting.get(meeting, 0) >= GRAPH_EDGES_PER_NODE
+            or per_file.get(file_id, 0) >= GRAPH_EDGES_PER_NODE
+        ):
             continue
         per_meeting[meeting] = per_meeting.get(meeting, 0) + 1
         per_file[file_id] = per_file.get(file_id, 0) + 1
         chosen.append((row, evidence, words))
-    material = [(str(ev.get("material", {}).get("content_key") or row["content_key"]), ev.get("material", {}).get("ordinal"))
-                for row, ev, _w in chosen]
-    chunks = _chunks_at(connection, [(key, ordinal) for key, ordinal in material if isinstance(ordinal, int)])
+    material = [
+        (
+            str(ev.get("material", {}).get("content_key") or row["content_key"]),
+            ev.get("material", {}).get("ordinal"),
+        )
+        for row, ev, _w in chosen
+    ]
+    chunks = _chunks_at(
+        connection, [(key, ordinal) for key, ordinal in material if isinstance(ordinal, int)]
+    )
     edges = []
     files: dict[str, dict[str, Any]] = {}
-    for rank, ((row, evidence, words), (key, ordinal)) in enumerate(zip(chosen, material, strict=True), start=1):
+    for rank, ((row, evidence, words), (key, ordinal)) in enumerate(
+        zip(chosen, material, strict=True), start=1
+    ):
         chunk = chunks.get((key, ordinal)) if isinstance(ordinal, int) else None
         edges.append(
             {
@@ -439,7 +524,9 @@ def project_related(connection: Any, project_id: str, *, window: str, today: dat
     return {"rev": related_rev(connection), "files": files, "edges": edges}
 
 
-def _chunks_at(connection: Any, anchors: list[tuple[str, int]]) -> dict[tuple[str, int], dict[str, Any]]:
+def _chunks_at(
+    connection: Any, anchors: list[tuple[str, int]]
+) -> dict[tuple[str, int], dict[str, Any]]:
     found: dict[tuple[str, int], dict[str, Any]] = {}
     unique = sorted(set(anchors))
     for part in related._batches(unique, 200):
@@ -457,14 +544,17 @@ def _chunks_at(connection: Any, anchors: list[tuple[str, int]]) -> dict[tuple[st
 # ---------------------------------------------------------------------- 预览定位和内容相关的会
 
 
-def passage(connection: Any, row: dict[str, Any], content_key: str | None, ordinal: int) -> dict[str, Any] | None:
+def passage(
+    connection: Any, row: dict[str, Any], content_key: str | None, ordinal: int
+) -> dict[str, Any] | None:
     """预览定位到那一段：这个 key 是文件现在的 → stale false；属于这份文件的来历（relations 或文件流水里
     有这份文件的 root_id、rel_path）并且片段还在 → stale true；否则 None。"""
     key = content_key or row.get("content_key")
     if not key:
         return None
     chunk = connection.execute(
-        "SELECT loc, start_ms, text FROM material_chunks WHERE content_key = ? AND ordinal = ?", (key, int(ordinal))
+        "SELECT loc, start_ms, text FROM material_chunks WHERE content_key = ? AND ordinal = ?",
+        (key, int(ordinal)),
     ).fetchone()
     if chunk is None:
         return None
@@ -487,7 +577,9 @@ def passage(connection: Any, row: dict[str, Any], content_key: str | None, ordin
     }
 
 
-def related_meetings(connection: Any, file_id: int, limit: int = RELATED_MEETINGS) -> list[dict[str, Any]]:
+def related_meetings(
+    connection: Any, file_id: int, limit: int = RELATED_MEETINGS
+) -> list[dict[str, Any]]:
     """文件面板、预览抽屉的「内容相关的会」：按内容找（同内容的副本上也看得到），新的在前，最多 5 条。
     和项目图谱一样去掉到处都相关的内容（hub_keys）；和栏一样挡掉那场会里你标过不相关的（按内容或按这份
     文件的位置，原地改过也挡）。"""
@@ -504,7 +596,7 @@ def related_meetings(connection: Any, file_id: int, limit: int = RELATED_MEETING
     place = {"root_id": file["root_id"], "rel_path": file["rel_path"]}
     found = connection.execute(
         f"""SELECT r.id, r.meeting_id, r.at_ms, r.quote, r.evidence_json, m.title, m.recording_date, m.created_at,
-                   {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id
+                   {AUDIO_ID_SQL.format(meeting="m.id")} AS audio_id
               FROM relations r
               JOIN meetings m ON m.id = r.meeting_id AND m.project_id = r.project_id
              WHERE r.project_id = ? AND r.content_key = ? AND r.kind = 'related' AND r.status = 'shown'
@@ -513,7 +605,9 @@ def related_meetings(connection: Any, file_id: int, limit: int = RELATED_MEETING
     )
     rows = []
     for row in found:
-        if related.is_blocked(key, place, related.rejected_filter(connection, str(row["meeting_id"]), project_id)):
+        if related.is_blocked(
+            key, place, related.rejected_filter(connection, str(row["meeting_id"]), project_id)
+        ):
             continue
         rows.append(row)
         if len(rows) >= int(limit):
@@ -525,7 +619,9 @@ def related_meetings(connection: Any, file_id: int, limit: int = RELATED_MEETING
             "date": str(row["recording_date"] or row["created_at"] or "")[:10],
             "at_ms": row["at_ms"],
             "quote": row["quote"] or "",
-            "words": [str(word) for word in related._json_obj(row["evidence_json"]).get("words") or []],
+            "words": [
+                str(word) for word in related._json_obj(row["evidence_json"]).get("words") or []
+            ],
             "audio_url": f"/api/media/{row['audio_id']}" if row["audio_id"] else None,
             "relation_id": int(row["id"]),
         }
@@ -559,7 +655,8 @@ def mentioned_counts(connection: Any, file_ids: list[int]) -> dict[str, int]:
         live += [
             int(row[0])
             for row in connection.execute(
-                f"SELECT id FROM material_files WHERE id IN ({related._marks(part)}) AND gone_at IS NULL", list(part)
+                f"SELECT id FROM material_files WHERE id IN ({related._marks(part)}) AND gone_at IS NULL",
+                list(part),
             ).fetchall()
         ]
     counts = file_mention_counts(connection, live)
@@ -608,7 +705,9 @@ def open_material(
     if command is None:
         raise RelatedError(503, OPEN_NO_APP)
     try:
-        (run or subprocess.run)(command, check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        (run or subprocess.run)(
+            command, check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
     except subprocess.TimeoutExpired:
         return  # 不等应用退出
     except OSError as error:

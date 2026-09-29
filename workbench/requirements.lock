@@ -101,6 +101,8 @@ pygments==2.20.0
     # via
     #   pytest
     #   rich
+pypinyin==0.55.0
+    # via meeting-workbench (pyproject.toml)
 pytest==9.1.1
     # via
     #   meeting-workbench (pyproject.toml)

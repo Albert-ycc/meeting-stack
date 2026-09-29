@@ -3,6 +3,7 @@
 背景：relay 里 5 个失败任务放了一个多月没有出口，3 个归档未完成让 relay 常驻 degraded，
 健康灯永远是黄的；资料库筛「失败」是 0 场，隔离目录在界面上找不到任何提示。
 """
+
 from fastapi.testclient import TestClient
 
 from meeting_workbench.attention import (
@@ -104,7 +105,9 @@ def test_minutes_failure_copy_depends_on_remaining_auto_recovery():
     assert "自动再试" in waiting["summary"]
     assert "重新生成纪要" in exhausted["next_step"]
     # 转写阶段失败不能说「纪要会自动重试」
-    transcription = describe_job({"job_id": "t", "status": "failed", "failure_stage": "transcribing"})
+    transcription = describe_job(
+        {"job_id": "t", "status": "failed", "failure_stage": "transcribing"}
+    )
     assert "重新转写" in transcription["next_step"]
     assert "自动" not in transcription["summary"]
 
@@ -127,7 +130,10 @@ def test_attention_lists_open_jobs_and_quarantined_directories(tmp_path):
     client, app = make_client(tmp_path, relay)
     app.state.last_scan = {
         "quarantine_details": [
-            {"directory": "/archive/260903 远山患者平台原型评审", "reason": "受管任务状态与预期不符：failed"}
+            {
+                "directory": "/archive/260903 远山患者平台原型评审",
+                "reason": "受管任务状态与预期不符：failed",
+            }
         ]
     }
 
@@ -160,7 +166,9 @@ def test_acknowledging_archive_failures_clears_relay_degraded(tmp_path):
     assert after["services"]["relay_worker"] == "healthy"
     assert after["counts"]["attention_jobs"] == 1
     assert after["counts"]["acknowledged_jobs"] == 1
-    assert {job["job_id"] for job in client.get("/api/attention").json()["jobs"]} == {"job-transcribe"}
+    assert {job["job_id"] for job in client.get("/api/attention").json()["jobs"]} == {
+        "job-transcribe"
+    }
 
 
 def test_new_archive_failure_not_yet_in_snapshot_keeps_degraded(tmp_path):
@@ -182,12 +190,16 @@ def test_acknowledged_job_reappears_after_it_changes(tmp_path):
     headers = write_headers(client)
     client.get("/api/attention")
     client.post("/api/jobs/job-transcribe/acknowledge", json={}, headers=headers)
-    assert "job-transcribe" not in {job["job_id"] for job in client.get("/api/attention").json()["jobs"]}
+    assert "job-transcribe" not in {
+        job["job_id"] for job in client.get("/api/attention").json()["jobs"]
+    }
 
     relay.jobs[0]["updated_at"] = "2026-09-14T09:00:00+00:00"  # 重试后又失败了
     app.state.attention_jobs = app.state.refresh_attention_jobs()
 
-    assert "job-transcribe" in {job["job_id"] for job in client.get("/api/attention").json()["jobs"]}
+    assert "job-transcribe" in {
+        job["job_id"] for job in client.get("/api/attention").json()["jobs"]
+    }
 
 
 def test_acknowledge_unknown_job_is_404(tmp_path):
@@ -261,7 +273,11 @@ def test_acknowledging_unknown_job_does_not_hammer_relay(tmp_path):
 
 def test_archive_failure_next_step_names_the_real_remedy():
     item = describe_job(
-        {"job_id": "job-archive", "status": "completed_unreviewed", "failure_stage": "pending_archive"}
+        {
+            "job_id": "job-archive",
+            "status": "completed_unreviewed",
+            "failure_stage": "pending_archive",
+        }
     )
 
     # 转写录音页没有「重试归档」按钮，下一步不能把人指到那里去

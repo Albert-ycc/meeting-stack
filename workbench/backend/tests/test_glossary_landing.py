@@ -1,4 +1,5 @@
 """1d-1a 纠错词的落点：确认时记到哪、撤销确认、恢复驳回、2 字扩整词、保存纪要直接记入。"""
+
 import json
 
 from meeting_workbench.db import Database, utc_now
@@ -63,16 +64,23 @@ def test_expansion_stops_at_punctuation_particles_and_six_chars():
         {"wrong": "树立", "correct": "数理", "alt_wrong": None, "alt_correct": None}
     ]
     # 遇到「的」停
-    assert extract_correction_candidates("树立协会的事", "数理协会的事", set())[0]["wrong"] == "树立协会"
+    assert (
+        extract_correction_candidates("树立协会的事", "数理协会的事", set())[0]["wrong"]
+        == "树立协会"
+    )
     # 没有重复可依时向右只扩到 4 字
-    assert extract_correction_candidates("树立协会章程草案", "数理协会章程草案", set())[0][
-        "wrong"
-    ] == "树立协会"
+    assert (
+        extract_correction_candidates("树立协会章程草案", "数理协会章程草案", set())[0]["wrong"]
+        == "树立协会"
+    )
     # 逐字稿里反复出现的长写法可以扩到 6 字，但不超过 6 字
     corpus = "树立协会章程草案第一条，树立协会章程草案第二条"
-    assert extract_correction_candidates("树立协会章程草案", "数理协会章程草案", set(), corpus)[0][
-        "wrong"
-    ] == "树立协会章程"
+    assert (
+        extract_correction_candidates("树立协会章程草案", "数理协会章程草案", set(), corpus)[0][
+            "wrong"
+        ]
+        == "树立协会章程"
+    )
 
 
 def test_expansion_follows_what_repeats_in_the_transcript():
@@ -114,14 +122,20 @@ def test_confirm_defaults_to_meeting_project_at_confirm_time(tmp_path):
     add_project(db, "p-yt", "云图")
     add_project(db, "p-sj", "数据中台")
     add_meeting(db, project_id="p-yt")
-    suggestion_id = add_suggestion(db, wrong="树立协会", correct="数理协会", scope="云图", meeting_id=MEETING)
+    suggestion_id = add_suggestion(
+        db, wrong="树立协会", correct="数理协会", scope="云图", meeting_id=MEETING
+    )
     # 建议排进来之后会议被改到了数据中台：按确认那一刻的项目记
     db.execute("UPDATE meetings SET project_id='p-sj' WHERE id=?", (MEETING,))
 
     result = confirm_suggestion(db, suggestion_id)
     assert result["created"] is True
     term = result["term"]
-    assert (term["project_id"], term["scope"], term["project_name"]) == ("p-sj", "数据中台", "数据中台")
+    assert (term["project_id"], term["scope"], term["project_name"]) == (
+        "p-sj",
+        "数据中台",
+        "数据中台",
+    )
     assert term["aliases"] == ["树立协会"]
     row = list_suggestions(db, status="confirmed")[0]
     assert (row["confirmed_term_id"], row["confirmed_wrong"]) == (term["id"], "树立协会")
@@ -164,7 +178,10 @@ def test_confirm_adds_to_existing_term_without_moving_it(tmp_path):
     existing = create_term(db, term="数理协会", aliases=["数立协会"])
     suggestion_id = add_suggestion(db, wrong="树立协会", correct="数理协会", meeting_id=MEETING)
     listed = list_suggestions(db, status="pending")[0]
-    assert (listed["existing_term_id"], listed["existing_term_project_id"]) == (existing["id"], None)
+    assert (listed["existing_term_id"], listed["existing_term_project_id"]) == (
+        existing["id"],
+        None,
+    )
 
     result = confirm_suggestion(db, suggestion_id)
     assert result["created"] is False
@@ -178,7 +195,12 @@ def test_confirm_short_records_the_two_char_pair(tmp_path):
     db = make_db(tmp_path)
     add_meeting(db)
     suggestion_id = add_suggestion(
-        db, wrong="树立协会", correct="数理协会", meeting_id=MEETING, alt_wrong="树立", alt_correct="数理"
+        db,
+        wrong="树立协会",
+        correct="数理协会",
+        meeting_id=MEETING,
+        alt_wrong="树立",
+        alt_correct="数理",
     )
     result = confirm_suggestion(db, suggestion_id, short=True)
     assert (result["wrong"], result["correct"]) == ("树立", "数理")
@@ -239,7 +261,11 @@ def test_undo_confirm_deletes_auto_term_and_returns_to_pending(tmp_path):
     assert list_terms(db) == []
     assert read_snapshot(snapshot)["terms"] == []
     row = list_suggestions(db, status="pending")[0]
-    assert (row["id"], row["confirmed_term_id"], row["confirmed_wrong"]) == (suggestion_id, None, None)
+    assert (row["id"], row["confirmed_term_id"], row["confirmed_wrong"]) == (
+        suggestion_id,
+        None,
+        None,
+    )
     # 撤销过的可以换个落点再确认
     assert confirm_suggestion(db, suggestion_id, target="public")["term"]["project_id"] is None
     # 待确认的不能撤销
@@ -286,7 +312,12 @@ def test_rejected_suggestion_can_be_restored_and_confirmed(tmp_path):
     db = Database(settings.database_path)
     suggestion_id = add_suggestion(db, wrong="树立", correct="数理")
     headers = write_headers(client)
-    assert client.post(f"/api/glossary/suggestions/{suggestion_id}/reject", headers=headers).status_code == 200
+    assert (
+        client.post(
+            f"/api/glossary/suggestions/{suggestion_id}/reject", headers=headers
+        ).status_code
+        == 200
+    )
     # 待确认的不能恢复，已驳回的能
     restored = client.post(f"/api/glossary/suggestions/{suggestion_id}/restore", headers=headers)
     assert restored.status_code == 200
@@ -304,7 +335,10 @@ def test_rejected_suggestion_can_be_restored_and_confirmed(tmp_path):
     assert undone.status_code == 200
     assert undone.json()["suggestion"]["status"] == "pending"
     assert client.get("/api/glossary/terms").json() == []
-    assert client.post(f"/api/glossary/suggestions/{suggestion_id}/undo", headers=headers).status_code == 404
+    assert (
+        client.post(f"/api/glossary/suggestions/{suggestion_id}/undo", headers=headers).status_code
+        == 404
+    )
 
 
 def test_confirm_api_rejects_unknown_target_and_extra_fields(tmp_path):
@@ -313,7 +347,9 @@ def test_confirm_api_rejects_unknown_target_and_extra_fields(tmp_path):
     suggestion_id = add_suggestion(db, wrong="树立", correct="数理")
     headers = write_headers(client)
     missing = client.post(
-        f"/api/glossary/suggestions/{suggestion_id}/confirm", json={"target": "p-x"}, headers=headers
+        f"/api/glossary/suggestions/{suggestion_id}/confirm",
+        json={"target": "p-x"},
+        headers=headers,
     )
     assert missing.status_code == 404
     extra = client.post(
@@ -344,7 +380,9 @@ def test_save_auto_records_when_correct_is_known_and_meeting_has_project(tmp_pat
     )
     assert saved.status_code == 200
     corrections = saved.json()["corrections"]
-    assert sorted((row["wrong"], row["correct"], row["status"], row["auto_recorded"]) for row in corrections) == [
+    assert sorted(
+        (row["wrong"], row["correct"], row["status"], row["auto_recorded"]) for row in corrections
+    ) == [
         ("树立协会", "数理协会", "confirmed", True),
         ("随方", "随访", "confirmed", True),
     ]
@@ -356,7 +394,12 @@ def test_save_auto_records_when_correct_is_known_and_meeting_has_project(tmp_pat
     }
     # 「已记入 · 撤销」
     auto_id = next(row["id"] for row in corrections if row["correct"] == "数理协会")
-    assert client.post(f"/api/glossary/suggestions/{auto_id}/undo", headers=write_headers(client)).status_code == 200
+    assert (
+        client.post(
+            f"/api/glossary/suggestions/{auto_id}/undo", headers=write_headers(client)
+        ).status_code
+        == 200
+    )
     assert get_term(db, term["id"])["aliases"] == []
 
 
@@ -366,12 +409,13 @@ def test_save_does_not_auto_record_without_project_or_when_wrong_is_a_known_name
     add_meeting(db)
     create_term(db, term="数理协会")
     create_term(db, term="月总")
-    db.execute("UPDATE glossary_terms SET also=? WHERE term='月总'", (json.dumps(["岳总"], ensure_ascii=False),))
+    db.execute(
+        "UPDATE glossary_terms SET also=? WHERE term='月总'",
+        (json.dumps(["岳总"], ensure_ascii=False),),
+    )
 
     # 会议没归项目：只排队
-    rows = record_corrections_from_diff(
-        db, "成立树立协会。", "成立数理协会。", meeting_id=MEETING
-    )
+    rows = record_corrections_from_diff(db, "成立树立协会。", "成立数理协会。", meeting_id=MEETING)
     assert [(row["wrong"], row["status"], row["auto_recorded"]) for row in rows] == [
         ("树立协会", "pending", False)
     ]
@@ -398,12 +442,28 @@ def test_record_uses_meeting_transcript_to_pick_the_whole_word(tmp_path):
         version,
         MEETING,
         [
-            {"id": "s1", "ordinal": 0, "start_ms": 0, "end_ms": 1000, "speaker_label": "A", "text": "数据终态这周要定"},
-            {"id": "s2", "ordinal": 1, "start_ms": 1000, "end_ms": 2000, "speaker_label": "A", "text": "数据终态的口径"},
+            {
+                "id": "s1",
+                "ordinal": 0,
+                "start_ms": 0,
+                "end_ms": 1000,
+                "speaker_label": "A",
+                "text": "数据终态这周要定",
+            },
+            {
+                "id": "s2",
+                "ordinal": 1,
+                "start_ms": 1000,
+                "end_ms": 2000,
+                "speaker_label": "A",
+                "text": "数据终态的口径",
+            },
         ],
     )
     db.execute("UPDATE meetings SET current_transcript_version_id=? WHERE id=?", (version, MEETING))
-    rows = record_corrections_from_diff(db, "数据终态下周上线。", "数据中台下周上线。", meeting_id=MEETING)
+    rows = record_corrections_from_diff(
+        db, "数据终态下周上线。", "数据中台下周上线。", meeting_id=MEETING
+    )
     assert [(row["wrong"], row["correct"]) for row in rows] == [("数据终态", "数据中台")]
 
 
@@ -412,7 +472,10 @@ def test_record_returns_nothing_for_duplicates(tmp_path):
     add_meeting(db)
     first = record_corrections_from_diff(db, "成立树立协会。", "成立数理协会。", meeting_id=MEETING)
     assert len(first) == 1
-    assert record_corrections_from_diff(db, "成立树立协会。", "成立数理协会。", meeting_id=MEETING) == []
+    assert (
+        record_corrections_from_diff(db, "成立树立协会。", "成立数理协会。", meeting_id=MEETING)
+        == []
+    )
     # 公共分组总在，哪怕一个词也没有
     assert list_scopes(db) == [
         {"kind": "general", "key": "通用", "label": "公共", "color": None, "count": 0}

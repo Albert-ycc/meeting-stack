@@ -1,4 +1,5 @@
 """第四期 4g：问答的本机那一半——取词、范围、名额、合并、转写时、预算和语句数、中和与回答校验。"""
+
 from __future__ import annotations
 
 import json
@@ -19,6 +20,7 @@ from .helpers import count_reads
 from .test_material_search import add_content, add_file, add_root
 from .test_project_linking import seed_meeting
 from .test_related import embed
+from .test_timeline import shanghai  # noqa: F401  用例的会议时间按 +08:00 写，日期按北京时间断言
 
 MODEL = "bge-test"
 SETTINGS = SimpleNamespace(semantic_enabled=True, semantic_model=MODEL)
@@ -38,14 +40,22 @@ def online(_path):
 def add_project(db, project_id, name, also=()):
     db.execute(
         "INSERT INTO projects(id, name, color, origin, also_names, created_at) VALUES (?, ?, '#2c8d83', 'manual', ?, ?)",
-        (project_id, name, json.dumps([{"name": value, "source": "manual"} for value in also]), utc_now()),
+        (
+            project_id,
+            name,
+            json.dumps([{"name": value, "source": "manual"} for value in also]),
+            utc_now(),
+        ),
     )
 
 
 def meeting(db, meeting_id, title, day, segments, *, project="p", minutes="# 摘要\n\n无。"):
-    seed_meeting(db, meeting_id, title, minutes, segments=segments, project_id=project, origin="manual")
+    seed_meeting(
+        db, meeting_id, title, minutes, segments=segments, project_id=project, origin="manual"
+    )
     db.execute(
-        "UPDATE meetings SET recording_date = ? WHERE id = ?", (f"2026-09-{day:02d}T10:00:00+08:00", meeting_id)
+        "UPDATE meetings SET recording_date = ? WHERE id = ?",
+        (f"2026-09-{day:02d}T10:00:00+08:00", meeting_id),
     )
 
 
@@ -63,8 +73,15 @@ def add_term(db, term, *, aliases=(), also=(), project_id="p"):
     db.execute(
         """INSERT INTO glossary_terms(id, term, aliases, also, confirmed, project_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, 1, ?, ?, ?)""",
-        (f"t-{term}", term, json.dumps(list(aliases), ensure_ascii=False),
-         json.dumps(list(also), ensure_ascii=False), project_id, now, now),
+        (
+            f"t-{term}",
+            term,
+            json.dumps(list(aliases), ensure_ascii=False),
+            json.dumps(list(also), ensure_ascii=False),
+            project_id,
+            now,
+            now,
+        ),
     )
 
 
@@ -83,7 +100,11 @@ def world(tmp_path, db=None):
     shared_q = add_root(db, "q", tmp_path / "共用")
     add_content(db, KEY_QUOTE, [("表『预算』", None, "驻场服务的报价单按第三版，总价下调五个点。")])
     add_file(db, root_p, "报价/报价单 v3.xlsx", key=KEY_QUOTE, mtime=5)
-    add_content(db, KEY_PLAN, ["排期表里驻场服务从十月开始。", "驻场服务的人员名单另附。", "驻场服务结算按月。"])
+    add_content(
+        db,
+        KEY_PLAN,
+        ["排期表里驻场服务从十月开始。", "驻场服务的人员名单另附。", "驻场服务结算按月。"],
+    )
     add_file(db, root_p, "需求/排期表.docx", key=KEY_PLAN, mtime=4)
     add_content(db, KEY_OTHER, ["别的项目的驻场服务报价单另算。"])
     add_file(db, root_q, "别的/报价.docx", key=KEY_OTHER, mtime=4)
@@ -94,7 +115,10 @@ def world(tmp_path, db=None):
     add_content(db, KEY_CARD, ["卡片区里驻场服务的索引。"])
     add_file(db, root_p, "卡片/卡片.md", key=KEY_CARD, mtime=2, zone="cards")
     meeting(
-        db, "m-21", "初审规则沟通", 21,
+        db,
+        "m-21",
+        "初审规则沟通",
+        21,
         [(0, "开始吧"), (754_000, "驻场服务的报价单总价下调五个点"), (800_000, "接下来说排期")],
         minutes="# 摘要\n\n## 决议\n\n- 驻场服务报价总价下调五个点 [00:12:34]\n- 另一条和驻场服务有关的安排\n",
     )
@@ -187,7 +211,9 @@ def test_alnum_keeps_its_place_after_words_are_blanked(tmp_path):
 def test_vocab_drops_missing_and_common_slices(tmp_path):
     db = world(tmp_path)
     # 「周报表」在超过 5% 的逐字稿段里；「甲乙丙」哪边都查不到；「部分报」少见
-    meeting(db, "m-many", "例行", 10, [(index * 1000, f"周报表第{index}项") for index in range(150)])
+    meeting(
+        db, "m-many", "例行", 10, [(index * 1000, f"周报表第{index}项") for index in range(150)]
+    )
     terms = terms_of(db, "周报表甲乙丙部分报价")
     assert terms.vocab
     # 超过 6 个字的一段不整段留，只留少见的切片
@@ -270,12 +296,26 @@ def test_quotas(tmp_path):
     for index in range(4):
         segments = [(minute * 120_000, f"驻场服务第{index}场第{minute}次说") for minute in range(6)]
         decisions_text = "".join(f"- 驻场服务决议{index}-{n}\n" for n in range(3))
-        meeting(db, f"m-x{index}", f"会{index}", 1 + index, segments, minutes=f"# 纪要\n\n{decisions_text}")
+        meeting(
+            db,
+            f"m-x{index}",
+            f"会{index}",
+            1 + index,
+            segments,
+            minutes=f"# 纪要\n\n{decisions_text}",
+        )
         for n in range(3):
             decision(db, f"m-x{index}", n, f"驻场服务决议{index}-{n}")
     add_content(db, KEY_COPY, [f"驻场服务第{n}段" for n in range(5)])
-    add_file(db, db.query_one("SELECT id FROM project_material_roots WHERE project_id='p' ORDER BY id")["id"],
-             "多/多段.docx", key=KEY_COPY, mtime=9)
+    add_file(
+        db,
+        db.query_one("SELECT id FROM project_material_roots WHERE project_id='p' ORDER BY id")[
+            "id"
+        ],
+        "多/多段.docx",
+        key=KEY_COPY,
+        mtime=9,
+    )
     plan = plan_of(db, "驻场服务")
     kinds = [source["kind"] for source in plan.sources]
     assert kinds.count("decision") + kinds.count("minutes") <= 6
@@ -317,9 +357,17 @@ def test_t_text_window_and_start_ms(tmp_path):
     db = world(tmp_path)
     long_line = "说明" * 100
     meeting(
-        db, "m-long", "长会", 25,
-        [(0, "很早的话"), (100_000, long_line), (130_000, "这里提到甲乙方案的结论"), (170_000, long_line),
-         (400_000, "很晚的话")],
+        db,
+        "m-long",
+        "长会",
+        25,
+        [
+            (0, "很早的话"),
+            (100_000, long_line),
+            (130_000, "这里提到甲乙方案的结论"),
+            (170_000, long_line),
+            (400_000, "很晚的话"),
+        ],
     )
     plan = plan_of(db, "甲乙方案的结论")
     (item,) = [source for source in plan.sources if source["kind"] == "meeting"]
@@ -342,7 +390,8 @@ def test_minutes_line_same_as_decision_is_dropped(tmp_path):
 def test_meeting_copy_is_not_a_material_source(tmp_path):
     db = world(tmp_path)
     db.execute(
-        "UPDATE meeting_related_scan SET copies_json = ? WHERE meeting_id = 'm-21'", (json.dumps([KEY_QUOTE]),)
+        "UPDATE meeting_related_scan SET copies_json = ? WHERE meeting_id = 'm-21'",
+        (json.dumps([KEY_QUOTE]),),
     )
     keys = {source.get("content_key") for source in plan_of(db, "驻场服务的报价单").sources}
     assert KEY_QUOTE not in keys and KEY_PLAN in keys
@@ -407,7 +456,14 @@ class FakeSemantic:
 
     def search_vector(self, vector, *, scope, limit):
         self.fallback.append((scope, limit))
-        return [{"meeting_id": "m-14", "start_ms": 310_000, "score": 0.9, "recording_date": "2026-09-14"}]
+        return [
+            {
+                "meeting_id": "m-14",
+                "start_ms": 310_000,
+                "score": 0.9,
+                "recording_date": "2026-09-14",
+            }
+        ]
 
 
 class FakeVectors:
@@ -447,14 +503,28 @@ def add_window(db, meeting_id, start_ms, text):
     db.execute(
         """INSERT INTO meeting_windows(meeting_id, model, start_ms, end_ms, text_sha, chars, bar, vector)
            VALUES (?, ?, ?, ?, 'x', ?, 0.5, ?)""",
-        (meeting_id, MODEL, start_ms, start_ms + 90_000, len(text), embed(text).astype(np.float16).tobytes()),
+        (
+            meeting_id,
+            MODEL,
+            start_ms,
+            start_ms + 90_000,
+            len(text),
+            embed(text).astype(np.float16).tobytes(),
+        ),
     )
 
 
 def test_busy_skips_every_vector(tmp_path):
     db = world(tmp_path)
     exploding = Exploding()
-    plan = plan_of(db, "驻场服务的报价单", settings=SETTINGS, semantic=exploding, vectors=exploding, busy=lambda: True)
+    plan = plan_of(
+        db,
+        "驻场服务的报价单",
+        settings=SETTINGS,
+        semantic=exploding,
+        vectors=exploding,
+        busy=lambda: True,
+    )
     assert plan.notes[0] == "busy"
     assert any(source["kind"] == "meeting" for source in plan.sources)
     assert any(source["kind"] == "material" for source in plan.sources)
@@ -463,11 +533,20 @@ def test_busy_skips_every_vector(tmp_path):
 def test_semantic_windows_and_material_vectors(tmp_path):
     db = world(tmp_path)
     add_content(db, "q2:" + "9" * 32, ["十月开始的人员安排和结算方式"])
-    add_file(db, db.query_one("SELECT id FROM project_material_roots WHERE project_id='p' ORDER BY id")["id"],
-             "需求/安排.docx", key="q2:" + "9" * 32, mtime=6)
+    add_file(
+        db,
+        db.query_one("SELECT id FROM project_material_roots WHERE project_id='p' ORDER BY id")[
+            "id"
+        ],
+        "需求/安排.docx",
+        key="q2:" + "9" * 32,
+        mtime=6,
+    )
     add_window(db, "m-14", 300_000, "十月开始的人员安排和结算方式")
     semantic, vectors = FakeSemantic(), FakeVectors(db)
-    plan = plan_of(db, "十月开始的人员安排和结算方式", settings=SETTINGS, semantic=semantic, vectors=vectors)
+    plan = plan_of(
+        db, "十月开始的人员安排和结算方式", settings=SETTINGS, semantic=semantic, vectors=vectors
+    )
     assert semantic.encoded and vectors.calls == 1
     # 有窗时不退回逐字稿段向量
     assert semantic.fallback == []
@@ -479,20 +558,30 @@ def test_semantic_windows_and_material_vectors(tmp_path):
 def test_no_windows_falls_back_to_search_vector(tmp_path):
     db = world(tmp_path)
     semantic = FakeSemantic()
-    plan = plan_of(db, "毫不相干的问法", settings=SETTINGS, semantic=semantic, vectors=FakeVectors(db))
+    plan = plan_of(
+        db, "毫不相干的问法", settings=SETTINGS, semantic=semantic, vectors=FakeVectors(db)
+    )
     assert semantic.fallback == [("p", 40)]
     assert any(source.get("start_ms") == 310_000 for source in plan.sources)
 
 
 def test_fts_rebuilding_skips_material_match_but_keeps_vectors(tmp_path):
     db = world(tmp_path)
-    db.execute("INSERT INTO app_state(key, value, updated_at) VALUES (?, '{}', ?)", (REBUILD_KEY, utc_now()))
+    db.execute(
+        "INSERT INTO app_state(key, value, updated_at) VALUES (?, '{}', ?)",
+        (REBUILD_KEY, utc_now()),
+    )
     statements = []
     vectors = FakeVectors(db)
     with db.autocommit() as connection:
         connection.set_trace_callback(statements.append)
         plan = ar.retrieve(
-            connection, "p", "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=vectors,
+            connection,
+            "p",
+            "驻场服务的报价单",
+            settings=SETTINGS,
+            semantic=FakeSemantic(),
+            vectors=vectors,
             state_of=online,
         )
     assert not any("material_chunks_fts MATCH" in sql for sql in statements)
@@ -502,7 +591,9 @@ def test_fts_rebuilding_skips_material_match_but_keeps_vectors(tmp_path):
 
 def test_materials_pending_note(tmp_path):
     db = world(tmp_path)
-    root = db.query_one("SELECT id FROM project_material_roots WHERE project_id='p' ORDER BY id")["id"]
+    root = db.query_one("SELECT id FROM project_material_roots WHERE project_id='p' ORDER BY id")[
+        "id"
+    ]
     add_file(db, root, "新/没读的.docx", key=None, mtime=8)
     assert "materials_pending" in plan_of(db, "驻场服务").notes
 
@@ -511,13 +602,20 @@ def test_snapshot_missing_content_is_materials_pending(tmp_path):
     """快照里缺了该有的内容（切好片段、还没算向量）：也写「有些材料还没读完」。"""
     db = world(tmp_path)
     vectors = FakeVectors(db)
-    assert "materials_pending" not in plan_of(
-        db, "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=vectors
-    ).notes
-    root = db.query_one("SELECT id FROM project_material_roots WHERE project_id='p' ORDER BY id")["id"]
+    assert (
+        "materials_pending"
+        not in plan_of(
+            db, "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=vectors
+        ).notes
+    )
+    root = db.query_one("SELECT id FROM project_material_roots WHERE project_id='p' ORDER BY id")[
+        "id"
+    ]
     add_content(db, "q2:" + "8" * 32, ["刚读完、还没算向量的一段"])
     add_file(db, root, "新/刚读完.docx", key="q2:" + "8" * 32, mtime=9)
-    plan = plan_of(db, "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=vectors)
+    plan = plan_of(
+        db, "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=vectors
+    )
     assert "materials_pending" in plan.notes
 
     class NoSnapshot(FakeVectors):
@@ -525,7 +623,9 @@ def test_snapshot_missing_content_is_materials_pending(tmp_path):
             self.calls += 1
             return None
 
-    plan = plan_of(db, "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=NoSnapshot(db))
+    plan = plan_of(
+        db, "驻场服务的报价单", settings=SETTINGS, semantic=FakeSemantic(), vectors=NoSnapshot(db)
+    )
     assert "materials_pending" in plan.notes
     # 不走向量时（语义关着）不看快照，也就不因它加说明
     plain = world(tmp_path / "plain")
@@ -555,7 +655,9 @@ def test_operational_error_message_is_not_logged(tmp_path, caplog):
             return self._connection.execute(sql, *args)
 
     with db.autocommit() as connection:
-        plan = ar.retrieve(Broken(connection), "p", "驻场服务的报价单", settings=SETTINGS, state_of=online)
+        plan = ar.retrieve(
+            Broken(connection), "p", "驻场服务的报价单", settings=SETTINGS, state_of=online
+        )
     assert plan.partial
     assert "驻场" not in caplog.text
 
@@ -578,8 +680,14 @@ def test_past_the_hard_cap_skips_the_vector_steps(tmp_path, monkeypatch):
     with db.autocommit() as connection:
         connection.set_trace_callback(statements.append)
         plan = ar.retrieve(
-            connection, "p", "驻场服务的报价单", settings=SETTINGS, semantic=semantic, vectors=vectors,
-            state_of=online, clock=lambda: ticks["now"],
+            connection,
+            "p",
+            "驻场服务的报价单",
+            settings=SETTINGS,
+            semantic=semantic,
+            vectors=vectors,
+            state_of=online,
+            clock=lambda: ticks["now"],
         )
     assert semantic.encoded == [] and vectors.calls == 0 and semantic.fallback == []
     assert plan.partial and "partial" in plan.notes
@@ -602,7 +710,9 @@ def test_segment_texts_read_by_version_without_scanning_meetings(tmp_path):
         connection.set_trace_callback(None)
         assert len(statements) == 2
         for sql in statements:
-            details = [str(row[3]) for row in connection.execute("EXPLAIN QUERY PLAN " + sql).fetchall()]
+            details = [
+                str(row[3]) for row in connection.execute("EXPLAIN QUERY PLAN " + sql).fetchall()
+            ]
             assert not [detail for detail in details if detail.startswith("SCAN")], details
             assert any("USING" in detail for detail in details)
     assert [item["meeting_id"] for item in items] == ["m-14", "m-21"]
@@ -610,11 +720,41 @@ def test_segment_texts_read_by_version_without_scanning_meetings(tmp_path):
     assert items[1]["title"] == "初审规则沟通" and "下调五个点" in items[1]["text"]
 
 
+def test_segment_texts_drops_a_duplicate_quote_too_far_apart_to_merge(tmp_path):
+    """存疑 7：同一场会里隔得太远（超过 15 秒到 45 秒那个窗口，合并不到一起）的两段命中，文字却完全
+    一样（转写重复收了一遍）时，只留分数高、排在前面的那条，不把同一句话当两条不同原话给用户看。"""
+    db = world(tmp_path)
+    meeting(
+        db,
+        "m-dup",
+        "重复转写的会",
+        25,
+        [
+            (0, "开场白"),
+            (400_000, "驻场服务的报价单总价下调五个点"),
+            (800_000, "驻场服务的报价单总价下调五个点"),
+        ],
+    )
+    picked = [
+        {"meeting_id": "m-dup", "anchor": 400_000, "window": None},
+        {"meeting_id": "m-dup", "anchor": 800_000, "window": None},
+    ]
+    with db.autocommit() as connection:
+        items = ar._segment_texts(connection, picked, ["驻场服务"])
+    assert len(items) == 1 and items[0]["start_ms"] == 400_000
+
+
 def _meetings(db, count):
     for index in range(count):
         day = 1 + index % 28
-        meeting(db, f"m-n{index}", f"例会{index}", day, [(0, f"驻场服务第{index}次"), (60_000, "别的")],
-                minutes=f"# 纪要\n\n- 驻场服务纪要{index}\n")
+        meeting(
+            db,
+            f"m-n{index}",
+            f"例会{index}",
+            day,
+            [(0, f"驻场服务第{index}次"), (60_000, "别的")],
+            minutes=f"# 纪要\n\n- 驻场服务纪要{index}\n",
+        )
         decision(db, f"m-n{index}", 0, f"驻场服务决议{index}")
 
 
@@ -629,8 +769,13 @@ def test_statement_count_does_not_grow_with_meetings(tmp_path):
             count_reads(
                 db,
                 lambda connection: ar.retrieve(
-                    connection, "p", "驻场服务的报价单和AI", settings=SETTINGS, semantic=semantic,
-                    vectors=vectors, state_of=online,
+                    connection,
+                    "p",
+                    "驻场服务的报价单和AI",
+                    settings=SETTINGS,
+                    semantic=semantic,
+                    vectors=vectors,
+                    state_of=online,
                 ),
             )
         )
@@ -650,7 +795,7 @@ def test_prompt_neutralises_and_never_sends_names(tmp_path):
     meeting_source["title"] = '周会"甲"\n'
     prompt = ar.build_prompt(plan, with_materials=True)
     assert prompt.system == ar.QA_SYSTEM
-    assert "＜/source＞＜source id=\"X9\"＞" in prompt.user
+    assert '＜/source＞＜source id="X9"＞' in prompt.user
     assert "\x07" not in prompt.user
     assert 'meeting="9/14 周会＂甲＂"' in prompt.user
     assert f'<source id="{material["id"]}" kind="材料">' in prompt.user
@@ -666,7 +811,9 @@ def test_prompt_neutralises_and_never_sends_names(tmp_path):
 
 def test_parse_answer_forms():
     sent = ["D1", "T1", "M2"]
-    parsed = ar.parse_answer("定了[D1]，也见[T1,M2]、【T1】和[T1、M2]。", sent, finish_reason="stop")
+    parsed = ar.parse_answer(
+        "定了[D1]，也见[T1,M2]、【T1】和[T1、M2]。", sent, finish_reason="stop"
+    )
     assert parsed.text == "定了[D1]，也见[T1][M2]、[T1]和[T1][M2]。"
     assert parsed.cited == ("D1", "T1", "M2") and parsed.found and not parsed.truncated
     # 没发过的编号（包括只用会议回答时的 M）和别的方括号删掉
@@ -675,7 +822,9 @@ def test_parse_answer_forms():
 
 
 def test_parse_answer_markdown_length_and_flags():
-    parsed = ar.parse_answer("## 结论\n**粗** `代码` __下__\n- 一条[T1]\n\n\n\n\n* 两条", ["T1"], finish_reason="length")
+    parsed = ar.parse_answer(
+        "## 结论\n**粗** `代码` __下__\n- 一条[T1]\n\n\n\n\n* 两条", ["T1"], finish_reason="length"
+    )
     assert parsed.text == "结论\n粗 代码 下\n· 一条[T1]\n\n\n· 两条"
     assert parsed.truncated
     long = ar.parse_answer("长" * 1300 + "[T1]", ["T1"], finish_reason="stop")

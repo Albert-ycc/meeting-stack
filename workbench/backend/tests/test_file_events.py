@@ -1,5 +1,6 @@
 """4a：文件流水。material_files 上的两个触发器怎么记，file_events 的 classify、recent_added、
 day_groups 和 400 天清理。"""
+
 from __future__ import annotations
 
 import os
@@ -53,8 +54,19 @@ def add_file(
                                       content_mtime_ns)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
-            root_id, rel_path, rel_path.rpartition("/")[0], name, stem, stem, ext.lower(), size,
-            mtime_ns, zone, utc_now(), content_key, size if content_key else None,
+            root_id,
+            rel_path,
+            rel_path.rpartition("/")[0],
+            name,
+            stem,
+            stem,
+            ext.lower(),
+            size,
+            mtime_ns,
+            zone,
+            utc_now(),
+            content_key,
+            size if content_key else None,
             mtime_ns if content_key else None,
         ),
     )
@@ -143,13 +155,23 @@ def test_changed_keeps_one_row_per_file_per_day(tmp_path):
     file_id = add_file(db, root_id, "报价单.xlsx", content_key="q2:first", mtime_ns=old_mtime)
     db.execute("DELETE FROM material_file_events")
 
-    db.execute("UPDATE material_files SET size = 11, content_key = 'q2:second' WHERE id = ?", (file_id,))
-    db.execute("UPDATE material_files SET size = 12, content_key = 'q2:third' WHERE id = ?", (file_id,))
+    db.execute(
+        "UPDATE material_files SET size = 11, content_key = 'q2:second' WHERE id = ?", (file_id,)
+    )
+    db.execute(
+        "UPDATE material_files SET size = 12, content_key = 'q2:third' WHERE id = ?", (file_id,)
+    )
 
     assert events(db) == [
         {
-            "file_id": file_id, "rel_path": "报价单.xlsx", "dir_rel": "", "kind": "changed",
-            "content_key": "q2:first", "size": 12, "mtime_ns": old_mtime, "day": today(),
+            "file_id": file_id,
+            "rel_path": "报价单.xlsx",
+            "dir_rel": "",
+            "kind": "changed",
+            "content_key": "q2:first",
+            "size": 12,
+            "mtime_ns": old_mtime,
+            "day": today(),
         }
     ]
 
@@ -162,9 +184,14 @@ def test_gone_and_back(tmp_path):
         "UPDATE material_files SET gone_at = ?, size = 99, mtime_ns = 600 WHERE id = ?",
         (utc_now(), file_id),
     )
-    db.execute("UPDATE material_files SET gone_at = NULL, size = 20, mtime_ns = 700 WHERE id = ?", (file_id,))
+    db.execute(
+        "UPDATE material_files SET gone_at = NULL, size = 20, mtime_ns = 700 WHERE id = ?",
+        (file_id,),
+    )
 
-    assert [(row["kind"], row["content_key"], row["size"], row["mtime_ns"]) for row in events(db)] == [
+    assert [
+        (row["kind"], row["content_key"], row["size"], row["mtime_ns"]) for row in events(db)
+    ] == [
         ("added", None, 10, 500),
         ("gone", "q2:a", 10, 500),  # 带原来的大小、修改时间和内容标识
         ("added", None, 20, 700),  # 又出现了
@@ -178,11 +205,18 @@ def test_exfat_quarter_hour_shift_is_ignored_but_real_edits_are_recorded(tmp_pat
     file_id = add_file(db, root_id, "报价单.xlsx", size=10, mtime_ns=mtime)
     db.execute("DELETE FROM material_file_events")
     quarter = 900_000_000_000
-    db.execute("UPDATE material_files SET mtime_ns = ? WHERE id = ?", (mtime - 4 * quarter, file_id))
-    db.execute("UPDATE material_files SET mtime_ns = ? WHERE id = ?", (mtime + 4 * quarter, file_id))
+    db.execute(
+        "UPDATE material_files SET mtime_ns = ? WHERE id = ?", (mtime - 4 * quarter, file_id)
+    )
+    db.execute(
+        "UPDATE material_files SET mtime_ns = ? WHERE id = ?", (mtime + 4 * quarter, file_id)
+    )
     assert events(db) == []
     # 大小变了，或者不是整刻钟，都是真的编辑
-    db.execute("UPDATE material_files SET mtime_ns = ?, size = 11 WHERE id = ?", (mtime + 8 * quarter, file_id))
+    db.execute(
+        "UPDATE material_files SET mtime_ns = ?, size = 11 WHERE id = ?",
+        (mtime + 8 * quarter, file_id),
+    )
     db.execute("UPDATE material_files SET mtime_ns = mtime_ns + 1 WHERE id = ?", (file_id,))
     assert [(row["kind"], row["size"]) for row in events(db)] == [("changed", 11)]
 
@@ -271,13 +305,25 @@ def add_event(
     at: str = "2026-09-27T06:00:00.000Z",
 ) -> dict:
     if rel_path is None:
-        rel_path = db.query_one("SELECT rel_path FROM material_files WHERE id = ?", (file_id,))["rel_path"]
+        rel_path = db.query_one("SELECT rel_path FROM material_files WHERE id = ?", (file_id,))[
+            "rel_path"
+        ]
     db.execute(
         """INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
                                             size, mtime_ns, day, at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (root_id, file_id, rel_path, rel_path.rpartition("/")[0], kind, content_key, size, mtime_ns,
-         day, at),
+        (
+            root_id,
+            file_id,
+            rel_path,
+            rel_path.rpartition("/")[0],
+            kind,
+            content_key,
+            size,
+            mtime_ns,
+            day,
+            at,
+        ),
     )
     return db.query_one("SELECT * FROM material_file_events ORDER BY id DESC LIMIT 1")
 
@@ -336,11 +382,15 @@ def test_classify_copies_and_true_additions(tmp_path):
     copy = add_file(db, 1, "备份/报价单.xlsx", size=10, mtime_ns=700, content_key="q2:a")
     fresh = add_file(db, 1, "新方案.docx", size=20, mtime_ns=800, content_key="q2:n")
     # 源文件后来删了，复制那一刻它还在
-    db.execute("UPDATE material_files SET gone_at = '2026-09-28T00:00:00+00:00' WHERE id = ?", (source,))
+    db.execute(
+        "UPDATE material_files SET gone_at = '2026-09-28T00:00:00+00:00' WHERE id = ?", (source,)
+    )
     rows = [add_event(db, copy, "added", mtime_ns=700), add_event(db, fresh, "added", size=20)]
     assert classify(db, rows) == ["copied", "added"]
     # 源文件在复制之前就不见了：内容不在盘上，算新增
-    db.execute("UPDATE material_files SET gone_at = '2026-09-01T00:00:00+00:00' WHERE id = ?", (source,))
+    db.execute(
+        "UPDATE material_files SET gone_at = '2026-09-01T00:00:00+00:00' WHERE id = ?", (source,)
+    )
     assert classify(db, rows[:1]) == ["added"]
 
 
@@ -379,7 +429,12 @@ def test_unkeyable_files_are_judged_by_name_and_size(tmp_path):
         add_event(db, resized, "added", size=71, mtime_ns=555),
     ]
     # 算不出内容标识的文件不用等，刚出现就按名字加大小判断
-    assert classify(db, rows, now=NOW - timedelta(hours=3)) == ["moved", "copied", "copied", "added"]
+    assert classify(db, rows, now=NOW - timedelta(hours=3)) == [
+        "moved",
+        "copied",
+        "copied",
+        "added",
+    ]
 
 
 # ---------------------------------------------------------------------- 读
@@ -394,7 +449,9 @@ def test_recent_added_returns_only_true_additions_in_the_window(tmp_path):
     add_event(db, moved_from, "gone")
     add_event(db, moved_to, "added")
     wanted = add_event(db, fresh, "added", size=20, mtime_ns=600, at="2026-09-27T07:00:00.000Z")
-    add_event(db, early, "added", size=30, mtime_ns=700, day="2026-09-20", at="2026-09-20T07:00:00.000Z")
+    add_event(
+        db, early, "added", size=30, mtime_ns=700, day="2026-09-20", at="2026-09-20T07:00:00.000Z"
+    )
     add_event(db, fresh, "changed", size=21, mtime_ns=601)
 
     with db.autocommit() as connection:
@@ -403,9 +460,12 @@ def test_recent_added_returns_only_true_additions_in_the_window(tmp_path):
         )
         assert [row["id"] for row in found] == [wanted["id"]]
         assert file_events.recent_added(connection, [], "2026-09-26T00:00:00Z", None) == []
-        assert file_events.recent_added(
-            connection, [1], "2026-09-26T00:00:00Z", "2026-09-27T07:00:00Z", now=NOW
-        ) == []
+        assert (
+            file_events.recent_added(
+                connection, [1], "2026-09-26T00:00:00Z", "2026-09-27T07:00:00Z", now=NOW
+            )
+            == []
+        )
 
 
 def test_day_groups_count_additions_and_changes_per_folder(tmp_path):
@@ -416,7 +476,9 @@ def test_day_groups_count_additions_and_changes_per_folder(tmp_path):
     add_event(db, moved_to, "added", at="2026-09-27T06:00:00.000Z")
     names = []
     for index in range(4):
-        file_id = add_file(db, 1, f"报价/附件{index}.docx", size=100 + index, content_key=f"q2:{index}")
+        file_id = add_file(
+            db, 1, f"报价/附件{index}.docx", size=100 + index, content_key=f"q2:{index}"
+        )
         add_event(db, file_id, "added", size=100 + index, at=f"2026-09-27T06:0{index}:00.000Z")
         names.append(f"附件{index}.docx")
     # 同一天新增过的文件不再算修改
@@ -454,8 +516,15 @@ def test_day_groups_statement_count_does_not_grow(tmp_path):
                         """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key,
                                                       ext, size, mtime_ns, seen_at)
                            VALUES (1, ?, ?, ?, ?, ?, 'zip', ?, ?, 'x')""",
-                        (rel_path, folder, f"文件{index}.zip", f"文件{index}", f"文件{index}", index,
-                         index),
+                        (
+                            rel_path,
+                            folder,
+                            f"文件{index}.zip",
+                            f"文件{index}",
+                            f"文件{index}",
+                            index,
+                            index,
+                        ),
                     ).lastrowid
                     connection.execute(
                         """INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind,
@@ -487,7 +556,9 @@ def test_prune_keeps_four_hundred_days(tmp_path):
         assert file_events.prune(connection, today=date(2026, 9, 27)) == 1
     with db.transaction() as connection:
         assert file_events.prune(connection, today=date(2026, 9, 27)) == 0
-    assert [row["day"] for row in db.query_all("SELECT day FROM material_file_events ORDER BY day")] == [
+    assert [
+        row["day"] for row in db.query_all("SELECT day FROM material_file_events ORDER BY day")
+    ] == [
         "2025-08-23",
         "2025-08-24",
         "2026-09-27",

@@ -1,4 +1,5 @@
 """会议归属状态（v13 / 第一期 1b-1）：状态推导、列表筛选、详情证据、确认、撤销、汇总。"""
+
 import itertools
 import json
 import uuid
@@ -122,15 +123,24 @@ def test_sql_and_python_state_rules_agree(tmp_path):
     assert listed == expected
     # 抽几条按规格核对
     assert expected["m-000"] == "ai_pending"  # 没项目、没来源、没批次
-    assert attribution_state(
-        project_id=project, origin="ai", link_status="needs_review", new_project_name=None
-    ) == "needs_review"
-    assert attribution_state(
-        project_id=None, origin="manual", link_status="needs_review", new_project_name=None
-    ) == "manual_none"
-    assert attribution_state(
-        project_id=None, origin=None, link_status="unresolved", new_project_name="智慧园区"
-    ) == "new_project"
+    assert (
+        attribution_state(
+            project_id=project, origin="ai", link_status="needs_review", new_project_name=None
+        )
+        == "needs_review"
+    )
+    assert (
+        attribution_state(
+            project_id=None, origin="manual", link_status="needs_review", new_project_name=None
+        )
+        == "manual_none"
+    )
+    assert (
+        attribution_state(
+            project_id=None, origin=None, link_status="unresolved", new_project_name="智慧园区"
+        )
+        == "new_project"
+    )
 
 
 def test_list_filters_by_attribution_and_carries_candidates(tmp_path):
@@ -222,9 +232,7 @@ def test_detail_shows_evidence_and_where_the_meeting_came_from(tmp_path, monkeyp
     assert came_from["cue_hint"]["term_id"] == term_id
 
     # 「以后不再用这个词判断项目」：关掉参与识别后提示消失，线索表里也没有它了
-    response = client.put(
-        f"/api/glossary/terms/{term_id}", json={"is_cue": False}, headers=headers
-    )
+    response = client.put(f"/api/glossary/terms/{term_id}", json={"is_cue": False}, headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["is_cue"] is False
     attribution = client.get("/api/meetings/m-1").json()["attribution"]
@@ -364,7 +372,9 @@ def test_a_task_confirmed_just_before_the_move_can_still_be_unconfirmed(tmp_path
     assert client.post(f"/api/tasks/{task}/confirm", json={}, headers=headers).status_code == 200
 
     client.patch("/api/meetings/m-1", json={"project_id": project_b}, headers=headers)
-    assert client.post("/api/meetings/m-1/project/undo", json={}, headers=headers).status_code == 200
+    assert (
+        client.post("/api/meetings/m-1/project/undo", json={}, headers=headers).status_code == 200
+    )
 
     # 改归属和撤销都只挪项目，不写任务事件，所以「撤销确认」仍然认这条任务
     response = client.post("/api/tasks/undo-review", json={"task_ids": [task]}, headers=headers)

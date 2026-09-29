@@ -163,7 +163,8 @@ describe("地址栏锚点直达", () => {
 
     expect(await screen.findByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
     expect(graph).toHaveBeenCalledWith("p", undefined, "m:a");
-    expect(meetingBrief).toHaveBeenCalledWith("a");
+    // 面板先渲染、取简报的 effect 后跑：机器忙时要等一下
+    await waitFor(() => expect(meetingBrief).toHaveBeenCalledWith("a"));
     expect(window.location.hash).toBe("#projects/p/graph?sel=m:a");
     expect(within(screen.getByRole("group", { name: "项目视图" })).getByRole("button", { name: "关系图" })).toHaveAttribute(
       "aria-pressed",

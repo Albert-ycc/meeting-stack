@@ -16,6 +16,7 @@ minutes-evidence.json（改过一次稿就验证不了）。
 - superseded_sql、project_decisions：给 4e、4h。
 对比行读的时候两条决议都还在（gone_at IS NULL）才算数。
 """
+
 from __future__ import annotations
 
 import difflib
@@ -39,7 +40,9 @@ from .tasks import UNDO_WINDOW_SECONDS
 logger = logging.getLogger(__name__)
 
 # 解析规则改了就加一：台账里 parser 对不上的会整场重新入库，id 照样接回。
-PARSER_VERSION = 1
+# 2：认表格式决议段（「| # | 决议 | 音频锚点 |」）
+# 3：清掉「T05　」「R07　」这类议题编号前缀
+PARSER_VERSION = 3
 
 ROUND_MEETINGS = 100
 ROUND_SECONDS = 1.0
@@ -77,9 +80,7 @@ _ITEM = re.compile(
 )
 # 时间点：[MM:SS]、[HH:MM:SS]，范围用破折号、连字符、波浪号、「至」「到」连起来，外面可以包反引号
 _TIME = r"(\d{1,2}):(\d{2})(?::(\d{2}))?(?:[.,]\d+)?"
-_RANGE = re.compile(
-    r"`?\[\s*" + _TIME + r"(?:\s*(?:[—–\-~～〜]+|至|到)\s*" + _TIME + r")?\s*\]`?"
-)
+_RANGE = re.compile(r"`?\[\s*" + _TIME + r"(?:\s*(?:[—–\-~～〜]+|至|到)\s*" + _TIME + r")?\s*\]`?")
 # 清理时去掉的时间点：方括号里时间后面跟别的字（说话人之类）也一起去掉
 _ANCHOR_ANY = re.compile(r"\s*`?\[\s*\d{1,2}:\d{2}(?::\d{2})?[^\]\n]*\]`?")
 # 「决议一：」「结论 2·」这类前缀；后面必须跟编号或分隔符，「结论是……」不动
@@ -87,6 +88,12 @@ _PREFIX = re.compile(
     r"^(?:决议|结论|共识)\s*(?:[一二三四五六七八九十百\d]+\s*[·:：、.．\-—]?|[·:：、.．\-—])\s*"
 )
 _EMPTY_KEYS = frozenset({"无", "暂无", "无决议", "暂无决议"})
+# 「T05　」「R07　」这类议题编号前缀（字母加数字，后面跟一个全角空格当分隔符，材料里当成议程
+# 标号用）。全角空格是关键：跟 TNM 分期（T3、N1、M0）不会撞——分期后面接的是文字或半角空格，
+# 没有人会在分期后面手打一个全角空格
+_TAG_PREFIX = re.compile(r"^[A-Za-z]{1,3}\d{1,3}　+")
+# 表格的分隔行「|---|:--:|」
+_TABLE_RULE = re.compile(r":?-{3,}:?")
 # 数值词：日期、星期、数字和百分数、中文数字（百分号写成 \x25，用词检查不把正则当界面文字）
 _VALUE_TOKEN = re.compile(
     r"\d{1,2}月\d{1,2}[日号]|(?:周|星期)[一二三四五六日天]|\d+(?:\.\d+)?\x25?|[零一二两三四五六七八九十百千万]+"
@@ -153,9 +160,10 @@ def value_tokens(text: str) -> list[str]:
 
 
 def _clean(raw: str) -> str:
-    """先去时间点和 **、__，再去「决议一：」这类前缀。存的时候不截断。"""
+    """先去时间点和 **、__，再去「决议一：」「T05　」这类前缀。存的时候不截断。"""
     text = _ANCHOR_ANY.sub("", raw).replace("**", "").replace("__", "")
     text = text.strip(" \t　`|")
+    text = _TAG_PREFIX.sub("", text)
     text = _PREFIX.sub("", text)
     return text.strip(" \t　`|-—·：:")
 
@@ -182,7 +190,7 @@ def pick_section(markdown: str) -> str | None:
         if rank is None or (best is not None and rank >= best[0]):
             continue
         tail = _SECTION_END.search(markdown, head.end())
-        best = (rank, index, markdown[head.end(): tail.start() if tail else len(markdown)])
+        best = (rank, index, markdown[head.end() : tail.start() if tail else len(markdown)])
     return None if best is None else best[2]
 
 
@@ -196,7 +204,7 @@ def _heading_items(body: str, heads: list[re.Match[str]]) -> list[dict[str, Any]
     items = []
     for index, head in enumerate(heads):
         end = heads[index + 1].start() if index + 1 < len(heads) else len(body)
-        rest = body[head.end():end]
+        rest = body[head.end() : end]
         start, stop = parse_anchor(head.group(1))
         if start is None:
             start, stop = parse_anchor(rest)
@@ -229,7 +237,12 @@ def _list_items(body: str) -> list[dict[str, Any]]:
         if match and indent is not None and (base is None or indent <= base):
             base = indent if base is None else base
             start, stop = parse_anchor(match.group("body"))
-            current = {"text": _clean(match.group("body")), "detail": "", "start_ms": start, "end_ms": stop}
+            current = {
+                "text": _clean(match.group("body")),
+                "detail": "",
+                "start_ms": start,
+                "end_ms": stop,
+            }
             items.append(current)
             continue
         if current is None or line.lstrip().startswith(("#", ">", "|", "---")):
@@ -242,13 +255,58 @@ def _list_items(body: str) -> list[dict[str, Any]]:
     return items
 
 
+def _cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _table_items(body: str) -> list[dict[str, Any]]:
+    """表格式（「| # | 决议 | 音频锚点 |」这类）：一行一条。表头含「决议 / 结论 / 共识 / 内容」的列是正文，
+    含「锚 / 时间」的列取时间点，「# / 编号 / 序号」列不要，其余列（比如「议题」）放 detail。"""
+    rows = [_cells(line) for line in body.splitlines() if line.lstrip().startswith("|")]
+    if len(rows) < 2:
+        return []
+    header = rows[0]
+    rows = [row for row in rows[1:] if not all(_TABLE_RULE.fullmatch(cell) for cell in row)]
+    kinds = []
+    for cell in header:
+        name = cell.replace("**", "").strip()
+        if name in {"#", "编号", "序号"}:
+            kinds.append("index")
+        elif any(word in name for word in ("决议", "结论", "共识", "内容")):
+            kinds.append("text")
+        elif "锚" in name or "时间" in name:
+            kinds.append("time")
+        else:
+            kinds.append("other")
+    if "text" not in kinds:
+        return []
+    text_at = kinds.index("text")
+    items = []
+    for row in rows:
+        cells = row + [""] * (len(kinds) - len(row))
+        start, stop = parse_anchor(cells[text_at])
+        for kind, cell in zip(kinds, cells, strict=False):
+            if start is None and kind == "time":
+                start, stop = parse_anchor(cell)
+        detail = [_clean(cell) for kind, cell in zip(kinds, cells, strict=False) if kind == "other"]
+        items.append(
+            {
+                "text": _clean(cells[text_at]),
+                "detail": " ".join(piece for piece in detail if piece),
+                "start_ms": start,
+                "end_ms": stop,
+            }
+        )
+    return items
+
+
 def parse_decisions(markdown: str) -> Parsed:
     """纪要决议段里的条目。note 是 no_section 或 empty；section_hash 是选中那一段正文的 sha1。"""
     body = pick_section(markdown or "")
     if body is None:
         return Parsed([], NO_SECTION, None)
     heads = list(_H3.finditer(body))
-    raw = _heading_items(body, heads) if heads else _list_items(body)
+    raw = _heading_items(body, heads) if heads else (_list_items(body) or _table_items(body))
     seen: set[str] = set()
     items: list[Item] = []
     for entry in raw:
@@ -295,7 +353,10 @@ def carry_over(old: Sequence[Mapping[str, Any]], new: Sequence[Item]) -> list[st
     for index, item in enumerate(new):
         same = [row for row in free.values() if row["text_key"] == item.text_key]
         if same:
-            row = min(same, key=lambda r: (r["gone_at"] is not None, abs(int(r["ordinal"]) - index), r["id"]))
+            row = min(
+                same,
+                key=lambda r: (r["gone_at"] is not None, abs(int(r["ordinal"]) - index), r["id"]),
+            )
             ids[index] = row["id"]
             free.pop(row["id"])
     candidates: list[tuple[float, bool, int, str]] = []
@@ -306,8 +367,17 @@ def carry_over(old: Sequence[Mapping[str, Any]], new: Sequence[Item]) -> list[st
             ratio = _ratio(row["text_key"], item.text_key)
             near = _near(row["start_ms"], item.start_ms)
             if ratio >= MATCH_RATIO or (near and ratio >= NEAR_RATIO):
-                candidates.append((ratio + (NEAR_BONUS if near else 0.0), row["gone_at"] is None, index, row["id"]))
-    for _score, _live, index, row_id in sorted(candidates, key=lambda c: (-c[0], not c[1], c[2], c[3])):
+                candidates.append(
+                    (
+                        ratio + (NEAR_BONUS if near else 0.0),
+                        row["gone_at"] is None,
+                        index,
+                        row["id"],
+                    )
+                )
+    for _score, _live, index, row_id in sorted(
+        candidates, key=lambda c: (-c[0], not c[1], c[2], c[3])
+    ):
         if ids[index] is None and row_id in free:
             ids[index] = row_id
             free.pop(row_id)
@@ -382,7 +452,9 @@ def decision_moment(meeting_row: Mapping[str, Any], start_ms: int | None) -> dat
     ns = _meeting_ns(meeting_row["recording_date"], meeting_row["created_at"])
     if ns is None:
         return None
-    moment = datetime.fromtimestamp(ns // 1_000_000_000, UTC) + timedelta(microseconds=(ns % 1_000_000_000) // 1000)
+    moment = datetime.fromtimestamp(ns // 1_000_000_000, UTC) + timedelta(
+        microseconds=(ns % 1_000_000_000) // 1000
+    )
     return moment + timedelta(milliseconds=int(start_ms or 0))
 
 
@@ -436,9 +508,7 @@ def _write_items(
     return material
 
 
-def ingest_meeting(
-    db: Database, row: Mapping[str, Any], *, now: datetime, cutoff: datetime
-) -> str:
+def ingest_meeting(db: Database, row: Mapping[str, Any], *, now: datetime, cutoff: datetime) -> str:
     """入库一场会：事务外读纪要、解析，BEGIN IMMEDIATE 里再核对版本和项目，对不上就不写。
 
     返回 written、fast（决议段没变，只改台账）或 skipped（解析期间版本或项目变了）。
@@ -486,13 +556,25 @@ def ingest_meeting(
                    project_id = excluded.project_id, parser = excluded.parser,
                    section_hash = excluded.section_hash, note = excluded.note,
                    scanned_at = excluded.scanned_at, updated_at = excluded.updated_at""",
-            (meeting_id, row["version_id"], project_id, PARSER_VERSION, parsed.section_hash,
-             parsed.note, stamp, stamp),
+            (
+                meeting_id,
+                row["version_id"],
+                project_id,
+                PARSER_VERSION,
+                parsed.section_hash,
+                parsed.note,
+                stamp,
+                stamp,
+            ),
         )
         if same_section and not moved:
             # 快路径：台账不在 GRAPH_REV_TABLES 里，关系图缓存不动
             return "fast"
-        material = False if same_section else _write_items(connection, meeting_id, parsed.items, stamp, now)
+        material = (
+            False
+            if same_section
+            else _write_items(connection, meeting_id, parsed.items, stamp, now)
+        )
         if moved:
             # 换了项目：ai 放到别的项目需求里的改回自动；picked 和 none 不动（读的时候只认同项目的需求）
             connection.execute(
@@ -511,7 +593,13 @@ def ingest_meeting(
 
 
 def _queue_pair(
-    connection: Any, meeting_id: str, meeting: Mapping[str, Any], *, now: datetime, cutoff: datetime, stamp: str
+    connection: Any,
+    meeting_id: str,
+    meeting: Mapping[str, Any],
+    *,
+    now: datetime,
+    cutoff: datetime,
+    stamp: str,
 ) -> None:
     """实质变化或换了项目：等 4c 对比（pending）。早于回补窗口的会直接 done，pair_hash 照算。"""
     live = connection.execute(
@@ -556,7 +644,9 @@ def ingest_pending(
             dict(row)
             for row in connection.execute(_PENDING_SQL, (PARSER_VERSION, max_meetings)).fetchall()
         ]
-        since = connection.execute("SELECT value FROM app_state WHERE key = 'links_since'").fetchone()
+        since = connection.execute(
+            "SELECT value FROM app_state WHERE key = 'links_since'"
+        ).fetchone()
     cutoff = backfill_cutoff(moment, backfill_days, since["value"] if since else None)
     deadline = clock() + max_seconds
     counts = {"pending": len(todo), "tried": 0, "written": 0, "fast": 0, "skipped": 0}
@@ -591,7 +681,11 @@ def ledger_decisions(
             ORDER BY d.ordinal, d.id""",
         (meeting_id,),
     ).fetchall()
-    if not rows or rows[0]["minutes_version_id"] != minutes_version_id or rows[0]["parser"] != PARSER_VERSION:
+    if (
+        not rows
+        or rows[0]["minutes_version_id"] != minutes_version_id
+        or rows[0]["parser"] != PARSER_VERSION
+    ):
         return None
     items = [
         {key: row[key] for key in ("id", "text", "detail", "start_ms", "end_ms")}
@@ -605,8 +699,15 @@ def serialize(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: row[key]
         for key in (
-            "id", "meeting_id", "text", "detail", "start_ms", "end_ms", "placement",
-            "requirement_id", "placed_at",
+            "id",
+            "meeting_id",
+            "text",
+            "detail",
+            "start_ms",
+            "end_ms",
+            "placement",
+            "requirement_id",
+            "placed_at",
         )
     }
 
@@ -669,7 +770,6 @@ def place(
     }
 
 
-
 # ---------------------------------------------------------------------- 4c：L1 里的两步（只写 relations）
 
 PAIR_KINDS = ("later_changed", "restated")
@@ -684,7 +784,9 @@ def pair_ident(early_id: str, late_id: str) -> str:
     return f"{early_id}|{late_id}"
 
 
-def decision_order(recording_date: str | None, created_at: str | None, start_ms: int | None, meeting_id: str) -> tuple:
+def decision_order(
+    recording_date: str | None, created_at: str | None, start_ms: int | None, meeting_id: str
+) -> tuple:
     """两条决议谁在前：会议时间，同一时间按 start_ms，再按会议 id。"""
     ns = _meeting_ns(recording_date, created_at)
     return (ns if ns is not None else 0, int(start_ms or 0), str(meeting_id))
@@ -727,7 +829,13 @@ def _clear_ids(connection: Any, ids: Sequence[int], stamp: str) -> int:
 
 
 def link_pairs(
-    connection: Any, meeting_id: str, project_id: str, meeting: Mapping[str, Any], *, material: bool, stamp: str
+    connection: Any,
+    meeting_id: str,
+    project_id: str,
+    meeting: Mapping[str, Any],
+    *,
+    material: bool,
+    stamp: str,
 ) -> None:
     """L1 写事务里 4c 的两步（ingest_meeting 在真写了决议或换了项目时调；快路径不调）。
 
@@ -759,7 +867,9 @@ def link_pairs(
             (meeting_id,),
         ).fetchall()
     ]
-    keys = sorted({row["text_key"] for row in mine if len(row["text_key"] or "") >= RESTATED_MIN_CHARS})
+    keys = sorted(
+        {row["text_key"] for row in mine if len(row["text_key"] or "") >= RESTATED_MIN_CHARS}
+    )
     matches: list[dict[str, Any]] = []
     for start in range(0, len(keys), _IN_BATCH):
         part = keys[start : start + _IN_BATCH]
@@ -775,11 +885,15 @@ def link_pairs(
         )
     candidates: dict[str, dict[str, Any]] = {}
     for own in mine:
-        own_order = decision_order(meeting["recording_date"], meeting["created_at"], own["start_ms"], meeting_id)
+        own_order = decision_order(
+            meeting["recording_date"], meeting["created_at"], own["start_ms"], meeting_id
+        )
         for other in matches:
             if other["text_key"] != own["text_key"]:
                 continue
-            other_order = decision_order(other["recording_date"], other["created_at"], other["start_ms"], other["meeting_id"])
+            other_order = decision_order(
+                other["recording_date"], other["created_at"], other["start_ms"], other["meeting_id"]
+            )
             if own_order <= other_order:
                 early, late, late_meeting = own, other, other["meeting_id"]
             else:
@@ -871,7 +985,9 @@ def title_fragments(title: str, excluded: Sequence[str] = ()) -> set[str]:
     return {piece for piece in found if not any(piece in name for name in names)}
 
 
-def title_match(text: str, requirements: Sequence[Mapping[str, Any]], excluded: Sequence[str] = ()) -> str | None:
+def title_match(
+    text: str, requirements: Sequence[Mapping[str, Any]], excluded: Sequence[str] = ()
+) -> str | None:
     """恰好一个需求名和决议（text 加 detail）有共同片段时返回它的 id，否则 None。"""
     body = _fold(text)
     hits = [
@@ -894,7 +1010,12 @@ def effective_requirement(
     unplaced 关联了两个以上、名字对不上（没归到具体需求）。"""
     placement = decision.get("placement")
     chosen = decision.get("requirement_id")
-    if placement == "picked" and chosen and project_id and decision.get("requirement_project") == project_id:
+    if (
+        placement == "picked"
+        and chosen
+        and project_id
+        and decision.get("requirement_project") == project_id
+    ):
         return chosen, "picked"
     if placement == "ai" and chosen and any(item["id"] == chosen for item in linked):
         return chosen, "ai"
@@ -904,7 +1025,9 @@ def effective_requirement(
         return None, "project"
     if len(linked) == 1:
         return linked[0]["id"], "only"
-    matched = title_match(f"{decision.get('text') or ''} {decision.get('detail') or ''}", linked, excluded)
+    matched = title_match(
+        f"{decision.get('text') or ''} {decision.get('detail') or ''}", linked, excluded
+    )
     return (matched, "title") if matched else (None, "unplaced")
 
 
@@ -932,8 +1055,15 @@ PAIR_FAILED = "这场会的决议没对比成"
 PAIR_LLM_OFF = "后台 AI 整理关着，不标哪些决议后来改了"
 PAIR_LINKS_OFF = "关联整理关着，决议按纪要现读，不标后来改了"
 PAIR_SENTENCES = (
-    PAIR_WAITING, PAIR_NO_KEY, PAIR_BAD_KEY, PAIR_CAPPED, PAIR_BALANCE, PAIR_UNREACHABLE, PAIR_FAILED,
-    PAIR_LLM_OFF, PAIR_LINKS_OFF,
+    PAIR_WAITING,
+    PAIR_NO_KEY,
+    PAIR_BAD_KEY,
+    PAIR_CAPPED,
+    PAIR_BALANCE,
+    PAIR_UNREACHABLE,
+    PAIR_FAILED,
+    PAIR_LLM_OFF,
+    PAIR_LINKS_OFF,
 )
 _PAIR_LLM_TEXTS = {
     "no_key": PAIR_NO_KEY,
@@ -947,7 +1077,9 @@ _PAIR_LLM_TEXTS = {
 RETRY_ACTION = {"kind": "retry", "label": "现在重试"}
 
 
-def _line(kind: str, text: str | None = None, action: Mapping[str, str] | None = None) -> dict[str, Any]:
+def _line(
+    kind: str, text: str | None = None, action: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     return {"kind": kind, "text": text, "action": dict(action) if action else None}
 
 
@@ -1003,10 +1135,10 @@ def _pair_rows_sql(where: str) -> str:
 SELECT r.id AS relation_id, r.kind, r.status, r.quote, r.decided_at, r.decision_id, r.to_decision_id,
        a.text AS a_text, a.start_ms AS a_start, a.meeting_id AS a_meeting,
        am.title AS a_title, am.recording_date AS a_rec, am.created_at AS a_created,
-       {AUDIO_ID_SQL.format(meeting='am.id')} AS a_audio,
+       {AUDIO_ID_SQL.format(meeting="am.id")} AS a_audio,
        b.text AS b_text, b.start_ms AS b_start, b.meeting_id AS b_meeting,
        bm.title AS b_title, bm.recording_date AS b_rec, bm.created_at AS b_created,
-       {AUDIO_ID_SQL.format(meeting='bm.id')} AS b_audio
+       {AUDIO_ID_SQL.format(meeting="bm.id")} AS b_audio
   FROM relations r
   JOIN decisions a ON a.id = r.decision_id AND a.gone_at IS NULL
   JOIN decisions b ON b.id = r.to_decision_id AND b.gone_at IS NULL
@@ -1028,7 +1160,9 @@ def _end(row: Mapping[str, Any], side: str) -> dict[str, Any]:
             "date": _day(row[f"{side}_rec"], row[f"{side}_created"]),
         },
         "audio_url": _audio_url(row[f"{side}_audio"]),
-        "order": decision_order(row[f"{side}_rec"], row[f"{side}_created"], row[f"{side}_start"], row[f"{side}_meeting"]),
+        "order": decision_order(
+            row[f"{side}_rec"], row[f"{side}_created"], row[f"{side}_start"], row[f"{side}_meeting"]
+        ),
     }
 
 
@@ -1090,7 +1224,9 @@ def pair_marks(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, list[di
     marks: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
     def slot(decision_id: str) -> dict[str, list[dict[str, Any]]]:
-        return marks.setdefault(decision_id, {"later": [], "earlier": [], "restated": [], "dismissed": []})
+        return marks.setdefault(
+            decision_id, {"later": [], "earlier": [], "restated": [], "dismissed": []}
+        )
 
     edge_of: dict[str, int] = {}
     group_later: dict[str, list[dict[str, Any]]] = {}
@@ -1098,11 +1234,17 @@ def pair_marks(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, list[di
         if row["status"] == "rejected":
             for own, other in (("a", "b"), ("b", "a")):
                 end = _end(row, other)
-                slot(row["decision_id"] if own == "a" else row["to_decision_id"])["dismissed"].append(
+                slot(row["decision_id"] if own == "a" else row["to_decision_id"])[
+                    "dismissed"
+                ].append(
                     {
                         "relation_id": row["relation_id"],
                         "kind": row["kind"],
-                        "other": {"date": end["meeting"]["date"], "meeting_title": end["meeting"]["title"], "text": end["text"]},
+                        "other": {
+                            "date": end["meeting"]["date"],
+                            "meeting_title": end["meeting"]["title"],
+                            "text": end["text"],
+                        },
                         "decided_at": row["decided_at"],
                     }
                 )
@@ -1119,7 +1261,9 @@ def pair_marks(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, list[di
     for root, ids in members.items():
         later = group_later.get(root, [])
         seen: set[str] = set()
-        unique = [ref for ref in later if not (ref["decision_id"] in seen or seen.add(ref["decision_id"]))]
+        unique = [
+            ref for ref in later if not (ref["decision_id"] in seen or seen.add(ref["decision_id"]))
+        ]
         for decision_id in ids:
             if unique:
                 slot(decision_id)["later"] = list(unique)
@@ -1183,7 +1327,7 @@ def requirement_log(
                        CASE WHEN :live = 0 OR s.meeting_id IS NULL
                                  OR s.minutes_version_id IS NOT m.current_minutes_version_id OR s.parser != :parser
                             THEN mv.markdown END AS markdown,
-                       {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id
+                       {AUDIO_ID_SQL.format(meeting="m.id")} AS audio_id
                   FROM ({_LOG_MEETINGS}) ms
                   JOIN meetings m ON m.id = ms.meeting_id
                   LEFT JOIN decision_scan s ON s.meeting_id = m.id
@@ -1209,11 +1353,14 @@ def requirement_log(
              ORDER BY r.created_at, r.id""",
         params,
     ).fetchall():
-        linked_by_meeting.setdefault(row["meeting_id"], []).append({"id": row["id"], "title": row["title"]})
+        linked_by_meeting.setdefault(row["meeting_id"], []).append(
+            {"id": row["id"], "title": row["title"]}
+        )
     marks: dict[str, dict[str, list[dict[str, Any]]]] = {}
     if live and project_id and any(not meeting["behind"] for meeting in meetings):
         rows = connection.execute(
-            _pair_rows_sql("r.project_id = :pid AND r.status IN ('shown', 'rejected')"), {"pid": project_id}
+            _pair_rows_sql("r.project_id = :pid AND r.status IN ('shown', 'rejected')"),
+            {"pid": project_id},
         ).fetchall()
         marks = pair_marks([dict(row) for row in rows])
 
@@ -1226,8 +1373,16 @@ def requirement_log(
             parsed = parse_safely(meeting["markdown"])
             note = parsed.note
             items: list[dict[str, Any]] = [
-                {"id": None, "text": item.text, "detail": item.detail, "start_ms": item.start_ms,
-                 "end_ms": item.end_ms, "placement": None, "requirement_id": None, "requirement_project": None}
+                {
+                    "id": None,
+                    "text": item.text,
+                    "detail": item.detail,
+                    "start_ms": item.start_ms,
+                    "end_ms": item.end_ms,
+                    "placement": None,
+                    "requirement_id": None,
+                    "requirement_project": None,
+                }
                 for item in parsed.items
             ]
         else:
@@ -1245,7 +1400,10 @@ def requirement_log(
                 "detail": item["detail"] or "",
                 "start_ms": item["start_ms"],
                 "end_ms": item["end_ms"],
-                "placement": {"how": how if chosen == requirement_id else "unplaced", "requirement_id": chosen},
+                "placement": {
+                    "how": how if chosen == requirement_id else "unplaced",
+                    "requirement_id": chosen,
+                },
                 "later": mark.get("later", []),
                 "earlier": mark.get("earlier", []),
                 "restated": mark.get("restated", []),
@@ -1273,14 +1431,21 @@ def requirement_log(
                 "note": NOTE_TEXT.get(note or ""),
                 "decisions": placed,
                 "unplaced": unplaced,
-                "_order": decision_order(meeting["recording_date"], meeting["created_at"], 0, meeting["id"]),
+                "_order": decision_order(
+                    meeting["recording_date"], meeting["created_at"], 0, meeting["id"]
+                ),
             }
         )
     groups.sort(key=lambda group: group["_order"], reverse=True)
     for group in groups:
         group.pop("_order")
     # 4e：在问的可能过时，「『报价单 v3』之后没改过，可能过时」，一条语句
-    entries = [entry for group in groups for entry in (*group["decisions"], *group["unplaced"]) if entry["id"]]
+    entries = [
+        entry
+        for group in groups
+        for entry in (*group["decisions"], *group["unplaced"])
+        if entry["id"]
+    ]
     if live and entries:
         from .relation_read import decision_questions
 
@@ -1360,7 +1525,11 @@ def project_decisions(
                 "requirement_id": chosen,
                 "placement": how,
                 "earlier": [
-                    {"decision_id": ref["decision_id"], "date": ref["meeting"]["date"], "text": ref["text"]}
+                    {
+                        "decision_id": ref["decision_id"],
+                        "date": ref["meeting"]["date"],
+                        "text": ref["text"],
+                    }
                     for ref in mark.get("earlier", [])
                 ],
                 "restated": [

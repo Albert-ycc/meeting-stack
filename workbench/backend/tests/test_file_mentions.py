@@ -1,4 +1,5 @@
 """第二期 2d：会上提到文件名的比对、你的改动、会议简报里的文件。"""
+
 import json
 from datetime import datetime
 
@@ -32,10 +33,22 @@ def add_file(db, root_id, rel, *, day="2026-09-01", zone="normal", gone=False):
         """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns,
                zone, seen_at, gone_at)
            VALUES (?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?, ?)""",
-        (root_id, rel, rel.rpartition("/")[0], name, stem, stem_key(stem), ns(day), zone, utc_now(),
-         utc_now() if gone else None),
+        (
+            root_id,
+            rel,
+            rel.rpartition("/")[0],
+            name,
+            stem,
+            stem_key(stem),
+            ns(day),
+            zone,
+            utc_now(),
+            utc_now() if gone else None,
+        ),
     )
-    return db.query_one("SELECT id FROM material_files WHERE root_id=? AND rel_path=?", (root_id, rel))["id"]
+    return db.query_one(
+        "SELECT id FROM material_files WHERE root_id=? AND rel_path=?", (root_id, rel)
+    )["id"]
 
 
 def said(*texts):
@@ -49,7 +62,9 @@ def run(db):
 def mentions(db, meeting_id="m"):
     return {
         row["stem_key"]: row
-        for row in db.query_all("SELECT * FROM meeting_file_mentions WHERE meeting_id=?", (meeting_id,))
+        for row in db.query_all(
+            "SELECT * FROM meeting_file_mentions WHERE meeting_id=?", (meeting_id,)
+        )
     }
 
 
@@ -66,8 +81,13 @@ def test_counts_only_what_is_not_inside_longer_words(tmp_path):
     add_file(db, root_id, "报价/报价单.xlsx")
     add_file(db, root_id, "看板系统说明.docx")
     add_meeting(
-        db, "m", ago=1, project_id="p",
-        segments=said("报价单位要先确认", "报价单明天发", "数据看板系统下周上线", "看板系统说明也要改"),
+        db,
+        "m",
+        ago=1,
+        project_id="p",
+        segments=said(
+            "报价单位要先确认", "报价单明天发", "数据看板系统下周上线", "看板系统说明也要改"
+        ),
     )
     add_meeting(db, "m2", ago=1, project_id="p", segments=said("报价单位要先确认"))
     add_term(db, "数据看板系统", "p")
@@ -90,12 +110,21 @@ def test_two_char_stems_need_two_mentions_and_letters_need_boundaries(tmp_path):
     add_file(db, root_id, "Roadmap.pptx")
     add_file(db, root_id, "云图AI项目周报.pptx")
     add_meeting(db, "m", ago=1, project_id="p", segments=said("排班先这样", "roadmaps 都看了"))
-    add_meeting(db, "m2", ago=1, project_id="p", segments=said("排班先这样，排班下周再说", "看一下 Roadmap 吧"))
+    add_meeting(
+        db,
+        "m2",
+        ago=1,
+        project_id="p",
+        segments=said("排班先这样，排班下周再说", "看一下 Roadmap 吧"),
+    )
 
     run(db)
 
     assert mentions(db) == {}
-    assert {key: row["count"] for key, row in mentions(db, "m2").items()} == {"排班": 2, "roadmap": 1}
+    assert {key: row["count"] for key, row in mentions(db, "m2").items()} == {
+        "排班": 2,
+        "roadmap": 1,
+    }
 
 
 def test_versions_prefer_the_full_name_then_the_meeting_date(tmp_path):
@@ -103,7 +132,9 @@ def test_versions_prefer_the_full_name_then_the_meeting_date(tmp_path):
     v1 = add_file(db, root_id, "报价/报价单 v1.xlsx", day="2026-09-10")
     v2 = add_file(db, root_id, "报价/报价单 v2.xlsx", day="2026-09-18")
     v3 = add_file(db, root_id, "报价/报价单 v3.xlsx", day="2026-09-25")
-    add_meeting(db, "said-v1", ago=1, project_id="p", segments=said("报价单 V1 那版不行", "报价单再改改"))
+    add_meeting(
+        db, "said-v1", ago=1, project_id="p", segments=said("报价单 V1 那版不行", "报价单再改改")
+    )
     add_meeting(db, "sep-20", ago=6, project_id="p", segments=said("报价单再改改"))
     add_meeting(db, "sep-05", ago=21, project_id="p", segments=said("报价单再改改"))
     add_meeting(db, "sep-26", ago=0, project_id="p", segments=said("报价单再改改"))
@@ -137,14 +168,23 @@ def test_minutes_only_mentions_need_three_characters(tmp_path):
     add_file(db, root_id, "需求说明书.docx")
     add_file(db, root_id, "排班.xlsx")
     add_meeting(
-        db, "m", ago=1, project_id="p", segments=said("今天先到这"),
+        db,
+        "m",
+        ago=1,
+        project_id="p",
+        segments=said("今天先到这"),
         minutes="## 待办\n- [00:12:34] 需求说明书要补一版，排班也看看，排班表\n",
     )
 
     run(db)
 
     row = mentions(db)["需求说明书"]
-    assert (row["source"], row["count"], row["minutes_count"], row["first_ms"]) == ("minutes", 0, 1, 754_000)
+    assert (row["source"], row["count"], row["minutes_count"], row["first_ms"]) == (
+        "minutes",
+        0,
+        1,
+        754_000,
+    )
     assert "排班" not in mentions(db)
 
 
@@ -157,8 +197,12 @@ def test_edits_moves_and_rejections(tmp_path):
     assert run(db)["pending"] == 0
 
     # 改稿后重新比对
-    version = db.query_one("SELECT current_transcript_version_id AS v FROM meetings WHERE id='m'")["v"]
-    db.execute("UPDATE segments SET text='报价单明天发，报价单要盖章' WHERE version_id=?", (version,))
+    version = db.query_one("SELECT current_transcript_version_id AS v FROM meetings WHERE id='m'")[
+        "v"
+    ]
+    db.execute(
+        "UPDATE segments SET text='报价单明天发，报价单要盖章' WHERE version_id=?", (version,)
+    )
     db.add_event("transcript_draft_saved", meeting_id="m")
     run(db)
     assert mentions(db)["报价单"]["count"] == 2
@@ -190,7 +234,9 @@ def test_edits_moves_and_rejections(tmp_path):
 
 def test_rejections_only_block_the_original_project(tmp_path):
     db, root_id = setup(tmp_path)
-    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),))
+    db.execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('q', '数据中台', ?)", (utc_now(),)
+    )
     other_root = add_root(db, tmp_path / "数据中台", project_id="q")
     db.execute(
         "INSERT INTO material_index_state(root_id, state, stems_rev, stems_hash) VALUES (?, 'done', 1, 'h')",
@@ -213,7 +259,12 @@ def test_rejections_only_block_the_original_project(tmp_path):
         "SELECT project_id, stem_key, status, file_id FROM meeting_file_mentions WHERE meeting_id='m' ORDER BY project_id"
     )
     assert rows == [
-        {"project_id": "p", "stem_key": "报价单", "status": "rejected", "file_id": rows[0]["file_id"]},
+        {
+            "project_id": "p",
+            "stem_key": "报价单",
+            "status": "rejected",
+            "file_id": rows[0]["file_id"],
+        },
         {"project_id": "q", "stem_key": "报价单", "status": "active", "file_id": q_file},
     ]
 
@@ -237,8 +288,12 @@ def test_your_pick_during_a_match_is_kept(tmp_path, monkeypatch):
     add_meeting(db, "m", ago=1, project_id="p", segments=said("报价单明天发"))
     run(db)
     assert mentions(db)["报价单"]["file_id"] == v2
-    version = db.query_one("SELECT current_transcript_version_id AS id FROM meetings WHERE id='m'")["id"]
-    db.execute("UPDATE segments SET text='报价单明天发，报价单要盖章' WHERE version_id=?", (version,))
+    version = db.query_one("SELECT current_transcript_version_id AS id FROM meetings WHERE id='m'")[
+        "id"
+    ]
+    db.execute(
+        "UPDATE segments SET text='报价单明天发，报价单要盖章' WHERE version_id=?", (version,)
+    )
     db.add_event("transcript_draft_saved", meeting_id="m")
     compute = file_mentions.compute_mentions
 
@@ -268,7 +323,9 @@ def test_a_file_moved_to_a_later_folder_keeps_its_mention(tmp_path):
     assert "报价单" in mentions(db)
 
     (root / "a" / "报价单.xlsx").rename(root / "z" / "报价单.xlsx")
-    MaterialIndexer(db, settings, clock=lambda: 0.0, round_entries=2).run_round()  # 读完 a/ 就停，z/ 还没读
+    MaterialIndexer(
+        db, settings, clock=lambda: 0.0, round_entries=2
+    ).run_round()  # 读完 a/ 就停，z/ 还没读
     run(db)  # 这时比对：旧位置没了、新位置还没收进来
     run_until_done(MaterialIndexer(db, settings, clock=lambda: 0.0))
     run(db)
@@ -281,7 +338,9 @@ def test_brief_lists_files_and_states(tmp_path):
     db, root_id = setup(tmp_path)
     add_file(db, root_id, "报价单.xlsx")
     add_file(db, root_id, "需求说明书.docx")
-    add_meeting(db, "m", ago=1, project_id="p", segments=said("报价单明天发，报价单要盖章", "需求说明书"))
+    add_meeting(
+        db, "m", ago=1, project_id="p", segments=said("报价单明天发，报价单要盖章", "需求说明书")
+    )
     add_meeting(db, "none", ago=1, segments=said("报价单"))
 
     def brief(meeting_id):
@@ -292,7 +351,10 @@ def test_brief_lists_files_and_states(tmp_path):
     run(db)
     body = brief("m")
     assert body["files_state"] == "done"
-    assert [(item["name"], item["count"]) for item in body["files"]] == [("报价单.xlsx", 2), ("需求说明书.docx", 1)]
+    assert [(item["name"], item["count"]) for item in body["files"]] == [
+        ("报价单.xlsx", 2),
+        ("需求说明书.docx", 1),
+    ]
     assert "files_note" not in body
     assert len(json.dumps(body, ensure_ascii=False).encode()) < 20_000
     assert brief("none")["files_state"] == "no_project"
@@ -311,13 +373,17 @@ def test_file_detail_lists_meetings_and_same_named_files(tmp_path):
 
     with db.autocommit() as connection:
         body = file_mentions.file_detail(
-            connection, v2, quotes=lambda meeting_id, starts: graph._segments_at(connection, meeting_id, starts)
+            connection,
+            v2,
+            quotes=lambda meeting_id, starts: graph._segments_at(connection, meeting_id, starts),
         )
 
     assert body["file"]["name"] == "报价单 v2.xlsx"
     assert body["file"]["folder_path"].endswith("云图AI/报价")
     assert [item["id"] for item in body["siblings"]] == [v1]
-    assert [(item["meeting_id"], item["count"], item["status"]) for item in body["meetings"]] == [("m", 2, "active")]
+    assert [(item["meeting_id"], item["count"], item["status"]) for item in body["meetings"]] == [
+        ("m", 2, "active")
+    ]
     assert body["meetings"][0]["quote"] == "先说报价单"
 
 
@@ -326,7 +392,7 @@ def test_file_detail_lists_meetings_and_same_named_files(tmp_path):
 
 def test_project_graph_draws_mentioned_files_with_caps(tmp_path):
     db, root_id = setup(tmp_path)
-    names = [f"模块{chr(0x4e00 + index)}说明" for index in range(16)]
+    names = [f"模块{chr(0x4E00 + index)}说明" for index in range(16)]
     for name in names:
         add_file(db, root_id, f"说明/{name}.docx")
     add_file(db, root_id, "需求池总表.xlsx")
@@ -335,7 +401,14 @@ def test_project_graph_draws_mentioned_files_with_caps(tmp_path):
         texts = ["需求池总表先过一遍"]
         for offset in range(4):
             texts += [names[(meeting * 3 + offset) % 16]] * (4 - offset)
-        add_meeting(db, f"m-{meeting}", ago=meeting + 1, project_id="p", origin="manual", segments=said(*texts))
+        add_meeting(
+            db,
+            f"m-{meeting}",
+            ago=meeting + 1,
+            project_id="p",
+            origin="manual",
+            segments=said(*texts),
+        )
     run(db)
 
     with db.autocommit() as connection:
@@ -365,12 +438,19 @@ def test_project_graph_draws_mentioned_files_with_caps(tmp_path):
 
 def test_more_files_fold_into_one_node(tmp_path):
     db, root_id = setup(tmp_path)
-    names = [f"模块{chr(0x4e00 + index)}说明" for index in range(20)]
+    names = [f"模块{chr(0x4E00 + index)}说明" for index in range(20)]
     for name in names:
         add_file(db, root_id, f"{name}.docx")
     for meeting in range(6):
         texts = [names[meeting * 3 + offset] for offset in range(3)]
-        add_meeting(db, f"m-{meeting}", ago=meeting + 1, project_id="p", origin="manual", segments=said(*texts))
+        add_meeting(
+            db,
+            f"m-{meeting}",
+            ago=meeting + 1,
+            project_id="p",
+            origin="manual",
+            segments=said(*texts),
+        )
     run(db)
 
     with db.autocommit() as connection:
@@ -403,19 +483,28 @@ def test_file_endpoints(tmp_path):
     run(db)
 
     status = client.get("/api/materials/index-status?project_id=p").json()["roots"]
-    assert [(item["root_id"], item["state"], item["files"]) for item in status] == [(root_id, "done", 2)]
+    assert [(item["root_id"], item["state"], item["files"]) for item in status] == [
+        (root_id, "done", 2)
+    ]
     detail = client.get(f"/api/graph/files/{v2}").json()
     assert detail["meetings"][0]["meeting_id"] == "m"
     assert client.get("/api/graph/files/9999").status_code == 404
 
     base = "/api/meetings/m/file-mentions/报价单"
-    assert client.post(f"{base}/pick", json={"file_id": v1}, headers=headers).json()["file_id"] == v1
+    assert (
+        client.post(f"{base}/pick", json={"file_id": v1}, headers=headers).json()["file_id"] == v1
+    )
     assert client.post(f"{base}/pick", json={"file_id": 9999}, headers=headers).status_code == 400
     assert client.post(f"{base}/reject", json={}, headers=headers).json()["status"] == "rejected"
     brief = client.get("/api/meetings/m/brief").json()
     assert brief["files"] == []
     assert client.post(f"{base}/restore", json={}, headers=headers).json()["status"] == "active"
-    assert client.post("/api/meetings/m/file-mentions/没有/reject", json={}, headers=headers).status_code == 404
+    assert (
+        client.post(
+            "/api/meetings/m/file-mentions/没有/reject", json={}, headers=headers
+        ).status_code
+        == 404
+    )
 
 
 # ---------------------------------------------------------------------- 先数再取（4a）
@@ -466,8 +555,16 @@ def add_aliases(db, term, *, aliases=(), also=(), project_id="p", confirmed=1):
     db.execute(
         """INSERT INTO glossary_terms(id, term, aliases, also, confirmed, project_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (f"t-{term}", term, json.dumps(list(aliases), ensure_ascii=False), json.dumps(list(also), ensure_ascii=False),
-         confirmed, project_id, utc_now(), utc_now()),
+        (
+            f"t-{term}",
+            term,
+            json.dumps(list(aliases), ensure_ascii=False),
+            json.dumps(list(also), ensure_ascii=False),
+            confirmed,
+            project_id,
+            utc_now(),
+            utc_now(),
+        ),
     )
 
 
@@ -477,15 +574,28 @@ def test_aliases_and_also_are_needles_with_their_own_label(tmp_path):
     board = add_file(db, root_id, "能耗看板方案.pptx")
     add_aliases(db, "报价单", aliases=["报价表"])
     add_aliases(db, "能耗看板方案", also=["看板PPT"])
-    add_meeting(db, "m", ago=1, project_id="p", segments=said("报价表发我一下", "报价表还要改", "看板PPT 明天讲"))
+    add_meeting(
+        db,
+        "m",
+        ago=1,
+        project_id="p",
+        segments=said("报价表发我一下", "报价表还要改", "看板PPT 明天讲"),
+    )
     add_meeting(db, "both", ago=1, project_id="p", segments=said("报价表发我一下", "报价单还要改"))
 
     run(db)
 
     rows = mentions(db)
-    assert (rows["报价单"]["file_id"], rows["报价单"]["needle"], rows["报价单"]["count"]) == (quote, "报价表", 2)
+    assert (rows["报价单"]["file_id"], rows["报价单"]["needle"], rows["报价单"]["count"]) == (
+        quote,
+        "报价表",
+        2,
+    )
     assert (rows["能耗看板方案"]["file_id"], rows["能耗看板方案"]["needle"]) == (board, "看板PPT")
-    assert graph.mention_label({**rows["报价单"], "relation_id": None}) == "会上说『报价表』2 次 · 00:00:00"
+    assert (
+        graph.mention_label({**rows["报价单"], "relation_id": None})
+        == "会上说『报价表』2 次 · 00:00:00"
+    )
     # 有别名也有本名：仍写词干
     assert mentions(db, "both")["报价单"]["needle"] == "报价单"
     assert mentions(db, "both")["报价单"]["count"] == 2
@@ -532,11 +642,25 @@ def test_spoken_version_and_final_pick_the_file(tmp_path):
 
 def test_this_or_last_version_is_not_a_version_number(tmp_path):
     spoken = file_mentions.spoken_version
-    for text in ("上一版报价单", "这一版", "下一版", "这两版", "那一版", "新一版", "前一版", "两版都看过", "改了三版"):
+    for text in (
+        "上一版报价单",
+        "这一版",
+        "下一版",
+        "这两版",
+        "那一版",
+        "新一版",
+        "前一版",
+        "两版都看过",
+        "改了三版",
+    ):
         assert spoken(text) is None, text
-    assert (spoken("第一版"), spoken("三版报价单"), spoken("版本二"), spoken("报价单V3版"), spoken("3.0版")) == (
-        1, 3, 2, 3, 3
-    )
+    assert (
+        spoken("第一版"),
+        spoken("三版报价单"),
+        spoken("版本二"),
+        spoken("报价单V3版"),
+        spoken("3.0版"),
+    ) == (1, 3, 2, 3, 3)
     db, root_id = setup(tmp_path)
     v1 = add_file(db, root_id, "报价单 v1.xlsx", day="2026-09-10")
     v2 = add_file(db, root_id, "报价单 v2.xlsx", day="2026-09-20")
@@ -545,9 +669,9 @@ def test_this_or_last_version_is_not_a_version_number(tmp_path):
     add_meeting(db, "both", ago=1, project_id="p", segments=said("报价单这两版都看过了"))
     run(db)
     # 不当成第 1 版、第 2 版：按会议日期挑开会前最新的
-    assert {meeting: mentions(db, meeting)["报价单"]["file_id"] for meeting in ("prev", "this", "both")} == {
-        "prev": v2, "this": v2, "both": v2
-    }
+    assert {
+        meeting: mentions(db, meeting)["报价单"]["file_id"] for meeting in ("prev", "this", "both")
+    } == {"prev": v2, "this": v2, "both": v2}
     # L5 留下「上一版」的提示：按提示挑第二新的一份
     now = utc_now()
     db.execute(
@@ -577,7 +701,7 @@ def test_hints_come_before_the_date_pick(tmp_path):
     run(db)
     assert mentions(db)["报价单"]["file_id"] == v1
     # 提示换成「最新的」：挪回开会前最新的那份
-    db.execute("UPDATE mention_extractions SET hints_json = '{\"报价单\": {\"rel\": \"latest\"}}'")
+    db.execute('UPDATE mention_extractions SET hints_json = \'{"报价单": {"rel": "latest"}}\'')
     db.execute("UPDATE meeting_file_scan SET dirty = dirty + 1 WHERE meeting_id = 'm'")
     run(db)
     assert mentions(db)["报价单"]["file_id"] == v1 + 1

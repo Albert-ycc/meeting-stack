@@ -1,4 +1,5 @@
 """冷启动整理（v13 第一期 1b-4）：弱归属复评、旧分组、同名文件夹、重复挂载。"""
+
 import json
 
 from meeting_workbench import cold_start
@@ -152,7 +153,10 @@ def test_legacy_groups_are_organized_and_can_be_undone(tmp_path):
 
     assert result == {"silent": 1, "organized": 2, "changed_terms": 3}
     assert _term_row(db, same)["project_id"] is not None
-    assert (_term_row(db, part)["project_id"], _term_row(db, part)["scope"]) == (yuntu, "云图科研用药")
+    assert (_term_row(db, part)["project_id"], _term_row(db, part)["scope"]) == (
+        yuntu,
+        "云图科研用药",
+    )
     assert (_term_row(db, other)["project_id"], _term_row(db, other)["scope"]) == (None, "通用")
     assert _term_row(db, public)["scope"] == "通用"
 
@@ -171,9 +175,14 @@ def test_legacy_groups_are_organized_and_can_be_undone(tmp_path):
     assert _term_row(db, other)["scope"] == "互联网医院"
     assert _term_row(db, part)["scope"] == "通用"
     assert client.get("/api/glossary/legacy-groups").json()["summary"]["undone"] is True
-    assert client.post("/api/glossary/legacy-groups/undo", json={}, headers=headers).status_code == 409
+    assert (
+        client.post("/api/glossary/legacy-groups/undo", json={}, headers=headers).status_code == 409
+    )
 
-    assert client.post("/api/glossary/legacy-groups/dismiss", json={}, headers=headers).status_code == 200
+    assert (
+        client.post("/api/glossary/legacy-groups/dismiss", json={}, headers=headers).status_code
+        == 200
+    )
     assert client.get("/api/glossary/legacy-groups").json()["summary"] is None
 
 
@@ -217,10 +226,15 @@ def test_projects_without_folders_get_same_name_suggestions(tmp_path):
     assert mounted["id"] not in by_project
 
     # 说过不挂的不再问
-    assert client.post(
-        "/api/cold-start/folders/decline", json={"project_ids": [yt]}, headers=headers
-    ).status_code == 200
-    assert [item["project_id"] for item in client.get("/api/cold-start/folders").json()["items"]] == [zt]
+    assert (
+        client.post(
+            "/api/cold-start/folders/decline", json={"project_ids": [yt]}, headers=headers
+        ).status_code
+        == 200
+    )
+    assert [
+        item["project_id"] for item in client.get("/api/cold-start/folders").json()["items"]
+    ] == [zt]
 
     # 稍后：几天内都不问
     snoozed = client.post("/api/cold-start/folders/snooze", json={}, headers=headers).json()

@@ -5,6 +5,7 @@
 不跟随符号链接、单文件夹最多数到 2000 个。接口全部走同步 def，由 FastAPI 丢进线程池，
 不阻塞事件循环。
 """
+
 from __future__ import annotations
 
 import os
@@ -110,7 +111,9 @@ def folder_stat(path: Path, *, limit: int = MAX_FOLDER_FILES) -> dict[str, Any]:
     }
 
 
-def list_folder_files(path: Path, *, limit: int = MAX_FOLDER_FILES, offset: int = 0) -> dict[str, Any]:
+def list_folder_files(
+    path: Path, *, limit: int = MAX_FOLDER_FILES, offset: int = 0
+) -> dict[str, Any]:
     """递归列出文件夹内文件，按相对路径排序分页；capped 表示命中了 MAX_FOLDER_FILES 硬上限。"""
     if not path.is_dir():
         return {"exists": False, "total": 0, "capped": False, "items": []}
@@ -124,7 +127,12 @@ def list_folder_files(path: Path, *, limit: int = MAX_FOLDER_FILES, offset: int 
         for file_path, stat_result in entries
     ]
     items.sort(key=lambda item: item["relative_path"])
-    return {"exists": True, "total": len(items), "capped": capped, "items": items[offset : offset + limit]}
+    return {
+        "exists": True,
+        "total": len(items),
+        "capped": capped,
+        "items": items[offset : offset + limit],
+    }
 
 
 def _project_subfolder_stats(root_path: Path) -> dict[str, Any]:
@@ -322,7 +330,10 @@ def add_material_root(
 ) -> dict[str, Any]:
     now = utc_now()
     with db.transaction() as connection:
-        if connection.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone() is None:
+        if (
+            connection.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone()
+            is None
+        ):
             raise NotFoundError(f"项目不存在：{project_id}")
         path, nested = validate_new_root(connection, settings, project_id, raw_path)
         try:

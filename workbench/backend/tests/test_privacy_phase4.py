@@ -29,6 +29,7 @@
   /api/bootstrap、去掉 glossary_candidates 的看板里。两个都记入以后：「蓝鲸七号原料」进了快照、不在线索里；
   「鲸湾海藻酸」带着错写；两个仍然不在索引里（索引不写词典）。
 """
+
 from __future__ import annotations
 
 import json
@@ -130,8 +131,19 @@ def fake_ai(monkeypatch) -> list[str]:
         if LOOSE_MARK in body:
             # 4b：回一条会上真说过的说法，L5 才有东西可对
             content = json.dumps(
-                {"refs": [{"at": "00:01:00", "quote": "上周那版报价单再看一下", "phrase": "上周那版报价单",
-                           "core": "报价单", "aka": [], "kind": "表格", "when": {"rel": "last_week", "version": None}}]},
+                {
+                    "refs": [
+                        {
+                            "at": "00:01:00",
+                            "quote": "上周那版报价单再看一下",
+                            "phrase": "上周那版报价单",
+                            "core": "报价单",
+                            "aka": [],
+                            "kind": "表格",
+                            "when": {"rel": "last_week", "version": None},
+                        }
+                    ]
+                },
                 ensure_ascii=False,
             )
         elif QA_MARK in body:
@@ -205,30 +217,51 @@ def build_world(tmp_path: Path) -> tuple[Database, Settings, Path]:
     )
     embed_all(db)
     seed_meeting(
-        db, RELATED_MEETING, "驻场沟通", "# 摘要\n\n排期。", segments=segments_for(TOPIC_A),
-        project_id=project_id, origin="manual",
+        db,
+        RELATED_MEETING,
+        "驻场沟通",
+        "# 摘要\n\n排期。",
+        segments=segments_for(TOPIC_A),
+        project_id=project_id,
+        origin="manual",
     )
     segments = [(0, "大家好，开始吧"), (754_000, "报价单按第三版发出"), (900_000, "排期表下周定稿")]
     seed_meeting(
-        db, "vm-20260926-143000", "云图周会", MINUTES, segments=segments,
-        project_id=project_id, origin="ai",
+        db,
+        "vm-20260926-143000",
+        "云图周会",
+        MINUTES,
+        segments=segments,
+        project_id=project_id,
+        origin="ai",
     )
     seed_meeting(db, "vm-20260927-100000", "周会", "# 摘要\n\n讨论报价单。", segments=segments)
     # 4c：同项目另一场会也定了报价单的事，初筛能留下，对比真的发出去
     seed_meeting(
-        db, PAIRS_MEETING, "报价沟通",
+        db,
+        PAIRS_MEETING,
+        "报价沟通",
         f"# 报价沟通\n\n## 一分钟摘要\n\n{MINUTES_SENTINEL}\n\n## 决议\n\n- 报价单按第二版发出 [00:03:00]\n",
         segments=[(0, TRANSCRIPT_SENTINEL), (180_000, "报价单按第二版发出")],
-        project_id=project_id, origin="manual",
+        project_id=project_id,
+        origin="manual",
     )
     # 4b：一场逐字稿够长的会（会名里有哨兵），会上说了「上周那版报价单」
     long_talk = [(0, "开始吧")] + [
         (60_000, "上周那版报价单再看一下"),
-        *[((index + 2) * 60_000, f"我们今天把排期再过一遍，确认下周的节奏安排和人手{index}") for index in range(20)],
+        *[
+            ((index + 2) * 60_000, f"我们今天把排期再过一遍，确认下周的节奏安排和人手{index}")
+            for index in range(20)
+        ],
     ]
     seed_meeting(
-        db, LOOSE_MEETING, f"{TITLE_SENTINEL}周会", "# 摘要\n\n排期。", segments=long_talk,
-        project_id=project_id, origin="manual",
+        db,
+        LOOSE_MEETING,
+        f"{TITLE_SENTINEL}周会",
+        "# 摘要\n\n排期。",
+        segments=long_talk,
+        project_id=project_id,
+        origin="manual",
     )
     db.execute(
         """INSERT INTO glossary_candidates(project_id, term, term_key, created_at, updated_at)
@@ -284,10 +317,12 @@ def outgoing(db: Database, settings: Settings, root: Path, requests: list[str]) 
     with db.autocommit() as connection:
         cues = repr(build_cue_table(connection))
         segments = json.dumps(
-            [list(row) for row in connection.execute("SELECT * FROM segments_fts")], ensure_ascii=False
+            [list(row) for row in connection.execute("SELECT * FROM segments_fts")],
+            ensure_ascii=False,
         )
         minutes = json.dumps(
-            [list(row) for row in connection.execute("SELECT * FROM minutes_fts")], ensure_ascii=False
+            [list(row) for row in connection.execute("SELECT * FROM minutes_fts")],
+            ensure_ascii=False,
         )
     cards = "\n".join(
         path.read_text(encoding="utf-8") for path in sorted(root.rglob("*.md")) if path.is_file()
@@ -305,7 +340,9 @@ def outgoing(db: Database, settings: Settings, root: Path, requests: list[str]) 
 def database_leaks(connection: sqlite3.Connection, needle: str) -> list[str]:
     """整库文本扫描：哪些表的哪些列里有 needle（哨兵本来就在的表和白名单列不算）。"""
     found: set[str] = set()
-    tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    tables = [
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    ]
     for table in tables:
         if table in MATERIAL_TEXT_TABLES or table.startswith(MATERIAL_TEXT_PREFIXES):
             continue
@@ -336,9 +373,13 @@ def test_material_text_stays_in_the_material_tables(tmp_path, fake_ai):
         assert MATERIAL_SENTINEL not in row["words"]
     with db.autocommit() as connection:
         # 哨兵确实在库里，扫描才有意义
-        assert connection.execute(
-            "SELECT COUNT(*) FROM material_chunks WHERE instr(text, ?) > 0", (MATERIAL_SENTINEL,)
-        ).fetchone()[0] == 2  # 4a 的一段、4d 的一段
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM material_chunks WHERE instr(text, ?) > 0",
+                (MATERIAL_SENTINEL,),
+            ).fetchone()[0]
+            == 2
+        )  # 4a 的一段、4d 的一段
         assert database_leaks(connection, MATERIAL_SENTINEL) == []
 
 
@@ -369,7 +410,13 @@ def test_loose_mentions_send_only_the_transcript(tmp_path, fake_ai):
     loose_requests = [text for text in fake_ai if LOOSE_MARK in text]
     assert loose_requests, "4b 一次都没发，这个测试什么都没验证"
     for text in loose_requests:
-        for sentinel in (TITLE_SENTINEL, NAME_SENTINEL, MATERIAL_SENTINEL, CANDIDATE_SENTINEL, "云图AI"):
+        for sentinel in (
+            TITLE_SENTINEL,
+            NAME_SENTINEL,
+            MATERIAL_SENTINEL,
+            CANDIDATE_SENTINEL,
+            "云图AI",
+        ):
             assert sentinel not in text, sentinel
         assert "上周那版报价单再看一下" in text
     # 候选词、文件名、材料文字不在任何一次请求里
@@ -377,7 +424,9 @@ def test_loose_mentions_send_only_the_transcript(tmp_path, fake_ai):
         for sentinel in (CANDIDATE_SENTINEL, NAME_SENTINEL, MATERIAL_SENTINEL):
             assert sentinel not in text, sentinel
     # L5 真的写出了放宽行（上面的材料文字断言才有意义）
-    rows = db.query_all("SELECT quote, evidence_json FROM relations WHERE kind = 'mention' AND origin = 'llm'")
+    rows = db.query_all(
+        "SELECT quote, evidence_json FROM relations WHERE kind = 'mention' AND origin = 'llm'"
+    )
     assert rows and rows[0]["quote"] == "上周那版报价单再看一下"
     for row in rows:
         assert MATERIAL_SENTINEL not in row["quote"] + row["evidence_json"]
@@ -392,8 +441,15 @@ def test_decision_pairs_send_only_decision_text(tmp_path, fake_ai):
     pair_requests = [text for text in fake_ai if PAIRS_MARK in text]
     assert pair_requests, "4c 一次都没发，这个测试什么都没验证"
     for text in pair_requests:
-        for sentinel in (MATERIAL_SENTINEL, NAME_SENTINEL, CANDIDATE_SENTINEL, MINUTES_SENTINEL, TRANSCRIPT_SENTINEL,
-                         "报价单 v3.xlsx", str(root)):
+        for sentinel in (
+            MATERIAL_SENTINEL,
+            NAME_SENTINEL,
+            CANDIDATE_SENTINEL,
+            MINUTES_SENTINEL,
+            TRANSCRIPT_SENTINEL,
+            "报价单 v3.xlsx",
+            str(root),
+        ):
             assert sentinel not in text, sentinel
         # 发的是决议原文和会名
         assert "报价单按第二版发出" in text and "报价单按第三版发出" in text and "报价沟通" in text
@@ -403,14 +459,18 @@ def test_related_keeps_material_text_out_and_shared_words_local(tmp_path, fake_a
     db, settings, root = build_world(tmp_path)
     with db.autocommit() as connection:
         fts_before = [
-            connection.execute(f"SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?", (f'"{SHARED_STEM}"',)).fetchone()[0]
+            connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?", (f'"{SHARED_STEM}"',)
+            ).fetchone()[0]
             for table in ("segments_fts", "minutes_fts")
         ]
 
     run_everything(db, settings)
 
     # H3 真的跑出了片段和相关行（下面的断言才有意义）
-    rows = db.query_all("SELECT words FROM meeting_window_passages WHERE meeting_id = ?", (RELATED_MEETING,))
+    rows = db.query_all(
+        "SELECT words FROM meeting_window_passages WHERE meeting_id = ?", (RELATED_MEETING,)
+    )
     assert rows and all(SHARED_STEM in json.loads(row["words"]) for row in rows)
     links = db.query_all("SELECT quote, evidence_json FROM relations WHERE kind = 'related'")
     assert links
@@ -424,9 +484,13 @@ def test_related_keeps_material_text_out_and_shared_words_local(tmp_path, fake_a
         assert SHARED_STEM not in repr(build_cue_table(connection))
         places = database_leaks(connection, SHARED_STEM)
         assert "meeting_window_passages.words" in places
-        assert not [place for place in places if place.startswith(("glossary_", "project_"))], places
+        assert not [place for place in places if place.startswith(("glossary_", "project_"))], (
+            places
+        )
         fts_after = [
-            connection.execute(f"SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?", (f'"{SHARED_STEM}"',)).fetchone()[0]
+            connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?", (f'"{SHARED_STEM}"',)
+            ).fetchone()[0]
             for table in ("segments_fts", "minutes_fts")
         ]
     assert fts_after == fts_before
@@ -459,8 +523,12 @@ def seed_produced_and_affects(db: Database) -> None:
     )
     # 影响：一场定了「总价下调 5%」的会；一份上个月的文件还写着下调 3%，同一段里有材料文字哨兵
     seed_meeting(
-        db, "vm-20260926-170000", "定价会", "# 定价会\n\n## 决议\n\n- 总价下调 5% [00:01:00]\n",
-        project_id=project_id, origin="manual",
+        db,
+        "vm-20260926-170000",
+        "定价会",
+        "# 定价会\n\n## 决议\n\n- 总价下调 5% [00:01:00]\n",
+        project_id=project_id,
+        origin="manual",
     )
     price_key = "q2:" + "9" * 32
     db.execute(
@@ -480,7 +548,6 @@ def seed_produced_and_affects(db: Database) -> None:
     )
 
 
-
 def test_produced_and_affects_keep_material_text_out(tmp_path, fake_ai):
     """4e：L4 和 H2 在 run_everything 里真的写出产出和影响；哨兵不进它们的 quote、evidence_json；
     单独再跑 L3、L4、H2 不发任何 AI 请求。"""
@@ -489,12 +556,18 @@ def test_produced_and_affects_keep_material_text_out(tmp_path, fake_ai):
 
     run_everything(db, settings)
 
-    rows = db.query_all("SELECT kind, quote, evidence_json FROM relations WHERE kind IN ('produced', 'affects')")
-    assert {row["kind"] for row in rows} == {"produced", "affects"}, "4e 一行都没写，这个测试什么都没验证"
+    rows = db.query_all(
+        "SELECT kind, quote, evidence_json FROM relations WHERE kind IN ('produced', 'affects')"
+    )
+    assert {row["kind"] for row in rows} == {"produced", "affects"}, (
+        "4e 一行都没写，这个测试什么都没验证"
+    )
     for row in rows:
         for sentinel in (MATERIAL_SENTINEL, NAME_SENTINEL, "报价说明"):
             assert sentinel not in row["quote"] + row["evidence_json"], sentinel
-    assert db.query_one("SELECT quote FROM relations WHERE kind = 'affects'")["quote"] == "总价下调 5%"
+    assert (
+        db.query_one("SELECT quote FROM relations WHERE kind = 'affects'")["quote"] == "总价下调 5%"
+    )
     for text in fake_ai:
         assert MATERIAL_SENTINEL not in text and "报价说明" not in text
     # 4e 不调 AI：单独再跑一遍 L3、L4、H2，记下的请求一条都不多
@@ -522,10 +595,14 @@ def test_graph_payloads_keep_material_text_out(tmp_path, fake_ai):
     payloads = []
     with db.autocommit() as connection:
         payloads.append(graph.project_graph(connection, project_id))
-        for row in connection.execute("SELECT id FROM material_files WHERE gone_at IS NULL").fetchall():
+        for row in connection.execute(
+            "SELECT id FROM material_files WHERE gone_at IS NULL"
+        ).fetchall():
             payloads.append(graph_local.file_map(connection, int(row["id"]), related_on=True))
             payloads.append(graph_local.trace(connection, f"file:{row['id']}"))
-        for row in connection.execute("SELECT id FROM meetings WHERE project_id IS NOT NULL").fetchall():
+        for row in connection.execute(
+            "SELECT id FROM meetings WHERE project_id IS NOT NULL"
+        ).fetchall():
             payloads.append(graph_local.trace(connection, f"m:{row['id']}"))
     text = json.dumps(payloads, ensure_ascii=False)
     assert "e:rel:" in text and "e:aff:" in text, "图接口没带上第四期的线，这个测试什么都没验证"
@@ -571,7 +648,11 @@ def test_ask_sends_material_text_only_after_confirm(tmp_path, fake_ai, caplog):
     later = fake_ai[2:]
     assert later, "之后的循环一次都没调 AI，这个测试什么都没验证"
     for text in later:
-        assert MATERIAL_SENTINEL not in text and NAME_SENTINEL not in text and ANSWER_SENTINEL not in text
+        assert (
+            MATERIAL_SENTINEL not in text
+            and NAME_SENTINEL not in text
+            and ANSWER_SENTINEL not in text
+        )
     places = outgoing(db, settings, root, later)
     for place, text in places.items():
         assert MATERIAL_SENTINEL not in text, place
@@ -580,7 +661,10 @@ def test_ask_sends_material_text_only_after_confirm(tmp_path, fake_ai, caplog):
     with db.autocommit() as connection:
         assert database_leaks(connection, MATERIAL_SENTINEL) == []
         # 回答哨兵：整库每张表的文本列（连材料表一起）都找不到
-        tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        tables = [
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        ]
         for table in tables:
             for row in connection.execute(f'SELECT * FROM "{table}"'):
                 for value in row:
@@ -604,7 +688,9 @@ PAIR_WRONG = "鲸湾海藻算"
 def seed_mined_words(db: Database, project_id: str, root: Path) -> None:
     """4h：3 份文字材料里各两次「蓝鲸七号原料」和「鲸湾海藻酸」；一场会上听成「鲸湾海藻算」两次。"""
     now = utc_now()
-    root_id = db.query_one("SELECT id FROM project_material_roots WHERE project_id = ?", (project_id,))["id"]
+    root_id = db.query_one(
+        "SELECT id FROM project_material_roots WHERE project_id = ?", (project_id,)
+    )["id"]
     for index in range(3):
         key = "q2:" + "9" * 31 + str(index)
         db.execute(
@@ -613,16 +699,30 @@ def seed_mined_words(db: Database, project_id: str, root: Path) -> None:
             (key, now, now),
         )
         text = f"{MINED_SENTINEL}，第{index}批入库。{PAIR_SENTINEL}，第{index + 3}批采购。" * 2
-        db.execute("INSERT INTO material_chunks(content_key, ordinal, text) VALUES (?, 0, ?)", (key, text))
+        db.execute(
+            "INSERT INTO material_chunks(content_key, ordinal, text) VALUES (?, 0, ?)", (key, text)
+        )
         db.execute(
             """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns,
                    zone, seen_at, content_key) VALUES (?, ?, '采购', ?, ?, ?, 'docx', 10, 1, 'normal', ?, ?)""",
-            (root_id, f"采购/清单{index}.docx", f"清单{index}.docx", f"清单{index}", f"清单{index}", now, key),
+            (
+                root_id,
+                f"采购/清单{index}.docx",
+                f"清单{index}.docx",
+                f"清单{index}",
+                f"清单{index}",
+                now,
+                key,
+            ),
         )
     seed_meeting(
-        db, "vm-20260927-150000", "采购沟通", "# 摘要\n\n采购。",
+        db,
+        "vm-20260927-150000",
+        "采购沟通",
+        "# 摘要\n\n采购。",
         segments=[(0, f"{PAIR_WRONG}这周到货"), (60_000, f"{PAIR_WRONG}的批号再核对")],
-        project_id=project_id, origin="manual",
+        project_id=project_id,
+        origin="manual",
     )
 
 
@@ -642,15 +742,21 @@ def test_mined_words_stay_local_until_accepted(tmp_path, fake_ai):
 
     pending = {
         (row["term"], row["wrong"])
-        for row in db.query_all("SELECT term, wrong FROM glossary_candidates WHERE status = 'pending'")
+        for row in db.query_all(
+            "SELECT term, wrong FROM glossary_candidates WHERE status = 'pending'"
+        )
     }
     assert (MINED_SENTINEL, "") in pending and (PAIR_SENTINEL, PAIR_WRONG) in pending, pending
     assert list((root / "声档会议记录").glob("00 索引.md")), "索引没写出来，这个测试什么都没验证"
     places = outgoing(db, settings, root, fake_ai)
-    client = TestClient(create_app(settings.model_copy(update={"links_enabled": True}), FakeRelayClient()))
+    client = TestClient(
+        create_app(settings.model_copy(update={"links_enabled": True}), FakeRelayClient())
+    )
     places["bootstrap"] = json.dumps(client.get("/api/bootstrap").json(), ensure_ascii=False)
     board = client.get(f"/api/projects/{project_id}/board").json()
-    assert {PAIR_SENTINEL, MINED_SENTINEL} <= {item["term"] for item in board["glossary_candidates"]}
+    assert {PAIR_SENTINEL, MINED_SENTINEL} <= {
+        item["term"] for item in board["glossary_candidates"]
+    }
     board.pop("glossary_candidates")
     places["看板"] = json.dumps(board, ensure_ascii=False)
     for place, text in places.items():
@@ -664,7 +770,9 @@ def test_mined_words_stay_local_until_accepted(tmp_path, fake_ai):
         glossary_mining.accept(db, project_id, key, [], snapshot_path=snapshot)
     CardWriter(db, settings).reconcile()
 
-    terms = {entry["term"]: entry for entry in json.loads(snapshot.read_text(encoding="utf-8"))["terms"]}
+    terms = {
+        entry["term"]: entry for entry in json.loads(snapshot.read_text(encoding="utf-8"))["terms"]
+    }
     assert MINED_SENTINEL in terms and terms[PAIR_SENTINEL]["aliases"] == [PAIR_WRONG]
     with db.autocommit() as connection:
         assert MINED_SENTINEL not in repr(build_cue_table(connection))
@@ -701,6 +809,15 @@ def test_requirement_context_keeps_material_text_out(tmp_path, fake_ai):
         result = card_index.requirement_context(connection, "r-p")
     assert len(fake_ai) == before
     text = result["markdown"] + "\n".join(result["paths"])
-    assert "## 定了什么" in text and "报价单按第三版发出" in text, "背景里没有决议，这个测试什么都没验证"
-    for sentinel in (MATERIAL_SENTINEL, NAME_SENTINEL, MINED_SENTINEL, PAIR_SENTINEL, CANDIDATE_SENTINEL, TRANSCRIPT_SENTINEL):
+    assert "## 定了什么" in text and "报价单按第三版发出" in text, (
+        "背景里没有决议，这个测试什么都没验证"
+    )
+    for sentinel in (
+        MATERIAL_SENTINEL,
+        NAME_SENTINEL,
+        MINED_SENTINEL,
+        PAIR_SENTINEL,
+        CANDIDATE_SENTINEL,
+        TRANSCRIPT_SENTINEL,
+    ):
         assert sentinel not in text, sentinel

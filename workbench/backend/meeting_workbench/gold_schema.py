@@ -23,8 +23,7 @@ def normalize_text(text: str) -> str:
     return "".join(
         character
         for character in normalized
-        if not character.isspace()
-        and not unicodedata.category(character).startswith(("P", "Z"))
+        if not character.isspace() and not unicodedata.category(character).startswith(("P", "Z"))
     )
 
 
@@ -34,10 +33,7 @@ def normalize_number(text: str) -> str:
         character
         for character in normalized
         if character in _NUMBER_SEMANTIC_CHARACTERS
-        or (
-            not character.isspace()
-            and not unicodedata.category(character).startswith(("P", "Z"))
-        )
+        or (not character.isspace() and not unicodedata.category(character).startswith(("P", "Z")))
     )
 
 
@@ -66,8 +62,7 @@ def validate_gold_sample(row: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise GoldSchemaError("必须是对象")
     if "schema_version" in row and (
-        type(row["schema_version"]) is not int
-        or row["schema_version"] != GOLD_SCHEMA_VERSION
+        type(row["schema_version"]) is not int or row["schema_version"] != GOLD_SCHEMA_VERSION
     ):
         raise GoldSchemaError("schema_version 无效")
     sample_id = row.get("id")

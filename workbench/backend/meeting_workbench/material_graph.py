@@ -10,6 +10,7 @@
   按字符串前缀对根目录路径匹配（不 realpath、不读盘）。在根目录里找过、没找到的记 gone；不在任何根目录下
   的路径没法找，不记 gone。
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -97,7 +98,11 @@ def recent_files(
 
 
 def decorate_roots(
-    connection: Any, project_id: str, result: dict[str, Any], *, counts: dict[int, dict[str, int]] | None
+    connection: Any,
+    project_id: str,
+    result: dict[str, Any],
+    *,
+    counts: dict[int, dict[str, int]] | None,
 ) -> dict[str, Any]:
     """给 GET /api/graph/projects/{id}/roots 的结果补上 recent_files、content、散放文件的 file_id。"""
     roots = {int(item["root_id"]): str(item["path"]) for item in result.get("roots", [])}
@@ -176,7 +181,9 @@ def decorate_expand(connection: Any, payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def cards_files(connection: Any, project_id: str, *, limit: int = CARDS_FILES) -> list[dict[str, Any]]:
+def cards_files(
+    connection: Any, project_id: str, *, limit: int = CARDS_FILES
+) -> list[dict[str, Any]]:
     """声档会议记录里的文件：只查库，zone=cards，按修改时间最多 20 个，给文件名、file_id 和位置（不给预览）。"""
     rows = connection.execute(
         """SELECT f.id, f.name, f.rel_path, f.root_id, f.mtime_ns FROM material_files f
@@ -238,14 +245,21 @@ def folder_files_from_index(
             }
             for row in rows[:MAX_FOLDER_FILES]
         ]
-        return {"exists": True, "total": len(items), "capped": capped, "items": items[offset : offset + limit]}
+        return {
+            "exists": True,
+            "total": len(items),
+            "capped": capped,
+            "items": items[offset : offset + limit],
+        }
     return None
 
 
 # ---------------------------------------------------------------------- 交付物连到文件
 
 
-def _live_by_content(connection: Any, content_key: str, prefer_root: int | None) -> dict[str, Any] | None:
+def _live_by_content(
+    connection: Any, content_key: str, prefer_root: int | None
+) -> dict[str, Any] | None:
     row = connection.execute(
         """SELECT id, name FROM material_files
             WHERE content_key = ? AND gone_at IS NULL AND zone != 'cards'
@@ -284,9 +298,12 @@ def deliverable_file(
     else:
         # 以前手填的路径：按字符串前缀对根目录路径匹配
         if roots is None:
-            roots = [(int(row["id"]), str(row["path"])) for row in connection.execute(
-                "SELECT id, path FROM project_material_roots ORDER BY id"
-            ).fetchall()]
+            roots = [
+                (int(row["id"]), str(row["path"]))
+                for row in connection.execute(
+                    "SELECT id, path FROM project_material_roots ORDER BY id"
+                ).fetchall()
+            ]
         for root_id, root_path in roots:
             rel = rel_under(root_path, str(deliverable.get("url") or ""))
             if rel:
@@ -296,19 +313,26 @@ def deliverable_file(
                     break
     if found is not None:
         return {"file_id": int(found["id"]), "name": found["name"], "gone": False}
-    name = PurePosixPath(str(deliverable.get("url") or "")).name or str(deliverable.get("title") or "")
+    name = PurePosixPath(str(deliverable.get("url") or "")).name or str(
+        deliverable.get("title") or ""
+    )
     return {"file_id": None, "name": name, "gone": looked}
 
 
-def decorate_deliverables(connection: Any, deliverables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def decorate_deliverables(
+    connection: Any, deliverables: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """file 类交付物补上 file_id、name、gone（展开一场会、任务详情用）。"""
     roots = None
     for item in deliverables:
         if item.get("kind") != "file":
             continue
         if roots is None:
-            roots = [(int(row["id"]), str(row["path"])) for row in connection.execute(
-                "SELECT id, path FROM project_material_roots ORDER BY id"
-            ).fetchall()]
+            roots = [
+                (int(row["id"]), str(row["path"]))
+                for row in connection.execute(
+                    "SELECT id, path FROM project_material_roots ORDER BY id"
+                ).fetchall()
+            ]
         item.update(deliverable_file(connection, item, roots=roots))
     return deliverables

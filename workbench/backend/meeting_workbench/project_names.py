@@ -8,6 +8,7 @@
 - 忽略名字、合并项目、删除空项目。
 - 新建项目时可以直接挂上或新建同名文件夹（找同名文件夹在 project_folders，读资料盘缓存）。
 """
+
 from __future__ import annotations
 
 import json
@@ -113,8 +114,12 @@ def validate_also_name(
     if owner is not None:
         project, kind = owner
         if kind == "name":
-            raise ConflictError(f"「{text}」已经是项目「{project['name']}」的名称，一个叫法只能指向一个项目")
-        raise ConflictError(f"「{text}」已经是「{project['name']}」的叫法，一个叫法只能指向一个项目")
+            raise ConflictError(
+                f"「{text}」已经是项目「{project['name']}」的名称，一个叫法只能指向一个项目"
+            )
+        raise ConflictError(
+            f"「{text}」已经是「{project['name']}」的叫法，一个叫法只能指向一个项目"
+        )
     return text
 
 
@@ -154,8 +159,10 @@ def add_former_name(
     new_key = norm_key(new_name)
     result = [entry for entry in entries if norm_key(entry["name"]) != new_key]
     old_key = norm_key(old_name)
-    if old_key and old_key != new_key and all(
-        norm_key(entry["name"]) != old_key for entry in result
+    if (
+        old_key
+        and old_key != new_key
+        and all(norm_key(entry["name"]) != old_key for entry in result)
     ):
         result.append({"name": old_name, "source": source})
     return result
@@ -312,13 +319,17 @@ def rescan_unresolved_for_project(connection: Any, project_id: str) -> list[str]
             "SELECT markdown FROM minutes_versions WHERE id=?",
             (meeting["current_minutes_version_id"],),
         ).fetchone()
-        segments = [
-            dict(row)
-            for row in connection.execute(
-                "SELECT start_ms, text FROM segments WHERE version_id=? ORDER BY ordinal",
-                (meeting["current_transcript_version_id"],),
-            ).fetchall()
-        ] if meeting["current_transcript_version_id"] else []
+        segments = (
+            [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT start_ms, text FROM segments WHERE version_id=? ORDER BY ordinal",
+                    (meeting["current_transcript_version_id"],),
+                ).fetchall()
+            ]
+            if meeting["current_transcript_version_id"]
+            else []
+        )
         hits = count_cues(
             cue_table,
             title=meeting["title"] or "",
@@ -335,7 +346,14 @@ def rescan_unresolved_for_project(connection: Any, project_id: str) -> list[str]
             else f"新建了项目「{project['name']}」，AI 之前觉得这场会像新项目「{meeting['new_project_name']}」"
         )
         candidates_json = json.dumps(
-            [{"project_id": project_id, "project_name": project["name"], "count": count, "llm": False}],
+            [
+                {
+                    "project_id": project_id,
+                    "project_name": project["name"],
+                    "count": count,
+                    "llm": False,
+                }
+            ],
             ensure_ascii=False,
         )
         connection.execute(
@@ -344,7 +362,13 @@ def rescan_unresolved_for_project(connection: Any, project_id: str) -> list[str]
                       candidates_json=?, evidence_json=?, reason=?, new_project_name=NULL,
                       finished_at=?
                 WHERE id=?""",
-            (candidates_json, json.dumps(evidence, ensure_ascii=False), reason, now, meeting["link_id"]),
+            (
+                candidates_json,
+                json.dumps(evidence, ensure_ascii=False),
+                reason,
+                now,
+                meeting["link_id"],
+            ),
         )
         connection.execute(
             """INSERT INTO events (meeting_id, job_id, event_type, actor, payload_json, created_at)
@@ -352,7 +376,11 @@ def rescan_unresolved_for_project(connection: Any, project_id: str) -> list[str]
             (
                 meeting_id,
                 json.dumps(
-                    {"reason": reason, "candidates": json.loads(candidates_json), "trigger": "new_project"},
+                    {
+                        "reason": reason,
+                        "candidates": json.loads(candidates_json),
+                        "trigger": "new_project",
+                    },
                     ensure_ascii=False,
                 ),
                 now,
@@ -432,14 +460,10 @@ def merge_project(connection: Any, src_id: str, dst_id: str) -> dict[str, Any]:
             connection.execute(
                 "UPDATE project_material_roots SET project_id=? WHERE id=?", (dst_id, row["id"])
             )
-    connection.execute(
-        "UPDATE project_links SET project_id=? WHERE project_id=?", (dst_id, src_id)
-    )
+    connection.execute("UPDATE project_links SET project_id=? WHERE project_id=?", (dst_id, src_id))
     for column in ("candidates_json", "evidence_json"):
         _rewrite_project_ids_in_json(connection, column, src_id, dst_id)
-    connection.execute(
-        "UPDATE name_decisions SET target_id=? WHERE target_id=?", (dst_id, src_id)
-    )
+    connection.execute("UPDATE name_decisions SET target_id=? WHERE target_id=?", (dst_id, src_id))
     also = also_entries(dst["also_names"])
     for entry in [{"name": src["name"], "source": "merged"}, *also_entries(src["also_names"])]:
         also = add_former_name(also, entry["name"], dst["name"], source=entry["source"])
@@ -457,7 +481,9 @@ def merge_project(connection: Any, src_id: str, dst_id: str) -> dict[str, Any]:
 
 def delete_empty_project(connection: Any, project_id: str) -> dict[str, Any]:
     """只允许删没有会议、没有需求的项目；它的任务变成未归项目，项目词回到公共词典。"""
-    project = connection.execute("SELECT id, name FROM projects WHERE id=?", (project_id,)).fetchone()
+    project = connection.execute(
+        "SELECT id, name FROM projects WHERE id=?", (project_id,)
+    ).fetchone()
     if project is None:
         raise NotFoundError("项目不存在")
     meetings = connection.execute(
@@ -525,9 +551,7 @@ def _match_kind(folder_name: str, names: list[str]) -> str | None:
     return best
 
 
-def create_project_folder(
-    settings: Settings, parent_raw: str, name: str
-) -> tuple[str, str | None]:
+def create_project_folder(settings: Settings, parent_raw: str, name: str) -> tuple[str, str | None]:
     """在 parent 下新建项目文件夹（只建这一层）。返回 (文件夹路径, 没建成的原因)；
     父目录所在的盘没插时不建，原因里写明，项目照常新建。"""
     folder_name, _replaced = sanitize_folder_name(name)

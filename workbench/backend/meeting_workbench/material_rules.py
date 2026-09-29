@@ -9,15 +9,30 @@
 | unsupported | Keynote、Pages、Numbers：不读，按扩展名直接记「格式不支持」 |
 | 其余 | 只收文件名，不读，也不算读不了 |
 """
+
 from __future__ import annotations
 
-AUDIO_EXTS = frozenset({"mp3", "m4a", "wav", "aac", "flac", "ogg", "opus", "wma", "amr", "aiff", "aif", "caf"})
-VIDEO_EXTS = frozenset({"mp4", "mov", "m4v", "avi", "mkv", "webm", "wmv", "flv", "3gp", "mts", "m2ts"})
+AUDIO_EXTS = frozenset(
+    {"mp3", "m4a", "wav", "aac", "flac", "ogg", "opus", "wma", "amr", "aiff", "aif", "caf"}
+)
+VIDEO_EXTS = frozenset(
+    {"mp4", "mov", "m4v", "avi", "mkv", "webm", "wmv", "flv", "3gp", "mts", "m2ts"}
+)
 # 系统影子文件：静默跳过，不进任何统计
 SYSTEM_NAMES = frozenset(
     {
-        ".DS_Store", "__MACOSX", ".Spotlight-V100", ".Trashes", ".fseventsd", ".TemporaryItems",
-        ".DocumentRevisions-V100", ".VolumeIcon.icns", ".apdisk", "Thumbs.db", "desktop.ini", "Icon\r",
+        ".DS_Store",
+        "__MACOSX",
+        ".Spotlight-V100",
+        ".Trashes",
+        ".fseventsd",
+        ".TemporaryItems",
+        ".DocumentRevisions-V100",
+        ".VolumeIcon.icns",
+        ".apdisk",
+        "Thumbs.db",
+        "desktop.ini",
+        "Icon\r",
     }
 )
 
@@ -31,22 +46,72 @@ CONTENT_LAYERS = (LAYER_TEXT, LAYER_PDF, LAYER_IMAGE, LAYER_MEDIA)
 # 纯文字（含代码文件）：按编码猜着读
 PLAIN_TEXT_EXTS = frozenset(
     {
-        "txt", "md", "markdown", "log", "csv", "tsv", "json", "yaml", "yml", "xml", "ini", "toml",
-        "conf", "sql", "ipynb", "srt", "vtt", "tex", "eml", "mht", "mhtml",
-        "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "css", "scss", "less", "sh", "bat", "ps1",
-        "java", "go", "rs", "c", "h", "cpp", "hpp", "cs", "rb", "php", "swift", "kt", "gradle",
-        "vue", "svelte", "plist", "cfg",
+        "txt",
+        "md",
+        "markdown",
+        "log",
+        "csv",
+        "tsv",
+        "json",
+        "yaml",
+        "yml",
+        "xml",
+        "ini",
+        "toml",
+        "conf",
+        "sql",
+        "ipynb",
+        "srt",
+        "vtt",
+        "tex",
+        "eml",
+        "mht",
+        "mhtml",
+        "py",
+        "js",
+        "mjs",
+        "cjs",
+        "ts",
+        "tsx",
+        "jsx",
+        "css",
+        "scss",
+        "less",
+        "sh",
+        "bat",
+        "ps1",
+        "java",
+        "go",
+        "rs",
+        "c",
+        "h",
+        "cpp",
+        "hpp",
+        "cs",
+        "rb",
+        "php",
+        "swift",
+        "kt",
+        "gradle",
+        "vue",
+        "svelte",
+        "plist",
+        "cfg",
     }
 )
 # 标准库解压，按 XML 或 HTML 读
-OOXML_EXTS = frozenset({"docx", "docm", "dotx", "xlsx", "xlsm", "xltx", "pptx", "pptm", "ppsx", "potx"})
+OOXML_EXTS = frozenset(
+    {"docx", "docm", "dotx", "xlsx", "xlsm", "xltx", "pptx", "pptm", "ppsx", "potx"}
+)
 ODF_EXTS = frozenset({"odt", "ods", "odp"})
 MARKUP_EXTS = frozenset({"epub", "html", "htm"})
 # macOS 自带的 textutil
 TEXTUTIL_EXTS = frozenset({"doc", "dot", "rtf", "rtfd", "wps"})
 # 老 Office 复合文档
 LEGACY_OFFICE_EXTS = frozenset({"xls", "xlt", "et", "ppt", "pps", "dps"})
-TEXT_LAYER_EXTS = PLAIN_TEXT_EXTS | OOXML_EXTS | ODF_EXTS | MARKUP_EXTS | TEXTUTIL_EXTS | LEGACY_OFFICE_EXTS
+TEXT_LAYER_EXTS = (
+    PLAIN_TEXT_EXTS | OOXML_EXTS | ODF_EXTS | MARKUP_EXTS | TEXTUTIL_EXTS | LEGACY_OFFICE_EXTS
+)
 PDF_EXTS = frozenset({"pdf"})
 IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "heic", "heif", "gif", "bmp", "tif", "tiff", "webp"})
 MEDIA_EXTS = frozenset(AUDIO_EXTS | VIDEO_EXTS)

@@ -1,5 +1,6 @@
 """第四期 4c：决议对比（decision_pairs）——初筛、只发决议原文、校验、方向、回答留着、收回、放需求、退避、
 截断减半、回补窗口、共用上限、认领后纪要变了整批丢掉。"""
+
 import json
 from datetime import UTC, date, datetime, timedelta
 
@@ -34,7 +35,14 @@ def make(tmp_path):
 
 
 def meeting(db, meeting_id, *lines, ago, title=None, project_id="p"):
-    add_meeting(db, meeting_id, ago=ago, project_id=project_id, origin="manual", title=title or f"周会{meeting_id}")
+    add_meeting(
+        db,
+        meeting_id,
+        ago=ago,
+        project_id=project_id,
+        origin="manual",
+        title=title or f"周会{meeting_id}",
+    )
     set_minutes(db, meeting_id, f"mv-{meeting_id}-1", minutes(*lines), kind="generated")
 
 
@@ -48,7 +56,8 @@ def scan(db, meeting_id):
 
 def decision_id(db, meeting_id, ordinal=0):
     return db.query_one(
-        "SELECT id FROM decisions WHERE meeting_id = ? AND ordinal = ? AND gone_at IS NULL", (meeting_id, ordinal)
+        "SELECT id FROM decisions WHERE meeting_id = ? AND ordinal = ? AND gone_at IS NULL",
+        (meeting_id, ordinal),
     )["id"]
 
 
@@ -70,7 +79,10 @@ def run(db, task, *, now=NOW, rounds=10):
 
 
 def changed(a="n1", b="e1", a_quote="先按 0.8", b_quote="改成 0.7", relation="changed"):
-    return {"pairs": [{"a": a, "b": b, "relation": relation, "a_quote": a_quote, "b_quote": b_quote}], "place": []}
+    return {
+        "pairs": [{"a": a, "b": b, "relation": relation, "a_quote": a_quote, "b_quote": b_quote}],
+        "place": [],
+    }
 
 
 def two_meetings(tmp_path):
@@ -86,8 +98,18 @@ def two_meetings(tmp_path):
 
 def test_task_sits_between_the_two_mention_orders(tmp_path):
     cfg = settings(tmp_path)
-    tasks = ordered([LooseMentionTask(cfg, TASK_BACKFILL), DecisionPairTask(cfg), LooseMentionTask(cfg, TASK_RECENT)])
-    assert [task.name for task in tasks] == list(TASK_ORDER) == ["mentions_recent", "pairs", "mentions_backfill"]
+    tasks = ordered(
+        [
+            LooseMentionTask(cfg, TASK_BACKFILL),
+            DecisionPairTask(cfg),
+            LooseMentionTask(cfg, TASK_RECENT),
+        ]
+    )
+    assert (
+        [task.name for task in tasks]
+        == list(TASK_ORDER)
+        == ["mentions_recent", "pairs", "mentions_backfill"]
+    )
 
 
 def test_nothing_left_after_the_local_filter_is_done_without_a_call(tmp_path):
@@ -109,21 +131,42 @@ def test_prefilter_rules():
     # 共有两个不在停用表里的 2 字片段（阈值、执行）
     assert decision_pairs.shared(left, right) == 2
     # 只共有停用表里的「我们」和一个别的 2 字片段不算
-    assert decision_pairs.shared(
-        decision_pairs.grams("我们这样来", ""), decision_pairs.grams("我们那样来", "")
-    ) == 0
+    assert (
+        decision_pairs.shared(
+            decision_pairs.grams("我们这样来", ""), decision_pairs.grams("我们那样来", "")
+        )
+        == 0
+    )
     # 一个 3 字片段就够
-    assert decision_pairs.shared(decision_pairs.grams("初审规则上线", ""), decision_pairs.grams("初审规则延期", "")) > 0
+    assert (
+        decision_pairs.shared(
+            decision_pairs.grams("初审规则上线", ""), decision_pairs.grams("初审规则延期", "")
+        )
+        > 0
+    )
     # 一个数值词就够；单个「一」不算数值词
-    assert decision_pairs.shared(decision_pairs.grams("", "周三上线"), decision_pairs.grams("", "改到周三")) == 1
+    assert (
+        decision_pairs.shared(
+            decision_pairs.grams("", "周三上线"), decision_pairs.grams("", "改到周三")
+        )
+        == 1
+    )
     assert decision_pairs.numeric_words("统一口径") == set()
     assert decision_pairs.numeric_words("9月30日前给三十份") == {"9月30日", "三十"}
 
 
 def test_claim_closes_at_most_five_meetings_without_a_call(tmp_path):
     db = make(tmp_path)
-    texts = ["驻场排班改成双岗", "导出按筛选范围全量", "报价单交给销售", "接口文档交由架构组评审",
-             "登录页换新配色", "日志保留期延长", "客服话术重新整理", "测试环境迁到新机房"]
+    texts = [
+        "驻场排班改成双岗",
+        "导出按筛选范围全量",
+        "报价单交给销售",
+        "接口文档交由架构组评审",
+        "登录页换新配色",
+        "日志保留期延长",
+        "客服话术重新整理",
+        "测试环境迁到新机房",
+    ]
     for index, text in enumerate(texts):
         meeting(db, f"m{index}", text, ago=index + 1)
     ingest(db)
@@ -136,9 +179,20 @@ def test_claim_closes_at_most_five_meetings_without_a_call(tmp_path):
 
 def test_seed_and_claim_close_at_most_five_per_tick_and_seed_looks_at_ten(tmp_path, monkeypatch):
     db = make(tmp_path)
-    texts = ["驻场排班改成双岗", "导出按筛选范围全量", "报价单交给销售", "接口文档交由架构组评审",
-             "登录页换新配色", "日志保留期延长", "客服话术重新整理", "测试环境迁到新机房",
-             "周报改到周四发", "验收单模板换新版", "培训排到下个月", "预算表再细化一版"]
+    texts = [
+        "驻场排班改成双岗",
+        "导出按筛选范围全量",
+        "报价单交给销售",
+        "接口文档交由架构组评审",
+        "登录页换新配色",
+        "日志保留期延长",
+        "客服话术重新整理",
+        "测试环境迁到新机房",
+        "周报改到周四发",
+        "验收单模板换新版",
+        "培训排到下个月",
+        "预算表再细化一版",
+    ]
     for index, text in enumerate(texts):
         meeting(db, f"m{index}", text, ago=index + 1)
     ingest(db)
@@ -184,8 +238,10 @@ def test_seed_and_claim_close_at_most_five_per_tick_and_seed_looks_at_ten(tmp_pa
 def test_prompt_carries_only_decision_text_meeting_names_and_requirement_names(tmp_path):
     db = two_meetings(tmp_path)
     add_requirement(db, "r1", "p", "初审规则 V2")
-    db.execute("INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES ('r1', 'new', ?)",
-               (NOW.isoformat(),))
+    db.execute(
+        "INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES ('r1', 'new', ?)",
+        (NOW.isoformat(),),
+    )
     chat = FakeChat(changed())
     run(db, DecisionPairTask(settings(tmp_path), chat=chat))
 
@@ -257,7 +313,11 @@ def test_a_changed_pair_is_written_with_the_earlier_decision_first(tmp_path):
     (row,) = pair_rows(db)
     old_id, new_id = decision_id(db, "old"), decision_id(db, "new")
     assert (row["kind"], row["status"], row["origin"]) == ("later_changed", "shown", "llm")
-    assert (row["decision_id"], row["to_decision_id"], row["ident"]) == (old_id, new_id, f"{old_id}|{new_id}")
+    assert (row["decision_id"], row["to_decision_id"], row["ident"]) == (
+        old_id,
+        new_id,
+        f"{old_id}|{new_id}",
+    )
     assert (row["meeting_id"], row["at_ms"], row["quote"]) == ("new", 30_000, "改成 0.7")
     assert json.loads(row["evidence_json"]) == {"why_earlier": "先按 0.8", "why_later": "改成 0.7"}
     assert scan(db, "old")["pair_state"] == "done" and scan(db, "old")["pair_attempts"] == 0
@@ -274,7 +334,10 @@ def test_reversed_codes_still_put_the_earlier_first(tmp_path):
     run(db, DecisionPairTask(settings(tmp_path), chat=chat))
 
     (row,) = pair_rows(db)
-    assert (row["decision_id"], row["to_decision_id"]) == (decision_id(db, "old"), decision_id(db, "new"))
+    assert (row["decision_id"], row["to_decision_id"]) == (
+        decision_id(db, "old"),
+        decision_id(db, "new"),
+    )
     assert json.loads(row["evidence_json"]) == {"why_earlier": "先按 0.8", "why_later": "改成 0.7"}
 
 
@@ -300,8 +363,20 @@ def test_one_pair_keeps_one_relation_and_whitespace_is_normalised(tmp_path):
     db = two_meetings(tmp_path)
     reply = {
         "pairs": [
-            {"a": "n1", "b": "e1", "relation": "restated", "a_quote": "阈值先按0.8", "b_quote": "阈值改成0.7"},
-            {"a": "n1", "b": "e1", "relation": "changed", "a_quote": "先按 0.8", "b_quote": "改成 0.7"},
+            {
+                "a": "n1",
+                "b": "e1",
+                "relation": "restated",
+                "a_quote": "阈值先按0.8",
+                "b_quote": "阈值改成0.7",
+            },
+            {
+                "a": "n1",
+                "b": "e1",
+                "relation": "changed",
+                "a_quote": "先按 0.8",
+                "b_quote": "改成 0.7",
+            },
         ],
         "place": [],
     }
@@ -315,23 +390,44 @@ def test_rejected_survives_and_missing_ones_are_cleared_on_recompare(tmp_path):
     ingest(db)
     # 只比旧会：新会、第三场先当作对完了（e1 是离得近的新会，e2 是第三场）
     db.execute("UPDATE decision_scan SET pair_state = 'done' WHERE meeting_id != 'old'")
-    reply = {"pairs": [
-        {"a": "n1", "b": "e1", "relation": "changed", "a_quote": "先按 0.8", "b_quote": "改成 0.7"},
-        {"a": "n1", "b": "e2", "relation": "changed", "a_quote": "先按 0.8", "b_quote": "改成 0.6"},
-    ], "place": []}
+    reply = {
+        "pairs": [
+            {
+                "a": "n1",
+                "b": "e1",
+                "relation": "changed",
+                "a_quote": "先按 0.8",
+                "b_quote": "改成 0.7",
+            },
+            {
+                "a": "n1",
+                "b": "e2",
+                "relation": "changed",
+                "a_quote": "先按 0.8",
+                "b_quote": "改成 0.6",
+            },
+        ],
+        "place": [],
+    }
     run(db, DecisionPairTask(settings(tmp_path), chat=FakeChat(reply)))
     rows = pair_rows(db)
     assert len(rows) == 2
     # 你标了第一对［不是一回事］
-    db.execute("UPDATE relations SET status = 'rejected', decided_at = ?, updated_at = ? WHERE id = ?",
-               (NOW.isoformat(), NOW.isoformat(), rows[0]["id"]))
+    db.execute(
+        "UPDATE relations SET status = 'rejected', decided_at = ?, updated_at = ? WHERE id = ?",
+        (NOW.isoformat(), NOW.isoformat(), rows[0]["id"]),
+    )
 
     # 旧会纪要实质变化，重新对比：AI 两对都不再返回
     set_minutes(db, "old", "mv-old-2", minutes(f"{OLD_TEXT}，另加复核"), kind="generated")
     later = NOW + timedelta(minutes=1)
     ingest(db, now=later)
     assert scan(db, "old")["pair_state"] == "pending"
-    run(db, DecisionPairTask(settings(tmp_path), chat=FakeChat({"pairs": [], "place": []})), now=later)
+    run(
+        db,
+        DecisionPairTask(settings(tmp_path), chat=FakeChat({"pairs": [], "place": []})),
+        now=later,
+    )
 
     statuses = {row["id"]: row["status"] for row in pair_rows(db)}
     assert statuses == {rows[0]["id"]: "rejected", rows[1]["id"]: "cleared"}
@@ -341,11 +437,20 @@ def test_rejected_pair_is_not_written_again(tmp_path):
     db = two_meetings(tmp_path)
     run(db, DecisionPairTask(settings(tmp_path), chat=FakeChat(changed())))
     (row,) = pair_rows(db)
-    db.execute("UPDATE relations SET status = 'rejected', updated_at = ? WHERE id = ?", (NOW.isoformat(), row["id"]))
+    db.execute(
+        "UPDATE relations SET status = 'rejected', updated_at = ? WHERE id = ?",
+        (NOW.isoformat(), row["id"]),
+    )
     db.execute("UPDATE decision_scan SET pair_state = 'pending' WHERE meeting_id = 'old'")
     later = NOW + timedelta(minutes=1)
-    run(db, DecisionPairTask(settings(tmp_path), chat=FakeChat(changed(relation="restated"))), now=later)
-    assert [(item["kind"], item["status"]) for item in pair_rows(db)] == [("later_changed", "rejected")]
+    run(
+        db,
+        DecisionPairTask(settings(tmp_path), chat=FakeChat(changed(relation="restated"))),
+        now=later,
+    )
+    assert [(item["kind"], item["status"]) for item in pair_rows(db)] == [
+        ("later_changed", "rejected")
+    ]
 
 
 def test_minutes_changed_after_the_claim_drop_the_whole_batch(tmp_path):
@@ -369,8 +474,10 @@ def test_multi_requirement_meeting_gets_ai_placement(tmp_path):
     add_requirement(db, "r2", "p", "驻场排班")
     meeting(db, "m", "下周起统一按新口径执行", ago=2)
     for requirement_id in ("r1", "r2"):
-        db.execute("INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES (?, 'm', ?)",
-                   (requirement_id, NOW.isoformat()))
+        db.execute(
+            "INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES (?, 'm', ?)",
+            (requirement_id, NOW.isoformat()),
+        )
     ingest(db)
     chat = FakeChat({"pairs": [], "place": [{"d": "n1", "r": "r2"}]})
     run(db, DecisionPairTask(settings(tmp_path), chat=chat))
@@ -388,12 +495,21 @@ def test_place_outside_the_listed_requirements_is_dropped(tmp_path):
     add_requirement(db, "r2", "p", "驻场排班")
     meeting(db, "m", "下周起统一按新口径执行", ago=2)
     for requirement_id in ("r1", "r2"):
-        db.execute("INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES (?, 'm', ?)",
-                   (requirement_id, NOW.isoformat()))
+        db.execute(
+            "INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES (?, 'm', ?)",
+            (requirement_id, NOW.isoformat()),
+        )
     ingest(db)
-    run(db, DecisionPairTask(settings(tmp_path), chat=FakeChat({"pairs": [], "place": [{"d": "n1", "r": "r9"}]})),
-        rounds=1)
-    assert db.query_one("SELECT placement FROM decisions WHERE meeting_id = 'm'") == {"placement": None}
+    run(
+        db,
+        DecisionPairTask(
+            settings(tmp_path), chat=FakeChat({"pairs": [], "place": [{"d": "n1", "r": "r9"}]})
+        ),
+        rounds=1,
+    )
+    assert db.query_one("SELECT placement FROM decisions WHERE meeting_id = 'm'") == {
+        "placement": None
+    }
     assert scan(db, "m")["pair_attempts"] == 1
 
 
@@ -475,8 +591,13 @@ def test_shares_the_daily_cap_with_mentions_and_resets_on_the_local_day(tmp_path
     cfg = settings(tmp_path, links_llm_daily_calls=1)
     day = {"value": date(2026, 9, 27)}
     chat = FakeChat(changed())
-    worker = LinksLLMWorker(db, cfg, tasks=[DecisionPairTask(cfg, chat=chat)], now=lambda: NOW,
-                            today=lambda: day["value"])
+    worker = LinksLLMWorker(
+        db,
+        cfg,
+        tasks=[DecisionPairTask(cfg, chat=chat)],
+        now=lambda: NOW,
+        today=lambda: day["value"],
+    )
     # 4b 今天已经用掉了唯一的一次
     assert worker.charge("background") is True
     assert worker.tick()["state"] == "capped"
@@ -492,9 +613,12 @@ def test_comparing_ignores_the_busy_signal(tmp_path):
 
     assert "busy" not in inspect.signature(LinksLLMWorker).parameters
     db = two_meetings(tmp_path)
-    worker = LinksLLMWorker(db, settings(tmp_path), tasks=[DecisionPairTask(settings(tmp_path),
-                                                                               chat=FakeChat(changed()))],
-                            now=lambda: NOW)
+    worker = LinksLLMWorker(
+        db,
+        settings(tmp_path),
+        tasks=[DecisionPairTask(settings(tmp_path), chat=FakeChat(changed()))],
+        now=lambda: NOW,
+    )
     assert worker.tick()["state"] == "ok"
 
 

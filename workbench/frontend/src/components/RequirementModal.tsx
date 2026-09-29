@@ -195,6 +195,7 @@ export function RequirementModal({
                   void handleSubmit();
                 }
               }}
+              maxLength={200}
               placeholder="例如：北辰仓快递配送"
               value={title}
             />

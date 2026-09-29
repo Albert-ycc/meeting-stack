@@ -6,6 +6,7 @@
 - name_as_requirement：建成需求（一个事务：改归属、建需求或用已有的、关联同名的会、挂需求文件夹），
   10 分钟内能撤销。
 """
+
 from __future__ import annotations
 
 import json
@@ -115,12 +116,16 @@ def spoken_forms(connection: Any, name: str, spoken: list[str]) -> dict[str, str
     return forms
 
 
-def count_spoken(forms: dict[str, str], segments: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def count_spoken(
+    forms: dict[str, str], segments: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
     """一场会里每个名字说了几次：{名字: {count, first_ms, anchors_ms}}（错写记在正写上）。"""
     totals: dict[str, dict[str, Any]] = {}
     for form, entry in FormScanner(forms).scan_segments(segments).items():
         target = forms.get(form, form)
-        bucket = totals.setdefault(target, {"count": 0, "first_ms": entry["first_ms"], "anchors_ms": []})
+        bucket = totals.setdefault(
+            target, {"count": 0, "first_ms": entry["first_ms"], "anchors_ms": []}
+        )
         bucket["count"] += entry["count"]
         bucket["first_ms"] = min(bucket["first_ms"], entry["first_ms"])
         bucket["anchors_ms"] = sorted(set(bucket["anchors_ms"]) | set(entry["anchors_ms"]))[:5]
@@ -198,12 +203,17 @@ def _requirement_projects(connection: Any, row: dict[str, Any]) -> list[dict[str
             suggested.append(project_id)
     projects = {
         item["id"]: dict(item)
-        for item in connection.execute("SELECT id, name, color FROM projects ORDER BY name").fetchall()
+        for item in connection.execute(
+            "SELECT id, name, color FROM projects ORDER BY name"
+        ).fetchall()
     }
     ordered = [pid for pid in suggested if pid in projects]
     ordered += [pid for pid in projects if pid not in ordered]
     return [
-        {**{key: projects[pid][key] for key in ("id", "name", "color")}, "suggested": pid in suggested}
+        {
+            **{key: projects[pid][key] for key in ("id", "name", "color")},
+            "suggested": pid in suggested,
+        }
         for pid in ordered
     ]
 
@@ -324,7 +334,10 @@ def name_candidates(
                 "inferred": target["source"] == "suggested",
             }
         else:
-            result["folder"] = {"mode": "none", "reason": "还没有可参照的项目文件夹，这次先不建文件夹"}
+            result["folder"] = {
+                "mode": "none",
+                "reason": "还没有可参照的项目文件夹，这次先不建文件夹",
+            }
     return result
 
 
@@ -372,9 +385,7 @@ def add_spoken_also(
     spoken: list[str] = []
     segment_lists: list[list[dict[str, Any]]] = []
     for meeting_id in meeting_ids:
-        row = connection.execute(
-            f"{_ROW_SQL} WHERE m.id=?", (meeting_id,)
-        ).fetchone()
+        row = connection.execute(f"{_ROW_SQL} WHERE m.id=?", (meeting_id,)).fetchone()
         if row is None:
             continue
         spoken += [name for name in json_names(row["new_name_spoken"]) if name not in spoken]
@@ -383,7 +394,9 @@ def add_spoken_also(
     totals: dict[str, dict[str, Any]] = {}
     for segments in segment_lists:
         for name, entry in count_spoken(forms, segments).items():
-            bucket = totals.setdefault(name, {"count": 0, "first_ms": entry["first_ms"], "anchors_ms": []})
+            bucket = totals.setdefault(
+                name, {"count": 0, "first_ms": entry["first_ms"], "anchors_ms": []}
+            )
             bucket["count"] += entry["count"]
     picked = pick_spoken(totals)
     if picked is None:
@@ -420,7 +433,12 @@ def add_spoken_also(
         meeting_id=None,
         payload={"project_id": project_id, "name": text, "count": entry["count"], "undo": undo},
     )
-    return {"name": text, "count": entry["count"], "event_id": event_id, "undo_until": undo_until(at)}
+    return {
+        "name": text,
+        "count": entry["count"],
+        "event_id": event_id,
+        "undo_until": undo_until(at),
+    }
 
 
 def undo_spoken_also(connection: Any, project_id: str, event_id: int) -> dict[str, Any]:
@@ -438,7 +456,9 @@ def undo_spoken_also(connection: Any, project_id: str, event_id: int) -> dict[st
         raise NotFoundError("项目不存在")
     current = also_entries(project["also_names"])
     kept = [
-        item for item in current if not (item["name"] == payload.get("name") and item["source"] == "spoken")
+        item
+        for item in current
+        if not (item["name"] == payload.get("name") and item["source"] == "spoken")
     ]
     if kept != current:
         connection.execute(
@@ -481,7 +501,9 @@ def name_as_requirement(
         project_id = row["project_id"]
     elif not project_id:
         raise ValueError("要建在哪个项目？")
-    project = connection.execute("SELECT id, name FROM projects WHERE id=?", (project_id,)).fetchone()
+    project = connection.execute(
+        "SELECT id, name FROM projects WHERE id=?", (project_id,)
+    ).fetchone()
     if project is None:
         raise NotFoundError("项目不存在")
     rows = _same_name_rows(connection, context, row, hint) if hint else [row]
@@ -491,7 +513,9 @@ def name_as_requirement(
         if item["project_id"] is None:
             reassign_meeting(connection, item["id"], project_id, actor="user")
             last = last_reassignment(connection, item["id"])
-            reassigned.append({"meeting_id": item["id"], "event_id": last["event_id"] if last else None})
+            reassigned.append(
+                {"meeting_id": item["id"], "event_id": last["event_id"] if last else None}
+            )
 
     existing = next(
         (
@@ -530,7 +554,8 @@ def name_as_requirement(
     linked = [
         item["id"]
         for item in rows
-        if (item["project_id"] in (None, project_id)) and link_meeting(connection, requirement_id, item["id"])
+        if (item["project_id"] in (None, project_id))
+        and link_meeting(connection, requirement_id, item["id"])
     ]
 
     undo_parts: list[dict[str, Any]] = []
@@ -539,7 +564,9 @@ def name_as_requirement(
         key = light_key(name)
         if key and key not in settled:
             settled.add(key)
-            undo_parts.append(settle_requirement_name(connection, project_id, name, "made", requirement_id))
+            undo_parts.append(
+                settle_requirement_name(connection, project_id, name, "made", requirement_id)
+            )
     if hint and hint["kind"] == "project":
         # 你把「像是新项目」的名字建成了需求：这个名字以后不再当新项目提示。
         undo_parts.append(settle_project_name(connection, [hint["name"]], "ignored"))
@@ -594,7 +621,7 @@ def undo_name_as_requirement(connection: Any, meeting_id: str) -> dict[str, Any]
     if linked:
         connection.execute(
             f"""DELETE FROM requirement_meetings
-                 WHERE requirement_id=? AND meeting_id IN ({', '.join('?' for _ in linked)})""",
+                 WHERE requirement_id=? AND meeting_id IN ({", ".join("?" for _ in linked)})""",
             (requirement_id, *linked),
         )
     deleted = False
@@ -609,9 +636,13 @@ def undo_name_as_requirement(connection: Any, meeting_id: str) -> dict[str, Any]
             {"id": requirement_id, "attached": attached},
         ).fetchone()["n"]
         if not busy:
-            connection.execute("DELETE FROM requirement_folders WHERE requirement_id=?", (requirement_id,))
+            connection.execute(
+                "DELETE FROM requirement_folders WHERE requirement_id=?", (requirement_id,)
+            )
             deleted = bool(
-                connection.execute("DELETE FROM requirements WHERE id=?", (requirement_id,)).rowcount
+                connection.execute(
+                    "DELETE FROM requirements WHERE id=?", (requirement_id,)
+                ).rowcount
             )
     restored_meetings = 0
     for item in payload.get("reassigned") or []:

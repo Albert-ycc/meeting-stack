@@ -2,6 +2,7 @@
 
 Vision 程序只能在 Mac 上编译运行，这里都用假的常驻进程和假的 swiftc、tesseract、sips。
 """
+
 import json
 import os
 import struct
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from meeting_workbench import cli, material_previews, ocr_trial
+from meeting_workbench import cli, material_previews, ocr_engines, ocr_trial
 from meeting_workbench.config import Settings
 from meeting_workbench.material_helpers import HelperTimeout
 from meeting_workbench.ocr_engines import (
@@ -31,10 +32,20 @@ from meeting_workbench.vision_helper import SWIFT_SOURCE, VisionBuild, find_swif
 from .test_material_content import contents, index, put, setup
 
 
+@pytest.fixture(autouse=True)
+def no_homebrew_tools(monkeypatch):
+    """程序在不在全由各用例的假 which 决定；不让本机 Homebrew 里真装着的 tesseract 混进来。"""
+    monkeypatch.setattr(ocr_engines, "HOMEBREW_BINS", ())
+
+
 def png(width: int, height: int, *, padding: int = 0) -> bytes:
     return (
-        b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height)
-        + b"\x08\x02\x00\x00\x00" + b"\0" * (4 + padding)
+        b"\x89PNG\r\n\x1a\n"
+        + struct.pack(">I", 13)
+        + b"IHDR"
+        + struct.pack(">II", width, height)
+        + b"\x08\x02\x00\x00\x00"
+        + b"\0" * (4 + padding)
     )
 
 
@@ -135,12 +146,16 @@ def sips_bin(folder: Path) -> str:
     )
 
 
-def make_engines(db, settings, tmp_path, *, tools=(), build=None, vision=None, busy=None, system="darwin"):
+def make_engines(
+    db, settings, tmp_path, *, tools=(), build=None, vision=None, busy=None, system="darwin"
+):
     folder = tmp_path / "fakebin"
     found = {}
     for name in tools:
         if name == "tesseract":
-            found[name] = tesseract_bin(folder, "数 理 协 会 的 报 告\\n第二行 English words\\n\\n第二段")
+            found[name] = tesseract_bin(
+                folder, "数 理 协 会 的 报 告\\n第二行 English words\\n\\n第二段"
+            )
         elif name == "sips":
             found[name] = sips_bin(folder)
         else:
@@ -156,7 +171,12 @@ def make_engines(db, settings, tmp_path, *, tools=(), build=None, vision=None, b
 
     vision = vision or FakeVision()
     engines = OcrEngines(
-        db, settings, system=system, run=run, which=which, busy_check=busy,
+        db,
+        settings,
+        system=system,
+        run=run,
+        which=which,
+        busy_check=busy,
         build=build or FakeBuild(settings.data_dir, ready=False),
         helper_factory=lambda binary: vision,
     )
@@ -189,9 +209,16 @@ def test_find_swiftc_asks_xcode_select_before_touching_swiftc():
 
     def present(argv, **kwargs):
         calls.append(argv[0])
-        return completed(argv, 0, "/Library/Developer/CommandLineTools/usr/bin/swiftc\n" if argv[0] == "xcrun" else "/x")
+        return completed(
+            argv,
+            0,
+            "/Library/Developer/CommandLineTools/usr/bin/swiftc\n" if argv[0] == "xcrun" else "/x",
+        )
 
-    assert find_swiftc(system="darwin", run=present) == "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+    assert (
+        find_swiftc(system="darwin", run=present)
+        == "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+    )
     calls.clear()
     assert find_swiftc(system="linux", run=present) is None and calls == []
 
@@ -207,7 +234,12 @@ class Compiler:
             return completed(argv, 0, self.version + "\n")
         self.compiles += 1
         if not self.ok:
-            return completed(argv, 1, "", "vision.swift:3:8: warning\nvision.swift:9:1: error: no such module 'Vision'\n")
+            return completed(
+                argv,
+                1,
+                "",
+                "vision.swift:3:8: warning\nvision.swift:9:1: error: no such module 'Vision'\n",
+            )
         Path(argv[argv.index("-o") + 1]).write_bytes(b"binary")
         return completed(argv, 0)
 
@@ -215,10 +247,14 @@ class Compiler:
 def test_vision_build_compiles_once_and_backs_off_after_failure(tmp_path):
     now = {"value": datetime(2026, 9, 27, tzinfo=UTC)}
     compiler = Compiler(ok=False)
-    build = VisionBuild(tmp_path, run=compiler, now=lambda: now["value"], find=lambda: "/usr/bin/swiftc")
+    build = VisionBuild(
+        tmp_path, run=compiler, now=lambda: now["value"], find=lambda: "/usr/bin/swiftc"
+    )
     assert build.ensure(background=False) is False
     assert build.describe() == "编译失败：vision.swift:9:1: error: no such module 'Vision'"
-    assert build.ensure(background=False) is False and compiler.compiles == 1  # 源码和版本都没变：不重编
+    assert (
+        build.ensure(background=False) is False and compiler.compiles == 1
+    )  # 源码和版本都没变：不重编
     now["value"] += timedelta(hours=25)
     build.ensure(background=False)
     assert compiler.compiles == 2  # 一天后再试一次
@@ -228,10 +264,14 @@ def test_vision_build_compiles_once_and_backs_off_after_failure(tmp_path):
     compiler.ok = True
     compiler.version = "Apple Swift version 6.2"
     assert build.ensure(background=False) is True
-    assert build.ready() and build.binary.name.startswith("sd-vision-") and build.describe() == "能用"
+    assert (
+        build.ready() and build.binary.name.startswith("sd-vision-") and build.describe() == "能用"
+    )
     assert not list(build.binary.parent.glob(".*.tmp"))
     assert build.ensure(background=False) is True and compiler.compiles == 4
-    other = VisionBuild(tmp_path, source=SWIFT_SOURCE + "\n// 改过", run=compiler, find=lambda: "/usr/bin/swiftc")
+    other = VisionBuild(
+        tmp_path, source=SWIFT_SOURCE + "\n// 改过", run=compiler, find=lambda: "/usr/bin/swiftc"
+    )
     assert other.binary != build.binary and not other.ready()  # 源码一变就重编
 
 
@@ -283,11 +323,19 @@ def test_engine_selection_and_switching(tmp_path):
 def test_tesseract_without_chinese_does_not_count(tmp_path):
     db, settings, *_rest = setup(tmp_path)
     folder = tmp_path / "fakebin"
-    english = fake_bin(folder, "tesseract", 'if [ "$1" = "--list-langs" ]; then printf "eng\\n"; fi\n')
-    engines = OcrEngines(db, settings, system="darwin", run=lambda argv, **kw: subprocess.run(argv, **kw)
-                         if argv[0] != "xcode-select" else completed(argv, 2),
-                         which=lambda name: english if name == "tesseract" else None,
-                         build=FakeBuild(settings.data_dir, ready=False))
+    english = fake_bin(
+        folder, "tesseract", 'if [ "$1" = "--list-langs" ]; then printf "eng\\n"; fi\n'
+    )
+    engines = OcrEngines(
+        db,
+        settings,
+        system="darwin",
+        run=lambda argv, **kw: (
+            subprocess.run(argv, **kw) if argv[0] != "xcode-select" else completed(argv, 2)
+        ),
+        which=lambda name: english if name == "tesseract" else None,
+        build=FakeBuild(settings.data_dir, ready=False),
+    )
     assert engines.tools().tesseract and not engines.tools().tesseract_chinese
     assert engines.image_engine() is None
 
@@ -297,11 +345,19 @@ def test_tesseract_without_chinese_does_not_count(tmp_path):
 
 def test_images_with_vision_small_images_and_no_text(tmp_path):
     db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path)
-    vision = FakeVision(image={"status": "ok", "pages": 1, "lines": [
-        {"t": "白板上写的 第一行", "c": 0.9, "x": 0.1, "y": 0.1, "w": 0.5, "h": 0.05},
-        {"t": "第二行", "c": 0.9, "x": 0.1, "y": 0.16, "w": 0.3, "h": 0.05},
-    ]})
-    engines, _ = make_engines(db, settings, tmp_path, build=FakeBuild(settings.data_dir), vision=vision)
+    vision = FakeVision(
+        image={
+            "status": "ok",
+            "pages": 1,
+            "lines": [
+                {"t": "白板上写的 第一行", "c": 0.9, "x": 0.1, "y": 0.1, "w": 0.5, "h": 0.05},
+                {"t": "第二行", "c": 0.9, "x": 0.1, "y": 0.16, "w": 0.3, "h": 0.05},
+            ],
+        }
+    )
+    engines, _ = make_engines(
+        db, settings, tmp_path, build=FakeBuild(settings.data_dir), vision=vision
+    )
     content.extractors.update(extractors(engines))
     put(root / "白板.png", png(1600, 1200, padding=2000))
     put(root / "一行字.png", png(600, 200, padding=15_000))  # 15KB 的文字截图照样认
@@ -309,7 +365,8 @@ def test_images_with_vision_small_images_and_no_text(tmp_path):
     index(indexer)
     content.run_round()
     by_name = {
-        row["name"]: row for row in db.query_all(
+        row["name"]: row
+        for row in db.query_all(
             "SELECT f.name, c.state, c.note, c.chunks, c.extractor FROM material_files f "
             "JOIN material_contents c ON c.content_key = f.content_key"
         )
@@ -324,8 +381,10 @@ def test_images_with_vision_small_images_and_no_text(tmp_path):
     put(root / "空白.png", png(1600, 1200, padding=3000))
     index(indexer)
     content.run_round()
-    row = db.query_one("SELECT c.state, c.note FROM material_files f JOIN material_contents c "
-                       "ON c.content_key = f.content_key WHERE f.name = '空白.png'")
+    row = db.query_one(
+        "SELECT c.state, c.note FROM material_files f JOIN material_contents c "
+        "ON c.content_key = f.content_key WHERE f.name = '空白.png'"
+    )
     assert (row["state"], row["note"]) == ("done", "no_text")
 
 
@@ -344,7 +403,9 @@ def test_tesseract_leaves_the_materials_untouched(tmp_path):
     arguments = (tmp_path / "fakebin" / "tesseract.args").read_text(encoding="utf-8")
     assert "stdout -l chi_sim+eng -c preserve_interword_spaces=1 OMP=1" in arguments
     assert str(photo) not in arguments  # HEIC 先转成 data_dir 里的 PNG
-    texts = [row["text"] for row in db.query_all("SELECT text FROM material_chunks ORDER BY ordinal")]
+    texts = [
+        row["text"] for row in db.query_all("SELECT text FROM material_chunks ORDER BY ordinal")
+    ]
     assert texts == ["数理协会的报告第二行 English words\n第二段"]
 
 
@@ -359,11 +420,18 @@ def test_missing_engines_mean_waiting_and_come_back_when_installed(tmp_path):
     put(root / "扫描件.pdf", b"%PDF-1.7\n")
     index(indexer)
     content.run_round()
-    states = {row["layer"]: (row["state"], row["note"], row["reason"]) for row in contents(db).values()}
-    assert states == {"image": ("waiting", "engine_missing", None), "pdf": ("waiting", "engine_missing", None)}
+    states = {
+        row["layer"]: (row["state"], row["note"], row["reason"]) for row in contents(db).values()
+    }
+    assert states == {
+        "image": ("waiting", "engine_missing", None),
+        "pdf": ("waiting", "engine_missing", None),
+    }
 
     # 装上了 tesseract：10 分钟内不重新看
-    engines.which = lambda name: tesseract_bin(tmp_path / "fakebin", "认出来的字") if name == "tesseract" else None
+    engines.which = lambda name: (
+        tesseract_bin(tmp_path / "fakebin", "认出来的字") if name == "tesseract" else None
+    )
     clock["value"] = 300
     content.run_round()
     assert contents(db)[next(iter(contents(db)))]["state"] == "waiting"
@@ -407,8 +475,15 @@ def test_switching_back_from_off_rereads_skipped_images(tmp_path):
 def pdf_setup(tmp_path, *, pages, busy=None, **vision_kwargs):
     db, settings, root, root_id, content, indexer, now, _state = setup(tmp_path)
     vision = FakeVision(pages=pages, **vision_kwargs)
-    engines, _ = make_engines(db, settings, tmp_path, tools=("tesseract",), build=FakeBuild(settings.data_dir),
-                              vision=vision, busy=busy)
+    engines, _ = make_engines(
+        db,
+        settings,
+        tmp_path,
+        tools=("tesseract",),
+        build=FakeBuild(settings.data_dir),
+        vision=vision,
+        busy=busy,
+    )
     content.extractors.update(extractors(engines))
     put(root / "合同.pdf", b"%PDF-1.7\n" + b"0" * 100)
     index(indexer)
@@ -419,7 +494,10 @@ LONG = "本合同由甲乙双方在平等自愿的基础上签订，约定交付
 
 
 def chunk_rows(db):
-    return [(row["loc"], row["text"]) for row in db.query_all("SELECT loc, text FROM material_chunks ORDER BY ordinal")]
+    return [
+        (row["loc"], row["text"])
+        for row in db.query_all("SELECT loc, text FROM material_chunks ORDER BY ordinal")
+    ]
 
 
 def test_pdf_text_layer_is_read_whatever_the_engine(tmp_path):
@@ -429,12 +507,18 @@ def test_pdf_text_layer_is_read_whatever_the_engine(tmp_path):
     row = next(iter(contents(db).values()))
     assert (row["state"], row["extractor"], row["pages"]) == ("done", "pdfkit+off", 2)
     assert chunk_rows(db) == [("第 1 页", LONG)]
-    assert [payload["cmd"] for payload, _t in vision.requests] == ["pdf_open", "pdf_text", "pdf_text"]
+    assert [payload["cmd"] for payload, _t in vision.requests] == [
+        "pdf_open",
+        "pdf_text",
+        "pdf_text",
+    ]
 
 
 def test_pdf_scanned_pages_use_vision_or_tesseract(tmp_path):
     lines = {1: [{"t": "扫 描 页 上 的 字", "x": 0.1, "y": 0.1, "h": 0.03, "p": 1}]}
-    db, settings, content, engines, vision, _now = pdf_setup(tmp_path, pages=[LONG, ""], lines=lines)
+    db, settings, content, engines, vision, _now = pdf_setup(
+        tmp_path, pages=[LONG, ""], lines=lines
+    )
     content.run_round()
     assert chunk_rows(db) == [("第 1 页", LONG), ("第 2 页", "扫描页上的字")]
     assert next(iter(contents(db).values()))["extractor"] == "pdfkit+vision"
@@ -479,7 +563,9 @@ def test_pdf_timeout_midway_keeps_the_earlier_pages(tmp_path):
 
 
 def test_pdf_timeout_at_the_start_retries_later(tmp_path):
-    db, settings, content, engines, vision, now = pdf_setup(tmp_path, pages=[LONG], fail_at=("pdf_open", None))
+    db, settings, content, engines, vision, now = pdf_setup(
+        tmp_path, pages=[LONG], fail_at=("pdf_open", None)
+    )
     content.run_round()
     row = next(iter(contents(db).values()))
     assert (row["state"], row["reason"]) == ("pending", "timeout")
@@ -538,13 +624,33 @@ def test_image_sizes_from_headers(tmp_path):
     assert size(png(600, 200)) == (600, 200)
     assert size(b"GIF89a" + struct.pack("<HH", 320, 240) + b"\0" * 10) == (320, 240)
     assert size(b"BM" + b"\0" * 16 + struct.pack("<ii", 800, -600) + b"\0" * 30) == (800, 600)
-    jpeg = (b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", 8) + b"Exif\0\0"
-            + b"\xff\xc0" + struct.pack(">HBHH", 17, 8, 1080, 1920) + b"\0" * 20)
+    jpeg = (
+        b"\xff\xd8"
+        + b"\xff\xe1"
+        + struct.pack(">H", 8)
+        + b"Exif\0\0"
+        + b"\xff\xc0"
+        + struct.pack(">HBHH", 17, 8, 1080, 1920)
+        + b"\0" * 20
+    )
     assert size(jpeg) == (1920, 1080)
-    webp = b"RIFF" + b"\0" * 4 + b"WEBPVP8X" + b"\0" * 8 + (1023).to_bytes(3, "little") + (767).to_bytes(3, "little")
+    webp = (
+        b"RIFF"
+        + b"\0" * 4
+        + b"WEBPVP8X"
+        + b"\0" * 8
+        + (1023).to_bytes(3, "little")
+        + (767).to_bytes(3, "little")
+    )
     assert size(webp) == (1024, 768)
-    tiff = b"II*\x00" + struct.pack("<I", 8) + struct.pack("<H", 2) + struct.pack("<HHII", 256, 3, 1, 2000) \
-        + struct.pack("<HHII", 257, 4, 1, 3000) + b"\0" * 8
+    tiff = (
+        b"II*\x00"
+        + struct.pack("<I", 8)
+        + struct.pack("<H", 2)
+        + struct.pack("<HHII", 256, 3, 1, 2000)
+        + struct.pack("<HHII", 257, 4, 1, 3000)
+        + b"\0" * 8
+    )
     assert size(tiff) == (2000, 3000)
     assert size(b"\x00\x00\x00\x18ftypheic") is None
     assert is_small(64, 64) and is_small(1000, 50) and not is_small(600, 200)
@@ -557,28 +663,43 @@ def test_preview_uses_one_shot_command_and_caches(tmp_path):
     build = FakeBuild(tmp_path / "data")
     log = tmp_path / "thumb.log"
     build.binary.parent.mkdir(parents=True)
-    build.binary.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\nprintf JPEG > "$4"\n', encoding="utf-8")
+    build.binary.write_text(
+        f'#!/bin/sh\necho "$@" >> "{log}"\nprintf JPEG > "$4"\n', encoding="utf-8"
+    )
     os.chmod(build.binary, 0o755)
     image = put(tmp_path / "白板.png", png(1600, 1200))
     first = material_previews.preview(tmp_path / "data", "q2:abc", image, kind="image", build=build)
     assert first.read_bytes() == b"JPEG" and first.name == "q2_abc-480.jpg"
-    second = material_previews.preview(tmp_path / "data", "q2:abc", image, kind="image", build=build)
+    second = material_previews.preview(
+        tmp_path / "data", "q2:abc", image, kind="image", build=build
+    )
     assert second == first and log.read_text(encoding="utf-8").count("thumb") == 1
-    material_previews.preview(tmp_path / "data", "q2:def", image, kind="pdf", build=build, size=1600)
+    material_previews.preview(
+        tmp_path / "data", "q2:def", image, kind="pdf", build=build, size=1600
+    )
     assert f"page1 {image} 1600" in log.read_text(encoding="utf-8")
     assert not list((tmp_path / "data" / "material-previews").glob(".*"))
 
 
 def test_preview_without_vision_uses_sips_for_images_only(tmp_path):
     build = FakeBuild(tmp_path / "data", ready=False)
-    sips = fake_bin(tmp_path / "bin", "sips",
-                    'while [ $# -gt 0 ]; do if [ "$1" = "--out" ]; then out="$2"; fi; shift; done\n'
-                    'printf JPEG > "$out"\n')
+    sips = fake_bin(
+        tmp_path / "bin",
+        "sips",
+        'while [ $# -gt 0 ]; do if [ "$1" = "--out" ]; then out="$2"; fi; shift; done\n'
+        'printf JPEG > "$out"\n',
+    )
     image = put(tmp_path / "白板.heic", b"heic")
-    assert material_previews.preview(tmp_path / "data", "q2:a", image, kind="image", build=build,
-                                     sips=sips).read_bytes() == b"JPEG"
+    assert (
+        material_previews.preview(
+            tmp_path / "data", "q2:a", image, kind="image", build=build, sips=sips
+        ).read_bytes()
+        == b"JPEG"
+    )
     with pytest.raises(material_previews.PreviewUnavailable):
-        material_previews.preview(tmp_path / "data", "q2:b", image, kind="pdf", build=build, sips=sips)
+        material_previews.preview(
+            tmp_path / "data", "q2:b", image, kind="pdf", build=build, sips=sips
+        )
 
 
 def test_preview_timeout_and_concurrency(tmp_path, monkeypatch):
@@ -589,14 +710,18 @@ def test_preview_timeout_and_concurrency(tmp_path, monkeypatch):
     image = put(tmp_path / "a.png", png(100, 100))
     started = time.monotonic()
     with pytest.raises(material_previews.PreviewTimeout):
-        material_previews.preview(tmp_path / "data", "q2:a", image, kind="image", build=build, timeout=1)
+        material_previews.preview(
+            tmp_path / "data", "q2:a", image, kind="image", build=build, timeout=1
+        )
     assert time.monotonic() - started < 10
     slots = threading.BoundedSemaphore(2)
     monkeypatch.setattr(material_previews, "_slots", slots)
     slots.acquire()
     slots.acquire()
     with pytest.raises(material_previews.PreviewTimeout):
-        material_previews.preview(tmp_path / "data", "q2:b", image, kind="image", build=build, timeout=0.2)
+        material_previews.preview(
+            tmp_path / "data", "q2:b", image, kind="image", build=build, timeout=0.2
+        )
 
 
 def test_preview_cache_is_pruned_oldest_first(tmp_path):
@@ -618,13 +743,26 @@ def test_doctor_reports_material_tools_without_failing(tmp_path, monkeypatch, ca
     staging = tmp_path / "staging"
     archive.mkdir()
     staging.mkdir()
-    settings = Settings(data_dir=tmp_path / "data", archive_root=archive, staging_root=staging, semantic_enabled=False)
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=staging,
+        semantic_enabled=False,
+    )
     monkeypatch.setattr(cli, "Settings", lambda: settings)
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert cli.main(["doctor"]) == 0
     payload = json.loads(capsys.readouterr().out)
     materials = payload["materials"]
-    assert set(materials) >= {"vision", "tesseract", "textutil", "ffmpeg", "funasr", "chip", "macos"}
+    assert set(materials) >= {
+        "vision",
+        "tesseract",
+        "textutil",
+        "ffmpeg",
+        "funasr",
+        "chip",
+        "macos",
+    }
 
 
 def test_ocr_engine_command_switches_without_restart(tmp_path, monkeypatch, capsys):
@@ -632,7 +770,12 @@ def test_ocr_engine_command_switches_without_restart(tmp_path, monkeypatch, caps
     staging = tmp_path / "staging"
     archive.mkdir()
     staging.mkdir()
-    settings = Settings(data_dir=tmp_path / "data", archive_root=archive, staging_root=staging, semantic_enabled=False)
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=staging,
+        semantic_enabled=False,
+    )
     monkeypatch.setattr(cli, "Settings", lambda: settings)
     assert cli.main(["materials", "ocr-engine", "off"]) == 0
     out = capsys.readouterr().out

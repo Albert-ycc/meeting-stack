@@ -1,5 +1,6 @@
 """第四期 4a：links_llm_loop 的框架（启用条件、每次最多一个调用、认领回收、错误三类、退避、停下和恢复、
 当天用量）和 POST /api/links/retry。4b、4c 的两种调用在这里用假的 LLMTask 代替。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -89,7 +90,11 @@ def worker(tmp_path, tasks=(), *, today=date(2026, 9, 27), clock=None, **overrid
     day = {"value": today}
     built = LinksLLMWorker(
         db,
-        settings(tmp_path, **{k: v for k, v in overrides.items() if k != "key"}, key=overrides.get("key", True)),
+        settings(
+            tmp_path,
+            **{k: v for k, v in overrides.items() if k != "key"},
+            key=overrides.get("key", True),
+        ),
         tasks=tasks,
         clock=clock or Clock(),
         now=lambda: NOW,
@@ -158,7 +163,9 @@ def test_stale_claims_come_back_without_counting(tmp_path):
 
     w.tick()
 
-    extractions = {row["meeting_id"]: row for row in db.query_all("SELECT * FROM mention_extractions")}
+    extractions = {
+        row["meeting_id"]: row for row in db.query_all("SELECT * FROM mention_extractions")
+    }
     assert extractions["old"]["state"] == "pending" and extractions["old"]["claimed_at"] is None
     assert (extractions["old"]["attempts"], extractions["old"]["parts_done"]) == (1, 2)
     assert extractions["fresh"]["state"] == "running"
@@ -168,7 +175,9 @@ def test_stale_claims_come_back_without_counting(tmp_path):
 
 
 def test_bad_content_and_bad_request_count_against_the_meeting(tmp_path):
-    task = FakeTask(jobs=["m1", "m1", "m1"], outcomes=[False, LLMError("bad_request", status=400), False])
+    task = FakeTask(
+        jobs=["m1", "m1", "m1"], outcomes=[False, LLMError("bad_request", status=400), False]
+    )
     w = worker(tmp_path, [task])
     assert [w.tick()["state"] for _ in range(3)] == ["invalid", "bad_request", "invalid"]
     assert task.failed == [("m1", "invalid"), ("m1", "bad_request"), ("m1", "invalid")]
@@ -227,9 +236,14 @@ def test_auth_stops_and_retry_clears_it(tmp_path):
 
 
 def test_refund_when_the_request_never_left(tmp_path):
-    task = FakeTask(jobs=["m1", "m2", "m3"], outcomes=[
-        LLMError("network", sent=False), LLMError("no_key", sent=False), LLMError("timeout", sent=True),
-    ])
+    task = FakeTask(
+        jobs=["m1", "m2", "m3"],
+        outcomes=[
+            LLMError("network", sent=False),
+            LLMError("no_key", sent=False),
+            LLMError("timeout", sent=True),
+        ],
+    )
     w = worker(tmp_path, [task])
     w.tick()
     assert usage(w.db)["background"] == 0
@@ -323,9 +337,13 @@ def test_retry_endpoint_requeues_and_clears_the_pause(tmp_path):
 
     assert response.status_code == 200 and response.json() == {"requeued": 2}
     assert db.query_one("SELECT state, attempts, error FROM mention_extractions") == {
-        "state": "pending", "attempts": 0, "error": None,
+        "state": "pending",
+        "attempts": 0,
+        "error": None,
     }
-    assert db.query_all("SELECT meeting_id, pair_state, pair_attempts, pair_after FROM decision_scan ORDER BY 1") == [
+    assert db.query_all(
+        "SELECT meeting_id, pair_state, pair_attempts, pair_after FROM decision_scan ORDER BY 1"
+    ) == [
         {"meeting_id": "m2", "pair_state": "pending", "pair_attempts": 0, "pair_after": None},
         {"meeting_id": "m3", "pair_state": "done", "pair_attempts": 0, "pair_after": None},
     ]
@@ -371,17 +389,24 @@ def test_loose_mentions_seed_only_qualified_meetings(tmp_path):
     add_meeting(db, "short", ago=1, project_id="p", segments=[(0, "报价单再看一下")])
     add_meeting(db, "old", ago=200, project_id="p", segments=talk())
     add_meeting(db, "loose", ago=1, segments=talk())
-    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('q', '别的项目', ?)", (utc_now(),))
     db.execute(
-        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('q', '/没收完', ?)", (utc_now(),)
+        "INSERT INTO projects(id, name, created_at) VALUES ('q', '别的项目', ?)", (utc_now(),)
+    )
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('q', '/没收完', ?)",
+        (utc_now(),),
     )
     add_meeting(db, "unindexed", ago=1, project_id="q", segments=talk())
 
     assert loose_mentions.seed(db, loose_settings(tmp_path), LOOSE_NOW) == 1
-    assert [row["meeting_id"] for row in db.query_all("SELECT meeting_id FROM mention_extractions")] == ["good"]
+    assert [
+        row["meeting_id"] for row in db.query_all("SELECT meeting_id FROM mention_extractions")
+    ] == ["good"]
     # 已经有行的不再建；300 天回补的设置能补到老会
     assert loose_mentions.seed(db, loose_settings(tmp_path), LOOSE_NOW) == 0
-    assert loose_mentions.seed(db, loose_settings(tmp_path, links_backfill_days=300), LOOSE_NOW) == 1
+    assert (
+        loose_mentions.seed(db, loose_settings(tmp_path, links_backfill_days=300), LOOSE_NOW) == 1
+    )
     # 0 表示只做新会：以 links_since 为界
     db.execute("DELETE FROM mention_extractions")
     db.execute("UPDATE app_state SET value = '2026-09-25T00:00:00+00:00' WHERE key = 'links_since'")
@@ -403,14 +428,23 @@ def test_order_recent_then_pairs_then_backfill_and_one_shared_cap(tmp_path):
         ]
     )
     assert [task.name for task in tasks] == list(links_llm.TASK_ORDER)
-    worker = LinksLLMWorker(db, cfg, tasks=tasks, now=lambda: LOOSE_NOW, today=lambda: date(2026, 9, 26))
-    states = [db.query_one("SELECT state FROM mention_extractions WHERE meeting_id = ?", (m,)) for m in ("recent", "older")]
+    worker = LinksLLMWorker(
+        db, cfg, tasks=tasks, now=lambda: LOOSE_NOW, today=lambda: date(2026, 9, 26)
+    )
+    states = [
+        db.query_one("SELECT state FROM mention_extractions WHERE meeting_id = ?", (m,))
+        for m in ("recent", "older")
+    ]
     assert states == [None, None]
     assert worker.tick()["called"] is True
-    assert db.query_one("SELECT state FROM mention_extractions WHERE meeting_id = 'recent'") == {"state": "done"}
+    assert db.query_one("SELECT state FROM mention_extractions WHERE meeting_id = 'recent'") == {
+        "state": "done"
+    }
     assert worker.tick()["called"] is True and pairs.ran == ["d1"]
     assert worker.tick()["called"] is True
-    assert db.query_one("SELECT state FROM mention_extractions WHERE meeting_id = 'older'") == {"state": "done"}
+    assert db.query_one("SELECT state FROM mention_extractions WHERE meeting_id = 'older'") == {
+        "state": "done"
+    }
     # 三种一起用每天的上限
     pairs.jobs.append("d2")
     assert worker.tick()["state"] == "capped" and pairs.ran == ["d1"]

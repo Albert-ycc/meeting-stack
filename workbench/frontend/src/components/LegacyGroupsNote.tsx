@@ -9,10 +9,12 @@ interface LegacyGroupsNoteProps {
   canWrite: boolean;
   /** 撤销后词条的分组变了，要重读术语和分组 */
   onChanged: () => void | Promise<void>;
+  /** 词典左栏里没有旧分组范围时，自己带一个小标题 */
+  withHeading?: boolean;
 }
 
 /** 词典页一行：「已自动整理 N 个旧分组［查看］［撤销］」。升级时没挂项目的旧分组被自动归到项目或公共。 */
-export function LegacyGroupsNote({ apiClient, canWrite, onChanged }: LegacyGroupsNoteProps) {
+export function LegacyGroupsNote({ apiClient, canWrite, onChanged, withHeading }: LegacyGroupsNoteProps) {
   const [summary, setSummary] = useState<LegacyGroupsSummary | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -61,43 +63,46 @@ export function LegacyGroupsNote({ apiClient, canWrite, onChanged }: LegacyGroup
   };
 
   return (
-    <div className="legacy-groups" role="status">
-      <div className="legacy-groups__line">
-        <span>
-          {summary.undone
-            ? "已撤销自动整理，旧分组恢复原样"
-            : `升级时已自动整理 ${summary.groups.length} 个旧分组`}
-        </span>
-        {!summary.undone && (
-          <button className="text-button" onClick={() => setExpanded((value) => !value)} type="button">
-            {expanded ? "收起" : "查看"}
-          </button>
+    <>
+      {withHeading && <div className="gw-sec">旧分组</div>}
+      <div className="legacy-groups" role="status">
+        <div className="legacy-groups__line">
+          <span>
+            {summary.undone
+              ? "已撤销自动整理，旧分组恢复原样"
+              : `升级时已自动整理 ${summary.groups.length} 个旧分组`}
+          </span>
+          {!summary.undone && (
+            <button className="text-button" onClick={() => setExpanded((value) => !value)} type="button">
+              {expanded ? "收起" : "查看"}
+            </button>
+          )}
+          {canWrite && !summary.undone && (
+            <button className="text-button" disabled={busy} onClick={() => void undo()} type="button">
+              撤销
+            </button>
+          )}
+          {canWrite && (
+            <button className="text-button" disabled={busy} onClick={() => void dismiss()} type="button">
+              知道了
+            </button>
+          )}
+        </div>
+        {expanded && (
+          <ul className="legacy-groups__list">
+            {summary.groups.map((group) => (
+              <li key={group.scope}>
+                「{group.scope}」{group.count} 条 → {group.project_name ? `项目「${group.project_name}」` : "公共"}
+              </li>
+            ))}
+          </ul>
         )}
-        {canWrite && !summary.undone && (
-          <button className="text-button" disabled={busy} onClick={() => void undo()} type="button">
-            撤销
-          </button>
-        )}
-        {canWrite && (
-          <button className="text-button" disabled={busy} onClick={() => void dismiss()} type="button">
-            知道了
-          </button>
+        {error && (
+          <p className="legacy-groups__error" role="alert">
+            {error}
+          </p>
         )}
       </div>
-      {expanded && (
-        <ul className="legacy-groups__list">
-          {summary.groups.map((group) => (
-            <li key={group.scope}>
-              「{group.scope}」{group.count} 条 → {group.project_name ? `项目「${group.project_name}」` : "公共"}
-            </li>
-          ))}
-        </ul>
-      )}
-      {error && (
-        <p className="legacy-groups__error" role="alert">
-          {error}
-        </p>
-      )}
-    </div>
+    </>
   );
 }

@@ -194,7 +194,7 @@ describe("ProjectGraph", () => {
 
     expect(apiClient.updateMeeting).toHaveBeenCalledWith("door0", { project_id: "p" });
     const notice = await screen.findByRole("status");
-    expect(notice).toHaveTextContent("已归到 云图AI；1 条任务一起移过去");
+    expect(notice).toHaveTextContent("已归到 云图AI；1 条待确认/过期的任务一起移过去");
     await waitFor(() => expect(apiClient.graph).toHaveBeenCalledTimes(2));
 
     await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
@@ -331,7 +331,7 @@ describe("ProjectGraph 拖放、残影、⌘Z、N", () => {
     fireEvent.mouseUp(window);
 
     expect(apiClient.updateMeeting).toHaveBeenCalledWith("a", { project_id: "q" });
-    expect(await screen.findByText(/^已改到 数据中台；1 条任务一起移过去/)).toBeInTheDocument();
+    expect(await screen.findByText(/^已改到 数据中台；1 条待确认\/过期的任务一起移过去/)).toBeInTheDocument();
     // 松手后补的 click 不会把这场会选中
     expect(screen.getByTestId("selection")).toHaveTextContent("");
     expect(screen.queryByRole("group", { name: "拖到项目上改归属" })).not.toBeInTheDocument();
@@ -2423,6 +2423,15 @@ describe("ProjectGraph 第四期的线和局部图", () => {
     expect(within(dialog).getByText("琥珀色虚线：在等你回答的产出和可能过时")).toBeInTheDocument();
     expect(within(dialog).getAllByRole("listitem")).toHaveLength(9);
     fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "图例" })).toBeNull());
+  });
+
+  it("D11：点画布空白处也关掉图例（不只是 Esc）——画布拖拽用的是 pointerdown，合成的 mousedown 不会派发", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "图例" }));
+    expect(screen.getByRole("dialog", { name: "图例" })).toBeInTheDocument();
+    const canvas = await screen.findByRole("application", { name: "云图AI 关系图" });
+    fireEvent.pointerDown(canvas);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "图例" })).toBeNull());
   });
 

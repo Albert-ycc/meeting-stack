@@ -1,5 +1,6 @@
 """第四期 4e：可能过时（affects：H2 match_due、L3 auto_clear）。纯函数的探针、两条规则、不标的几种、
 上限、增量和整场重配、自动收回、回答和撤销、转写时和全文表重建时不动。"""
+
 from __future__ import annotations
 
 import json
@@ -34,29 +35,45 @@ def world(tmp_path, *, links_since: datetime | None = None):
     db = Database(tmp_path / "workbench.sqlite3")
     db.initialize()
     db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', 'x')")
-    db.execute("INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, 'x')", (ROOT,))
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, 'x')",
+        (ROOT,),
+    )
     root_id = int(db.query_one("SELECT id FROM project_material_roots")["id"])
     swept(db, root_id)
-    db.execute("UPDATE app_state SET value = ? WHERE key = 'links_since'", (stamp(links_since or at(-10)),))
+    db.execute(
+        "UPDATE app_state SET value = ? WHERE key = 'links_since'", (stamp(links_since or at(-10)),)
+    )
     return SimpleNamespace(db=db, root=root_id)
 
 
 def meeting(db, meeting_id: str, *texts: str, day: datetime | None = None) -> None:
     """一场归了项目的会，纪要的决议段就是 texts（第一条在 12:34）。"""
     moment = day or at(-2)
-    items = "\n".join(f"- {text}" + (" [00:12:34]" if index == 0 else "") for index, text in enumerate(texts))
+    items = "\n".join(
+        f"- {text}" + (" [00:12:34]" if index == 0 else "") for index, text in enumerate(texts)
+    )
     markdown = f"# 周会\n\n## 决议\n\n{items}\n"
     db.execute(
         """INSERT INTO meetings(id, title, recording_date, status, project_id, created_at, updated_at)
            VALUES (?, ?, ?, 'completed_unreviewed', 'p', ?, ?)""",
-        (meeting_id, f"会 {meeting_id}", moment.astimezone().date().isoformat(), utc_now(), utc_now()),
+        (
+            meeting_id,
+            f"会 {meeting_id}",
+            moment.astimezone().date().isoformat(),
+            utc_now(),
+            utc_now(),
+        ),
     )
     db.execute(
         """INSERT INTO minutes_versions(id, meeting_id, version_no, markdown, html, kind, published, created_at)
            VALUES (?, ?, 1, ?, '', 'generated', 0, ?)""",
         (f"mv-{meeting_id}", meeting_id, markdown, utc_now()),
     )
-    db.execute("UPDATE meetings SET current_minutes_version_id = ? WHERE id = ?", (f"mv-{meeting_id}", meeting_id))
+    db.execute(
+        "UPDATE meetings SET current_minutes_version_id = ? WHERE id = ?",
+        (f"mv-{meeting_id}", meeting_id),
+    )
     decisions.ingest_pending(db, now=NOW, max_seconds=60)
 
 
@@ -79,7 +96,10 @@ def material(
     mtime_ns = ns(mtime or at(-20))
     name = rel_path.rpartition("/")[2]
     stem, _dot, ext = name.rpartition(".")
-    if db.query_one("SELECT 1 AS x FROM material_contents WHERE content_key = ?", (content_key,)) is None:
+    if (
+        db.query_one("SELECT 1 AS x FROM material_contents WHERE content_key = ?", (content_key,))
+        is None
+    ):
         db.execute(
             """INSERT INTO material_contents(content_key, layer, state, chars, chunks, meeting_id, created_at, updated_at)
                VALUES (?, 'text', 'done', 100, ?, ?, 'x', 'x')""",
@@ -90,14 +110,27 @@ def material(
                 "INSERT INTO material_chunks(content_key, ordinal, loc, start_ms, text) VALUES (?, ?, ?, ?, ?)",
                 (content_key, ordinal, f"第 {ordinal + 1} 页", start_ms, text),
             )
-    existing = db.query_one("SELECT id FROM material_files WHERE root_id = ? AND rel_path = ?", (root_id, rel_path))
+    existing = db.query_one(
+        "SELECT id FROM material_files WHERE root_id = ? AND rel_path = ?", (root_id, rel_path)
+    )
     if existing is None:
         db.execute(
             """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns, zone,
                    seen_at, content_key, content_size, content_mtime_ns)
                VALUES (?, ?, ?, ?, ?, ?, ?, 100, ?, 'normal', 'x', ?, ?, ?)""",
-            (root_id, rel_path, rel_path.rpartition("/")[0], name, stem, stem, ext, mtime_ns, content_key,
-             100 if fresh else 99, mtime_ns),
+            (
+                root_id,
+                rel_path,
+                rel_path.rpartition("/")[0],
+                name,
+                stem,
+                stem,
+                ext,
+                mtime_ns,
+                content_key,
+                100 if fresh else 99,
+                mtime_ns,
+            ),
         )
     else:
         db.execute(
@@ -105,7 +138,9 @@ def material(
                 WHERE id = ?""",
             (content_key, mtime_ns, 100 if fresh else 99, mtime_ns, existing["id"]),
         )
-    row = db.query_one("SELECT * FROM material_files WHERE root_id = ? AND rel_path = ?", (root_id, rel_path))
+    row = db.query_one(
+        "SELECT * FROM material_files WHERE root_id = ? AND rel_path = ?", (root_id, rel_path)
+    )
     return row
 
 
@@ -173,8 +208,14 @@ def test_values_skip_versions_and_single_digits():
         ("count", None, None),
     ]
     assert [value.kind for value in affects.values("12月3人到场")] == ["month", "count"]
-    assert [(value.kind, value.month, value.day) for value in affects.values("十月十五日上线")] == [("date", 10, 15)]
-    assert affects.cn_number("三千五百") == 3500 and affects.cn_number("十五") == 15 and affects.cn_number("两万") == 20_000
+    assert [(value.kind, value.month, value.day) for value in affects.values("十月十五日上线")] == [
+        ("date", 10, 15)
+    ]
+    assert (
+        affects.cn_number("三千五百") == 3500
+        and affects.cn_number("十五") == 15
+        and affects.cn_number("两万") == 20_000
+    )
 
 
 @pytest.mark.parametrize(
@@ -198,7 +239,11 @@ def test_decision_subject_probes(text, subject):
 
 def test_decision_subject_adds_terms_and_skips_project_names():
     terms = [("能耗看板", ["能耗看板", "看板系统"]), ("驻场服务", ["驻场服务"]), ("排期", ["排期"])]
-    assert affects.decision_subject("看板系统的总价下调 5%，排期不变", terms=terms) == ["总价", "能耗看板", "排期"]
+    assert affects.decision_subject("看板系统的总价下调 5%，排期不变", terms=terms) == [
+        "总价",
+        "能耗看板",
+        "排期",
+    ]
     assert affects.decision_subject("云图AI下调 5%", excluded=["云图AI"]) == []
 
 
@@ -208,13 +253,25 @@ def test_cancel_objects():
     assert affects.cancel_objects("不再做周报了") == ["做周报"]
     # 后面紧跟数值的「改成」是改数
     assert affects.cancel_objects("驻场改成 2 人") == []
+    # 复合名词里的「取消」（「订单取消接口」「销售单取消」「采购单取消」）：D2 误报复现，不能把「共用」
+    # 当成取消的对象
+    assert (
+        affects.cancel_objects("订单取消接口统一为一个，销售单取消与采购单取消共用，需要对。") == []
+    )
+    # 句中动词用法照常算：前面是别的词（本期、决定、这次）也不能丢
+    assert affects.cancel_objects("也取消驻场服务") == ["驻场服务"]
+    assert affects.cancel_objects("本期去掉资质核验模块") == ["资质核验模块"]
+    assert affects.cancel_objects("会上决定取消驻场服务") == ["驻场服务"]
+    assert affects.cancel_objects("这次不做医助端") == ["医助端"]
 
 
 def test_rules():
     decided = affects.values("总价下调 5%")
     assert affects.value_hit("…总价在原基础上下调 3%，含税…", "总价", decided)
     assert not affects.value_hit("总价下调 5%，含税", "总价", decided)  # 文件已经改好了
-    assert not affects.value_hit("总价" + "这里是很长的一段说明文字" * 5 + "下调 3%", "总价", decided)  # 太远
+    assert not affects.value_hit(
+        "总价" + "这里是很长的一段说明文字" * 5 + "下调 3%", "总价", decided
+    )  # 太远
     assert not affects.value_hit("驻场 3 台", "驻场", affects.values("驻场改成 2 人"))  # 单位不同
     assert affects.value_hit("方案含驻场服务 3 人", "驻场", affects.values("驻场改成 2 人"))
     assert affects.cancel_hit("方案含驻场服务 3 人", "驻场服务")
@@ -227,18 +284,44 @@ def test_rules():
 def test_value_rule_marks_an_old_file(tmp_path):
     w = world(tmp_path)
     meeting(w.db, "m", "总价下调 5%")
-    file = material(w.db, w.root, "报价/报价单 v3.xlsx", "封面", "报价说明：总价在原基础上下调 3%，含税")
+    file = material(
+        w.db, w.root, "报价/报价单 v3.xlsx", "封面", "报价说明：总价在原基础上下调 3%，含税"
+    )
     result = run(w.db)
     assert result["written"] == 1
     (row,) = open_rows(w.db)
     decision_id = w.db.query_one("SELECT id FROM decisions")["id"]
     assert row["ident"] == f"{decision_id}|{file['content_key']}"
-    assert (row["origin"], row["meeting_id"], row["at_ms"], row["quote"]) == ("rule", "m", 754_000, "总价下调 5%")
+    assert (row["origin"], row["meeting_id"], row["at_ms"], row["quote"]) == (
+        "rule",
+        "m",
+        754_000,
+        "总价下调 5%",
+    )
     assert json.loads(row["evidence_json"]) == {"rule": "value", "terms": ["总价"], "ordinal": 1}
     # 一场会配完：台账跟上，再跑一轮什么都不写
-    scan = w.db.query_one("SELECT affects_hash, section_hash, affects_chunk_mark FROM decision_scan WHERE meeting_id = 'm'")
+    scan = w.db.query_one(
+        "SELECT affects_hash, section_hash, affects_chunk_mark FROM decision_scan WHERE meeting_id = 'm'"
+    )
     assert scan["affects_hash"] == scan["section_hash"] and scan["affects_chunk_mark"] > 0
     assert run(w.db)["pending"] == 0
+
+
+def test_too_common_term_subject_is_skipped(tmp_path):
+    """D2 误报复现：决议里带一个全项目到处都是的已确认词条（EDC）当主语时，这个词条本身太泛，
+    不能当证据——即使某几份文件里刚好有一个不一样的数，也不该因为这个词条而标过时；真正具体的
+    主语（节点数量）不受影响，照样能标到对的文件。"""
+    w = world(tmp_path)
+    w.db.execute(
+        """INSERT INTO glossary_terms(id, term, aliases, also, confirmed, project_id, created_at, updated_at)
+           VALUES ('t-edc', 'EDC', '[]', '[]', 1, 'p', 'x', 'x')"""
+    )
+    meeting(w.db, "m", "EDC 节点数量调整为 2 个")
+    material(w.db, w.root, "方案/节点方案.docx", "节点数量为 5 个")
+    for index in range(11):
+        material(w.db, w.root, f"EDC/接口说明{index}.docx", f"EDC 模块处理 {index + 3} 个数据")
+    run(w.db)
+    assert names(w.db) == ["节点方案.docx"]
 
 
 def test_cancel_rule_and_two_char_subjects(tmp_path, monkeypatch):
@@ -248,8 +331,14 @@ def test_cancel_rule_and_two_char_subjects(tmp_path, monkeypatch):
     material(w.db, w.root, "方案/通知说明.docx", "上线以后发短信通知用户")
     material(w.db, w.root, "报价/预算表.xlsx", "项目预算 15 万元")
     run(w.db)
-    rules = sorted((row["name"], json.loads(row["evidence_json"])["rule"]) for row in open_rows(w.db))
-    assert rules == [("实施方案.docx", "cancel"), ("通知说明.docx", "cancel"), ("预算表.xlsx", "value")]
+    rules = sorted(
+        (row["name"], json.loads(row["evidence_json"])["rule"]) for row in open_rows(w.db)
+    )
+    assert rules == [
+        ("实施方案.docx", "cancel"),
+        ("通知说明.docx", "cancel"),
+        ("预算表.xlsx", "value"),
+    ]
 
 
 def test_two_char_subjects_skip_large_projects(tmp_path, monkeypatch):
@@ -261,13 +350,18 @@ def test_two_char_subjects_skip_large_projects(tmp_path, monkeypatch):
     assert open_rows(w.db) == []
 
 
-@pytest.mark.parametrize("case", ["newer", "stale_key", "recording", "meeting_material", "record", "too_old", "same_value"])
+@pytest.mark.parametrize(
+    "case",
+    ["newer", "stale_key", "recording", "meeting_material", "record", "too_old", "same_value"],
+)
 def test_files_that_are_not_marked(tmp_path, case):
     w = world(tmp_path)
     meeting(w.db, "m", "报价单总价下调 5%，下周一发给客户确认")
     decision_day = at(-2)
     if case == "newer":
-        material(w.db, w.root, "报价/报价单.xlsx", "总价下调 3%", mtime=decision_day + timedelta(days=1))
+        material(
+            w.db, w.root, "报价/报价单.xlsx", "总价下调 3%", mtime=decision_day + timedelta(days=1)
+        )
     elif case == "stale_key":
         material(w.db, w.root, "报价/报价单.xlsx", "总价下调 3%", fresh=False)
     elif case == "recording":
@@ -276,7 +370,13 @@ def test_files_that_are_not_marked(tmp_path, case):
         material(w.db, w.root, "录音/沟通.m4a", "总价下调 3%", meeting_id="m")
     elif case == "record":
         # 导出的纪要副本：有一段就是这条决议
-        material(w.db, w.root, "纪要/周会纪要.docx", "报价单总价下调 5%，下周一发给客户确认", "旧稿里总价下调 3%")
+        material(
+            w.db,
+            w.root,
+            "纪要/周会纪要.docx",
+            "报价单总价下调 5%，下周一发给客户确认",
+            "旧稿里总价下调 3%",
+        )
     elif case == "too_old":
         material(w.db, w.root, "报价/报价单.xlsx", "总价下调 3%", mtime=at(-400))
     else:
@@ -309,7 +409,9 @@ def test_project_cap_waits_for_room_without_pushing_out(tmp_path):
     run(w.db)
     rows = open_rows(w.db)
     assert len(rows) == 12
-    scan = w.db.query_one("SELECT affects_hash, section_hash FROM decision_scan WHERE meeting_id = 'm'")
+    scan = w.db.query_one(
+        "SELECT affects_hash, section_hash FROM decision_scan WHERE meeting_id = 'm'"
+    )
     assert scan["affects_hash"] == f"capped:{scan['section_hash']}"
     # 满了不再到期；有空位了整场重配，补上一个，已经在问的一个不少
     assert run(w.db)["pending"] == 0
@@ -337,12 +439,18 @@ def test_new_chunks_only_add_and_a_changed_section_rematches(tmp_path):
     material(w.db, w.root, "报价/报价单 b.xlsx", "总价下调 4%")
     result = run(w.db, now=at(0.01))
     assert result["pending"] == 1 and result["written"] == 1 and result["cleared"] == 0
-    assert w.db.query_one("SELECT status FROM relations WHERE content_key = 'q2:gone'")["status"] == "suggested"
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE content_key = 'q2:gone'")["status"]
+        == "suggested"
+    )
     # 决议段变了：整场重配，clear_missing 收回不再命中的
     w.db.execute("UPDATE decision_scan SET section_hash = 'changed' WHERE meeting_id = 'm'")
     result = run(w.db, now=at(0.02))
     assert result["cleared"] == 1
-    assert w.db.query_one("SELECT status FROM relations WHERE content_key = 'q2:gone'")["status"] == "cleared"
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE content_key = 'q2:gone'")["status"]
+        == "cleared"
+    )
     assert names(w.db) == ["报价单 a.xlsx", "报价单 b.xlsx"]
 
 
@@ -364,7 +472,9 @@ def test_busy_stops_and_fts_rebuild_skips(tmp_path):
     material(w.db, w.root, "报价/报价单.xlsx", "总价下调 3%")
     assert run(w.db, busy=lambda: True)["stopped"] == "busy"
     assert open_rows(w.db) == []
-    w.db.execute("INSERT INTO app_state(key, value, updated_at) VALUES ('material_fts_rebuild', '{}', 'x')")
+    w.db.execute(
+        "INSERT INTO app_state(key, value, updated_at) VALUES ('material_fts_rebuild', '{}', 'x')"
+    )
     settings = SimpleNamespace(links_enabled=True, links_backfill_days=180, semantic_model="x")
     worker = LinksWorker(w.db, settings, now=lambda: NOW)
     assert worker.run_round()["phases"]["affects"] == "off"
@@ -374,7 +484,9 @@ def test_busy_stops_and_fts_rebuild_skips(tmp_path):
 
 
 def test_decided_values_keep_only_the_new_value():
-    assert [(value.kind, value.number) for value in affects.decided_values("驻场人员由 3 人改成 2 人")] == [("count", 2)]
+    assert [
+        (value.kind, value.number) for value in affects.decided_values("驻场人员由 3 人改成 2 人")
+    ] == [("count", 2)]
     assert [value.number for value in affects.decided_values("总价从 3% 调到 5%")] == [5]
     # 没有「由」「从」的两个数都是决议自己的
     assert len(affects.decided_values("甲方 3 人、乙方 2 人")) == 2
@@ -408,7 +520,9 @@ def test_real_copy_with_the_decided_value_is_not_marked(tmp_path):
     w = world(tmp_path)
     meeting(w.db, "m", "总价在原基础上下调 5%，含税")
     # 导出的纪要：一段就是这条决议（写着 5%），另一段是旧稿的说法
-    material(w.db, w.root, "纪要/周会纪要.docx", "决议：总价在原基础上下调 5%，含税", "旧稿里总价下调 3%")
+    material(
+        w.db, w.root, "纪要/周会纪要.docx", "决议：总价在原基础上下调 5%，含税", "旧稿里总价下调 3%"
+    )
     run(w.db)
     assert open_rows(w.db) == []
 
@@ -420,7 +534,9 @@ def _count_statements(db, monkeypatch) -> list[str]:
     def traced():
         connection = connect()
         # 全文索引自己的内部语句（-- 开头）不算
-        connection.set_trace_callback(lambda statement: None if statement.startswith("--") else seen.append(statement))
+        connection.set_trace_callback(
+            lambda statement: None if statement.startswith("--") else seen.append(statement)
+        )
         return connection
 
     monkeypatch.setattr(db, "connect", traced)
@@ -440,14 +556,25 @@ def _many_files(db, root_id: int, files: int, chunks: int, hit: str) -> None:
             )
             connection.executemany(
                 "INSERT INTO material_chunks(content_key, ordinal, loc, start_ms, text) VALUES (?, ?, '', NULL, ?)",
-                [(key, ordinal, hit if ordinal == chunks - 1 else f"{filler} 第{ordinal}段") for ordinal in range(chunks)],
+                [
+                    (key, ordinal, hit if ordinal == chunks - 1 else f"{filler} 第{ordinal}段")
+                    for ordinal in range(chunks)
+                ],
             )
             connection.execute(
                 """INSERT INTO material_files(root_id, rel_path, dir_rel, name, stem, stem_key, ext, size, mtime_ns,
                        zone, seen_at, content_key, content_size, content_mtime_ns)
                    VALUES (?, ?, '资料', ?, ?, ?, 'docx', 100, ?, 'normal', 'x', ?, 100, ?)""",
-                (root_id, f"资料/文件{index}.docx", f"文件{index}.docx", f"文件{index}", f"文件{index}", mtime, key,
-                 mtime),
+                (
+                    root_id,
+                    f"资料/文件{index}.docx",
+                    f"文件{index}.docx",
+                    f"文件{index}",
+                    f"文件{index}",
+                    mtime,
+                    key,
+                    mtime,
+                ),
             )
 
 
@@ -486,11 +613,15 @@ def test_round_stops_as_budget_or_busy_and_keeps_the_ledger_whole(tmp_path):
     material(w.db, w.root, "驻场/排班.xlsx", "驻场 3 人，排期 4 周")
 
     def ledger(meeting_id):
-        return w.db.query_one("SELECT affects_hash FROM decision_scan WHERE meeting_id = ?", (meeting_id,))["affects_hash"]
+        return w.db.query_one(
+            "SELECT affects_hash FROM decision_scan WHERE meeting_id = ?", (meeting_id,)
+        )["affects_hash"]
 
     # 时间：第一场会不看时间，一定配完；第二场会一开始就没时间了，什么都不写、台账不动
     ticks = iter(range(0, 1000, 10))
-    result = affects.match_due(w.db, lambda: False, 5.0, now=NOW, since=stamp(NOW), clock=lambda: next(ticks))
+    result = affects.match_due(
+        w.db, lambda: False, 5.0, now=NOW, since=stamp(NOW), clock=lambda: next(ticks)
+    )
     assert result["stopped"] == "budget" and result["tried"] == 1
     assert names(w.db) == ["报价单.xlsx"] and ledger("m1") is not None and ledger("m2") is None
     # 条数：第二场会要配 2 条，这一轮只剩 1 条，停在它前面（不白做半场）
@@ -503,7 +634,10 @@ def test_round_stops_as_budget_or_busy_and_keeps_the_ledger_whole(tmp_path):
     # 下一轮它排第一，整场配完（第一场会不看条数），台账跟上
     result = run(w.db, max_decisions=1)
     assert result["stopped"] is None and result["tried"] == 2 and ledger("m2") is not None
-    assert sorted(set(names(w.db))) == sorted({"排班.xlsx", "报价单.xlsx"}) and len(open_rows(w.db)) == 3
+    assert (
+        sorted(set(names(w.db))) == sorted({"排班.xlsx", "报价单.xlsx"})
+        and len(open_rows(w.db)) == 3
+    )
 
 
 # ---------------------------------------------------------------------- L3
@@ -522,9 +656,13 @@ def test_auto_clear(tmp_path, case):
     (row,) = open_rows(w.db)
     assert l3(w.db)["cleared"] == 0
     if case == "edited":
-        w.db.execute("UPDATE material_files SET mtime_ns = ? WHERE id = ?", (ns(at(-0.1)), file["id"]))
+        w.db.execute(
+            "UPDATE material_files SET mtime_ns = ? WHERE id = ?", (ns(at(-0.1)), file["id"])
+        )
     elif case == "new_key":
-        w.db.execute("UPDATE material_files SET content_key = 'q2:other' WHERE id = ?", (file["id"],))
+        w.db.execute(
+            "UPDATE material_files SET content_key = 'q2:other' WHERE id = ?", (file["id"],)
+        )
     elif case == "gone":
         w.db.execute("UPDATE material_files SET gone_at = 'x' WHERE id = ?", (file["id"],))
     elif case == "decision_gone":
@@ -540,7 +678,10 @@ def test_auto_clear(tmp_path, case):
             (f"{early}|{late}", early, late),
         )
     assert l3(w.db, now=at(0.01))["cleared"] == 1
-    assert w.db.query_one("SELECT status FROM relations WHERE id = ?", (row["id"],))["status"] == "cleared"
+    assert (
+        w.db.query_one("SELECT status FROM relations WHERE id = ?", (row["id"],))["status"]
+        == "cleared"
+    )
 
 
 def test_auto_clear_walks_500_rows_a_round(tmp_path):
@@ -579,7 +720,10 @@ def test_updated_holds_for_the_content_and_no_holds_for_the_path(tmp_path):
     w.db.execute("UPDATE decision_scan SET section_hash = 'changed'")
     run(w.db, now=at(0.01))
     assert open_rows(w.db) == []
-    statuses = {row["content_key"]: row["status"] for row in w.db.query_all("SELECT content_key, status FROM relations")}
+    statuses = {
+        row["content_key"]: row["status"]
+        for row in w.db.query_all("SELECT content_key, status FROM relations")
+    }
     assert statuses == {quote["content_key"]: "resolved", plan["content_key"]: "rejected"}
 
 

@@ -12,6 +12,7 @@
   包含关系的一步先展开那个决议或任务看能不能接着走，没走通的最多 3 次；总共不超过 48 条语句。
   中心文件按同内容那一组读（挪过位置、找不到活文件时旧 id 上的线也算）。
 """
+
 from __future__ import annotations
 
 import re
@@ -25,6 +26,7 @@ from . import related
 from . import relation_read
 from .decisions import decision_moment
 from .file_mentions import _meeting_ns
+from .file_stems import STEM_YES, stem_usability
 from .relation_read import AUDIO_ID_SQL, LIVE_ID_SQL, _marks, _short, mention_union
 
 MAP_NEIGHBOURS = 12
@@ -34,8 +36,12 @@ REQUIREMENT_CAP = 1
 RELATED_CAP = 3
 TRACE_STEPS = 3
 TRACE_NODES = 12
-TRACE_LOOKAHEAD = 3  # 包含关系的一步先看一眼能不能接着走；没走通的展开最多这么多次（语句总数仍 ≤ 48）
-NODE_PATTERN = r"^(file:\d{1,12}|m:[A-Za-z0-9_-]{1,64}|dec:[A-Za-z0-9_-]{1,64}|task:[A-Za-z0-9_-]{1,64})$"
+TRACE_LOOKAHEAD = (
+    3  # 包含关系的一步先看一眼能不能接着走；没走通的展开最多这么多次（语句总数仍 ≤ 48）
+)
+NODE_PATTERN = (
+    r"^(file:\d{1,12}|m:[A-Za-z0-9_-]{1,64}|dec:[A-Za-z0-9_-]{1,64}|task:[A-Za-z0-9_-]{1,64})$"
+)
 TRACE_TASK_STATUSES = ("confirmed", "in_progress", "done")
 
 FILE_MISSING = "这份文件不在索引里了"
@@ -78,7 +84,9 @@ def _ms(moment: datetime | None) -> int | None:
     return int(moment.timestamp() * 1000) if moment else None
 
 
-def _caption(title: str | None, recording_date: str | None, created_at: str | None, today: date) -> str:
+def _caption(
+    title: str | None, recording_date: str | None, created_at: str | None, today: date
+) -> str:
     day = graph.local_day(recording_date, created_at)
     return f"{graph.month_day(day, today)} {title or ''}".strip()
 
@@ -112,7 +120,12 @@ class _Center:
 
     @property
     def group(self) -> list[int]:
-        ids = [self.file_id, int(self.given["id"]), *(int(copy["id"]) for copy in self.copies), *self.earlier]
+        ids = [
+            self.file_id,
+            int(self.given["id"]),
+            *(int(copy["id"]) for copy in self.copies),
+            *self.earlier,
+        ]
         return list(dict.fromkeys(ids))
 
     @property
@@ -141,8 +154,14 @@ def _resolve_file(connection: Any, file_id: int) -> _Center:
                 WHERE pr.project_id = ?
                   AND (f.id = ? OR (? IS NOT NULL AND f.content_key = ?) OR (f.root_id = ? AND f.rel_path = ?))
                 ORDER BY f.mtime_ns DESC, f.id""",
-            (given["project_id"], file_id, given["content_key"], given["content_key"], given["root_id"],
-             given["rel_path"]),
+            (
+                given["project_id"],
+                file_id,
+                given["content_key"],
+                given["content_key"],
+                given["root_id"],
+                given["rel_path"],
+            ),
         ).fetchall()
     ]
     rows = [row for row in found if row["gone_at"] is None]
@@ -150,15 +169,29 @@ def _resolve_file(connection: Any, file_id: int) -> _Center:
     if given["gone_at"] is None:
         live = given
     else:
-        same_content = [row for row in rows if given["content_key"] and row["content_key"] == given["content_key"]]
-        same_place = [row for row in rows if row["root_id"] == given["root_id"] and row["rel_path"] == given["rel_path"]]
+        same_content = [
+            row
+            for row in rows
+            if given["content_key"] and row["content_key"] == given["content_key"]
+        ]
+        same_place = [
+            row
+            for row in rows
+            if row["root_id"] == given["root_id"] and row["rel_path"] == given["rel_path"]
+        ]
         live = (same_content or same_place or [None])[0]
     copies = []
     key = (live or given).get("content_key")
     if live is not None and key:
         copies = [row for row in rows if row["id"] != live["id"] and row["content_key"] == key]
-    earlier = [int(row["id"]) for row in found if row["gone_at"] is not None and key and row["content_key"] == key]
-    return _Center(given=given, live=live, copies=copies, project_id=str(given["project_id"]), earlier=earlier)
+    earlier = [
+        int(row["id"])
+        for row in found
+        if row["gone_at"] is not None and key and row["content_key"] == key
+    ]
+    return _Center(
+        given=given, live=live, copies=copies, project_id=str(given["project_id"]), earlier=earlier
+    )
 
 
 def _center_payload(center: _Center, *, stale: bool, asks: bool) -> dict[str, Any]:
@@ -197,7 +230,9 @@ class _Neighbour:
     order: int = 0  # 同级里的次序（提到：字面先于放宽）
 
 
-def _requirement_of(root_path: str | None, rel_path: str, folders: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _requirement_of(
+    root_path: str | None, rel_path: str, folders: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     """装着这份文件的需求文件夹（最深的那个）。"""
     if not root_path:
         return None
@@ -205,12 +240,18 @@ def _requirement_of(root_path: str | None, rel_path: str, folders: list[dict[str
     best = None
     for folder in folders:
         base = str(folder["path"]).rstrip("/")
-        if base and full.startswith(base + "/") and (best is None or len(base) > len(str(best["path"]))):
+        if (
+            base
+            and full.startswith(base + "/")
+            and (best is None or len(base) > len(str(best["path"])))
+        ):
             best = folder
     return best
 
 
-def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: date | None = None) -> dict[str, Any]:
+def file_map(
+    connection: Any, file_id: int, *, related_on: bool = False, today: date | None = None
+) -> dict[str, Any]:
     """局部图。语句：文件本身、同内容的活文件、提到、非相关的关联行、交付物、同名的版本、需求文件夹、
     相关（related_on 时）、会议一批、提到的原话；最多 10 条。"""
     today = today or datetime.now().astimezone().date()
@@ -225,8 +266,12 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
     mention_rows = [
         dict(row)
         for row in connection.execute(
-            f"""WITH u AS ({mention_union(literal=f"fm.file_id IN ({marks}) AND fm.project_id = ?",
-                                          loose="r.project_id = ?")})
+            f"""WITH u AS ({
+                mention_union(
+                    literal=f"fm.file_id IN ({marks}) AND fm.project_id = ?",
+                    loose="r.project_id = ?",
+                )
+            })
                 SELECT u.* FROM u WHERE u.file_id IN ({marks})""",
             (*group, project_id, project_id, *group),
         ).fetchall()
@@ -262,7 +307,10 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
         relation_rows = [row for row in relation_rows if row["live_id"] in group]
 
     # ⑤ 交付物（按内容标识或位置）
-    places = [(center.row["root_id"], center.row["rel_path"]), (center.given["root_id"], center.given["rel_path"])]
+    places = [
+        (center.row["root_id"], center.row["rel_path"]),
+        (center.given["root_id"], center.given["rel_path"]),
+    ]
     places += [(copy["root_id"], copy["rel_path"]) for copy in center.copies]
     places = list(dict.fromkeys(places))
     place_values = ", ".join("(?, ?)" for _ in places)
@@ -280,10 +328,11 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
         ).fetchall()
     ]
 
-    # ⑥ 同名的别的版本（同 stem_key、不同内容）
+    # ⑥ 同名的别的版本（同 stem_key、不同内容）：stem_key 要过 stem_usability 这道判断，PRD、
+    # README 这类通用文件名在别的文件夹里也很常见，不代表是同一份的别的版本（见 D7）
     same_rows: list[dict[str, Any]] = []
     stem_key = center.row.get("stem_key")
-    if stem_key:
+    if stem_key and stem_usability(stem_key) == STEM_YES:
         same_rows = [
             dict(row)
             for row in connection.execute(
@@ -324,7 +373,9 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
     # ⑨ 会议一批（提到、决议、任务、相关用到的会）
     meeting_ids = set(per_meeting)
     for row in relation_rows:
-        meeting_ids.update(filter(None, (row["meeting_id"], row["decision_meeting_id"], row["task_meeting_id"])))
+        meeting_ids.update(
+            filter(None, (row["meeting_id"], row["decision_meeting_id"], row["task_meeting_id"]))
+        )
     meeting_ids.update(filter(None, (row["meeting_id"] for row in deliverable_rows)))
     meeting_ids.update(filter(None, (row["meeting_id"] for row in related_rows)))
     meetings = _meetings(connection, sorted(meeting_ids))
@@ -353,7 +404,11 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
     def task_node(row: dict[str, Any], meeting_id: str | None, anchor_ms: Any) -> tuple[str, int]:
         node_id = f"task:{row['task_id']}"
         meeting = meetings.get(meeting_id or "")
-        moment = meeting["moment"] + timedelta(milliseconds=int(anchor_ms or 0)) if meeting and meeting["moment"] else None
+        moment = (
+            meeting["moment"] + timedelta(milliseconds=int(anchor_ms or 0))
+            if meeting and meeting["moment"]
+            else None
+        )
         nodes.setdefault(
             node_id,
             {
@@ -389,8 +444,16 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
                 "audio_url": _audio(meeting["audio_id"]) if meeting else None,
             },
         )
-        day = graph.local_day(meeting["row"]["recording_date"], meeting["row"]["created_at"]) if meeting else None
-        return node_id, _ms(moment) or 0, graph.affects_label(row["decision_text"], center.row["name"], day, today)
+        day = (
+            graph.local_day(meeting["row"]["recording_date"], meeting["row"]["created_at"])
+            if meeting
+            else None
+        )
+        return (
+            node_id,
+            _ms(moment) or 0,
+            graph.affects_label(row["decision_text"], center.row["name"], day, today),
+        )
 
     for row in relation_rows:
         if row["kind"] == "affects":
@@ -417,7 +480,9 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
                         "relation_id": row["id"],
                         "decision_id": row["decision_id"],
                         "meeting_id": row["decision_meeting_id"] or row["meeting_id"],
-                        "at_ms": row["decision_ms"] if row["decision_ms"] is not None else row["at_ms"],
+                        "at_ms": row["decision_ms"]
+                        if row["decision_ms"] is not None
+                        else row["at_ms"],
                         "quote": _short(row["decision_text"], relation_read.QUOTE_CHARS),
                     },
                 )
@@ -489,9 +554,17 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
             "needle": row["needle"],
         }
         if row["relation_id"] is not None:
-            edge.update(origin="manual" if row["via"] == "manual" else "llm", relation_id=row["relation_id"])
+            edge.update(
+                origin="manual" if row["via"] == "manual" else "llm", relation_id=row["relation_id"]
+            )
         neighbours.append(
-            _Neighbour(3, _ms(meetings[meeting_id]["moment"]) or 0, node_id, edge, 0 if row["via"] == "literal" else 1)
+            _Neighbour(
+                3,
+                _ms(meetings[meeting_id]["moment"]) or 0,
+                node_id,
+                edge,
+                0 if row["via"] == "literal" else 1,
+            )
         )
     stem = str(center.row.get("stem") or graph.file_stem(center.row["name"]))
     for row in same_rows:
@@ -499,35 +572,59 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
         moment = _file_moment(row["mtime_ns"])
         nodes.setdefault(
             node_id,
-            {"id": node_id, "kind": "file", "file_id": int(row["id"]), "name": row["name"], "ext": row["ext"],
-             "at": _iso(moment)},
+            {
+                "id": node_id,
+                "kind": "file",
+                "file_id": int(row["id"]),
+                "name": row["name"],
+                "ext": row["ext"],
+                "at": _iso(moment),
+            },
         )
         neighbours.append(
             _Neighbour(
                 5,
                 _ms(moment) or 0,
                 node_id,
-                {"id": f"e:same:{row['id']}:{center.file_id}", "kind": "same_name", "from": node_id,
-                 "to": center_id, "label": f"同属『{stem}』"},
+                {
+                    "id": f"e:same:{row['id']}:{center.file_id}",
+                    "kind": "same_name",
+                    "from": node_id,
+                    "to": center_id,
+                    "label": f"同属『{stem}』",
+                },
             )
         )
     if requirement is not None:
         node_id = f"r:{requirement['requirement_id']}"
-        nodes[node_id] = {"id": node_id, "kind": "requirement", "requirement_id": requirement["requirement_id"],
-                          "title": requirement["title"]}
+        nodes[node_id] = {
+            "id": node_id,
+            "kind": "requirement",
+            "requirement_id": requirement["requirement_id"],
+            "title": requirement["title"],
+        }
         neighbours.append(
             _Neighbour(
                 6,
                 0,
                 node_id,
-                {"id": f"e:belongs:{requirement['requirement_id']}:{center.file_id}", "kind": "belongs",
-                 "from": node_id, "to": center_id, "label": f"同属需求『{requirement['title']}』的文件夹"},
+                {
+                    "id": f"e:belongs:{requirement['requirement_id']}:{center.file_id}",
+                    "kind": "belongs",
+                    "from": node_id,
+                    "to": center_id,
+                    "label": f"同属需求『{requirement['title']}』的文件夹",
+                },
             )
         )
     related_meetings: set[str] = set()
     for row in related_rows:
         meeting_id = row["meeting_id"]
-        if meeting_id in per_meeting or meeting_id in related_meetings or meeting_id not in meetings:
+        if (
+            meeting_id in per_meeting
+            or meeting_id in related_meetings
+            or meeting_id not in meetings
+        ):
             continue
         if len(related_meetings) >= RELATED_CAP:
             break
@@ -554,8 +651,11 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
                     "quote": _short(row["quote"] or "", relation_read.QUOTE_CHARS),
                     "words": words,
                     # 只给位置，不给材料里的字
-                    "passage": {"loc": material.get("loc") or "", "content_key": material.get("content_key"),
-                                "ordinal": material.get("ordinal")},
+                    "passage": {
+                        "loc": material.get("loc") or "",
+                        "content_key": material.get("content_key"),
+                        "ordinal": material.get("ordinal"),
+                    },
                 },
             )
         )
@@ -577,11 +677,24 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
     for node_id in drawn:
         node = nodes[node_id]
         meeting_id = node.get("meeting_id")
-        if node["kind"] not in ("decision", "task") or not meeting_id or f"m:{meeting_id}" not in drawn_set:
+        if (
+            node["kind"] not in ("decision", "task")
+            or not meeting_id
+            or f"m:{meeting_id}" not in drawn_set
+        ):
             continue
         if node["kind"] == "decision":
-            edges.append({"id": f"e:in:{node['decision_id']}", "kind": "in_meeting", "from": f"m:{meeting_id}",
-                          "to": node_id, "label": "", "meeting_id": meeting_id, "at_ms": node["start_ms"]})
+            edges.append(
+                {
+                    "id": f"e:in:{node['decision_id']}",
+                    "kind": "in_meeting",
+                    "from": f"m:{meeting_id}",
+                    "to": node_id,
+                    "label": "",
+                    "meeting_id": meeting_id,
+                    "at_ms": node["start_ms"],
+                }
+            )
         else:
             edges.append(_task_from_edge(node, meeting_id))
 
@@ -621,8 +734,15 @@ def file_map(connection: Any, file_id: int, *, related_on: bool = False, today: 
 def _task_from_edge(node: dict[str, Any], meeting_id: str) -> dict[str, Any]:
     anchor = node.get("anchor_ms")
     label = TASK_FROM_TEXT + (f" · {graph._clock_hms(anchor)}" if anchor is not None else "")
-    return {"id": f"e:task:{node['task_id']}", "kind": "task_from", "from": f"m:{meeting_id}", "to": node["id"],
-            "label": label, "meeting_id": meeting_id, "at_ms": anchor}
+    return {
+        "id": f"e:task:{node['task_id']}",
+        "kind": "task_from",
+        "from": f"m:{meeting_id}",
+        "to": node["id"],
+        "label": label,
+        "meeting_id": meeting_id,
+        "at_ms": anchor,
+    }
 
 
 def _node_label(node: dict[str, Any]) -> str:
@@ -644,7 +764,7 @@ def _meetings(connection: Any, meeting_ids: list[str]) -> dict[str, dict[str, An
     today = datetime.now().astimezone().date()
     rows = connection.execute(
         f"""SELECT m.id, m.title, m.recording_date, m.created_at, m.project_id,
-                   {AUDIO_ID_SQL.format(meeting='m.id')} AS audio_id
+                   {AUDIO_ID_SQL.format(meeting="m.id")} AS audio_id
               FROM meetings m WHERE m.id IN ({_marks(meeting_ids)})""",
         meeting_ids,
     ).fetchall()
@@ -670,12 +790,19 @@ def _segments_at(connection: Any, anchors: list[tuple[str, int]]) -> dict[tuple[
              WHERE m.id IN ({_marks(meeting_ids)}) AND (s.meeting_id, s.start_ms) IN (VALUES {values})""",
         (*meeting_ids, *[value for pair in pairs for value in pair]),
     ).fetchall()
-    return {(row["meeting_id"], int(row["start_ms"])): _short(row["text"] or "", relation_read.QUOTE_CHARS) for row in rows}
+    return {
+        (row["meeting_id"], int(row["start_ms"])): _short(
+            row["text"] or "", relation_read.QUOTE_CHARS
+        )
+        for row in rows
+    }
 
 
 # ---------------------------------------------------------------------- 来龙去脉
 
-_TRACE_KINDS = frozenset({"mention", "deliverable", "affects_resolved", "later_changed", "restated"})
+_TRACE_KINDS = frozenset(
+    {"mention", "deliverable", "affects_resolved", "later_changed", "restated"}
+)
 
 
 @dataclass
@@ -713,34 +840,61 @@ class _Tracer:
         moment = _meeting_moment(row["recording_date"], row["created_at"])
         node_id = f"m:{row['id']}"
         self.info[node_id] = {
-            "id": node_id, "kind": "meeting", "meeting_id": row["id"], "title": row["label"],
+            "id": node_id,
+            "kind": "meeting",
+            "meeting_id": row["id"],
+            "title": row["label"],
             "caption": _caption(row["label"], row["recording_date"], row["created_at"], self.today),
-            "at": _iso(moment), "audio_url": _audio(row["audio_id"]), "_ms": _ms(moment),
+            "at": _iso(moment),
+            "audio_url": _audio(row["audio_id"]),
+            "_ms": _ms(moment),
             "_project": row.get("project_id"),
         }
 
     def _put_decision(self, row: dict[str, Any]) -> None:
-        moment = decision_moment({"recording_date": row["recording_date"], "created_at": row["created_at"]}, row["ms"])
+        moment = decision_moment(
+            {"recording_date": row["recording_date"], "created_at": row["created_at"]}, row["ms"]
+        )
         node_id = f"dec:{row['id']}"
         self.info[node_id] = {
-            "id": node_id, "kind": "decision", "decision_id": row["id"], "text": row["label"],
-            "meeting_id": row["meeting_id"], "start_ms": row["ms"],
-            "meeting_caption": _caption(row["caption"], row["recording_date"], row["created_at"], self.today),
-            "at": _iso(moment), "audio_url": _audio(row["audio_id"]), "_ms": _ms(moment),
-            "_project": row.get("project_id"), "_day": graph.local_day(row["recording_date"], row["created_at"]),
+            "id": node_id,
+            "kind": "decision",
+            "decision_id": row["id"],
+            "text": row["label"],
+            "meeting_id": row["meeting_id"],
+            "start_ms": row["ms"],
+            "meeting_caption": _caption(
+                row["caption"], row["recording_date"], row["created_at"], self.today
+            ),
+            "at": _iso(moment),
+            "audio_url": _audio(row["audio_id"]),
+            "_ms": _ms(moment),
+            "_project": row.get("project_id"),
+            "_day": graph.local_day(row["recording_date"], row["created_at"]),
         }
 
     def _put_task(self, row: dict[str, Any]) -> None:
-        base = _meeting_moment(row["recording_date"], row["created_at"]) if row["meeting_id"] else None
+        base = (
+            _meeting_moment(row["recording_date"], row["created_at"]) if row["meeting_id"] else None
+        )
         moment = base + timedelta(milliseconds=int(row["ms"] or 0)) if base else None
         node_id = f"task:{row['id']}"
         self.info[node_id] = {
-            "id": node_id, "kind": "task", "task_id": row["id"], "title": row["label"], "status": row["status"],
-            "meeting_id": row["meeting_id"], "anchor_ms": row["ms"],
+            "id": node_id,
+            "kind": "task",
+            "task_id": row["id"],
+            "title": row["label"],
+            "status": row["status"],
+            "meeting_id": row["meeting_id"],
+            "anchor_ms": row["ms"],
             "meeting_caption": (
-                _caption(row["caption"], row["recording_date"], row["created_at"], self.today) if row["meeting_id"] else None
+                _caption(row["caption"], row["recording_date"], row["created_at"], self.today)
+                if row["meeting_id"]
+                else None
             ),
-            "at": _iso(moment), "audio_url": _audio(row["audio_id"]), "_ms": _ms(moment),
+            "at": _iso(moment),
+            "audio_url": _audio(row["audio_id"]),
+            "_ms": _ms(moment),
             "_project": row.get("project_id"),
         }
 
@@ -748,8 +902,15 @@ class _Tracer:
         moment = _file_moment(row["mtime_ns"])
         node_id = f"file:{row['id']}"
         self.info[node_id] = {
-            "id": node_id, "kind": "file", "file_id": int(row["id"]), "name": row["label"], "ext": row["ext"],
-            "at": _iso(moment), "_ms": _ms(moment), "_gone": row["status"] is not None, "_stem": row.get("stem"),
+            "id": node_id,
+            "kind": "file",
+            "file_id": int(row["id"]),
+            "name": row["label"],
+            "ext": row["ext"],
+            "at": _iso(moment),
+            "_ms": _ms(moment),
+            "_gone": row["status"] is not None,
+            "_stem": row.get("stem"),
             "_stem_key": row.get("stem_key"),
         }
 
@@ -793,15 +954,29 @@ SELECT 'file', f.id, f.name, NULL, NULL, NULL, NULL, f.gone_at, f.mtime_ns, f.ex
             files=_marks(by_prefix["file"]),
         )
         params = [
-            *by_prefix["m"], *by_prefix["dec"], containment_meeting or "", *by_prefix["task"],
-            containment_meeting or "", *TRACE_TASK_STATUSES, *[int(value) for value in by_prefix["file"]],
+            *by_prefix["m"],
+            *by_prefix["dec"],
+            containment_meeting or "",
+            *by_prefix["task"],
+            containment_meeting or "",
+            *TRACE_TASK_STATUSES,
+            *[int(value) for value in by_prefix["file"]],
         ]
         rows = [dict(row) for row in self.connection.execute(sql, params).fetchall()]
         contained = []
         for row in rows:
-            put = {"m": self._put_meeting, "dec": self._put_decision, "task": self._put_task, "file": self._put_file}[row["p"]]
+            put = {
+                "m": self._put_meeting,
+                "dec": self._put_decision,
+                "task": self._put_task,
+                "file": self._put_file,
+            }[row["p"]]
             put(row)
-            if containment_meeting and row["p"] in ("dec", "task") and row["meeting_id"] == containment_meeting:
+            if (
+                containment_meeting
+                and row["p"] in ("dec", "task")
+                and row["meeting_id"] == containment_meeting
+            ):
                 contained.append(row)
         return contained
 
@@ -813,8 +988,15 @@ SELECT 'file', f.id, f.name, NULL, NULL, NULL, NULL, f.gone_at, f.mtime_ns, f.ex
         """包含关系的线：会议到决议（in_meeting）、会议到任务（task_from）。"""
         node = self.info[node_id]
         if node["kind"] == "decision":
-            edge = {"id": f"e:in:{node['decision_id']}", "kind": "in_meeting", "from": f"m:{meeting_id}", "to": node_id,
-                    "label": "", "meeting_id": meeting_id, "at_ms": node["start_ms"]}
+            edge = {
+                "id": f"e:in:{node['decision_id']}",
+                "kind": "in_meeting",
+                "from": f"m:{meeting_id}",
+                "to": node_id,
+                "label": "",
+                "meeting_id": meeting_id,
+                "at_ms": node["start_ms"],
+            }
         else:
             edge = _task_from_edge(node, meeting_id)
         edge["level"] = 1
@@ -833,7 +1015,11 @@ SELECT 'file', f.id, f.name, NULL, NULL, NULL, NULL, f.gone_at, f.mtime_ns, f.ex
     def _expand(self, node_id: str) -> list[_Step]:
         prefix = node_id.partition(":")[0]
         # 中心文件按同内容那一组读（和局部图一样）：挪过位置、找不到活文件时旧 id 上的线也算在它上面
-        group = self.center_file.group if self.center_file is not None and node_id == self.center_id else None
+        group = (
+            self.center_file.group
+            if self.center_file is not None and node_id == self.center_id
+            else None
+        )
         raw = relation_read.edges_of(self.connection, node_id, _TRACE_KINDS, file_group=group)
         others = set()
         for edge in raw:
@@ -855,7 +1041,11 @@ SELECT 'file', f.id, f.name, NULL, NULL, NULL, NULL, f.gone_at, f.mtime_ns, f.ex
                 task = self.info.get(edge["from"])
                 if task is None or task.get("status") not in TRACE_TASK_STATUSES:
                     continue
-            steps.append(_Step(other, _level(kind, edge.get("via")), True, self._edge(self._trace_edge(edge))))
+            steps.append(
+                _Step(
+                    other, _level(kind, edge.get("via")), True, self._edge(self._trace_edge(edge))
+                )
+            )
         # 包含关系：会议到它的决议和（已确认、进行中、完成的）任务；决议、任务到它的会
         if prefix == "m":
             meeting_id = node_id.partition(":")[2]
@@ -864,14 +1054,17 @@ SELECT 'file', f.id, f.name, NULL, NULL, NULL, NULL, f.gone_at, f.mtime_ns, f.ex
                 steps.append(_Step(target, 1, False, self._containment(meeting_id, target)))
         elif own_meeting and f"m:{own_meeting}" in self.info:
             if prefix != "task" or info.get("status") in TRACE_TASK_STATUSES:
-                steps.append(_Step(f"m:{own_meeting}", 1, False, self._containment(own_meeting, node_id)))
+                steps.append(
+                    _Step(f"m:{own_meeting}", 1, False, self._containment(own_meeting, node_id))
+                )
         return steps
 
     def _same_name(self) -> list[_Step]:
         center = self.center_file
         assert center is not None
         stem_key = center.row.get("stem_key")
-        if not stem_key:
+        # PRD、README 这类通用文件名在别的文件夹里也很常见，不代表是同一份的别的版本（见 D7）
+        if not stem_key or stem_usability(stem_key) != STEM_YES:
             return []
         group = center.group
         rows = self.connection.execute(
@@ -880,56 +1073,104 @@ SELECT 'file', f.id, f.name, NULL, NULL, NULL, NULL, f.gone_at, f.mtime_ns, f.ex
                  WHERE pr.project_id = ? AND f.stem_key = ? AND f.gone_at IS NULL AND f.id NOT IN ({_marks(group)})
                    AND (? IS NULL OR f.content_key IS NULL OR f.content_key != ?)
                  ORDER BY f.mtime_ns DESC, f.id DESC LIMIT ?""",
-            (center.project_id, stem_key, *group, center.content_key, center.content_key, SAME_NAME_CAP),
+            (
+                center.project_id,
+                stem_key,
+                *group,
+                center.content_key,
+                center.content_key,
+                SAME_NAME_CAP,
+            ),
         ).fetchall()
         stem = str(center.row.get("stem") or graph.file_stem(center.row["name"]))
         steps = []
         for row in rows:
             self._put_file(dict(row))
             node_id = f"file:{row['id']}"
-            edge = {"id": f"e:same:{row['id']}:{center.file_id}", "kind": "same_name", "from": node_id,
-                    "to": self.center_id, "label": f"同属『{stem}』", "level": 2}
+            edge = {
+                "id": f"e:same:{row['id']}:{center.file_id}",
+                "kind": "same_name",
+                "from": node_id,
+                "to": self.center_id,
+                "label": f"同属『{stem}』",
+                "level": 2,
+            }
             steps.append(_Step(node_id, 2, True, self._edge(edge)))
         return steps
 
     def _trace_edge(self, edge: dict[str, Any]) -> dict[str, Any]:
         kind = edge["kind"]
         level = _level(kind, edge.get("via"))
-        base = {"from": edge["from"], "to": edge["to"], "meeting_id": edge.get("meeting_id"), "at_ms": edge.get("at_ms"),
-                "quote": _short(edge.get("quote") or "", relation_read.QUOTE_CHARS), "level": level}
+        base = {
+            "from": edge["from"],
+            "to": edge["to"],
+            "meeting_id": edge.get("meeting_id"),
+            "at_ms": edge.get("at_ms"),
+            "quote": _short(edge.get("quote") or "", relation_read.QUOTE_CHARS),
+            "level": level,
+        }
         if kind == "mention":
             meeting_id = edge["meeting_id"]
             needle = edge.get("needle") or ""
-            label = f"会上说『{needle}』· {graph._clock_hms(edge.get('at_ms'))}" if needle else "会上提到"
-            item = {"id": f"e:file:{edge['file_id']}:{meeting_id}", "kind": "mentioned", "label": label,
-                    "needle": needle}
+            label = (
+                f"会上说『{needle}』· {graph._clock_hms(edge.get('at_ms'))}"
+                if needle
+                else "会上提到"
+            )
+            item = {
+                "id": f"e:file:{edge['file_id']}:{meeting_id}",
+                "kind": "mentioned",
+                "label": label,
+                "needle": needle,
+            }
             if edge.get("relation_id") is not None:
-                item.update(relation_id=edge["relation_id"], origin="manual" if edge.get("via") == "manual" else "llm")
+                item.update(
+                    relation_id=edge["relation_id"],
+                    origin="manual" if edge.get("via") == "manual" else "llm",
+                )
             return {**base, **item}
         if kind == "deliverable":
             task = self.info.get(edge["from"], {})
-            return {**base, "id": f"e:dlv:{edge['deliverable_id']}", "kind": "deliverable",
-                    "label": graph.deliverable_label(task.get("title")), "deliverable_id": edge["deliverable_id"],
-                    "task_id": task.get("task_id")}
+            return {
+                **base,
+                "id": f"e:dlv:{edge['deliverable_id']}",
+                "kind": "deliverable",
+                "label": graph.deliverable_label(task.get("title")),
+                "deliverable_id": edge["deliverable_id"],
+                "task_id": task.get("task_id"),
+            }
         if kind == "affects_resolved":
             decision = self.info.get(edge["from"], {})
             file = self.info.get(edge["to"], {})
             text = decision.get("text") or edge.get("quote") or ""
             day = decision.get("_day")
-            label = graph.affects_label(text, file.get("name") or "", day, self.today).rsplit("，", 1)[0]
-            return {**base, "id": f"e:aff:{edge['relation_id']}", "kind": "affects", "state": "ok",
-                    "label": label + "，你标过已更新", "relation_id": edge["relation_id"],
-                    "decision_id": edge.get("decision_id")}
+            label = graph.affects_label(text, file.get("name") or "", day, self.today).rsplit(
+                "，", 1
+            )[0]
+            return {
+                **base,
+                "id": f"e:aff:{edge['relation_id']}",
+                "kind": "affects",
+                "state": "ok",
+                "label": label + "，你标过已更新",
+                "relation_id": edge["relation_id"],
+                "decision_id": edge.get("decision_id"),
+            }
         # 后来改了、后来又提到：箭头指向后一条
         first, second = edge["from"], edge["to"]
         first_ms = self.info.get(first, {}).get("_ms") or 0
         second_ms = self.info.get(second, {}).get("_ms") or 0
         if first_ms > second_ms:
             first, second = second, first
-        return {**base, "from": first, "to": second,
-                "id": f"e:{'later' if kind == 'later_changed' else 'restated'}:{edge['relation_id']}", "kind": kind,
-                "label": LATER_CHANGED_TEXT if kind == "later_changed" else RESTATED_TEXT,
-                "relation_id": edge["relation_id"]}
+        return {
+            **base,
+            "from": first,
+            "to": second,
+            "id": f"e:{'later' if kind == 'later_changed' else 'restated'}:{edge['relation_id']}",
+            "kind": kind,
+            "label": LATER_CHANGED_TEXT if kind == "later_changed" else RESTATED_TEXT,
+            "relation_id": edge["relation_id"],
+        }
 
 
 def _trace_center(tracer: _Tracer, node: str) -> dict[str, Any]:
@@ -941,9 +1182,17 @@ def _trace_center(tracer: _Tracer, node: str) -> dict[str, Any]:
         tracer.center_file = center
         tracer.center_id = f"file:{center.file_id}"
         row = center.row
-        tracer._put_file({"id": center.file_id, "label": row["name"], "ext": row["ext"], "mtime_ns": row.get("mtime_ns"),
-                          "status": None if center.live is not None else "gone", "stem": row.get("stem"),
-                          "stem_key": row.get("stem_key")})
+        tracer._put_file(
+            {
+                "id": center.file_id,
+                "label": row["name"],
+                "ext": row["ext"],
+                "mtime_ns": row.get("mtime_ns"),
+                "status": None if center.live is not None else "gone",
+                "stem": row.get("stem"),
+                "stem_key": row.get("stem_key"),
+            }
+        )
         return _center_payload(center, stale=False, asks=False)
     audio = AUDIO_ID_SQL.format(meeting="m.id")
     if prefix == "m":
@@ -1002,7 +1251,9 @@ def trace(connection: Any, node: str, *, today: date | None = None) -> dict[str,
     cut = {"back": False, "forward": False}
     spare = [TRACE_LOOKAHEAD]
 
-    def candidates_of(node_id: str, direction: str, taken: set[str]) -> list[tuple[int, int, str, _Step]]:
+    def candidates_of(
+        node_id: str, direction: str, taken: set[str]
+    ) -> list[tuple[int, int, str, _Step]]:
         current_ms = tracer.info[node_id].get("_ms")
         if current_ms is None:
             return []
@@ -1013,7 +1264,9 @@ def trace(connection: Any, node: str, *, today: date | None = None) -> dict[str,
             target_ms = tracer.info.get(step.target, {}).get("_ms")
             if target_ms is None:
                 continue
-            if (direction == "back" and target_ms < current_ms) or (direction == "forward" and target_ms > current_ms):
+            if (direction == "back" and target_ms < current_ms) or (
+                direction == "forward" and target_ms > current_ms
+            ):
                 found.append((step.level, abs(target_ms - current_ms), step.target, step))
         return sorted(found, key=lambda item: item[:3])
 
@@ -1043,8 +1296,10 @@ def trace(connection: Any, node: str, *, today: date | None = None) -> dict[str,
             # 几乎总先被取中，会上一条没有下文的决议就把这个方向截断了（cut 还是 false）。这里仍按那个
             # 顺序看，但包含关系的一步只在它还能接着走时才取；都走不通时退回原来的取法（取排第一的，
             # 这时链就停在它上面）。
-            best = next((step for *_order, step in candidates if step.counted or leads_on(step, direction)),
-                        candidates[0][3])
+            best = next(
+                (step for *_order, step in candidates if step.counted or leads_on(step, direction)),
+                candidates[0][3],
+            )
             chain_nodes.add(best.target)
             sides[direction].append(best.target)
             chain_edges.add(best.edge["id"])

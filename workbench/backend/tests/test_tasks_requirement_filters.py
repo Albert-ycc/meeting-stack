@@ -1,5 +1,6 @@
 """`/api/tasks` 新筛选（requirement_id / assignee / meeting_date_from/to / q）与
 counts、project_counts 口径（260915 新增，D20）。"""
+
 from meeting_workbench.db import Database, utc_now
 
 from .test_tasks_api import make_client, write_headers
@@ -75,15 +76,11 @@ def test_filter_by_meeting_date_range_matches_meetings_endpoint_convention(tmp_p
     insert_task(db, "early-task", "confirmed", meeting_id="vm-early")
     insert_task(db, "late-task", "confirmed", meeting_id="vm-late")
 
-    payload = client.get(
-        "/api/tasks", params={"meeting_date_from": "2026-03-01"}
-    ).json()
+    payload = client.get("/api/tasks", params={"meeting_date_from": "2026-03-01"}).json()
     assert {item["id"] for item in payload["items"]} == {"late-task"}
     assert payload["items"][0]["meeting_recording_date"] == "2026-06-01T00:00:00+00:00"
 
-    both = client.get(
-        "/api/tasks", params={"meeting_date_to": "2026-12-31"}
-    ).json()
+    both = client.get("/api/tasks", params={"meeting_date_to": "2026-12-31"}).json()
     assert {item["id"] for item in both["items"]} == {"early-task", "late-task"}
 
 
@@ -114,20 +111,24 @@ def test_counts_affected_by_new_filters_but_not_status(tmp_path):
     """counts 受除 status 外的全部筛选影响。"""
     client, settings = make_client(tmp_path)
     project_id = client.post(
-        "/api/projects", json={"name": "样品项目", "color": "#2c8d83"}, headers=write_headers(client)
+        "/api/projects",
+        json={"name": "样品项目", "color": "#2c8d83"},
+        headers=write_headers(client),
     ).json()["id"]
     db = Database(settings.database_path)
     insert_task(db, "me-confirmed", "confirmed", assignee="me", project_id=project_id)
     insert_task(db, "me-done", "done", assignee="me", project_id=project_id)
     insert_task(db, "ai-confirmed", "confirmed", assignee="ai", project_id=project_id)
 
-    payload = client.get(
-        "/api/tasks", params={"assignee": "me", "status": "confirmed"}
-    ).json()
+    payload = client.get("/api/tasks", params={"assignee": "me", "status": "confirmed"}).json()
     assert payload["total"] == 1
     assert payload["counts"] == {
-        "pending_confirm": 0, "confirmed": 1, "in_progress": 0,
-        "done": 1, "cancelled": 0, "expired": 0,
+        "pending_confirm": 0,
+        "confirmed": 1,
+        "in_progress": 0,
+        "done": 1,
+        "cancelled": 0,
+        "expired": 0,
     }
 
 

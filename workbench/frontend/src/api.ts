@@ -22,6 +22,7 @@ import type {
   RequirementsPayload,
   AsrGoldSample,
   AsrShadowRun,
+  GlossaryCandidatesInbox,
   GlossaryConfirmResult,
   GlossaryScope,
   GlossarySuggestion,
@@ -481,11 +482,35 @@ function formatValidationLocation(location: unknown): string {
     hotwords: "热词",
     filename: "文件名",
     size_bytes: "文件大小",
+    title: "名称",
   };
   return location
     .filter((part) => part !== "body" && part !== "query" && part !== "path")
     .map((part) => typeof part === "number" ? `第 ${part + 1} 项` : fieldNames[String(part)] ?? String(part))
     .join(" ");
+}
+
+/**
+ * pydantic v2 内置校验器的 msg 是英文原文（"String should have at most 200 characters"），
+ * D9 的场景（需求名超长）就是这种。这里只翻这几种固定文案的内置消息——能精确匹配上的才翻，
+ * 翻不出来的（比如后端自定义 Value error 校验器写的话）原样返回，不额外杜撰通用兜底文案，
+ * 免得把后端本来就写清楚的话盖掉。
+ */
+function translateValidationMessage(message: string): string {
+  const maxChars = message.match(/^String should have at most (\d+) characters?$/);
+  if (maxChars) return `不能超过 ${maxChars[1]} 个字`;
+  const minChars = message.match(/^String should have at least (\d+) characters?$/);
+  if (minChars) return minChars[1] === "1" ? "不能为空" : `不能少于 ${minChars[1]} 个字`;
+  const maxItems = message.match(/^(?:List|Set|Tuple) should have at most (\d+) items?$/);
+  if (maxItems) return `最多 ${maxItems[1]} 项`;
+  const minItems = message.match(/^(?:List|Set|Tuple) should have at least (\d+) items?$/);
+  if (minItems) return `至少要 ${minItems[1]} 项`;
+  const ge = message.match(/^Input should be greater than or equal to (-?\d+(?:\.\d+)?)$/);
+  if (ge) return `不能小于 ${ge[1]}`;
+  const gt = message.match(/^Input should be greater than (-?\d+(?:\.\d+)?)$/);
+  if (gt) return `要大于 ${gt[1]}`;
+  if (message === "Field required") return "不能为空";
+  return message;
 }
 
 function formatErrorDetail(data: unknown, status: number): string {
@@ -498,10 +523,13 @@ function formatErrorDetail(data: unknown, status: number): string {
   const entries = Array.isArray(detail) ? detail : [detail];
   const messages = entries.flatMap((entry) => {
     if (typeof entry !== "object" || entry === null) return [];
-    const message = "msg" in entry && typeof entry.msg === "string" ? entry.msg : "";
-    if (!message) return [];
+    const rawMessage = "msg" in entry && typeof entry.msg === "string" ? entry.msg : "";
+    if (!rawMessage) return [];
+    const message = translateValidationMessage(rawMessage);
     const location = "loc" in entry ? formatValidationLocation(entry.loc) : "";
-    return [location ? `${location}：${message}` : message];
+    // 翻成中文的消息直接接在字段名后面念成一句话；翻不出来的保持原来的「字段：原文」分隔
+    const translated = message !== rawMessage;
+    return [location ? (translated ? `${location}${message}` : `${location}：${message}`) : message];
   });
   return messages.length ? messages.join("；") : `请求失败（${status}）`;
 }
@@ -1291,6 +1319,8 @@ export const api = {
   requirementContext: (requirementId: string) =>
     read<RequirementContext>(`/api/requirements/${encodeURIComponent(requirementId)}/context`),
   // ---------------------------------------------------------------- 4h 从材料里找到的词
+  /** 词典页收件箱：所有项目的待认词，按项目分组 */
+  glossaryCandidatesInbox: () => read<GlossaryCandidatesInbox>("/api/glossary/candidates"),
   /** 词典页：这个项目全部待认的词（最多 30 项） */
   glossaryCandidates: (projectId: string) =>
     read<MaterialWordsList>(`/api/projects/${encodeURIComponent(projectId)}/glossary-candidates`),

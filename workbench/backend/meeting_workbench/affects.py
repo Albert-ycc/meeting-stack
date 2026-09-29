@@ -7,9 +7,11 @@ relations.quote 是决议原文。
 - 纯函数：values(text) 认六种数值（百分数、金额、日期、月份、数量、普通数，中文数字到「千」）；
   decided_values(text) 是决议自己定下的值（「由 A 改成 B」只留 B）；decision_subject(text) 取主语
   （紧挨着第一个数值前面的那段，在「在」「按」「由」「从」处截断，加上决议里出现的已确认词条，最多
-  3 个）；cancel_objects(text) 取「取消 X」「X 换成…」里的 X。项目名、它的也叫和根目录名永远不当主语。
+  3 个）；cancel_objects(text) 取「取消 X」「X 换成…」里的 X（「订单取消接口」「采购单取消」这类复合名词
+  里的「取消」不算）。项目名、它的也叫和根目录名永远不当主语。
 - 找片段：3 个字以上用 material_chunks_fts MATCH；2 个字的只在本项目片段不超过 10 万段时用 instr，
-  一场会的 2 字主语合成一条语句一起查。
+  一场会的 2 字主语合成一条语句一起查。字面上这个主语在项目材料里超过 10 份文件都有（「EDC」「定位」
+  这类到处都是的词）时太泛，不能当证据，这个主语直接跳过。
 - 两条规则：数值规则（片段里有主语，主语前后 40 个字以内有同类、值不同的数；决议自己的值已经在
   里面就跳过）；取消规则（片段里原样有 X）。
 - 文件：活的、normal 区、内容标识新鲜、不是录音和会议材料、修改时间早于决议且在一年以内、不是这条
@@ -23,6 +25,7 @@ relations.quote 是决议原文。
 - L3：在问的影响，文件断了线、决议之后改过、决议没了或后来改了的改 cleared。
 - stat_guard：文件面板和预览在有在问的影响时 stat 一次文件，变了就先不给这几个问题（不写库）。
 """
+
 from __future__ import annotations
 
 import json
@@ -61,7 +64,20 @@ RULE_CANCEL = "cancel"
 
 # ---------------------------------------------------------------------- 数值
 
-_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_DIGITS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
 _CN_UNITS = {"十": 10, "百": 100, "千": 1000}
 _CN = "零〇一二两三四五六七八九十百千"
 # 前面紧挨着字母的数（v3 这种版本号）不算
@@ -103,7 +119,9 @@ class Value:
 def cn_number(text: str) -> float | None:
     """中文数字到「千」（加上「万」作乘数）：五 → 5，十五 → 15，三千五百 → 3500，两万 → 20000。"""
     text = text.strip()
-    if not text or any(char not in _CN_DIGITS and char not in _CN_UNITS and char != "万" for char in text):
+    if not text or any(
+        char not in _CN_DIGITS and char not in _CN_UNITS and char != "万" for char in text
+    ):
         return None
     if "万" in text:
         head, _sep, tail = text.partition("万")
@@ -145,11 +163,26 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (KIND_PERCENT, re.compile(rf"百分之\s*([{_CN}\d.]+)")),
     (KIND_PERCENT, re.compile(rf"({_NUM}|[{_CN}]+)\s*(?:\x25|个点)")),
     # 月后面是阿拉伯数字的日可以不写「日」「号」；是中文数字的日要写（「12 月两个版本」不是 12/2）
-    (KIND_DATE, re.compile(rf"(?<![\d.]){_YEAR}(\d{{1,2}}|[{_CN}]{{1,3}})\s*月\s*(\d{{1,2}})(?!\d)(?:\s*[日号]|{_NOT_DAY})")),
-    (KIND_DATE, re.compile(rf"(?<![\d.]){_YEAR}(\d{{1,2}}|[{_CN}]{{1,3}})\s*月\s*([{_CN}]{{1,3}})\s*[日号]")),
+    (
+        KIND_DATE,
+        re.compile(
+            rf"(?<![\d.]){_YEAR}(\d{{1,2}}|[{_CN}]{{1,3}})\s*月\s*(\d{{1,2}})(?!\d)(?:\s*[日号]|{_NOT_DAY})"
+        ),
+    ),
+    (
+        KIND_DATE,
+        re.compile(
+            rf"(?<![\d.]){_YEAR}(\d{{1,2}}|[{_CN}]{{1,3}})\s*月\s*([{_CN}]{{1,3}})\s*[日号]"
+        ),
+    ),
     (KIND_DATE, re.compile(r"(?<![\d./])(?:\d{4}/)?(\d{1,2})/(\d{1,2})(?![\d/])")),
     (KIND_DATE, re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})\s*[日号]")),
-    (KIND_MONTH, re.compile(rf"(?<![\d.]){_YEAR}(\d{{1,2}}|[{_CN}]{{1,3}})\s*月(?:份|底|初|中旬|上旬|下旬|中|末)?")),
+    (
+        KIND_MONTH,
+        re.compile(
+            rf"(?<![\d.]){_YEAR}(\d{{1,2}}|[{_CN}]{{1,3}})\s*月(?:份|底|初|中旬|上旬|下旬|中|末)?"
+        ),
+    ),
     (KIND_MONEY, re.compile(rf"({_NUM}|[{_CN}]+)\s*(万|千)\s*{_MONEY_SUFFIX}?")),
     (KIND_MONEY, re.compile(rf"({_NUM})\s*(k|w)(?![A-Za-z])\s*({_MONEY_SUFFIX})?", re.IGNORECASE)),
     (KIND_MONEY, re.compile(rf"({_NUM}|[{_CN}]+)\s*{_MONEY_SUFFIX}")),
@@ -204,10 +237,16 @@ def _value(kind: str, match: re.Match[str], start: int, end: int) -> Value | Non
     if kind == KIND_PERCENT:
         return Value(kind, number, start, end)
     if kind == KIND_MONEY:
-        scale = match.group(2).lower() if match.lastindex and match.lastindex >= 2 and match.group(2) else ""
+        scale = (
+            match.group(2).lower()
+            if match.lastindex and match.lastindex >= 2 and match.group(2)
+            else ""
+        )
         if scale in ("k", "w") and not match.group(3):
             # 1.2k、3w 只在前面有 ¥、￥ 或说钱的词时算金额（「3w 用户」不是）
-            if not _MONEY_CONTEXT.search(match.string[max(0, start - _MONEY_CONTEXT_CHARS) : start]):
+            if not _MONEY_CONTEXT.search(
+                match.string[max(0, start - _MONEY_CONTEXT_CHARS) : start]
+            ):
                 return None
         return Value(kind, number * _MONEY_SCALE.get(scale, 1), start, end)
     if kind == KIND_COUNT:
@@ -239,12 +278,78 @@ def same(left: Value, right: Value) -> bool:
 _TRAILING_VERBS = tuple(
     sorted(
         (
-            "下调", "上调", "调整为", "调整到", "调整成", "调到", "调为", "调成", "改为", "改成", "改到", "定在",
-            "定为", "定成", "控制在", "维持在", "保持在", "不超过", "不低于", "不少于", "不高于", "不多于", "按照",
-            "降到", "降至", "降为", "提到", "提高到", "提高", "降低", "增加到", "增加", "减少到", "减少", "减到",
-            "设为", "设置为", "设成", "大约", "约为", "暂定", "暂时", "统一", "先", "暂", "按", "为", "是", "到",
-            "在", "约", "共", "再", "都", "也", "就", "还", "仍", "需", "要", "需要", "应", "应该", "必须", "只", "最多", "最少", "至少", "上限", "下限",
-            "由", "从",
+            "下调",
+            "上调",
+            "调整为",
+            "调整到",
+            "调整成",
+            "调到",
+            "调为",
+            "调成",
+            "改为",
+            "改成",
+            "改到",
+            "定在",
+            "定为",
+            "定成",
+            "控制在",
+            "维持在",
+            "保持在",
+            "不超过",
+            "不低于",
+            "不少于",
+            "不高于",
+            "不多于",
+            "按照",
+            "降到",
+            "降至",
+            "降为",
+            "提到",
+            "提高到",
+            "提高",
+            "降低",
+            "增加到",
+            "增加",
+            "减少到",
+            "减少",
+            "减到",
+            "设为",
+            "设置为",
+            "设成",
+            "大约",
+            "约为",
+            "暂定",
+            "暂时",
+            "统一",
+            "先",
+            "暂",
+            "按",
+            "为",
+            "是",
+            "到",
+            "在",
+            "约",
+            "共",
+            "再",
+            "都",
+            "也",
+            "就",
+            "还",
+            "仍",
+            "需",
+            "要",
+            "需要",
+            "应",
+            "应该",
+            "必须",
+            "只",
+            "最多",
+            "最少",
+            "至少",
+            "上限",
+            "下限",
+            "由",
+            "从",
         ),
         key=len,
         reverse=True,
@@ -257,18 +362,74 @@ _FROM_WORDS = ("由", "从")
 _CHANGE_VERBS = tuple(
     sorted(
         (
-            "改成", "改为", "改到", "调到", "调为", "调成", "调整为", "调整到", "调整成", "降到", "降至", "降为",
-            "降低到", "升到", "升至", "升为", "提到", "提高到", "提升到", "增加到", "减少到", "减到",
+            "改成",
+            "改为",
+            "改到",
+            "调到",
+            "调为",
+            "调成",
+            "调整为",
+            "调整到",
+            "调整成",
+            "降到",
+            "降至",
+            "降为",
+            "降低到",
+            "升到",
+            "升至",
+            "升为",
+            "提到",
+            "提高到",
+            "提升到",
+            "增加到",
+            "减少到",
+            "减到",
         ),
         key=len,
         reverse=True,
     )
 )
-_LEADING_WORDS = ("的", "把", "将", "对", "就", "并", "且", "和", "与", "及", "由", "从", "让", "给", "请", "原来的", "原")
+_LEADING_WORDS = (
+    "的",
+    "把",
+    "将",
+    "对",
+    "就",
+    "并",
+    "且",
+    "和",
+    "与",
+    "及",
+    "由",
+    "从",
+    "让",
+    "给",
+    "请",
+    "原来的",
+    "原",
+)
 _CANCEL_BEFORE = re.compile(r"(取消|不再|去掉|砍掉|停用|下线|不做)(?:掉|了)?\s*")
 _CANCEL_AFTER = re.compile(r"(换成|替换为|替换成|改用|改成)")
 _CANCEL_STOP = re.compile(r"(?:和|与|以及|及|或)")
 _TRAILING_PARTICLES = ("了", "的", "吧", "呢", "啊")
+# 「取消」当名词用时夹在复合词里：「订单取消接口」（后面直接跟着接口、按钮这类名词）、「采购单取消」
+# （前面是「单」）。这两种不当动词处理；「本期去掉 X」「会上决定取消 X」照常算
+_CANCEL_NOUN_HEADS = (
+    "接口",
+    "按钮",
+    "功能",
+    "流程",
+    "原因",
+    "状态",
+    "操作",
+    "记录",
+    "规则",
+    "逻辑",
+    "入口",
+    "权限",
+    "页面",
+    "时间",
+)
 
 
 def _run_char(char: str) -> bool:
@@ -324,7 +485,11 @@ def decided_values(text: str) -> list[Value]:
     for index, value in enumerate(found):
         before = body[: value.start].rstrip()
         after = body[value.end :].lstrip()
-        if index + 1 < len(found) and before.endswith(_FROM_WORDS) and after.startswith(_CHANGE_VERBS):
+        if (
+            index + 1 < len(found)
+            and before.endswith(_FROM_WORDS)
+            and after.startswith(_CHANGE_VERBS)
+        ):
             continue
         kept.append(value)
     return kept
@@ -361,7 +526,9 @@ def decision_subject(
     found = values(body)
     if found:
         # 「看板系统的总价」取「的」后面那一截
-        word = _strip_trailing(_cut(_strip_trailing(_run_before(body, found[0].start)))).rpartition("的")[2]
+        word = _strip_trailing(_cut(_strip_trailing(_run_before(body, found[0].start)))).rpartition(
+            "的"
+        )[2]
         word = _strip_leading(word)[-SUBJECT_CHARS:]
         word = _strip_leading(word)
         if len(word) >= 2 and not _banned(word, excluded):
@@ -387,12 +554,22 @@ def _object(word: str) -> str | None:
     return word if 2 <= len(word) <= 12 else None
 
 
+def _cancel_is_verb(body: str, start: int, end: int) -> bool:
+    """body[start:end] 处的触发词是不是动词用法：前面紧贴「单」（「采购单取消」）或后面紧跟接口、按钮这类
+    名词（「订单取消接口」）时是复合名词的一截，不算。"""
+    before = _run_before(body, start)
+    return not before.endswith("单") and not body[end:].startswith(_CANCEL_NOUN_HEADS)
+
+
 def cancel_objects(text: str, *, excluded: Sequence[str] = ()) -> list[str]:
     """取消的说法里旧的那个东西 X（2 到 12 个字）：「取消」「不再」「去掉」「砍掉」「停用」「下线」「不做」
-    加 X，或 X 加「换成」「替换为」「改用」「改成」（后面紧跟数值的「改成」是改数，不算）。"""
+    加 X，或 X 加「换成」「替换为」「改用」「改成」（后面紧跟数值的「改成」是改数，不算）。「订单取消
+    接口」「采购单取消」这类复合名词里的「取消」不当动词处理。"""
     body = _normal(text)
     found: list[str] = []
     for match in _CANCEL_BEFORE.finditer(body):
+        if not _cancel_is_verb(body, match.start(), match.end()):
+            continue
         word = _object(_run_after(body, match.end()))
         if word:
             found.append(word)
@@ -450,7 +627,9 @@ def _shingles(text: str) -> set[str]:
     return {key[index : index + 4] for index in range(len(key) - 3)}
 
 
-def is_record(decision_text: str, chunk_texts: Iterable[str], decided: Sequence[Value] = ()) -> bool:
+def is_record(
+    decision_text: str, chunk_texts: Iterable[str], decided: Sequence[Value] = ()
+) -> bool:
     """这份文件是不是这条决议的记录（导出的纪要副本）：有一段包含决议 60% 以上的 4 字片段。decided 不为
     空时（数值规则）这一段还要写着决议自己的值才算：『总价在原基础上下调 3%，含税』对决议『总价在原基础
     上下调 5%，含税』字面几乎一样，却正是要标的旧文件。"""
@@ -468,7 +647,9 @@ def is_record(decision_text: str, chunk_texts: Iterable[str], decided: Sequence[
 
 def _has_value(text: str, decided: Sequence[Value]) -> bool:
     found = values(text)
-    return any(compatible(mine, theirs) and same(mine, theirs) for mine in decided for theirs in found)
+    return any(
+        compatible(mine, theirs) and same(mine, theirs) for mine in decided for theirs in found
+    )
 
 
 # ---------------------------------------------------------------------- H2 的排程
@@ -570,10 +751,15 @@ def due_count(connection: Any, now: datetime) -> int:
 
 
 def _project_context(connection: Any, project_id: str) -> dict[str, Any]:
-    project = connection.execute("SELECT name, also_names FROM projects WHERE id = ?", (project_id,)).fetchone()
-    roots = [str(row[0]) for row in connection.execute(
-        "SELECT path FROM project_material_roots WHERE project_id = ?", (project_id,)
-    ).fetchall()]
+    project = connection.execute(
+        "SELECT name, also_names FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    roots = [
+        str(row[0])
+        for row in connection.execute(
+            "SELECT path FROM project_material_roots WHERE project_id = ?", (project_id,)
+        ).fetchall()
+    ]
     excluded = [
         *(project_names(project["name"], project["also_names"]) if project is not None else []),
         *(path.rstrip("/").rpartition("/")[2] for path in roots),
@@ -595,9 +781,14 @@ def _project_context(connection: Any, project_id: str) -> dict[str, Any]:
                 names.extend(str(item) for item in extra if isinstance(item, str) and item)
         terms.append((str(row["term"]), names))
     chunk_total = connection.execute(
-        f"SELECT COUNT(*) FROM material_chunks c WHERE c.content_key IN ({_PROJECT_FILES})", (project_id,)
+        f"SELECT COUNT(*) FROM material_chunks c WHERE c.content_key IN ({_PROJECT_FILES})",
+        (project_id,),
     ).fetchone()[0]
-    return {"excluded": excluded, "terms": terms, "short_ok": int(chunk_total) <= SHORT_NEEDLE_CHUNKS}
+    return {
+        "excluded": excluded,
+        "terms": terms,
+        "short_ok": int(chunk_total) <= SHORT_NEEDLE_CHUNKS,
+    }
 
 
 # 片段连文件：活的、normal 区、内容标识新鲜、不是录音、不是会议材料、在这个项目的根目录里
@@ -609,7 +800,9 @@ _CHUNK_JOIN = """JOIN material_contents mc ON mc.content_key = c.content_key AND
   JOIN project_material_roots pr ON pr.id = f.root_id AND pr.project_id = :pid"""
 
 
-def _match_chunks(connection: Any, project_id: str, needle: str, after: int, upto: int) -> list[dict[str, Any]]:
+def _match_chunks(
+    connection: Any, project_id: str, needle: str, after: int, upto: int
+) -> list[dict[str, Any]]:
     return [
         dict(row)
         for row in connection.execute(
@@ -706,8 +899,16 @@ def match_decision(
         elif context["short_ok"] and shorts < SHORT_PER_DECISION:
             shorts += 1
             cached = (short_cache or {}).get(needle)
-            chunks = cached if cached is not None else _short_chunks(connection, project_id, [needle], after, upto)[needle]
+            chunks = (
+                cached
+                if cached is not None
+                else _short_chunks(connection, project_id, [needle], after, upto)[needle]
+            )
         else:
+            continue
+        if rule == RULE_VALUE and len({chunk["content_key"] for chunk in chunks}) > TOO_MANY_FILES:
+            # 主语在项目材料里到处都是（「EDC」「定位」这类广泛出现的词），不止决议自己说的这份，
+            # 太泛不能当证据：这条决议的字面主语没抓准，跳过这个主语，不进一步判断片段
             continue
         for chunk in chunks:
             mtime = int(chunk["mtime_ns"] or 0)
@@ -734,7 +935,9 @@ def match_decision(
     return sorted(best.values(), key=lambda hit: hit.order())[:FILES_PER_DECISION]
 
 
-def _row_for(decision: Mapping[str, Any], meeting_id: str, project_id: str, hit: _Hit) -> dict[str, Any]:
+def _row_for(
+    decision: Mapping[str, Any], meeting_id: str, project_id: str, hit: _Hit
+) -> dict[str, Any]:
     chunk = hit.chunk
     return {
         "kind": "affects",
@@ -752,7 +955,9 @@ def _row_for(decision: Mapping[str, Any], meeting_id: str, project_id: str, hit:
         "stem_key": chunk["stem_key"],
         # 决议原文；材料一端只存段号
         "quote": str(decision["text"] or ""),
-        "evidence_json": canonical({"rule": hit.rule, "terms": [hit.term], "ordinal": int(chunk["ordinal"])}),
+        "evidence_json": canonical(
+            {"rule": hit.rule, "terms": [hit.term], "ordinal": int(chunk["ordinal"])}
+        ),
         "score": (2.0 if hit.rule == RULE_CANCEL else 1.0) + len(hit.term) / 100,
     }
 
@@ -802,7 +1007,11 @@ def match_due(
             stopped = STOP_BUDGET
             break
         outcome = _match_meeting(
-            db, meeting, moment, stamp, busy,
+            db,
+            meeting,
+            moment,
+            stamp,
+            busy,
             out_of_time=None if first else out_of_time,
             room=None if first else most - tried,
         )
@@ -813,7 +1022,13 @@ def match_due(
         tried += outcome["tried"]
         written += outcome["written"]
         cleared += outcome["cleared"]
-    return {"tried": tried, "pending": len(due), "written": written, "cleared": cleared, "stopped": stopped}
+    return {
+        "tried": tried,
+        "pending": len(due),
+        "written": written,
+        "cleared": cleared,
+        "stopped": stopped,
+    }
 
 
 def _match_meeting(
@@ -835,7 +1050,7 @@ def _match_meeting(
     after = 0 if full else int(meeting["affects_chunk_mark"] or 0)
     floor = meeting["floor"]
     decisions_sql = f"""SELECT d.id, d.text, d.start_ms FROM decisions d
-                         WHERE d.meeting_id = ? AND d.gone_at IS NULL AND NOT {superseded_sql('d')}
+                         WHERE d.meeting_id = ? AND d.gone_at IS NULL AND NOT {superseded_sql("d")}
                          ORDER BY d.ordinal, d.id"""
     with db.autocommit() as connection:
         decisions: list[tuple[dict[str, Any], datetime]] = []
@@ -856,7 +1071,9 @@ def _match_meeting(
                 text = str(decision["text"] or "")
                 words = cancel_objects(text, excluded=context["excluded"])
                 if decided_values(text):
-                    words += decision_subject(text, terms=context["terms"], excluded=context["excluded"])
+                    words += decision_subject(
+                        text, terms=context["terms"], excluded=context["excluded"]
+                    )
                 shorts += [word for word in words if len(word) == 2 and word not in shorts]
         cache = _short_chunks(connection, project_id, shorts, after, upto) if shorts else {}
         rows: list[dict[str, Any]] = []
@@ -868,7 +1085,13 @@ def _match_meeting(
                 return STOP_BUDGET
             tried += 1
             hits = match_decision(
-                connection, decision, context, project_id=project_id, moment=decided_at, after=after, upto=upto,
+                connection,
+                decision,
+                context,
+                project_id=project_id,
+                moment=decided_at,
+                after=after,
+                upto=upto,
                 short_cache=cache,
             )
             for hit in hits or []:
@@ -902,8 +1125,18 @@ def _match_meeting(
                 continue
             # 你回答过的（已更新、不相关）和按路径标过不相关的：不写，也不占空位
             status, origin = statuses.get(row["ident"], ("", ""))
-            if (status and status != "cleared") or origin == "manual" or is_rejected(
-                connection, "affects", project_id, row["decision_id"], row["content_key"], row["root_id"], row["rel_path"]
+            if (
+                (status and status != "cleared")
+                or origin == "manual"
+                or is_rejected(
+                    connection,
+                    "affects",
+                    project_id,
+                    row["decision_id"],
+                    row["content_key"],
+                    row["root_id"],
+                    row["rel_path"],
+                )
             ):
                 continue
             decision_id = str(row["decision_id"])
@@ -920,7 +1153,15 @@ def _match_meeting(
         if fresh:
             written = upsert_system(connection, fresh, stamp, since=since)
         if full:
-            cleared = clear_missing(connection, "affects", project_id, {"meeting_id": meeting_id}, keep, stamp, since=since)
+            cleared = clear_missing(
+                connection,
+                "affects",
+                project_id,
+                {"meeting_id": meeting_id},
+                keep,
+                stamp,
+                since=since,
+            )
         # 这次或之前整场重配时有等空位的：记 capped:，项目里在问的少于 12 个时再整场重配
         waiting = capped or (not full and str(meeting["affects_hash"] or "").startswith(CAPPED))
         mark_hash = f"{CAPPED}{meeting['section_hash']}" if waiting else meeting["section_hash"]
@@ -935,7 +1176,9 @@ def _match_meeting(
 # ---------------------------------------------------------------------- L3 和 stat
 
 
-def auto_clear(db: Any, now: datetime, since: str, *, limit: int | None = None, after: int = 0) -> dict[str, int]:
+def auto_clear(
+    db: Any, now: datetime, since: str, *, limit: int | None = None, after: int = 0
+) -> dict[str, int]:
     """L3：在问的影响按 id 从 after 往后看 limit 行，改 cleared 的：文件断了线；文件现在的修改时间不早于
     决议时刻，或内容标识和这一行的不同（决议之后改过了）；决议没了或后来改了。返回 {seen, cleared,
     after}：after 是下一轮从哪一行之后接着看（到底了回 0）。"""
@@ -946,7 +1189,7 @@ def auto_clear(db: Any, now: datetime, since: str, *, limit: int | None = None, 
             for row in connection.execute(
                 f"""SELECT r.*, d.start_ms AS decision_ms, d.gone_at AS decision_gone,
                            m.recording_date, m.created_at AS meeting_created_at,
-                           CASE WHEN d.id IS NOT NULL AND {superseded_sql('d')} THEN 1 ELSE 0 END AS superseded
+                           CASE WHEN d.id IS NOT NULL AND {superseded_sql("d")} THEN 1 ELSE 0 END AS superseded
                       FROM relations r
                       LEFT JOIN decisions d ON d.id = r.decision_id
                       LEFT JOIN meetings m ON m.id = d.meeting_id
@@ -981,7 +1224,8 @@ def _stale(connection: Any, row: Mapping[str, Any]) -> bool:
     if live is None or live.get("content_key") != row["content_key"]:
         return True
     moment = decision_moment(
-        {"recording_date": row["recording_date"], "created_at": row["meeting_created_at"]}, row["decision_ms"]
+        {"recording_date": row["recording_date"], "created_at": row["meeting_created_at"]},
+        row["decision_ms"],
     )
     return moment is None or int(live.get("mtime_ns") or 0) >= _ns(moment)
 
@@ -1001,7 +1245,9 @@ def stat_guard(row: Mapping[str, Any], state_of: Callable[[str], str]) -> bool:
     return info.st_size == row.get("size") and info.st_mtime_ns == row.get("mtime_ns")
 
 
-def guarded_questions(questions: list[dict[str, Any]], row: Mapping[str, Any] | None, state_of: Callable[[str], str]) -> list[dict[str, Any]]:
+def guarded_questions(
+    questions: list[dict[str, Any]], row: Mapping[str, Any] | None, state_of: Callable[[str], str]
+) -> list[dict[str, Any]]:
     """有在问的影响时 stat_guard 一次；文件变了就先不给影响的问题（产出的照给）。"""
     if row is None or not any(item["kind"] == "affects" for item in questions):
         return questions

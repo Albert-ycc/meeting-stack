@@ -91,7 +91,10 @@
   background: var(--stage);
   border: 1px solid var(--line);
   border-radius: 12px;
+  /* D12：width:max-content 不管容器多窄都按内容的完整宽度撑开，flex-wrap 永远没机会触发，
+     手机端最后一个页签（全部）被裁掉；max-width:100% 让它能被父级挤到换行 */
   width: max-content;
+  max-width: 100%;
 }
 
 .requirements-tabs button {

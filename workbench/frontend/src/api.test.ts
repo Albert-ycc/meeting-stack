@@ -46,9 +46,26 @@ describe("API write protection", () => {
 
     const error = await api.startUpload("meeting.m4a", 8, ["bad"]).catch((reason: unknown) => reason);
     expect(error).toMatchObject({ status: 422 });
-    expect((error as Error).message).toContain("热词 第 1 项：String should have at most 80 characters");
+    // D9：pydantic 内置的长度类消息要翻成中文，不能把英文原文糊给用户
+    expect((error as Error).message).toContain("热词 第 1 项不能超过 80 个字");
+    expect((error as Error).message).not.toContain("String should have at most");
+    // 后端自定义校验器写的话（不是内置消息）翻不出来时原样保留，不杜撰
     expect((error as Error).message).toContain("Value error, control characters are not allowed");
     expect((error as Error).message).not.toContain("[object Object]");
+  });
+
+  it("translates the requirement/task title length error (D9) without leaking the English pydantic message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify({
+          detail: [{ loc: ["body", "title"], msg: "String should have at most 200 characters", type: "string_too_long" }],
+        }), { status: 422, headers: { "Content-Type": "application/json" } }),
+    )));
+
+    const error = await api
+      .updateRequirement("req-1", { title: "x".repeat(300) })
+      .catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ status: 422 });
+    expect((error as Error).message).toBe("名称不能超过 200 个字");
   });
 
   it("reads the selected transcript version segments from the version endpoint", async () => {

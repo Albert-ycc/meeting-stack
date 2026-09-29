@@ -1,4 +1,5 @@
 """第三期 3b：服务这边的文档正文读取：切段、片段和状态同一个事务写、超时再试、换层、升级后重读。"""
+
 from datetime import timedelta
 
 from meeting_workbench import extract_worker
@@ -35,7 +36,9 @@ def extractor(tmp_path, helper=None):
 def chunks(db):
     return [
         (row["loc"], row["text"])
-        for row in db.query_all("SELECT loc, text FROM material_chunks ORDER BY content_key, ordinal")
+        for row in db.query_all(
+            "SELECT loc, text FROM material_chunks ORDER BY content_key, ordinal"
+        )
     ]
 
 
@@ -85,7 +88,9 @@ def test_chunks_stop_at_200k_chars():
 
 def test_documents_are_read_chunked_and_searchable(tmp_path):
     text, _helper = extractor(tmp_path)
-    db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path, extractors={"text": text})
+    db, settings, root, root_id, content, indexer, _now, _state = setup(
+        tmp_path, extractors={"text": text}
+    )
     put(root / "纪要.md", "第一段讲报价单的事\n\n第二段讲交付")
     build_docx(root / "方案.docx", ["方案正文里的验收标准"])
     put(root / "方案.docx", (root / "方案.docx").read_bytes())
@@ -105,7 +110,9 @@ def test_documents_are_read_chunked_and_searchable(tmp_path):
 
 def test_rereading_replaces_old_chunks_in_one_transaction(tmp_path):
     text, _helper = extractor(tmp_path)
-    db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path, extractors={"text": text})
+    db, settings, root, root_id, content, indexer, _now, _state = setup(
+        tmp_path, extractors={"text": text}
+    )
     put(root / "纪要.md", "旧的正文内容")
     index(indexer)
     content.run_round()
@@ -122,7 +129,9 @@ def test_truncated_answer_is_noted(tmp_path, monkeypatch):
 
     monkeypatch.setattr(extract_formats, "MAX_CHARS", 5)
     text, _helper = extractor(tmp_path)
-    db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path, extractors={"text": text})
+    db, settings, root, root_id, content, indexer, _now, _state = setup(
+        tmp_path, extractors={"text": text}
+    )
     put(root / "长.txt", "一二三四五六七八九十")
     index(indexer)
     content.run_round()
@@ -136,7 +145,9 @@ def test_truncated_answer_is_noted(tmp_path, monkeypatch):
 def test_timeout_retries_once_with_120_seconds_then_gives_up(tmp_path):
     helper = InProcess(fail=[HelperTimeout("超时"), HelperTimeout("又超时")])
     text, _ = extractor(tmp_path, helper)
-    db, settings, root, root_id, content, indexer, now, _state = setup(tmp_path, extractors={"text": text})
+    db, settings, root, root_id, content, indexer, now, _state = setup(
+        tmp_path, extractors={"text": text}
+    )
     put(root / "卡住.txt", "x")
     index(indexer)
     content.run_round()
@@ -162,7 +173,9 @@ def test_password_corrupt_and_waiting(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_WORKBENCH_TEXTUTIL", raising=False)
     monkeypatch.setattr(sys, "platform", "linux")
     text, _helper = extractor(tmp_path)
-    db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path, extractors={"text": text})
+    db, settings, root, root_id, content, indexer, _now, _state = setup(
+        tmp_path, extractors={"text": text}
+    )
     build_xls(root / "锁.xls", [("表", [["x"]])], encrypted=True)
     put(root / "锁.xls", (root / "锁.xls").read_bytes())
     put(root / "坏.docx", b"PK\x03\x04 broken")
@@ -178,13 +191,18 @@ def test_password_corrupt_and_waiting(tmp_path, monkeypatch):
     }
     assert (by_name["锁.xls"]["state"], by_name["锁.xls"]["reason"]) == ("unreadable", "password")
     assert (by_name["坏.docx"]["state"], by_name["坏.docx"]["reason"]) == ("unreadable", "corrupt")
-    assert (by_name["说明.rtf"]["state"], by_name["说明.rtf"]["note"]) == ("waiting", "engine_missing")
+    assert (by_name["说明.rtf"]["state"], by_name["说明.rtf"]["note"]) == (
+        "waiting",
+        "engine_missing",
+    )
     assert by_name["锁.xls"]["extractor"] == "stdlib"
 
 
 def test_pdf_with_a_doc_extension_moves_to_the_pdf_layer(tmp_path):
     text, helper = extractor(tmp_path)
-    db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path, extractors={"text": text})
+    db, settings, root, root_id, content, indexer, _now, _state = setup(
+        tmp_path, extractors={"text": text}
+    )
     put(root / "合同.doc", b"%PDF-1.7\n1 0 obj\n")
     index(indexer)
     content.run_round()
@@ -198,7 +216,9 @@ def test_permission_from_the_reader_goes_on_the_file_row(tmp_path):
     def denied(path, layer, row):
         return ExtractResult(status="permission")
 
-    db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path, extractors={"text": denied})
+    db, settings, root, root_id, content, indexer, _now, _state = setup(
+        tmp_path, extractors={"text": denied}
+    )
     put(root / "纪要.md", "x")
     index(indexer)
     content.run_round()
@@ -209,7 +229,9 @@ def test_permission_from_the_reader_goes_on_the_file_row(tmp_path):
 def test_stopped_reader_writes_nothing_and_ends_the_round(tmp_path):
     helper = InProcess(fail=[HelperStopped("busy")])
     text, _ = extractor(tmp_path, helper)
-    db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path, extractors={"text": text})
+    db, settings, root, root_id, content, indexer, _now, _state = setup(
+        tmp_path, extractors={"text": text}
+    )
     put(root / "纪要.md", "会议开始转写时读到一半")
     index(indexer)
     assert content.run_round()["ended"] == "busy"
@@ -224,7 +246,9 @@ def test_stopped_reader_writes_nothing_and_ends_the_round(tmp_path):
 
 def test_newer_reader_rereads_old_results_when_idle_and_only_online_copies(tmp_path):
     text, helper = extractor(tmp_path)
-    db, settings, root, root_id, content, indexer, _now, state = setup(tmp_path, extractors={"text": text})
+    db, settings, root, root_id, content, indexer, _now, state = setup(
+        tmp_path, extractors={"text": text}
+    )
     put(root / "纪要.md", "正文")
     put(root / "坏.docx", b"PK\x03\x04 broken")
     index(indexer)
@@ -296,7 +320,9 @@ def test_content_tree_states(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("MEETING_WORKBENCH_TEXTUTIL", str(script))
     text, _helper = extractor(tmp_path)
-    db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path, extractors={"text": text})
+    db, settings, root, root_id, content, indexer, _now, _state = setup(
+        tmp_path, extractors={"text": text}
+    )
     build_content_tree(root)
     index(indexer)
     for _ in range(3):
@@ -313,13 +339,44 @@ def test_content_tree_states(tmp_path, monkeypatch):
     assert by_name["cache.pyc"] == (None, None) and by_name[".env"] == (None, None)
     done = {name for name, (state, _reason) in by_name.items() if state == "done"}
     assert done == {
-        "gbk.txt", "方案.docx", "预算.xlsx", "汇报.pptx", "开放.odt", "书.epub", "网页.html", "邮件.eml",
-        "笔记.ipynb", "系统导出.doc", "导出.xls", "老表.xls", "老幻灯片.ppt", "改了扩展名的老文档.docx",
+        "gbk.txt",
+        "方案.docx",
+        "预算.xlsx",
+        "汇报.pptx",
+        "开放.odt",
+        "书.epub",
+        "网页.html",
+        "邮件.eml",
+        "笔记.ipynb",
+        "系统导出.doc",
+        "导出.xls",
+        "老表.xls",
+        "老幻灯片.ppt",
+        "改了扩展名的老文档.docx",
     }
-    for needle in ("中文 Windows", "方案正文", "页眉", "批注", "服务器", "张三", "备注", "开放格式", "第一章",
-                   "网页正文", "邮件正文", "print(1)", "其实是网页", "市场", "老表格", "老幻灯片", "老 Word"):
+    for needle in (
+        "中文 Windows",
+        "方案正文",
+        "页眉",
+        "批注",
+        "服务器",
+        "张三",
+        "备注",
+        "开放格式",
+        "第一章",
+        "网页正文",
+        "邮件正文",
+        "print(1)",
+        "其实是网页",
+        "市场",
+        "老表格",
+        "老幻灯片",
+        "老 Word",
+    ):
         # 三个字以上走全文索引（按三个字一组切）；两个字的直接扫片段
-        found = fts(db, needle) if len(needle) >= 3 else db.query_all(
-            "SELECT 1 FROM material_chunks WHERE instr(text, ?) > 0", (needle,)
+        found = (
+            fts(db, needle)
+            if len(needle) >= 3
+            else db.query_all("SELECT 1 FROM material_chunks WHERE instr(text, ?) > 0", (needle,))
         )
         assert found, needle

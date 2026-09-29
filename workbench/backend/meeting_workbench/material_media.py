@@ -23,6 +23,7 @@
   这一段失败，同一段重试一次；两次都失败先查盘，盘在线时超时的记处理超时、ok:false 的记文件损坏。
 - 不写中转的任何表，不占中转的队列；这个循环也不进健康检查。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -48,7 +49,14 @@ from .material_content import (
     _split_long,
     stat_signature,
 )
-from .material_helpers import HelperCrashed, HelperProcess, HelperStopped, HelperTimeout, StopFlag, run_background
+from .material_helpers import (
+    HelperCrashed,
+    HelperProcess,
+    HelperStopped,
+    HelperTimeout,
+    StopFlag,
+    run_background,
+)
 from .material_rules import LAYER_MEDIA
 from .materials import ROOT_ONLINE, volume_state
 from .ocr_engines import Tools, media_missing
@@ -108,7 +116,9 @@ def parse_probe(stdout: bytes | str) -> tuple[int | None, bool]:
     if not isinstance(data, dict):
         raise ValueError("ffprobe 的输出不是对象")
     streams = data.get("streams") or []
-    has_audio = any(isinstance(stream, dict) and stream.get("codec_type") == "audio" for stream in streams)
+    has_audio = any(
+        isinstance(stream, dict) and stream.get("codec_type") == "audio" for stream in streams
+    )
     raw = (data.get("format") or {}).get("duration")
     try:
         seconds = float(raw)
@@ -135,7 +145,14 @@ def wav_seconds(path: Path) -> float:
 
 def _joined(left: str, right: str) -> str:
     """接上一句：英文单词之间补一个空格，中文直接接。"""
-    if left and right and left[-1].isascii() and not left[-1].isspace() and right[0].isascii() and right[0].isalnum():
+    if (
+        left
+        and right
+        and left[-1].isascii()
+        and not left[-1].isspace()
+        and right[0].isascii()
+        and right[0].isalnum()
+    ):
         return f"{left} {right}"
     return left + right
 
@@ -190,7 +207,9 @@ def overlap_rule(script: str | None) -> Callable[..., bool] | None:
     if cache_key not in _overlap_rules:
         rule = None
         try:
-            spec = importlib.util.spec_from_file_location("meeting_workbench_funasr_transcribe", source)
+            spec = importlib.util.spec_from_file_location(
+                "meeting_workbench_funasr_transcribe", source
+            )
             if spec is not None and spec.loader is not None:
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
@@ -202,15 +221,24 @@ def overlap_rule(script: str | None) -> Callable[..., bool] | None:
 
 
 def drop_overlap(
-    fresh: list[dict[str, Any]], parts: list[dict[str, Any]], boundary_ms: int, rule: Callable[..., bool] | None
+    fresh: list[dict[str, Any]],
+    parts: list[dict[str, Any]],
+    boundary_ms: int,
+    rule: Callable[..., bool] | None,
 ) -> list[dict[str, Any]]:
     """这一段开头和上一段多取的 2 秒重叠：文字完全相同的句子去掉。"""
     if rule is None or not parts or boundary_ms <= 0:
         return fresh
-    existing = [{"start": p["start_ms"], "end": p["end_ms"], "text": p["text"]} for p in parts[-12:]]
+    existing = [
+        {"start": p["start_ms"], "end": p["end_ms"], "text": p["text"]} for p in parts[-12:]
+    ]
     kept = []
     for sentence in fresh:
-        candidate = {"start": sentence["start_ms"], "end": sentence["end_ms"], "text": sentence["text"]}
+        candidate = {
+            "start": sentence["start_ms"],
+            "end": sentence["end_ms"],
+            "text": sentence["text"],
+        }
         if rule(candidate, existing, boundary_ms / 1000):
             continue
         kept.append(sentence)
@@ -248,7 +276,12 @@ class MaterialMedia:
         self._helper_factory = helper_factory or self._default_helper
         self._helper: Any = None
         self._running = threading.Lock()
-        self.progress: dict[str, Any] = {"paused": None, "content_key": None, "done_ms": 0, "total_ms": None}
+        self.progress: dict[str, Any] = {
+            "paused": None,
+            "content_key": None,
+            "done_ms": 0,
+            "total_ms": None,
+        }
 
     # ---------------------------------------------------------------- 转写程序
 
@@ -318,8 +351,13 @@ class MaterialMedia:
             return stats
 
     def _run_once(self) -> bool:
-        roots = {int(row["id"]): row["path"] for row in self.db.query_all("SELECT id, path FROM project_material_roots")}
-        online = {root_id: path for root_id, path in roots.items() if self.state_of(path) == ROOT_ONLINE}
+        roots = {
+            int(row["id"]): row["path"]
+            for row in self.db.query_all("SELECT id, path FROM project_material_roots")
+        }
+        online = {
+            root_id: path for root_id, path in roots.items() if self.state_of(path) == ROOT_ONLINE
+        }
         if not online:
             return False
         candidates = self.content.extract_candidates(online, limit=1, layers=[LAYER_MEDIA])
@@ -376,7 +414,9 @@ class MaterialMedia:
         return self.content.finish_extract(row, root_path, path, expected, result)
 
     def _result(self, status: str, **fields: Any) -> ExtractResult:
-        return ExtractResult(status, extractor=EXTRACTOR, extractor_version=EXTRACTOR_VERSION, **fields)
+        return ExtractResult(
+            status, extractor=EXTRACTOR, extractor_version=EXTRACTOR_VERSION, **fields
+        )
 
     def _transcribe_file(
         self, row: dict[str, Any], path: Path, expected: tuple[int | None, int | None], tools: Tools
@@ -385,16 +425,21 @@ class MaterialMedia:
         job = self._job(key)
         if job is None:
             # 1. 是不是哪场会的录音
-            known = self.db.query_one("SELECT sha256 FROM material_contents WHERE content_key = ?", (key,))
+            known = self.db.query_one(
+                "SELECT sha256 FROM material_contents WHERE content_key = ?", (key,)
+            )
             digest = known["sha256"] if known else None
             if digest is None:
                 digest = self._sha256(path, expected[0])
             if digest is not None:
                 meeting_id = self._meeting_for(digest)
                 if meeting_id is not None:
-                    return self._result("ok", spans=[], note="meeting_audio", meeting_id=meeting_id, sha256=digest)
+                    return self._result(
+                        "ok", spans=[], note="meeting_audio", meeting_id=meeting_id, sha256=digest
+                    )
                 self.db.execute(
-                    "UPDATE material_contents SET sha256 = ? WHERE content_key = ? AND sha256 IS NULL", (digest, key)
+                    "UPDATE material_contents SET sha256 = ? WHERE content_key = ? AND sha256 IS NULL",
+                    (digest, key),
                 )
             # 2. 时长和音轨
             total_ms, has_audio = self._probe(path, tools)
@@ -451,7 +496,9 @@ class MaterialMedia:
                 folder.rmdir()
             except OSError:
                 pass
-        truncated = (total_ms is not None and total_ms > MAX_MS) or (total_ms is None and not reached_end)
+        truncated = (total_ms is not None and total_ms > MAX_MS) or (
+            total_ms is None and not reached_end
+        )
         spans = merge_sentences(parts)
         return self._result(
             "ok",
@@ -491,8 +538,16 @@ class MaterialMedia:
         return str(row["id"]) if row else None
 
     def _probe(self, path: Path, tools: Tools) -> tuple[int | None, bool]:
-        argv = [str(tools.ffprobe), "-v", "error", "-show_entries", "format=duration:stream=codec_type",
-                "-of", "json", str(path)]
+        argv = [
+            str(tools.ffprobe),
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration:stream=codec_type",
+            "-of",
+            "json",
+            str(path),
+        ]
         try:
             result = self.run(argv, timeout=PROBE_TIMEOUT_SECONDS, stop=self.stop)
         except HelperTimeout as error:
@@ -506,14 +561,30 @@ class MaterialMedia:
         except ValueError as error:
             raise _Failed("corrupt") from error
 
-    def _cut(self, path: Path, start_ms: int, folder: Path, tools: Tools) -> tuple[Path, float] | None:
+    def _cut(
+        self, path: Path, start_ms: int, folder: Path, tools: Tools
+    ) -> tuple[Path, float] | None:
         """切一段 16k 单声道 wav（多取 2 秒）；切出来是空的就是过了结尾，返回 None。"""
         folder.mkdir(parents=True, exist_ok=True)
         wav = folder / f"{start_ms}.wav"
         argv = [
-            str(tools.ffmpeg), "-nostdin", "-v", "error", "-y",
-            "-ss", f"{start_ms / 1000:.3f}", "-t", str(SEGMENT_MS // 1000 + SEGMENT_EXTRA_SECONDS),
-            "-i", str(path), "-vn", "-ac", "1", "-ar", "16000", str(wav),
+            str(tools.ffmpeg),
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-ss",
+            f"{start_ms / 1000:.3f}",
+            "-t",
+            str(SEGMENT_MS // 1000 + SEGMENT_EXTRA_SECONDS),
+            "-i",
+            str(path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            str(wav),
         ]
         try:
             result = self.run(argv, timeout=CUT_TIMEOUT_SECONDS, stop=self.stop)
@@ -563,7 +634,9 @@ class MaterialMedia:
                 continue
             if answer.get("ok"):
                 return list(answer.get("sentences") or [])
-            logger.warning("材料录音转写这一段回了 ok:false（%s）：%.300s", key, answer.get("error"))
+            logger.warning(
+                "材料录音转写这一段回了 ok:false（%s）：%.300s", key, answer.get("error")
+            )
             failure = "corrupt"
         raise _Failed(failure)
 
@@ -585,7 +658,9 @@ class MaterialMedia:
         assert job is not None
         return job
 
-    def _save_progress(self, key: str, done_ms: int, next_ms: int, parts: list[dict[str, Any]]) -> bool:
+    def _save_progress(
+        self, key: str, done_ms: int, next_ms: int, parts: list[dict[str, Any]]
+    ) -> bool:
         """转好一段：追加句子、done_ms 前进（带条件，别的地方动过就不写）。"""
         count = self.db.execute_rowcount(
             """UPDATE material_media_jobs SET done_ms = ?, parts = ?, attempts = 0, updated_at = ?
@@ -615,4 +690,3 @@ def _clean(sentences: list[Any]) -> list[dict[str, Any]]:
             continue
         cleaned.append({"start_ms": start, "end_ms": max(end, start), "text": text})
     return cleaned
-
