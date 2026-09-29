@@ -1,33 +1,56 @@
-/* 词典页：自动整理旧分组的说明行 */
+/* 词典左栏底部：自动整理旧分组的说明小卡 */
 
 .legacy-groups {
-  margin-bottom: 14px;
-  padding: 8px 12px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  background: var(--paper);
-  border: 1px dashed var(--line);
+  margin: 2px 4px 0;
+  padding: 10px 10px 8px;
+  color: var(--ink-2);
+  font-size: 13px;
+  background: transparent;
+  border: 1px dashed var(--line-strong);
   border-radius: 10px;
 }
 
 .legacy-groups__line {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 10px;
+  gap: 6px 12px;
 }
 
 .legacy-groups__line > span {
-  margin-right: 4px;
+  width: 100%;
+  margin: 0 0 2px;
+  line-height: 1.45;
+}
+
+.legacy-groups .text-button {
+  min-height: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+.legacy-groups .text-button:hover:not(:disabled) {
+  color: var(--heading);
+  text-decoration-color: var(--signal);
 }
 
 .legacy-groups__list {
-  margin: 8px 0 2px;
-  padding-left: 18px;
-  line-height: 1.8;
+  margin: 6px 0 4px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  list-style: none;
+}
+
+.legacy-groups__list li {
+  padding: 2px 0;
 }
 
 .legacy-groups__error {
   margin: 6px 0 0;
   color: var(--danger);
+  font-size: 12.5px;
 }

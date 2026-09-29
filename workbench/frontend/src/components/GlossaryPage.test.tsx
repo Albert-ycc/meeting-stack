@@ -6,6 +6,14 @@ import { ApiError, type ApiClient } from "../api";
 import { LinksFlagsContext } from "./links/LinksFlagsContext";
 import type { GlossarySuggestion, GlossaryTerm, MeetingSummary, Project } from "../types";
 
+/*
+ * 词典页（分栏工作台）。这个文件是原来卡片式词典页测试的改写：
+ * 芯片条改成左栏范围按钮（role=button，aria-current 表示选中），卡片改成中栏列表行（role=option），
+ * 「新增术语」是列表头上的按钮，编辑不再有弹窗而是右栏就地编辑，
+ * 项目的待认词从列表上方的一整块改成「从材料里找到的词」页签。
+ * 新行为（收件箱、键盘、未保存守卫、右栏编辑、详情里的会议）见 GlossaryPage.workbench.test.tsx。
+ */
+
 const meetings: MeetingSummary[] = [
   { id: "m-1", title: "儿科门诊例会", status: "published", tags: [] },
 ];
@@ -78,13 +86,16 @@ function client(overrides: Partial<ApiClient> = {}) {
   } as unknown as ApiClient;
 }
 
+const list = () => screen.getByRole("listbox", { name: "词条" });
+const flags = { linksEnabled: true, semanticEnabled: false, llmConfigured: false };
+
 describe("GlossaryPage", () => {
-  it("渲染术语卡片：术语、别名、分类；命中次数没有写入方，不显示", async () => {
+  it("渲染术语行：术语、错写、分类；命中次数没有写入方，不显示", async () => {
     render(<GlossaryPage apiClient={client()} canWrite meetings={meetings} projects={projects} />);
 
-    expect(await screen.findByText("儿童生长发育")).toBeTruthy();
-    expect(screen.getByText("儿生发")).toBeTruthy();
-    expect(screen.getByText("术语")).toBeTruthy();
+    expect(await within(await screen.findByRole("listbox", { name: "词条" })).findByText("儿童生长发育")).toBeTruthy();
+    expect(within(list()).getByText("儿生发")).toBeTruthy();
+    expect(within(list()).getByText("术语")).toBeTruthy();
     expect(screen.queryByText(/命中 \d+/)).toBeNull();
   });
 
@@ -94,10 +105,10 @@ describe("GlossaryPage", () => {
     });
     render(<GlossaryPage apiClient={apiClient} canWrite meetings={meetings} projects={projects} />);
 
-    expect(await screen.findByText("儿童生长发育")).toBeTruthy();
-    expect(screen.getByText("生长激素")).toBeTruthy();
-    expect(screen.getByText("儿保科")).toBeTruthy();
-    // 分组小节标题：公共 / 项目名 / 桶名，各自都出现过（chip 和分组标题都会渲染这些文字）
+    expect(await within(await screen.findByRole("listbox", { name: "词条" })).findByText("儿童生长发育")).toBeTruthy();
+    expect(within(list()).getByText("生长激素")).toBeTruthy();
+    expect(within(list()).getByText("儿保科")).toBeTruthy();
+    // 分组小节标题：公共 / 项目名 / 桶名，各自都出现过（左栏和分组头都会渲染这些文字）
     expect(screen.getAllByText("公共").length).toBeGreaterThan(0);
     expect(screen.getAllByText("云图 0830 迭代").length).toBeGreaterThan(0);
     expect(screen.getAllByText("儿科").length).toBeGreaterThan(0);
@@ -113,44 +124,44 @@ describe("GlossaryPage", () => {
     });
     render(<GlossaryPage apiClient={apiClient} canWrite meetings={meetings} projects={projects} />);
 
-    await screen.findByText("儿童生长发育");
+    await within(await screen.findByRole("listbox", { name: "词条" })).findByText("儿童生长发育");
     // 「全部」分组标题只应出现一次「通用」，且计数按本地已加载术语现算为 1（不是远端的陈旧值 2）。
     const groupHeads = screen.getAllByText("公共").filter((node) => node.tagName === "STRONG");
     expect(groupHeads).toHaveLength(1);
     expect(groupHeads[0].nextSibling?.textContent).toBe("1");
   });
 
-  it("点击项目 chip 只留下这个项目的术语", async () => {
+  it("点击左栏的项目范围只留下这个项目的术语", async () => {
     const apiClient = client({
       glossaryTerms: vi.fn().mockResolvedValue([generalTerm, projectTerm, bucketTerm]),
     });
     render(<GlossaryPage apiClient={apiClient} canWrite meetings={meetings} projects={projects} />);
 
-    expect(await screen.findByText("儿童生长发育")).toBeTruthy();
+    expect(await within(await screen.findByRole("listbox", { name: "词条" })).findByText("儿童生长发育")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("tab", { name: /云图 0830 迭代/ }));
+    fireEvent.click(screen.getByRole("button", { name: /云图 0830 迭代/ }));
 
-    expect(screen.queryByText("儿童生长发育")).toBeNull();
-    expect(screen.queryByText("儿保科")).toBeNull();
-    expect(screen.getByText("生长激素")).toBeTruthy();
+    expect(within(list()).queryByText("儿童生长发育")).toBeNull();
+    expect(within(list()).queryByText("儿保科")).toBeNull();
+    expect(within(list()).getByText("生长激素")).toBeTruthy();
   });
 
-  it("搜索框按术语与别名即时过滤，不打接口", async () => {
+  it("搜索框按术语与错写即时过滤，不打接口", async () => {
     const apiClient = client({
       glossaryTerms: vi.fn().mockResolvedValue([generalTerm, projectTerm]),
     });
     render(<GlossaryPage apiClient={apiClient} canWrite meetings={meetings} projects={projects} />);
 
-    expect(await screen.findByText("生长激素")).toBeTruthy();
+    expect(await within(await screen.findByRole("listbox", { name: "词条" })).findByText("生长激素")).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("搜索术语"), { target: { value: "生长激素" } });
 
-    expect(screen.queryByText("儿童生长发育")).toBeNull();
-    expect(screen.getByText("生长激素")).toBeTruthy();
+    expect(within(list()).queryByText("儿童生长发育")).toBeNull();
+    expect(within(list()).getByText("生长激素")).toBeTruthy();
     expect(apiClient.glossaryTerms).toHaveBeenCalledTimes(1);
   });
 
-  it("initialProjectId 预选中对应的项目 chip", async () => {
+  it("initialProjectId 预选中对应的项目范围", async () => {
     const apiClient = client({
       glossaryTerms: vi.fn().mockResolvedValue([generalTerm, projectTerm]),
     });
@@ -164,11 +175,12 @@ describe("GlossaryPage", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByText("生长激素")).toBeTruthy());
-    expect(screen.queryByText("儿童生长发育")).toBeNull();
+    await waitFor(() => expect(within(list()).getByText("生长激素")).toBeTruthy());
+    expect(within(list()).queryByText("儿童生长发育")).toBeNull();
+    expect(screen.getByRole("button", { name: /云图 0830 迭代/ })).toHaveAttribute("aria-current", "true");
   });
 
-  it("4h：选中项目 chip 时取这个项目的待认词，放在词条列表上面；切换 chip 时旧请求不串进来", async () => {
+  it("4h：选中项目时取这个项目的待认词，做成「从材料里找到的词」页签；切换范围时旧请求不串进来", async () => {
     const word = {
       key: "驻场服务", term: "驻场服务", existing_term: null, wrongs: [], files: 15, spoken: 3,
       heard: [], file_names: [], file_quote: null,
@@ -186,78 +198,82 @@ describe("GlossaryPage", () => {
       undoGlossaryCandidate: vi.fn(),
     } as unknown as Partial<ApiClient>);
     render(
-      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: false, llmConfigured: false }}>
+      <LinksFlagsContext.Provider value={flags}>
         <GlossaryPage apiClient={apiClient} canWrite meetings={meetings} projects={projects} />
       </LinksFlagsContext.Provider>,
     );
-    expect(await screen.findByText("儿童生长发育")).toBeTruthy();
+    expect(await within(await screen.findByRole("listbox", { name: "词条" })).findByText("儿童生长发育")).toBeTruthy();
     expect(glossaryCandidates).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("tab", { name: /云图 0830 迭代/ }));
-    fireEvent.click(screen.getByRole("tab", { name: /^全部/ }));
-    fireEvent.click(screen.getByRole("tab", { name: /云图 0830 迭代/ }));
+    fireEvent.click(screen.getByRole("button", { name: /云图 0830 迭代/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^全部/ }));
+    fireEvent.click(screen.getByRole("button", { name: /云图 0830 迭代/ }));
 
-    expect(await screen.findByText("从云图 0830 迭代的材料里找到的词")).toBeTruthy();
+    const materialTab = await screen.findByRole("tab", { name: /从材料里找到的词/ });
     expect(glossaryCandidates).toHaveBeenCalledWith("project-1");
     resolveFirst({ items: [{ ...word, key: "旧的", term: "旧请求的词" }], total: 1 });
-    await waitFor(() => expect(screen.queryByText("旧请求的词")).toBeNull());
-    const block = screen.getByRole("region", { name: "从云图 0830 迭代的材料里找到的词" });
-    const term = screen.getByText("生长激素");
-    expect(block.compareDocumentPosition(term) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(materialTab);
+    expect(await within(screen.getByRole("listbox", { name: "待认词" })).findByText("驻场服务")).toBeTruthy();
+    expect(screen.queryByText("旧请求的词")).toBeNull();
+    // 词条页签还在，回去能看到这个项目的词
+    fireEvent.click(screen.getByRole("tab", { name: /^词条/ }));
+    expect(within(list()).getByText("生长激素")).toBeTruthy();
   });
 
-  it("4h：回答或撤销以后一并重取候选词，撤销的词回到列表里", async () => {
+  it("4h：回答后这一行留在列表里并带撤销，撤销的词回到待认", async () => {
     const word = {
       key: "驻场服务", term: "驻场服务", existing_term: null, wrongs: [], files: 15, spoken: 3,
       heard: [], file_names: [], file_quote: null,
     };
-    const glossaryCandidates = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [word], total: 1 })
-      .mockResolvedValueOnce({ items: [], total: 0 })
-      .mockResolvedValue({ items: [word], total: 1 });
+    const rejectGlossaryCandidate = vi.fn().mockResolvedValue({
+      text: "以后不再提『驻场服务』", undo_until: new Date(Date.now() + 600_000).toISOString(),
+    });
+    const undoGlossaryCandidate = vi.fn().mockResolvedValue({ status: "pending", text: "已撤销，『驻场服务』回到这里" });
     const apiClient = client({
       glossaryTerms: vi.fn().mockResolvedValue([generalTerm, projectTerm]),
-      glossaryCandidates,
+      glossaryCandidates: vi.fn().mockResolvedValue({ items: [word], total: 1 }),
       acceptGlossaryCandidate: vi.fn(),
-      rejectGlossaryCandidate: vi.fn().mockResolvedValue({
-        text: "以后不再提『驻场服务』", undo_until: new Date(Date.now() + 600_000).toISOString(),
-      }),
-      undoGlossaryCandidate: vi.fn().mockResolvedValue({ status: "pending", text: "已撤销，『驻场服务』回到这里" }),
+      rejectGlossaryCandidate,
+      undoGlossaryCandidate,
     } as unknown as Partial<ApiClient>);
     render(
-      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: false, llmConfigured: false }}>
+      <LinksFlagsContext.Provider value={flags}>
         <GlossaryPage apiClient={apiClient} canWrite initialProjectId="project-1" meetings={meetings} projects={projects} />
       </LinksFlagsContext.Provider>,
     );
-    const block = await screen.findByRole("region", { name: "从云图 0830 迭代的材料里找到的词" });
-    expect(within(block).getAllByRole("listitem")).toHaveLength(1);
-    fireEvent.click(within(block).getByRole("button", { name: "不是" }));
-    expect(await within(block).findByText("以后不再提『驻场服务』")).toBeTruthy();
-    await waitFor(() => expect(glossaryCandidates).toHaveBeenCalledTimes(2));
-    expect(within(block).queryAllByRole("listitem")).toHaveLength(0);
-    fireEvent.click(within(block).getByRole("button", { name: "撤销" }));
-    expect(await within(block).findByText("已撤销，『驻场服务』回到这里")).toBeTruthy();
-    await waitFor(() => expect(glossaryCandidates).toHaveBeenCalledTimes(3));
-    await waitFor(() => expect(within(block).getAllByRole("listitem")).toHaveLength(1));
+    fireEvent.click(await screen.findByRole("tab", { name: /从材料里找到的词/ }));
+    const candidates = screen.getByRole("listbox", { name: "待认词" });
+    expect(within(candidates).getAllByRole("option")).toHaveLength(1);
+
+    fireEvent.click(within(candidates).getByRole("button", { name: "不是：驻场服务" }));
+    expect(await screen.findByText("以后不再提『驻场服务』", { selector: ".action-banner__text" })).toBeTruthy();
+    expect(within(candidates).getAllByRole("option")).toHaveLength(1);
+    expect(within(candidates).getByText("不是")).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "撤销" })[0]);
+    await waitFor(() => expect(undoGlossaryCandidate).toHaveBeenCalledWith("project-1", { key: "驻场服务" }));
+    expect(await screen.findByText("已撤销，『驻场服务』回到这里", { selector: ".action-banner__text" })).toBeTruthy();
+    await waitFor(() => expect(within(candidates).getByRole("button", { name: "不是：驻场服务" })).toBeTruthy());
   });
 
   it("4h：候选词接口是旧后台（404 Not Found）时整块静默不出", async () => {
     const apiClient = client({
       glossaryTerms: vi.fn().mockResolvedValue([generalTerm, projectTerm]),
       glossaryCandidates: vi.fn().mockRejectedValue(new ApiError("Not Found", 404, { detail: "Not Found" })),
+      glossaryCandidatesInbox: vi.fn().mockRejectedValue(new ApiError("Not Found", 404, { detail: "Not Found" })),
       acceptGlossaryCandidate: vi.fn(),
       rejectGlossaryCandidate: vi.fn(),
       undoGlossaryCandidate: vi.fn(),
     } as unknown as Partial<ApiClient>);
     render(
-      <LinksFlagsContext.Provider value={{ linksEnabled: true, semanticEnabled: false, llmConfigured: false }}>
+      <LinksFlagsContext.Provider value={flags}>
         <GlossaryPage apiClient={apiClient} canWrite initialProjectId="project-1" meetings={meetings} projects={projects} />
       </LinksFlagsContext.Provider>,
     );
-    await waitFor(() => expect(screen.getByText("生长激素")).toBeTruthy());
+    await waitFor(() => expect(within(list()).getByText("生长激素")).toBeTruthy());
     await waitFor(() => expect(apiClient.glossaryCandidates).toHaveBeenCalled());
-    expect(screen.queryByText(/的材料里找到的词/)).toBeNull();
+    expect(screen.queryByText(/材料里找到的词/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /待认词/ })).toBeNull();
     expect(screen.queryByText(/后台还是旧版本/)).toBeNull();
   });
 
@@ -360,29 +376,28 @@ describe("GlossaryPage", () => {
       expect(apiClient.confirmGlossarySuggestion).toHaveBeenCalledWith("sug-1", { target: "auto", short: false }),
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: "已驳回" }));
+    fireEvent.click(screen.getByRole("tab", { name: /^已驳回/ }));
     fireEvent.click(await screen.findByRole("button", { name: "恢复" }));
     await waitFor(() => expect(apiClient.restoreGlossarySuggestion).toHaveBeenCalledWith("sug-9"));
   });
 
-  it("只读模式（canWrite=false）不展示编辑与新增操作", async () => {
+  it("只读模式（canWrite=false）不展示编辑、新增与删除操作", async () => {
     render(<GlossaryPage apiClient={client()} canWrite={false} meetings={meetings} projects={projects} />);
 
-    expect(await screen.findByText("儿童生长发育")).toBeTruthy();
-    expect(screen.queryByText("＋ 新增术语")).toBeNull();
-    expect(screen.queryByText("编辑")).toBeNull();
-    expect(screen.queryByText("删除")).toBeNull();
+    expect(await within(await screen.findByRole("listbox", { name: "词条" })).findByText("儿童生长发育")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /新增术语/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^删除/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "保存修改" })).toBeNull();
+    expect(screen.getByLabelText("正确写法")).toHaveAttribute("readonly");
   });
 
   it("新增术语：归属选「项目」时提交 project_id，不带 scope", async () => {
     const apiClient = client();
     render(<GlossaryPage apiClient={apiClient} canWrite meetings={meetings} projects={projects} />);
 
-    fireEvent.click(await screen.findByText("＋ 新增术语"));
-    fireEvent.change(screen.getByPlaceholderText("权威写法，例如：儿童生长发育"), {
-      target: { value: "生长曲线" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "项目" }));
+    fireEvent.click(await screen.findByRole("button", { name: /新增术语/ }));
+    fireEvent.change(screen.getByLabelText("正确写法"), { target: { value: "生长曲线" } });
+    fireEvent.click(screen.getByRole("radio", { name: "项目" }));
     fireEvent.change(screen.getByLabelText("选择项目"), { target: { value: "project-1" } });
     fireEvent.click(screen.getByRole("button", { name: "加入词典" }));
 

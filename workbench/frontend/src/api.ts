@@ -22,6 +22,7 @@ import type {
   RequirementsPayload,
   AsrGoldSample,
   AsrShadowRun,
+  GlossaryCandidatesInbox,
   GlossaryConfirmResult,
   GlossaryScope,
   GlossarySuggestion,
@@ -1318,6 +1319,8 @@ export const api = {
   requirementContext: (requirementId: string) =>
     read<RequirementContext>(`/api/requirements/${encodeURIComponent(requirementId)}/context`),
   // ---------------------------------------------------------------- 4h 从材料里找到的词
+  /** 词典页收件箱：所有项目的待认词，按项目分组 */
+  glossaryCandidatesInbox: () => read<GlossaryCandidatesInbox>("/api/glossary/candidates"),
   /** 词典页：这个项目全部待认的词（最多 30 项） */
   glossaryCandidates: (projectId: string) =>
     read<MaterialWordsList>(`/api/projects/${encodeURIComponent(projectId)}/glossary-candidates`),

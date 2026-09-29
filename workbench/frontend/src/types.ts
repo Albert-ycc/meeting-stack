@@ -1152,6 +1152,20 @@ export interface MaterialWordsList {
   total: number;
 }
 
+/** 词典页收件箱：各项目的待认词汇总，待认多的项目在前；挖词关闭时 projects 为空 */
+export interface GlossaryCandidateGroup {
+  project_id: string;
+  project_name: string;
+  project_color: string | null;
+  items: MaterialWord[];
+  total: number;
+}
+
+export interface GlossaryCandidatesInbox {
+  projects: GlossaryCandidateGroup[];
+  total: number;
+}
+
 /** 会议页词典小节：这场会听错的、待认的写法 */
 export interface MaterialPair {
   key: string;

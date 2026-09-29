@@ -46,6 +46,11 @@ const SOURCES = import.meta.glob(
     "./components/MaterialWords.tsx",
     "./components/ProjectGlossary.tsx",
     "./components/GlossaryPage.tsx",
+    "./components/GlossaryCandidates.tsx",
+    "./components/GlossaryScopeRail.tsx",
+    "./components/GlossarySuggestionsPane.tsx",
+    "./components/GlossaryTermEditor.tsx",
+    "./components/GlossaryTermList.tsx",
     "./components/MeetingGlossaryPanel.tsx",
     // 4h：需求页的［复制给 Claude Code］和它的提示
     "./components/RequirementDetailPage.tsx",
