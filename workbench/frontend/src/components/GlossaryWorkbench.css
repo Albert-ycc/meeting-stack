@@ -1,4 +1,4 @@
-/* 词典页「分栏工作台」：左栏范围 + 收件箱计数，中栏高密度列表，右栏详情就地编辑。
+/* 词典页「分栏工作台」：左栏范围 + 收件箱计数，中栏词条列表，右栏详情就地编辑。
  * 颜色只走全站 token；这一页比别处密，字号从 13px 起，正文 14px。 */
 
 .gw.page-content {
@@ -455,26 +455,20 @@
   overflow: auto;
 }
 
+/* 名字（带分类）｜错写｜删除。名字格至少 128px，和待认词行的第一列同宽，切过去时第二列不跳；
+ * 名字加分类更长的那一行只把自己的错写往后推，但错写至少留出一块的位置。归属看分组头 */
 .gw-cols {
   display: grid;
   align-items: center;
   column-gap: 12px;
-}
-
-.gw-cols--all {
-  grid-template-columns: 136px minmax(0, 1fr) 44px 118px 22px;
-}
-
-.gw-cols--project,
-.gw-cols--other {
-  grid-template-columns: 136px minmax(0, 1fr) 44px 30px 22px;
+  grid-template-columns: minmax(128px, max-content) minmax(min(96px, 25%), 1fr) 22px;
 }
 
 .gw-colh {
   position: sticky;
   top: 0;
   z-index: 3;
-  height: 28px;
+  height: 36px;
   padding: 0 14px 0 18px;
   color: var(--muted-2);
   font-size: 12px;
@@ -485,10 +479,10 @@
 
 .gw-gh {
   position: sticky;
-  top: 28px;
+  top: 36px;
   z-index: 2;
   display: flex;
-  height: 30px;
+  height: 36px;
   align-items: center;
   gap: 8px;
   padding: 0 14px 0 18px;
@@ -525,11 +519,21 @@
 
 .gw-row {
   position: relative;
-  min-height: 28px;
+  min-height: 40px;
   padding: 0 14px 0 18px;
   font-size: 14px;
   border-bottom: 1px solid rgb(var(--fg-rgb) / 0.035);
   cursor: default;
+}
+
+/* J/K 往上走时选中行会被顶到滚动区最上面，让出吸顶的列头和分组头 */
+.gw-row.gw-cols,
+.gw-gh--flat ~ .gw-row--cand {
+  scroll-margin-top: 36px;
+}
+
+.gw-row.gw-cols--all {
+  scroll-margin-top: 72px;
 }
 
 .gw-row:hover {
@@ -559,58 +563,101 @@
   white-space: nowrap;
 }
 
+/* 列表里的名字格：名字后面跟一个小字分类。放不下时分类整块折到被裁掉的第二行，不切半个字 */
+.gw-cols .gw-t {
+  display: flex;
+  height: 20px;
+  min-width: 0;
+  max-width: 280px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+}
+
+.gw-t__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gw-c {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* 错写格排成一行：箭头、块、「+N」都不缩，只有第一块和「也叫」在放不下时自己出省略号。
+ * 几个间距和 GlossaryTermList.tsx 里算放几块的常量对着改 */
 .gw-w {
+  position: relative;
+  display: flex;
+  align-items: center;
   overflow: hidden;
   color: var(--ink-2);
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .gw-w__arr {
-  margin-right: 6px;
+  flex: none;
+  margin-right: 8px;
   color: var(--muted-2);
 }
 
-.gw-w__sep {
-  margin: 0 5px;
-  color: var(--muted-2);
+/* 橙色只留给当前行，免得一屏的箭头把选中竖条淹掉 */
+.gw-row:hover .gw-w__arr,
+.gw-row[aria-selected="true"] .gw-w__arr {
+  color: var(--signal);
+  font-weight: 600;
+}
+
+/* 和右栏详情里的错写块同一种样子，缩成列表的尺寸 */
+.gw-w__chip {
+  flex: none;
+  padding: 0 6px;
+  font-size: 13px;
+  line-height: 20px;
+  background: rgb(var(--fg-rgb) / 0.045);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.gw-w__chip + .gw-w__chip {
+  margin-left: 5px;
+}
+
+/* 列窄到放不下第一块时它自己出省略号，不至于整块没了只剩一个箭头（放得下时不压，见 WrongsCell） */
+.gw-w__chip--squeeze {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 收进「+N」的块：看不见、不占位，但还量得出宽度 */
+.gw-w__chip--spare {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
 }
 
 .gw-w__more {
+  flex: none;
   margin-left: 6px;
   color: var(--muted-2);
   font-size: 12px;
 }
 
+/* 「也叫」只截它自己，吃不到前面的错写 */
 .gw-w__also {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
   margin-left: 8px;
   color: var(--muted);
   font-size: 13px;
-}
-
-.gw-c {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.gw-o {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.gw-o span {
-  overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.gw-cue svg {
-  display: block;
-  color: var(--muted-2);
 }
 
 /* 不用 visibility：读屏和键盘 Tab 到得了，悬停或选中时才显形 */
@@ -701,7 +748,7 @@
 /* 候选行 */
 .gw-row--cand {
   display: grid;
-  min-height: 34px;
+  min-height: 40px;
   align-items: center;
   column-gap: 12px;
   grid-template-columns: 128px minmax(0, 1fr) auto;
@@ -756,7 +803,8 @@
 }
 
 .gw-row--more {
-  display: block;
+  display: flex;
+  align-items: center;
   color: var(--muted);
   font-size: 13px;
 }
@@ -1604,12 +1652,24 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
-  .gw-row.gw-cols > :nth-child(n + 4) {
-    display: none;
+  /* 手机上把名字格拆开，排成「名字｜错写｜分类靠右」；删除钮（只读时是占位）不显示 */
+  .gw-row.gw-cols .gw-t {
+    display: contents;
+  }
+
+  .gw-row.gw-cols .gw-w {
+    order: 1;
   }
 
   .gw-row.gw-cols .gw-c {
+    order: 2;
+    color: var(--muted);
+    font-size: 13px;
     text-align: right;
+  }
+
+  .gw-row.gw-cols > :nth-child(n + 3) {
+    display: none;
   }
 
   .gw-mstrip {

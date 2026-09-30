@@ -65,12 +65,6 @@ export const IconX = () => (
     <path d="m3 3 9 9M12 3l-9 9" />
   </Icon>
 );
-export const IconTarget = () => (
-  <Icon size={14}>
-    <circle cx="7.5" cy="7.5" r="5.8" />
-    <circle cx="7.5" cy="7.5" r="2.4" />
-  </Icon>
-);
 export const IconPlus = () => (
   <Icon size={13} width={1.8}>
     <path d="M7.5 2v11M2 7.5h11" />

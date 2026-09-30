@@ -73,6 +73,11 @@ export function matchesSearch(term: GlossaryTerm, needle: string): boolean {
   return (term.also ?? []).some((name) => name.toLowerCase().includes(needle));
 }
 
+/** 配了错写的排在前面（真正在纠错的先看到），两拨各自保持原顺序。 */
+export function correctionsFirst(terms: GlossaryTerm[]): GlossaryTerm[] {
+  return [...terms.filter((term) => term.aliases.length > 0), ...terms.filter((term) => term.aliases.length === 0)];
+}
+
 /** 待认词的搜索：词本身或任一听错的写法 */
 export function matchesCandidateSearch(word: MaterialWord, needle: string): boolean {
   if (!needle) return true;
