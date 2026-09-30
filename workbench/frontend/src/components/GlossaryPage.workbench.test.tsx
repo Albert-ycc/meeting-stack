@@ -193,7 +193,7 @@ describe("词典页 · 左栏", () => {
 });
 
 describe("词典页 · 列表与搜索", () => {
-  it("错写在列表第二列，放不下的写「+N」，也叫接在后面；分类、归属列", async () => {
+  it("错写在列表第二列，放不下的写「+N」，也叫接在后面；分类贴在名字后，归属看分组头", async () => {
     const many = term("gt-many", "数理协会", { aliases: ["树立协会", "术立协会", "数立协会", "输理协会"], also: ["数理"] });
     mount(client({ glossaryTerms: vi.fn().mockResolvedValue([...TERMS, many]) }));
     await ready();
@@ -202,11 +202,31 @@ describe("词典页 · 列表与搜索", () => {
     expect(row).toHaveTextContent("树立协会");
     expect(row).toHaveTextContent("+2");
     expect(row).toHaveTextContent("也叫 数理");
+    // 量不到宽度时按字数估：前两块显示，后两块收进「+2」
+    const chips = [...row.querySelectorAll(".gw-w__chip")];
+    expect(chips.map((chip) => chip.classList.contains("gw-w__chip--spare"))).toEqual([false, false, true, true]);
     const cui = within(termList()).getByText("崔总").closest('[role="option"]') as HTMLElement;
     expect(cui).toHaveTextContent("C总");
     expect(cui).toHaveTextContent("CC总");
-    expect(cui).toHaveTextContent("人名");
-    expect(cui).toHaveTextContent("公共");
+    expect(cui.querySelector(".gw-t")).toHaveTextContent("崔总人名");
+    expect(cui).not.toHaveTextContent("公共");
+    expect(within(termList()).getByRole("group", { name: "公共" })).toContainElement(cui);
+  });
+
+  it.each([true, false])("项目里每行只有名字、错写、删除位三格，没有识别列（canWrite=%s）", async (canWrite) => {
+    // 手机样式按「第 3 格是删除钮或只读占位」把它藏掉，行里再加格子要一起改那条规则
+    mount(client(), { canWrite });
+    await ready();
+    fireEvent.click(within(rail()).getByRole("button", { name: /医米科研用药/ }));
+
+    const list = termList();
+    const head = list.querySelector(".gw-colh") as HTMLElement;
+    expect(head).toHaveTextContent("正确写法 · 分类");
+    expect(head).toHaveTextContent("← 错写（会被改正）");
+    expect(head).not.toHaveTextContent("识别");
+    const rows = within(list).getAllByRole("option");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row.children).toHaveLength(3);
   });
 
   it("搜索命中错写也能找到，命中的字标出来；搜不到时给「把『X』加进词典」", async () => {
