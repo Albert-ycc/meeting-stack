@@ -20,6 +20,7 @@ import {
   ALL_KEY,
   chipIdentity,
   chipKey,
+  correctionsFirst,
   deriveLocalScopes,
   matchesChip,
   matchesSearch,
@@ -269,12 +270,12 @@ export function GlossaryPage({
         .map((chip) => ({
           key: chipKey(chip),
           chip,
-          items: terms.filter((term) => matchesChip(term, chip) && matchesSearch(term, needle)),
+          items: correctionsFirst(terms.filter((term) => matchesChip(term, chip) && matchesSearch(term, needle))),
         }))
         .filter((section) => section.items.length > 0);
     }
     if (!activeChip) return [];
-    const items = terms.filter((term) => matchesChip(term, activeChip) && matchesSearch(term, needle));
+    const items = correctionsFirst(terms.filter((term) => matchesChip(term, activeChip) && matchesSearch(term, needle)));
     return items.length ? [{ key: scopeKey, chip: null, items }] : [];
   }, [activeChip, chips, needle, scopeKey, terms]);
   const visibleTermIds = useMemo(() => sections.flatMap((section) => section.items.map((term) => term.id)), [sections]);
@@ -439,10 +440,12 @@ export function GlossaryPage({
     if (next !== selectedTermId || isNew) selectTerm(next);
   };
 
-  // 选中项跟着键盘走时，让它留在可视范围里
+  // 选中项跟着键盘走时，让它留在可视范围里。保存后它可能换了位置（补了或删光错写、改了归属、新词刚出现），
+  // 等列表刷新完再跟一次；别的行增删不跟，免得把用户滚到别处的列表拽回来
+  const [savedTick, setSavedTick] = useState(0);
   useEffect(() => {
     document.querySelector<HTMLElement>('.gw-list [role="option"][aria-selected="true"]')?.scrollIntoView?.({ block: "nearest" });
-  }, [selectedTermId, selectedCandId]);
+  }, [selectedTermId, selectedCandId, savedTick]);
 
   // —— 词条写操作 ——
   const removeTerm = async (term: GlossaryTerm) => {
@@ -475,7 +478,7 @@ export function GlossaryPage({
       setActiveChipKey(landed);
     }
     if (saved && needle && !matchesSearch(saved, needle)) setSearch("");
-    void reloadAfterWrite();
+    void reloadAfterWrite().then(() => setSavedTick((tick) => tick + 1));
   };
 
   // —— 待确认写操作 ——

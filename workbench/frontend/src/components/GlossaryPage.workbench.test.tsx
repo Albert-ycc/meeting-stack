@@ -229,6 +229,105 @@ describe("词典页 · 列表与搜索", () => {
     for (const row of rows) expect(row.children).toHaveLength(3);
   });
 
+  it("配了错写的排在本组前面：默认选中和 J/K 都按排好的顺序走", async () => {
+    mount(client());
+    await ready();
+    fireEvent.click(within(rail()).getByRole("button", { name: /医米科研用药/ }));
+
+    // 数据里「科研用药」在前，但它没有错写
+    const names = () => within(termList()).getAllByRole("option").map((row) => row.querySelector(".gw-t__name")?.textContent);
+    expect(names()).toEqual(["不良反应", "科研用药"]);
+    expect(selectedRow(termList())).toHaveTextContent("不良反应");
+    press("j");
+    expect(selectedRow(termList())).toHaveTextContent("科研用药");
+  });
+
+  it("给词补上错写保存后，它挪到组前面、仍然选中并滚进可视范围", async () => {
+    const zhang = term("gt-zhang", "张三");
+    const scrolled = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled(this.querySelector(".gw-t__name")?.textContent);
+    };
+    try {
+      const apiClient = client({
+        glossaryTerms: vi
+          .fn()
+          .mockResolvedValueOnce([...TERMS, zhang])
+          .mockResolvedValue([...TERMS, { ...zhang, aliases: ["章三"] }]),
+        updateGlossaryTerm: vi.fn().mockResolvedValue({ ...zhang, aliases: ["章三"] }),
+      });
+      mount(apiClient);
+      await ready();
+      const publicNames = () =>
+        within(within(termList()).getByRole("group", { name: "公共" }))
+          .getAllByRole("option")
+          .map((row) => row.querySelector(".gw-t__name")?.textContent);
+      expect(publicNames()).toEqual(["崔总", "东升", "张三"]);
+
+      fireEvent.click(within(termList()).getByText("张三"));
+      scrolled.mockClear();
+      fireEvent.change(screen.getByLabelText("添加错写"), { target: { value: "章三" } });
+      fireEvent.keyDown(screen.getByLabelText("添加错写"), { key: "Enter" });
+      fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+      await waitFor(() => expect(publicNames()).toEqual(["崔总", "张三", "东升"]));
+      const row = selectedRow(termList()) as HTMLElement;
+      expect(row).toHaveTextContent("张三");
+      // 错写变了要按新内容重新估放几块：新补的这块显示出来，不是收进「+1」
+      expect(row.querySelector(".gw-w__chip")).not.toHaveClass("gw-w__chip--spare");
+      expect(row.querySelector(".gw-w__more")).toBeNull();
+      await waitFor(() => expect(scrolled).toHaveBeenLastCalledWith("张三"));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("删掉别的词不去拽列表：选中项不动时不滚动", async () => {
+    const scrolled = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrolled;
+    try {
+      const apiClient = client({
+        glossaryTerms: vi.fn().mockResolvedValueOnce(TERMS).mockResolvedValue(TERMS.filter((item) => item.id !== "gt-cui")),
+      });
+      mount(apiClient);
+      await ready();
+      fireEvent.click(within(termList()).getByText("东升"));
+      scrolled.mockClear();
+
+      fireEvent.click(within(termList()).getByRole("button", { name: "删除『崔总』" }));
+      fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+      await waitFor(() => expect(within(termList()).queryByText("崔总")).toBeNull());
+      expect(selectedRow(termList())).toHaveTextContent("东升");
+      expect(scrolled).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("删掉选中的词，落到排好顺序里的下一条", async () => {
+    // 数据顺序 A B C D，显示成 A C B D（带错写的在前）
+    const four = [
+      term("gt-a", "甲一", { aliases: ["甲乙"] }),
+      term("gt-b", "乙二"),
+      term("gt-c", "丙三", { aliases: ["饼三"] }),
+      term("gt-d", "丁四"),
+    ];
+    const apiClient = client({
+      glossaryTerms: vi.fn().mockResolvedValueOnce(four).mockResolvedValue(four.filter((item) => item.id !== "gt-c")),
+      glossaryScopes: vi.fn().mockResolvedValue([{ kind: "general", key: "通用", label: "公共", color: null, count: 4 }]),
+    });
+    mount(apiClient);
+    await within(await screen.findByRole("listbox", { name: "词条" })).findByText("丙三");
+    fireEvent.click(within(termList()).getByText("丙三"));
+
+    fireEvent.click(within(termList()).getByRole("button", { name: "删除『丙三』" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+    await waitFor(() => expect(apiClient.deleteGlossaryTerm).toHaveBeenCalledWith("gt-c"));
+    await waitFor(() => expect(selectedRow(termList())).toHaveTextContent("乙二"));
+  });
+
   it("搜索命中错写也能找到，命中的字标出来；搜不到时给「把『X』加进词典」", async () => {
     mount(client());
     await ready();
