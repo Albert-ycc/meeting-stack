@@ -10,6 +10,7 @@ import type {
   MeetingDetail,
   MeetingFilters,
   MeetingSummary,
+  PoolFlash,
   PreviewTarget,
   Project,
   SearchPayload,
@@ -202,7 +203,7 @@ export default function App({ apiClient = api }: AppProps) {
     | null
   >(null);
   // 认领、新建后回到需求池时提示一句；改完需求回到详情页时也提示一句
-  const [poolFlash, setPoolFlash] = useState<string | null>(null);
+  const [poolFlash, setPoolFlash] = useState<PoolFlash | null>(null);
   const [requirementFlash, setRequirementFlash] = useState<string | null>(null);
   // 从项目详情页跳进词典时预选中的项目 chip；普通侧栏导航进词典时为 null（不预筛）。
   const [glossaryProjectId, setGlossaryProjectId] = useState<string | null>(null);
@@ -891,13 +892,14 @@ export default function App({ apiClient = api }: AppProps) {
         writePersistentState(POOL_QUERY_KEY, "", POOL_QUERY_STORE);
       }
     }
-    setPoolFlash(
-      result.kind === "merged"
-        ? `已合并到「${requirement.title}」`
-        : `已${result.kind === "claimed" ? "认领" : "新建"}「${requirement.title}」，挂上墙了${
-            unfiltered ? "；原来的筛选会挡住它，已清空筛选" : ""
-          }`,
-    );
+    setPoolFlash({
+      message:
+        result.kind === "merged"
+          ? `已合并到「${requirement.title}」`
+          : `已${result.kind === "claimed" ? "认领" : "新建"}「${requirement.title}」，挂上墙了${
+              unfiltered ? "；原来的筛选会挡住它，已清空筛选" : ""
+            }`,
+    });
     void refreshProjects();
     leaveRequirementForm();
   };

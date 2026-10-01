@@ -951,6 +951,8 @@ export const api = {
     project_id?: string | null;
     requirement_id?: string | null;
     assignee?: string;
+    /** 截止 YYYY-MM-DD，null 或不传即未定截止（R05-6）；手动新建的任务本来就是已确认 */
+    due_date?: string | null;
   }) =>
     write<TaskDetail>("/api/tasks", "POST", data),
   updateTask: (
@@ -961,6 +963,8 @@ export const api = {
       project_id?: string | null;
       requirement_id?: string | null;
       assignee?: string;
+      /** 截止 YYYY-MM-DD，传 null 清空 */
+      due_date?: string | null;
     },
   ) => write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}`, "PATCH", data),
   confirmTask: (
@@ -1157,6 +1161,13 @@ export const api = {
       {},
     ),
   droppedCandidates: () => read<DroppedCandidates>("/api/requirement-candidates/dropped"),
+  /** 合并后 10 分钟内撤销（R01-14）：候选回到待认领，合并带进去的原话、关联会议、任务都退回；过了时间 409 */
+  undoCandidateMerge: (candidateId: string) =>
+    write<CandidateDetail>(
+      `/api/requirement-candidates/${encodeURIComponent(candidateId)}/unmerge`,
+      "POST",
+      {},
+    ),
   updateRequirement: (
     requirementId: string,
     data: {

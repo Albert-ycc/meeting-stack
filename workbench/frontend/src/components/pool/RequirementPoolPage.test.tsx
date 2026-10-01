@@ -193,7 +193,7 @@ describe("RequirementPoolPage", () => {
       poolPayload({ items: [], total: 0, counts: { pending: 0, active: 0, done: 0, shelved: 0, all: 0 } }),
     );
     const onFlashShown = vi.fn();
-    const handlers = renderPage({ requirementPool }, { flash: "已认领「科室会预约后台导出」，挂上墙了", onFlashShown });
+    const handlers = renderPage({ requirementPool }, { flash: { message: "已认领「科室会预约后台导出」，挂上墙了" }, onFlashShown });
 
     expect(await screen.findByText("墙上还没有需求")).toBeInTheDocument();
     expect(screen.getByText("会后 AI 会从纪要里抽需求候选，放进待认领")).toBeInTheDocument();

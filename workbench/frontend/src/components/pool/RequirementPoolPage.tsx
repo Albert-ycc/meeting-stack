@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api";
-import type { PoolItem, PoolTab, RequirementPoolPayload, RequirementPriority } from "../../types";
+import type { PoolFlash, PoolItem, PoolTab, RequirementPoolPayload, RequirementPriority } from "../../types";
 import { usePersistentState } from "../../viewState";
 import { REQUIREMENT_PRIORITIES } from "../RequirementBadges";
 import { useToast } from "../Toast";
@@ -39,7 +39,8 @@ interface RequirementPoolPageProps {
   apiClient: ApiClient;
   canWrite: boolean;
   /** 认领、新建后回到需求池时要提示的话，显示一次 */
-  flash?: string | null;
+  /** App 带过来的提示：认领、新建、从认领页合并之后（高亮哪张、能不能撤销见 PoolFlash） */
+  flash?: PoolFlash | null;
   onFlashShown?: () => void;
   onOpenRequirement: (requirementId: string) => void;
   onClaimCandidate: (candidateId: string) => void;
@@ -133,7 +134,7 @@ export function RequirementPoolPage({
 
   useEffect(() => {
     if (!flash) return;
-    showToast(flash);
+    showToast(flash.message);
     onFlashShown?.();
   }, [flash, onFlashShown, showToast]);
 

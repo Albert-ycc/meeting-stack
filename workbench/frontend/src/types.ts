@@ -1036,6 +1036,8 @@ export interface Task {
   requirement_priority?: RequirementPriority | null;
   requirement_status?: RequirementStatus | null;
   meeting_recording_date?: string | null;
+  /** 截止，精确到日（YYYY-MM-DD）；空即未定截止（R05-6） */
+  due_date?: string | null;
 }
 
 export interface TaskDetail extends Task {
@@ -1617,6 +1619,17 @@ export interface RequirementSource {
   anchor_ms: number | null;
   /** 合并自哪条候选 */
   via_candidate_title: string | null;
+  /** 合并进来的原话：合并后 10 分钟内可撤销（R01-14），这时带上候选 id 和截止时间；过了时间或不是合并来的为 null */
+  undo_merge?: { candidate_id: string; until: string } | null;
+}
+
+/** 需求池页的轻提示：认领、新建、从认领页合并之后由 App 带过来 */
+export interface PoolFlash {
+  message: string;
+  /** 认领、新建后在墙上按排序落位并高亮 3 秒的那张海报（R01-13） */
+  highlightId?: string;
+  /** 合并后提示上带［撤销］，点了调 undoCandidateMerge（R01-14） */
+  undoMergeCandidateId?: string;
 }
 
 /** 新建、修改需求时传的来源：会议必填，原话和时间锚可空（只选了会、没挑原话） */
