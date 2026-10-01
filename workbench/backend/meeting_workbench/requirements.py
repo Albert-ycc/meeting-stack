@@ -9,10 +9,12 @@ v17（需求池改版 260930）：需求多了说明和来源。来源＝提出�
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import unicodedata
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,8 @@ FOLDER_PREVIEW_LIMIT = 6
 TITLE_MAX_CHARS = 200
 SUMMARY_MAX_CHARS = 70
 QUOTE_MAX_CHARS = 1000
+# 合并后多久内能撤销（R01-14、R02-11）
+MERGE_UNDO_MINUTES = 10
 # 未完成任务在前，其余（已完成/已过期/已取消）在后，同组按创建时间倒序
 _TASK_ORDER_SQL = """
     CASE WHEN t.status IN ({open_statuses}) THEN 0 ELSE 1 END,
@@ -181,6 +185,11 @@ def anchor_in_recording(anchor_ms: Any, duration_ms: int | None) -> bool:
     return not duration_ms or anchor_ms <= duration_ms
 
 
+def has_words(text: str) -> bool:
+    """有没有字：至少一个字母、汉字或数字。纯标点、全空白的句子不算原话。"""
+    return any(unicodedata.category(char)[0] in "LN" for char in text)
+
+
 def clean_source(connection: Any, source: dict[str, Any]) -> dict[str, Any]:
     """来源入参：会议必填且存在；原话和时间锚可空（只选了会、没挑原话）。"""
     meeting_id = str(source.get("meeting_id") or "").strip()
@@ -194,8 +203,20 @@ def clean_source(connection: Any, source: dict[str, Any]) -> dict[str, Any]:
     quote = str(source.get("quote") or "").strip()
     if len(quote) > QUOTE_MAX_CHARS:
         raise ValueError(f"原话最多 {QUOTE_MAX_CHARS} 字")
+    if quote and not has_words(quote):
+        raise ValueError("原话里得有字，纯标点的句子不能当原话")
     anchor_ms = source.get("anchor_ms")
-    if anchor_ms is not None and not anchor_in_recording(anchor_ms, meeting["duration_ms"]):
+    duration_ms = meeting["duration_ms"]
+    # 逐字稿最后几句的开始时间可能比录音时长还晚一点（转写和录音各算各的）：截到录音末尾，
+    # 不然从逐字稿选的句子存不进来，用户也没法改
+    if (
+        isinstance(anchor_ms, int)
+        and not isinstance(anchor_ms, bool)
+        and duration_ms
+        and anchor_ms > duration_ms
+    ):
+        anchor_ms = duration_ms
+    if anchor_ms is not None and not anchor_in_recording(anchor_ms, duration_ms):
         raise ValueError("时间锚要落在这场会的录音里")
     return {"meeting_id": meeting_id, "quote": quote, "anchor_ms": anchor_ms}
 
@@ -375,7 +396,29 @@ def _folder_detail(
     }
 
 
-def get_requirement(task_service: TaskService, requirement_id: str) -> dict[str, Any]:
+def _merge_undo_marks(
+    connection: Any, requirement_id: str, *, now: datetime | None = None
+) -> dict[int, dict[str, str]]:
+    """合并进这条需求、还在撤销时限里的原话 → {candidate_id, until}：详情页在那一行给［撤销合并］。"""
+    moment = now or datetime.now(UTC)
+    marks: dict[int, dict[str, str]] = {}
+    rows = connection.execute(
+        """SELECT id, merged_at, merge_undo FROM requirement_candidates
+            WHERE requirement_id=? AND status='merged' AND merge_undo IS NOT NULL""",
+        (requirement_id,),
+    ).fetchall()
+    for row in rows:
+        until = datetime.fromisoformat(row["merged_at"]) + timedelta(minutes=MERGE_UNDO_MINUTES)
+        if moment >= until:
+            continue
+        for source in json.loads(row["merge_undo"]).get("sources", []):
+            marks[source["id"]] = {"candidate_id": row["id"], "until": until.isoformat()}
+    return marks
+
+
+def get_requirement(
+    task_service: TaskService, requirement_id: str, *, now: datetime | None = None
+) -> dict[str, Any]:
     db = task_service.db
     row = db.query_one("SELECT * FROM requirements WHERE id=?", (requirement_id,))
     if row is None:
@@ -400,6 +443,9 @@ def get_requirement(task_service: TaskService, requirement_id: str) -> dict[str,
         sources = load_sources(connection, owner="requirement", ids=[requirement_id]).get(
             requirement_id, []
         )
+        undo_marks = _merge_undo_marks(connection, requirement_id, now=now)
+    for source in sources:
+        source["undo_merge"] = undo_marks.get(source["id"])
     # R05：合并进来的原话和提出它的那句一起列，按会议时间先后；头部波形取提出它的那场会。
     detail["sources"] = sources
     detail["source"] = origin_of(sources)

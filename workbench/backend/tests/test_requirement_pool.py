@@ -617,28 +617,44 @@ def test_candidates_never_reach_requirement_counts_or_old_list(tmp_path):
     assert "京东仓签收凭证" not in {item["title"] for item in old_list["items"]}
 
 
-def test_source_anchor_must_fall_inside_the_recording(tmp_path):
-    """这场会录了 747000 毫秒：锚点超出录音画不出标记、也跳不过去，接口不收。"""
+def test_source_anchor_past_the_recording_end_is_pulled_back(tmp_path):
+    """这场会录了 747000 毫秒。逐字稿最后几句的开始时间可能比录音时长晚一点（转写和录音各算各的）：
+    选了这样的句子照样能存，时间锚截到录音末尾，不然用户存不进来、也没处可改（审查 B3）。"""
     client, headers, db = make_world(tmp_path)
     base = {"project_id": project_id("cvm"), "title": "科室会预约后台导出", "priority": "P2"}
 
     beyond = client.post(
         "/api/requirements",
-        json={**base, "source": {"meeting_id": meeting_id("cvm"), "anchor_ms": 747001}},
-        headers=headers,
-    )
-    assert beyond.status_code == 400
-    at_end = client.post(
-        "/api/requirements",
         json={
             **base,
             "summary": None,
-            "source": {"meeting_id": meeting_id("cvm"), "anchor_ms": 747000},
+            "source": {"meeting_id": meeting_id("cvm"), "anchor_ms": 747001},
         },
         headers=headers,
     )
-    assert at_end.status_code == 200, at_end.text
-    assert (at_end.json()["source"]["anchor_ms"], at_end.json()["summary"]) == (747000, "")
+    assert beyond.status_code == 200, beyond.text
+    assert (beyond.json()["source"]["anchor_ms"], beyond.json()["summary"]) == (747000, "")
+
+
+def test_quote_needs_at_least_one_word(tmp_path):
+    """纯标点、全空白的句子不能当原话（审查 B2）：存进去会在详情页显示成「时间签＋空引号」。"""
+    client, headers, db = make_world(tmp_path)
+    base = {"project_id": project_id("cvm"), "title": "科室会预约后台导出", "priority": "P2"}
+
+    for quote in ("，。？", "……", " ！ "):
+        response = client.post(
+            "/api/requirements",
+            json={**base, "source": {"meeting_id": meeting_id("cvm"), "quote": quote}},
+            headers=headers,
+        )
+        assert response.status_code == 400, quote
+        assert response.json()["detail"] == "原话里得有字，纯标点的句子不能当原话"
+    excel = client.post(
+        "/api/requirements",
+        json={**base, "source": {"meeting_id": meeting_id("cvm"), "quote": "excel？"}},
+        headers=headers,
+    )
+    assert excel.status_code == 200, excel.text
 
 
 def test_unlinking_the_source_meeting_drops_its_quote(tmp_path):

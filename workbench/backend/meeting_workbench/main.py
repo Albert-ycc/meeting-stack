@@ -4727,6 +4727,11 @@ def create_app(
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
 
+    @app.post("/api/requirement-candidates/{candidate_id}/unmerge")
+    def unmerge_requirement_candidate(candidate_id: str, _body: dict[str, Any] | None = None):
+        # 合并后 10 分钟内撤销（R01-14）；过了时间、原话已经不在那条需求里时 409
+        return requirement_candidates.unmerge_candidate(task_service, candidate_id)
+
     @app.post("/api/requirement-candidates/{candidate_id}/drop")
     def drop_requirement_candidate(candidate_id: str, _body: dict[str, Any] | None = None):
         return requirement_candidates.drop_candidate(db, candidate_id)

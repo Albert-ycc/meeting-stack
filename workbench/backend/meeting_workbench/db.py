@@ -1355,6 +1355,10 @@ CREATE TABLE IF NOT EXISTS requirement_candidates (
     project_id_seen TEXT,
     -- 丢掉时会议的归属：「同项目丢掉过的不再提示」按它算，会议后来改了归属也不跟着搬家
     dropped_project_id TEXT,
+    -- 合并的时间和这次合并带进需求的东西（JSON：原话原来的样子、新加的关联会议、跟过去的任务和它们
+    -- 原来的项目），10 分钟内撤销合并按它原样退回（R01-14）；撤销后清空
+    merged_at TEXT,
+    merge_undo TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -1595,14 +1599,14 @@ class Database:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_candidate ON tasks(candidate_id)"
             )
-            # v17 候选表后补的两列（建过 v17 早期版本的库补上；新库建表时就有）
+            # v17 候选表后补的列（建过 v17 早期版本的库补上；新库建表时就有）
             candidate_columns = {
                 row["name"]
                 for row in connection.execute(
                     "PRAGMA table_info(requirement_candidates)"
                 ).fetchall()
             }
-            for name in ("project_id_seen", "dropped_project_id"):
+            for name in ("project_id_seen", "dropped_project_id", "merged_at", "merge_undo"):
                 if name not in candidate_columns:
                     connection.execute(f"ALTER TABLE requirement_candidates ADD COLUMN {name} TEXT")
             minutes_columns = {

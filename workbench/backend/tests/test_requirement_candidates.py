@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -290,6 +290,176 @@ def test_merge_only_into_open_requirements_of_the_same_project(tmp_path):
         {"requirement_id": elsewhere},
     )
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------- 撤销合并（R01-14）
+
+# CVM 云讲堂那场会里另一句真实原话（同一场会抽出的任务「持续盯预约场次并在群里动员报名」的锚点）
+MOBILIZE_QUOTE = "我会同步的去实时的去看这个场次预约，然后尽量多次的在群里动员大家去去去报名。"
+
+
+def merged_minutes_ago(db, candidate_id, minutes):
+    """把合并时间往前挪：撤销时限按服务端的当前时间算，用例不等真时间。"""
+    stamp = (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+    db.execute("UPDATE requirement_candidates SET merged_at=? WHERE id=?", (stamp, candidate_id))
+
+
+def test_merge_can_be_undone_within_ten_minutes(tmp_path):
+    client, headers, db = make_world(tmp_path)
+    target = create(client, headers, "cvm", "直播间运营六项修正", "P1")
+    candidate_id = candidate(db, "export", "科室会预约后台导出", summary=EXPORT_SUMMARY)
+    task_on_candidate(
+        db, "task-mobilize", "持续盯预约场次并在群里动员报名", 487620, MOBILIZE_QUOTE, candidate_id
+    )
+    # 没归项目的任务合并后跟着需求进了 CVM 云讲堂，撤销时回到没归项目
+    task_on_candidate(
+        db,
+        "task-script",
+        "话术修改稿发执行群走默示确认",
+        718230,
+        "那个就直接呃甩到执行群里，然后说对应的同事检查一下。",
+        candidate_id,
+    )
+    db.execute("UPDATE tasks SET project_id=NULL WHERE id='task-script'")
+
+    merged = post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{candidate_id}/merge",
+        {"requirement_id": target},
+    ).json()
+    assert [meeting["id"] for meeting in merged["meetings"]] == [meeting_id("cvm")]
+    assert sorted(task["id"] for task in merged["tasks"]) == ["task-mobilize", "task-script"]
+    (source,) = merged["sources"]
+    assert source["kind"] == "merged"
+    assert source["undo_merge"]["candidate_id"] == candidate_id
+
+    response = post(client, headers, f"/api/requirement-candidates/{candidate_id}/unmerge")
+
+    assert response.status_code == 200, response.text
+    restored = response.json()
+    assert (restored["status"], restored["requirement_id"]) == ("pending", None)
+    assert [
+        (s["kind"], s["quote"], s["anchor_ms"], s["via_candidate_title"])
+        for s in restored["sources"]
+    ] == [("origin", QUOTES["export"][1], QUOTES["export"][2], None)]
+    detail = client.get(f"/api/requirements/{target}").json()
+    # 这次合并新加的关联会议拆掉，原话、任务都退回候选
+    assert (detail["sources"], detail["meetings"], detail["tasks"]) == ([], [], [])
+    assert db.query_all(
+        "SELECT id, requirement_id, candidate_id, project_id FROM tasks ORDER BY id"
+    ) == [
+        {
+            "id": "task-mobilize",
+            "requirement_id": None,
+            "candidate_id": candidate_id,
+            "project_id": project_id("cvm"),
+        },
+        {
+            "id": "task-script",
+            "requirement_id": None,
+            "candidate_id": candidate_id,
+            "project_id": None,
+        },
+    ]
+    assert db.query_one(
+        "SELECT body FROM task_events WHERE task_id='task-mobilize' ORDER BY id DESC LIMIT 1"
+    ) == {"body": "撤销合并：回到候选「科室会预约后台导出」"}
+    assert titles(wall(client, status="pending")) == ["科室会预约后台导出"]
+    # 回到待认领以后可以照常再处理，撤销不能再撤一次
+    again = post(client, headers, f"/api/requirement-candidates/{candidate_id}/unmerge")
+    assert again.status_code == 409
+
+
+def test_merge_undo_closes_after_ten_minutes(tmp_path):
+    client, headers, db = make_world(tmp_path)
+    target = create(client, headers, "yimi", "京东科研仓对接", "P0", source_key="inbound")
+    candidate_id = candidate(db, "receipt", "京东仓签收凭证", summary=RECEIPT_SUMMARY)
+    post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{candidate_id}/merge",
+        {"requirement_id": target},
+    )
+    merged_minutes_ago(db, candidate_id, 9)
+    merged = client.get(f"/api/requirements/{target}").json()["sources"][1]
+    assert merged["undo_merge"]["candidate_id"] == candidate_id
+
+    merged_minutes_ago(db, candidate_id, 11)
+
+    assert client.get(f"/api/requirements/{target}").json()["sources"][1]["undo_merge"] is None
+    response = post(client, headers, f"/api/requirement-candidates/{candidate_id}/unmerge")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "合并超过 10 分钟，不能撤销了"
+    # 提出它的那句不受影响，合并进来的原话和那场会的关联都还在
+    detail = client.get(f"/api/requirements/{target}").json()
+    assert [source["kind"] for source in detail["sources"]] == ["origin", "merged"]
+    assert [meeting["id"] for meeting in detail["meetings"]] == [meeting_id("jd")]
+
+
+def test_merge_undo_only_takes_back_what_that_merge_brought(tmp_path):
+    client, headers, db = make_world(tmp_path)
+    target = create(client, headers, "cvm", "直播间运营六项修正", "P1")
+    other = create(client, headers, "cvm", "科室会预约后台权限", "P1")
+    first = candidate(db, "export", "科室会预约后台导出", summary=EXPORT_SUMMARY)
+    task_on_candidate(
+        db, "task-mobilize", "持续盯预约场次并在群里动员报名", 487620, MOBILIZE_QUOTE, first
+    )
+    with db.transaction() as connection:
+        second = insert_candidate(
+            connection,
+            meeting_id=meeting_id("cvm"),
+            title="科室会预约场次动员",
+            summary="",
+            quote=MOBILIZE_QUOTE,
+            anchor_ms=487620,
+        )
+    for candidate_id in (first, second):
+        post(
+            client,
+            headers,
+            f"/api/requirement-candidates/{candidate_id}/merge",
+            {"requirement_id": target},
+        )
+    # 合并后 10 分钟里任务被改挂到别的需求：撤销不把它拽回来
+    client.patch("/api/tasks/task-mobilize", json={"requirement_id": other}, headers=headers)
+
+    response = post(client, headers, f"/api/requirement-candidates/{first}/unmerge")
+
+    assert response.status_code == 200, response.text
+    detail = client.get(f"/api/requirements/{target}").json()
+    # 同一场会后来又合并进一条：关联留着，那一条的原话也留着
+    assert [meeting["id"] for meeting in detail["meetings"]] == [meeting_id("cvm")]
+    assert [(s["quote"], s["via_candidate_title"]) for s in detail["sources"]] == [
+        (MOBILIZE_QUOTE, "科室会预约场次动员")
+    ]
+    assert db.query_one(
+        "SELECT requirement_id, candidate_id FROM tasks WHERE id='task-mobilize'"
+    ) == {"requirement_id": other, "candidate_id": None}
+
+
+def test_merge_undo_refused_when_its_quote_is_gone(tmp_path):
+    client, headers, db = make_world(tmp_path)
+    target = create(client, headers, "cvm", "直播间运营六项修正", "P1")
+    candidate_id = candidate(db, "export", "科室会预约后台导出")
+    post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{candidate_id}/merge",
+        {"requirement_id": target},
+    )
+    # 详情页把那场会移出关联：触发器连原话一起删了
+    removed = client.delete(
+        f"/api/requirements/{target}/meetings/{meeting_id('cvm')}",
+        headers={**headers, "Content-Type": "application/json"},
+    )
+    assert removed.status_code == 200, removed.text
+
+    response = post(client, headers, f"/api/requirement-candidates/{candidate_id}/unmerge")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "合并进去的原话已经不在那条需求里了，不能撤销"
+    assert client.get(f"/api/requirement-candidates/{candidate_id}").json()["status"] == "merged"
 
 
 def test_default_action_falls_back_to_claim_when_the_similar_requirement_is_done(tmp_path):

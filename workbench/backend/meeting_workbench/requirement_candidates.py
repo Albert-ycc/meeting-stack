@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 import uuid
@@ -23,6 +24,7 @@ from .llm import neutralise
 from .project_profile import light_key
 from .project_seats import MEETING_TIME_SQL, seat_ranks
 from .requirements import (
+    MERGE_UNDO_MINUTES,
     QUOTE_MAX_CHARS,
     SUMMARY_MAX_CHARS,
     TITLE_MAX_CHARS,
@@ -1077,16 +1079,70 @@ def claim_candidate(
     return get_requirement(task_service, requirement_id)
 
 
+def _merge_before(connection: Any, candidate_id: str, requirement_id: str) -> dict[str, Any]:
+    """合并之前记下候选的原话、目标需求已有的关联会议、候选上的任务（和它们的项目）。"""
+    return {
+        "sources": [
+            dict(row)
+            for row in connection.execute(
+                """SELECT id, kind, meeting_id, via_candidate_title FROM requirement_sources
+                    WHERE candidate_id=? ORDER BY id""",
+                (candidate_id,),
+            ).fetchall()
+        ],
+        "linked": {
+            row["meeting_id"]
+            for row in connection.execute(
+                "SELECT meeting_id FROM requirement_meetings WHERE requirement_id=?",
+                (requirement_id,),
+            ).fetchall()
+        },
+        "tasks": {
+            row["id"]: row["project_id"]
+            for row in connection.execute(
+                "SELECT id, project_id FROM tasks WHERE candidate_id=? AND requirement_id IS NULL",
+                (candidate_id,),
+            ).fetchall()
+        },
+    }
+
+
+def _merge_record(connection: Any, before: dict[str, Any], requirement_id: str) -> str:
+    """这次合并实际带进需求的东西：原话原来的样子、新加的关联会议、真挂过去的任务和它们原来的项目。
+    撤销合并只退回这些——交接时没跟过去的任务（不在候选范围里的）不会被撤销挂回候选。"""
+    moved = [
+        row["id"]
+        for row in connection.execute(
+            f"""SELECT id FROM tasks
+                 WHERE requirement_id=? AND id IN ({", ".join("?" for _ in before["tasks"])})
+                 ORDER BY id""",
+            (requirement_id, *before["tasks"]),
+        ).fetchall()
+    ]
+    return json.dumps(
+        {
+            "sources": [
+                {"id": s["id"], "kind": s["kind"], "via_candidate_title": s["via_candidate_title"]}
+                for s in before["sources"]
+            ],
+            "meetings": sorted({s["meeting_id"] for s in before["sources"]} - before["linked"]),
+            "tasks": [{"id": task_id, "project_id": before["tasks"][task_id]} for task_id in moved],
+        },
+        ensure_ascii=False,
+    )
+
+
 def merge_candidate(
     task_service: TaskService,
     candidate_id: str,
     requirement_id: str,
     *,
     project_id: str | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """合并（S03，或认领撞名后「改为合并到那条需求」）：这场会关联到目标需求、原话追加到它的来源，
     候选消失。目标只能是所属项目里进行中或已搁置的需求；所属项目是认领页上选的 project_id，
-    不传时取来源会议的归属。不改会议归属。"""
+    不传时取来源会议的归属。不改会议归属。合并带进去的东西记在候选上，10 分钟内能撤销。"""
     with task_service.db.transaction() as connection:
         candidate = _pending_candidate(connection, candidate_id)
         project_id = _merge_project(connection, candidate, project_id)
@@ -1101,11 +1157,82 @@ def merge_candidate(
             raise ValueError("只能合并到所属项目里的需求")
         if target["status"] not in MERGE_TARGET_STATUSES:
             raise ValueError("不能合并到已完成的需求")
+        before = _merge_before(connection, candidate_id, requirement_id)
         _hand_over(connection, candidate, requirement_id, merged=True)
+        stamp = (now or datetime.now(UTC)).isoformat()
         connection.execute(
-            "UPDATE requirements SET updated_at=? WHERE id=?", (utc_now(), requirement_id)
+            "UPDATE requirement_candidates SET merged_at=?, merge_undo=? WHERE id=?",
+            (stamp, _merge_record(connection, before, requirement_id), candidate_id),
         )
-    return get_requirement(task_service, requirement_id)
+        connection.execute(
+            "UPDATE requirements SET updated_at=? WHERE id=?", (stamp, requirement_id)
+        )
+    return get_requirement(task_service, requirement_id, now=now)
+
+
+def unmerge_candidate(
+    task_service: TaskService, candidate_id: str, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """撤销合并（R01-14）：合并后 10 分钟内，候选回到待认领，这次合并带进需求的原话、关联会议、任务按
+    合并时记下的原样退回。原话已经不在那条需求里（比如那场会被移出了关联、原话跟着删了）时不能撤销；
+    任务在这 10 分钟里被改挂到别处的不动。"""
+    moment = now or datetime.now(UTC)
+    stamp = moment.isoformat()
+    with task_service.db.transaction() as connection:
+        candidate = _candidate_row(connection, candidate_id)
+        if candidate["status"] != "merged" or not candidate["merge_undo"]:
+            raise ConflictError("这条候选没有合并，不用撤销")
+        if moment - datetime.fromisoformat(candidate["merged_at"]) > timedelta(
+            minutes=MERGE_UNDO_MINUTES
+        ):
+            raise ConflictError(f"合并超过 {MERGE_UNDO_MINUTES} 分钟，不能撤销了")
+        record = json.loads(candidate["merge_undo"])
+        requirement_id = candidate["requirement_id"]
+        restored = 0
+        for source in record["sources"]:
+            restored += connection.execute(
+                """UPDATE requirement_sources
+                      SET requirement_id=NULL, candidate_id=?, kind=?, via_candidate_title=?
+                    WHERE id=? AND requirement_id=?""",
+                (
+                    candidate_id,
+                    source["kind"],
+                    source["via_candidate_title"],
+                    source["id"],
+                    requirement_id,
+                ),
+            ).rowcount
+        if record["sources"] and not restored:
+            raise ConflictError("合并进去的原话已经不在那条需求里了，不能撤销")
+        # 只拆这次合并新加的关联，而且那场会已经没有别的原话留在需求里（同一场会后来又合并进一条的，
+        # 关联留着；拆关联的触发器会连带删掉这场会的原话）
+        for meeting_id in record["meetings"]:
+            connection.execute(
+                """DELETE FROM requirement_meetings
+                    WHERE requirement_id=? AND meeting_id=?
+                      AND NOT EXISTS (SELECT 1 FROM requirement_sources
+                                       WHERE requirement_id=? AND meeting_id=?)""",
+                (requirement_id, meeting_id, requirement_id, meeting_id),
+            )
+        for task in record["tasks"]:
+            if connection.execute(
+                """UPDATE tasks SET requirement_id=NULL, candidate_id=?, project_id=?, updated_at=?
+                    WHERE id=? AND requirement_id=?""",
+                (candidate_id, task["project_id"], stamp, task["id"], requirement_id),
+            ).rowcount:
+                connection.execute(
+                    """INSERT INTO task_events(task_id, kind, body, created_at)
+                       VALUES (?, 'requirement_changed', ?, ?)""",
+                    (task["id"], f"撤销合并：回到候选「{candidate['title']}」", stamp),
+                )
+        connection.execute(
+            """UPDATE requirement_candidates
+                  SET status='pending', requirement_id=NULL, merged_at=NULL, merge_undo=NULL,
+                      updated_at=?
+                WHERE id=?""",
+            (stamp, candidate_id),
+        )
+    return get_candidate(task_service.db, candidate_id)
 
 
 def drop_candidate(
