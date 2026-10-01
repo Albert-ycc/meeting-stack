@@ -1,4 +1,4 @@
-import type { KeyboardEvent, MouseEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import { formatDurationText, formatMonthDay, formatMonthDayClock, formatTime } from "../../format";
 import type { PoolItem } from "../../types";
@@ -17,7 +17,17 @@ interface PosterCardProps {
   onClaim?: (item: PoolItem) => void;
   onMerge?: (item: PoolItem) => void;
   onDrop?: (item: PoolItem) => void;
+  /**
+   * 点「接下」：把这条需求的背景复制出去，不改需求状态（R02-9）。要在点击的手势里同步发起复制，
+   * 所以这里只管调用；复制成功返回 true，按钮这才变「已复制」2 秒。
+   */
+  onTake?: (item: PoolItem) => Promise<boolean>;
+  /** 认领、新建后落位的那张：描边 3 秒（R01-13） */
+  highlighted?: boolean;
 }
+
+/** 「已复制」在按钮上停多久 */
+const TAKE_FEEDBACK_MS = 2000;
 
 export function anchorLabel(milliseconds: number): string {
   return formatTime(milliseconds, true);
@@ -39,6 +49,14 @@ function LinkIcon() {
   );
 }
 
+function CheckIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" height="12" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 16 16" width="12">
+      <path d="M3.2 8.6l3 3 6.6-7.2" />
+    </svg>
+  );
+}
+
 function stop(event: MouseEvent) {
   event.stopPropagation();
 }
@@ -52,12 +70,45 @@ export function PosterCard({
   onClaim,
   onMerge,
   onDrop,
+  onTake,
+  highlighted = false,
 }: PosterCardProps) {
   const candidate = item.kind === "candidate";
   const source = item.source;
   const date = posterDateLabel(item);
   const open = () => {
     if (!preview) onOpen?.(item);
+  };
+  const [takeState, setTakeState] = useState<"idle" | "busy" | "copied">("idle");
+  const resetTimer = useRef<number | null>(null);
+  const mounted = useRef(true);
+  // StrictMode 开发时会先卸载再挂一次：挂上时要把 mounted 重新置回 true，不然复制完按钮卡在「复制中…」
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    };
+  }, []);
+  const take = () => {
+    if (preview || !onTake || takeState === "busy") return;
+    setTakeState("busy");
+    // onTake 在这一行同步调用：复制要在点击的手势里发起
+    void onTake(item).then(
+      (copied) => {
+        if (!mounted.current) return;
+        if (!copied) {
+          setTakeState("idle");
+          return;
+        }
+        setTakeState("copied");
+        if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+        resetTimer.current = window.setTimeout(() => setTakeState("idle"), TAKE_FEEDBACK_MS);
+      },
+      () => {
+        if (mounted.current) setTakeState("idle");
+      },
+    );
   };
   const openSource = () => {
     if (preview || !source || !onOpenMeeting) return;
@@ -77,7 +128,10 @@ export function PosterCard({
   return (
     <article
       aria-label={`${candidate ? "候选" : "需求"}：${item.title}`}
-      className={`poster ${candidate ? "poster--candidate" : ""} ${preview ? "poster--preview" : ""}`}
+      className={`poster ${candidate ? "poster--candidate" : ""} ${preview ? "poster--preview" : ""} ${
+        highlighted ? "poster--highlight" : ""
+      }`}
+      data-poster-id={item.id}
       data-status={item.status}
       onClick={open}
       onKeyDown={(event: KeyboardEvent) => {
@@ -203,8 +257,23 @@ export function PosterCard({
               <button className="poster__text-action" disabled={preview} onClick={open} type="button">
                 查看
               </button>
-              <button className="poster__pill" disabled={preview} onClick={open} type="button">
-                接下 <span aria-hidden="true">→</span>
+              <button
+                className={`poster__pill ${takeState === "copied" ? "is-copied" : ""}`}
+                disabled={preview || takeState === "busy"}
+                onClick={take}
+                type="button"
+              >
+                {takeState === "copied" ? (
+                  <>
+                    <CheckIcon /> 已复制
+                  </>
+                ) : takeState === "busy" ? (
+                  "复制中…"
+                ) : (
+                  <>
+                    接下 <span aria-hidden="true">→</span>
+                  </>
+                )}
               </button>
             </span>
           )}

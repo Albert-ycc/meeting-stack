@@ -4,7 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, type ApiClient, type RelationQuestion, type RequirementDecisionLog } from "../api";
 import { LinksFlagsContext } from "./links/LinksFlagsContext";
-import type { RequirementDetail } from "../types";
+import type { RequirementDetail, RequirementSource } from "../types";
+import { stubPeaksFetch } from "./pool/peaksFixtures";
+import { EXPORT_SOURCE, JD_SOURCE, RECEIPT_SOURCE } from "./pool/poolFixtures";
+import { clearPeaksCache } from "./pool/PosterWaveform";
 import { RequirementDetailPage } from "./RequirementDetailPage";
 
 function baseDetail(overrides: Partial<RequirementDetail> = {}): RequirementDetail {
@@ -123,7 +126,11 @@ describe("RequirementDetailPage", () => {
 
   it("4h：［复制给 Claude Code］复制预取的背景，点击之后不再发请求", async () => {
     const requirement = vi.fn().mockResolvedValue(baseDetail());
-    const requirementContext = vi.fn().mockResolvedValue({ markdown: CONTEXT_MARKDOWN, paths: [], cards_missing: 0 });
+    const requirementContext = vi.fn().mockResolvedValue({
+      markdown: CONTEXT_MARKDOWN,
+      paths: ["/Volumes/资料盘/会议纪要与录音/260908 云图需求梳理与北辰科研仓对接", "/Volumes/资料盘/蓝鲸云/云图科研用药/V1.5.7-北辰仓快递配送-260914"],
+      cards_missing: 0,
+    });
     renderCopyPage({ requirement, requirementContext });
 
     await screen.findByRole("heading", { name: "北辰仓快递配送" });
@@ -132,17 +139,30 @@ describe("RequirementDetailPage", () => {
     await userEvent.click(button);
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(CONTEXT_MARKDOWN);
-    expect(await screen.findByText("已复制，粘给 Claude Code 就行")).toBeInTheDocument();
+    // 和海报上的「接下」同一句（R05-5）：N 取背景里带回来的文件路径数
+    expect(await screen.findByText("已复制需求背景和 2 个文件路径，去 Claude Code 粘贴")).toBeInTheDocument();
     expect(requirementContext).toHaveBeenCalledTimes(1);
     expect(requirement).toHaveBeenCalledTimes(1);
   });
 
-  it("4h：有会的纪要不在项目文件夹里时换一句提示", async () => {
+  it("4h：有会的纪要不在项目文件夹里时，同一句后面多带一句说明", async () => {
     const requirement = vi.fn().mockResolvedValue(baseDetail());
-    const requirementContext = vi.fn().mockResolvedValue({ markdown: CONTEXT_MARKDOWN, paths: [], cards_missing: 1 });
+    const requirementContext = vi.fn().mockResolvedValue({ markdown: CONTEXT_MARKDOWN, paths: ["/Volumes/资料盘/a"], cards_missing: 1 });
     renderCopyPage({ requirement, requirementContext });
     await userEvent.click(await screen.findByRole("button", { name: "复制给 Claude Code" }));
-    expect(await screen.findByText("已复制；有 1 场会的纪要不在项目文件夹里，带的是归档文件夹")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "已复制需求背景和 1 个文件路径，去 Claude Code 粘贴；有 1 场会的纪要不在项目文件夹里，带的是归档文件夹",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("4h：没有任何文件路径时不说「0 个文件路径」", async () => {
+    const requirement = vi.fn().mockResolvedValue(baseDetail());
+    const requirementContext = vi.fn().mockResolvedValue({ markdown: CONTEXT_MARKDOWN, paths: [], cards_missing: 0 });
+    renderCopyPage({ requirement, requirementContext });
+    await userEvent.click(await screen.findByRole("button", { name: "复制给 Claude Code" }));
+    expect(await screen.findByText("已复制需求背景，去 Claude Code 粘贴")).toBeInTheDocument();
   });
 
   it("4h：背景还没取到时按钮写「正在准备…」并置灰", async () => {
@@ -685,13 +705,17 @@ describe("RequirementDetailPage 头部和出自录音（R05）", () => {
   }
 
   it("需求名最醒目，座次、项目、等级在上，说明在下；出自录音列出提出的和合并进来的原话", async () => {
+    clearPeaksCache();
+    stubPeaksFetch({ 77: origin.duration_ms });
+    const withAudio = { ...origin, audio_artifact_id: 77 };
+    const mergedWithAudio = { ...merged, audio_artifact_id: 77 };
     const onOpenMeeting = renderDetail({
       title: "京东科研仓对接",
       project_name: "医米科研用药",
       project_seat: 1,
       summary: "把京东科研仓当作一个药房接进医米。",
-      source: origin,
-      sources: [origin, merged],
+      source: withAudio,
+      sources: [withAudio, mergedWithAudio],
     });
 
     expect(await screen.findByRole("heading", { name: "京东科研仓对接" })).toBeInTheDocument();
@@ -702,13 +726,25 @@ describe("RequirementDetailPage 头部和出自录音（R05）", () => {
     expect(card.getByText("提出 · 会上原话")).toBeInTheDocument();
     expect(card.getByText("合并自候选「京东仓签收凭证」")).toBeInTheDocument();
     expect(card.getByText(`「${merged.quote}」`)).toBeInTheDocument();
-    expect(card.getByText("00:13:45 提出")).toBeInTheDocument();
+    // 时间签在峰值取到以后才画（取不到整块波形都不画，见下面的用例）
+    expect(await card.findByText("00:13:45 提出")).toBeInTheDocument();
     expect(card.getByText("00:31:49 合并 · 京东仓签收凭证")).toBeInTheDocument();
 
     await userEvent.click(card.getByRole("button", { name: /从 00:31:49 开始放/ }));
     expect(onOpenMeeting).toHaveBeenLastCalledWith("vm-20260916-190150-2eebb406", 1909360);
     await userEvent.click(card.getByRole("button", { name: /打开会议/ }));
     expect(onOpenMeeting).toHaveBeenLastCalledWith("vm-20260916-190150-2eebb406", 825270);
+    vi.unstubAllGlobals();
+  });
+
+  it("这场会没有录音文件：「出自录音」只有会议信息和原话时间锚，没有波形、时间签、坐标轴", async () => {
+    renderDetail({ source: origin, sources: [origin, merged] });
+
+    const card = within(await screen.findByRole("region", { name: "出自录音" }));
+    expect(card.getByText("260916 医米京东科研仓系统对接")).toBeInTheDocument();
+    expect(card.getByRole("button", { name: /从 00:13:45 开始放/ })).toBeInTheDocument();
+    expect(card.queryByText("00:00")).not.toBeInTheDocument();
+    expect(card.queryByText("00:13:45 提出")).not.toBeInTheDocument();
   });
 
   it("已完成、已搁置在需求名后面盖章，不再挂「进行中」", async () => {
@@ -719,5 +755,298 @@ describe("RequirementDetailPage 头部和出自录音（R05）", () => {
 
     renderDetail({ status: "shelved" });
     expect(await screen.findByText("已搁置")).toHaveClass("requirement-detail__stamp--shelved");
+  });
+});
+
+// ---------------------------------------------------------------- 需求池改版收尾（260930、261001 版 PRD）
+
+/*
+ * 下面几组用例的会、原话、时间锚照生产库逐字稿抄（poolFixtures 和后端 requirement_pool_world 同一份）：
+ * 京东科研仓对接那场会有 00:13:45 提出、00:31:49 合并进来的两句；云课堂那场会有 00:09:36 一句。
+ */
+const JD_ID = JD_SOURCE.meeting_id;
+const CVM_ID = EXPORT_SOURCE.meeting_id;
+const JD_MEETING = {
+  id: JD_ID,
+  title: JD_SOURCE.meeting_title,
+  recording_date: JD_SOURCE.recording_date,
+  duration_ms: JD_SOURCE.duration_ms,
+  canonical_dir: "/Volumes/资料盘/会议纪要与录音/260916 医米京东科研仓系统对接",
+};
+const CVM_MEETING = {
+  id: CVM_ID,
+  title: EXPORT_SOURCE.meeting_title,
+  recording_date: EXPORT_SOURCE.recording_date,
+  duration_ms: EXPORT_SOURCE.duration_ms,
+  canonical_dir: null,
+};
+const JD_ORIGIN: RequirementSource = { ...JD_SOURCE };
+const JD_MERGED: RequirementSource = { ...RECEIPT_SOURCE, kind: "merged", via_candidate_title: "京东仓签收凭证" };
+const CVM_ORIGIN: RequirementSource = { ...EXPORT_SOURCE };
+
+function jdDetail(overrides: Partial<RequirementDetail> = {}): RequirementDetail {
+  return baseDetail({
+    title: "京东科研仓对接",
+    project_name: "医米科研用药",
+    priority: "P0",
+    meetings: [JD_MEETING],
+    folders: [],
+    tasks: [],
+    source: JD_ORIGIN,
+    sources: [JD_ORIGIN, JD_MERGED],
+    ...overrides,
+  });
+}
+
+function renderJd(api: Record<string, unknown>, detail: RequirementDetail = jdDetail()) {
+  const requirement = vi.fn().mockResolvedValue(detail);
+  render(
+    <RequirementDetailPage
+      apiClient={{ requirement, ...api } as unknown as ApiClient}
+      canPickFolders
+      canWrite
+      onBack={vi.fn()}
+      onOpenMeeting={vi.fn()}
+      onOpenProject={vi.fn()}
+      onOpenTask={vi.fn()}
+      projects={[{ id: "project-a", name: "医米科研用药", color: "#2c8d83" }]}
+      requirementId="req-1"
+    />,
+  );
+  return requirement;
+}
+
+function meetingRow(title: string) {
+  const cell = screen.getByText(title, { selector: ".requirement-detail__meeting-title" });
+  return within(cell.closest(".requirement-detail__meeting-row") as HTMLElement);
+}
+
+describe("RequirementDetailPage 移除关联会议（审查 M1）", () => {
+  it("这场会有带原话的来源：移除前先确认，文案写明一起删掉几句原话、不能恢复；取消不移除，确认才移除", async () => {
+    const removeRequirementMeeting = vi.fn().mockResolvedValue(jdDetail({ meetings: [], sources: [] }));
+    renderJd({ removeRequirementMeeting });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    fireEvent.click(meetingRow(JD_MEETING.title).getByRole("button", { name: "移除" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("移除后，出自这场会的 2 句原话会一起删掉，不能恢复");
+    expect(removeRequirementMeeting).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(removeRequirementMeeting).not.toHaveBeenCalled();
+
+    fireEvent.click(meetingRow(JD_MEETING.title).getByRole("button", { name: "移除" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "移除" }));
+    await waitFor(() => expect(removeRequirementMeeting).toHaveBeenCalledWith("req-1", JD_ID));
+  });
+
+  it("只数出自这场会的原话：两场会各有来源时，每场会写各自的句数", async () => {
+    const removeRequirementMeeting = vi.fn().mockResolvedValue(jdDetail());
+    renderJd(
+      { removeRequirementMeeting },
+      jdDetail({ meetings: [JD_MEETING, CVM_MEETING], sources: [JD_ORIGIN, JD_MERGED, CVM_ORIGIN] }),
+    );
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    fireEvent.click(meetingRow(CVM_MEETING.title).getByRole("button", { name: "移除" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("出自这场会的 1 句原话");
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+
+    fireEvent.click(meetingRow(JD_MEETING.title).getByRole("button", { name: "移除" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("出自这场会的 2 句原话");
+  });
+
+  it("没有原话的会照旧直接移除，不弹确认：别的会有来源、这场会没有", async () => {
+    const removeRequirementMeeting = vi.fn().mockResolvedValue(jdDetail());
+    renderJd({ removeRequirementMeeting }, jdDetail({ meetings: [JD_MEETING, CVM_MEETING], sources: [CVM_ORIGIN] }));
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    fireEvent.click(meetingRow(JD_MEETING.title).getByRole("button", { name: "移除" }));
+    await waitFor(() => expect(removeRequirementMeeting).toHaveBeenCalledWith("req-1", JD_ID));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("只关联了会议、没挑原话的来源（原话为空）不算原话：照旧直接移除", async () => {
+    const removeRequirementMeeting = vi.fn().mockResolvedValue(jdDetail());
+    const bare = { ...JD_ORIGIN, quote: "", anchor_ms: null };
+    renderJd({ removeRequirementMeeting }, jdDetail({ source: bare, sources: [bare] }));
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    fireEvent.click(meetingRow(JD_MEETING.title).getByRole("button", { name: "移除" }));
+    await waitFor(() => expect(removeRequirementMeeting).toHaveBeenCalledWith("req-1", JD_ID));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("需求没有来源（手动新建时留空）：直接移除", async () => {
+    const removeRequirementMeeting = vi.fn().mockResolvedValue(jdDetail());
+    renderJd({ removeRequirementMeeting }, jdDetail({ source: null, sources: [] }));
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    fireEvent.click(meetingRow(JD_MEETING.title).getByRole("button", { name: "移除" }));
+    await waitFor(() => expect(removeRequirementMeeting).toHaveBeenCalledWith("req-1", JD_ID));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+});
+
+describe("RequirementDetailPage 撤销合并（R01-14，S03-b）", () => {
+  // 合并后 10 分钟内可撤销；until 是后端算好的截止时刻，页面按本机时间判断，用例里钉住时钟
+  const NOW = new Date("2026-10-01T10:00:00+08:00");
+  const undoable = (until: Date): RequirementSource => ({
+    ...JD_MERGED,
+    undo_merge: { candidate_id: "candidate-receipt", until: until.toISOString() },
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: NOW });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("合并进来的原话在时限内：那一行有「撤销合并」，点了调接口，成功后刷新详情并提示「已撤销合并」", async () => {
+    const withUndo = jdDetail({ sources: [JD_ORIGIN, undoable(new Date(NOW.getTime() + 8 * 60_000))] });
+    const afterUndo = jdDetail({ sources: [JD_ORIGIN] });
+    const undoCandidateMerge = vi.fn().mockResolvedValue({});
+    const requirement = vi.fn().mockResolvedValueOnce(withUndo).mockResolvedValue(afterUndo);
+    render(
+      <RequirementDetailPage
+        apiClient={{ requirement, undoCandidateMerge } as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        onBack={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenProject={vi.fn()}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId="req-1"
+      />,
+    );
+
+    const card = within(await screen.findByRole("region", { name: "出自录音" }));
+    const button = card.getByRole("button", { name: "撤销合并" });
+    expect(button.closest("li")).toHaveTextContent("合并自候选「京东仓签收凭证」");
+    fireEvent.click(button);
+
+    await waitFor(() => expect(undoCandidateMerge).toHaveBeenCalledWith("candidate-receipt"));
+    expect(await screen.findByText("已撤销合并")).toBeInTheDocument();
+    await waitFor(() => expect(requirement).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "撤销合并" })).not.toBeInTheDocument());
+  });
+
+  it("撤销失败（比如超过 10 分钟）：红色提示条写后端给的原因，详情不变", async () => {
+    const undoCandidateMerge = vi
+      .fn()
+      .mockRejectedValue(new ApiError("合并超过 10 分钟，不能撤销了", 409, { detail: "合并超过 10 分钟，不能撤销了" }));
+    renderJd(
+      { undoCandidateMerge },
+      jdDetail({ sources: [JD_ORIGIN, undoable(new Date(NOW.getTime() + 60_000))] }),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "撤销合并" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("合并超过 10 分钟，不能撤销了");
+    expect(screen.queryByText("已撤销合并")).not.toBeInTheDocument();
+  });
+
+  it("过了 until 就不显示：页面打开时已经过了，或者开着页面等到了点", async () => {
+    renderJd({}, jdDetail({ sources: [JD_ORIGIN, undoable(new Date(NOW.getTime() + 60_000))] }));
+    expect(await screen.findByRole("button", { name: "撤销合并" })).toBeInTheDocument();
+    // 异步推进：React 的副作用要靠微任务和定时器交替才排得上，同步推进会跳过它们
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(61_000);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(screen.queryByRole("button", { name: "撤销合并" })).not.toBeInTheDocument();
+    cleanup();
+
+    renderJd({}, jdDetail({ sources: [JD_ORIGIN, undoable(new Date(NOW.getTime() - 1_000))] }));
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    expect(screen.queryByRole("button", { name: "撤销合并" })).not.toBeInTheDocument();
+  });
+
+  it("没有写权限时不显示「撤销合并」", async () => {
+    const requirement = vi.fn().mockResolvedValue(jdDetail({ sources: [JD_ORIGIN, undoable(new Date(NOW.getTime() + 60_000))] }));
+    render(
+      <RequirementDetailPage
+        apiClient={{ requirement } as unknown as ApiClient}
+        canPickFolders
+        canWrite={false}
+        onBack={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenProject={vi.fn()}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId="req-1"
+      />,
+    );
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    expect(screen.queryByRole("button", { name: "撤销合并" })).not.toBeInTheDocument();
+  });
+});
+
+describe("RequirementDetailPage 在任务区新建任务（R05-6，S12-c）", () => {
+  it("弹窗写「挂在「需求名」下」、挂到需求只读；填任务名、选负责人后创建，任务挂在本需求上，创建后刷新详情", async () => {
+    const createTask = vi.fn().mockResolvedValue({});
+    const requirements = vi.fn().mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0, counts: { active: 0, done: 0, shelved: 0, all: 0 } });
+    const requirement = renderJd({ createTask, requirements });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    fireEvent.click(screen.getByRole("button", { name: "＋ 新建任务" }));
+    const dialog = await screen.findByRole("dialog", { name: "新建任务" });
+    expect(dialog).toHaveTextContent("挂在「京东科研仓对接」下");
+    const locked = within(dialog).getByRole("group", { name: "挂到需求" });
+    expect(locked).toHaveTextContent("京东科研仓对接");
+    expect(locked).toHaveTextContent("P0");
+    expect(dialog).toHaveTextContent("从需求详情新建，固定挂在这条需求上");
+    // 不能改需求，也不能改项目：没有下拉
+    expect(within(dialog).queryByRole("button", { name: /所属项目|医米科研用药|未归项目/ })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /未归需求/ })).not.toBeInTheDocument();
+
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "把入库单推送接口的字段表发给京东" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "AI" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建" }));
+
+    await waitFor(() =>
+      expect(createTask).toHaveBeenCalledWith({
+        title: "把入库单推送接口的字段表发给京东",
+        project_id: "project-a",
+        requirement_id: "req-1",
+        assignee: "ai",
+      }),
+    );
+    await waitFor(() => expect(requirement).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "新建任务" })).not.toBeInTheDocument());
+  });
+});
+
+describe("RequirementDetailPage 头部：超长需求名（审查 B6）", () => {
+  // 取会上说过的几句决议连起来，凑一条 170 多字的需求名（审查里是 166 字）
+  const LONG_TITLE =
+    "京东科研仓对接：采购单入库、销售单、订单取消、物流轨迹四类接口必须对上，签收凭证怎么拿还悬着；" +
+    "医米系统强制要求患者上传手写签名的随货同行单，与手持身份证及药盒拍照一并作为收货凭证；" +
+    "患者收货凭证上传不全将影响其下一次药品申请，单次结算周期内如有差异不单独处理，可平移到下一次结算周期；" +
+    "医米侧确认盘点口径与智研保持一致，医米侧不能只接收物流状态。";
+
+  it("需求名 170 多字：按钮在标题行的顶上，不悬在十行标题中间；面包屑「需求池」不收缩、需求名一行截断", async () => {
+    expect(LONG_TITLE.length).toBeGreaterThan(166);
+    renderJd({}, jdDetail({ title: LONG_TITLE }));
+    await screen.findByRole("heading", { name: LONG_TITLE });
+
+    const row = document.querySelector(".requirement-detail__title-row") as HTMLElement;
+    expect(getComputedStyle(row).alignItems).toBe("flex-start");
+
+    const crumb = document.querySelector(".requirement-detail__breadcrumb") as HTMLElement;
+    const backLink = crumb.querySelector("button") as HTMLElement;
+    expect(getComputedStyle(backLink).flexShrink).toBe("0");
+    expect(getComputedStyle(backLink).whiteSpace).toBe("nowrap");
+    const current = crumb.querySelector(".requirement-detail__crumb-current") as HTMLElement;
+    expect(current).toHaveTextContent(LONG_TITLE);
+    expect(current).toHaveAttribute("title", LONG_TITLE);
+    expect(getComputedStyle(current).textOverflow).toBe("ellipsis");
+    expect(getComputedStyle(current).whiteSpace).toBe("nowrap");
+    expect(getComputedStyle(current).overflow).toBe("hidden");
   });
 });

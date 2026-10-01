@@ -308,3 +308,64 @@
   background: var(--signal-dark);
   border-color: var(--signal-dark);
 }
+
+/* 从需求详情新建任务（R05-6、S12-c）：标题下的副标题、只读的「挂到需求」一行 */
+.task-edit-modal__titles {
+  min-width: 0;
+}
+
+.task-edit-modal__subtitle {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.task-edit-modal__field textarea.is-compact {
+  min-height: 64px;
+}
+
+.task-edit-modal__label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-edit-modal__hint {
+  color: var(--ink-faint);
+  font-size: 12px;
+  text-align: right;
+}
+
+.task-edit-modal__locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 12px;
+  color: var(--ink);
+  font-size: 13px;
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.task-edit-modal__locked-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-edit-modal__flag,
+.task-edit-modal__lock {
+  flex: none;
+  color: var(--ink-faint);
+}
+
+.task-edit-modal__lock {
+  margin-left: auto;
+}

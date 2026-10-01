@@ -39,22 +39,29 @@
   cursor: pointer;
 }
 
+/* --flag-rows：时间签排成几行（挨得近的错开，见 flagLayout）；每行 26px，一行时顶部留 30px */
 .source-card__wave {
   position: relative;
-  padding-top: 30px;
+  padding-top: calc(var(--flag-rows, 1) * 26px + 4px);
 }
 
-/* 波形上方的时间签：提出的实心、合并进来的空心，竖线由波形自己画 */
+/* 还在取波形：先占住整块的高度（时间签一行 + 波形 64px + 坐标轴），取到了不把下面的内容顶下去 */
+.source-card__wave.is-loading {
+  min-height: 116px;
+}
+
+/* 波形上方的时间签：提出的实心、合并进来的空心，竖线由波形自己画。
+ * 每个签的 left、top、transform 由组件按锚点位置和排到第几行算出来：
+ * 贴着锚点又不伸出波形的左右边，挨得近的错开一行 */
 .source-card__flags {
   position: absolute;
   inset: 0 0 auto;
-  height: 24px;
+  height: calc(var(--flag-rows, 1) * 26px - 4px);
 }
 
 .source-card__flag {
   position: absolute;
-  top: 0;
-  max-width: 46%;
+  max-width: 100%;
   overflow: hidden;
   padding: 3px 8px;
   border: 1px solid var(--signal);
@@ -67,7 +74,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
-  transform: translateX(-50%);
 }
 
 .source-card__flag.is-origin {
@@ -122,9 +128,34 @@
   font-weight: 600;
 }
 
+.source-card__quote-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 14px;
+}
+
 .source-card__quote small {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* 合并后 10 分钟内的［撤销合并］：挂在那一行的标签后面，不抢原话的位置 */
+.source-card__undo {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--signal-dark);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.source-card__undo:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .source-card__quote p {
@@ -132,4 +163,16 @@
   color: var(--ink);
   font-size: 15px;
   line-height: 1.6;
+}
+
+/* 手机：卡片内边距收小让波形宽一点；每条原话的时间放在原话上面，不再把原话挤进 160 像素的窄列 */
+@media (max-width: 767px) {
+  .source-card {
+    padding: 18px 16px;
+  }
+
+  .source-card__quotes li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
 }

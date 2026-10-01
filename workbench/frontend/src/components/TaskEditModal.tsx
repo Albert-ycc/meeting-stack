@@ -2,7 +2,14 @@ import { useEffect, useRef, useState } from "react";
 
 import { similarProjectFrom } from "../api";
 import type { ApiClient } from "../api";
-import type { Project, RequirementSummary, SimilarProjectSuggestion, Task, TaskAssignee } from "../types";
+import type {
+  Project,
+  RequirementPriority,
+  RequirementSummary,
+  SimilarProjectSuggestion,
+  Task,
+  TaskAssignee,
+} from "../types";
 import { isComposingKeydown } from "../keyboard";
 import { useDialogFocus } from "./useDialog";
 import { PriorityBadge } from "./RequirementBadges";
@@ -20,6 +27,12 @@ export interface TaskEditModalProps {
   defaultProjectId?: string | null;
   /** 仅新建模式生效 */
   defaultRequirementId?: string | null;
+  /**
+   * 从需求详情新建任务（R05-6、S12-c）：任务固定挂在这条需求上。弹窗里「挂到需求」是只读的一行，
+   * 副标题写「挂在「需求名」下」，不能改需求，也不能改项目（所属项目由 defaultProjectId 给）。
+   * 负责人默认选「我」。仅新建模式生效；不传时和以前完全一样。
+   */
+  fixedRequirement?: { id: string; title: string; priority: RequirementPriority };
 }
 
 /** 快速新建项目时给一个默认识别色，用户可到项目页再调整。 */
@@ -34,8 +47,10 @@ export function TaskEditModal({
   onSaved,
   defaultProjectId = null,
   defaultRequirementId = null,
+  fixedRequirement,
 }: TaskEditModalProps) {
   const isEdit = task !== null;
+  const lockedRequirement = isEdit ? null : (fixedRequirement ?? null);
   const [description, setDescription] = useState(task?.title ?? "");
   const [projectId, setProjectId] = useState<string | null>(
     task ? task.project_id ?? null : defaultProjectId,
@@ -44,10 +59,10 @@ export function TaskEditModal({
   // 没动过却带上 null 会把 AI 或会议给的项目冲掉。
   const [projectTouched, setProjectTouched] = useState(false);
   const [requirementId, setRequirementId] = useState<string | null>(
-    task ? task.requirement_id ?? null : defaultRequirementId,
+    task ? task.requirement_id ?? null : (fixedRequirement?.id ?? defaultRequirementId),
   );
   const [requirementOptions, setRequirementOptions] = useState<RequirementSummary[]>([]);
-  const [assignee, setAssignee] = useState<TaskAssignee>(task?.assignee ?? "ai");
+  const [assignee, setAssignee] = useState<TaskAssignee>(task?.assignee ?? (fixedRequirement ? "me" : "ai"));
   // 项目下拉和需求下拉只留一个开着：project | requirement | null
   const [openMenu, setOpenMenu] = useState<"project" | "requirement" | null>(null);
   const [creatingProject, setCreatingProject] = useState(false);
@@ -70,7 +85,8 @@ export function TaskEditModal({
 
   // 所属需求下拉跟随所属项目收窄：只列该项目进行中的需求
   useEffect(() => {
-    if (!projectId) {
+    // 固定挂在某条需求上时不用列需求
+    if (!projectId || lockedRequirement) {
       setRequirementOptions([]);
       return;
     }
@@ -86,7 +102,7 @@ export function TaskEditModal({
     return () => {
       cancelled = true;
     };
-  }, [apiClient, projectId]);
+  }, [apiClient, lockedRequirement, projectId]);
 
   const trimmed = description.trim();
   const canSave = trimmed.length > 0 && !saving && canWrite;
@@ -104,10 +120,22 @@ export function TaskEditModal({
       : null;
 
   const primaryLabel = !isEdit
-    ? "创建任务"
+    ? lockedRequirement
+      ? "创建"
+      : "创建任务"
     : task.status === "pending_confirm"
       ? "保存并确认"
       : "保存";
+
+  const assigneeChoices: Array<{ value: TaskAssignee; label: string }> = lockedRequirement
+    ? [
+        { value: "me", label: "我" },
+        { value: "ai", label: "AI" },
+      ]
+    : [
+        { value: "ai", label: "交给 AI" },
+        { value: "me", label: "我来做" },
+      ];
 
   const closeMenus = () => {
     openMenuRef.current = null;
@@ -214,7 +242,14 @@ export function TaskEditModal({
         role="dialog"
       >
         <header className="task-edit-modal__head">
-          <h2>{isEdit ? "修改任务" : "新建任务"}</h2>
+          {lockedRequirement ? (
+            <div className="task-edit-modal__titles">
+              <h2>新建任务</h2>
+              <p className="task-edit-modal__subtitle">挂在「{lockedRequirement.title}」下</p>
+            </div>
+          ) : (
+            <h2>{isEdit ? "修改任务" : "新建任务"}</h2>
+          )}
           <button
             aria-label="关闭"
             className="task-edit-modal__close"
@@ -228,237 +263,255 @@ export function TaskEditModal({
 
         <div className="task-edit-modal__body">
           <label className="task-edit-modal__field">
-            <span className="task-edit-modal__label">任务描述</span>
+            <span className="task-edit-modal__label">{lockedRequirement ? "任务名" : "任务描述"}</span>
             <textarea
               autoFocus={!isEdit}
+              className={lockedRequirement ? "is-compact" : undefined}
               disabled={!canWrite}
               onChange={(event) => setDescription(event.target.value)}
-              placeholder="要完成的事，例如：整理本周产品周报"
-              rows={3}
+              placeholder={lockedRequirement ? "要做的一件事" : "要完成的事，例如：整理本周产品周报"}
+              rows={lockedRequirement ? 2 : 3}
               value={description}
             />
           </label>
 
-          <div className="task-edit-modal__field" ref={projectDropdownRef}>
-            <span className="task-edit-modal__label">所属项目</span>
-            <button
-              aria-expanded={openMenu === "project"}
-              aria-haspopup="listbox"
-              className="task-edit-modal__select-trigger"
-              disabled={!canWrite}
-              onClick={() => setOpenMenu((current) => (current === "project" ? null : "project"))}
-              type="button"
-            >
-              <span className="task-edit-modal__select-value">
-                {currentProject && (
-                  <i className="task-edit-modal__dot" style={{ background: currentProject.color }} />
-                )}
-                <span
-                  className={currentProjectName ? undefined : "task-edit-modal__select-placeholder"}
-                >
-                  {currentProjectName ?? "未归项目"}
-                </span>
-              </span>
-              <span aria-hidden="true" className="task-edit-modal__caret">
-                ▾
-              </span>
-            </button>
-
-            {openMenu === "project" && (
-              <div className="task-edit-modal__menu" role="listbox">
+          {lockedRequirement ? (
+            <div className="task-edit-modal__field">
+              <div className="task-edit-modal__label-row">
+                <span className="task-edit-modal__label">挂到需求</span>
+                <span className="task-edit-modal__hint">从需求详情新建，固定挂在这条需求上</span>
+              </div>
+              <div aria-label="挂到需求" className="task-edit-modal__locked" role="group">
+                <svg aria-hidden="true" className="task-edit-modal__flag" fill="none" height="14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 16 16" width="14">
+                  <path d="M3.5 14V2.5M3.5 3h8l-1.8 2.7L11.5 8.4h-8" />
+                </svg>
+                <span className="task-edit-modal__locked-title">{lockedRequirement.title}</span>
+                <PriorityBadge priority={lockedRequirement.priority} />
+                <svg aria-label="不能修改" className="task-edit-modal__lock" fill="none" height="14" role="img" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 16 16" width="14">
+                  <rect height="6.5" rx="1.4" width="9" x="3.5" y="7.5" />
+                  <path d="M5.5 7.5V5.5a2.5 2.5 0 015 0v2" />
+                </svg>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="task-edit-modal__field" ref={projectDropdownRef}>
+                <span className="task-edit-modal__label">所属项目</span>
                 <button
-                  aria-selected={projectId === null}
-                  className={`task-edit-modal__option ${projectId === null ? "is-selected" : ""}`}
-                  onClick={() => {
-                    setProjectId(null);
-                    setProjectTouched(true);
-                    setRequirementId(null); // 换掉/清空所属项目，之前挂的需求不属于新项目了
-                    closeMenus();
-                  }}
-                  role="option"
+                  aria-expanded={openMenu === "project"}
+                  aria-haspopup="listbox"
+                  className="task-edit-modal__select-trigger"
+                  disabled={!canWrite}
+                  onClick={() => setOpenMenu((current) => (current === "project" ? null : "project"))}
                   type="button"
                 >
-                  <span className="task-edit-modal__option-name">未归项目</span>
-                  {projectId === null && (
-                    <span aria-hidden="true" className="task-edit-modal__check">
-                      ✓
-                    </span>
-                  )}
-                </button>
-                {projects.map((project) => (
-                  <button
-                    aria-selected={project.id === projectId}
-                    className={`task-edit-modal__option ${project.id === projectId ? "is-selected" : ""}`}
-                    key={project.id}
-                    onClick={() => {
-                      setProjectId(project.id);
-                      setProjectTouched(true);
-                      setRequirementId(null); // 换了所属项目，之前挂的需求不属于新项目了
-                      closeMenus();
-                    }}
-                    role="option"
-                    type="button"
-                  >
-                    <span className="task-edit-modal__option-name">
-                      <i className="task-edit-modal__dot" style={{ background: project.color }} />
-                      {project.name}
-                    </span>
-                    {project.id === projectId && (
-                      <span aria-hidden="true" className="task-edit-modal__check">
-                        ✓
-                      </span>
+                  <span className="task-edit-modal__select-value">
+                    {currentProject && (
+                      <i className="task-edit-modal__dot" style={{ background: currentProject.color }} />
                     )}
-                  </button>
-                ))}
-                <div className="task-edit-modal__menu-sep" />
-                {creatingProject ? (
-                  <div className="task-edit-modal__inline-create">
-                    <input
-                      aria-label="新项目名称"
-                      autoFocus
-                      onChange={(event) => {
-                        setNewProjectName(event.target.value);
-                        setProjectSuggestion(null);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" && !isComposingKeydown(event)) {
-                          event.preventDefault();
-                          void createProject();
-                        }
-                      }}
-                      placeholder="新项目名称"
-                      value={newProjectName}
-                    />
-                    <button
-                      className="task-edit-modal__inline-confirm"
-                      disabled={creatingProjectBusy || !newProjectName.trim()}
-                      onClick={() => void createProject()}
-                      type="button"
+                    <span
+                      className={currentProjectName ? undefined : "task-edit-modal__select-placeholder"}
                     >
-                      {creatingProjectBusy ? "创建中…" : "创建"}
-                    </button>
+                      {currentProjectName ?? "未归项目"}
+                    </span>
+                  </span>
+                  <span aria-hidden="true" className="task-edit-modal__caret">
+                    ▾
+                  </span>
+                </button>
+
+                {openMenu === "project" && (
+                  <div className="task-edit-modal__menu" role="listbox">
                     <button
-                      className="task-edit-modal__inline-cancel"
-                      disabled={creatingProjectBusy}
+                      aria-selected={projectId === null}
+                      className={`task-edit-modal__option ${projectId === null ? "is-selected" : ""}`}
                       onClick={() => {
-                        setNewProjectName("");
-                        setProjectSuggestion(null);
-                        setCreatingProject(false);
+                        setProjectId(null);
+                        setProjectTouched(true);
+                        setRequirementId(null); // 换掉/清空所属项目，之前挂的需求不属于新项目了
+                        closeMenus();
                       }}
+                      role="option"
                       type="button"
                     >
-                      取消
+                      <span className="task-edit-modal__option-name">未归项目</span>
+                      {projectId === null && (
+                        <span aria-hidden="true" className="task-edit-modal__check">
+                          ✓
+                        </span>
+                      )}
                     </button>
-                    {projectSuggestion && (
-                      <SimilarProjectQuestion
-                        disabled={creatingProjectBusy}
-                        onForce={() => void createProject(true)}
-                        onUse={takeProject}
-                        suggestion={projectSuggestion}
-                      />
+                    {projects.map((project) => (
+                      <button
+                        aria-selected={project.id === projectId}
+                        className={`task-edit-modal__option ${project.id === projectId ? "is-selected" : ""}`}
+                        key={project.id}
+                        onClick={() => {
+                          setProjectId(project.id);
+                          setProjectTouched(true);
+                          setRequirementId(null); // 换了所属项目，之前挂的需求不属于新项目了
+                          closeMenus();
+                        }}
+                        role="option"
+                        type="button"
+                      >
+                        <span className="task-edit-modal__option-name">
+                          <i className="task-edit-modal__dot" style={{ background: project.color }} />
+                          {project.name}
+                        </span>
+                        {project.id === projectId && (
+                          <span aria-hidden="true" className="task-edit-modal__check">
+                            ✓
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                    <div className="task-edit-modal__menu-sep" />
+                    {creatingProject ? (
+                      <div className="task-edit-modal__inline-create">
+                        <input
+                          aria-label="新项目名称"
+                          autoFocus
+                          onChange={(event) => {
+                            setNewProjectName(event.target.value);
+                            setProjectSuggestion(null);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && !isComposingKeydown(event)) {
+                              event.preventDefault();
+                              void createProject();
+                            }
+                          }}
+                          placeholder="新项目名称"
+                          value={newProjectName}
+                        />
+                        <button
+                          className="task-edit-modal__inline-confirm"
+                          disabled={creatingProjectBusy || !newProjectName.trim()}
+                          onClick={() => void createProject()}
+                          type="button"
+                        >
+                          {creatingProjectBusy ? "创建中…" : "创建"}
+                        </button>
+                        <button
+                          className="task-edit-modal__inline-cancel"
+                          disabled={creatingProjectBusy}
+                          onClick={() => {
+                            setNewProjectName("");
+                            setProjectSuggestion(null);
+                            setCreatingProject(false);
+                          }}
+                          type="button"
+                        >
+                          取消
+                        </button>
+                        {projectSuggestion && (
+                          <SimilarProjectQuestion
+                            disabled={creatingProjectBusy}
+                            onForce={() => void createProject(true)}
+                            onUse={takeProject}
+                            suggestion={projectSuggestion}
+                          />
+                        )}
+                      </div>
+                    ) : (
+                      <button
+                        className="task-edit-modal__create-option"
+                        onClick={() => setCreatingProject(true)}
+                        type="button"
+                      >
+                        ＋ 新建项目
+                      </button>
                     )}
                   </div>
-                ) : (
-                  <button
-                    className="task-edit-modal__create-option"
-                    onClick={() => setCreatingProject(true)}
-                    type="button"
-                  >
-                    ＋ 新建项目
-                  </button>
                 )}
               </div>
-            )}
-          </div>
 
-          <div className="task-edit-modal__field" ref={requirementDropdownRef}>
-            <span className="task-edit-modal__label">所属需求</span>
-            <button
-              aria-expanded={openMenu === "requirement"}
-              aria-haspopup="listbox"
-              className="task-edit-modal__select-trigger"
-              disabled={!canWrite || !projectId}
-              onClick={() => setOpenMenu((current) => (current === "requirement" ? null : "requirement"))}
-              type="button"
-            >
-              <span className="task-edit-modal__select-value">
-                {currentRequirement && <PriorityBadge priority={currentRequirement.priority} />}
-                <span
-                  className={currentRequirement ? undefined : "task-edit-modal__select-placeholder"}
-                >
-                  {currentRequirement?.title ?? "未归需求"}
-                </span>
-              </span>
-              <span aria-hidden="true" className="task-edit-modal__caret">
-                ▾
-              </span>
-            </button>
-
-            {openMenu === "requirement" && (
-              <div className="task-edit-modal__menu" role="listbox">
+              <div className="task-edit-modal__field" ref={requirementDropdownRef}>
+                <span className="task-edit-modal__label">所属需求</span>
                 <button
-                  aria-selected={requirementId === null}
-                  className={`task-edit-modal__option ${requirementId === null ? "is-selected" : ""}`}
-                  onClick={() => {
-                    setRequirementId(null);
-                    closeMenus();
-                  }}
-                  role="option"
+                  aria-expanded={openMenu === "requirement"}
+                  aria-haspopup="listbox"
+                  className="task-edit-modal__select-trigger"
+                  disabled={!canWrite || !projectId}
+                  onClick={() => setOpenMenu((current) => (current === "requirement" ? null : "requirement"))}
                   type="button"
                 >
-                  <span className="task-edit-modal__option-name">未归需求</span>
-                  {requirementId === null && (
-                    <span aria-hidden="true" className="task-edit-modal__check">
-                      ✓
+                  <span className="task-edit-modal__select-value">
+                    {currentRequirement && <PriorityBadge priority={currentRequirement.priority} />}
+                    <span
+                      className={currentRequirement ? undefined : "task-edit-modal__select-placeholder"}
+                    >
+                      {currentRequirement?.title ?? "未归需求"}
                     </span>
-                  )}
+                  </span>
+                  <span aria-hidden="true" className="task-edit-modal__caret">
+                    ▾
+                  </span>
                 </button>
-                {requirementOptions.map((requirement) => (
-                  <button
-                    aria-selected={requirement.id === requirementId}
-                    className={`task-edit-modal__option ${requirement.id === requirementId ? "is-selected" : ""}`}
-                    key={requirement.id}
-                    onClick={() => {
-                      setRequirementId(requirement.id);
-                      closeMenus();
-                    }}
-                    role="option"
-                    type="button"
-                  >
-                    <span className="task-edit-modal__option-name">
-                      <PriorityBadge priority={requirement.priority} />
-                      {requirement.title}
-                    </span>
-                    {requirement.id === requirementId && (
-                      <span aria-hidden="true" className="task-edit-modal__check">
-                        ✓
-                      </span>
-                    )}
-                  </button>
-                ))}
+
+                {openMenu === "requirement" && (
+                  <div className="task-edit-modal__menu" role="listbox">
+                    <button
+                      aria-selected={requirementId === null}
+                      className={`task-edit-modal__option ${requirementId === null ? "is-selected" : ""}`}
+                      onClick={() => {
+                        setRequirementId(null);
+                        closeMenus();
+                      }}
+                      role="option"
+                      type="button"
+                    >
+                      <span className="task-edit-modal__option-name">未归需求</span>
+                      {requirementId === null && (
+                        <span aria-hidden="true" className="task-edit-modal__check">
+                          ✓
+                        </span>
+                      )}
+                    </button>
+                    {requirementOptions.map((requirement) => (
+                      <button
+                        aria-selected={requirement.id === requirementId}
+                        className={`task-edit-modal__option ${requirement.id === requirementId ? "is-selected" : ""}`}
+                        key={requirement.id}
+                        onClick={() => {
+                          setRequirementId(requirement.id);
+                          closeMenus();
+                        }}
+                        role="option"
+                        type="button"
+                      >
+                        <span className="task-edit-modal__option-name">
+                          <PriorityBadge priority={requirement.priority} />
+                          {requirement.title}
+                        </span>
+                        {requirement.id === requirementId && (
+                          <span aria-hidden="true" className="task-edit-modal__check">
+                            ✓
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </>
+          )}
 
           <div className="task-edit-modal__field">
-            <span className="task-edit-modal__label">执行方</span>
-            <div aria-label="执行方" className="task-edit-modal__segmented" role="group">
-              <button
-                aria-pressed={assignee === "ai"}
-                disabled={!canWrite}
-                onClick={() => setAssignee("ai")}
-                type="button"
-              >
-                交给 AI
-              </button>
-              <button
-                aria-pressed={assignee === "me"}
-                disabled={!canWrite}
-                onClick={() => setAssignee("me")}
-                type="button"
-              >
-                我来做
-              </button>
+            <span className="task-edit-modal__label">{lockedRequirement ? "负责人" : "执行方"}</span>
+            <div aria-label={lockedRequirement ? "负责人" : "执行方"} className="task-edit-modal__segmented" role="group">
+              {assigneeChoices.map((choice) => (
+                <button
+                  aria-pressed={assignee === choice.value}
+                  disabled={!canWrite}
+                  key={choice.value}
+                  onClick={() => setAssignee(choice.value)}
+                  type="button"
+                >
+                  {choice.label}
+                </button>
+              ))}
             </div>
           </div>
         </div>

@@ -43,9 +43,25 @@
   color: var(--faint);
 }
 
+/* 面包屑只占一行：「需求池」和斜杠不收缩，当前需求名太长就在这一行里截断，
+ * 不把前面的字挤成竖排（审查 B6） */
+.requirement-detail__breadcrumb button,
+.requirement-detail__breadcrumb > span:first-of-type {
+  flex: none;
+  white-space: nowrap;
+}
+
+.requirement-detail__crumb-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 按钮顶着标题的第一行：需求名很长、折成十来行时，按钮不悬在标题中间（审查 B6） */
 .requirement-detail__title-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
   margin-top: 8px;
@@ -454,6 +470,17 @@
 
 /* 手机上三张表不再按列排：标题独占一行，其余字段在下面顺排，表头隐藏。 */
 @media (max-width: 767px) {
+  /* 头部：需求名占满一行，两个按钮折到它下面（并排的话标题只剩 90 来像素宽，折成竖条） */
+  .requirement-detail__title-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .requirement-detail__actions {
+    flex-wrap: wrap;
+  }
+
   .requirement-detail__meeting-row--head,
   .requirement-detail__folder-row--head,
   .requirement-detail__task-row--head {

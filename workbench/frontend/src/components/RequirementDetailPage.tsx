@@ -12,6 +12,7 @@ import type {
   Task,
   TaskStatus,
 } from "../types";
+import { useConfirm } from "./ConfirmDialog";
 import { FolderIcon } from "./FolderIcon";
 import { REQUIREMENT_STATUS_LABELS } from "./RequirementBadges";
 import { RequirementModal } from "./RequirementModal";
@@ -27,6 +28,7 @@ import { DecisionLogCard } from "./decisions/DecisionLogCard";
 import { MentionedBadge } from "./files/MentionedBadge";
 import { useMentionedCounts } from "./files/useMentionedCounts";
 import { RequirementSourceCard } from "./pool/RequirementSourceCard";
+import { copiedMessage } from "./pool/requirementCopy";
 
 interface RequirementDetailPageProps {
   apiClient: ApiClient;
@@ -136,6 +138,7 @@ export function RequirementDetailPage({
   onFlashShown,
 }: RequirementDetailPageProps) {
   const { toastNode, showToast } = useToast();
+  const [confirm, confirmDialog] = useConfirm();
   useEffect(() => {
     if (!flash) return;
     showToast(flash);
@@ -245,13 +248,8 @@ export function RequirementDetailPage({
   const copyForClaudeCode = () => {
     if (!detail) return;
     if (context.state === "ready") {
-      const missing = context.data.cards_missing;
-      void copyPath(
-        context.data.markdown,
-        missing > 0
-          ? `已复制；有 ${missing} 场会的纪要不在项目文件夹里，带的是归档文件夹`
-          : "已复制，粘给 Claude Code 就行",
-      );
+      // 和海报上的「接下」同一个动作、同一句提示（R05-5）
+      void copyPath(context.data.markdown, copiedMessage(context.data));
       return;
     }
     // 旧后台或背景没取到：退回旧的路径清单
@@ -263,8 +261,27 @@ export function RequirementDetailPage({
     void copyPath(paths.join("\n"), `已复制 ${paths.length} 条路径`);
   };
 
-  const removeMeeting = (meetingId: string) =>
-    void mutate(() => apiClient.removeRequirementMeeting(requirementId, meetingId), "已移除关联会议");
+  const removeMeeting = async (meetingId: string) => {
+    // 一场会从关联会议里移除，出自这场会的原话（提出的、合并进来的）会被数据库一起删掉，收不回来：先问一句。
+    // 没有原话的会照旧直接移除
+    const quotes = (detail?.sources ?? []).filter(
+      (source) => source.meeting_id === meetingId && (source.quote || "").trim() !== "",
+    ).length;
+    if (quotes > 0) {
+      const confirmed = await confirm({
+        title: "移除这场会？",
+        message: `移除后，出自这场会的 ${quotes} 句原话会一起删掉，不能恢复`,
+        confirmLabel: "移除",
+        tone: "danger",
+      });
+      if (!confirmed) return;
+    }
+    await mutate(() => apiClient.removeRequirementMeeting(requirementId, meetingId), "已移除关联会议");
+  };
+
+  // 合并进来的原话 10 分钟内可撤销（R01-14）：候选回到待认领，这次合并带进来的原话、会议、任务退回去
+  const undoMerge = (candidateId: string) =>
+    void mutate(() => apiClient.undoCandidateMerge(candidateId), "已撤销合并");
 
   const removeFolder = (folderId: number) =>
     void mutate(() => apiClient.removeRequirementFolder(requirementId, folderId), "已移除材料文件夹");
@@ -337,7 +354,7 @@ export function RequirementDetailPage({
         <nav aria-label="面包屑" className="requirement-detail__breadcrumb">
           <button onClick={onBack} type="button">{backLabel}</button>
           <span>/</span>
-          <span>{detail.title}</span>
+          <span className="requirement-detail__crumb-current" title={detail.title}>{detail.title}</span>
         </nav>
         {/* R05-1：头部和海报一致——座次、项目、等级在上，需求名最醒目，说明在下；已完成、已搁置盖个章 */}
         <div className="requirement-detail__meta">
@@ -396,7 +413,13 @@ export function RequirementDetailPage({
         {detail.summary && <p className="requirement-detail__summary">{detail.summary}</p>}
       </header>
 
-      <RequirementSourceCard onOpenMeeting={onOpenMeeting} origin={detail.source ?? null} sources={detail.sources ?? []} />
+      <RequirementSourceCard
+        onOpenMeeting={onOpenMeeting}
+        onUndoMerge={canWrite ? undoMerge : undefined}
+        origin={detail.source ?? null}
+        sources={detail.sources ?? []}
+        undoBusy={mutating}
+      />
 
       <section className="requirement-detail__card">
         <header className="requirement-detail__card-head">
@@ -430,7 +453,7 @@ export function RequirementDetailPage({
                     <button onClick={() => void copyPath(meeting.canonical_dir!, "已复制路径")} type="button">复制路径</button>
                   )}
                   {canWrite && (
-                    <button disabled={mutating} onClick={() => removeMeeting(meeting.id)} type="button">移除</button>
+                    <button disabled={mutating} onClick={() => void removeMeeting(meeting.id)} type="button">移除</button>
                   )}
                 </span>
               </div>
@@ -642,12 +665,14 @@ export function RequirementDetailPage({
         />
       )}
 
+      {confirmDialog}
+
       {creatingTask && (
         <TaskEditModal
           apiClient={apiClient}
           canWrite={canWrite}
           defaultProjectId={detail.project_id}
-          defaultRequirementId={detail.id}
+          fixedRequirement={{ id: detail.id, title: detail.title, priority: detail.priority }}
           onClose={() => setCreatingTask(false)}
           onSaved={() => { setCreatingTask(false); void load(); }}
           projects={projects}

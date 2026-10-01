@@ -1,34 +1,74 @@
-/* 轻提示：顶栏下方、内容区水平居中（桌面端侧栏宽 228px） */
+/* 轻提示：屏幕底部、内容区水平居中的深色条（S09-d、S12-b；桌面端侧栏宽 228px）。
+ * 两套主题里都是深色条：浅色主题近黑底白字，深色主题比页面底色亮一档、靠细边和阴影托出来。 */
 .app-toast {
   position: fixed;
-  top: 90px;
+  bottom: 28px;
   left: calc(228px + (100vw - 228px) / 2);
   z-index: 80;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-pill);
-  background: var(--surface-2);
-  box-shadow: var(--shadow);
-  color: var(--ink);
+  gap: 10px;
+  width: max-content;
+  max-width: min(640px, calc(100vw - 228px - 32px));
+  padding: 11px 16px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 12px;
+  background: #1d1d1f;
+  box-shadow: 0 14px 32px rgb(0 0 0 / 0.28);
+  color: #f4f4f2;
   font-size: 13px;
-  line-height: 1.2;
-  white-space: nowrap;
+  line-height: 1.45;
   transform: translateX(-50%);
-  pointer-events: none;
 }
 
-.app-toast__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ok);
+.app-toast__check {
+  flex: none;
+  color: #5fd9a0;
 }
 
+.app-toast__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 条上的［撤销］：左边一道细分隔线，橙色字 */
+.app-toast__undo {
+  flex: none;
+  margin: -4px -8px -4px 2px;
+  padding: 4px 8px 4px 14px;
+  border: 0;
+  border-left: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 0 8px 8px 0;
+  background: none;
+  color: #ff9152;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.app-toast__undo:hover {
+  color: #ffb07f;
+}
+
+.app-toast__undo:focus-visible {
+  outline: 2px solid #ff9152;
+  outline-offset: -2px;
+}
+
+/* 窄一点的桌面（≤1120px）侧栏收成 190px，居中的基准跟着变 */
+@media (max-width: 1120px) {
+  .app-toast {
+    left: calc(190px + (100vw - 190px) / 2);
+    max-width: min(640px, calc(100vw - 190px - 32px));
+  }
+}
+
+/* 手机：底部有一条 62px 的导航栏，提示条浮在它上面；宽度按屏宽收，长句子折行 */
 @media (max-width: 767px) {
   .app-toast {
+    bottom: calc(62px + 14px + env(safe-area-inset-bottom, 0px));
     left: 50%;
+    max-width: calc(100vw - 32px);
   }
 }

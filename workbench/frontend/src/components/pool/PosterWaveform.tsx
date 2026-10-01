@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import "./PosterWaveform.css";
 
-interface Peaks {
+export interface Peaks {
   duration_seconds: number;
   peaks: number[];
 }
@@ -91,12 +91,50 @@ interface PosterWaveformProps {
   /** 点波形：从第一个标记那一秒开始放（R02-3） */
   onActivate?: () => void;
   label?: string;
+  /** 调用方已经取到的峰值：给了就直接画，不再等进视口、不再取（详情页的卡片自己要用时长，先取了） */
+  peaks?: Peaks;
 }
 
-export function PosterWaveform({ artifactId, markers, bars = 96, height = 28, onActivate, label }: PosterWaveformProps) {
+export type PeaksState = { status: "loading" } | { status: "ready"; peaks: Peaks } | { status: "unavailable" };
+
+const LOADING: PeaksState = { status: "loading" };
+const UNAVAILABLE: PeaksState = { status: "unavailable" };
+
+/**
+ * 取一段录音的峰值。没有录音（artifactId 为空）、峰值接口失败、峰值是空的都算 unavailable：
+ * 调用方这时什么都不画（波形、时间签、坐标轴、空位），只剩会议信息和原话时间锚（R02 异常）。
+ * enabled 为 false 时先不取（海报等进了视口再取）。
+ */
+export function usePeaks(artifactId: number | null, enabled = true): PeaksState {
+  const [loaded, setLoaded] = useState<{ artifactId: number; peaks: Peaks | null } | null>(null);
+
+  useEffect(() => {
+    if (artifactId === null || !enabled) return;
+    let active = true;
+    void loadPeaks(artifactId).then((payload) => {
+      if (active) setLoaded({ artifactId, peaks: payload });
+    });
+    return () => {
+      active = false;
+    };
+  }, [artifactId, enabled]);
+
+  if (artifactId === null) return UNAVAILABLE;
+  if (!loaded || loaded.artifactId !== artifactId) return LOADING;
+  return loaded.peaks ? { status: "ready", peaks: loaded.peaks } : UNAVAILABLE;
+}
+
+export function PosterWaveform({
+  artifactId,
+  markers,
+  bars = 96,
+  height = 28,
+  onActivate,
+  label,
+  peaks: preloaded,
+}: PosterWaveformProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
-  const [peaks, setPeaks] = useState<Peaks | null>(null);
 
   // 进了视口才取峰值：墙往下拉才看得到的海报不抢前面的
   useEffect(() => {
@@ -116,18 +154,12 @@ export function PosterWaveform({ artifactId, markers, bars = 96, height = 28, on
     return () => observer.disconnect();
   }, [artifactId]);
 
-  useEffect(() => {
-    if (!visible || artifactId === null) return;
-    let active = true;
-    void loadPeaks(artifactId).then((payload) => {
-      if (active) setPeaks(payload);
-    });
-    return () => {
-      active = false;
-    };
-  }, [artifactId, visible]);
+  const own = usePeaks(artifactId, visible && !preloaded);
+  const state: PeaksState = preloaded ? { status: "ready", peaks: preloaded } : own;
 
-  if (artifactId === null) return null;
+  // 没有录音、取不到峰值：不画，也不留一块空位
+  if (state.status === "unavailable") return null;
+  const peaks = state.status === "ready" ? state.peaks : null;
   const durationMs = peaks ? peaks.duration_seconds * 1000 : 0;
   const values = peaks ? downsamplePeaks(peaks.peaks, bars) : [];
   const ceiling = Math.max(0.05, ...values);

@@ -9,6 +9,7 @@ import { DirectionBar } from "./DirectionBar";
 import { DroppedCandidatesDialog } from "./DroppedCandidatesDialog";
 import { MergeCandidateDialog } from "./MergeCandidateDialog";
 import { PosterCard } from "./PosterCard";
+import { copiedMessage, copyFailureReason, copyRequirementBackground } from "./requirementCopy";
 import "./RequirementPoolPage.css";
 
 /** 页签和筛选记在本机（R02-8），刷新、关掉再开都保持上次的选择 */
@@ -18,6 +19,16 @@ export const POOL_PRIORITIES_KEY = "requirementPool.priorities";
 export const POOL_QUERY_KEY = "requirementPool.q";
 // 墙上一次挂完：现在是几十条的量级，不分页
 const WALL_LIMIT = 500;
+/** 认领、新建后落位的那张海报描边多久（R01-13） */
+const HIGHLIGHT_MS = 3000;
+
+/** 合并成功的轻提示（R01-14）：从认领页合并回来时由 App 用同一句 */
+export const mergedMessage = (title: string) => `已合并到「${title}」，这场会和原话已加进去`;
+
+function findPoster(wall: HTMLElement | null, id: string): HTMLElement | null {
+  if (!wall) return null;
+  return Array.from(wall.querySelectorAll<HTMLElement>("[data-poster-id]")).find((node) => node.dataset.posterId === id) ?? null;
+}
 
 const TABS: Array<{ key: PoolTab; label: string }> = [
   { key: "pending", label: "待认领" },
@@ -96,6 +107,10 @@ export function RequirementPoolPage({
   const [showDropped, setShowDropped] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const requestRef = useRef(0);
+  const wallRef = useRef<HTMLDivElement>(null);
+  // 认领、新建回来要高亮的那张：墙面还没取到时先记在 pending，海报挂上去了才开始描边、计 3 秒
+  const [pendingHighlight, setPendingHighlight] = useState<string | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const request = ++requestRef.current;
@@ -132,12 +147,6 @@ export function RequirementPoolPage({
     return () => window.clearTimeout(timer);
   }, [draftQuery, query, setQuery]);
 
-  useEffect(() => {
-    if (!flash) return;
-    showToast(flash.message);
-    onFlashShown?.();
-  }, [flash, onFlashShown, showToast]);
-
   const filtered = projectIds.length > 0 || priorities.length > 0 || query.trim() !== "";
   const clearFilters = () => {
     setProjectIds([]);
@@ -150,6 +159,65 @@ export function RequirementPoolPage({
     await load();
     await onProjectsChanged?.();
   };
+
+  // 提示上的［撤销］停 10 秒，期间页签、筛选可能已经换了：回调里用最新的刷新，别拿点击那一刻的旧筛选重新取
+  const refreshRef = useRef(refreshAfterChange);
+  useEffect(() => {
+    refreshRef.current = refreshAfterChange;
+  });
+
+  // 合并后撤销（R01-14）：成功回到待认领，失败（多半过了 10 分钟）提示后端给的原因；两种都把墙换成最新的
+  const undoMerge = useCallback(
+    async (candidateId: string) => {
+      try {
+        await apiClient.undoCandidateMerge(candidateId);
+        showToast("已撤销合并");
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : "撤销失败，请稍后重试");
+      }
+      await refreshRef.current();
+    },
+    [apiClient, showToast],
+  );
+
+  // 丢掉后撤销（R01-15）：和「已丢掉」里的撤销是同一个接口
+  const undoDrop = useCallback(
+    async (item: PoolItem) => {
+      try {
+        await apiClient.restoreCandidate(item.id);
+        showToast(`「${item.title}」回到待认领了`);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : "撤销失败，请稍后重试");
+      }
+      await refreshRef.current();
+    },
+    [apiClient, showToast],
+  );
+
+  useEffect(() => {
+    if (!flash) return;
+    const mergedCandidateId = flash.undoMergeCandidateId;
+    showToast(flash.message, mergedCandidateId ? { onUndo: () => undoMerge(mergedCandidateId) } : undefined);
+    if (flash.highlightId) setPendingHighlight(flash.highlightId);
+    onFlashShown?.();
+  }, [flash, onFlashShown, showToast, undoMerge]);
+
+  // 墙面取到后：要高亮的海报在墙上就滚进视野、描边 3 秒；不在当前列表里（筛掉了、在别的页签）就不管，不报错
+  useEffect(() => {
+    if (!pendingHighlight || !payload) return;
+    setPendingHighlight(null);
+    const node = findPoster(wallRef.current, pendingHighlight);
+    if (!node) return;
+    const reduceMotion = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    node.scrollIntoView?.({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+    setHighlightId(pendingHighlight);
+  }, [pendingHighlight, payload]);
+
+  useEffect(() => {
+    if (!highlightId) return;
+    const timer = window.setTimeout(() => setHighlightId(null), HIGHLIGHT_MS);
+    return () => window.clearTimeout(timer);
+  }, [highlightId]);
 
   const saveSeats = async (ids: string[]) => {
     try {
@@ -167,7 +235,7 @@ export function RequirementPoolPage({
     setBusyId(item.id);
     try {
       await apiClient.dropCandidate(item.id);
-      showToast(`已丢掉「${item.title}」，30 天内可以在「已丢掉」里撤销`);
+      showToast(`已丢掉「${item.title}」，30 天内可在已丢掉里撤销`, { onUndo: () => undoDrop(item) });
       await load();
     } catch (err) {
       // 多半是在别处已经认领、合并或丢掉了：提示原因，墙上换成最新的
@@ -181,6 +249,19 @@ export function RequirementPoolPage({
   const openItem = (item: PoolItem) => {
     if (item.kind === "candidate") onClaimCandidate(item.id);
     else onOpenRequirement(item.id);
+  };
+
+  // 「接下」（R02-9）：把需求背景复制出去，交给 Claude Code 去干；不改需求状态。
+  // 这个函数由点击处理函数同步调用，复制在手势里发起（见 requirementCopy）
+  const takeRequirement = async (item: PoolItem): Promise<boolean> => {
+    try {
+      const context = await copyRequirementBackground(() => apiClient.requirementContext(item.id));
+      showToast(copiedMessage(context));
+      return true;
+    } catch (error) {
+      showToast(`没复制成功：${copyFailureReason(error)}`);
+      return false;
+    }
   };
 
   const counts = payload?.counts;
@@ -317,10 +398,11 @@ export function RequirementPoolPage({
       )}
 
       {items.length > 0 && (
-        <div aria-busy={busyId !== null} className="pool-wall">
+        <div aria-busy={busyId !== null} className="pool-wall" ref={wallRef}>
           {items.map((item) => (
             <PosterCard
               canWrite={canWrite && busyId !== item.id}
+              highlighted={highlightId === item.id}
               item={item}
               key={`${item.kind}-${item.id}`}
               onClaim={(target) => onClaimCandidate(target.id)}
@@ -328,6 +410,7 @@ export function RequirementPoolPage({
               onMerge={setMerging}
               onOpen={openItem}
               onOpenMeeting={onOpenMeeting}
+              onTake={takeRequirement}
             />
           ))}
         </div>
@@ -352,8 +435,9 @@ export function RequirementPoolPage({
             void load();
           }}
           onMerged={(requirement) => {
+            const candidateId = merging.id;
             setMerging(null);
-            showToast(`已合并到「${requirement.title}」`);
+            showToast(mergedMessage(requirement.title), { onUndo: () => undoMerge(candidateId) });
             void refreshAfterChange();
           }}
         />

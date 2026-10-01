@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -250,5 +250,159 @@ describe("TaskEditModal 原地新建项目：近似重名", () => {
     await userEvent.click(await screen.findByRole("button", { name: "仍然新建" }));
 
     expect(createProjectWith).toHaveBeenCalledWith({ name: "云图科研", color: expect.stringMatching(/^#/), force: true });
+  });
+});
+
+describe("TaskEditModal 从需求详情新建（fixedRequirement，R05-6，S12-c）", () => {
+  const FIXED = { id: "req-a1", title: "北辰仓快递配送", priority: "P0" as const };
+
+  function renderFixed(api: Partial<ApiClient> = {}, props: Partial<Parameters<typeof TaskEditModal>[0]> = {}) {
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <TaskEditModal
+        apiClient={makeClient(api)}
+        canWrite
+        defaultProjectId="proj-a"
+        fixedRequirement={FIXED}
+        onClose={onClose}
+        onSaved={onSaved}
+        projects={PROJECTS}
+        task={null}
+        {...props}
+      />,
+    );
+    return { onSaved, onClose };
+  }
+
+  it("副标题写「挂在「需求名」下」；「挂到需求」是只读的一行：需求名、P 标签、锁，旁注说明为什么不能改", () => {
+    renderFixed();
+
+    const dialog = screen.getByRole("dialog", { name: "新建任务" });
+    expect(dialog).toHaveTextContent("挂在「北辰仓快递配送」下");
+    const locked = within(dialog).getByRole("group", { name: "挂到需求" });
+    expect(locked).toHaveTextContent("北辰仓快递配送");
+    expect(within(locked).getByText("P0")).toHaveClass("priority-badge--p0");
+    expect(within(locked).getByRole("img", { name: "不能修改" })).toBeInTheDocument();
+    expect(dialog).toHaveTextContent("从需求详情新建，固定挂在这条需求上");
+    // 是一行字，不是下拉：里面没有能点开的东西
+    expect(within(locked).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("不能改需求，也不能改项目：弹窗里没有所属项目、所属需求两个下拉，也不去拉项目下的需求列表", () => {
+    const requirements = vi.fn();
+    renderFixed({ requirements } as Partial<ApiClient>);
+
+    expect(screen.queryByText("所属项目")).not.toBeInTheDocument();
+    expect(screen.queryByText("所属需求")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /未归项目|云图科研用药/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /未归需求/ })).not.toBeInTheDocument();
+    expect(requirements).not.toHaveBeenCalled();
+  });
+
+  it("填任务名、选负责人，创建时任务固定挂在这条需求上，项目取需求所在的项目；负责人默认「我」", async () => {
+    const createTask = vi.fn().mockResolvedValue({});
+    const { onSaved, onClose } = renderFixed({ createTask } as Partial<ApiClient>);
+
+    expect(screen.getByRole("button", { name: "我" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "false");
+    // 没填任务名不能创建
+    expect(screen.getByRole("button", { name: "创建" })).toBeDisabled();
+
+    await userEvent.type(screen.getByPlaceholderText("要做的一件事"), "与北辰拉会对齐科研仓对接工作量与排期");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(createTask).toHaveBeenCalledWith({
+      title: "与北辰拉会对齐科研仓对接工作量与排期",
+      project_id: "proj-a",
+      requirement_id: "req-a1",
+      assignee: "me",
+    });
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("负责人可以改成 AI", async () => {
+    const createTask = vi.fn().mockResolvedValue({});
+    renderFixed({ createTask } as Partial<ApiClient>);
+
+    await userEvent.click(screen.getByRole("button", { name: "AI" }));
+    expect(screen.getByRole("button", { name: "AI" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.type(screen.getByPlaceholderText("要做的一件事"), "整理本周产品周报");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ assignee: "ai", requirement_id: "req-a1" }));
+  });
+
+  it("创建失败：原因写在弹窗里，弹窗不关，需求还是固定的那一条", async () => {
+    const createTask = vi.fn().mockRejectedValue(new Error("需求已经被删了"));
+    const { onSaved, onClose } = renderFixed({ createTask } as Partial<ApiClient>);
+
+    await userEvent.type(screen.getByPlaceholderText("要做的一件事"), "整理本周产品周报");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("需求已经被删了");
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("group", { name: "挂到需求" })).toHaveTextContent("北辰仓快递配送");
+  });
+
+  it("旧调用方没变（待办、项目页）：不传 fixedRequirement 时还是原来的样子——有所属项目、所属需求下拉，没有副标题和锁定行，负责人默认 AI", async () => {
+    const createTask = vi.fn().mockResolvedValue({});
+    render(
+      <TaskEditModal
+        apiClient={makeClient({ createTask } as Partial<ApiClient>)}
+        canWrite
+        defaultProjectId="proj-a"
+        defaultRequirementId="req-a1"
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        projects={PROJECTS}
+        task={null}
+      />,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "新建任务" });
+    expect(dialog).not.toHaveTextContent("挂在「");
+    expect(within(dialog).queryByRole("group", { name: "挂到需求" })).not.toBeInTheDocument();
+    expect(within(dialog).getByText("所属项目")).toBeInTheDocument();
+    expect(within(dialog).getByText("所属需求")).toBeInTheDocument();
+    expect(within(dialog).getByText("任务描述")).toBeInTheDocument();
+    expect(within(dialog).getByText("执行方")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "交给 AI" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(dialog).getByRole("button", { name: "我来做" })).toHaveAttribute("aria-pressed", "false");
+    expect(within(dialog).getByRole("button", { name: "创建任务" })).toBeInTheDocument();
+    // 项目和需求还能点开改
+    expect(await within(dialog).findByRole("button", { name: /北辰仓快递配送/ })).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: /云图科研用药/ })).toBeEnabled();
+
+    await userEvent.type(within(dialog).getByPlaceholderText("要完成的事，例如：整理本周产品周报"), "新任务");
+    await userEvent.click(within(dialog).getByRole("button", { name: "创建任务" }));
+    expect(createTask).toHaveBeenCalledWith({
+      title: "新任务",
+      project_id: "proj-a",
+      requirement_id: "req-a1",
+      assignee: "ai",
+    });
+  });
+
+  it("旧调用方没变：修改已有任务时传了 fixedRequirement 也不生效（只对新建生效），需求下拉还在", async () => {
+    render(
+      <TaskEditModal
+        apiClient={makeClient()}
+        canWrite
+        fixedRequirement={FIXED}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        projects={PROJECTS}
+        task={makeTask({ status: "confirmed", requirement_id: "req-a1", requirement_title: "北辰仓快递配送", requirement_priority: "P0", requirement_status: "active" })}
+      />,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "修改任务" });
+    expect(dialog).not.toHaveTextContent("挂在「");
+    expect(within(dialog).queryByRole("group", { name: "挂到需求" })).not.toBeInTheDocument();
+    expect(within(dialog).getByText("所属需求")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "交给 AI" })).toBeInTheDocument();
   });
 });

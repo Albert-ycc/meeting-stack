@@ -1,9 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../../api";
-import { candidateItem, CVM, HENGRUI, HUAXIA, poolPayload, requirementItem, YIMI } from "./poolFixtures";
+import { ApiError, type ApiClient } from "../../api";
+import type { RequirementContext } from "../../types";
+import { installClipboard, uninstallClipboard, writtenText } from "./clipboardStub";
+import { candidateItem, CVM, EXPORT_SOURCE, HENGRUI, HUAXIA, JD_SOURCE, poolPayload, requirementItem, YIMI } from "./poolFixtures";
 import { RequirementPoolPage } from "./RequirementPoolPage";
 
 async function expectToast(text: string) {
@@ -120,12 +122,12 @@ describe("RequirementPoolPage", () => {
 
     await userEvent.click(within(poster).getByRole("button", { name: "丢掉" }));
     expect(dropCandidate).toHaveBeenCalledWith("candidate-receipt");
-    await expectToast("已丢掉「京东仓签收凭证」，30 天内可以在「已丢掉」里撤销");
+    await expectToast("已丢掉「京东仓签收凭证」，30 天内可在已丢掉里撤销");
     expect(await screen.findByText("没有待认领的候选")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "已丢掉 1 条" }));
     const dialog = await screen.findByRole("dialog", { name: "已丢掉的候选" });
-    expect(within(dialog).getByText(/10-31 前可撤销/)).toBeInTheDocument();
+    expect(within(dialog).getByText("京东仓签收凭证")).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "撤销" }));
     expect(restoreCandidate).toHaveBeenCalledWith("candidate-receipt");
     await expectToast("「京东仓签收凭证」回到待认领了");
@@ -170,7 +172,7 @@ describe("RequirementPoolPage", () => {
 
     await userEvent.click(within(dialog).getByRole("button", { name: "合并" }));
     expect(mergeCandidate).toHaveBeenCalledWith("candidate-receipt", "requirement-jd", undefined);
-    await expectToast("已合并到「京东科研仓对接」");
+    await expectToast("已合并到「京东科研仓对接」，这场会和原话已加进去");
     expect(screen.queryByRole("dialog", { name: "合并到已有需求" })).not.toBeInTheDocument();
     await waitFor(() => expect(handlers.onProjectsChanged).toHaveBeenCalledTimes(1));
   });
@@ -265,5 +267,351 @@ describe("RequirementPoolPage", () => {
     await expectToast("座次没保存：项目有变化，已刷新，请再拖一次");
     expect(screen.getByRole("status")).not.toHaveTextContent("project-a44ff42eac0740c6");
     await waitFor(() => expect(requirementPool).toHaveBeenCalledTimes(2));
+  });
+});
+
+// ---------------------------------------------------------------- 需求池改版收尾（261001 版 PRD）
+
+/* 复制出去的背景：来源原话取自京东科研仓对接那场会的逐字稿（00:13:45，825270 ms），和 poolFixtures 同一份 */
+const JD_BACKGROUND =
+  "# 京东科研仓对接（医米科研用药 · 需求 · P0 · 进行中）\n\n## 来源原话\n\n- 00:13:45 " + JD_SOURCE.quote + "\n";
+const JD_PATHS = [
+  "/Volumes/资料盘/会议纪要与录音/260916 医米京东科研仓系统对接",
+  "/Volumes/资料盘/医朵云/医米科研用药/对接京东科研仓",
+];
+
+function contextOf(overrides: Partial<RequirementContext> = {}): RequirementContext {
+  return { markdown: JD_BACKGROUND, paths: JD_PATHS, cards_missing: 0, ...overrides };
+}
+
+describe("RequirementPoolPage「接下」（R02-9，S05-b，R02-9 的轻提示）", () => {
+  afterEach(() => uninstallClipboard());
+
+  function renderWall(api: Partial<ApiClient>) {
+    const requirementPool = vi.fn().mockResolvedValue(poolPayload());
+    const handlers = renderPage({ requirementPool, ...api });
+    return handlers;
+  }
+
+  it("点「接下」：背景还没取到就在点击的那一下写剪贴板；取到后复制的是这条需求的背景，提示「已复制需求背景和 2 个文件路径」，按钮变「已复制」；不进详情、不改状态", async () => {
+    const stubs = installClipboard();
+    let finish: (context: RequirementContext) => void = () => undefined;
+    const requirementContext = vi.fn(() => new Promise<RequirementContext>((resolve) => (finish = resolve)));
+    const updateRequirement = vi.fn();
+    const handlers = renderWall({ requirementContext, updateRequirement } as Partial<ApiClient>);
+    const poster = await screen.findByRole("article", { name: "需求：京东科研仓对接" });
+
+    fireEvent.click(within(poster).getByRole("button", { name: /接下/ }));
+    // 点击处理函数一返回：接口发出去了，剪贴板也已经在写（内容是个还没兑现的 Promise）
+    expect(requirementContext).toHaveBeenCalledWith("requirement-jd");
+    expect(stubs.write).toHaveBeenCalledTimes(1);
+    expect(within(poster).getByRole("button", { name: "复制中…" })).toBeDisabled();
+
+    await act(async () => finish(contextOf()));
+    expect(await writtenText(stubs.write)).toBe(JD_BACKGROUND);
+    await expectToast("已复制需求背景和 2 个文件路径，去 Claude Code 粘贴");
+    expect(within(poster).getByRole("button", { name: "已复制" })).toBeInTheDocument();
+    expect(handlers.onOpenRequirement).not.toHaveBeenCalled();
+    expect(updateRequirement).not.toHaveBeenCalled();
+  });
+
+  it("浏览器没有 ClipboardItem：等背景到了用 writeText 复制，同样提示、按钮同样变「已复制」", async () => {
+    const stubs = installClipboard({}, false);
+    const requirementContext = vi.fn().mockResolvedValue(contextOf({ paths: [JD_PATHS[0]] }));
+    renderWall({ requirementContext } as Partial<ApiClient>);
+
+    const poster = await screen.findByRole("article", { name: "需求：京东科研仓对接" });
+    fireEvent.click(within(poster).getByRole("button", { name: /接下/ }));
+
+    await expectToast("已复制需求背景和 1 个文件路径，去 Claude Code 粘贴");
+    expect(stubs.write).not.toHaveBeenCalled();
+    expect(stubs.writeText).toHaveBeenCalledWith(JD_BACKGROUND);
+    expect(within(poster).getByRole("button", { name: "已复制" })).toBeInTheDocument();
+  });
+
+  it("手势里的写入被拒：退回 writeText，通了就照常提示", async () => {
+    const stubs = installClipboard({ write: vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError")) });
+    renderWall({ requirementContext: vi.fn().mockResolvedValue(contextOf()) } as Partial<ApiClient>);
+
+    const poster = await screen.findByRole("article", { name: "需求：京东科研仓对接" });
+    fireEvent.click(within(poster).getByRole("button", { name: /接下/ }));
+
+    await expectToast("已复制需求背景和 2 个文件路径，去 Claude Code 粘贴");
+    expect(stubs.writeText).toHaveBeenCalledWith(JD_BACKGROUND);
+  });
+
+  it("两条路都不通：提示失败原因和出路，按钮回到「接下」，不假装复制了", async () => {
+    installClipboard({
+      write: vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError")),
+      writeText: vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError")),
+    });
+    renderWall({ requirementContext: vi.fn().mockResolvedValue(contextOf()) } as Partial<ApiClient>);
+
+    const poster = await screen.findByRole("article", { name: "需求：京东科研仓对接" });
+    fireEvent.click(within(poster).getByRole("button", { name: /接下/ }));
+
+    await expectToast("没复制成功：浏览器不让写剪贴板，到需求详情里点「复制给 Claude Code」再试");
+    await waitFor(() => expect(within(poster).getByRole("button", { name: /接下/ })).toBeEnabled());
+    expect(within(poster).queryByRole("button", { name: /已复制/ })).not.toBeInTheDocument();
+  });
+
+  it("取背景失败：提示「没复制成功：」加接口给的原因，不写剪贴板的备用路径", async () => {
+    const stubs = installClipboard();
+    const requirementContext = vi.fn().mockRejectedValue(new ApiError("需求不存在：requirement-jd", 404, { detail: "需求不存在：requirement-jd" }));
+    renderWall({ requirementContext } as Partial<ApiClient>);
+
+    const poster = await screen.findByRole("article", { name: "需求：京东科研仓对接" });
+    fireEvent.click(within(poster).getByRole("button", { name: /接下/ }));
+
+    await expectToast("没复制成功：需求不存在：requirement-jd");
+    expect(stubs.writeText).not.toHaveBeenCalled();
+    expect(within(poster).getByRole("button", { name: /接下/ })).toBeEnabled();
+  });
+
+  it("没有任何文件路径的需求：提示不说「0 个文件路径」", async () => {
+    installClipboard();
+    renderWall({ requirementContext: vi.fn().mockResolvedValue(contextOf({ paths: [] })) } as Partial<ApiClient>);
+
+    const poster = await screen.findByRole("article", { name: "需求：京东科研仓对接" });
+    fireEvent.click(within(poster).getByRole("button", { name: /接下/ }));
+    await expectToast("已复制需求背景，去 Claude Code 粘贴");
+  });
+});
+
+describe("RequirementPoolPage 丢掉候选后的撤销（R01-15，S01-b）", () => {
+  beforeEach(() => {
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.tab", JSON.stringify("pending"));
+  });
+
+  const pending = () => poolPayload({ status: "pending", items: [candidateItem()] });
+  const empty = () => poolPayload({ status: "pending", items: [], dropped_count: 1 });
+
+  it("提示「已丢掉「X」，30 天内可在已丢掉里撤销」带「撤销」：点了调 restoreCandidate，候选回到待认领，墙上重新取", async () => {
+    const requirementPool = vi.fn().mockResolvedValueOnce(pending()).mockResolvedValueOnce(empty()).mockResolvedValue(pending());
+    const dropCandidate = vi.fn().mockResolvedValue({});
+    const restoreCandidate = vi.fn().mockResolvedValue({});
+    renderPage({ requirementPool, dropCandidate, restoreCandidate });
+
+    const poster = await screen.findByRole("article", { name: "候选：京东仓签收凭证" });
+    fireEvent.click(within(poster).getByRole("button", { name: "丢掉" }));
+    await expectToast("已丢掉「京东仓签收凭证」，30 天内可在已丢掉里撤销");
+    expect(await screen.findByText("没有待认领的候选")).toBeInTheDocument();
+
+    fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(restoreCandidate).toHaveBeenCalledWith("candidate-receipt"));
+    await expectToast("「京东仓签收凭证」回到待认领了");
+    expect(await screen.findByRole("article", { name: "候选：京东仓签收凭证" })).toBeInTheDocument();
+    expect(within(screen.getByRole("status")).queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
+  });
+
+  it("撤销失败（比如在别处已经撤销了）：提示后端给的原因，墙上换成最新的", async () => {
+    const requirementPool = vi.fn().mockResolvedValueOnce(pending()).mockResolvedValue(empty());
+    const dropCandidate = vi.fn().mockResolvedValue({});
+    const restoreCandidate = vi.fn().mockRejectedValue(new ApiError("这条候选不在已丢掉里", 409, { detail: "这条候选不在已丢掉里" }));
+    renderPage({ requirementPool, dropCandidate, restoreCandidate });
+
+    const poster = await screen.findByRole("article", { name: "候选：京东仓签收凭证" });
+    fireEvent.click(within(poster).getByRole("button", { name: "丢掉" }));
+    await expectToast("已丢掉");
+    fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+
+    await expectToast("这条候选不在已丢掉里");
+    await waitFor(() => expect(requirementPool).toHaveBeenCalledTimes(3));
+  });
+
+  it("10 秒的撤销窗口里换了页签：撤销之后刷新用的是现在的页签，不是点「丢掉」那一刻的", async () => {
+    const requirementPool = vi.fn().mockImplementation(async (filters: { status: string }) =>
+      filters.status === "pending" ? pending() : poolPayload({ status: filters.status as "active", items: [] }),
+    );
+    const dropCandidate = vi.fn().mockResolvedValue({});
+    const restoreCandidate = vi.fn().mockResolvedValue({});
+    renderPage({ requirementPool, dropCandidate, restoreCandidate });
+
+    const poster = await screen.findByRole("article", { name: "候选：京东仓签收凭证" });
+    fireEvent.click(within(poster).getByRole("button", { name: "丢掉" }));
+    await expectToast("已丢掉");
+    fireEvent.click(screen.getByRole("tab", { name: /进行中/ }));
+    await waitFor(() => expect(requirementPool).toHaveBeenLastCalledWith(expect.objectContaining({ status: "active" })));
+
+    fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(restoreCandidate).toHaveBeenCalledTimes(1));
+    await expectToast("回到待认领了");
+    await waitFor(() => expect(requirementPool.mock.calls.length).toBeGreaterThanOrEqual(4));
+    expect(requirementPool).toHaveBeenLastCalledWith(expect.objectContaining({ status: "active" }));
+  });
+});
+
+describe("RequirementPoolPage 合并后的撤销（R01-14，S03-b）", () => {
+  const MERGE_TARGETS = {
+    project_id: YIMI,
+    items: [
+      {
+        id: "requirement-jd",
+        title: "京东科研仓对接",
+        status: "active",
+        priority: "P0",
+        meeting_title: "260916 医米京东科研仓系统对接",
+        recording_date: "2026-09-16T19:01:50-07:00",
+        recommended: true,
+      },
+    ],
+  };
+
+  async function mergeFromWall(api: Partial<ApiClient>) {
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.tab", JSON.stringify("pending"));
+    const requirementPool = vi.fn().mockResolvedValue(poolPayload({ status: "pending", items: [candidateItem()] }));
+    const candidateMergeTargets = vi.fn().mockResolvedValue(MERGE_TARGETS);
+    const mergeCandidate = vi.fn().mockResolvedValue(requirementItem());
+    const handlers = renderPage({ requirementPool, candidateMergeTargets, mergeCandidate, ...api });
+    const poster = await screen.findByRole("article", { name: "候选：京东仓签收凭证" });
+    fireEvent.click(within(poster).getByRole("button", { name: "合并" }));
+    const dialog = await screen.findByRole("dialog", { name: "合并到已有需求" });
+    await within(dialog).findByRole("radio", { name: /京东科研仓对接/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "合并" }));
+    await expectToast("已合并到「京东科研仓对接」，这场会和原话已加进去");
+    return { requirementPool, handlers };
+  }
+
+  it("在需求池里合并：提示「已合并到「X」，这场会和原话已加进去」带「撤销」；点了调 undoCandidateMerge，成功后刷新墙并提示「已撤销合并」", async () => {
+    const undoCandidateMerge = vi.fn().mockResolvedValue({});
+    const { requirementPool, handlers } = await mergeFromWall({ undoCandidateMerge } as Partial<ApiClient>);
+    const callsBefore = requirementPool.mock.calls.length;
+
+    fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(undoCandidateMerge).toHaveBeenCalledWith("candidate-receipt"));
+    await expectToast("已撤销合并");
+    await waitFor(() => expect(requirementPool.mock.calls.length).toBeGreaterThan(callsBefore));
+    // 合并、撤销各刷新一次项目列表
+    await waitFor(() => expect(handlers.onProjectsChanged).toHaveBeenCalledTimes(2));
+    expect(within(screen.getByRole("status")).queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
+  });
+
+  it("撤销失败（比如合并已经超过 10 分钟）：提示后端返回的原因，墙上换成最新的", async () => {
+    const undoCandidateMerge = vi
+      .fn()
+      .mockRejectedValue(new ApiError("合并超过 10 分钟，不能撤销了", 409, { detail: "合并超过 10 分钟，不能撤销了" }));
+    const { requirementPool } = await mergeFromWall({ undoCandidateMerge } as Partial<ApiClient>);
+    const callsBefore = requirementPool.mock.calls.length;
+
+    fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+    await expectToast("合并超过 10 分钟，不能撤销了");
+    await waitFor(() => expect(requirementPool.mock.calls.length).toBeGreaterThan(callsBefore));
+  });
+
+  it("从认领页合并回来（App 带来的 flash 有 undoMergeCandidateId）：提示同样带「撤销」，点了调 undoCandidateMerge", async () => {
+    const requirementPool = vi.fn().mockResolvedValue(poolPayload({ status: "pending", items: [candidateItem()] }));
+    const undoCandidateMerge = vi.fn().mockResolvedValue({});
+    renderPage(
+      { requirementPool, undoCandidateMerge },
+      { flash: { message: "已合并到「京东科研仓对接」，这场会和原话已加进去", undoMergeCandidateId: "candidate-receipt" } },
+    );
+
+    await expectToast("已合并到「京东科研仓对接」，这场会和原话已加进去");
+    fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(undoCandidateMerge).toHaveBeenCalledWith("candidate-receipt"));
+    await expectToast("已撤销合并");
+  });
+
+  it("flash 没有 undoMergeCandidateId（认领、新建）：提示上没有「撤销」", async () => {
+    const requirementPool = vi.fn().mockResolvedValue(poolPayload());
+    renderPage({ requirementPool }, { flash: { message: "需求已创建" } });
+
+    await expectToast("需求已创建");
+    expect(within(screen.getByRole("status")).queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
+  });
+});
+
+describe("RequirementPoolPage 认领后的高亮（R01-13，S02-c）", () => {
+  const scrollIntoView = vi.fn();
+
+  // 刚认领的那条：云课堂的科室会预约后台导出，P2；来源原话是 00:09:36 那句（576900 ms）
+  const claimed = requirementItem({
+    id: "requirement-export",
+    title: "科室会预约后台导出",
+    summary: "预约审核页现在不能导出 Excel，运营要把科室会预约名单拉出来对表。",
+    priority: "P2",
+    project_id: CVM,
+    project_name: "CVM 云讲堂",
+    project_seat: null,
+    source: EXPORT_SOURCE,
+    meeting_count: 1,
+    follow_up_count: 0,
+    folder_count: 0,
+  });
+  const wall = () => poolPayload({ items: [requirementItem(), claimed], total: 2 });
+
+  beforeEach(() => {
+    Element.prototype.scrollIntoView = scrollIntoView;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+    scrollIntoView.mockReset();
+  });
+
+  it("flash 带着 highlightId：那张海报滚进视野、描边 3 秒，同时提示 flash.message", async () => {
+    const requirementPool = vi.fn().mockResolvedValue(wall());
+    renderPage({ requirementPool }, { flash: { message: "已认领「科室会预约后台导出」，挂上墙了", highlightId: "requirement-export" } });
+
+    const poster = await screen.findByRole("article", { name: "需求：科室会预约后台导出" });
+    await waitFor(() => expect(poster).toHaveClass("poster--highlight"));
+    expect(screen.getByRole("article", { name: "需求：京东科研仓对接" })).not.toHaveClass("poster--highlight");
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: "center" }));
+    expect(scrollIntoView.mock.contexts[0]).toBe(poster);
+    await expectToast("已认领「科室会预约后台导出」，挂上墙了");
+
+    act(() => {
+      vi.advanceTimersByTime(2_900);
+    });
+    expect(poster).toHaveClass("poster--highlight");
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(poster).not.toHaveClass("poster--highlight");
+  });
+
+  it("墙面还没取到时先记着：取到了才描边，3 秒从描边那一刻起算", async () => {
+    let arrive: (payload: ReturnType<typeof wall>) => void = () => undefined;
+    const requirementPool = vi.fn(() => new Promise<ReturnType<typeof wall>>((resolve) => (arrive = resolve)));
+    renderPage({ requirementPool }, { flash: { message: "已认领「科室会预约后台导出」，挂上墙了", highlightId: "requirement-export" } });
+
+    // 墙面要等 5 秒才回来：这 5 秒里不会有描边，也不会把 3 秒耗掉
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    await act(async () => arrive(wall()));
+    const poster = await screen.findByRole("article", { name: "需求：科室会预约后台导出" });
+    await waitFor(() => expect(poster).toHaveClass("poster--highlight"));
+    act(() => {
+      vi.advanceTimersByTime(2_900);
+    });
+    expect(poster).toHaveClass("poster--highlight");
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(poster).not.toHaveClass("poster--highlight");
+  });
+
+  it("要高亮的海报不在当前列表里（筛掉了、在别的页签）：不报错、不描边，提示照常", async () => {
+    const requirementPool = vi.fn().mockResolvedValue(poolPayload());
+    renderPage({ requirementPool }, { flash: { message: "已认领「科室会预约后台导出」，挂上墙了", highlightId: "requirement-export" } });
+
+    await screen.findByRole("article", { name: "需求：京东科研仓对接" });
+    await expectToast("已认领「科室会预约后台导出」，挂上墙了");
+    expect(document.querySelector(".poster--highlight")).toBeNull();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("flash 没有 highlightId（合并回来、座次保存）：不滚动、不描边", async () => {
+    const requirementPool = vi.fn().mockResolvedValue(wall());
+    renderPage({ requirementPool }, { flash: { message: "已合并到「京东科研仓对接」，这场会和原话已加进去" } });
+
+    await screen.findByRole("article", { name: "需求：科室会预约后台导出" });
+    expect(document.querySelector(".poster--highlight")).toBeNull();
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 });
