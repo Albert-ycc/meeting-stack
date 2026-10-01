@@ -14,6 +14,18 @@ import { useTheme } from "../theme";
 
 export interface AudioPlayerHandle {
   seekTo: (milliseconds: number) => void;
+  /** 放：还没读到录音时记着，读到、跳到要去的那一秒以后再放 */
+  play: () => void;
+  pause: () => void;
+}
+
+/** jsdom 没有实现播放；浏览器拦下自动播放时 play() 的 Promise 会失败，都不当错 */
+function startPlaying(audio: HTMLAudioElement) {
+  try {
+    void audio.play()?.catch(() => undefined);
+  } catch {
+    // jsdom
+  }
 }
 
 interface AudioPlayerProps {
@@ -36,6 +48,7 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(funct
   const theme = useTheme().resolved;
   const draggingWaveformRef = useRef(false);
   const pendingSeekRef = useRef<number | null>(initialSeekMs > 0 ? initialSeekMs : null);
+  const pendingPlayRef = useRef(false);
   const [currentMs, setCurrentMs] = useState(0);
   const [duration, setDuration] = useState(durationMs ?? 0);
   const [rate, setRate] = useState(1);
@@ -53,7 +66,19 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(funct
     onTimeChange(milliseconds);
   };
 
-  useImperativeHandle(ref, () => ({ seekTo }));
+  const play = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) startPlaying(audio);
+    else pendingPlayRef.current = true;
+  };
+
+  const pause = () => {
+    pendingPlayRef.current = false;
+    audioRef.current?.pause();
+  };
+
+  useImperativeHandle(ref, () => ({ seekTo, play, pause }));
 
   useEffect(() => {
     if (initialSeekMs <= 0) return;
@@ -178,6 +203,10 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(funct
     const updateDuration = () => {
       setDuration(audio.duration * 1000 || durationMs || 0);
       if (pendingSeekRef.current !== null) seekTo(pendingSeekRef.current);
+      if (pendingPlayRef.current) {
+        pendingPlayRef.current = false;
+        startPlaying(audio);
+      }
     };
     audio.addEventListener("timeupdate", updateTime);
     audio.addEventListener("loadedmetadata", updateDuration);

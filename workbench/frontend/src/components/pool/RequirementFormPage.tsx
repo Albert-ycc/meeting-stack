@@ -35,6 +35,8 @@ export type RequirementFormResult = {
 export interface RequirementPrefill {
   source: SourceDraft;
   projectId: string | null;
+  /** 那场会是从哪个页面打开的（面包屑第一段，和会议页返回按钮一致）；不传写「录音档案」 */
+  from?: string;
 }
 
 interface RequirementFormPageProps {
@@ -749,7 +751,7 @@ export function RequirementFormPage({
         <p className="form-page__crumb">
           <span>
             {prefill
-              ? `录音档案 / ${prefill.source.meeting_title} /`
+              ? `${prefill.from ?? "录音档案"} / ${prefill.source.meeting_title} /`
               : editing && requirement
                 ? `需求池 / ${requirement.title} /`
                 : "需求池 /"}

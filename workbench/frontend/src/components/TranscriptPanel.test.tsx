@@ -187,6 +187,30 @@ describe("TranscriptPanel 选中一段建成需求（R01-10）", () => {
     expect(screen.queryByRole("toolbar", { name: "选中的原话" })).not.toBeInTheDocument();
   });
 
+  it("查找过滤后跨着藏起来的句子选：不挨着的地方补「……」，挨着的照样直接接上（第二轮审查一般-1）", async () => {
+    const onCreateRequirement = vi.fn();
+    render(
+      <TranscriptPanel currentTimeMs={0} editable={false} onCreateRequirement={onCreateRequirement} onSeek={vi.fn()} segments={CVM_SEGMENTS} />,
+    );
+    // 查「导出」：第 2 句和第 4 句看得见，中间的「是没有办法，」藏起来了
+    fireEvent.change(screen.getByLabelText("在本次逐字稿中搜索"), { target: { value: "导出" } });
+    expect(screen.queryByTestId("segment-seg-581000")).not.toBeInTheDocument();
+
+    selectAcross("576900", 0, "582060", 14);
+    fireEvent.click(screen.getByRole("button", { name: "建成需求" }));
+
+    expect(onCreateRequirement).toHaveBeenLastCalledWith({
+      quote: "那我有办法导出 excel 吗？……我看到导出是一个 OKOK。",
+      anchorMs: 576900,
+    });
+
+    // 不过滤时挨着的两句直接接上
+    fireEvent.change(screen.getByLabelText("在本次逐字稿中搜索"), { target: { value: "" } });
+    selectAcross("576900", 0, "581000", 6);
+    fireEvent.click(screen.getByRole("button", { name: "建成需求" }));
+    expect(onCreateRequirement).toHaveBeenLastCalledWith({ quote: "那我有办法导出 excel 吗？是没有办法，", anchorMs: 576900 });
+  });
+
   it("从句子中间选起，原话只取选中的那几个字", () => {
     const onCreateRequirement = vi.fn();
     render(

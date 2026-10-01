@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AudioPlayer } from "./AudioPlayer";
+import { AudioPlayer, type AudioPlayerHandle } from "./AudioPlayer";
 
 const setTime = vi.fn();
 
@@ -19,6 +20,44 @@ vi.mock("wavesurfer.js", () => ({
 describe("AudioPlayer", () => {
   beforeEach(() => {
     setTime.mockClear();
+  });
+
+  it("还没读到录音时说放：读到元数据、跳到要去的那一秒以后再放（从原话时间进会议，R02-3）", () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    const ref = createRef<AudioPlayerHandle>();
+    const onTimeChange = vi.fn();
+    const { container } = render(
+      <AudioPlayer durationMs={747_000} initialSeekMs={576_900} mediaUrl="/api/media/1" onTimeChange={onTimeChange} ref={ref} />,
+    );
+    const audio = container.querySelector("audio")!;
+
+    act(() => ref.current!.play());
+    expect(play).not.toHaveBeenCalled();
+
+    Object.defineProperty(audio, "readyState", { configurable: true, value: HTMLMediaElement.HAVE_METADATA });
+    fireEvent(audio, new Event("loadedmetadata"));
+
+    expect(onTimeChange).toHaveBeenLastCalledWith(576_900);
+    expect(play).toHaveBeenCalledTimes(1);
+    play.mockRestore();
+  });
+
+  it("说了放又说停（新增页盖上来）：读到录音以后也不放", () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    const ref = createRef<AudioPlayerHandle>();
+    const { container } = render(<AudioPlayer durationMs={747_000} mediaUrl="/api/media/1" onTimeChange={vi.fn()} ref={ref} />);
+    const audio = container.querySelector("audio")!;
+
+    act(() => ref.current!.play());
+    act(() => ref.current!.pause());
+    Object.defineProperty(audio, "readyState", { configurable: true, value: HTMLMediaElement.HAVE_METADATA });
+    fireEvent(audio, new Event("loadedmetadata"));
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(play).not.toHaveBeenCalled();
+    play.mockRestore();
+    pause.mockRestore();
   });
 
   it("updates the audio anchor while dragging across the waveform", () => {

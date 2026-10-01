@@ -124,13 +124,14 @@ describe("RequirementDetailPage", () => {
 
   const CONTEXT_MARKDOWN = "# 北辰仓快递配送（云图科研用药 · 需求 · P0 · 进行中）\n\n> 声档生成的背景。\n";
 
-  it("4h：［复制给 Claude Code］复制预取的背景，点击之后不再发请求", async () => {
+  it("4h：［复制给 Claude Code］点的当下现取背景：详情页开着时别处改过的说明也带上（第二轮审查建议 5）", async () => {
     const requirement = vi.fn().mockResolvedValue(baseDetail());
-    const requirementContext = vi.fn().mockResolvedValue({
-      markdown: CONTEXT_MARKDOWN,
-      paths: ["/Volumes/资料盘/会议纪要与录音/260908 云图需求梳理与北辰科研仓对接", "/Volumes/资料盘/蓝鲸云/云图科研用药/V1.5.7-北辰仓快递配送-260914"],
-      cards_missing: 0,
-    });
+    const paths = ["/Volumes/资料盘/会议纪要与录音/260908 云图需求梳理与北辰科研仓对接", "/Volumes/资料盘/蓝鲸云/云图科研用药/V1.5.7-北辰仓快递配送-260914"];
+    const changed = `${CONTEXT_MARKDOWN}\n## 说明\n别处刚改过的说明\n`;
+    const requirementContext = vi
+      .fn()
+      .mockResolvedValueOnce({ markdown: CONTEXT_MARKDOWN, paths, cards_missing: 0 })
+      .mockResolvedValueOnce({ markdown: changed, paths, cards_missing: 0 });
     renderCopyPage({ requirement, requirementContext });
 
     await screen.findByRole("heading", { name: "北辰仓快递配送" });
@@ -138,10 +139,11 @@ describe("RequirementDetailPage", () => {
     expect(requirementContext).toHaveBeenCalledTimes(1);
     await userEvent.click(button);
 
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(CONTEXT_MARKDOWN);
+    // 复制出去的是点的当下取回来的那一份，不是进页面时取的
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(changed));
     // 和海报上的「接下」同一句（R05-5）：N 取背景里带回来的文件路径数
     expect(await screen.findByText("已复制需求背景和 2 个文件路径，去 Claude Code 粘贴")).toBeInTheDocument();
-    expect(requirementContext).toHaveBeenCalledTimes(1);
+    expect(requirementContext).toHaveBeenCalledTimes(2);
     expect(requirement).toHaveBeenCalledTimes(1);
   });
 

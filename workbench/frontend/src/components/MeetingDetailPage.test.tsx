@@ -1862,6 +1862,62 @@ describe("MeetingDetailPage 抽需求候选（R01-4）", () => {
   });
 });
 
+describe("MeetingDetailPage 从原话时间进来（R02-3）、被新增页盖住", () => {
+  function pageWithAudio(props: { autoplay?: boolean; covered?: boolean }) {
+    // 有录音时播放器会去取波形；让它一直等着，用例里不真建播放器
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    const page: MeetingDetail = {
+      ...meeting(false),
+      duration_ms: 60_000,
+      artifacts: [{ id: 42, kind: "audio", role: "source", path: "/x/vm-1.m4a" } as MeetingDetail["artifacts"][number]],
+    };
+    return (
+      <MeetingDetailPage
+        apiClient={client(vi.fn())}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={page}
+        onBack={vi.fn()}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[]}
+        tags={[]}
+        {...props}
+      />
+    );
+  }
+
+  it("带着 autoplay 打开：读到录音就开始放；不带不放", () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    const { container, unmount } = render(pageWithAudio({ autoplay: true }));
+    const audio = container.querySelector("audio")!;
+    Object.defineProperty(audio, "readyState", { configurable: true, value: HTMLMediaElement.HAVE_METADATA });
+    fireEvent(audio, new Event("loadedmetadata"));
+    expect(play).toHaveBeenCalledTimes(1);
+    unmount();
+
+    play.mockClear();
+    const plain = render(pageWithAudio({}));
+    const quiet = plain.container.querySelector("audio")!;
+    Object.defineProperty(quiet, "readyState", { configurable: true, value: HTMLMediaElement.HAVE_METADATA });
+    fireEvent(quiet, new Event("loadedmetadata"));
+    expect(play).not.toHaveBeenCalled();
+    play.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("新增页盖上来时停下录音：页面上看不到播放器了（第二轮审查建议 2）", () => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    const { rerender } = render(pageWithAudio({}));
+    expect(pause).not.toHaveBeenCalled();
+
+    rerender(pageWithAudio({ covered: true }));
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    pause.mockRestore();
+    vi.unstubAllGlobals();
+  });
+});
+
 describe("MeetingDetailPage 逐字稿选句建需求（R01-10）", () => {
   it("选中一段［建成需求］：带着这场会、选中的原话、第一句的时间和会议归属去新增需求页", () => {
     // 有录音时播放器会去取波形；让它一直等着，用例里不真建播放器

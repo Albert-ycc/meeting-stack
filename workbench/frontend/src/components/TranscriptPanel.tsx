@@ -34,10 +34,15 @@ const HAS_WORDS = /[\p{L}\p{N}]/u;
 const PICK_WIDTH = 240;
 const PICK_HEIGHT = 44;
 
-/** 选区盖到的几句正文里被选中的字连起来；一个字都没选到正文时为 null */
+/**
+ * 选区盖到的几句正文里被选中的字连起来；一个字都没选到正文时为 null。
+ * 查找过滤以后，选区会跨过被藏起来的句子：不挨着的地方补「……」，不把隔开的话接成一口气说的
+ * （第二轮审查一般-1）。挨不挨着看每行的 data-index（在整份逐字稿里的位置）。
+ */
 export function selectedQuote(container: HTMLElement, range: Range): TranscriptPick | null {
   const parts: string[] = [];
   let anchorMs: number | null = null;
+  let previous: number | null = null;
   for (const body of Array.from(container.querySelectorAll<HTMLElement>("[data-start-ms] .segment-text"))) {
     if (!range.intersectsNode(body)) continue;
     const piece = document.createRange();
@@ -46,7 +51,11 @@ export function selectedQuote(container: HTMLElement, range: Range): TranscriptP
     if (body.contains(range.endContainer)) piece.setEnd(range.endContainer, range.endOffset);
     const text = piece.toString();
     if (!text.trim()) continue;
-    if (anchorMs === null) anchorMs = Number(body.closest<HTMLElement>("[data-start-ms]")?.dataset.startMs ?? 0);
+    const row = body.closest<HTMLElement>("[data-start-ms]");
+    if (anchorMs === null) anchorMs = Number(row?.dataset.startMs ?? 0);
+    const position = row?.dataset.index === undefined ? null : Number(row.dataset.index);
+    if (previous !== null && position !== null && position !== previous + 1) parts.push("……");
+    previous = position;
     parts.push(text);
   }
   const quote = parts.join("").trim();
@@ -307,6 +316,7 @@ export function TranscriptPanel({
             <article
               aria-current={isActive ? "true" : undefined}
               className={`transcript-row ${isActive ? "is-current" : ""}`}
+              data-index={sourceIndex}
               data-start-ms={segment.start_ms}
               data-testid={`segment-${segment.id}`}
               key={segment.id}

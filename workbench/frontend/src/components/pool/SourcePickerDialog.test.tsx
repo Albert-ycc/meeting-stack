@@ -506,7 +506,8 @@ describe("选原话（第二步）", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "确定" }));
     expect(handlers.onPicked).toHaveBeenCalledWith(
       expect.objectContaining({
-        quote: "它其实要读白介素十七，要把它的比例稍微缩小一点，然后可能前面四列需要去把它填充满一百场。",
+        // 三句在逐字稿里隔着没显示的句子：不挨着的地方补「……」，不接成一口气说的（第二轮审查一般-1）
+        quote: "它其实要读白介素十七，……要把它的比例稍微缩小一点，……然后可能前面四列需要去把它填充满一百场。",
         anchor_ms: 330820,
       }),
     );
@@ -522,7 +523,9 @@ describe("选原话（第二步）", () => {
     pointer("pointerUp", lineButton(dialog, /然后可能前面四列需要去把它填充满一百场/));
 
     expect(within(dialog).getByText("已选 3 句")).toBeInTheDocument();
-    expect(within(dialog).getByText("「它其实要读白介素十七，要把它的比例稍微缩小一点，然后可能前面四列需要去把它填充满一百场。」")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("「它其实要读白介素十七，……要把它的比例稍微缩小一点，……然后可能前面四列需要去把它填充满一百场。」"),
+    ).toBeInTheDocument();
   });
 
   it("查找词变了：被过滤掉的已选句子既不高亮也不进原话，清掉查找词它们又回来", async () => {
@@ -642,6 +645,11 @@ describe("选原话（第二步）", () => {
 describe("quoteOf、hasContent、groupByDay", () => {
   it("原话取选中的文字，时间锚取第一句有字的开头", () => {
     expect(quoteOf(CVM_SEGMENTS.slice(7, 9))).toEqual({ quote: "那我有办法导出 excel 吗？是没有办法，", anchor_ms: 576900 });
+    // 挨着的两句直接接上；中间隔着句子的补「……」
+    expect(quoteOf(CVM_SEGMENTS.slice(7, 9), [7, 8]).quote).toBe("那我有办法导出 excel 吗？是没有办法，");
+    expect(quoteOf([CVM_SEGMENTS[1], CVM_SEGMENTS[7]], [1, 7]).quote).toBe(
+      `${CVM_SEGMENTS[1].text.trim()}……那我有办法导出 excel 吗？`,
+    );
     expect(quoteOf([{ ...CVM_SEGMENTS[6], text: " " }, CVM_SEGMENTS[7]])).toEqual({ quote: "那我有办法导出 excel 吗？", anchor_ms: 576900 });
   });
 

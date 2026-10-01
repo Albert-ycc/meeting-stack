@@ -39,19 +39,24 @@ const AUTO_SCROLL_EDGE = 36;
 
 /**
  * 选中的几句连成原话：原话取选中的文字，时间锚取第一句有字的开头（R01 异常与边界，和逐字稿页一致）。
- * picked 是屏幕上看得见、高亮着的那几句，按逐字稿先后排好。
+ * picked 是屏幕上看得见、高亮着的那几句，按逐字稿先后排好；positions 是它们在整份逐字稿里的位置。
+ * 查找过滤以后连选、拖选会跨过被藏起来的句子：不挨着的地方补「……」，不把隔开的话接成一口气说的
+ * （第二轮审查一般-1：「没有签收……拒收了……签收入库」接成一句，「拒收」那层意思就没了）。
  */
-export function quoteOf(picked: Segment[]): { quote: string; anchor_ms: number } {
-  const first = picked.find((segment) => segment.text.trim() !== "") ?? picked[0];
-  return {
-    quote: picked.map((segment) => segment.text.trim()).join(""),
-    anchor_ms: first?.start_ms ?? 0,
-  };
+export function quoteOf(picked: Segment[], positions?: number[]): { quote: string; anchor_ms: number } {
+  const first = picked.find((segment) => hasContent(segment.text)) ?? picked[0];
+  const quote = picked
+    .map((segment, order) => {
+      const gap = order > 0 && positions !== undefined && positions[order] !== positions[order - 1] + 1;
+      return `${gap ? "……" : ""}${segment.text.trim()}`;
+    })
+    .join("");
+  return { quote, anchor_ms: first?.start_ms ?? 0 };
 }
 
-/** 去掉标点、空白和看不见的格式字符以后还剩字，才算一句原话 */
+/** 有字（字母、汉字或数字）才算一句原话：纯标点、空白、看不见的格式字符不算，和后端 has_words 一致 */
 export function hasContent(text: string): boolean {
-  return text.replace(/[\p{P}\p{Z}\p{C}\s]/gu, "") !== "";
+  return /[\p{L}\p{N}]/u.test(text);
 }
 
 export interface DayGroup {
@@ -425,7 +430,10 @@ function QuoteStep({ apiClient, meeting, onBack, onClose, onPicked }: QuoteStepP
   const picked = pickedRows.map(({ segment }) => segment);
   const pickedIndexes = new Set(pickedRows.map(({ index }) => index));
 
-  const { quote, anchor_ms } = quoteOf(picked);
+  const { quote, anchor_ms } = quoteOf(
+    picked,
+    pickedRows.map(({ index }) => index),
+  );
   const tooLong = [...quote].length > QUOTE_MAX;
   const blank = picked.length > 0 && !hasContent(quote);
   const problem = tooLong ? `原话最多 ${QUOTE_MAX} 字，少选几句` : blank ? "选中的只有标点或空白，再选一句有字的" : null;

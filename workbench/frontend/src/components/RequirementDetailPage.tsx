@@ -29,7 +29,7 @@ import { MentionedBadge } from "./files/MentionedBadge";
 import { useMentionedCounts } from "./files/useMentionedCounts";
 import { RequirementSourceCard } from "./pool/RequirementSourceCard";
 import { unmergedMessage } from "./pool/RequirementPoolPage";
-import { copiedMessage } from "./pool/requirementCopy";
+import { copiedMessage, copyFailureReason, copyRequirementBackground } from "./pool/requirementCopy";
 
 interface RequirementDetailPageProps {
   apiClient: ApiClient;
@@ -249,8 +249,14 @@ export function RequirementDetailPage({
   const copyForClaudeCode = () => {
     if (!detail) return;
     if (context.state === "ready") {
-      // 和海报上的「接下」同一个动作、同一句提示（R05-5）
-      void copyPath(context.data.markdown, copiedMessage(context.data));
+      // 和海报上的「接下」同一个动作、同一句提示（R05-5）：点的当下现取背景，详情页开着时别处改过的说明、
+      // 新合并进来的原话也带上（第二轮审查建议 5）；写剪贴板在点击里同步发起，WebKit 才认
+      void copyRequirementBackground(() => apiClient.requirementContext(requirementId))
+        .then((data) => {
+          setContext({ state: "ready", data });
+          showToast(copiedMessage(data));
+        })
+        .catch((error: unknown) => setNotice(`没复制成功：${copyFailureReason(error)}`, "error"));
       return;
     }
     // 旧后台或背景没取到：退回旧的路径清单

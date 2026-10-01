@@ -263,6 +263,8 @@ export default function App({ apiClient = api }: AppProps) {
   const [detailState, setDetailState] = useState<LoadState>("idle");
   const [detailError, setDetailError] = useState("");
   const [initialSeekMs, setInitialSeekMs] = useState(0);
+  // 从需求池、需求详情点原话时间打开会议：跳到那一秒并开始放
+  const [initialAutoplay, setInitialAutoplay] = useState(false);
   const [initialDetailTab, setInitialDetailTab] = useState<"transcript" | "minutes">("transcript");
   const [query, setQuery] = useState("");
   // 检索结果页：提交时的搜索词和范围（"" 全部；"none" 没归项目的会；其他是项目 id）
@@ -425,14 +427,33 @@ export default function App({ apiClient = api }: AppProps) {
         if (!seekMs) return;
       }
       // 退回到一场会：回到当初打开它时所在的视图，返回按钮和侧栏才对得上（审查 M7：从需求详情后退回到
-      // 会议，返回按钮写着「需求详情」、点了却去录音档案）
-      const behind = (window.history.state as { behind?: string } | null)?.behind;
-      if (behind && behind !== "requirementForm" && behind in VIEW_LABELS && meetingId !== openMeetingIdRef.current) {
-        setView(behind as AppView);
+      // 会议，返回按钮写着「需求详情」、点了却去录音档案）；从这场会选句建过需求的，停在选的那一句
+      const landed = window.history.state as { behind?: string; resumeAt?: number | null } | null;
+      if (
+        landed?.behind &&
+        landed.behind !== "requirementForm" &&
+        landed.behind in VIEW_LABELS &&
+        meetingId !== openMeetingIdRef.current
+      ) {
+        setView(landed.behind as AppView);
       }
       if (meetingId && (meetingId !== openMeetingIdRef.current || seekMs)) {
-        historyHandlersRef.current.openMeeting(meetingId, seekMs);
+        historyHandlersRef.current.openMeeting(meetingId, seekMs || (landed?.resumeAt ?? 0));
       }
+      return;
+    }
+    // 前进、后退回到「盖在会议页上的新增页」那一条：带来的来源记在这条历史里（第二轮审查一般-3）。
+    // 会议还开着就重新盖上、不关会议页；会议已经关了（中途去了别处、刷新过）就按普通新增页打开，来源照样带上
+    const carried =
+      hash === "#requirements/new"
+        ? (window.history.state as { meetingForm?: RequirementPrefill } | null)?.meetingForm
+        : undefined;
+    if (carried && carried.source.meeting_id === openMeetingIdRef.current) {
+      meetingScrollRef.current = {
+        page: document.documentElement.scrollTop,
+        transcript: document.querySelector<HTMLElement>(".transcript-scroll")?.scrollTop ?? 0,
+      };
+      setMeetingFormPrefill(carried);
       return;
     }
     if (openMeetingIdRef.current) {
@@ -502,7 +523,7 @@ export default function App({ apiClient = api }: AppProps) {
       if (isMobileRef.current) {
         setView("requirements");
       } else if (candidateId === null) {
-        setRequirementForm({ mode: "create" });
+        setRequirementForm({ mode: "create", prefill: carried });
         setView("requirementForm");
       } else if (candidateId) {
         setRequirementForm({ mode: "claim", candidateId });
@@ -684,6 +705,7 @@ export default function App({ apiClient = api }: AppProps) {
     seekMs = 0,
     fromHistory = false,
     tab: "transcript" | "minutes" = "transcript",
+    autoplay = false,
   ) => {
     if (detailNavigationLocked) return;
     if (!fromHistory) historySyncRef.current = false;
@@ -695,6 +717,7 @@ export default function App({ apiClient = api }: AppProps) {
       return;
     }
     setInitialSeekMs(seekMs);
+    setInitialAutoplay(autoplay);
     setInitialDetailTab(tab);
     // 检索结果不清：从会议返回时要回到刚才那页结果。
     setDetailDirty(false);
@@ -703,6 +726,11 @@ export default function App({ apiClient = api }: AppProps) {
     setOpenMeetingId(meetingId);
     void loadDetail(meetingId);
   };
+
+  // 需求池海报、需求详情「出自录音」上点原话时间、波形：打开会议并从这一秒开始放（R02-3、R05-1）；
+  // 没有时间（只关联了会议）就只打开
+  const openMeetingAtQuote = (meetingId: string, atMs?: number) =>
+    openMeeting(meetingId, atMs ?? 0, false, "transcript", atMs !== undefined);
 
   const resetDetailState = () => {
     detailRequestSequence.current += 1;
@@ -884,15 +912,26 @@ export default function App({ apiClient = api }: AppProps) {
   // 新增、认领、修改需求的二级页（R04-1）：保存或放弃后回到进入前的页面
   const openRequirementCreate = (prefill?: RequirementPrefill) => {
     if (prefill && openMeetingId) {
+      // 面包屑第一段写这场会是从哪儿打开的，和会议页的返回按钮一致
+      const carried: RequirementPrefill = { ...prefill, from: searchActive ? "检索结果" : VIEW_LABELS[view] };
       meetingScrollRef.current = {
         page: document.documentElement.scrollTop,
         transcript: document.querySelector<HTMLElement>(".transcript-scroll")?.scrollTop ?? 0,
       };
+      // 会议这一条记下选的那一句：建完需求后退回来时会议是重新打开的，停在这一句，接着往下挑
+      window.history.replaceState(
+        { ...((window.history.state as Record<string, unknown> | null) ?? {}), resumeAt: prefill.source.anchor_ms },
+        "",
+      );
       // 先压历史、再盖上新增页：新增页一挂上就滚到顶，等它挂上以后再压，浏览器给会议这一条记下的滚动位置就是 0，
-      // 后退时它按 0 恢复，盖掉我们放回去的位置
-      history.pushState({ app: true }, "", `${window.location.pathname}${window.location.search}#requirements/new`);
+      // 后退时它按 0 恢复，盖掉我们放回去的位置。来源记在这一条里，前进后退、刷新回到这一条时还在
+      history.pushState(
+        { app: true, meetingForm: carried },
+        "",
+        `${window.location.pathname}${window.location.search}#requirements/new`,
+      );
       historySyncRef.current = false;
-      setMeetingFormPrefill(prefill);
+      setMeetingFormPrefill(carried);
       return;
     }
     setRequirementForm({ mode: "create", prefill });
@@ -1186,6 +1225,8 @@ export default function App({ apiClient = api }: AppProps) {
         apiClient={apiClient}
         canWriteTasks={!isMobile || mobileTaskWrite}
         initialSeekMs={initialSeekMs}
+        autoplay={initialAutoplay}
+        covered={meetingFormPrefill !== null}
         initialTab={initialDetailTab}
         isMobile={isMobile}
         meeting={detail}
@@ -1373,7 +1414,7 @@ export default function App({ apiClient = api }: AppProps) {
         onClaimCandidate={openCandidateClaim}
         onCreateRequirement={() => openRequirementCreate()}
         onFlashShown={() => setPoolFlash(null)}
-        onOpenMeeting={(meetingId, atMs) => openMeeting(meetingId, atMs)}
+        onOpenMeeting={openMeetingAtQuote}
         onOpenRequirement={openRequirementDetail}
         onProjectsChanged={refreshProjects}
       />
@@ -1417,7 +1458,7 @@ export default function App({ apiClient = api }: AppProps) {
         onEdit={isMobile ? undefined : () => openRequirementEdit(openRequirementId)}
         onFlashShown={() => setRequirementFlash(null)}
         onOpenInGraph={isMobile ? undefined : (projectId, requirementId) => openProjectGraph(projectId, `r:${requirementId}`)}
-        onOpenMeeting={openMeeting}
+        onOpenMeeting={openMeetingAtQuote}
         onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
         onOpenProject={openProjectDetail}
         onOpenTask={setTaskDrawerId}

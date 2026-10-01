@@ -45,6 +45,10 @@ import { RelatedMaterials } from "./links/RelatedMaterials";
 interface MeetingDetailPageProps {
   apiClient: ApiClient;
   initialSeekMs: number;
+  /** 从需求池、需求详情点原话时间进来：跳到那一秒并开始放（R02-3、S05-c） */
+  autoplay?: boolean;
+  /** 新增页盖在会议页上：停下录音，页面上看不到播放器，接着放就只能取消回去才停得了 */
+  covered?: boolean;
   /** 从检索的纪要命中点进来时直接打开纪要页签 */
   initialTab?: "transcript" | "minutes";
   isMobile: boolean;
@@ -264,6 +268,8 @@ function SafeMarkdown({ children }: { children: string }) {
 export function MeetingDetailPage({
   apiClient,
   initialSeekMs,
+  autoplay = false,
+  covered = false,
   initialTab = "transcript",
   isMobile,
   meeting,
@@ -662,7 +668,12 @@ export function MeetingDetailPage({
 
   useEffect(() => {
     if (initialSeekMs > 0) playerRef.current?.seekTo(initialSeekMs);
-  }, [initialSeekMs]);
+    if (autoplay) playerRef.current?.play();
+  }, [initialSeekMs, autoplay]);
+
+  useEffect(() => {
+    if (covered) playerRef.current?.pause();
+  }, [covered]);
 
   const audio = meeting.artifacts.find((artifact) => artifact.kind === "audio");
   const mediaUrl = audio ? `/api/media/${audio.id}` : null;
