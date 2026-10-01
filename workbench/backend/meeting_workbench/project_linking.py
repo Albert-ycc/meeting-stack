@@ -194,11 +194,15 @@ def reassign_meeting(
             f"(project_id=? OR (project_id IS NULL AND status IN ({status_placeholders})))"
         )
         movable_params = (from_project_id, *DRAFT_TASK_STATUSES)
+    # 挂了需求的留在原项目；挂着别的会抽出的候选的也留下——那条候选跟着它自己的会，不随这场会搬家，
+    # 任务跟过去就成了挂着别的项目的候选（同一场会的候选随会搬，任务照常跟着走）
     movable_rows = connection.execute(
         f"""SELECT id, project_id FROM tasks
              WHERE meeting_id=? AND requirement_id IS NULL AND {movable_sql}
+               AND (candidate_id IS NULL OR candidate_id IN
+                    (SELECT id FROM requirement_candidates WHERE meeting_id=?))
              ORDER BY created_at, id""",
-        (meeting_id, *movable_params),
+        (meeting_id, *movable_params, meeting_id),
     ).fetchall()
     moved_from = {
         row["id"]: row["project_id"] for row in movable_rows if row["project_id"] != to_project_id

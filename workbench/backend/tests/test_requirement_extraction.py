@@ -228,8 +228,8 @@ def test_batches_from_before_launch_only_extract_tasks(tmp_path, monkeypatch):
     assert "requirements" not in prompts[0]
     assert "existing_requirements" not in prompts[0]
     assert (
-        '{"tasks":[{"title":"...","detail":"...","anchor_quote":"...","assignee_suggestion":"ai|me"}]}'
-        in prompts[0]
+        '{"tasks":[{"title":"...","detail":"...","anchor_quote":"...","assignee_suggestion":"ai|me",'
+        '"due_phrase":null,"due_date":null}]}' in prompts[0]
     )
     assert pending(client) == {}
     assert list(tasks_of(db, "cvm")) == ["催填节后三场信息"]

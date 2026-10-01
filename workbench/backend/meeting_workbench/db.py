@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -1601,6 +1601,11 @@ class Database:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_candidate ON tasks(candidate_id)"
             )
+            # v18：任务的截止（YYYY-MM-DD，空是未定截止）和 AI 抽到的原文时间说法。只加列不回填：
+            # 存量任务一律归「未定截止」，截止只对上线后新抽出的任务生效。
+            for name in ("due_date", "due_phrase"):
+                if name not in task_columns:
+                    connection.execute(f"ALTER TABLE tasks ADD COLUMN {name} TEXT")
             # v17 候选表后补的列（建过 v17 早期版本的库补上；新库建表时就有）
             candidate_columns = {
                 row["name"]

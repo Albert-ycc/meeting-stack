@@ -519,6 +519,8 @@ class TaskCreateInput(BaseModel):
     project_id: str | None = Field(default=None, max_length=64)
     requirement_id: str | None = Field(default=None, max_length=64)
     assignee: str = "me"
+    # 截止 YYYY-MM-DD，空是未定截止（R07-2）
+    due_date: str | None = Field(default=None, max_length=10)
 
 
 class TaskUpdateInput(BaseModel):
@@ -531,6 +533,9 @@ class TaskUpdateInput(BaseModel):
     project_id: str | None = Field(default=None, max_length=64)
     requirement_id: str | None = Field(default=None, max_length=64)
     assignee: str | None = None
+    # 同上：传 null 是清空截止、不挂候选。挂候选和挂需求二选一（R07-8）。
+    due_date: str | None = Field(default=None, max_length=10)
+    candidate_id: str | None = Field(default=None, max_length=64)
 
 
 class RevealInput(BaseModel):
@@ -4818,6 +4823,7 @@ def create_app(
                 project_id=body.project_id,
                 requirement_id=body.requirement_id,
                 assignee=body.assignee,
+                due_date=body.due_date,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
@@ -4834,6 +4840,10 @@ def create_app(
                 assignee=body.assignee,
                 requirement_id=body.requirement_id,
                 requirement_id_given="requirement_id" in body.model_fields_set,
+                due_date=body.due_date,
+                due_date_given="due_date" in body.model_fields_set,
+                candidate_id=body.candidate_id,
+                candidate_id_given="candidate_id" in body.model_fields_set,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
@@ -4850,6 +4860,10 @@ def create_app(
     def undo_review(body: BatchConfirmInput):
         return task_service.undo_review(body.task_ids)
 
+    @app.post("/api/tasks/undo-complete")
+    def undo_complete(body: BatchConfirmInput):
+        return task_service.undo_complete(body.task_ids)
+
     @app.post("/api/tasks/{task_id}/confirm")
     def confirm_task(task_id: str, body: TaskUpdateInput):
         try:
@@ -4862,6 +4876,10 @@ def create_app(
                 assignee=body.assignee,
                 requirement_id=body.requirement_id,
                 requirement_id_given="requirement_id" in body.model_fields_set,
+                due_date=body.due_date,
+                due_date_given="due_date" in body.model_fields_set,
+                candidate_id=body.candidate_id,
+                candidate_id_given="candidate_id" in body.model_fields_set,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error

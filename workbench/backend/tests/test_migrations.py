@@ -615,9 +615,20 @@ V17_COLUMNS = (("projects", "seat"), ("requirements", "summary"), ("tasks", "can
 V17_TRIGGERS = ("requirement_sources_follow_unlink",)
 
 
+V18_COLUMNS = (("tasks", "due_date"), ("tasks", "due_phrase"))
+
+
+def _downgrade_to_v17(connection: sqlite3.Connection) -> None:
+    """把刚建好的 v18 库退回 v17 的形状：删掉任务上的截止两列。"""
+    for table, column in V18_COLUMNS:
+        connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    connection.execute("PRAGMA user_version=17")
+
+
 def _downgrade_to_v16(connection: sqlite3.Connection) -> None:
     """把刚建好的 v17 库退回 v16 的形状：先删新触发器（它引用来源表）和老表上的两个新索引（带索引的列
     删不掉），再删两张新表、三个新列和候选上线时刻键。"""
+    _downgrade_to_v17(connection)
     for trigger in V17_TRIGGERS:
         connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for index in V17_OLD_TABLE_INDEXES:
@@ -881,7 +892,7 @@ def test_version_fourteen_migration_adds_tables_and_keeps_data(tmp_path):
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [13]
-    assert db.user_version() == SCHEMA_VERSION == 17
+    assert db.user_version() == SCHEMA_VERSION
     assert set(V14_TABLES) <= _tables(db)
     assert db.query_one("SELECT name FROM projects WHERE id='p-a'") == {"name": "云图AI"}
     assert db.query_one("SELECT decision FROM name_decisions") == {"decision": "ignored"}
@@ -897,7 +908,7 @@ def test_version_fourteen_migration_adds_tables_and_keeps_data(tmp_path):
     # 再跑一遍什么都不变
     db.initialize()
     db.initialize()
-    assert db.user_version() == 17
+    assert db.user_version() == SCHEMA_VERSION
     assert db.query_one("SELECT COUNT(*) AS n FROM project_material_roots") == {"n": 1}
 
 
@@ -922,7 +933,7 @@ def test_version_fifteen_migration_adds_material_content_and_keeps_data(tmp_path
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [14]
-    assert db.user_version() == SCHEMA_VERSION == 17
+    assert db.user_version() == SCHEMA_VERSION
     assert set(V15_TABLES) | set(V15_TRIGGERS) <= _tables(db)
     columns = {row["name"] for row in db.query_all("PRAGMA table_info(material_files)")}
     assert set(V15_FILE_COLUMNS) <= columns
@@ -936,7 +947,7 @@ def test_version_fifteen_migration_adds_material_content_and_keeps_data(tmp_path
     assert db.query_one("SELECT value FROM app_state WHERE key='ocr_engine'") == {"value": "auto"}
     db.initialize()
     db.initialize()
-    assert db.user_version() == 17
+    assert db.user_version() == SCHEMA_VERSION
     assert db.query_one("SELECT COUNT(*) AS n FROM material_files") == {"n": 1}
 
 
@@ -1109,7 +1120,7 @@ def test_version_sixteen_migration_adds_tables_and_keeps_data(tmp_path):
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [15]
-    assert db.user_version() == SCHEMA_VERSION == 17
+    assert db.user_version() == SCHEMA_VERSION
     objects = _schema_objects(db)
     assert set(V16_TABLES) <= objects["table"]
     assert len(V16_TABLES) == 11
@@ -1132,7 +1143,7 @@ def test_version_sixteen_migration_adds_tables_and_keeps_data(tmp_path):
     snapshot = db.query_all("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
     db.initialize()
     db.initialize()
-    assert db.user_version() == 17
+    assert db.user_version() == SCHEMA_VERSION
     assert db.query_all("SELECT type, name, sql FROM sqlite_master ORDER BY type, name") == snapshot
     assert db.query_one("SELECT value FROM app_state WHERE key='links_since'") == {
         "value": keys["links_since"]
@@ -1172,7 +1183,7 @@ def test_version_sixteen_rollback_marker_keeps_objects(tmp_path):
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [15]
-    assert db.user_version() == 17
+    assert db.user_version() == SCHEMA_VERSION
     assert db.query_all("SELECT type, name FROM sqlite_master ORDER BY type, name") == before
     assert db.query_one("SELECT status FROM relations") == {"status": "rejected"}
     assert db.query_one("SELECT text FROM decisions") == {"text": "阈值先按 0.8 执行"}
@@ -1180,13 +1191,16 @@ def test_version_sixteen_rollback_marker_keeps_objects(tmp_path):
     assert db.query_one("SELECT value FROM app_state WHERE key='links_since'") == since
     # 比代码新的库照旧拒绝打开
     with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA user_version=18")
+        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
     try:
         db.initialize()
     except sqlite3.DatabaseError as error:
-        assert "database version 18 is newer than supported 17" in str(error)
+        assert (
+            f"database version {SCHEMA_VERSION + 1} is newer than supported {SCHEMA_VERSION}"
+            in str(error)
+        )
     else:
-        raise AssertionError("v18 的库不该被打开")
+        raise AssertionError("比代码新的库不该被打开")
 
 
 def test_version_sixteen_graph_rev_policy(tmp_path):
@@ -1394,7 +1408,7 @@ def test_version_seventeen_migration_adds_candidates_sources_and_seat(tmp_path):
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [16]
-    assert db.user_version() == SCHEMA_VERSION == 17
+    assert db.user_version() == SCHEMA_VERSION
     objects = _schema_objects(db)
     assert set(V17_TABLES) <= objects["table"]
     assert set(V17_INDEXES) <= objects["index"] and len(V17_INDEXES) == 8
@@ -1419,7 +1433,7 @@ def test_version_seventeen_migration_adds_candidates_sources_and_seat(tmp_path):
     snapshot = db.query_all("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
     db.initialize()
     db.initialize()
-    assert db.user_version() == 17
+    assert db.user_version() == SCHEMA_VERSION
     assert db.query_all("SELECT type, name, sql FROM sqlite_master ORDER BY type, name") == snapshot
     assert (
         db.query_one("SELECT value FROM app_state WHERE key='requirement_candidates_since'")
@@ -1501,7 +1515,7 @@ def test_version_seventeen_rollback_marker_keeps_candidates_and_seats(tmp_path):
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [16]
-    assert db.user_version() == 17
+    assert db.user_version() == SCHEMA_VERSION
     assert db.query_all("SELECT type, name FROM sqlite_master ORDER BY type, name") == before
     assert db.query_one("SELECT seat FROM projects") == {"seat": 1}
     assert db.query_one("SELECT status FROM requirement_candidates") == {"status": "pending"}
@@ -1542,3 +1556,66 @@ def test_requirement_source_belongs_to_exactly_one_owner_and_one_origin(tmp_path
     db.execute(insert, ("r", None, "merged"))
     db.execute(insert, ("r", None, "merged"))
     assert db.query_one("SELECT COUNT(*) AS n FROM requirement_sources") == {"n": 4}
+
+
+def test_version_eighteen_migration_adds_task_due_without_backfill(tmp_path):
+    """v18 任务截止：任务上加 due_date、due_phrase 两列，存量任务一律留空（归「未定截止」），不回填。"""
+    database_path = tmp_path / "workbench.sqlite3"
+    db = Database(database_path)
+    db.initialize()
+    with sqlite3.connect(database_path) as connection:
+        _downgrade_to_v17(connection)
+        # 生产库里原文带「明天」的存量任务：迁移不能替它算截止
+        connection.executescript(
+            """
+            INSERT INTO meetings(id, title, recording_date, status)
+            VALUES ('vm-20260922-203016-464d0ff9', '发卡变更与一直拍流程改造沟通',
+                    '2026-09-22T20:30:16-07:00', 'published');
+            INSERT INTO tasks(id, title, detail, status, meeting_id, anchor_quote,
+                              status_changed_at, created_at, updated_at)
+            VALUES ('task-5172818d4e3f4190b1a7f46efad1b8ab', '明天晚上先上后台并撤下码，统一验证扫码',
+                    '明天晚上先把后台上了，同时把码先撤掉，统一再验证扫码有没有问题。', 'confirmed',
+                    'vm-20260922-203016-464d0ff9', '这明天晚上把后台先上了吧', 'x', 'x', 'x');
+            """
+        )
+    columns = {row["name"] for row in db.query_all("PRAGMA table_info(tasks)")}
+    assert not {"due_date", "due_phrase"} & columns
+    backups: list[int] = []
+
+    db.initialize(before_migrate=lambda: backups.append(db.user_version()))
+
+    assert backups == [17]
+    assert db.user_version() == SCHEMA_VERSION == 18
+    assert db.query_one("SELECT title, status, due_date, due_phrase FROM tasks") == {
+        "title": "明天晚上先上后台并撤下码，统一验证扫码",
+        "status": "confirmed",
+        "due_date": None,
+        "due_phrase": None,
+    }
+    snapshot = db.query_all("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+    db.initialize()
+    assert db.query_all("SELECT type, name, sql FROM sqlite_master ORDER BY type, name") == snapshot
+
+
+def test_version_eighteen_rollback_marker_keeps_due(tmp_path):
+    """回滚是改 user_version=17（v17 的代码不碰截止两列）；回到 v18 时截止还在。"""
+    database_path = tmp_path / "workbench.sqlite3"
+    db = Database(database_path)
+    db.initialize()
+    db.execute(
+        """INSERT INTO tasks(id, title, status, due_date, due_phrase,
+                             status_changed_at, created_at, updated_at)
+           VALUES ('task-36ee9fa9dda2428ba88b5b56234a8075', '「人身健康」明天开发完、28号再测',
+                   'confirmed', '2026-09-28', '二十八号再测测', 'x', 'x', 'x')"""
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA user_version=17")
+    backups: list[int] = []
+
+    db.initialize(before_migrate=lambda: backups.append(db.user_version()))
+
+    assert backups == [17]
+    assert db.query_one("SELECT due_date, due_phrase FROM tasks") == {
+        "due_date": "2026-09-28",
+        "due_phrase": "二十八号再测测",
+    }

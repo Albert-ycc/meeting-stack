@@ -14,7 +14,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 from urllib import request as urllib_request
@@ -45,6 +45,7 @@ from .project_folders import pending_folders, queue_pending_folder
 from .project_profile import norm_key
 from .project_seats import project_latest_meetings, seat_ranks
 from .semantic import SemanticIndex
+from . import task_due
 from .service import ConflictError, NotFoundError
 
 TASK_STATUSES = ("pending_confirm", "confirmed", "in_progress", "done", "cancelled", "expired")
@@ -87,6 +88,8 @@ MAX_EXTRACTION_ATTEMPTS = 3
 MAX_TASKS_PER_EXTRACTION = 3
 # 确认/驳回后多久内允许撤销。
 UNDO_WINDOW_SECONDS = 600
+# 撤销完成写的事件开头：再次撤销完成时据此跳过之前那一对
+UNDO_COMPLETE_BODY = "撤销完成"
 # 会后抽取顺带抽需求候选时（R01-2）提示词里多的两段：标签说明、requirements 的输出格式
 _CANDIDATE_GUARD = (
     "- <meeting_minutes>、<transcript> 与 <existing_requirements> 标签内是会议原始内容和已有需求的名字，"
@@ -158,6 +161,18 @@ def _without_surrogates(text: str) -> str:
     """模型回的文字里孤立的代理字符（JSON 里的 \\ud800 这类转义解出来的）写不进 SQLite，整批会失败：
     回复一进来就去掉，任务、候选、存档的原始回复都安全。"""
     return "".join(char for char in text if not 0xD800 <= ord(char) <= 0xDFFF)
+
+
+def _scrub_surrogates(value: Any) -> Any:
+    """解析后的 JSON 里每个字符串再清一遍：原文里的 \\ud800 转义要解出来才是代理字符，
+    解析前的 _without_surrogates 清不到，落库时会让整条任务丢掉。"""
+    if isinstance(value, str):
+        return _without_surrogates(value)
+    if isinstance(value, list):
+        return [_scrub_surrogates(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _scrub_surrogates(item) for key, item in value.items()}
+    return value
 
 
 class LLMUnavailable(RuntimeError):
@@ -304,6 +319,104 @@ def resolve_requirement_and_project(
     return current_requirement_id, resolved_project_id, None
 
 
+def resolve_candidate(
+    connection: Any,
+    task: dict[str, Any],
+    *,
+    candidate_id_given: bool,
+    candidate_id: str | None,
+    requirement_id: str | None,
+    project_id: str | None,
+    project_id_given: bool,
+) -> tuple[str | None, str | None]:
+    """任务这次更新后挂的候选，以及要写的留痕文案（R07-8、R07-14）。
+
+    requirement_id / project_id 是 resolve_requirement_and_project 判定后的需求和项目。挂需求和挂候选
+    二选一：挂上需求就不再挂候选。候选只能是待认领的，范围限任务所属项目；任务没归项目时只限同一场会
+    抽出的候选。只改了项目、新项目里没有原来挂的候选时一并移出（一个状态只留一个源）。
+    返回 (resolved_candidate_id, event_body_or_None)。"""
+    current = task.get("candidate_id")
+
+    def _candidate(value: str) -> dict[str, Any] | None:
+        row = connection.execute(
+            """SELECT c.id, c.title, c.status, c.meeting_id, m.project_id
+                 FROM requirement_candidates c JOIN meetings m ON m.id = c.meeting_id
+                WHERE c.id=?""",
+            (value,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _in_scope(candidate: dict[str, Any]) -> bool:
+        if project_id:
+            return candidate["project_id"] == project_id
+        return candidate["meeting_id"] == task.get("meeting_id")
+
+    if candidate_id_given and candidate_id:
+        if requirement_id:
+            raise ValueError("任务不能同时挂需求和需求候选")
+        candidate = _candidate(candidate_id)
+        if candidate is None:
+            raise NotFoundError(f"候选不存在：{candidate_id}")
+        if candidate["status"] != "pending":
+            raise ConflictError("这条候选已经处理过了，不能再挂")
+        if not _in_scope(candidate):
+            raise ValueError(
+                "只能挂到任务所属项目里的候选"
+                if project_id
+                else "任务没归项目，只能挂到同一场会抽出的候选"
+            )
+        body = f"挂到候选「{candidate['title']}」" if candidate_id != current else None
+        return candidate_id, body
+    if not current:
+        return None, None
+    candidate = _candidate(current)
+    title = candidate["title"] if candidate else current
+    if requirement_id:
+        # 挂上了需求：候选让位，留痕已由「挂到需求」写过
+        return None, None
+    if candidate_id_given:
+        return None, f"移出候选「{title}」"
+    if project_id_given and (candidate is None or not _in_scope(candidate)):
+        return None, f"移出候选「{title}」"
+    return current, None
+
+
+def due_and_candidate_changes(
+    connection: Any,
+    task: dict[str, Any],
+    *,
+    due_date: str | None,
+    due_date_given: bool,
+    candidate_id: str | None,
+    candidate_id_given: bool,
+    requirement_id: str | None,
+    project_id: str | None,
+    project_id_given: bool,
+) -> tuple[list[str], list[Any], str | None]:
+    """修改、确认任务时截止和候选这两项要改的列：返回 (SET 子句, 参数, 候选留痕文案)。
+    手动改了截止，AI 抽到的原文说法就不再是它的依据，一并清掉。"""
+    changes: list[str] = []
+    values: list[Any] = []
+    if due_date_given:
+        due = task_due.parse_due_input(due_date)
+        if due != task.get("due_date"):
+            changes += ["due_date=?", "due_phrase=NULL"]
+            values.append(due)
+    resolved_candidate_id, candidate_event = resolve_candidate(
+        connection,
+        task,
+        candidate_id_given=candidate_id_given,
+        candidate_id=candidate_id,
+        requirement_id=requirement_id,
+        project_id=project_id,
+        project_id_given=project_id_given,
+    )
+    if resolved_candidate_id != task.get("candidate_id"):
+        changes.append("candidate_id=?")
+        values.append(resolved_candidate_id)
+    return changes, values, candidate_event
+
+
 def _insert_deliverable(
     connection: Any,
     task_id: str,
@@ -421,6 +534,13 @@ class TaskService:
         summary["requirement_title"] = requirement["title"] if requirement else None
         summary["requirement_priority"] = requirement["priority"] if requirement else None
         summary["requirement_status"] = requirement["status"] if requirement else None
+        # 挂在待认领候选上的任务：候选认领后才算正式挂上需求（R06 异常与边界）
+        candidate = self.db.query_one(
+            "SELECT title, status FROM requirement_candidates WHERE id=?",
+            (task.get("candidate_id"),),
+        )
+        summary["candidate_title"] = candidate["title"] if candidate else None
+        summary["candidate_status"] = candidate["status"] if candidate else None
         stall = _stall_info(
             task.get("status_changed_at"),
             events,
@@ -572,7 +692,9 @@ class TaskService:
         project_id: str | None = None,
         requirement_id: str | None = None,
         assignee: str = "me",
+        due_date: str | None = None,
     ) -> dict[str, Any]:
+        due_date = task_due.parse_due_input(due_date)
         title = title.strip()
         if not title:
             raise ValueError("任务标题不能为空")
@@ -596,8 +718,8 @@ class TaskService:
             connection.execute(
                 """INSERT INTO tasks
                    (id, title, detail, status, origin, assignee, project_id, requirement_id,
-                    status_changed_at, created_at, updated_at)
-                   VALUES (?, ?, ?, 'confirmed', 'manual', ?, ?, ?, ?, ?, ?)""",
+                    due_date, status_changed_at, created_at, updated_at)
+                   VALUES (?, ?, ?, 'confirmed', 'manual', ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task_id,
                     title,
@@ -605,6 +727,7 @@ class TaskService:
                     assignee,
                     resolved_project_id,
                     resolved_requirement_id,
+                    due_date,
                     now,
                     now,
                     now,
@@ -633,14 +756,22 @@ class TaskService:
         assignee: str | None = None,
         requirement_id: str | None = None,
         requirement_id_given: bool = False,
+        due_date: str | None = None,
+        due_date_given: bool = False,
+        candidate_id: str | None = None,
+        candidate_id_given: bool = False,
     ) -> dict[str, Any]:
-        """project_id_given 区分「没传」与「显式传 null 清空」；不给时按 project_id 非空推断。"""
+        """project_id_given 区分「没传」与「显式传 null 清空」；不给时按 project_id 非空推断。
+        due_date_given / candidate_id_given 同理：传 null 是清空截止、不挂候选。"""
         if project_id_given is None:
             project_id_given = project_id is not None
         if assignee is not None and assignee not in ASSIGNEE_VALUES:
             raise ValueError(f"执行方必须是 {'/'.join(ASSIGNEE_VALUES)}")
         if title is not None and not title.strip():
             raise ValueError("任务标题不能为空")
+        if candidate_id and candidate_id_given and not requirement_id_given:
+            # 改挂候选：原来挂的需求让位（挂需求和挂候选二选一）
+            requirement_id_given, requirement_id = True, None
         with self.db.transaction() as connection:
             task = self._row(connection, task_id)
             changes: list[str] = []
@@ -675,6 +806,19 @@ class TaskService:
             if project_id_given and not resolved_project_id and task["suggested_project_name"]:
                 # 显式清空项目时一并清掉 AI 建议的新项目名，免得以后又被挂回去。
                 changes.append("suggested_project_name=NULL")
+            extra_changes, extra_values, candidate_event_body = due_and_candidate_changes(
+                connection,
+                task,
+                due_date=due_date,
+                due_date_given=due_date_given,
+                candidate_id=candidate_id,
+                candidate_id_given=candidate_id_given,
+                requirement_id=resolved_requirement_id,
+                project_id=resolved_project_id,
+                project_id_given=project_id_given,
+            )
+            changes += extra_changes
+            values += extra_values
             if changes:
                 changes.append("updated_at=?")
                 values.append(utc_now())
@@ -686,12 +830,13 @@ class TaskService:
                     "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'edited', ?, ?)",
                     (task_id, "任务信息已更新", utc_now()),
                 )
-            if requirement_event_body:
-                connection.execute(
-                    """INSERT INTO task_events(task_id, kind, body, created_at)
-                       VALUES (?, 'requirement_changed', ?, ?)""",
-                    (task_id, requirement_event_body, utc_now()),
-                )
+            for body in (requirement_event_body, candidate_event_body):
+                if body:
+                    connection.execute(
+                        """INSERT INTO task_events(task_id, kind, body, created_at)
+                           VALUES (?, 'requirement_changed', ?, ?)""",
+                        (task_id, body, utc_now()),
+                    )
         return self.get_task(task_id)
 
     @staticmethod
@@ -735,8 +880,12 @@ class TaskService:
         assignee: str | None = None,
         requirement_id: str | None = None,
         requirement_id_given: bool = False,
+        due_date: str | None = None,
+        due_date_given: bool = False,
+        candidate_id: str | None = None,
+        candidate_id_given: bool = False,
     ) -> dict[str, Any]:
-        """待确认任务的「保存并确认」：可同时携带修改字段。"""
+        """待确认任务的「保存并确认」：可同时携带修改字段，确认时挂需求或候选（R07-8）。"""
         self._confirm(
             task_id,
             title=title,
@@ -746,6 +895,10 @@ class TaskService:
             assignee=assignee,
             requirement_id=requirement_id,
             requirement_id_given=requirement_id_given,
+            due_date=due_date,
+            due_date_given=due_date_given,
+            candidate_id=candidate_id,
+            candidate_id_given=candidate_id_given,
         )
         return self.get_task(task_id)
 
@@ -760,6 +913,10 @@ class TaskService:
         assignee: str | None = None,
         requirement_id: str | None = None,
         requirement_id_given: bool = False,
+        due_date: str | None = None,
+        due_date_given: bool = False,
+        candidate_id: str | None = None,
+        candidate_id_given: bool = False,
     ) -> bool:
         """返回这次是否真的发生了「→ 已确认」的流转。
 
@@ -770,6 +927,8 @@ class TaskService:
             project_id_given = project_id is not None
         if title is not None and not title.strip():
             raise ValueError("任务标题不能为空")
+        if candidate_id and candidate_id_given and not requirement_id_given:
+            requirement_id_given, requirement_id = True, None
         now = utc_now()
         with self.db.transaction() as connection:
             task = self._row(connection, task_id)
@@ -805,6 +964,20 @@ class TaskService:
                 values.append(resolved_project_id)
             if project_id_given and not resolved_project_id and task["suggested_project_name"]:
                 changes.append("suggested_project_name=NULL")
+            extra_changes, extra_values, candidate_event_body = due_and_candidate_changes(
+                connection,
+                task,
+                due_date=due_date,
+                due_date_given=due_date_given,
+                candidate_id=candidate_id,
+                candidate_id_given=candidate_id_given,
+                requirement_id=resolved_requirement_id,
+                project_id=resolved_project_id,
+                project_id_given=project_id_given,
+            )
+            changes += extra_changes
+            values += extra_values
+            link_events = [body for body in (requirement_event_body, candidate_event_body) if body]
             if task["status"] == "confirmed":
                 # 已经是已确认（另一端刚确认过、本页还没刷新）：不再写「任务已确认」事件、不刷新
                 # status_changed_at。否则撤销能把几天前确认的任务打回待确认，停滞计时也被清零（260914 验收）。
@@ -817,11 +990,11 @@ class TaskService:
                         "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'edited', ?, ?)",
                         (task_id, "任务信息已更新", now),
                     )
-                if requirement_event_body:
+                for body in link_events:
                     connection.execute(
                         """INSERT INTO task_events(task_id, kind, body, created_at)
                            VALUES (?, 'requirement_changed', ?, ?)""",
-                        (task_id, requirement_event_body, now),
+                        (task_id, body, now),
                     )
                 return False
             changes += ["status='confirmed'", "status_changed_at=?", "updated_at=?"]
@@ -829,11 +1002,11 @@ class TaskService:
             connection.execute(f"UPDATE tasks SET {', '.join(changes)} WHERE id=?", tuple(values))
             # 需求留痕要写在「已确认」之前：undo_review 认「最后一条事件必须就是这次确认
             # 本身」，'confirmed' 必须留在最后一条，否则撤销会把这条任务判定为不可撤销（D25）。
-            if requirement_event_body:
+            for body in link_events:
                 connection.execute(
                     """INSERT INTO task_events(task_id, kind, body, created_at)
                        VALUES (?, 'requirement_changed', ?, ?)""",
-                    (task_id, requirement_event_body, now),
+                    (task_id, body, now),
                 )
             connection.execute(
                 "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'confirmed', ?, ?)",
@@ -942,6 +1115,78 @@ class TaskService:
                 connection.execute(
                     "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'reverted', ?, ?)",
                     (task_id, "撤销上一步，恢复为待确认", now),
+                )
+            reverted.append(task_id)
+        return {"reverted": reverted, "failed": failed}
+
+    def undo_complete(self, task_ids: list[str]) -> dict[str, Any]:
+        """撤销刚才的完成（R06-11、R07-12）：10 分钟内退回完成前的已确认或进行中。
+
+        和 undo_review 同一套判定：最后一条事件必须就是那次「→ done」本身、且在撤销窗口内，之后又加了
+        备注、交付物的不动。不经状态迁移表（done 没有出口），停滞计时恢复成完成前那次流转的时刻。"""
+        reverted: list[str] = []
+        failed: list[dict[str, Any]] = []
+        threshold = datetime.now(UTC) - timedelta(seconds=UNDO_WINDOW_SECONDS)
+        for task_id in task_ids:
+            now = utc_now()
+            with self.db.transaction() as connection:
+                task = connection.execute(
+                    "SELECT status, status_changed_at FROM tasks WHERE id=?", (task_id,)
+                ).fetchone()
+                if task is None:
+                    failed.append({"task_id": task_id, "error": "任务不存在"})
+                    continue
+                last = connection.execute(
+                    """SELECT id, kind, body, created_at FROM task_events
+                        WHERE task_id=? ORDER BY id DESC LIMIT 1""",
+                    (task_id,),
+                ).fetchone()
+                previous = (last["body"].split(" → ")[0] if last else "").strip()
+                at = _parse_dt(last["created_at"]) if last else None
+                if (
+                    task["status"] != "done"
+                    or last is None
+                    or last["kind"] != "status_changed"
+                    or last["body"] != f"{previous} → done"
+                    or previous not in ("confirmed", "in_progress")
+                    or at is None
+                    or at < threshold
+                    or task["status_changed_at"] != last["created_at"]
+                ):
+                    failed.append({"task_id": task_id, "error": "只能撤销刚刚的完成"})
+                    continue
+                # 完成前那次流转（建出、确认、改状态、撤销、恢复）写事件和 status_changed_at 是同一刻。
+                # 之前完成又撤销过的一对（「→ done」和「撤销完成」）跳过：撤销完成把计时还回更早的时刻，
+                # 它自己的事件时刻不是计时起点。
+                transitions = connection.execute(
+                    """SELECT kind, body, created_at FROM task_events
+                        WHERE task_id=? AND id<? AND kind IN
+                              ('created', 'confirmed', 'status_changed', 'reverted', 'expired',
+                               'rejected')
+                        ORDER BY id DESC""",
+                    (task_id, last["id"]),
+                ).fetchall()
+                started = now
+                skip = 0
+                for event in transitions:
+                    if event["kind"] == "reverted" and event["body"].startswith(UNDO_COMPLETE_BODY):
+                        skip += 1
+                    elif (
+                        skip
+                        and event["kind"] == "status_changed"
+                        and event["body"].endswith("→ done")
+                    ):
+                        skip -= 1
+                    else:
+                        started = event["created_at"]
+                        break
+                connection.execute(
+                    "UPDATE tasks SET status=?, status_changed_at=?, updated_at=? WHERE id=?",
+                    (previous, started, now, task_id),
+                )
+                connection.execute(
+                    "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'reverted', ?, ?)",
+                    (task_id, f"{UNDO_COMPLETE_BODY}，恢复为 {previous}", now),
                 )
             reverted.append(task_id)
         return {"reverted": reverted, "failed": failed}
@@ -1810,6 +2055,12 @@ class TaskService:
         if minutes is None:
             raise RuntimeError("纪要版本不存在")
         segments = self._segments(meeting_id)
+        # 截止以开会日期为基准换算（R07-2）
+        base = task_due.meeting_date(
+            self.db.query_one(
+                "SELECT recording_date, created_at FROM meetings WHERE id=?", (meeting_id,)
+            )
+        )
         # 候选上线以后建的批次，任务和需求候选在这一次里一起抽（R01-2）；之前的批次照旧只抽任务。
         candidates = None
         with self.db.autocommit() as connection:
@@ -1823,6 +2074,7 @@ class TaskService:
             transcript=segments,
             supplement=extraction.get("supplement") or "",
             candidates=candidates,
+            meeting_date=base,
         )
         raw = _without_surrogates(self._call_llm(prompt))
         payload = self._parse_llm_tasks(raw)
@@ -1882,14 +2134,16 @@ class TaskService:
                         if task.get("assignee_suggestion") in ASSIGNEE_VALUES
                         else "ai"
                     )
+                    due_date, due_phrase = task_due.extracted_due(task, base)
                     task_id = f"task-{uuid.uuid4().hex}"
                     now = utc_now()
                     connection.execute(
                         """INSERT INTO tasks
                            (id, title, detail, status, origin, assignee, meeting_id,
                             project_id, extraction_id, anchor_ms, anchor_quote, candidate_id,
-                            status_changed_at, created_at, updated_at)
-                           VALUES (?, ?, ?, 'pending_confirm', 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            due_date, due_phrase, status_changed_at, created_at, updated_at)
+                           VALUES (?, ?, ?, 'pending_confirm', 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                   ?, ?)""",
                         (
                             task_id,
                             title,
@@ -1903,6 +2157,8 @@ class TaskService:
                             by_no.get(
                                 requirement_candidates.item_no(task.get("requirement_no")) or 0
                             ),
+                            due_date,
+                            due_phrase,
                             now,
                             now,
                             now,
@@ -1981,9 +2237,10 @@ class TaskService:
         transcript: list[dict[str, Any]],
         supplement: str,
         candidates: dict[str, Any] | None = None,
+        meeting_date: date | None = None,
     ) -> str:
         """会后抽取的提示词。candidates 是 requirement_candidates.extraction_context 的对照清单：
-        给了就在同一次里抽需求候选（R01-2），没给时和只抽任务的原提示词一字不差。"""
+        给了就在同一次里抽需求候选（R01-2）。每条任务带截止，meeting_date 是换算基准（R07-2）。"""
         from . import requirement_candidates  # 函数内导入：requirement_candidates 导入了本模块
 
         transcript_excerpt = self._transcript_excerpt(transcript)
@@ -1996,14 +2253,15 @@ class TaskService:
             requirement_block = ""
             output_format = (
                 '{"tasks":[{"title":"...","detail":"...","anchor_quote":"...",'
-                '"assignee_suggestion":"ai|me"}]}\n'
+                '"assignee_suggestion":"ai|me","due_phrase":null,"due_date":null}]}\n'
             )
         else:
             guard = _CANDIDATE_GUARD
             requirement_block = requirement_candidates.prompt_rules(candidates, with_tasks=True)
             output_format = (
                 '{"tasks":[{"title":"...","detail":"...","anchor_quote":"...",'
-                '"assignee_suggestion":"ai|me","requirement_no":null}],'
+                '"assignee_suggestion":"ai|me","due_phrase":null,"due_date":null,'
+                '"requirement_no":null}],'
                 f"{_REQUIREMENTS_FORMAT}}}\n"
             )
         return (
@@ -2018,6 +2276,7 @@ class TaskService:
             "- anchor_quote 必须是逐字稿中的原句摘录（短、可回听定位）。\n"
             "- 执行方：产出文档/原型/方案等可交给 AI 的 assignee_suggestion=ai；"
             "需要本人线下沟通/拍板/确认的 =me。\n"
+            f"{task_due.prompt_rules(meeting_date)}"
             f"{guard}"
             f"会议标题：{title}\n"
             f"{supplement_block}\n"
@@ -2104,6 +2363,7 @@ class TaskService:
             raise RuntimeError("任务抽取返回无法解析的 JSON")
         if not isinstance(payload, dict):
             raise RuntimeError("任务抽取返回不是 JSON 对象")
+        payload = _scrub_surrogates(payload)
         # requirements 缺了或不是列表：和「AI 说一条都没有」（空列表）分开，调用方据此不动原来的候选
         payload["requirements_ok"] = isinstance(payload.get("requirements"), list)
         for key in ("tasks", "requirements"):
