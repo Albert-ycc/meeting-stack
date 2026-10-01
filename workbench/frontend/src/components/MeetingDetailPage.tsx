@@ -1340,6 +1340,8 @@ export function MeetingDetailPage({
                         })
                     : undefined
                 }
+                // 改了逐字稿还没存：选中的是没存下来的字，带去当原话就对不上库里的逐字稿（审查 M5）
+                pickBlockedReason={transcriptDirty ? "逐字稿有没保存的修改，先保存或放弃再选句" : undefined}
                 onMerge={merge}
                 onReadingTimeChange={noteReadingTime}
                 onSeek={seekFromTranscript}

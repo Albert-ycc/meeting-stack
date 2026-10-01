@@ -1913,4 +1913,38 @@ describe("MeetingDetailPage 逐字稿选句建需求（R01-10）", () => {
     });
     vi.unstubAllGlobals();
   });
+
+  it("改了逐字稿、退出编辑但没保存：选句时浮条只说原因，不带没存下来的字去建需求（审查 M5）", async () => {
+    const onCreateRequirement = vi.fn();
+    render(
+      <MeetingDetailPage
+        apiClient={client(vi.fn())}
+        canWriteTasks
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={{ ...meeting(false), project_id: "project-a", project_name: "云图AI" }}
+        onBack={vi.fn()}
+        onCreateRequirement={onCreateRequirement}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[{ id: "project-a", name: "云图AI", color: "#376f68" }]}
+        tags={[]}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "编辑逐字稿" }));
+    const textarea = screen.getByLabelText("00:00 逐字稿") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: `${textarea.value}（改过没存）` } });
+    await userEvent.click(screen.getByRole("button", { name: "退出编辑" }));
+
+    const text = screen.getByTestId("segment-seg-main").querySelector(".segment-text")!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, text.textContent!.length);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent.mouseUp(screen.getByTestId("segment-seg-main"));
+
+    expect(screen.getByRole("toolbar", { name: "选中的原话" })).toHaveTextContent("逐字稿有没保存的修改，先保存或放弃再选句");
+    expect(screen.queryByRole("button", { name: "建成需求" })).not.toBeInTheDocument();
+    expect(onCreateRequirement).not.toHaveBeenCalled();
+  });
 });

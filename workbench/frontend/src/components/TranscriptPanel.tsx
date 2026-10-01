@@ -27,8 +27,12 @@ export interface TranscriptPick {
   anchorMs: number;
 }
 
-// 和后端一致：原话最多 1000 字
+// 和后端一致：原话最多 1000 字；至少有一个字母、汉字或数字，纯标点、全空白的不算原话
 const QUOTE_MAX = 1000;
+const HAS_WORDS = /[\p{L}\p{N}]/u;
+// 浮条的大致尺寸：贴边、夹在可见范围里时用
+const PICK_WIDTH = 240;
+const PICK_HEIGHT = 44;
 
 /** 选区盖到的几句正文里被选中的字连起来；一个字都没选到正文时为 null */
 export function selectedQuote(container: HTMLElement, range: Range): TranscriptPick | null {
@@ -75,6 +79,8 @@ interface TranscriptPanelProps {
   onReadingTimeChange?: (milliseconds: number | null) => void;
   /** 选中一段逐字稿时旁边浮出［建成需求］（R01-10、S04）；不传时不浮（编辑态、手机、只读） */
   onCreateRequirement?: (pick: TranscriptPick) => void;
+  /** 有原因不能建时，浮条上只写原因、不给按钮（逐字稿有没保存的修改：原话会带上没存下来的字） */
+  pickBlockedReason?: string;
 }
 
 export function TranscriptPanel({
@@ -88,10 +94,13 @@ export function TranscriptPanel({
   segments,
   onReadingTimeChange,
   onCreateRequirement,
+  pickBlockedReason,
 }: TranscriptPanelProps) {
   const [term, setTerm] = useState("");
   // 选中的一段和浮条的位置（相对滚动内容）
   const [pick, setPick] = useState<(TranscriptPick & { top: number; left: number }) | null>(null);
+  // 在滚动框里按下了鼠标、还没松开（可能在框外松开）
+  const selectingRef = useRef(false);
   const [cursorById, setCursorById] = useState<Record<string, number>>({});
   const activeRef = useRef<HTMLElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
@@ -172,6 +181,7 @@ export function TranscriptPanel({
   }, [editable, segments]);
 
   const readSelection = () => {
+    selectingRef.current = false;
     const box = scrollRef.current;
     const selection = window.getSelection();
     if (!onCreateRequirement || editable || !box || !selection || selection.isCollapsed || !selection.rangeCount) {
@@ -184,19 +194,38 @@ export function TranscriptPanel({
       setPick(null);
       return;
     }
-    // 浮条放在选区第一行的末尾（S04）；jsdom 的 Range 没有这两个量位置的方法，放在左上角
-    const first =
-      (typeof range.getClientRects === "function" ? range.getClientRects()[0] : undefined) ??
+    // 浮条贴在选区最后一行下面，也就是松手的地方：拖着让逐字稿自动滚动选了好几屏时，第一行早滚出去了，
+    // 放在那儿就看不见（审查 M6）；从说话人那里拖起时也不压住选中的字。夹在滚动框的可见范围里。
+    // jsdom 的 Range 没有量位置的方法，放在左上角
+    const rects = typeof range.getClientRects === "function" ? Array.from(range.getClientRects()) : [];
+    const last =
+      rects[rects.length - 1] ??
       (typeof range.getBoundingClientRect === "function" ? range.getBoundingClientRect() : undefined);
     const boxRect = box.getBoundingClientRect();
+    const lowest = Math.max(box.scrollTop, box.scrollTop + box.clientHeight - PICK_HEIGHT);
     setPick({
       ...found,
-      top: first ? Math.max(0, first.top - boxRect.top + box.scrollTop - 8) : 0,
-      left: first ? Math.max(0, Math.min(first.right - boxRect.left + 12, box.clientWidth - 240)) : 0,
+      top: last ? Math.min(Math.max(last.bottom - boxRect.top + box.scrollTop + 6, box.scrollTop), lowest) : 0,
+      left: last
+        ? Math.max(0, Math.min(last.right - boxRect.left - PICK_WIDTH / 2, box.clientWidth - PICK_WIDTH))
+        : 0,
     });
   };
+  const readSelectionRef = useRef(readSelection);
+  readSelectionRef.current = readSelection;
+
+  // 在逐字稿里按下、拖到框外才松开：框上收不到 mouseup，在文档上补收一次（审查 M6）
+  useEffect(() => {
+    const finish = (event: globalThis.MouseEvent) => {
+      if (!selectingRef.current || scrollRef.current?.contains(event.target as Node)) return;
+      readSelectionRef.current();
+    };
+    document.addEventListener("mouseup", finish);
+    return () => document.removeEventListener("mouseup", finish);
+  }, []);
 
   const clearPick = (event: MouseEvent) => {
+    selectingRef.current = true;
     if (!(event.target as HTMLElement).closest(".transcript-pick")) setPick(null);
   };
 
@@ -246,8 +275,12 @@ export function TranscriptPanel({
             style={{ top: pick.top, left: pick.left }}
           >
             <span className="transcript-pick__time">{formatTime(pick.anchorMs, true)}</span>
-            {[...pick.quote].length > QUOTE_MAX ? (
+            {pickBlockedReason ? (
+              <small>{pickBlockedReason}</small>
+            ) : [...pick.quote].length > QUOTE_MAX ? (
               <small>选中的超过 {QUOTE_MAX} 字，少选几句</small>
+            ) : !HAS_WORDS.test(pick.quote) ? (
+              <small>选中的只有标点，换一句</small>
             ) : (
               <button
                 onClick={() => {

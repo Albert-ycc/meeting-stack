@@ -198,6 +198,88 @@ describe("TranscriptPanel 选中一段建成需求（R01-10）", () => {
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
   });
 
+  it("逐字稿有没保存的修改时，浮条只说原因、不给建（选中的是没存下来的字）", () => {
+    const onCreateRequirement = vi.fn();
+    render(
+      <TranscriptPanel
+        currentTimeMs={0}
+        editable={false}
+        onCreateRequirement={onCreateRequirement}
+        onSeek={vi.fn()}
+        pickBlockedReason="逐字稿有没保存的修改，先保存或放弃再选句"
+        segments={CVM_SEGMENTS}
+      />,
+    );
+
+    selectAcross("576900", 0, "581000", 6);
+
+    expect(screen.getByRole("toolbar", { name: "选中的原话" })).toHaveTextContent("逐字稿有没保存的修改，先保存或放弃再选句");
+    expect(screen.queryByRole("button", { name: "建成需求" })).not.toBeInTheDocument();
+  });
+
+  it("只选中了标点不给建，提示换一句", () => {
+    render(
+      <TranscriptPanel currentTimeMs={0} editable={false} onCreateRequirement={vi.fn()} onSeek={vi.fn()} segments={CVM_SEGMENTS} />,
+    );
+
+    // 「那我有办法导出 excel 吗？」里只选句末的问号
+    selectAcross("576900", 15, "576900", 16);
+
+    expect(screen.getByRole("toolbar", { name: "选中的原话" })).toHaveTextContent("选中的只有标点，换一句");
+    expect(screen.queryByRole("button", { name: "建成需求" })).not.toBeInTheDocument();
+  });
+
+  it("在逐字稿里按下、拖到框外才松开，照样浮出［建成需求］", () => {
+    const onCreateRequirement = vi.fn();
+    render(
+      <TranscriptPanel currentTimeMs={0} editable={false} onCreateRequirement={onCreateRequirement} onSeek={vi.fn()} segments={CVM_SEGMENTS} />,
+    );
+    fireEvent.mouseDown(screen.getByTestId("segment-seg-576900"));
+    const textOf = (id: string) => screen.getByTestId(`segment-seg-${id}`).querySelector(".segment-text")!.firstChild!;
+    const range = document.createRange();
+    range.setStart(textOf("576900"), 0);
+    range.setEnd(textOf("581000"), 6);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+
+    fireEvent.mouseUp(document.body);
+
+    fireEvent.click(screen.getByRole("button", { name: "建成需求" }));
+    expect(onCreateRequirement).toHaveBeenCalledWith({ quote: "那我有办法导出 excel 吗？是没有办法，", anchorMs: 576900 });
+  });
+
+  it("浮条贴在选区最后一行下面，夹在滚动框看得见的范围里", () => {
+    const { container } = render(
+      <TranscriptPanel currentTimeMs={0} editable={false} onCreateRequirement={vi.fn()} onSeek={vi.fn()} segments={CVM_SEGMENTS} />,
+    );
+    const box = container.querySelector<HTMLElement>(".transcript-scroll")!;
+    // 滚动框在视口 y=100 处、高 400、宽 800，已经往下滚了 500
+    Object.defineProperty(box, "scrollTop", { configurable: true, value: 500, writable: true });
+    Object.defineProperty(box, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(box, "clientWidth", { configurable: true, value: 800 });
+    vi.spyOn(box, "getBoundingClientRect").mockReturnValue({
+      top: 100, left: 50, right: 850, bottom: 500, width: 800, height: 400, x: 50, y: 100, toJSON: () => ({}),
+    });
+    const lines = (lastBottom: number) => [
+      { top: -880, bottom: -860, left: 60, right: 300 },
+      { top: lastBottom - 20, bottom: lastBottom, left: 60, right: 450 },
+    ];
+    const original = Range.prototype.getClientRects;
+    try {
+      // 选了好几屏：第一行早滚出视野，最后一行在可见范围里 → 贴在最后一行下面
+      Range.prototype.getClientRects = vi.fn(() => lines(320)) as unknown as typeof original;
+      selectAcross("576900", 0, "581000", 6);
+      expect(screen.getByRole("toolbar", { name: "选中的原话" })).toHaveStyle({ top: "726px", left: "280px" });
+
+      // 松手时最后一行还在框外（拖出了框）→ 夹到可见范围底边
+      Range.prototype.getClientRects = vi.fn(() => lines(2000)) as unknown as typeof original;
+      selectAcross("576900", 0, "581000", 6);
+      expect(screen.getByRole("toolbar", { name: "选中的原话" })).toHaveStyle({ top: "856px" });
+    } finally {
+      Range.prototype.getClientRects = original;
+    }
+  });
+
   it("选中的超过 1000 字不给建，提示少选几句", () => {
     const long = [{ ...CVM_SEGMENTS[0], text: "预".repeat(1001) }];
     render(
