@@ -35,6 +35,7 @@ import { ProjectsPage } from "./components/ProjectsPage";
 import { RequirementDetailPage } from "./components/RequirementDetailPage";
 import { RequirementsPage } from "./components/RequirementsPage";
 import {
+  LEAVE_FORM_CONFIRM,
   RequirementFormPage,
   type RequirementFormResult,
   type RequirementPrefill,
@@ -90,6 +91,18 @@ export function useMobileBreakpoint() {
     return () => media.removeEventListener("change", update);
   }, []);
   return isMobile;
+}
+
+type RequirementFormState =
+  | { mode: "create"; prefill?: RequirementPrefill }
+  | { mode: "claim"; candidateId: string }
+  | { mode: "edit"; requirementId: string };
+
+/** 新增、认领、修改需求二级页的地址 */
+function requirementFormPath(form: RequirementFormState): string {
+  if (form.mode === "create") return "#requirements/new";
+  if (form.mode === "edit") return `#requirements/${encodeURIComponent(form.requirementId)}/edit`;
+  return `#requirements/claim/${encodeURIComponent(form.candidateId)}`;
 }
 
 // 会议详情页「← 返回」按钮上显示的去处：打开会议前所在的视图。
@@ -197,12 +210,11 @@ export default function App({ apiClient = api }: AppProps) {
   const [openRequirementId, setOpenRequirementId] = useState<string | null>(null);
   // 新增、认领、修改需求的二级页（地址 #requirements/new、#requirements/claim/<候选 id>、#requirements/<id>/edit）；
   // 从逐字稿选句进来的新增（S10）带着来源，刷新后来源不在了，就是一张空的新增页
-  const [requirementForm, setRequirementForm] = useState<
-    | { mode: "create"; prefill?: RequirementPrefill }
-    | { mode: "claim"; candidateId: string }
-    | { mode: "edit"; requirementId: string }
-    | null
-  >(null);
+  const [requirementForm, setRequirementForm] = useState<RequirementFormState | null>(null);
+  // 表单页上有没保存的改动（表单经 onDirtyChange 报上来）。存成 ref：保存成功时表单先报 false 再 onDone，
+  // 紧跟着的跳转要读到新值。formPathRef 是正开着的表单页的地址，浏览器后退被拦下时放回去（审查 B1）
+  const formDirtyRef = useRef(false);
+  const formPathRef = useRef<string | null>(null);
   // 从逐字稿选句进来的新增页（S10）盖在会议页上：会议页不卸载、只是藏起来，取消回来滚动位置、播放进度、
   // 返回去处都还在（R04-1、审查 M7）。meetingScrollRef 记着盖上之前整页和逐字稿框各滚到哪了
   const [meetingFormPrefill, setMeetingFormPrefill] = useState<RequirementPrefill | null>(null);
@@ -378,6 +390,19 @@ export default function App({ apiClient = api }: AppProps) {
   const applyHash = useCallback(() => {
     historySyncRef.current = true;
     const hash = window.location.hash;
+    // 表单页上有没保存的改动时按了浏览器后退、前进：先问；留下就把表单页的地址放回去（审查 B1）
+    const formPath = formPathRef.current;
+    // 地址就是正开着的这张表单页：什么都不做。浏览器后退会先后发 popstate、hashchange，前一次拦下后把地址
+    // 放回来了，后一次读到的就是表单页自己——当成「打开新增页」处理会关掉会议页、换成一张空白新增页
+    if (formPath && hash === formPath) return;
+    if (formPath && formDirtyRef.current) {
+      if (!window.confirm(LEAVE_FORM_CONFIRM)) {
+        history.pushState({ app: true }, "", formPath);
+        historySyncRef.current = false;
+        return;
+      }
+      formDirtyRef.current = false;
+    }
     const exitingLocal = localExitRef.current;
     localExitRef.current = false;
     if (hash.startsWith("#meetings/")) {
@@ -703,6 +728,11 @@ export default function App({ apiClient = api }: AppProps) {
 
   openMeetingIdRef.current = openMeetingId;
   meetingFormRef.current = meetingFormPrefill;
+  formPathRef.current = meetingFormPrefill
+    ? "#requirements/new"
+    : view === "requirementForm" && requirementForm
+      ? requirementFormPath(requirementForm)
+      : null;
   detailDirtyRef.current = detailDirty;
   historyHandlersRef.current = {
     openMeeting: (meetingId: string, seekMs = 0) => openMeeting(meetingId, seekMs, true),
@@ -729,9 +759,18 @@ export default function App({ apiClient = api }: AppProps) {
     setGlossaryProjectId(null);
   };
 
+  // 离开表单页之前：有没保存的改动先确认（审查 B1）。确认了就清掉标记，免得接下来的跳转再问一遍
+  const confirmLeaveForm = (): boolean => {
+    if (!formPathRef.current || !formDirtyRef.current) return true;
+    if (!window.confirm(LEAVE_FORM_CONFIRM)) return false;
+    formDirtyRef.current = false;
+    return true;
+  };
+
   const navigate = (nextView: AppView) => {
     if (detailNavigationLocked) return;
     if (isMobile && (nextView === "jobs" || nextView === "graph")) return;
+    if (!confirmLeaveForm()) return;
     if (
       detail &&
       detailDirty &&
@@ -983,11 +1022,7 @@ export default function App({ apiClient = api }: AppProps) {
             : view === "requirementDetail" && openRequirementId
               ? `#requirements/${openRequirementId}`
               : view === "requirementForm" && requirementForm
-                ? requirementForm.mode === "create"
-                  ? "#requirements/new"
-                  : requirementForm.mode === "edit"
-                    ? `#requirements/${encodeURIComponent(requirementForm.requirementId)}/edit`
-                    : `#requirements/claim/${encodeURIComponent(requirementForm.candidateId)}`
+                ? requirementFormPath(requirementForm)
               : view === "overview"
                 ? ""
                 : view === "projectDetail" || view === "requirementDetail" || view === "requirementForm"
@@ -1064,6 +1099,7 @@ export default function App({ apiClient = api }: AppProps) {
   // word：点「也可以搜」换一个词；scope：结果页换范围
   const submitSearch = async (overrides: { word?: string; scope?: string } = {}) => {
     if (detailNavigationLocked) return;
+    if (!confirmLeaveForm()) return;
     const normalized = (overrides.word ?? query).trim();
     // 从别的页面重新搜时回到全部项目；在结果页里接着搜就沿用刚才选的范围
     const scope = overrides.scope ?? (searchActive ? searchScope : "");
@@ -1201,9 +1237,12 @@ export default function App({ apiClient = api }: AppProps) {
           key="new-from-meeting"
           mode="create"
           onCancel={leaveRequirementForm}
+          onDirtyChange={(dirty) => {
+            formDirtyRef.current = dirty;
+          }}
           onDone={finishRequirementForm}
-          onOpenProject={openProjectDetail}
-          onOpenRequirement={openRequirementDetail}
+          onOpenProject={(projectId) => confirmLeaveForm() && openProjectDetail(projectId)}
+          onOpenRequirement={(requirementId) => confirmLeaveForm() && openRequirementDetail(requirementId)}
           prefill={meetingFormPrefill}
           projects={projects}
         />
@@ -1350,9 +1389,12 @@ export default function App({ apiClient = api }: AppProps) {
         }
         mode={requirementForm.mode}
         onCancel={leaveRequirementForm}
+        onDirtyChange={(dirty) => {
+          formDirtyRef.current = dirty;
+        }}
         onDone={finishRequirementForm}
-        onOpenProject={openProjectDetail}
-        onOpenRequirement={openRequirementDetail}
+        onOpenProject={(projectId) => confirmLeaveForm() && openProjectDetail(projectId)}
+        onOpenRequirement={(requirementId) => confirmLeaveForm() && openRequirementDetail(requirementId)}
         prefill={requirementForm.mode === "create" ? requirementForm.prefill : undefined}
         projects={projects}
         requirementId={requirementForm.mode === "edit" ? requirementForm.requirementId : undefined}

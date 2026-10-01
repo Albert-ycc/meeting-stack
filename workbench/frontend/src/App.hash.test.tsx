@@ -871,4 +871,28 @@ describe("需求二级页的来去（R04-1、R04-8）", () => {
     expect(screen.getByRole("button", { name: "← 返回录音档案" })).toBeInTheDocument();
     expect(currentNav()).toHaveTextContent("录音档案");
   });
+
+  it("新增页改了没存：点侧栏、浏览器后退都先问；选留下就还在新增页，选离开才走（审查 B1）", async () => {
+    render(<App apiClient={meetingClient()} />);
+    await openCvmFromLibrary();
+    await pickExportQuote();
+    await userEvent.type(await screen.findByLabelText("需求名"), "科室会预约后台导出");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "工作台" }));
+    expect(confirm).toHaveBeenLastCalledWith("当前需求仍有未保存修改。放弃这些修改并离开吗？");
+    expect(screen.getByRole("heading", { name: "新增需求" })).toBeInTheDocument();
+
+    act(() => window.history.back());
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(window.location.hash).toBe("#requirements/new"));
+    expect(screen.getByRole("heading", { name: "新增需求" })).toBeInTheDocument();
+    expect(screen.getByLabelText("需求名")).toHaveValue("科室会预约后台导出");
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
+    expect(await screen.findByText("会议录音档案")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "新增需求" })).not.toBeInTheDocument();
+    expect(confirm).toHaveBeenCalledTimes(3);
+  });
 });
