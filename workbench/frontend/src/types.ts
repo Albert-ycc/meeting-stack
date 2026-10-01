@@ -1036,6 +1036,14 @@ export interface Task {
   requirement_priority?: RequirementPriority | null;
   requirement_status?: RequirementStatus | null;
   meeting_recording_date?: string | null;
+  /** 截止 YYYY-MM-DD；空是未定截止（v18，存量任务都是空的） */
+  due_date?: string | null;
+  /** AI 抽到的原文时间说法，只给人核对换算；手动改过截止就清空 */
+  due_phrase?: string | null;
+  /** 挂着的待认领候选（和 requirement_id 二选一）：候选认领后才算正式挂上需求 */
+  candidate_id?: string | null;
+  candidate_title?: string | null;
+  candidate_status?: CandidateStatus | null;
 }
 
 export interface TaskDetail extends Task {
@@ -1935,3 +1943,112 @@ export type AskJob =
       local_model: boolean;
     }
   | { state: "stopped"; reason: string; text: string; retry: boolean; sources: AskSource[] };
+
+/* ---------------------------------------------------------------- 待办（项目页与待办改版 R07） */
+
+export type TodoGroupKey = "overdue" | "today" | "week" | "later" | "undated";
+
+export interface TodoGroup {
+  key: TodoGroupKey;
+  label: string;
+  count: number;
+  /** 组内按截止由早到晚，再按来源会议时间由近到远 */
+  items: Task[];
+}
+
+export interface TodoPayload {
+  /** 北京日期的今天 YYYY-MM-DD */
+  today: string;
+  /** 本周日 */
+  week_end: string;
+  total: number;
+  /** 逾期 / 今天 / 本周 / 之后 / 未定截止，空组也给 */
+  groups: TodoGroup[];
+  /** 各状态计数，只受状态之外的筛选影响（别的页签的数字） */
+  counts: Partial<Record<TaskStatus, number>>;
+  /** 项目 → 各状态计数；没挂项目的记在 "none" 名下 */
+  project_counts: Record<string, Partial<Record<TaskStatus, number>>>;
+  /** 「我的方向」条的项目：已排座次的在前（seat 是名次），其后按最近会议排；count 由前端按页签算 */
+  projects: Array<Omit<PoolProject, "count">>;
+}
+
+export interface TodoFilters {
+  /** 逗号分隔的多个项目，none 是没挂项目的 */
+  project_id?: string;
+  requirement_id?: string;
+  assignee?: TaskAssignee;
+  meeting_date_from?: string;
+  meeting_date_to?: string;
+  q?: string;
+}
+
+/** 挂到需求的一个选项：进行中需求或待认领候选 */
+export interface LinkOption {
+  kind: "requirement" | "candidate";
+  id: string;
+  title: string;
+  /** 候选没有等级 */
+  priority: RequirementPriority | null;
+  project_id: string | null;
+  project_name: string | null;
+  /** 候选出自哪场会 */
+  meeting_id: string | null;
+  /** 推荐理由：现在挂着的 / AI 抽取时配好的候选 / 已关联这场会的需求 / 同一场会抽出的候选 */
+  reason?: "current" | "paired" | "linked" | "same_meeting";
+}
+
+export interface RequirementOptionsPayload {
+  task_id: string;
+  /** 待确认的任务（或没归项目的）才能挂候选 */
+  can_link_candidates: boolean;
+  /** 推荐项，第一条是默认选中的；空＝只显示「不挂」 */
+  recommended: LinkOption[];
+  default: LinkOption | null;
+  /** 可选范围（已按 q 搜索）：任务所属项目；没归项目时是同一场会的候选和已关联这场会的需求 */
+  options: LinkOption[];
+  current: { kind: "requirement" | "candidate"; id: string } | null;
+}
+
+export interface ReviewCardTask extends Task {
+  /** 待确认的任务才有：推荐项，第一条是默认 */
+  recommended: LinkOption[];
+}
+
+export interface ReviewCardCandidate extends Omit<PoolItem, "status"> {
+  status: CandidateStatus;
+  /** 认领建成或合并进去的需求名 */
+  requirement_title: string | null;
+}
+
+export interface ReviewCard {
+  meeting: {
+    id: string;
+    title: string;
+    recording_date: string | null;
+    duration_ms: number | null;
+    project_id: string | null;
+    project_name: string | null;
+    project_color: string | null;
+  };
+  /** 这场会抽出的 AI 任务（已过期的不列），按抽出先后；确认、驳回后仍留在卡里 */
+  tasks: ReviewCardTask[];
+  candidates: ReviewCardCandidate[];
+  pending_task_count: number;
+  pending_candidate_count: number;
+  /** 候选和任务都处理完：整张置灰沉底 */
+  done: boolean;
+}
+
+export interface ReviewCardsPayload {
+  /** 待处理的在前（会议由近到远），处理完的沉底（只留最近 7 天的） */
+  cards: ReviewCard[];
+  pending_task_count: number;
+  pending_candidate_count: number;
+}
+
+export interface ConfirmAllResult {
+  confirmed: string[];
+  failed: Array<{ task_id: string; error: string }>;
+  /** 每条确认时挂上的推荐项（没有推荐为 null） */
+  linked: Record<string, LinkOption | null>;
+}

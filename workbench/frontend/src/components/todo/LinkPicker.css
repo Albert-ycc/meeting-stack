@@ -1,0 +1,120 @@
+/* 挂到需求的选择器：浮在触发按钮下方，由外层给 position（外层容器要 position: relative） */
+.link-picker {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-height: 360px;
+  padding: 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-stage);
+  box-shadow: var(--shadow);
+}
+
+.link-picker__search {
+  width: 100%;
+  padding: 7px 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface-2, var(--stage));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.link-picker__search:focus {
+  border-color: var(--signal-line);
+  outline: none;
+}
+
+.link-picker__list {
+  flex: 1;
+  min-height: 0;
+  margin-top: 6px;
+  overflow-y: auto;
+}
+
+.link-picker__heading {
+  padding: 8px 8px 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.link-picker__option,
+.link-picker__none {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+  padding: 7px 8px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.link-picker__option:hover,
+.link-picker__none:hover,
+.link-picker__option.is-selected,
+.link-picker__none.is-selected {
+  background: rgb(var(--fg-rgb) / 0.06);
+}
+
+.link-picker__option:focus-visible,
+.link-picker__none:focus-visible {
+  outline: 2px solid var(--signal-line);
+  outline-offset: -2px;
+}
+
+.link-picker__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-picker__flag {
+  flex: none;
+  color: var(--muted);
+}
+
+.link-picker__candidate {
+  flex: none;
+  padding: 1px 5px;
+  color: var(--muted);
+  font-size: 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+}
+
+.link-picker__reason {
+  flex: none;
+  padding: 1px 6px;
+  color: var(--signal);
+  font-size: 10px;
+  background: var(--signal-bg);
+  border-radius: var(--r-pill);
+}
+
+.link-picker__empty {
+  padding: 8px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.link-picker__none {
+  margin-top: 6px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 8px 8px;
+}

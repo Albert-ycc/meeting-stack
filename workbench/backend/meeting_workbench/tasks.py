@@ -619,11 +619,15 @@ class TaskService:
             ] = row["n"]
         clauses = list(scope_clauses)
         params = list(scope_params)
-        if project_id == "none":
-            clauses.append("t.project_id IS NULL")
-        elif project_id:
-            clauses.append("t.project_id=?")
-            params.append(project_id)
+        # 项目可多选（逗号分隔，待办页「我的方向」条点选几个项目），none 是没挂项目的
+        project_keys = [part.strip() for part in (project_id or "").split(",") if part.strip()]
+        if project_keys:
+            named = [key for key in project_keys if key != "none"]
+            parts = ["t.project_id IS NULL"] if "none" in project_keys else []
+            if named:
+                parts.append(f"t.project_id IN ({', '.join('?' for _ in named)})")
+                params.extend(named)
+            clauses.append(f"({' OR '.join(parts)})")
         # 各状态计数只受状态之外的筛选影响：页签数字由服务端给出唯一口径，
         # 前端不再拉一页数据自己数（260914 只拉 500 条导致「已完成 0」而库里有 73 条）。
         base_where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -917,8 +921,14 @@ class TaskService:
         due_date_given: bool = False,
         candidate_id: str | None = None,
         candidate_id_given: bool = False,
+        only_pending: bool = False,
+        link_for: Callable[[Any, dict[str, Any]], dict[str, Any]] | None = None,
     ) -> bool:
         """返回这次是否真的发生了「→ 已确认」的流转。
+
+        批量确认（审核卡「全部确认」）用后两个参数：only_pending 只从待确认起步——这期间别处驳回、
+        别处刚确认过的不动；link_for 在同一个事务里按任务当前的样子定挂哪条（返回 requirement_id /
+        candidate_id 参数），不拿事务外算好的旧推荐去覆盖别人刚做的选择。
 
         确认不会再按 AI 建议名自动建项目：项目只来自会议归属或人工选择。
         suggested_project_name 列保留，以后建出同名项目时再把草稿挂过去。
@@ -927,11 +937,19 @@ class TaskService:
             project_id_given = project_id is not None
         if title is not None and not title.strip():
             raise ValueError("任务标题不能为空")
-        if candidate_id and candidate_id_given and not requirement_id_given:
-            requirement_id_given, requirement_id = True, None
         now = utc_now()
         with self.db.transaction() as connection:
             task = self._row(connection, task_id)
+            if only_pending and task["status"] != "pending_confirm":
+                return False
+            if link_for is not None:
+                link = link_for(connection, task)
+                if "requirement_id" in link:
+                    requirement_id, requirement_id_given = link["requirement_id"], True
+                if "candidate_id" in link:
+                    candidate_id, candidate_id_given = link["candidate_id"], True
+            if candidate_id and candidate_id_given and not requirement_id_given:
+                requirement_id_given, requirement_id = True, None
             self._assert_transition(task["status"], "confirmed")
             changes: list[str] = []
             values: list[Any] = []

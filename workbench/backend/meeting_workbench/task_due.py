@@ -23,8 +23,9 @@ from zoneinfo import ZoneInfo
 MAX_DUE_DAYS = 366
 # 原文说法最多留多长：只是给人核对换算的依据，不是正文
 MAX_PHRASE_CHARS = 40
-# 会上说话人的时区：「明天」「本周」按这个日历换算
-SPEAKER_TZ = ZoneInfo("Asia/Shanghai")
+# 用户和会上说话人的时区：会上的「明天」「本周」按这个日历换算，待办的「今天」也按它（用户 261001 拍板，
+# 不按跑声档的那台 Mac 的太平洋时区）
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 # 手动填的截止只收这个范围，挡住 0001-01-01、9999-12-31 这类手滑
 MANUAL_DUE_RANGE = (date(2000, 1, 1), date(2099, 12, 31))
 WEEKDAYS = ("一", "二", "三", "四", "五", "六", "日")
@@ -40,7 +41,12 @@ def speaker_date(value: str | None) -> date | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.astimezone()
-    return parsed.astimezone(SPEAKER_TZ).date()
+    return parsed.astimezone(BEIJING_TZ).date()
+
+
+def beijing_today(now: datetime | None = None) -> date:
+    """待办分组的「今天」：北京时间的今天。"""
+    return (now or datetime.now(BEIJING_TZ)).astimezone(BEIJING_TZ).date()
 
 
 def meeting_date(meeting: dict[str, Any] | None) -> date | None:

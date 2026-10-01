@@ -57,7 +57,7 @@ from .attribution import (
     recognition_profile,
 )
 from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
-from . import project_seats, requirement_candidates, requirement_pool
+from . import project_seats, requirement_candidates, requirement_pool, todo
 from . import search as search_module
 from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
@@ -4809,6 +4809,52 @@ def create_app(
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/todo")
+    def todo_groups(
+        project_id: str | None = None,
+        requirement_id: str | None = None,
+        assignee: str | None = None,
+        meeting_date_from: str | None = None,
+        meeting_date_to: str | None = None,
+        q: str | None = None,
+    ):
+        try:
+            return todo.list_todo(
+                task_service,
+                project_id=project_id,
+                requirement_id=requirement_id,
+                assignee=assignee,
+                meeting_date_from=meeting_date_from,
+                meeting_date_to=meeting_date_to,
+                q=q,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/review-cards")
+    def review_cards(
+        project_id: str | None = None,
+        meeting_date_from: str | None = None,
+        meeting_date_to: str | None = None,
+    ):
+        try:
+            return todo.review_cards(
+                task_service,
+                project_id=project_id,
+                meeting_date_from=meeting_date_from,
+                meeting_date_to=meeting_date_to,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/review-cards/{meeting_id}/confirm-all")
+    def review_card_confirm_all(meeting_id: str):
+        return todo.confirm_all(task_service, meeting_id)
+
+    @app.get("/api/tasks/{task_id}/requirement-options")
+    def task_requirement_options(task_id: str, q: str | None = Query(default=None, max_length=100)):
+        return todo.requirement_options(task_service, task_id, q)
 
     @app.get("/api/tasks/{task_id}")
     def task_detail(task_id: str):

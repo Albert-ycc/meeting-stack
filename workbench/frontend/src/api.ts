@@ -82,6 +82,11 @@ import type {
   MaterialUnreadablePage,
   AskJob,
   AskPlan,
+  ConfirmAllResult,
+  RequirementOptionsPayload,
+  ReviewCardsPayload,
+  TodoFilters,
+  TodoPayload,
 } from "./types";
 import type {
   CardsFilesPayload,
@@ -951,6 +956,7 @@ export const api = {
     project_id?: string | null;
     requirement_id?: string | null;
     assignee?: string;
+    due_date?: string | null;
   }) =>
     write<TaskDetail>("/api/tasks", "POST", data),
   updateTask: (
@@ -961,6 +967,10 @@ export const api = {
       project_id?: string | null;
       requirement_id?: string | null;
       assignee?: string;
+      /** null＝清空截止 */
+      due_date?: string | null;
+      /** 和 requirement_id 二选一；null＝不挂候选 */
+      candidate_id?: string | null;
     },
   ) => write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}`, "PATCH", data),
   confirmTask: (
@@ -971,8 +981,30 @@ export const api = {
       project_id?: string | null;
       requirement_id?: string | null;
       assignee?: string;
+      due_date?: string | null;
+      candidate_id?: string | null;
     } = {},
   ) => write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/confirm`, "POST", data),
+  /** 待办：已确认、进行中的任务按截止分五组（R07-4） */
+  todo: (filters: TodoFilters = {}) => read<TodoPayload>(`/api/todo${queryString(filters)}`),
+  /** 挂到需求的推荐和可选范围（R07-8、R07-14） */
+  taskRequirementOptions: (taskId: string, q?: string) =>
+    read<RequirementOptionsPayload>(
+      `/api/tasks/${encodeURIComponent(taskId)}/requirement-options${queryString(q ? { q } : {})}`,
+    ),
+  /** 待确认按会议的审核卡（R07-9） */
+  reviewCards: (filters: { project_id?: string; meeting_date_from?: string; meeting_date_to?: string } = {}) =>
+    read<ReviewCardsPayload>(`/api/review-cards${queryString(filters)}`),
+  /** 审核卡「全部确认」：每条按自己的默认推荐挂需求；撤销用 undoTaskReview */
+  confirmAllInMeeting: (meetingId: string) =>
+    write<ConfirmAllResult>(`/api/review-cards/${encodeURIComponent(meetingId)}/confirm-all`, "POST", {}),
+  /** 10 分钟内撤销刚才的完成 */
+  undoTaskComplete: (taskIds: string[]) =>
+    write<{ reverted: string[]; failed: Array<{ task_id: string; error: string }> }>(
+      "/api/tasks/undo-complete",
+      "POST",
+      { task_ids: taskIds },
+    ),
   rejectTask: (taskId: string) =>
     write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}/reject`, "POST", {}),
   setTaskStatus: (taskId: string, status: Task["status"]) =>
