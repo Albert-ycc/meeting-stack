@@ -154,6 +154,12 @@ def _stall_info(
     }
 
 
+def _without_surrogates(text: str) -> str:
+    """模型回的文字里孤立的代理字符（JSON 里的 \\ud800 这类转义解出来的）写不进 SQLite，整批会失败：
+    回复一进来就去掉，任务、候选、存档的原始回复都安全。"""
+    return "".join(char for char in text if not 0xD800 <= ord(char) <= 0xDFFF)
+
+
 class LLMUnavailable(RuntimeError):
     """LLM API key 缺失或不可用；抽取跳过但不计为失败重试。"""
 
@@ -1595,7 +1601,11 @@ class TaskService:
         return llm_ready(self.settings)
 
     def extract_pending(self, *, max_batches: int = 5) -> dict[str, Any]:
+        from . import requirement_candidates  # 函数内导入：requirement_candidates 导入了本模块
+
         self._recover_stalled_extractions()
+        # 抽完候选以后会议才归项目、改项目的：先按新项目把候选的去重核一遍，再抽新的
+        requirement_candidates.reconcile_moved(self.db)
         self._seed_extractions()
         # 纪要卡必须先于任务卡：同一轮扫描里先在群里说清「这场会写完了、定了什么」，
         # 抽完任务再发确认卡，两条通知连起来才是一条读得懂的线。
@@ -1731,7 +1741,7 @@ class TaskService:
             raise NotFoundError(f"会议不存在：{meeting_id}")
         if not meeting["current_minutes_version_id"]:
             raise ConflictError("这场会还没有纪要，抽不了需求候选")
-        empty = {"created": 0, "merged": 0}
+        empty = {"created": 0, "updated": 0, "merged": 0, "removed": 0}
         if not self._llm_ready():
             return {"status": "unavailable", **empty}
         minutes = self.db.query_one(
@@ -1747,7 +1757,9 @@ class TaskService:
             candidates=context,
         )
         try:
-            payload = self._parse_llm_tasks(self._call_llm(prompt))
+            payload = self._parse_llm_tasks(_without_surrogates(self._call_llm(prompt)))
+            if not payload["requirements_ok"]:
+                raise RuntimeError("AI 回的 requirements 不是列表")
             with self.db.transaction() as connection:
                 saved = requirement_candidates.save_extracted(
                     connection,
@@ -1758,20 +1770,24 @@ class TaskService:
         except LLMUnavailable:
             return {"status": "unavailable", **empty}
         except Exception:
-            # AI 没回、回的不是 JSON：这场会原来的候选一条不动（换掉和新建在同一个事务里）
+            # AI 没回、回的不是 JSON、requirements 格式不对：这场会原来的候选一条不动
             logger.exception("抽需求候选失败 meeting=%s", meeting_id)
             return {"status": "failed", **empty}
         logger.info(
-            "抽需求候选 meeting=%s 新建=%d 并入=%d 没出=%s",
+            "抽需求候选 meeting=%s 新建=%d 更新=%d 并入=%d 撤下=%d 没出=%s",
             meeting_id,
             len(saved["created"]),
+            len(saved["updated"]),
             len(saved["merged"]),
+            saved["removed"],
             saved["skipped"],
         )
         return {
             "status": "done",
             "created": len(saved["created"]),
+            "updated": len(saved["updated"]),
             "merged": len(set(saved["merged"])),
+            "removed": saved["removed"],
         }
 
     def _segments(self, meeting_id: str) -> list[dict[str, Any]]:
@@ -1797,7 +1813,9 @@ class TaskService:
         # 候选上线以后建的批次，任务和需求候选在这一次里一起抽（R01-2）；之前的批次照旧只抽任务。
         candidates = None
         with self.db.autocommit() as connection:
-            if requirement_candidates.candidates_wanted(connection, extraction.get("created_at")):
+            if requirement_candidates.candidates_wanted(
+                connection, extraction.get("created_at"), meeting_id
+            ):
                 candidates = requirement_candidates.extraction_context(connection, meeting_id)
         prompt = self._build_extraction_prompt(
             title=extraction.get("meeting_title") or "",
@@ -1806,7 +1824,7 @@ class TaskService:
             supplement=extraction.get("supplement") or "",
             candidates=candidates,
         )
-        raw = self._call_llm(prompt)
+        raw = _without_surrogates(self._call_llm(prompt))
         payload = self._parse_llm_tasks(raw)
         # 提示词已要求按重要性排序且不超过上限，这里再硬截一次，防模型不守规矩。
         tasks = (payload.get("tasks") or [])[:MAX_TASKS_PER_EXTRACTION]
@@ -1814,24 +1832,37 @@ class TaskService:
         created_tasks: list[dict[str, Any]] = []
         skipped: list[str] = []
         with self.db.transaction() as connection:
-            # 先落候选，同一次抽出的任务按 AI 给的序号挂上去
+            # 先落候选，同一次抽出的任务按 AI 给的序号挂上去。候选这一步出了没想到的错只撤回候选的改动，
+            # 任务照常落库：新功能不能拖垮已经在用的会后任务抽取。
             by_no: dict[int, str] = {}
-            if candidates is not None:
-                saved = requirement_candidates.save_extracted(
-                    connection,
-                    meeting_id=meeting_id,
-                    items=payload.get("requirements") or [],
-                    context=candidates,
-                    extraction_id=extraction["id"],
-                )
-                by_no = saved["by_no"]
-                logger.info(
-                    "需求候选 meeting=%s 新建=%d 并入=%d 没出=%s",
-                    meeting_id,
-                    len(saved["created"]),
-                    len(saved["merged"]),
-                    saved["skipped"],
-                )
+            if candidates is not None and not payload["requirements_ok"]:
+                logger.warning("需求候选格式不对，这场会原来的候选不动 meeting=%s", meeting_id)
+            elif candidates is not None:
+                connection.execute("SAVEPOINT requirement_candidates")
+                try:
+                    saved = requirement_candidates.save_extracted(
+                        connection,
+                        meeting_id=meeting_id,
+                        items=payload["requirements"],
+                        context=candidates,
+                        extraction_id=extraction["id"],
+                    )
+                except Exception:
+                    connection.execute("ROLLBACK TO requirement_candidates")
+                    logger.exception("需求候选没存上，任务照常 meeting=%s", meeting_id)
+                else:
+                    by_no = saved["by_no"]
+                    logger.info(
+                        "需求候选 meeting=%s 新建=%d 更新=%d 并入=%d 撤下=%d 没出=%s",
+                        meeting_id,
+                        len(saved["created"]),
+                        len(saved["updated"]),
+                        len(saved["merged"]),
+                        saved["removed"],
+                        saved["skipped"],
+                    )
+                finally:
+                    connection.execute("RELEASE requirement_candidates")
             # 任务跟会议走：直接取会议当前的项目（扫描顺序已改成先归属、再抽任务）。
             # 会议之后才归属或改归属时，由 project_linking 把草稿任务一起带过去。
             meeting_row = connection.execute(
@@ -2073,6 +2104,8 @@ class TaskService:
             raise RuntimeError("任务抽取返回无法解析的 JSON")
         if not isinstance(payload, dict):
             raise RuntimeError("任务抽取返回不是 JSON 对象")
+        # requirements 缺了或不是列表：和「AI 说一条都没有」（空列表）分开，调用方据此不动原来的候选
+        payload["requirements_ok"] = isinstance(payload.get("requirements"), list)
         for key in ("tasks", "requirements"):
             items = payload.get(key)
             payload[key] = (

@@ -17,7 +17,7 @@ from typing import Any
 
 from .db import Database
 from .project_seats import MEETING_TIME_SQL, project_latest_meetings, seat_ranks
-from .requirement_candidates import DROP_UNDO_DAYS, candidate_items, public_item
+from .requirement_candidates import DROP_UNDO_DAYS, candidate_items, public_item, reconcile_moved
 from .requirements import REQUIREMENT_PRIORITIES, follow_up_count, load_sources, origin_of
 from .tasks import OPEN_TASK_STATUSES
 
@@ -155,6 +155,8 @@ def list_pool(
     project_ids = set(_split(project_id))
     needle = (q or "").strip().casefold()
     cutoff = ((now or datetime.now(UTC)) - timedelta(days=DROP_UNDO_DAYS)).isoformat()
+    # 抽完候选以后会议才归项目、改项目的：先按新项目把去重和「丢掉过的不再提示」核一遍，墙上不出重复
+    reconcile_moved(db)
     with db.autocommit() as connection:
         order, direction = project_order(connection)
         items = requirement_items(connection) + candidate_items(connection, statuses=("pending",))

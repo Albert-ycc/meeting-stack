@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 
+from meeting_workbench import requirement_candidates
 from meeting_workbench.db import Database
 from meeting_workbench.requirement_candidates import (
     extraction_context,
@@ -549,7 +550,13 @@ def test_manual_extract_brings_candidates_for_a_history_meeting(tmp_path, monkey
     response = extract_candidates(client, headers, "cvm")
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"status": "done", "created": 2, "merged": 0}
+    assert response.json() == {
+        "status": "done",
+        "created": 2,
+        "updated": 0,
+        "merged": 0,
+        "removed": 0,
+    }
     assert "抽「需求候选」" in prompts[0] and '"tasks"' not in prompts[0]
     assert set(pending(client)) == {"AI 主持话术读法修正", "科室会预约后台导出"}
     assert tasks_of(db, "cvm") == tasks_before
@@ -575,7 +582,9 @@ def test_manual_extract_reports_what_happened(tmp_path, monkeypatch):
     assert extract_candidates(client, headers, "cvm").json() == {
         "status": "failed",
         "created": 0,
+        "updated": 0,
         "merged": 0,
+        "removed": 0,
     }
     assert list(pending(client)) == ["科室会预约后台导出"]
     # 没配模型：不调 AI
@@ -584,6 +593,334 @@ def test_manual_extract_reports_what_happened(tmp_path, monkeypatch):
     assert extract_candidates(client, headers, "cvm").json() == {
         "status": "unavailable",
         "created": 0,
+        "updated": 0,
         "merged": 0,
+        "removed": 0,
     }
     assert prompts == []
+
+
+# ---------------------------------------------------------------- 对抗式审查后补的
+
+
+def test_history_meetings_never_get_candidates_automatically(tmp_path, monkeypatch):
+    """R01-4 按会算：上线前就进了声档的会，纪要上线后重新导入、重新生成，或者点［重新抽取］，都只抽任务
+    （0906 那次 19 场历史会议批量重新导入，重放不会出一条候选）；要候选只能手动补抽。"""
+    client, headers, db, settings = make_world(tmp_path)
+    db.execute("UPDATE meetings SET created_at=?", (BEFORE_LAUNCH,))
+    seed_minutes(db, "cvm")
+    prompts = fake_ai(monkeypatch, reply(EXPORT, tasks=[CHASE_TASK]))
+
+    scan(db, settings, "cvm")
+    re_extract(client, headers, "cvm")
+
+    assert all("existing_requirements" not in prompt for prompt in prompts)
+    assert pending(client) == {}
+    assert list(tasks_of(db, "cvm")) == ["催填节后三场信息"]
+    fake_ai(monkeypatch, reply(EXPORT))
+    assert extract_candidates(client, headers, "cvm").json()["created"] == 1
+
+
+def test_one_bad_candidate_never_sinks_the_tasks(tmp_path, monkeypatch):
+    """候选里哪一条坏了（序号写成 ①、名字是列表、带孤立的代理字符）只跳过或洗干净那一条；
+    同一次抽出的任务照常落库，批次是 done。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "cvm")
+    fake_ai(
+        monkeypatch,
+        json.dumps(
+            {
+                "tasks": [{**CHASE_TASK, "requirement_no": "①"}],
+                "requirements": [
+                    {"no": "①", **EXPORT},
+                    {"no": 2, "title": ["科室会", "导出"], "summary": "", "anchor_quote": ""},
+                    {
+                        "no": 3,
+                        "title": "直播画面\ud800比例",
+                        "summary": 12345,
+                        "anchor_quote": None,
+                    },
+                    {"no": "#4", **SHEET},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    scan(db, settings, "cvm")
+
+    assert db.query_one(
+        "SELECT status, attempts FROM task_extractions WHERE meeting_id=?", (meeting_id("cvm"),)
+    ) == {"status": "done", "attempts": 1}
+    assert set(pending(client)) == {"科室会预约后台导出", "直播画面比例", "共享预约表补齐一百场"}
+    assert pending(client)["直播画面比例"]["summary"] == ""
+    assert list(tasks_of(db, "cvm")) == ["催填节后三场信息"]
+
+
+def test_a_candidate_that_fails_to_save_is_rolled_back_alone(tmp_path, monkeypatch):
+    """一条候选写库时出错：撤回这一条（不留下没有原话的半条），别的候选和任务照常。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "cvm")
+    real = requirement_candidates.insert_candidate
+
+    def flaky(connection, **kwargs):
+        candidate_id = real(connection, **kwargs)
+        if kwargs["title"] == "共享预约表补齐一百场":
+            raise RuntimeError("磁盘满了")
+        return candidate_id
+
+    monkeypatch.setattr(requirement_candidates, "insert_candidate", flaky)
+    fake_ai(monkeypatch, reply(SCRIPT, SHEET, EXPORT, tasks=[{**SCRIPT_TASK, "requirement_no": 1}]))
+
+    scan(db, settings, "cvm")
+
+    assert set(pending(client)) == {"AI 主持话术读法修正", "科室会预约后台导出"}
+    assert db.query_one(
+        "SELECT COUNT(*) AS n FROM requirement_candidates WHERE title='共享预约表补齐一百场'"
+    ) == {"n": 0}
+    assert tasks_of(db, "cvm")["话术修改稿发执行群走默示确认"]["candidate_id"] is not None
+
+
+def test_candidate_step_blowing_up_keeps_tasks_and_old_candidates(tmp_path, monkeypatch):
+    """候选这一步整个出错（没想到的异常）：候选的改动全部撤回，原来待认领的不动；同一次的任务照常落库。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "cvm")
+    fake_ai(monkeypatch, reply(EXPORT))
+    scan(db, settings, "cvm")
+    export_id = pending(client)["科室会预约后台导出"]["id"]
+
+    def boom(connection, **kwargs):
+        connection.execute("DELETE FROM requirement_candidates")
+        raise RuntimeError("没想到的错")
+
+    monkeypatch.setattr(requirement_candidates, "save_extracted", boom)
+    seed_minutes(db, "cvm")
+    fake_ai(monkeypatch, reply(SCRIPT, tasks=[CHASE_TASK]))
+    scan(db, settings, "cvm")
+
+    assert [item["id"] for item in pending(client).values()] == [export_id]
+    assert list(tasks_of(db, "cvm")) == ["催填节后三场信息"]
+
+
+def test_quotes_must_be_found_whole_in_the_transcript(tmp_path, monkeypatch):
+    """原话要整句在逐字稿里找得到（R01-3）：开头对上、后半句是编的不算；跨句的（第一句很短也行）、
+    标点和空白不一样的照样认；「嗯」这种太短的不当原话。找不到的只留来源会议。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "cvm")
+    fake_ai(
+        monkeypatch,
+        reply(
+            {**EXPORT, "anchor_quote": "是没有办法，我看到导出是一个OKOK"},
+            {**SCRIPT, "anchor_quote": "就是 IL 杠十七 a 是一个错误的读法，大家同意马上上线新版本"},
+            {**SCREEN, "anchor_quote": "要把它的比例稍微缩小一点 比如说搜到百分之九十五"},
+            {**SHEET, "anchor_quote": "四列需要去把它填充满一百场"},
+            {**ACCESS, "anchor_quote": "嗯"},
+        ),
+    )
+
+    scan(db, settings, "cvm")
+
+    wall = pending(client)
+    anchors = {
+        title: (item["source"]["quote"], item["source"]["anchor_ms"])
+        for title, item in wall.items()
+    }
+    assert anchors == {
+        "科室会预约后台导出": ("是没有办法，我看到导出是一个OKOK", 581000),
+        "AI 主持话术读法修正": ("", None),
+        "直播画面比例缩到 95%": ("要把它的比例稍微缩小一点 比如说搜到百分之九十五", 387880),
+        "共享预约表补齐一百场": ("四列需要去把它填充满一百场", 526090),
+        "科室会预约后台开权限": ("", None),
+    }
+
+
+def test_re_extraction_keeps_the_same_candidate_and_its_tasks(tmp_path, monkeypatch):
+    """R01-5 只替换还没处理的候选：重抽又抽到同名的，原地更新说明和原话——候选 id 不变，挂着的任务
+    （已经确认的也算）还挂着，开着的认领页照样能认领，认领后任务随需求走。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "cvm")
+    fake_ai(monkeypatch, reply(SCRIPT, tasks=[{**SCRIPT_TASK, "requirement_no": 1}]))
+    scan(db, settings, "cvm")
+    script_id = pending(client)["AI 主持话术读法修正"]["id"]
+    task = tasks_of(db, "cvm")["话术修改稿发执行群走默示确认"]
+    db.execute("UPDATE tasks SET status='confirmed' WHERE id=?", (task["id"],))
+
+    fake_ai(
+        monkeypatch,
+        reply({**SCRIPT, "summary": "IL-17a 改读「白介素十七」，话术修改稿发执行群走默示确认。"}),
+    )
+    re_extract(client, headers, "cvm")
+
+    item = pending(client)["AI 主持话术读法修正"]
+    assert item["id"] == script_id
+    assert item["summary"] == "IL-17a 改读「白介素十七」，话术修改稿发执行群走默示确认。"
+    assert db.query_one("SELECT candidate_id FROM tasks WHERE id=?", (task["id"],)) == {
+        "candidate_id": script_id
+    }
+    claimed = client.post(
+        f"/api/requirement-candidates/{script_id}/claim",
+        json={"title": "AI 主持话术读法修正"},
+        headers=headers,
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert db.query_one("SELECT requirement_id FROM tasks WHERE id=?", (task["id"],)) == {
+        "requirement_id": claimed.json()["id"]
+    }
+
+
+def test_malformed_requirements_leave_existing_candidates_alone(tmp_path, monkeypatch):
+    """AI 回的 requirements 缺了、不是列表：当格式不对，不是「一条都没有」——原来待认领的不动，
+    同一次的任务照常；手动补抽报失败。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "cvm")
+    fake_ai(monkeypatch, reply(EXPORT))
+    scan(db, settings, "cvm")
+    export_id = pending(client)["科室会预约后台导出"]["id"]
+
+    seed_minutes(db, "cvm")
+    fake_ai(monkeypatch, json.dumps({"tasks": [CHASE_TASK]}, ensure_ascii=False))
+    scan(db, settings, "cvm")
+    assert [item["id"] for item in pending(client).values()] == [export_id]
+    assert list(tasks_of(db, "cvm")) == ["催填节后三场信息"]
+
+    for broken in (
+        '{"requirements": {"no": 1}}',
+        '{"requirements": null}',
+        '{"requirements": "无"}',
+    ):
+        fake_ai(monkeypatch, broken)
+        assert extract_candidates(client, headers, "cvm").json()["status"] == "failed"
+    assert [item["id"] for item in pending(client).values()] == [export_id]
+
+
+def test_meeting_assigned_after_extraction_is_checked_again(tmp_path, monkeypatch):
+    """会议没归项目时抽的候选，事后归到项目：按新项目重核（R01-6、R01-9）——同项目丢掉过同名的算丢掉，
+    同项目已有同名待认领的并进那条，同项目有同名的进行中需求默认合并过去。"""
+    client, headers, db, settings = make_world(tmp_path)
+    live = create(client, headers, "cvm", "直播间运营六项修正", "P1")
+    seed_minutes(db, "cvm")
+    fake_ai(monkeypatch, reply(EXPORT, SHEET))
+    scan(db, settings, "cvm")
+    wall = pending(client)
+    client.post(
+        f"/api/requirement-candidates/{wall['科室会预约后台导出']['id']}/drop",
+        json={},
+        headers=headers,
+    )
+    sheet_id = wall["共享预约表补齐一百场"]["id"]
+
+    seed_minutes(db, "doctor")
+    doctor_quote = "然后这个门口或者你把前面这个也都不要嘛统一掉嘛。"
+    fake_ai(
+        monkeypatch,
+        reply(
+            {**EXPORT, "anchor_quote": doctor_quote},
+            {**SHEET, "anchor_quote": doctor_quote},
+            {"title": "直播间运营六项修正", "summary": "", "anchor_quote": ""},
+        ),
+    )
+    scan(db, settings, "doctor")
+    assert len([item for item in pending(client).values() if item["project_id"] is None]) == 3
+
+    db.execute(
+        "UPDATE meetings SET project_id=? WHERE id=?", (project_id("cvm"), meeting_id("doctor"))
+    )
+    wall = pending(client)
+
+    assert set(wall) == {"共享预约表补齐一百场", "直播间运营六项修正"}
+    sheet = detail(client, sheet_id)
+    assert {s["meeting_id"] for s in sheet["sources"]} == {meeting_id("cvm"), meeting_id("doctor")}
+    assert wall["直播间运营六项修正"]["default_action"] == "merge"
+    assert wall["直播间运营六项修正"]["similar_requirement"]["id"] == live
+    dropped = client.get("/api/requirement-candidates/dropped").json()["items"]
+    assert sorted((item["title"], item["source"]["meeting_id"]) for item in dropped) == sorted(
+        [("科室会预约后台导出", meeting_id("cvm")), ("科室会预约后台导出", meeting_id("doctor"))]
+    )
+
+
+def test_dropped_names_stay_with_the_project_they_were_dropped_in(tmp_path, monkeypatch):
+    """丢掉的名字按丢掉时的项目算（R01-9）：那场会后来改到别的项目，原项目的别的会照样不再提示，
+    新项目的会不受影响。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "family")
+    fake_ai(monkeypatch, reply(FAMILY))
+    scan(db, settings, "family")
+    family_id = pending(client)["亲友积分入口与导入字段"]["id"]
+    client.post(f"/api/requirement-candidates/{family_id}/drop", json={}, headers=headers)
+    db.execute(
+        "UPDATE meetings SET project_id=? WHERE id=?", (project_id("cvm"), meeting_id("family"))
+    )
+
+    seed_minutes(db, "blackcard")
+    fake_ai(monkeypatch, reply({**FAMILY, "anchor_quote": "亲友也有百分之十的积分。"}))
+    scan(db, settings, "blackcard")
+    assert pending(client) == {}
+
+    seed_minutes(db, "cvm")
+    fake_ai(monkeypatch, reply({**FAMILY, "anchor_quote": ""}))
+    scan(db, settings, "cvm")
+    assert pending(client)["亲友积分入口与导入字段"]["project_id"] == project_id("cvm")
+
+
+def test_duplicates_inside_one_reply(tmp_path, monkeypatch):
+    """同一次抽出两条同名的只出一条，挂在第二条上的任务挂到第一条；两条都并进同一条已有候选的只并一次，
+    空并不白占名额。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "family")
+    fake_ai(monkeypatch, reply(FAMILY))
+    scan(db, settings, "family")
+
+    seed_minutes(db, "blackcard")
+    new = ["黑卡注销后亲友折扣", "黑卡分享链接权限", "积分限制购买口径", "亲友七折权益展示"]
+    fake_ai(
+        monkeypatch,
+        lambda prompt: reply(
+            {
+                "title": "亲友积分口径",
+                "summary": "",
+                "anchor_quote": "",
+                "same_as": code_of(prompt, FAMILY["title"]),
+            },
+            {
+                "title": "亲友积分说法",
+                "summary": "",
+                "anchor_quote": "",
+                "same_as": code_of(prompt, FAMILY["title"]),
+            },
+            {"title": new[0], "summary": "", "anchor_quote": ""},
+            {"title": new[0], "summary": "", "anchor_quote": ""},
+            *({"title": title, "summary": "", "anchor_quote": ""} for title in new[1:]),
+            tasks=[{**ASK_TASK, "requirement_no": 4}],
+        ),
+    )
+    scan(db, settings, "blackcard")
+
+    wall = pending(client)
+    assert set(wall) == {FAMILY["title"], *new}
+    assert tasks_of(db, "blackcard")[ASK_TASK["title"]]["candidate_id"] == wall[new[0]]["id"]
+
+
+def test_code_titles_are_skipped_and_long_summaries_end_at_a_sentence(tmp_path, monkeypatch):
+    """AI 把清单编号当需求名（R1、c2）的不出；说明超过 70 字时在 40 字以后最近的句末截断。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "cvm")
+    long_summary = (
+        EXPORT_SUMMARY
+        + "导出要按日期筛选并带上科室。"
+        + "后面这句话很长很长很长很长很长很长很长很长很长"
+    )
+    assert len(long_summary) > 70
+    fake_ai(
+        monkeypatch,
+        reply(
+            {"title": "R1", "summary": "", "anchor_quote": ""},
+            {"title": "c2"},
+            {**EXPORT, "summary": long_summary},
+        ),
+    )
+
+    scan(db, settings, "cvm")
+
+    wall = pending(client)
+    assert list(wall) == ["科室会预约后台导出"]
+    assert wall["科室会预约后台导出"]["summary"] == EXPORT_SUMMARY + "导出要按日期筛选并带上科室。"

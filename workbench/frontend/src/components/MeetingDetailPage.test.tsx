@@ -1821,13 +1821,19 @@ describe("MeetingDetailPage 抽需求候选（R01-4）", () => {
   }
 
   it("有纪要的会在归档归属里能手动补抽，抽完提示放在待认领，［去看看］打开需求池", async () => {
-    const extractRequirementCandidates = vi.fn().mockResolvedValue({ status: "done", created: 2, merged: 1 });
+    const extractRequirementCandidates = vi
+      .fn()
+      .mockResolvedValue({ status: "done", created: 1, updated: 1, merged: 1, removed: 2 });
     const { onOpenPendingCandidates } = renderPage(withMinutes, { extractRequirementCandidates });
 
     await userEvent.click(screen.getByRole("button", { name: "抽需求候选" }));
 
     expect(extractRequirementCandidates).toHaveBeenCalledWith("vm-1");
-    expect(await screen.findByText("抽出 2 条需求候选，另有 1 条并进了已有的候选，放在需求池「待认领」")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "抽出 2 条需求候选，放在需求池「待认领」；另有 1 条并进了已有的候选；原来待认领、这次没再抽到的 2 条撤下了",
+      ),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "去看看" }));
     expect(onOpenPendingCandidates).toHaveBeenCalledTimes(1);
   });

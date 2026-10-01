@@ -81,11 +81,16 @@ interface MeetingDetailPageProps {
 
 type DetailTab = "transcript" | "minutes" | "tasks";
 
-/** ［抽需求候选］的结果提示 */
-function candidateExtractionNotice({ created, merged }: CandidateExtraction): string {
-  const joined = merged ? `${merged} 条并进了已有的候选` : "";
-  if (created) return `抽出 ${created} 条需求候选${joined ? `，另有 ${joined}` : ""}，放在需求池「待认领」`;
-  return joined ? `没有新的需求候选，${joined}` : "这场会没抽出新的需求候选";
+/** ［抽需求候选］的结果提示：原来待认领、这次没再抽到的被撤下了也要说，不然看不出候选少了 */
+function candidateExtractionNotice({ created, updated = 0, merged, removed = 0 }: CandidateExtraction): string {
+  const found = created + updated;
+  return [
+    found ? `抽出 ${found} 条需求候选，放在需求池「待认领」` : "这场会没抽出新的需求候选",
+    merged ? `另有 ${merged} 条并进了已有的候选` : "",
+    removed ? `原来待认领、这次没再抽到的 ${removed} 条撤下了` : "",
+  ]
+    .filter(Boolean)
+    .join("；");
 }
 
 // 检查器主项目下拉里的特殊取值：「不归项目」（没项目的会上显式标一下）和「交给 AI 判断」。
@@ -739,7 +744,7 @@ export function MeetingDetailPage({
           candidateExtractionNotice(result),
           "success",
           undefined,
-          result.created + result.merged > 0 && onOpenPendingCandidates
+          result.created + (result.updated ?? 0) + result.merged > 0 && onOpenPendingCandidates
             ? [{ label: "去看看", onClick: onOpenPendingCandidates }]
             : undefined,
         );

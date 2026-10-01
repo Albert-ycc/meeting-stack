@@ -1739,11 +1739,13 @@ export interface MergeTargets {
   items: MergeTarget[];
 }
 
-/** 会议详情［抽需求候选］的结果：新建几条、并进已有候选几条 */
+/** 会议详情［抽需求候选］的结果：新建、原地更新、并进已有候选、撤下（这场会原来待认领、这次没再抽到）各几条 */
 export interface CandidateExtraction {
   status: "done" | "unavailable" | "failed";
   created: number;
+  updated?: number;
   merged: number;
+  removed?: number;
 }
 
 /** 认领撞名（409）：同项目已有的那条需求 */

@@ -1351,6 +1351,10 @@ CREATE TABLE IF NOT EXISTS requirement_candidates (
         CHECK (status IN ('pending', 'claimed', 'merged', 'dropped')),
     requirement_id TEXT REFERENCES requirements(id) ON DELETE SET NULL,
     dropped_at TEXT,
+    -- 抽出（或上次核过）时会议的归属：会议事后改了项目，墙面取数时按新项目重核去重
+    project_id_seen TEXT,
+    -- 丢掉时会议的归属：「同项目丢掉过的不再提示」按它算，会议后来改了归属也不跟着搬家
+    dropped_project_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -1591,6 +1595,16 @@ class Database:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_candidate ON tasks(candidate_id)"
             )
+            # v17 候选表后补的两列（建过 v17 早期版本的库补上；新库建表时就有）
+            candidate_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(requirement_candidates)"
+                ).fetchall()
+            }
+            for name in ("project_id_seen", "dropped_project_id"):
+                if name not in candidate_columns:
+                    connection.execute(f"ALTER TABLE requirement_candidates ADD COLUMN {name} TEXT")
             minutes_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(minutes_versions)").fetchall()
