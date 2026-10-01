@@ -62,8 +62,9 @@ def card_stats(connection: Any, *, now: datetime | None = None) -> dict[str, dic
             latest_jd[row["project_id"]] = row["jd"]
             item["latest_meeting_title"] = row["title"]
             held = speaker_date(row["at"])
+            # 按自然周算，和节奏条同一口径：最近一场在本周是 0，在上周是 1……
             item["weeks_since_last_meeting"] = (
-                max(0, (today - held).days) // 7 if held is not None else None
+                max(0, (this_monday - _monday(held)).days // 7) if held is not None else None
             )
         held = speaker_date(row["at"])
         if held is None:
@@ -76,7 +77,7 @@ def card_stats(connection: Any, *, now: datetime | None = None) -> dict[str, dic
 
 def empty_stats() -> dict[str, Any]:
     """没有需求、候选、会议的项目：卡片上全是 0。weeks_since_last_meeting 是最近一场会距今整周数
-    （前端满 3 周写「已 N 周没有会议」），没有会议为 None。"""
+    （按自然周，和节奏条一致；前端满 3 周写「已 N 周没有会议」），没有会议为 None。"""
     return {
         "active_requirement_titles": [],
         "active_requirement_count": 0,

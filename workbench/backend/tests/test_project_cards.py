@@ -59,8 +59,22 @@ def test_quiet_projects_and_rhythm_slide_with_the_week(tmp_path, monkeypatch):
     cards = projects_by_id(client)
 
     huaxia = cards[project_id("huaxia")]
+    # 按自然周：09-14 那周到 10-19 那周隔 5 周，节奏条最后 5 格是空的
     assert huaxia["weeks_since_last_meeting"] == 5
+
     assert huaxia["weekly_meetings"] == [0] * 6 + [1] + [0] * 5
     # 处理过的候选不算待认领
     client.post(f"/api/requirement-candidates/{candidate_id}/drop", json={}, headers=headers)
     assert projects_by_id(client)[project_id("cvm")]["pending_candidate_count"] == 0
+
+
+def test_weeks_without_meetings_count_calendar_weeks(tmp_path, monkeypatch):
+    """恒瑞最近一场在北京 09-22（周二）；今天 10-05（周一）：隔了 09-28、10-05 两个周一，按自然周是 2，
+    节奏条最后两格是空的（滚动 7 天取整只有 13 天＝1 周，和节奏条对不上）。"""
+    client, headers, db, candidate_id, tasks = make_cvm_world(tmp_path, monkeypatch)
+    monkeypatch.setattr(project_cards, "beijing_today", lambda now=None: date(2026, 10, 5))
+
+    hengrui = projects_by_id(client)[project_id("hengrui")]
+
+    assert hengrui["weeks_since_last_meeting"] == 2
+    assert hengrui["weekly_meetings"][-3:] == [2, 0, 0]
