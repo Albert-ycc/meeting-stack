@@ -382,9 +382,11 @@ def test_existing_term_whose_wrongs_are_all_taken_says_so_without_undo(api):
     )
 
 
-def test_meeting_accept_records_only_the_shown_wrong(api):
+def test_meeting_accept_records_only_the_shown_wrong(api, monkeypatch):
     """会议页一行只显示一个写法：只记这个写法，别的写法留着，在词典页记到『词』上。"""
     client, _settings, db, headers = api
+    # 接口那一步也钉在 NOW：后面直接调 gm 用的是 NOW 往后的时刻，走真实时间的话过了 NOW+1 天先后就反了
+    monkeypatch.setattr(gm, "_now", lambda now: now or NOW)
     now = utc_now()
     db.execute(
         """INSERT INTO glossary_candidates(project_id, term, term_key, wrong, spoken, status, created_at, updated_at)
