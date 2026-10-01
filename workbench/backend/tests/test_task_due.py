@@ -603,3 +603,67 @@ def test_moving_a_meeting_leaves_tasks_hung_on_other_meetings_candidates(tmp_pat
         "project_id": project_id("yimi"),
         "candidate_id": receipt,
     }
+
+
+def make_jd_world(tmp_path, monkeypatch):
+    """医米「260916 京东科研仓系统对接」抽出候选「京东仓签收凭证」；「EDC 系统选型」那场会的一条任务挂上它。"""
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(settings.database_path)
+    seed_world(db)
+    db.execute("UPDATE app_state SET value=? WHERE key='requirement_candidates_since'", (LAUNCH,))
+    seed_minutes(db, "jd")
+    fake_ai(monkeypatch, reply(RECEIPT))
+    scan(db, settings, "jd")
+    receipt = db.query_one("SELECT id FROM requirement_candidates WHERE title='京东仓签收凭证'")[
+        "id"
+    ]
+    edc_task = client.post(
+        "/api/tasks",
+        json={"title": "确认产研能否派一人对接 EDC", "project_id": project_id("yimi")},
+        headers=headers,
+    ).json()["id"]
+    db.execute("UPDATE tasks SET meeting_id=? WHERE id=?", (meeting_id("edc"), edc_task))
+    hung = client.patch(f"/api/tasks/{edc_task}", json={"candidate_id": receipt}, headers=headers)
+    assert hung.json()["candidate_id"] == receipt, hung.text
+    return client, headers, db, settings, receipt, edc_task
+
+
+def test_claim_leaves_tasks_the_candidate_drifted_away_from(tmp_path, monkeypatch):
+    """候选那场会事后改归恒瑞：挂着它的医米任务越界了。认领时不把它拉进恒瑞，移出候选并留痕。"""
+    client, headers, db, settings, receipt, edc_task = make_jd_world(tmp_path, monkeypatch)
+    client.patch(
+        f"/api/meetings/{meeting_id('jd')}",
+        json={"project_id": project_id("hengrui")},
+        headers=headers,
+    )
+
+    claimed = client.post(
+        f"/api/requirement-candidates/{receipt}/claim",
+        json={"title": "京东仓签收凭证"},
+        headers=headers,
+    )
+
+    assert claimed.status_code == 200, claimed.text
+    task = client.get(f"/api/tasks/{edc_task}").json()
+    assert (task["project_id"], task["requirement_id"], task["candidate_id"]) == (
+        project_id("yimi"),
+        None,
+        None,
+    )
+    assert task["events"][-1]["body"] == "移出候选「京东仓签收凭证」：不在候选所在的项目里"
+
+
+def test_re_extraction_keeps_candidates_people_hung_tasks_on(tmp_path, monkeypatch):
+    """纪要重新生成后再抽、这次没抽到「京东仓签收凭证」：有人挂过任务的候选留着，任务照挂；
+    只有这场会自己草稿挂着的候选才照旧撤下。"""
+    client, headers, db, settings, receipt, edc_task = make_jd_world(tmp_path, monkeypatch)
+    seed_minutes(db, "jd")
+    fake_ai(monkeypatch, reply())
+
+    scan(db, settings, "jd")
+
+    assert db.query_one("SELECT status FROM requirement_candidates WHERE id=?", (receipt,)) == {
+        "status": "pending"
+    }
+    assert client.get(f"/api/tasks/{edc_task}").json()["candidate_id"] == receipt

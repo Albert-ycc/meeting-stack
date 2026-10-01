@@ -646,6 +646,16 @@ def save_extracted(
         seen[key] = candidate_id
         result["by_no"][no] = candidate_id
     for candidate_id in replaceable_ids - kept:
+        # 有人挂过任务的不撤：已确认的、别的会的任务挂在上面（项目页与待办改版 R07-8），撤下会让任务的挂接
+        # 悄悄没了。这场会自己抽出的草稿挂着的不算，那是 AI 上次的配对，照旧撤下。
+        if connection.execute(
+            """SELECT 1 FROM tasks t JOIN requirement_candidates c ON c.id = t.candidate_id
+                WHERE t.candidate_id = ?
+                  AND NOT (t.meeting_id IS c.meeting_id
+                           AND t.status IN ('pending_confirm', 'expired'))""",
+            (candidate_id,),
+        ).fetchone():
+            continue
         connection.execute("DELETE FROM requirement_candidates WHERE id=?", (candidate_id,))
         result["removed"] += 1
     return result
@@ -1022,7 +1032,23 @@ def _hand_over(
     tasks = connection.execute(
         "SELECT * FROM tasks WHERE candidate_id=? AND requirement_id IS NULL", (candidate_id,)
     ).fetchall()
+    # 只接手候选范围里的任务：任务所属项目就是候选所在的项目，任务没归项目时是同一场会的。候选的项目跟着
+    # 它那场会走，挂上以后两边谁改了项目都可能越界；越界的移出候选并留痕，不随认领被拉进别的项目。
+    in_scope = []
     for task in tasks:
+        if (
+            task["project_id"] == candidate["project_id"]
+            if task["project_id"] is not None
+            else task["meeting_id"] == candidate["meeting_id"]
+        ):
+            in_scope.append(task)
+            continue
+        connection.execute(
+            """INSERT INTO task_events(task_id, kind, body, created_at)
+               VALUES (?, 'requirement_changed', ?, ?)""",
+            (task["id"], f"移出候选「{candidate['title']}」：不在候选所在的项目里", now),
+        )
+    for task in in_scope:
         _requirement_id, project_id, event_body = resolve_requirement_and_project(
             connection,
             dict(task),
