@@ -330,6 +330,9 @@ def test_drop_detaches_tasks_and_can_be_undone_within_30_days(tmp_path):
     assert db.query_one("SELECT candidate_id FROM tasks") == {"candidate_id": None}
     pool = wall(client, status="pending")
     assert (pool["items"], pool["dropped_count"]) == ([], 1)
+    # 「已丢掉」不跟筛选走：筛别的项目、搜别的名字，链接上的数和弹层列的一样
+    assert wall(client, status="pending", project_id=project_id("yimi"))["dropped_count"] == 1
+    assert wall(client, status="pending", q="京东")["dropped_count"] == 1
     listing = client.get("/api/requirement-candidates/dropped").json()
     assert [item["title"] for item in listing["items"]] == ["科室会预约后台导出"]
     dropped_at = datetime.fromisoformat(dropped["dropped_at"])

@@ -197,5 +197,6 @@ def list_pool(
         "counts": {**counts, "all": sum(counts.values())},
         "projects": direction,
         "unassigned_count": per_project.get(None, 0),
-        "dropped_count": sum(1 for item in dropped if project_ok(item) and name_ok(item)),
+        # 「已丢掉」是全局的回收站：链接上的数和点开的弹层一样，不跟项目、名称筛选走
+        "dropped_count": len(dropped),
     }
