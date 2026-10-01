@@ -1036,8 +1036,6 @@ export interface Task {
   requirement_priority?: RequirementPriority | null;
   requirement_status?: RequirementStatus | null;
   meeting_recording_date?: string | null;
-  /** 截止，精确到日（YYYY-MM-DD）；空即未定截止（R05-6） */
-  due_date?: string | null;
 }
 
 export interface TaskDetail extends Task {

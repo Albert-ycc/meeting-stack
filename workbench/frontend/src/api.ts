@@ -951,8 +951,6 @@ export const api = {
     project_id?: string | null;
     requirement_id?: string | null;
     assignee?: string;
-    /** 截止 YYYY-MM-DD，null 或不传即未定截止（R05-6）；手动新建的任务本来就是已确认 */
-    due_date?: string | null;
   }) =>
     write<TaskDetail>("/api/tasks", "POST", data),
   updateTask: (
@@ -963,8 +961,6 @@ export const api = {
       project_id?: string | null;
       requirement_id?: string | null;
       assignee?: string;
-      /** 截止 YYYY-MM-DD，传 null 清空 */
-      due_date?: string | null;
     },
   ) => write<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}`, "PATCH", data),
   confirmTask: (
