@@ -156,4 +156,17 @@ describe("useToast", () => {
     expect(errors).not.toHaveBeenCalled();
     errors.mockRestore();
   });
+  it("tone: error：换成叹号和 alert，读屏立即播报；默认停 10 秒，不跟 hook 的 2.4 秒走", () => {
+    render(<Page message="确认失败：任务已经是「已完成」，不能改成「已确认」，刷新后再看" options={{ tone: "error" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "弹提示" }));
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveClass("app-toast--error");
+    expect(alert).toHaveTextContent("确认失败");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    advance(9_900);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    advance(200);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

@@ -26,6 +26,16 @@
   color: #5fd9a0;
 }
 
+/* 操作没成（tone: "error"）：同一条深色条，左边换成红色叹号、加一道红边 */
+.app-toast__mark {
+  flex: none;
+  color: #ff7a72;
+}
+
+.app-toast--error {
+  border-color: rgb(255 122 114 / 0.45);
+}
+
 .app-toast__text {
   min-width: 0;
   overflow-wrap: anywhere;

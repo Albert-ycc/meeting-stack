@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { AsyncState } from "./AsyncState";
-import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeTone } from "./Notice";
+import type { NoticeTone } from "./Notice";
+import { useToast } from "./Toast";
 import { Pagination } from "./Pagination";
 import { DirectionBar } from "./pool/DirectionBar";
 import { PriorityBadge } from "./RequirementBadges";
@@ -126,7 +127,7 @@ export function TasksPage({
   // 切到分页清单的页签后，清单还没取回来之前显示加载中，不露出上一个页签的行
   const [listFresh, setListFresh] = useState(false);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
-  const { notice, setNotice, dismissNotice } = useNotice();
+  const { toastNode, showToast, hideToast } = useToast();
   // 旧值（本机存过的 all、in_progress）不在页签里，读回来就当没存，落到默认的「未完成」
   const [activeTab, setActiveTab] = usePersistentState<TabKey>("tasks.activeTab", "open", {
     valid: (value) => typeof value === "string" && TAB_KEYS.includes(value),
@@ -226,15 +227,6 @@ export function TasksPage({
     page,
   ]);
 
-  // useNotice 只自动收起成功提示；提醒和失败这里也在 10 秒后收起（仍可手动 ✕）
-  const noticeKey = notice?.key;
-  const noticeTone = notice?.tone;
-  useEffect(() => {
-    if (noticeKey === undefined || noticeTone === "success") return;
-    const timer = window.setTimeout(dismissNotice, UNDO_NOTICE_MS);
-    return () => window.clearTimeout(timer);
-  }, [noticeKey, noticeTone, dismissNotice]);
-
   // 提示条上的［撤销］可能在筛选变了以后才点：刷新要用最新的 load，不是创建那一刻的
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -293,11 +285,10 @@ export function TasksPage({
     if (busyRef.current) return; // ref 级互斥：双击同帧不会连发两个写请求
     busyRef.current = true;
     setBusy(true);
-    setNotice(""); // 新的写操作开始，上一步的提示和撤销入口作废
     try {
       await action();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
+      showToast(error instanceof Error ? error.message : "操作失败，请稍后重试", { tone: "error" });
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -310,25 +301,19 @@ export function TasksPage({
     await loadRef.current();
   };
 
-  // 页面所有结果提示和撤销都走这一个入口（审核卡也用它）：带 undo 就出［撤销］，停 10 秒。
+  // 页面所有结果提示和撤销都走这一个入口（审核卡也用它）：共用的底部深色条，带 undo 就出［撤销］、停 10 秒；
+  // 没成的（提醒、失败）用错误样式。新的提示顶掉旧的，旧条上的撤销入口跟着作废。
   const notify = (message: string, undo?: () => Promise<void>, tone: NoticeTone = "success") => {
-    setNotice(
-      message,
-      tone,
-      undo ? UNDO_NOTICE_MS : undefined,
-      undo
-        ? [
-            {
-              label: "撤销",
-              onClick: () =>
-                void run(async () => {
-                  await undo();
-                  await refresh();
-                }),
-            },
-          ]
+    showToast(message, {
+      tone: tone === "success" ? undefined : "error",
+      onUndo: undo
+        ? () =>
+            run(async () => {
+              await undo();
+              await refresh();
+            })
         : undefined,
-    );
+    });
   };
 
   const undoReview = async (ids: string[]) => {
@@ -441,7 +426,7 @@ export function TasksPage({
 
   const switchTab = (key: TabKey) => {
     if (key === activeTab) return;
-    setNotice(""); // 上一个页签的提示（尤其是失败）不带到新页签
+    hideToast(); // 上一个页签的提示（尤其是失败）不带到新页签
     setPage(0);
     setListFresh(false);
     setListTasks([]);
@@ -767,7 +752,7 @@ export function TasksPage({
       )}
 
       {/* 固定在视口底部的浮层，不占文档流：出现、消失时列表不会跳，连点也不会点错行 */}
-      <NoticeBanner className="tasks-toast" notice={notice} onDismiss={dismissNotice} />
+      {toastNode}
 
       <div className={`tasks-table-card ${isListTab(activeTab) ? "" : "tasks-table-card--floating"}`}>
         {state === "error" && (

@@ -723,11 +723,20 @@ describe("审查补丁", () => {
     expect(apiClient.undoTaskComplete).toHaveBeenCalledWith(["t-fresh"]);
   });
 
-  it("结果提示是固定在视口底部的浮层（不占文档流），带撤销", async () => {
-    renderPage(makeClient());
+  it("结果提示用共用的底部深色条（不占文档流），带撤销；失败用错误样式", async () => {
+    const apiClient = makeClient();
+    renderPage(apiClient);
     await userEvent.click(within(await todoRow("安排与华谊的会")).getByRole("button", { name: /^完成「/ }));
 
-    expect(await screen.findByRole("status")).toHaveClass("tasks-toast");
+    const toast = await screen.findByRole("status");
+    expect(toast).toHaveClass("app-toast");
+    expect(within(toast).getByRole("button", { name: "撤销" })).toBeInTheDocument();
+
+    (apiClient.setTaskStatus as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("任务已经是「已完成」，不能改成「已完成」，刷新后再看"),
+    );
+    await userEvent.click(within(await todoRow("确认产研能否派一人对接 EDC")).getByRole("button", { name: /^完成「/ }));
+    expect(await screen.findByRole("alert")).toHaveClass("app-toast--error");
   });
 
   it("挂到需求选择器和 ⋯ 菜单互斥：开一个就收起另一个", async () => {
