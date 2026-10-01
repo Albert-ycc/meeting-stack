@@ -1,0 +1,46 @@
+.rhythm {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rhythm--empty {
+  min-height: 62px;
+}
+
+.rhythm__head,
+.rhythm__axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-faint);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.rhythm__bars {
+  display: flex;
+  height: 34px;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.rhythm__bar {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--muted);
+  border-radius: 1px;
+}
+
+.rhythm__bar.is-zero {
+  height: 2px;
+  background: var(--faint);
+}
+
+.rhythm__bar.is-now {
+  background: var(--signal);
+}
+
+.rhythm__bar.is-now.is-zero {
+  background: var(--signal-line);
+}

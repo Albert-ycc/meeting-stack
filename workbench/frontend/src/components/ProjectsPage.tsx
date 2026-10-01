@@ -1,8 +1,10 @@
 import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 
 import type { ApiClient } from "../api";
-import type { MeetingSummary, Project, Tag } from "../types";
+import type { MeetingSummary, PoolProject, Project, Tag } from "../types";
 import { BlurText } from "./motion/BlurText";
+import { DirectionBar } from "./pool/DirectionBar";
+import { ProjectPanel, ProjectRow } from "./projects/ProjectPanel";
 import { ProjectFormModal } from "./ProjectFormModal";
 import { ProjectParentRow } from "./ProjectParentRow";
 import "./ProjectsPage.css";
@@ -23,20 +25,25 @@ interface ProjectsPageProps {
 
 type RootFilter = "all" | "attached" | "unattached";
 
+/** 未排座次的项目默认只列前几行，其余折起来，点开就地展开 */
+const UNSEATED_FOLDED_ROWS = 8;
+
 function meetingCount(project: Project, meetings: MeetingSummary[]): number {
   return project.meeting_count ?? meetings.filter((meeting) => meeting.project_id === project.id).length;
 }
 
-function rootsLabel(project: Project): { text: string; attached: boolean } {
-  const roots = project.material_roots ?? [];
-  const pending = project.pending_folder;
-  // 盘不在时建的项目：文件夹还在等补建
-  if (roots.length === 0 && pending) {
-    return { text: pending.state === "waiting" ? `插上后自动建 ${pending.path}` : pending.reason ?? "未挂", attached: false };
-  }
-  if (roots.length === 0) return { text: "未挂", attached: false };
-  if (roots.length === 1) return { text: roots[0].path, attached: true };
-  return { text: `${roots[0].path}（等 ${roots.length} 个）`, attached: true };
+function splitBySeat(projects: Project[]) {
+  const seated = projects
+    .filter((project) => project.seat != null)
+    .sort((a, b) => (a.seat as number) - (b.seat as number));
+  const unseated = projects
+    .filter((project) => project.seat == null)
+    .sort((a, b) => {
+      const left = a.latest_meeting_date ? Date.parse(a.latest_meeting_date) : -Infinity;
+      const right = b.latest_meeting_date ? Date.parse(b.latest_meeting_date) : -Infinity;
+      return right - left || a.name.localeCompare(b.name, "zh-CN");
+    });
+  return { seated, unseated };
 }
 
 export function ProjectsPage({
@@ -61,17 +68,53 @@ export function ProjectsPage({
 
   const [formModal, setFormModal] = useState<{ mode: "create" | "edit"; project: Project | null } | null>(null);
 
-  const rows = useMemo(() => {
+  // 「我的方向」条点选的项目；记在页面状态里，离开再回来还在
+  const [pickedIds, setPickedIds] = usePersistentState<string[]>("projects.directionIds", [], { valid: Array.isArray });
+  const [unseatedOpen, setUnseatedOpen] = useState(false);
+
+  // 已排座次的按座次，未排的按最近一场会由近到远（没有会议的排最后）：方向条和下面的两段用同一个顺序
+  const { seated, unseated } = useMemo(() => splitBySeat(projects), [projects]);
+  const directionProjects: PoolProject[] = useMemo(
+    () =>
+      [...seated, ...unseated].map((project) => ({
+        id: project.id,
+        name: project.name,
+        color: project.color,
+        seat: project.seat ?? null,
+        latest_meeting_date: project.latest_meeting_date ?? null,
+        count: project.open_task_count ?? 0,
+      })),
+    [seated, unseated],
+  );
+
+  const matches = useMemo(() => {
     const keyword = appliedName.trim().toLowerCase();
-    const filtered = projects.filter((project) => {
+    const picked = pickedIds.filter((id) => projects.some((project) => project.id === id));
+    return (project: Project) => {
       if (keyword && !project.name.toLowerCase().includes(keyword)) return false;
       const attached = (project.material_roots ?? []).length > 0;
       if (appliedRoot === "attached" && !attached) return false;
       if (appliedRoot === "unattached" && attached) return false;
-      return true;
-    });
-    return [...filtered].sort((a, b) => meetingCount(b, meetings) - meetingCount(a, meetings));
-  }, [projects, meetings, appliedName, appliedRoot]);
+      return picked.length === 0 || picked.includes(project.id);
+    };
+  }, [projects, appliedName, appliedRoot, pickedIds]);
+  const seatedShown = seated.filter(matches);
+  const unseatedShown = unseated.filter(matches);
+  const unseatedRows = unseatedOpen ? unseatedShown : unseatedShown.slice(0, UNSEATED_FOLDED_ROWS);
+
+  const toggleProject = (projectId: string) =>
+    setPickedIds((current) => (current.includes(projectId) ? current.filter((id) => id !== projectId) : [...current, projectId]));
+
+  const saveSeats = async (projectIds: string[]) => {
+    try {
+      await apiClient.saveProjectSeats(projectIds);
+      setNotice("座次已保存");
+    } catch {
+      // 多半是项目在别处改过（删掉、合并、另一个窗口排过座次）：下面重新取一遍，用新的一排再拖
+      setNotice("座次没保存：项目有变化，已刷新，请再拖一次", "warning");
+    }
+    await onProjectsChanged();
+  };
 
   const runQuery = (event: FormEvent) => {
     event.preventDefault();
@@ -110,6 +153,7 @@ export function ProjectsPage({
         <div>
           <span className="eyebrow">PROJECTS / 项目管理</span>
           <h1><BlurText text="项目" /></h1>
+          <p>按「我的方向」排座次，每个项目里的需求、任务和录音都从这里进。</p>
           <ProjectParentRow
             apiClient={apiClient}
             canEdit={canEdit}
@@ -117,22 +161,36 @@ export function ProjectsPage({
             onProjectsChanged={onProjectsChanged}
           />
         </div>
-        {canEdit && (
-          <div className="projects-page__actions">
-            {/* 全部项目概览只在电脑上有（手机上 #graph 退回项目列表），路由在 App 里 */}
-            <a className="projects-graph-link" href="#graph">
-              全部项目图
-            </a>
-            <button
-              className="projects-create"
-              onClick={() => setFormModal({ mode: "create", project: null })}
-              type="button"
-            >
-              ＋ 新建项目
-            </button>
+        <div className="projects-page__actions">
+          <div className="projects-count">
+            <strong>{projects.length}</strong>
+            <span>个项目<br />在跟进</span>
           </div>
-        )}
+          {canEdit && (
+            <>
+              {/* 全部项目概览只在电脑上有（手机上 #graph 退回项目列表），路由在 App 里 */}
+              <a className="projects-graph-link" href="#graph">
+                全部项目图
+              </a>
+              <button
+                className="projects-create"
+                onClick={() => setFormModal({ mode: "create", project: null })}
+                type="button"
+              >
+                ＋ 新建项目
+              </button>
+            </>
+          )}
+        </div>
       </header>
+
+      <DirectionBar
+        canWrite={canEdit}
+        onSeatsChange={saveSeats}
+        onToggle={toggleProject}
+        projects={directionProjects}
+        selected={pickedIds}
+      />
 
       <form className="projects-query" onSubmit={runQuery}>
         <label className="projects-query__field">
@@ -163,67 +221,52 @@ export function ProjectsPage({
 
       <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
-      <div className="projects-table-card">
-        <table className="projects-table">
-          <thead>
-            <tr>
-              <th>项目名称</th>
-              <th>材料根目录</th>
-              <th>进行中需求</th>
-              <th>全部需求</th>
-              <th>会议</th>
-              <th>未完成任务</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((project) => {
-              const roots = rootsLabel(project);
-              return (
-                <tr key={project.id}>
-                  <td>
-                    <button className="projects-table__name" onClick={() => onOpenProject(project.id)} type="button">
-                      <i style={{ background: project.color }} />
-                      {project.name}
-                    </button>
-                  </td>
-                  <td className={roots.attached ? "projects-table__root" : "projects-table__root is-empty"}>
-                    {roots.text}
-                  </td>
-                  <td>{project.requirement_counts?.active ?? 0}</td>
-                  <td>{project.requirement_counts?.all ?? 0}</td>
-                  <td>{meetingCount(project, meetings)}</td>
-                  <td>{project.open_task_count ?? 0}</td>
-                  <td>
-                    <span className="projects-table__ops">
-                      <button className="text-button" onClick={() => onOpenProject(project.id)} type="button">
-                        查看
-                      </button>
-                      {canEdit && (
-                        <button
-                          className="text-button"
-                          onClick={() => setFormModal({ mode: "edit", project })}
-                          type="button"
-                        >
-                          编辑
-                        </button>
-                      )}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-            {rows.length === 0 && (
-              <tr>
-                <td className="projects-table__empty" colSpan={7}>
-                  没有符合条件的项目
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-        <p className="projects-table__count">共 {rows.length} 条</p>
-      </div>
+      {seatedShown.length === 0 && unseatedShown.length === 0 && <p className="projects-empty">没有符合条件的项目</p>}
+
+      {seatedShown.length > 0 && (
+        <div className="project-panels">
+          {seatedShown.map((project) => (
+            <ProjectPanel
+              canEdit={canEdit}
+              key={project.id}
+              meetingTotal={meetingCount(project, meetings)}
+              onEdit={(target) => setFormModal({ mode: "edit", project: target })}
+              onOpen={onOpenProject}
+              project={project}
+            />
+          ))}
+        </div>
+      )}
+
+      {unseatedShown.length > 0 && (
+        <section className="project-unseated">
+          <h2 className="project-unseated__title">
+            未排座次 <span>按最近会议排</span>
+          </h2>
+          <ul aria-label="未排座次的项目列表" className="project-rows">
+            {unseatedRows.map((project) => (
+              <ProjectRow
+                canEdit={canEdit}
+                key={project.id}
+                meetingTotal={meetingCount(project, meetings)}
+                onEdit={(target) => setFormModal({ mode: "edit", project: target })}
+                onOpen={onOpenProject}
+                project={project}
+              />
+            ))}
+          </ul>
+          {unseatedShown.length > UNSEATED_FOLDED_ROWS && (
+            <button
+              aria-expanded={unseatedOpen}
+              className="project-more"
+              onClick={() => setUnseatedOpen((open) => !open)}
+              type="button"
+            >
+              {unseatedOpen ? "收起" : `还有 ${unseatedShown.length - UNSEATED_FOLDED_ROWS} 个项目`} {unseatedOpen ? "▴" : "▾"}
+            </button>
+          )}
+        </section>
+      )}
 
       {canEdit && (
         <div className="classification-create desktop-only">

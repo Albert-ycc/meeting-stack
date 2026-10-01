@@ -67,8 +67,9 @@ function client(overrides: Partial<ApiClient> = {}) {
   } as unknown as ApiClient;
 }
 
-function renderPage(overrides: Partial<Parameters<typeof ProjectDetailPage>[0]> = {}) {
-  return render(
+/** 默认点开「材料」标签页：老用例测的是材料、词典、时间线这些区块；传 null 停在默认的「需求与任务」 */
+async function renderPage(overrides: Partial<Parameters<typeof ProjectDetailPage>[0]> = {}, tab: string | null = "材料") {
+  const view = render(
     <ProjectDetailPage
       apiClient={client()}
       canPickFolders
@@ -83,12 +84,14 @@ function renderPage(overrides: Partial<Parameters<typeof ProjectDetailPage>[0]> 
       {...overrides}
     />,
   );
+  if (tab) fireEvent.click(await screen.findByRole("tab", { name: tab }));
+  return view;
 }
 
 describe("ProjectDetailPage 词典区", () => {
   it("列出项目词（错写、也叫）和总数，另有公共词一行", async () => {
     const onOpenGlossary = vi.fn();
-    renderPage({
+    await renderPage({
       onOpenGlossary,
       apiClient: client({
         projectBoard: vi.fn().mockResolvedValue({
@@ -114,7 +117,7 @@ describe("ProjectDetailPage 词典区", () => {
   });
 
   it("后端还没带 glossary 字段：不报错，渲染成空态", async () => {
-    renderPage();
+    await renderPage();
 
     expect(await screen.findByText("项目词只在这个项目的会里用来纠错和识别项目")).toBeTruthy();
     expect(screen.getByText("0 条项目词")).toBeTruthy();
@@ -122,7 +125,7 @@ describe("ProjectDetailPage 词典区", () => {
 
   it("点击「在词典中查看」调用 onOpenGlossary 并带上当前项目 id", async () => {
     const onOpenGlossary = vi.fn();
-    renderPage({ onOpenGlossary });
+    await renderPage({ onOpenGlossary });
 
     fireEvent.click(await screen.findByText("在词典中查看 →"));
 
@@ -132,7 +135,7 @@ describe("ProjectDetailPage 词典区", () => {
   it("输入正确写法回车，再接着输入错写，空着回车就加入", async () => {
     const createGlossaryTerm = vi.fn().mockResolvedValue({});
     const projectBoard = vi.fn().mockResolvedValue(baseBoard);
-    renderPage({ apiClient: client({ createGlossaryTerm, projectBoard } as Partial<ApiClient>) });
+    await renderPage({ apiClient: client({ createGlossaryTerm, projectBoard } as Partial<ApiClient>) });
 
     await userEvent.type(await screen.findByLabelText("项目词的正确写法"), "初审规则{Enter}");
     await userEvent.type(screen.getByLabelText("错写"), "出审规则{Enter}");
@@ -156,7 +159,7 @@ describe("ProjectDetailPage 词典区", () => {
     const conflict = { term_id: "gt-1", term: "随访", project_id: null, project_name: null, aliases: ["随方"], also: [] };
     const createGlossaryTerm = vi.fn().mockRejectedValue(new ApiError("「随访」已在 公共 词典", 409, { conflict }));
     const mergeGlossaryTerm = vi.fn().mockResolvedValue({});
-    renderPage({ apiClient: client({ createGlossaryTerm, mergeGlossaryTerm } as Partial<ApiClient>) });
+    await renderPage({ apiClient: client({ createGlossaryTerm, mergeGlossaryTerm } as Partial<ApiClient>) });
 
     await userEvent.type(await screen.findByLabelText("项目词的正确写法"), "随访{Enter}");
     await userEvent.type(screen.getByLabelText("错写"), "随仿{Enter}{Enter}");
@@ -169,17 +172,32 @@ describe("ProjectDetailPage 词典区", () => {
 });
 
 describe("ProjectDetailPage 页头", () => {
-  it("面包屑、色点、名称与会议·需求·未完成任务小计", async () => {
-    renderPage();
+  it("面包屑、名称、座次徽标与「N 场会 · 最近 · 材料根目录」一行", async () => {
+    await renderPage(
+      {
+        projects: [{ ...baseBoard, seat: 2, latest_meeting_date: "2026-09-28T18:37:26-07:00" }] as never,
+        apiClient: client({ projectBoard: vi.fn().mockResolvedValue({ ...baseBoard, seat: 2 }) } as Partial<ApiClient>),
+      },
+      null,
+    );
 
     expect(await screen.findByRole("heading", { name: "云图科研用药" })).toBeInTheDocument();
-    expect(screen.getByText("会议 33 场 · 需求 12 个 · 未完成任务 17 条")).toBeInTheDocument();
+    expect(screen.getByLabelText("座次 2")).toBeInTheDocument();
+    expect(
+      screen.getByText(/33 场会 · 最近 \d\d-\d\d · 材料根目录 \/Volumes\/资料盘\/蓝鲸云\/云图科研用药/),
+    ).toBeInTheDocument();
+  });
+
+  it("没排座次不显示座次", async () => {
+    await renderPage({}, null);
+    await screen.findByRole("heading", { name: "云图科研用药" });
+    expect(screen.queryByLabelText(/座次/)).toBeNull();
   });
 });
 
 describe("ProjectDetailPage 材料根目录卡", () => {
   it("展示路径、子文件夹数与复制路径", async () => {
-    renderPage();
+    await renderPage();
 
     expect(await screen.findByText("/Volumes/资料盘/蓝鲸云/云图科研用药")).toBeInTheDocument();
     expect(screen.getByText("29 个子文件夹")).toBeInTheDocument();
@@ -187,7 +205,7 @@ describe("ProjectDetailPage 材料根目录卡", () => {
   });
 
   it("找不到目录、没有改名候选时显示异常态与重新选…", async () => {
-    renderPage({
+    await renderPage({
       apiClient: client({
         projectBoard: vi.fn().mockResolvedValue({
           ...baseBoard,
@@ -202,7 +220,7 @@ describe("ProjectDetailPage 材料根目录卡", () => {
   });
 
   it("资料盘没插时只提示未连接，不让重新选择", async () => {
-    renderPage({
+    await renderPage({
       apiClient: client({
         projectBoard: vi.fn().mockResolvedValue({
           ...baseBoard,
@@ -232,7 +250,7 @@ describe("ProjectDetailPage 材料根目录卡", () => {
       breadcrumbs: [{ name: "资料盘", path: "/Volumes/资料盘" }],
       dirs: [{ name: "蓝鲸云", path: "/Volumes/资料盘/蓝鲸云" }],
     });
-    renderPage({
+    await renderPage({
       apiClient: client({
         projectBoard: vi.fn().mockResolvedValue({
           ...baseBoard,
@@ -259,7 +277,7 @@ describe("ProjectDetailPage 材料根目录卡", () => {
   });
 
   it("没有根目录时显示空态", async () => {
-    renderPage({
+    await renderPage({
       apiClient: client({
         projectBoard: vi.fn().mockResolvedValue({ ...baseBoard, material_roots: [] }),
       } as Partial<ApiClient>),
@@ -270,7 +288,7 @@ describe("ProjectDetailPage 材料根目录卡", () => {
 
   it("移除材料根目录需二次确认", async () => {
     const removeProjectMaterialRoot = vi.fn().mockResolvedValue({ ok: true });
-    renderPage({ apiClient: client({ removeProjectMaterialRoot } as Partial<ApiClient>) });
+    await renderPage({ apiClient: client({ removeProjectMaterialRoot } as Partial<ApiClient>) });
 
     await screen.findByText("/Volumes/资料盘/蓝鲸云/云图科研用药");
     await userEvent.click(screen.getByRole("button", { name: "移除" }));
@@ -285,7 +303,7 @@ describe("ProjectDetailPage 材料根目录卡", () => {
 
   it("移除失败时原因写在确认弹窗里，弹窗不关", async () => {
     const removeProjectMaterialRoot = vi.fn().mockRejectedValue(new Error("目录正被需求引用"));
-    renderPage({ apiClient: client({ removeProjectMaterialRoot } as Partial<ApiClient>) });
+    await renderPage({ apiClient: client({ removeProjectMaterialRoot } as Partial<ApiClient>) });
 
     await screen.findByText("/Volumes/资料盘/蓝鲸云/云图科研用药");
     await userEvent.click(screen.getByRole("button", { name: "移除" }));
@@ -301,14 +319,14 @@ describe("ProjectDetailPage 材料根目录卡", () => {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
-    renderPage();
+    await renderPage();
 
     await userEvent.click(await screen.findByRole("button", { name: "复制路径" }));
     expect(await screen.findByText("已复制路径")).toBeInTheDocument();
   });
 
   it("canPickFolders 为 false 时隐藏添加/移除/重新选择，仍保留复制路径", async () => {
-    renderPage({ canPickFolders: false });
+    await renderPage({ canPickFolders: false });
 
     await screen.findByText("/Volumes/资料盘/蓝鲸云/云图科研用药");
     expect(screen.queryByRole("button", { name: "＋ 添加目录" })).not.toBeInTheDocument();
@@ -325,7 +343,7 @@ describe("ProjectDetailPage 材料根目录卡", () => {
       breadcrumbs: [{ name: "资料盘", path: "/Volumes/资料盘" }],
       dirs: [{ name: "蓝鲸云", path: "/Volumes/资料盘/蓝鲸云" }],
     });
-    renderPage({ apiClient: client({ addProjectMaterialRoot, browseMaterials } as Partial<ApiClient>) });
+    await renderPage({ apiClient: client({ addProjectMaterialRoot, browseMaterials } as Partial<ApiClient>) });
 
     await userEvent.click(await screen.findByRole("button", { name: "＋ 添加目录" }));
     await userEvent.click(await screen.findByText("蓝鲸云"));
@@ -354,7 +372,7 @@ describe("ProjectDetailPage 盘不在时建的项目", () => {
   });
 
   it("在等：一句话说插上后自动建，没有按钮", async () => {
-    renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(pendingBoard("waiting")) }) });
+    await renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(pendingBoard("waiting")) }) });
 
     expect(await screen.findByText("资料盘未连接，插上后自动建 /Volumes/资料盘/项目/云图看板")).toBeInTheDocument();
     expect(screen.queryByText("还没有材料根目录")).not.toBeInTheDocument();
@@ -368,7 +386,7 @@ describe("ProjectDetailPage 盘不在时建的项目", () => {
       material_roots: [{ id: 3, project_id: "project-1", path: "/Volumes/资料盘/新位置/云图看板", exists: true, created_at: "" }],
     });
     const projectBoard = vi.fn().mockResolvedValue(pendingBoard("stopped", "要放新文件夹的位置不存在了"));
-    renderPage({ apiClient: client({ projectBoard, movePendingFolder, browseMaterials } as Partial<ApiClient>) });
+    await renderPage({ apiClient: client({ projectBoard, movePendingFolder, browseMaterials } as Partial<ApiClient>) });
 
     expect(await screen.findByText("要放新文件夹的位置不存在了")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "重新选位置…" }));
@@ -383,7 +401,7 @@ describe("ProjectDetailPage 盘不在时建的项目", () => {
 
   it("取径器里选「不建了，以后自己挂文件夹」", async () => {
     const dropPendingFolder = vi.fn().mockResolvedValue({ ok: true });
-    renderPage({
+    await renderPage({
       apiClient: client({
         projectBoard: vi.fn().mockResolvedValue(pendingBoard("stopped", "没有权限在这里建文件夹")),
         movePendingFolder: vi.fn(),
@@ -428,7 +446,7 @@ describe("ProjectDetailPage 文件夹改名后找回", () => {
       cards_written: 2,
     });
     const projectBoard = vi.fn().mockResolvedValue(missingBoard);
-    renderPage({ apiClient: client({ projectBoard, renameCandidates, repointProjectMaterialRoot } as Partial<ApiClient>) });
+    await renderPage({ apiClient: client({ projectBoard, renameCandidates, repointProjectMaterialRoot } as Partial<ApiClient>) });
 
     const question = await screen.findByRole("group", { name: "是不是改了名" });
     expect(question).toHaveTextContent(
@@ -458,7 +476,7 @@ describe("ProjectDetailPage 文件夹改名后找回", () => {
       })
       .mockResolvedValueOnce({ state: "ready", candidates: [], default_path: null });
     const declineRenameCandidate = vi.fn().mockResolvedValue({ ok: true });
-    renderPage({
+    await renderPage({
       apiClient: client({
         projectBoard: vi.fn().mockResolvedValue(missingBoard),
         renameCandidates,
@@ -479,7 +497,7 @@ describe("ProjectDetailPage 文件夹改名后找回", () => {
       candidates: [candidate("云图A", 3, "里面有这个项目的会议卡片"), candidate("云图B", 3, "里面有这个项目的会议卡片")],
       default_path: null,
     });
-    renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(missingBoard), renameCandidates }) });
+    await renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(missingBoard), renameCandidates }) });
 
     const question = await screen.findByRole("group", { name: "是不是改了名" });
     expect(question).toHaveTextContent("是不是改名成了下面哪一个？");
@@ -500,7 +518,7 @@ describe("ProjectDetailPage 文件夹改名后找回", () => {
           candidates: [candidate("云图2026", 2, "里面 12 个子文件夹有 11 个对得上")],
           default_path: "/Volumes/资料盘/蓝鲸云/云图2026",
         });
-      renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(missingBoard), renameCandidates }) });
+      await renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(missingBoard), renameCandidates }) });
 
       expect(await screen.findByText("找不到该目录")).toBeInTheDocument();
       // 「找不到该目录」可能先于第一次询问画出来，等询问真的发出去再推时间
@@ -552,7 +570,7 @@ describe("ProjectDetailPage 文件名索引", () => {
         indexRoot(5, { state: "done", files: 8, updated_at: fiveMinutesAgo }),
       ],
     });
-    renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(fiveRoots), getMaterialIndexStatus }) });
+    await renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(fiveRoots), getMaterialIndexStatus }) });
 
     expect(
       await screen.findByText("已认得 1,234 个文件名 · 5 分钟前（node_modules、.git 等 3 个文件夹只记了个数）"),
@@ -572,7 +590,7 @@ describe("ProjectDetailPage 文件名索引", () => {
         .fn()
         .mockResolvedValueOnce({ roots: [indexRoot(1, { state: "walking", files: 820, indexed_once: false })] })
         .mockResolvedValue({ roots: [indexRoot(1, { state: "done", files: 1500, updated_at: new Date().toISOString() })] });
-      renderPage({ apiClient: client({ getMaterialIndexStatus }) });
+      await renderPage({ apiClient: client({ getMaterialIndexStatus }) });
 
       expect(await screen.findByText("正在认文件名，已认 820 个")).toBeInTheDocument();
       await act(async () => {
@@ -590,113 +608,15 @@ describe("ProjectDetailPage 文件名索引", () => {
   });
 
   it("旧后端没有这个接口时不写这一行", async () => {
-    renderPage();
+    await renderPage();
     expect(await screen.findByText(baseBoard.material_roots![0].path)).toBeInTheDocument();
     expect(document.querySelector(".material-root-row__index")).toBeNull();
   });
 });
 
-describe("ProjectDetailPage 需求卡", () => {
-  it("按页签取数并渲染表格", async () => {
-    const requirements = vi.fn().mockImplementation(async (filters) => {
-      if (filters.status === "done") {
-        return {
-          items: [requirementRow({ id: "req-done", title: "北辰直邮初版原型", status: "done", priority: "P0" })],
-          total: 1,
-          limit: 10,
-          offset: 0,
-          counts: { active: 6, done: 5, shelved: 1, all: 12 },
-        };
-      }
-      return {
-        items: [requirementRow()],
-        total: 6,
-        limit: 10,
-        offset: 0,
-        counts: { active: 6, done: 5, shelved: 1, all: 12 },
-      };
-    });
-    const onOpenRequirement = vi.fn();
-    renderPage({ apiClient: client({ requirements } as Partial<ApiClient>), onOpenRequirement });
-
-    expect(await screen.findByText("北辰仓快递配送")).toBeInTheDocument();
-    expect(requirements).toHaveBeenCalledWith(
-      expect.objectContaining({ project_id: "project-1", status: "active", limit: 10, offset: 0 }),
-    );
-
-    await userEvent.click(screen.getByRole("tab", { name: /已完成/ }));
-    expect(await screen.findByText("北辰直邮初版原型")).toBeInTheDocument();
-    expect(requirements).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "done", offset: 0 }),
-    );
-
-    await userEvent.click(screen.getByRole("button", { name: "查看" }));
-    expect(onOpenRequirement).toHaveBeenCalledWith("req-done");
-  });
-
-  it("没有需求时显示空态", async () => {
-    renderPage();
-    expect(await screen.findByText("还没有需求")).toBeInTheDocument();
-  });
-});
-
-describe("ProjectDetailPage 会议卡", () => {
-  function meetingRow(overrides: Partial<ProjectMeetingRow> = {}): ProjectMeetingRow {
-    return {
-      id: "m1",
-      title: "260908 云图需求梳理与北辰科研仓对接",
-      recording_date: "2026-09-08T06:05:00Z",
-      duration_ms: 50 * 60_000,
-      canonical_dir: null,
-      requirements: [
-        { id: "r1", title: "北辰仓快递配送", priority: "P0", status: "active", project_id: "project-1" },
-        { id: "r2", title: "复审流程可配置", priority: "P1", status: "active", project_id: "project-1" },
-        { id: "r3", title: "库存盘点", priority: "P3", status: "active", project_id: "project-1" },
-      ],
-      ...overrides,
-    };
-  }
-
-  it("关联需求超过两个时折叠成「等 N 个」", async () => {
-    renderPage({ apiClient: client({ projectMeetings: vi.fn().mockResolvedValue([meetingRow()]) } as Partial<ApiClient>) });
-
-    expect(await screen.findByText("北辰仓快递配送")).toBeInTheDocument();
-    expect(screen.getByText("复审流程可配置")).toBeInTheDocument();
-    expect(screen.getByText("等 1 个")).toBeInTheDocument();
-    expect(screen.queryByText("库存盘点")).not.toBeInTheDocument();
-  });
-
-  it("点打开跳到会议详情", async () => {
-    const onOpenMeeting = vi.fn();
-    renderPage({
-      apiClient: client({ projectMeetings: vi.fn().mockResolvedValue([meetingRow()]) } as Partial<ApiClient>),
-      onOpenMeeting,
-    });
-
-    await userEvent.click(await screen.findByRole("button", { name: "打开" }));
-    expect(onOpenMeeting).toHaveBeenCalledWith("m1");
-  });
-
-  it("没有会议时显示空态", async () => {
-    renderPage();
-    expect(await screen.findByText("还没有会议")).toBeInTheDocument();
-  });
-
-  it("超过 8 场按页码条分页（客户端切片）", async () => {
-    const rows = Array.from({ length: 9 }, (_, index) => meetingRow({ id: `m${index}`, title: `会议 ${index}`, requirements: [] }));
-    renderPage({ apiClient: client({ projectMeetings: vi.fn().mockResolvedValue(rows) } as Partial<ApiClient>) });
-
-    await screen.findByText("会议 0");
-    expect(screen.queryByText("会议 8")).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "2" }));
-    expect(await screen.findByText("会议 8")).toBeInTheDocument();
-  });
-});
-
 describe("ProjectDetailPage 编辑项目与新建需求", () => {
   it("编辑项目打开弹窗并预填当前信息", async () => {
-    renderPage();
+    await renderPage();
     await screen.findByRole("heading", { name: "云图科研用药" });
 
     await userEvent.click(screen.getByRole("button", { name: "编辑项目" }));
@@ -705,7 +625,7 @@ describe("ProjectDetailPage 编辑项目与新建需求", () => {
   });
 
   it("canWrite 为 false 时不显示编辑项目 / 新建需求 / 添加目录", async () => {
-    renderPage({ canWrite: false });
+    await renderPage({ canWrite: false });
     await screen.findByRole("heading", { name: "云图科研用药" });
 
     expect(screen.queryByRole("button", { name: "编辑项目" })).not.toBeInTheDocument();
@@ -727,7 +647,7 @@ describe("ProjectDetailPage 系统怎么认出这个项目", () => {
     const projectBoard = vi.fn().mockResolvedValue({ ...baseBoard, profile });
     const updateProject = vi.fn().mockResolvedValue(baseBoard);
     const onProjectsChanged = vi.fn();
-    renderPage({ apiClient: client({ projectBoard, updateProject }), onProjectsChanged });
+    await renderPage({ apiClient: client({ projectBoard, updateProject }), onProjectsChanged });
 
     const card = await screen.findByRole("region", { name: "系统怎么认出这个项目" });
     expect(card).toHaveTextContent("自动归入 9 场、你改走 1 场");
@@ -743,7 +663,7 @@ describe("ProjectDetailPage 系统怎么认出这个项目", () => {
     const target = { id: "project-2", name: "数据中台", color: "#3f51b5" };
     const mergeProject = vi.fn().mockResolvedValue(target);
     const onOpenProject = vi.fn();
-    renderPage({
+    await renderPage({
       apiClient: client({ mergeProject }),
       onOpenProject,
       projects: [{ ...baseBoard }, target],
@@ -768,7 +688,7 @@ describe("ProjectDetailPage 冷启动提示", () => {
       meeting_count: 0,
       requirement_counts: { active: 0, done: 0, shelved: 0, all: 0 },
     };
-    renderPage({
+    await renderPage({
       apiClient: client({ projectBoard: vi.fn().mockResolvedValue(orphan) }),
       projects: [orphan, { id: "project-2", name: "数据中台", color: "#3f51b5" }],
     });
@@ -792,7 +712,7 @@ describe("ProjectDetailPage 冷启动提示", () => {
         },
       ],
     };
-    renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(shared) }) });
+    await renderPage({ apiClient: client({ projectBoard: vi.fn().mockResolvedValue(shared) }) });
 
     expect(await screen.findByText(/也挂在「云图老项目」下/)).toHaveTextContent(
       "会议卡片只写给先挂上的「云图老项目」，不需要可以在这里移除",
@@ -837,7 +757,7 @@ describe("ProjectDetailPage 材料内容进度（3e）", () => {
   it("在读：已读多少、还剩多少，读不了分原因，只收文件名的写在括号里，「只记了个数」只写一次", async () => {
     const getMaterialIndexStatus = vi.fn().mockResolvedValue({ roots: [indexRoot()] });
     const getMaterialCoverage = vi.fn().mockResolvedValue({ roots: [coverageRoot()] });
-    renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage }) });
+    await renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage }) });
 
     expect(
       await screen.findByText(/正文、图片文字、录音已读 1,020 个，还剩 210 个，读不了 7 个（要密码 2、文件损坏 3、格式不支持 2）/),
@@ -856,7 +776,7 @@ describe("ProjectDetailPage 材料内容进度（3e）", () => {
   it("转写会议时先停；读完了写「内容都读完了」；识别程序没装单独一句", async () => {
     const getMaterialIndexStatus = vi.fn().mockResolvedValue({ roots: [indexRoot()] });
     const getMaterialCoverage = vi.fn().mockResolvedValue({ roots: [coverageRoot({ paused: "busy" })] });
-    const first = renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage }) });
+    const first = await renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage }) });
     expect(await screen.findByText(/还剩 210 个 · 转写会议时先停，转写完接着读/)).toBeInTheDocument();
     first.unmount();
 
@@ -870,7 +790,7 @@ describe("ProjectDetailPage 材料内容进度（3e）", () => {
         }),
       ],
     });
-    const second = renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage: done }) });
+    const second = await renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage: done }) });
     expect(await screen.findByText("内容都读完了")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "看看" })).toBeNull();
     second.unmount();
@@ -878,7 +798,7 @@ describe("ProjectDetailPage 材料内容进度（3e）", () => {
     const waiting = vi.fn().mockResolvedValue({
       roots: [coverageRoot({ pending: 0, waiting: [{ what: "ffmpeg", files: 4, hint }] })],
     });
-    renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage: waiting }) });
+    await renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage: waiting }) });
     expect(await screen.findByText(hint)).toBeInTheDocument();
     expect(screen.getByText(/已读 1,020 个，还剩 4 个/)).toBeInTheDocument();
   });
@@ -899,7 +819,7 @@ describe("ProjectDetailPage 材料内容进度（3e）", () => {
       .mockResolvedValueOnce({ items: [item(1), item(2)], total: 3, next_offset: 2 })
       .mockResolvedValueOnce({ items: [item(3)], total: 3, next_offset: null });
     const onOpenPreview = vi.fn();
-    renderPage({
+    await renderPage({
       apiClient: client({
         getMaterialIndexStatus: vi.fn().mockResolvedValue({ roots: [indexRoot()] }),
         getMaterialCoverage: vi.fn().mockResolvedValue({ roots: [coverageRoot({ pending: 0 })] }),
@@ -935,7 +855,7 @@ describe("ProjectDetailPage 材料内容进度（3e）", () => {
         .fn()
         .mockResolvedValueOnce({ roots: [coverageRoot()] })
         .mockResolvedValue({ roots: [coverageRoot({ pending: 0 })] });
-      const view = renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage }) });
+      const view = await renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage }) });
       expect(await screen.findByText(/还剩 210 个/)).toBeInTheDocument();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(INDEX_POLL_MS);
@@ -950,7 +870,7 @@ describe("ProjectDetailPage 材料内容进度（3e）", () => {
       view.unmount();
 
       const offline = vi.fn().mockResolvedValue({ roots: [coverageRoot({}, false)] });
-      renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage: offline }) });
+      await renderPage({ apiClient: client({ getMaterialIndexStatus, getMaterialCoverage: offline }) });
       expect(await screen.findByText(/还剩 210 个/)).toBeInTheDocument();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(INDEX_POLL_MS * 2);
@@ -962,7 +882,7 @@ describe("ProjectDetailPage 材料内容进度（3e）", () => {
   });
 
   it("coverage 出错时照旧写文件名那行（带「只记了个数」）", async () => {
-    renderPage({
+    await renderPage({
       apiClient: client({
         getMaterialIndexStatus: vi.fn().mockResolvedValue({ roots: [indexRoot()] }),
         getMaterialCoverage: vi.fn().mockRejectedValue(new Error("boom")),
@@ -1012,8 +932,8 @@ function timelinePayload(overrides: Partial<ProjectTimelinePayload> = {}): Proje
 
 const LINKS_ON = { linksEnabled: true, semanticEnabled: true, llmConfigured: true };
 
-function renderTimeline(api: Partial<ApiClient>, props: Partial<Parameters<typeof ProjectDetailPage>[0]> = {}) {
-  return render(
+async function renderTimeline(api: Partial<ApiClient>, props: Partial<Parameters<typeof ProjectDetailPage>[0]> = {}) {
+  const view = render(
     <LinksFlagsContext.Provider value={LINKS_ON}>
       <ProjectDetailPage
         apiClient={client({ meetingQuotes: vi.fn().mockResolvedValue({ quotes: [] }), ...api } as Partial<ApiClient>)}
@@ -1030,12 +950,14 @@ function renderTimeline(api: Partial<ApiClient>, props: Partial<Parameters<typeo
       />
     </LinksFlagsContext.Provider>,
   );
+  fireEvent.click(await screen.findByRole("tab", { name: "材料" }));
+  return view;
 }
 
 describe("ProjectDetailPage 的时间线（4c）", () => {
-  it("在「AI 自动建的项目」提示之后、「材料根目录」之前，条目的字照规格", async () => {
+  it("在「材料」页签里排在「材料根目录」之后，条目的字照规格", async () => {
     const projectTimeline = vi.fn().mockResolvedValue(timelinePayload());
-    renderTimeline({
+    await renderTimeline({
       projectTimeline,
       projectBoard: vi.fn().mockResolvedValue({ ...baseBoard, origin: "ai", material_roots: [] }),
     } as Partial<ApiClient>);
@@ -1043,8 +965,8 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
     const card = await screen.findByRole("region", { name: "时间线" });
     const hint = await screen.findByText(/这个项目是 AI 自动建的/);
     const roots = await screen.findByRole("heading", { name: "材料根目录" });
-    expect(hint.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(card.compareDocumentPosition(roots) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(hint.compareDocumentPosition(roots) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(roots.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await waitFor(() => expect(projectTimeline).toHaveBeenCalledWith("project-1", { kind: "all", days: 7 }));
 
     const inCard = within(card);
@@ -1072,7 +994,7 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
         next_before: null,
       }))
       .mockResolvedValue(timelinePayload({ kind: "decisions", days: [], next_before: null }));
-    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    await renderTimeline({ projectTimeline } as Partial<ApiClient>);
 
     const card = await screen.findByRole("region", { name: "时间线" });
     await within(card).findByText("今天");
@@ -1099,7 +1021,7 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
         state: { kind: "waiting", reason: "offline", text: "资料盘未连接，插上后接着记文件的变化", action: null },
       });
       const projectTimeline = vi.fn().mockResolvedValueOnce(waiting).mockResolvedValue(noRoots);
-      renderTimeline({ projectTimeline } as Partial<ApiClient>);
+      await renderTimeline({ projectTimeline } as Partial<ApiClient>);
       const card = await screen.findByRole("region", { name: "时间线" });
       expect(await within(card).findByText("资料盘未连接，插上后接着记文件的变化")).toBeInTheDocument();
       await act(async () => {
@@ -1118,7 +1040,7 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
       state: { kind: "stopped", reason: "no_roots", text: "这个项目还没挂材料文件夹，时间线里只有会议和任务",
                action: { kind: "attach_root", label: "挂上文件夹" } },
     }));
-    renderTimeline({ projectTimeline } as Partial<ApiClient>, { canPickFolders: false });
+    await renderTimeline({ projectTimeline } as Partial<ApiClient>, { canPickFolders: false });
     const card = await screen.findByRole("region", { name: "时间线" });
     await within(card).findByText("这个项目还没挂材料文件夹，时间线里只有会议和任务");
     expect(within(card).queryByRole("button", { name: "挂上文件夹" })).not.toBeInTheDocument();
@@ -1142,7 +1064,7 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
     const projectTimeline = vi.fn().mockResolvedValueOnce(timelinePayload()).mockResolvedValue(decisions);
     const placeDecision = vi.fn().mockResolvedValue({ decision: {}, undo: { placement: null, requirement_id: null }, undo_until: "2099-01-01T00:00:00Z" });
     const onOpenMeeting = vi.fn();
-    renderTimeline({ projectTimeline, placeDecision } as Partial<ApiClient>, { onOpenMeeting });
+    await renderTimeline({ projectTimeline, placeDecision } as Partial<ApiClient>, { onOpenMeeting });
 
     const card = await screen.findByRole("region", { name: "时间线" });
     await within(card).findByText("今天");
@@ -1182,7 +1104,7 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
         .mockResolvedValueOnce(timelinePayload({ state: waiting }))
         .mockResolvedValueOnce(older)
         .mockResolvedValue(refreshed);
-      renderTimeline({ projectTimeline } as Partial<ApiClient>);
+      await renderTimeline({ projectTimeline } as Partial<ApiClient>);
       const card = await screen.findByRole("region", { name: "时间线" });
       await within(card).findByText("今天");
       fireEvent.click(within(card).getByRole("button", { name: "更早" }));
@@ -1216,7 +1138,7 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
         ] }],
         next_before: null,
       }));
-    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    await renderTimeline({ projectTimeline } as Partial<ApiClient>);
     const card = await screen.findByRole("region", { name: "时间线" });
     expect(await within(card).findByText("10:00 完成了任务：写一版方案")).toBeInTheDocument();
     expect(projectTimeline).toHaveBeenLastCalledWith("project-1", { kind: "all", days: 7, before: "2026-09-20" });
@@ -1225,7 +1147,7 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
 
   it("往前取了几页仍是空的：只留［更早］，不写「还没有…」", async () => {
     const projectTimeline = vi.fn().mockResolvedValue(timelinePayload({ days: [], next_before: "2026-09-01" }));
-    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    await renderTimeline({ projectTimeline } as Partial<ApiClient>);
     const card = await screen.findByRole("region", { name: "时间线" });
     expect(await within(card).findByRole("button", { name: "更早" })).toBeInTheDocument();
     expect(projectTimeline).toHaveBeenCalledTimes(4);
@@ -1242,7 +1164,7 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
       .mockResolvedValueOnce(timelinePayload())
       .mockReturnValueOnce(pending)
       .mockResolvedValue(timelinePayload({ kind: "tasks", days: [], next_before: null }));
-    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    await renderTimeline({ projectTimeline } as Partial<ApiClient>);
     const card = await screen.findByRole("region", { name: "时间线" });
     await within(card).findByText("今天");
     await userEvent.click(within(card).getByRole("button", { name: "更早" }));
@@ -1273,7 +1195,7 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
       requirements: [{ id: "r1", title: "初审规则 V2" }],
       days: [{ day: "2026-09-27", label: "今天", more_dirs: 0, items: [decisionItem("dec-n", "none"), decisionItem("dec-p", "project")] }],
     }));
-    renderTimeline({ projectTimeline, placeDecision: vi.fn() } as Partial<ApiClient>);
+    await renderTimeline({ projectTimeline, placeDecision: vi.fn() } as Partial<ApiClient>);
     const card = await screen.findByRole("region", { name: "时间线" });
     await within(card).findByText("今天");
     await userEvent.click(within(card).getByRole("button", { name: "决议" }));
@@ -1288,19 +1210,19 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
 
   it("「还有 N 条」打开纪要；旧后台没有方法时不画时间线", async () => {
     const onOpenMeeting = vi.fn();
-    renderTimeline({ projectTimeline: vi.fn().mockResolvedValue(timelinePayload()) } as Partial<ApiClient>, { onOpenMeeting });
+    await renderTimeline({ projectTimeline: vi.fn().mockResolvedValue(timelinePayload()) } as Partial<ApiClient>, { onOpenMeeting });
     const card = await screen.findByRole("region", { name: "时间线" });
     await userEvent.click(await within(card).findByRole("button", { name: "还有 5 条" }));
     expect(onOpenMeeting).toHaveBeenCalledWith("m1", undefined, "minutes");
   });
 
   it("旧后台：没有 projectTimeline 或接口 404 时不画", async () => {
-    const { unmount } = renderTimeline({});
+    const { unmount } = await renderTimeline({});
     await screen.findByRole("heading", { name: "材料根目录" });
     expect(screen.queryByRole("region", { name: "时间线" })).not.toBeInTheDocument();
     unmount();
     const projectTimeline = vi.fn().mockRejectedValue(new ApiError("Not Found", 404, { detail: "Not Found" }));
-    renderTimeline({ projectTimeline } as Partial<ApiClient>);
+    await renderTimeline({ projectTimeline } as Partial<ApiClient>);
     await screen.findByRole("heading", { name: "材料根目录" });
     await waitFor(() => expect(projectTimeline).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByRole("region", { name: "时间线" })).not.toBeInTheDocument());
@@ -1311,7 +1233,7 @@ describe("ProjectDetailPage 的问答卡（4g）", () => {
   it("有 askPrepare 时「问这个项目」卡在时间线上面；材料出处交给 onOpenPreviewTarget", async () => {
     const projectTimeline = vi.fn().mockResolvedValue(timelinePayload());
     const askPrepare = vi.fn();
-    renderTimeline({ projectTimeline, askPrepare, ask: vi.fn(), askJob: vi.fn() } as Partial<ApiClient>, {
+    await renderTimeline({ projectTimeline, askPrepare, ask: vi.fn(), askJob: vi.fn() } as Partial<ApiClient>, {
       onOpenPreviewTarget: vi.fn(),
       isMobile: true,
     });
@@ -1323,7 +1245,7 @@ describe("ProjectDetailPage 的问答卡（4g）", () => {
   });
 
   it("没有 askPrepare（旧后台）时不画问答卡", async () => {
-    renderTimeline({ projectTimeline: vi.fn().mockResolvedValue(timelinePayload()) } as Partial<ApiClient>);
+    await renderTimeline({ projectTimeline: vi.fn().mockResolvedValue(timelinePayload()) } as Partial<ApiClient>);
     await screen.findByRole("region", { name: "时间线" });
     expect(screen.queryByRole("region", { name: "问这个项目" })).toBeNull();
   });

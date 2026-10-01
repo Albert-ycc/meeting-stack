@@ -506,9 +506,9 @@ describe("App refresh and navigation safety", () => {
     await waitFor(() => expect(projects).toHaveBeenCalledTimes(2));
 
     fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
-    // 项目管理页 260915 起改成表格（D18），会议数是「会议」列里的数字，不再是「N 场会议」文案。
-    const row = await screen.findByRole("row", { name: /项目甲/ });
-    expect(within(row).getByText("2")).toBeInTheDocument();
+    // 项目管理页没排座次的项目是列表行，会议数是行里「会议」下面的数字。
+    const list = await screen.findByRole("list", { name: "未排座次的项目列表" });
+    expect(within(list).getByText("会议").nextElementSibling).toHaveTextContent("2");
   });
 });
 

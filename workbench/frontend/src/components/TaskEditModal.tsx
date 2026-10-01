@@ -33,6 +33,8 @@ export interface TaskEditModalProps {
    * 负责人默认选「我」。仅新建模式生效；不传时和以前完全一样。
    */
   fixedRequirement?: { id: string; title: string; priority: RequirementPriority };
+  /** fixedRequirement 时「挂到需求」旁的说明；默认是需求详情里的那句，别处打开（项目详情的任务面板）换成不提来源的 */
+  fixedHint?: string;
   /** 待确认的任务点保存时是否同时确认，默认是。审核卡打开的传 false：只保存，确认留给卡上的［确认］ */
   confirmOnSave?: boolean;
 }
@@ -58,6 +60,7 @@ export function TaskEditModal({
   defaultProjectId = null,
   defaultRequirementId = null,
   fixedRequirement,
+  fixedHint = "从需求详情新建，固定挂在这条需求上",
   confirmOnSave = true,
 }: TaskEditModalProps) {
   const isEdit = task !== null;
@@ -301,7 +304,7 @@ export function TaskEditModal({
             <div className="task-edit-modal__field">
               <div className="task-edit-modal__label-row">
                 <span className="task-edit-modal__label">挂到需求</span>
-                <span className="task-edit-modal__hint">从需求详情新建，固定挂在这条需求上</span>
+                <span className="task-edit-modal__hint">{fixedHint}</span>
               </div>
               <div aria-label="挂到需求" className="task-edit-modal__locked" role="group">
                 <svg aria-hidden="true" className="task-edit-modal__flag" fill="none" height="14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 16 16" width="14">

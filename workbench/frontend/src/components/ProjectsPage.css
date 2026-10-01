@@ -1,4 +1,4 @@
-/* 项目管理：查询区 + 表格 */
+/* 项目管理：页头、查询区；面板和列表行在 projects/ProjectPanel.css */
 
 .projects-page__heading {
   align-items: center;
@@ -109,105 +109,31 @@
   border-color: var(--line-strong);
 }
 
-.projects-table-card {
-  overflow-x: auto;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-}
-
-.projects-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.projects-table thead th {
-  padding: 13px 16px;
-  color: var(--ink-faint);
-  font-size: 12px;
-  font-weight: 500;
-  text-align: left;
-  white-space: nowrap;
-  background: var(--stage);
-}
-
-.projects-table thead th:first-child {
-  border-radius: 16px 0 0 0;
-}
-
-.projects-table thead th:last-child {
-  border-radius: 0 16px 0 0;
-}
-
-.projects-table tbody td {
-  padding: 13px 16px;
-  color: var(--ink-2);
-  font-size: 13px;
-  border-top: 1px solid var(--line);
-}
-
-.projects-table__name {
-  display: inline-flex;
+/* 右上角的项目数：大数字加两行小字，和右边的按钮之间一条竖线 */
+.projects-count {
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0;
-  color: var(--ink);
-  font-size: 14px;
+  padding-right: 18px;
+  border-right: 1px solid var(--line-strong);
+}
+
+.projects-count strong {
+  color: var(--heading);
+  font-size: 34px;
   font-weight: 500;
-  background: transparent;
-  border: 0;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
-.projects-table__name:hover {
-  color: var(--signal-dark);
-}
-
-.projects-table__name i {
-  display: inline-block;
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.projects-table__root {
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.projects-table__root.is-empty {
-  color: var(--ink-faint);
-}
-
-.projects-table__ops {
-  display: flex;
-  gap: 10px;
-}
-
-/* 行操作「查看 / 编辑」是橙色文字链接，不是全局灰色的 .text-button */
-.projects-table__ops .text-button {
-  color: var(--signal-dark);
-  font-weight: 500;
-}
-
-.projects-table__ops .text-button:hover {
-  color: var(--signal);
-}
-
-.projects-table__empty {
-  padding: 28px 16px;
-  color: var(--ink-faint);
-  font-size: 12px;
-  text-align: center;
-}
-
-.projects-table__count {
-  margin: 0;
-  padding: 12px 16px;
+.projects-count span {
   color: var(--ink-faint);
   font-size: 11px;
+  line-height: 14px;
+}
+
+.projects-page > .direction-bar {
+  margin-bottom: 14px;
 }
 
 @media (max-width: 767px) {
@@ -229,5 +155,15 @@
 
   .projects-query__buttons {
     margin-left: 0;
+  }
+
+  .projects-page__actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .projects-count {
+    padding-right: 0;
+    border-right: 0;
   }
 }

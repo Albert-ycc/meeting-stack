@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import type { ApiClient } from "../api";
-import { formatDurationText, formatMonthDay } from "../format";
+import { ApiError, type ApiClient } from "../api";
+import { formatMonthDay } from "../format";
 import type {
   MaterialCoverage,
   MaterialCoverageRoot,
@@ -13,12 +13,7 @@ import type {
   PreviewTarget,
   Project,
   ProjectBoard,
-  ProjectMeetingRow,
   ProjectSubfoldersPayload,
-  RequirementRef,
-  RequirementStatus,
-  RequirementSummary,
-  RequirementsPayload,
   UnreadableReason,
 } from "../types";
 import { AsyncState } from "./AsyncState";
@@ -26,11 +21,9 @@ import { nestedHints } from "./ClaimFoldersDialog";
 import { FolderIcon } from "./FolderIcon";
 import { MaterialRootPickerModal } from "./MaterialRootPickerModal";
 import { ProjectCardsRow } from "./ProjectCardsRow";
-import { Pagination } from "./Pagination";
 import { ProjectFormModal } from "./ProjectFormModal";
 import { ProjectRecognitionCard } from "./ProjectRecognitionCard";
 import { RootRenameQuestion, movedNote } from "./RootRenameQuestion";
-import { PriorityBadge, RequirementStatusBadge } from "./RequirementBadges";
 // FE-1 负责的需求弹窗；写这个文件时它可能还不存在，tsc 报「模块不存在」属于预期（简报第 5 节已钉死 props）。
 import { RequirementModal } from "./RequirementModal";
 import { useToast } from "./Toast";
@@ -42,6 +35,8 @@ import { ProjectGlossary } from "./ProjectGlossary";
 import { usePersistentState } from "../viewState";
 import { ProjectTimeline } from "./decisions/ProjectTimeline";
 import { ProjectAsk } from "./ask/ProjectAsk";
+import { RecordingsTab } from "./projects/detail/RecordingsTab";
+import { WorkTab } from "./projects/detail/WorkTab";
 
 interface ProjectDetailPageProps {
   apiClient: ApiClient;
@@ -66,8 +61,13 @@ interface ProjectDetailPageProps {
   onProjectsChanged?: () => void | Promise<void>;
   /** 合并后跳到目标项目 */
   onOpenProject?: (projectId: string) => void;
-  /** 标题行右侧的［关系图｜清单］（手机端没有关系图，不传） */
-  modeToggle?: ReactNode;
+  /** 「关系图」标签页里的内容（手机端没有关系图，不传就没有这个标签页） */
+  graphTab?: ReactNode;
+  /** 地址栏记着的视图：graph＝停在关系图标签页。切到或离开关系图标签页时通过 onViewModeChange 告诉外面 */
+  viewMode?: "graph" | "list";
+  onViewModeChange?: (mode: "graph" | "list") => void;
+  /** 「去认领」：外面把需求池切到待认领并只筛本项目，再跳过去 */
+  onClaimCandidates?: (projectId: string) => void;
   /** 4g：问答出处里的材料打开预览抽屉到「回答引用的这段」；不传时退回 onOpenPreview(文件 id) */
   onOpenPreviewTarget?: (target: PreviewTarget) => void;
   /** 4g：手机上问答卡占满宽度 */
@@ -75,9 +75,9 @@ interface ProjectDetailPageProps {
 }
 
 type LoadState = "loading" | "ready" | "error";
+type BoardState = LoadState | "missing";
+type DetailTab = "work" | "recordings" | "graph" | "materials";
 
-const REQUIREMENTS_PAGE_SIZE = 10;
-const MEETINGS_PAGE_SIZE = 8;
 /** 文件名还在认（pending / walking）、内容还在读时隔一会儿再问一次进度 */
 export const INDEX_POLL_MS = 15_000;
 
@@ -255,29 +255,6 @@ function UnreadableList({
   );
 }
 
-const REQUIREMENT_TABS: Array<{ key: RequirementStatus | "all"; label: string }> = [
-  { key: "active", label: "进行中" },
-  { key: "done", label: "已完成" },
-  { key: "shelved", label: "已搁置" },
-  { key: "all", label: "全部" },
-];
-
-function RequirementRefChips({ items }: { items: RequirementRef[] }) {
-  if (items.length === 0) return <span className="detail-table__muted">—</span>;
-  const shown = items.slice(0, 2);
-  const rest = items.length - shown.length;
-  return (
-    <span className="detail-chip-row">
-      {shown.map((item) => (
-        <span className="detail-chip" key={item.id}>
-          {item.title}
-        </span>
-      ))}
-      {rest > 0 && <span className="detail-chip detail-chip--more">等 {rest} 个</span>}
-    </span>
-  );
-}
-
 export function ProjectDetailPage({
   apiClient,
   projectId,
@@ -285,7 +262,7 @@ export function ProjectDetailPage({
   onBack,
   onOpenGlossary,
   onOpenMeeting,
-  onOpenTask: _onOpenTask,
+  onOpenTask,
   onOpenPreview,
   reloadKey = 0,
   onProjectUpdated,
@@ -295,27 +272,26 @@ export function ProjectDetailPage({
   canReveal = true,
   onProjectsChanged,
   onOpenProject,
-  modeToggle,
+  graphTab,
+  viewMode,
+  onViewModeChange,
+  onClaimCandidates,
   onOpenPreviewTarget,
   isMobile = false,
 }: ProjectDetailPageProps) {
   const [board, setBoard] = useState<ProjectBoard | null>(null);
-  const [boardState, setBoardState] = useState<LoadState>("loading");
+  const [boardState, setBoardState] = useState<BoardState>("loading");
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const titleFocused = useRef(false);
   const [subfolders, setSubfolders] = useState<ProjectSubfoldersPayload | null>(null);
   const [indexStatus, setIndexStatus] = useState<MaterialIndexStatus | null>(null);
   const [coverage, setCoverage] = useState<MaterialCoverage | null>(null);
   // 哪些根目录的［看看］展开着
   const [unreadableOpen, setUnreadableOpen] = useState<Set<number>>(() => new Set());
 
-  const [meetingRows, setMeetingRows] = useState<ProjectMeetingRow[] | null>(null);
-  const [meetingsState, setMeetingsState] = useState<LoadState>("loading");
-  // 项目详情里两张子表的页签与页码按项目分别记住，离开再回来还在原处。
-  const [meetingsPage, setMeetingsPage] = usePersistentState(`project.${projectId}.meetingsPage`, 0);
-
-  const [requirementsTab, setRequirementsTab] = usePersistentState<RequirementStatus | "all">(`project.${projectId}.requirementsTab`, "active");
-  const [requirementsPage, setRequirementsPage] = usePersistentState(`project.${projectId}.requirementsPage`, 0);
-  const [requirementsPayload, setRequirementsPayload] = useState<RequirementsPayload | null>(null);
-  const [requirementsState, setRequirementsState] = useState<LoadState>("loading");
+  const [tab, setTab] = useState<DetailTab>(viewMode === "graph" && graphTab ? "graph" : "work");
+  // 新建需求后「需求与任务」要重取
+  const [workKey, setWorkKey] = useState(0);
 
   const [editingProject, setEditingProject] = useState<false | "edit" | "merge" | "delete">(false);
   const [creatingRequirement, setCreatingRequirement] = useState(false);
@@ -336,10 +312,19 @@ export function ProjectDetailPage({
       const data = await apiClient.projectBoard(projectId);
       setBoard(data);
       setBoardState("ready");
-    } catch {
-      setBoardState("error");
+    } catch (error) {
+      // 项目不存在（被删、被合并、链接过期）：单独一种状态，只出一个「项目不存在」
+      setBoardState(error instanceof ApiError && error.status === 404 ? "missing" : "error");
     }
   }, [apiClient, projectId]);
+
+  // 进详情后焦点落到页面标题：键盘进来时不停在 body 上
+  useEffect(() => {
+    if (board && !titleFocused.current) {
+      titleFocused.current = true;
+      titleRef.current?.focus({ preventScroll: true });
+    }
+  }, [board]);
 
   const loadSubfolders = useCallback(async () => {
     try {
@@ -350,45 +335,17 @@ export function ProjectDetailPage({
     }
   }, [apiClient, projectId]);
 
-  const loadMeetings = useCallback(async () => {
-    setMeetingsState("loading");
-    try {
-      const rows = await apiClient.projectMeetings(projectId);
-      setMeetingRows(rows);
-      setMeetingsState("ready");
-    } catch {
-      setMeetingsState("error");
-    }
-  }, [apiClient, projectId]);
-
-  const loadRequirements = useCallback(async () => {
-    setRequirementsState("loading");
-    try {
-      const payload = await apiClient.requirements({
-        project_id: projectId,
-        ...(requirementsTab === "all" ? {} : { status: requirementsTab }),
-        limit: REQUIREMENTS_PAGE_SIZE,
-        offset: requirementsPage * REQUIREMENTS_PAGE_SIZE,
-      });
-      setRequirementsPayload(payload);
-      setRequirementsState("ready");
-    } catch {
-      setRequirementsState("error");
-    }
-  }, [apiClient, projectId, requirementsTab, requirementsPage]);
-
   useEffect(() => {
     void loadBoard();
     void loadSubfolders();
   }, [loadBoard, loadSubfolders, reloadKey]);
 
+  // 地址栏（前进、后退、深链）改了视图：标签页跟着走
+  const hasGraph = Boolean(graphTab);
   useEffect(() => {
-    void loadMeetings();
-  }, [loadMeetings, reloadKey]);
-
-  useEffect(() => {
-    void loadRequirements();
-  }, [loadRequirements, reloadKey]);
+    if (viewMode === "graph" && hasGraph) setTab("graph");
+    else if (viewMode === "list") setTab((current) => (current === "graph" ? "work" : current));
+  }, [viewMode, hasGraph]);
 
   // 文件名索引和内容的进度：挂的根目录变了就重问；同一个定时器每 15 秒两样一起问，
   // 有根目录在认文件名、或在线根目录还有没读完的内容时继续，否则停
@@ -429,19 +386,10 @@ export function ProjectDetailPage({
     return map;
   }, [subfolders]);
 
-  const meetingsPageCount = Math.ceil((meetingRows?.length ?? 0) / MEETINGS_PAGE_SIZE);
-  const visibleMeetings = (meetingRows ?? []).slice(
-    meetingsPage * MEETINGS_PAGE_SIZE,
-    meetingsPage * MEETINGS_PAGE_SIZE + MEETINGS_PAGE_SIZE,
-  );
-  const requirementsPageCount = requirementsPayload
-    ? Math.max(1, Math.ceil(requirementsPayload.total / REQUIREMENTS_PAGE_SIZE))
-    : 1;
-
-  const switchRequirementsTab = (key: RequirementStatus | "all") => {
-    if (key === requirementsTab) return;
-    setRequirementsTab(key);
-    setRequirementsPage(0);
+  const selectTab = (next: DetailTab) => {
+    if (next === tab) return;
+    setTab(next);
+    if (next === "graph" || tab === "graph") onViewModeChange?.(next === "graph" ? "graph" : "list");
   };
 
   const copyWithToast = async (text: string, done: string) => {
@@ -574,6 +522,18 @@ export function ProjectDetailPage({
   const canManageFolders = canWrite && canPickFolders;
   const isEmptyProject = (board?.meeting_count ?? 0) === 0 && (requirementCounts?.all ?? 0) === 0;
 
+  const firstRoot = roots[0];
+  // 看板接口不带座次和最近一场会的日子，项目列表里有
+  const listed = projects.find((project) => project.id === projectId);
+  const seat = board?.seat ?? listed?.seat ?? null;
+  const latestMeeting = board?.latest_meeting_date ?? listed?.latest_meeting_date ?? null;
+  const subtitleParts: string[] = [];
+  if (board) {
+    subtitleParts.push(`${board.meeting_count ?? 0} 场会`);
+    if (latestMeeting) subtitleParts.push(`最近 ${formatMonthDay(latestMeeting)}`);
+    if (firstRoot) subtitleParts.push(`材料根目录 ${firstRoot.path}${roots.length > 1 ? `（另 ${roots.length - 1} 个）` : ""}`);
+  }
+
   return (
     <section className="detail-page page-content">
       {toastNode}
@@ -588,11 +548,16 @@ export function ProjectDetailPage({
         <div className="detail-head__row">
           {board && (
             <div className="detail-head__title">
-              <i aria-hidden="true" style={{ background: board.color }} />
-              <h1>{board.name}</h1>
+              <h1 ref={titleRef} tabIndex={-1}>
+                {board.name}
+              </h1>
+              {seat !== null && (
+                <span aria-label={`座次 ${seat}`} className="detail-head__seat">
+                  {seat}
+                </span>
+              )}
             </div>
           )}
-          {modeToggle}
           {canWrite && board && (
             <span className="detail-head__actions">
               <button className="detail-head__edit" onClick={() => setEditingProject("edit")} type="button">
@@ -604,17 +569,39 @@ export function ProjectDetailPage({
             </span>
           )}
         </div>
-        {board && (
-          <p className="detail-head__subtitle">
-            会议 {board.meeting_count ?? meetingRows?.length ?? 0} 场 · 需求 {requirementCounts?.all ?? 0} 个 ·
-            未完成任务 {board.open_task_count ?? 0} 条
-          </p>
+        {board && <p className="detail-head__subtitle">{subtitleParts.join(" · ")}</p>}
+        {board && boardState === "ready" && (
+          <div aria-label="项目内容" className="project-tabs" role="tablist">
+            <button aria-selected={tab === "work"} onClick={() => selectTab("work")} role="tab" type="button">
+              需求与任务
+            </button>
+            <button aria-selected={tab === "recordings"} onClick={() => selectTab("recordings")} role="tab" type="button">
+              录音
+              {(board.meeting_count ?? 0) > 0 && <small>{board.meeting_count}</small>}
+            </button>
+            {graphTab && (
+              <button aria-selected={tab === "graph"} onClick={() => selectTab("graph")} role="tab" type="button">
+                关系图
+              </button>
+            )}
+            <button aria-selected={tab === "materials"} onClick={() => selectTab("materials")} role="tab" type="button">
+              材料
+            </button>
+          </div>
         )}
       </header>
 
       <NoticeBanner notice={notice} onDismiss={dismissNotice} />
 
       {boardState === "loading" && <AsyncState state="loading" />}
+      {boardState === "missing" && (
+        <div className="detail-error" role="alert">
+          <span>项目不存在，可能已被删除或合并到别的项目</span>
+          <button onClick={onBack} type="button">
+            返回项目列表
+          </button>
+        </div>
+      )}
       {boardState === "error" && (
         <div className="detail-error">
           <span>项目详情读取失败</span>
@@ -649,367 +636,268 @@ export function ProjectDetailPage({
             </div>
           )}
 
-          {/* 4g：「问这个项目」卡在「AI 自动建的项目」提示之后、时间线之上（手机上也有）；没有 askPrepare 时不画 */}
-          <ProjectAsk
-            apiClient={apiClient}
-            isMobile={isMobile}
-            onOpenMeeting={onOpenMeeting}
-            onOpenPreview={(target) =>
-              onOpenPreviewTarget ? onOpenPreviewTarget(target) : onOpenPreview?.(target.fileId)
-            }
-            projectId={projectId}
-            projectName={board.name}
-            variant="card"
-          />
-
-          {/* 4c：时间线在「AI 自动建的项目」提示之后、「材料根目录」卡之前 */}
-          <ProjectTimeline
-            apiClient={apiClient}
-            canWrite={canWrite}
-            onAttachRoot={canManageFolders ? openAddRoot : undefined}
-            onOpenMeeting={onOpenMeeting}
-            projectId={projectId}
-            reloadKey={reloadKey}
-          />
-
-          <section className="detail-card">
-            <header className="detail-card__head">
-              <h2>材料根目录</h2>
-              {canManageFolders && (
-                <button className="detail-card__add" onClick={openAddRoot} type="button">
-                  ＋ 添加目录
-                </button>
-              )}
-            </header>
-            {pendingFolder ? (
-              <ul className="material-root-list">
-                <li className="material-root-row material-root-row--pending">
-                  <FolderIcon className="material-root-row__icon" />
-                  {pendingFolder.state === "waiting" ? (
-                    <span className="material-root-row__path">资料盘未连接，插上后自动建 {pendingFolder.path}</span>
-                  ) : (
-                    <>
-                      <span className="material-root-row__path">{pendingFolder.path}</span>
-                      <span className="material-root-row__missing">{pendingFolder.reason ?? "文件夹没建成"}</span>
-                      {canManageFolders && typeof apiClient.movePendingFolder === "function" && (
-                        <span className="material-root-row__ops">
-                          <button
-                            onClick={() => {
-                              setRootError("");
-                              setMovingPending(true);
-                            }}
-                            type="button"
-                          >
-                            重新选位置…
-                          </button>
-                        </span>
-                      )}
-                    </>
-                  )}
-                </li>
-              </ul>
-            ) : roots.length === 0 ? (
-              <div className="detail-card__empty">
-                <p>还没有材料根目录</p>
-                {canManageFolders && (
-                  <button onClick={openAddRoot} type="button">
-                    ＋ 添加目录
-                  </button>
-                )}
-              </div>
-            ) : (
-              <ul className="material-root-list">
-                {roots.map((root) => {
-                  const state = root.state ?? (root.exists ? "online" : "missing");
-                  const index = indexStatus?.roots.find((item) => item.root_id === root.id);
-                  const covered = coverage?.roots.find((item) => item.root_id === root.id);
-                  const contentText = covered ? coverageText(covered) : null;
-                  const showUnreadable = unreadableOpen.has(root.id);
-                  return (
-                    <li className="material-root-row" key={root.id}>
-                      <FolderIcon className="material-root-row__icon" />
-                      <span className="material-root-row__path">{root.path}</span>
-                      {state === "online" ? (
-                        <span className="material-root-row__count">
-                          {subfolderCounts.get(root.id) ?? 0} 个子文件夹
-                        </span>
-                      ) : state === "volume_offline" ? (
-                        <span className="material-root-row__offline">资料盘未连接，插上后自动恢复</span>
-                      ) : (
-                        // 盘在、文件夹没了：问是不是改了名，没候选时照旧「重新选…」
-                        <RootRenameQuestion
-                          apiClient={apiClient}
-                          canManage={canManageFolders}
-                          onRepointed={onRepointed}
-                          onReselect={() => openReselectRoot(root)}
-                          projectId={projectId}
-                          root={root}
-                        />
-                      )}
-                      {index && (
-                        <span
-                          className={`material-root-row__index${
-                            index.state === "error" || index.state === "missing" ? " is-stopped" : ""
-                          }`}
-                        >
-                          {indexStatusText(index, Date.now(), !covered)}
-                        </span>
-                      )}
-                      {contentText &&
-                        (contentText.progress || contentText.unreadable || contentText.names || contentText.waiting.length > 0) && (
-                          <div className="material-root-row__content">
-                            {(contentText.progress || contentText.unreadable || contentText.names) && (
-                              <p>
-                                {[contentText.progress, contentText.unreadable].filter(Boolean).join("，")}
-                                {contentText.unreadable && (
-                                  <button
-                                    aria-expanded={showUnreadable}
-                                    className="material-root-row__look"
-                                    onClick={() =>
-                                      setUnreadableOpen((current) => {
-                                        const nextOpen = new Set(current);
-                                        if (nextOpen.has(root.id)) nextOpen.delete(root.id);
-                                        else nextOpen.add(root.id);
-                                        return nextOpen;
-                                      })
-                                    }
-                                    type="button"
-                                  >
-                                    {showUnreadable ? "收起" : "看看"}
-                                  </button>
-                                )}
-                                {contentText.names && <span className="material-root-row__names">{contentText.names}</span>}
-                              </p>
-                            )}
-                            {contentText.waiting.map((hint) => (
-                              <p className="material-root-row__waiting" key={hint}>
-                                {hint}
-                              </p>
-                            ))}
-                            {showUnreadable && (
-                              <UnreadableList
-                                apiClient={apiClient}
-                                onCopy={(path) => void copyPath(path)}
-                                onOpenPreview={onOpenPreview}
-                                projectId={projectId}
-                                rootId={root.id}
-                              />
-                            )}
-                          </div>
-                        )}
-                      {(root.shared_with?.length ?? 0) > 0 && (
-                        <span className="material-root-row__shared" role="note">
-                          也挂在{root.shared_with!.map((entry) => `「${entry.project_name}」`).join("")}下，
-                          {root.cards_owner_id === projectId
-                            ? "会议卡片写在这个项目里"
-                            : `会议卡片只写给先挂上的「${
-                                root.shared_with!.find((entry) => entry.project_id === root.cards_owner_id)?.project_name ?? ""
-                              }」，不需要可以在这里移除`}
-                        </span>
-                      )}
-                      <span className="material-root-row__ops">
-                        {state === "online" && (
-                          <button onClick={() => void copyPath(root.path)} type="button">
-                            复制路径
-                          </button>
-                        )}
-                        {canManageFolders && (
-                          <button
-                            className="material-root-row__remove"
-                            onClick={() => void removeRoot(root)}
-                            type="button"
-                          >
-                            移除
-                          </button>
-                        )}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {board.cards && (
-              <ProjectCardsRow
-                apiClient={apiClient}
-                canPickFolders={Boolean(canPickFolders)}
-                canReveal={canReveal}
-                canWrite={canWrite}
-                cards={board.cards}
-                onChanged={loadBoard}
-                onCopy={copyWithToast}
-                projectId={projectId}
-              />
-            )}
-          </section>
-
-          {board.profile && (
-            <ProjectRecognitionCard
+          {tab === "work" && (
+            <WorkTab
               apiClient={apiClient}
               canWrite={canWrite}
-              onChanged={async () => {
-                await loadBoard();
-                await onProjectsChanged?.();
-              }}
-              profile={board.profile}
+              onChanged={() => void onProjectsChanged?.()}
+              onClaim={onClaimCandidates ? () => onClaimCandidates(projectId) : undefined}
+              onOpenMeeting={onOpenMeeting}
+              onOpenRequirement={onOpenRequirement}
+              onOpenTask={onOpenTask}
               projectId={projectId}
               projectName={board.name}
+              projectSeat={seat}
+              projects={projects}
+              reloadKey={reloadKey + workKey}
+              showToast={showToast}
             />
           )}
 
-          <section className="detail-card">
-            <header className="detail-card__head">
-              <h2>需求</h2>
-            </header>
-            <div aria-label="需求状态" className="detail-subtabs" role="tablist">
-              {REQUIREMENT_TABS.map((tab) => (
-                <button
-                  aria-selected={requirementsTab === tab.key}
-                  key={tab.key}
-                  onClick={() => switchRequirementsTab(tab.key)}
-                  role="tab"
-                  type="button"
-                >
-                  {tab.label}
-                  <span>
-                    {tab.key === "all" ? requirementCounts?.all ?? 0 : requirementCounts?.[tab.key] ?? 0}
-                  </span>
-                </button>
-              ))}
-            </div>
-            {requirementsState === "loading" && <AsyncState state="loading" />}
-            {requirementsState === "error" && (
-              <div className="detail-error">
-                <span>需求读取失败</span>
-                <button onClick={() => void loadRequirements()} type="button">
-                  重试
-                </button>
-              </div>
-            )}
-            {requirementsState === "ready" && requirementsPayload && requirementsPayload.items.length === 0 && (
-              <AsyncState message="还没有需求" state="empty" />
-            )}
-            {requirementsState === "ready" && requirementsPayload && requirementsPayload.items.length > 0 && (
-              <>
-                <table className="detail-table">
-                  <thead>
-                    <tr>
-                      <th>需求名称</th>
-                      <th>优先级</th>
-                      <th>状态</th>
-                      <th>未完成任务</th>
-                      <th>关联会议</th>
-                      <th>最近会议</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {requirementsPayload.items.map((item: RequirementSummary) => (
-                      <tr key={item.id}>
-                        <td>
-                          <button className="detail-table__link" onClick={() => onOpenRequirement(item.id)} type="button">
-                            {item.title}
-                          </button>
-                        </td>
-                        <td>
-                          <PriorityBadge priority={item.priority} />
-                        </td>
-                        <td>
-                          <RequirementStatusBadge status={item.status} />
-                        </td>
-                        <td>{item.open_task_count}</td>
-                        <td>{item.meeting_count}</td>
-                        <td>{formatMonthDay(item.latest_meeting_date)}</td>
-                        <td>
-                          <button className="text-button" onClick={() => onOpenRequirement(item.id)} type="button">
-                            查看
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div className="detail-table__pagination">
-                  <p className="detail-table__count">共 {requirementsPayload.total} 条</p>
-                  <Pagination onChange={setRequirementsPage} page={requirementsPage} pageCount={requirementsPageCount} />
-                </div>
-              </>
-            )}
-          </section>
+          {tab === "recordings" && (
+            <RecordingsTab
+              apiClient={apiClient}
+              onOpenMeeting={onOpenMeeting}
+              onOpenRequirement={onOpenRequirement}
+              projectId={projectId}
+              reloadKey={reloadKey}
+            />
+          )}
 
-          <section className="detail-card">
-            <header className="detail-card__head">
-              <h2>会议</h2>
-            </header>
-            {meetingsState === "loading" && <AsyncState state="loading" />}
-            {meetingsState === "error" && (
-              <div className="detail-error">
-                <span>会议读取失败</span>
-                <button onClick={() => void loadMeetings()} type="button">
-                  重试
-                </button>
-              </div>
-            )}
-            {meetingsState === "ready" && (meetingRows?.length ?? 0) === 0 && (
-              <AsyncState message="还没有会议" state="empty" />
-            )}
-            {meetingsState === "ready" && (meetingRows?.length ?? 0) > 0 && (
-              <>
-                <table className="detail-table">
-                  <thead>
-                    <tr>
-                      <th>日期</th>
-                      <th>会议</th>
-                      <th>时长</th>
-                      <th>关联需求</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleMeetings.map((row) => (
-                      <tr key={row.id}>
-                        <td>{formatMonthDay(row.recording_date)}</td>
-                        <td>{row.title}</td>
-                        <td>{row.duration_ms != null ? formatDurationText(row.duration_ms) : "--"}</td>
-                        <td>
-                          <RequirementRefChips items={row.requirements} />
-                        </td>
-                        <td>
-                          <button className="text-button" onClick={() => onOpenMeeting(row.id)} type="button">
-                            打开
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div className="detail-table__pagination">
-                  <p className="detail-table__count">共 {meetingRows?.length ?? 0} 场</p>
-                  <Pagination onChange={setMeetingsPage} page={meetingsPage} pageCount={meetingsPageCount} />
-                </div>
-              </>
-            )}
-          </section>
+          {tab === "materials" && (
+            <>
+            {/* 4g：「问这个项目」卡在「材料」页签最上面（手机上也有）；没有 askPrepare 时不画 */}
+            <ProjectAsk
+              apiClient={apiClient}
+              isMobile={isMobile}
+              onOpenMeeting={onOpenMeeting}
+              onOpenPreview={(target) =>
+                onOpenPreviewTarget ? onOpenPreviewTarget(target) : onOpenPreview?.(target.fileId)
+              }
+              projectId={projectId}
+              projectName={board.name}
+              variant="card"
+            />
 
-          <ProjectGlossary
-            apiClient={apiClient}
-            canWrite={canWrite}
-            onChanged={async (message) => {
-              setNotice(message);
-              await loadBoard();
-            }}
-            onOpenGlossary={onOpenGlossary}
-            projectId={projectId}
-            projectName={board.name}
-            publicCount={board.public_glossary_count ?? 0}
-            terms={board.glossary_terms ?? []}
-            total={board.glossary_count ?? 0}
-            candidates={board.glossary_candidates}
-            candidateTotal={board.glossary_candidate_total}
-            onOpenMeeting={(meetingId, seekMs) => onOpenMeeting(meetingId, seekMs)}
-            onReload={loadBoard}
-          />
+            <section className="detail-card">
+              <header className="detail-card__head">
+                <h2>材料根目录</h2>
+                {canManageFolders && (
+                  <button className="detail-card__add" onClick={openAddRoot} type="button">
+                    ＋ 添加目录
+                  </button>
+                )}
+              </header>
+              {pendingFolder ? (
+                <ul className="material-root-list">
+                  <li className="material-root-row material-root-row--pending">
+                    <FolderIcon className="material-root-row__icon" />
+                    {pendingFolder.state === "waiting" ? (
+                      <span className="material-root-row__path">资料盘未连接，插上后自动建 {pendingFolder.path}</span>
+                    ) : (
+                      <>
+                        <span className="material-root-row__path">{pendingFolder.path}</span>
+                        <span className="material-root-row__missing">{pendingFolder.reason ?? "文件夹没建成"}</span>
+                        {canManageFolders && typeof apiClient.movePendingFolder === "function" && (
+                          <span className="material-root-row__ops">
+                            <button
+                              onClick={() => {
+                                setRootError("");
+                                setMovingPending(true);
+                              }}
+                              type="button"
+                            >
+                              重新选位置…
+                            </button>
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </li>
+                </ul>
+              ) : roots.length === 0 ? (
+                <div className="detail-card__empty">
+                  <p>还没有材料根目录</p>
+                  {canManageFolders && (
+                    <button onClick={openAddRoot} type="button">
+                      ＋ 添加目录
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <ul className="material-root-list">
+                  {roots.map((root) => {
+                    const state = root.state ?? (root.exists ? "online" : "missing");
+                    const index = indexStatus?.roots.find((item) => item.root_id === root.id);
+                    const covered = coverage?.roots.find((item) => item.root_id === root.id);
+                    const contentText = covered ? coverageText(covered) : null;
+                    const showUnreadable = unreadableOpen.has(root.id);
+                    return (
+                      <li className="material-root-row" key={root.id}>
+                        <FolderIcon className="material-root-row__icon" />
+                        <span className="material-root-row__path">{root.path}</span>
+                        {state === "online" ? (
+                          <span className="material-root-row__count">
+                            {subfolderCounts.get(root.id) ?? 0} 个子文件夹
+                          </span>
+                        ) : state === "volume_offline" ? (
+                          <span className="material-root-row__offline">资料盘未连接，插上后自动恢复</span>
+                        ) : (
+                          // 盘在、文件夹没了：问是不是改了名，没候选时照旧「重新选…」
+                          <RootRenameQuestion
+                            apiClient={apiClient}
+                            canManage={canManageFolders}
+                            onRepointed={onRepointed}
+                            onReselect={() => openReselectRoot(root)}
+                            projectId={projectId}
+                            root={root}
+                          />
+                        )}
+                        {index && (
+                          <span
+                            className={`material-root-row__index${
+                              index.state === "error" || index.state === "missing" ? " is-stopped" : ""
+                            }`}
+                          >
+                            {indexStatusText(index, Date.now(), !covered)}
+                          </span>
+                        )}
+                        {contentText &&
+                          (contentText.progress || contentText.unreadable || contentText.names || contentText.waiting.length > 0) && (
+                            <div className="material-root-row__content">
+                              {(contentText.progress || contentText.unreadable || contentText.names) && (
+                                <p>
+                                  {[contentText.progress, contentText.unreadable].filter(Boolean).join("，")}
+                                  {contentText.unreadable && (
+                                    <button
+                                      aria-expanded={showUnreadable}
+                                      className="material-root-row__look"
+                                      onClick={() =>
+                                        setUnreadableOpen((current) => {
+                                          const nextOpen = new Set(current);
+                                          if (nextOpen.has(root.id)) nextOpen.delete(root.id);
+                                          else nextOpen.add(root.id);
+                                          return nextOpen;
+                                        })
+                                      }
+                                      type="button"
+                                    >
+                                      {showUnreadable ? "收起" : "看看"}
+                                    </button>
+                                  )}
+                                  {contentText.names && <span className="material-root-row__names">{contentText.names}</span>}
+                                </p>
+                              )}
+                              {contentText.waiting.map((hint) => (
+                                <p className="material-root-row__waiting" key={hint}>
+                                  {hint}
+                                </p>
+                              ))}
+                              {showUnreadable && (
+                                <UnreadableList
+                                  apiClient={apiClient}
+                                  onCopy={(path) => void copyPath(path)}
+                                  onOpenPreview={onOpenPreview}
+                                  projectId={projectId}
+                                  rootId={root.id}
+                                />
+                              )}
+                            </div>
+                          )}
+                        {(root.shared_with?.length ?? 0) > 0 && (
+                          <span className="material-root-row__shared" role="note">
+                            也挂在{root.shared_with!.map((entry) => `「${entry.project_name}」`).join("")}下，
+                            {root.cards_owner_id === projectId
+                              ? "会议卡片写在这个项目里"
+                              : `会议卡片只写给先挂上的「${
+                                  root.shared_with!.find((entry) => entry.project_id === root.cards_owner_id)?.project_name ?? ""
+                                }」，不需要可以在这里移除`}
+                          </span>
+                        )}
+                        <span className="material-root-row__ops">
+                          {state === "online" && (
+                            <button onClick={() => void copyPath(root.path)} type="button">
+                              复制路径
+                            </button>
+                          )}
+                          {canManageFolders && (
+                            <button
+                              className="material-root-row__remove"
+                              onClick={() => void removeRoot(root)}
+                              type="button"
+                            >
+                              移除
+                            </button>
+                          )}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {board.cards && (
+                <ProjectCardsRow
+                  apiClient={apiClient}
+                  canPickFolders={Boolean(canPickFolders)}
+                  canReveal={canReveal}
+                  canWrite={canWrite}
+                  cards={board.cards}
+                  onChanged={loadBoard}
+                  onCopy={copyWithToast}
+                  projectId={projectId}
+                />
+              )}
+            </section>
+
+            {board.profile && (
+              <ProjectRecognitionCard
+                apiClient={apiClient}
+                canWrite={canWrite}
+                onChanged={async () => {
+                  await loadBoard();
+                  await onProjectsChanged?.();
+                }}
+                profile={board.profile}
+                projectId={projectId}
+                projectName={board.name}
+              />
+            )}
+
+            <ProjectGlossary
+              apiClient={apiClient}
+              canWrite={canWrite}
+              onChanged={async (message) => {
+                setNotice(message);
+                await loadBoard();
+              }}
+              onOpenGlossary={onOpenGlossary}
+              projectId={projectId}
+              projectName={board.name}
+              publicCount={board.public_glossary_count ?? 0}
+              terms={board.glossary_terms ?? []}
+              total={board.glossary_count ?? 0}
+              candidates={board.glossary_candidates}
+              candidateTotal={board.glossary_candidate_total}
+              onOpenMeeting={(meetingId, seekMs) => onOpenMeeting(meetingId, seekMs)}
+              onReload={loadBoard}
+            />
+            {/* 决议时间线收在「材料」页签的最后 */}
+            <ProjectTimeline
+              apiClient={apiClient}
+              canWrite={canWrite}
+              onAttachRoot={canManageFolders ? openAddRoot : undefined}
+              onOpenMeeting={onOpenMeeting}
+              projectId={projectId}
+              reloadKey={reloadKey}
+            />
+
+            </>
+          )}
         </>
       )}
+
+      {/* 关系图自己管加载和出错，不等看板读完；地址栏深链直接落在这个标签页时也能打开 */}
+      {tab === "graph" && graphTab && boardState !== "missing" && <div className="detail-tab-graph">{graphTab}</div>}
 
       {editingProject && board && (
         <ProjectFormModal
@@ -1048,9 +936,8 @@ export function ProjectDetailPage({
           onClose={() => setCreatingRequirement(false)}
           onSaved={() => {
             setCreatingRequirement(false);
-            setRequirementsPage(0);
+            setWorkKey((key) => key + 1);
             void loadBoard();
-            void loadRequirements();
           }}
           projects={projects}
         />

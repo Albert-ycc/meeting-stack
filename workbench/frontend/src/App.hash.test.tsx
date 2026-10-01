@@ -9,6 +9,16 @@ import { foldersPayload, overviewPayload } from "./components/graph/overviewFixt
 import { forgetGraphCache } from "./components/graph/ProjectGraph";
 import { candidateItem, CVM, EXPORT_SOURCE } from "./components/pool/poolFixtures";
 import { focusPayload, payload } from "./components/graph/testFixtures";
+import {
+  POOL_PRIORITIES_KEY,
+  POOL_PRIORITIES_STORE,
+  POOL_PROJECTS_KEY,
+  POOL_PROJECTS_STORE,
+  POOL_QUERY_KEY,
+  POOL_QUERY_STORE,
+  POOL_TAB_KEY,
+} from "./components/pool/RequirementPoolPage";
+import { readPersistentState, writePersistentState } from "./viewState";
 
 function desktopMatchMedia() {
   return {
@@ -287,6 +297,7 @@ describe("地址栏锚点直达", () => {
           graph,
           graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
           meetingBrief,
+          projectBoard: vi.fn().mockResolvedValue({ id: "p", name: "云图AI", color: "#2c8d83", meeting_count: 0, material_roots: [], meetings: [] }),
         } as unknown as Partial<ApiClient>)}
       />,
     );
@@ -296,10 +307,8 @@ describe("地址栏锚点直达", () => {
     // 面板先渲染、取简报的 effect 后跑：机器忙时要等一下
     await waitFor(() => expect(meetingBrief).toHaveBeenCalledWith("a"));
     expect(window.location.hash).toBe("#projects/p/graph?sel=m:a");
-    expect(within(screen.getByRole("group", { name: "项目视图" })).getByRole("button", { name: "关系图" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    // 关系图是项目详情的一个标签页，地址栏带着它时标签页停在这里
+    expect(await screen.findByRole("tab", { name: "关系图" })).toHaveAttribute("aria-selected", "true");
 
     const depth = window.history.length;
     await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 b/ }));
@@ -671,6 +680,8 @@ describe("材料预览抽屉（3e）", () => {
 
     render(<App apiClient={apiClient} />);
 
+    // 材料根目录在项目详情的「材料」标签页里
+    await user.click(await screen.findByRole("tab", { name: "材料" }));
     await user.click(await screen.findByRole("button", { name: "看看" }));
     await user.click(await screen.findByRole("button", { name: "预览" }));
     const drawer = await screen.findByRole("dialog", { name: "材料预览" });
@@ -1013,5 +1024,83 @@ describe("需求二级页的来去（R04-1、R04-8）", () => {
     expect(await screen.findByText("会议录音档案")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "新增需求" })).not.toBeInTheDocument();
     expect(confirm).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("从项目列表进项目详情", () => {
+  const board = { id: "p", name: "云图AI", color: "#2c8d83", meeting_count: 0, material_roots: [], meetings: [] };
+  function listClient() {
+    return client({
+      projects: vi.fn().mockResolvedValue([{ id: "p", name: "云图AI", color: "#2c8d83" }]),
+      projectBoard: vi.fn().mockResolvedValue(board),
+      projectWork: vi.fn().mockResolvedValue({
+        project_id: "p",
+        requirements: [],
+        closed_requirements: [],
+        unlinked_tasks: [],
+        pending_candidates: [],
+      }),
+      requirementPool: vi.fn().mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 200,
+        offset: 0,
+        status: "active",
+        counts: { pending: 0, active: 0, done: 0, shelved: 0, all: 0 },
+        projects: [{ id: "p", name: "云图AI", color: "#2c8d83", seat: null, latest_meeting_date: null, count: 0 }],
+        unassigned_count: 0,
+        dropped_count: 0,
+      }),
+      graph: vi.fn().mockResolvedValue(payload()),
+      graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
+    } as unknown as Partial<ApiClient>);
+  }
+
+  async function openFromList() {
+    window.history.replaceState(null, "", "/#projects");
+    render(<App apiClient={listClient()} />);
+    const names = await screen.findAllByText("云图AI");
+    await userEvent.click(names[names.length - 1]);
+    return screen.findByRole("tab", { name: "需求与任务" });
+  }
+
+  it("没存过视图偏好：落在「需求与任务」，不是关系图", async () => {
+    window.localStorage.removeItem("meeting-workbench:graph:mode.p");
+    expect(await openFromList()).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "关系图" })).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("以前存过「关系图」偏好：也落在「需求与任务」，只有点关系图标签才去关系图", async () => {
+    window.localStorage.setItem("meeting-workbench:graph:mode.p", "graph");
+    try {
+      expect(await openFromList()).toHaveAttribute("aria-selected", "true");
+      await userEvent.click(screen.getByRole("tab", { name: "关系图" }));
+      expect(screen.getByRole("tab", { name: "关系图" })).toHaveAttribute("aria-selected", "true");
+    } finally {
+      window.localStorage.removeItem("meeting-workbench:graph:mode.p");
+    }
+  });
+
+  it("「去认领」把需求池切到待认领、只筛本项目，并清掉记着的等级筛选和搜索词", async () => {
+    writePersistentState(POOL_PRIORITIES_KEY, ["P0"], POOL_PRIORITIES_STORE);
+    writePersistentState(POOL_QUERY_KEY, "对接", POOL_QUERY_STORE);
+    window.history.replaceState(null, "", "/#projects");
+    const api = listClient();
+    api.projectWork = vi.fn().mockResolvedValue({
+      project_id: "p",
+      requirements: [],
+      closed_requirements: [],
+      unlinked_tasks: [],
+      pending_candidates: [{ id: "candidate-receipt", title: "京东仓签收凭证" }],
+    });
+    render(<App apiClient={api} />);
+    const names = await screen.findAllByText("云图AI");
+    await userEvent.click(names[names.length - 1]);
+    await userEvent.click(await screen.findByRole("button", { name: /去认领/ }));
+
+    expect(readPersistentState(POOL_TAB_KEY, "active", { local: true })).toBe("pending");
+    expect(readPersistentState<string[]>(POOL_PROJECTS_KEY, [], POOL_PROJECTS_STORE)).toEqual(["p"]);
+    expect(readPersistentState<string[]>(POOL_PRIORITIES_KEY, ["x"], POOL_PRIORITIES_STORE)).toEqual([]);
+    expect(readPersistentState(POOL_QUERY_KEY, "x", POOL_QUERY_STORE)).toBe("");
   });
 });

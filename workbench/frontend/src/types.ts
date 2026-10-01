@@ -110,6 +110,18 @@ export interface Project {
   seat?: number | null;
   /** v17：归属这个项目的会议里录音时间最晚的一场 */
   latest_meeting_date?: string | null;
+  /** 项目列表卡片（R06-2）：进行中需求的标题，最多 2 条（P0→P3、同级最近会议在前） */
+  active_requirement_titles?: string[];
+  active_requirement_count?: number;
+  /** 待认领的需求候选条数 */
+  pending_candidate_count?: number;
+  /** 近 12 周每周开了几场会，周按北京日历从周一算，最后一格是本周 */
+  weekly_meetings?: number[];
+  latest_meeting_title?: string | null;
+  /** 累计录音时长 */
+  recording_ms?: number;
+  /** 最近一场会距今整周数（满 3 周写「已 N 周没有会议」）；没有会议为 null */
+  weeks_since_last_meeting?: number | null;
 }
 
 /** waiting：等资料盘插上；stopped：建不了（位置不存在、没权限……），reason 说为什么，不再每轮重试 */
@@ -2051,4 +2063,32 @@ export interface ConfirmAllResult {
   failed: Array<{ task_id: string; error: string }>;
   /** 每条确认时挂上的推荐项（没有推荐为 null） */
   linked: Record<string, LinkOption | null>;
+}
+
+/* ---------------------------------------------------------------- 项目详情（项目页与待办改版 R06） */
+
+export interface ProjectWorkRequirement {
+  id: string;
+  title: string;
+  status: RequirementStatus;
+  priority: RequirementPriority;
+  task_count: number;
+  open_task_count: number;
+}
+
+export interface ProjectWorkPayload {
+  project_id: string;
+  /** 进行中需求，P0→P3、同级最近会议在前；tasks 是任务面板（已确认、进行中、已完成，未完成在前、刚完成的在末尾） */
+  requirements: Array<ProjectWorkRequirement & { tasks: Task[] }>;
+  /** 已完成、已搁置的需求（折叠区） */
+  closed_requirements: Array<ProjectWorkRequirement & { all_done: boolean }>;
+  /** 没挂需求的已确认、进行中任务（挂在待认领候选上的也在，带 candidate_title） */
+  unlinked_tasks: Task[];
+  /** 本项目的待认领候选（横幅「有 N 条待认领」） */
+  pending_candidates: Array<{ id: string; title: string }>;
+}
+
+/** 录音标签页的一场会：现有的项目会议行加这场会抽出的任务数 */
+export interface ProjectRecordingRow extends ProjectMeetingRow {
+  task_count: number;
 }

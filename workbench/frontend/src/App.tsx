@@ -29,8 +29,7 @@ import { ProjectDetailPage } from "./components/ProjectDetailPage";
 import { OverviewGraph } from "./components/graph/OverviewGraph";
 import { ProjectGraph } from "./components/graph/ProjectGraph";
 import type { GraphLocal } from "./components/graph/graphTypes";
-import { ViewModeToggle } from "./components/graph/ViewModeToggle";
-import { readProjectMode, writeProjectMode, type ProjectViewMode } from "./components/graph/graphPrefs";
+import type { ProjectViewMode } from "./components/graph/graphPrefs";
 import { ProjectsPage } from "./components/ProjectsPage";
 import { RequirementDetailPage } from "./components/RequirementDetailPage";
 import { RequirementsPage } from "./components/RequirementsPage";
@@ -809,10 +808,11 @@ export default function App({ apiClient = api }: AppProps) {
     performNavigate(nextView);
   };
 
-  // 应用内打开项目：按这个项目上次选的视图（关系图或清单）；手机端只有清单
+  // 应用内打开项目
   const openProjectDetail = (projectId: string) => {
     setOpenProjectId(projectId);
-    setProjectMode(readProjectMode(projectId));
+    // 从列表、别的页进项目一律先看「需求与任务」；关系图只由 #projects/<id>/graph 深链或点标签进入
+    setProjectMode("list");
     setGraphSelection(null);
     setGraphFocus(null);
     setGraphExpanded(null);
@@ -876,7 +876,6 @@ export default function App({ apiClient = api }: AppProps) {
 
   const changeProjectMode = (mode: ProjectViewMode) => {
     if (!openProjectId) return;
-    writeProjectMode(openProjectId, mode);
     setProjectMode(mode);
     setGraphSelection(null);
     setGraphFocus(null);
@@ -1494,62 +1493,73 @@ export default function App({ apiClient = api }: AppProps) {
       />
     );
   } else if (view === "projectDetail" && openProjectId) {
-    content =
-      !isMobile && projectMode === "graph" ? (
-        <ProjectGraph
-          apiClient={apiClient}
-          expanded={graphExpanded}
-          focus={graphFocus}
-          key={openProjectId}
-          local={graphLocal}
-          onLocalChange={changeGraphLocal}
-          onOpenTask={setTaskDrawerId}
-          modeToggle={<ViewModeToggle mode="graph" onChange={changeProjectMode} />}
-          onBack={() => navigate("projects")}
-          onExpandChange={changeGraphExpand}
-          onOpenAttributionReview={() => {
-            applyFilters({ attribution: "needs_review" });
-            navigate("library");
-          }}
-          onOpenGlossary={openGlossaryForProject}
-          onOpenMeeting={openMeeting}
-          onOpenPreview={(fileId, startMs) => setPreviewTarget({ fileId, startMs })}
-          // 4g：问答出处带时间和标签页打开会议；材料出处打开预览抽屉到那一段
-          onOpenMeetingAt={(meetingId, seekMs, tab) => openMeeting(meetingId, seekMs ?? 0, false, tab)}
-          onOpenPreviewTarget={setPreviewTarget}
-          onOpenProject={openProjectDetail}
-          onOpenRequirement={openRequirementFromGraph}
-          onProjectsChanged={refreshProjects}
-          onSelectionChange={setGraphSelection}
-          projectId={openProjectId}
-          projects={projects}
-          selection={graphSelection}
-        />
-      ) : (
-        <ProjectDetailPage
-          apiClient={apiClient}
-          key={openProjectId}
-          modeToggle={isMobile ? undefined : <ViewModeToggle mode="list" onChange={changeProjectMode} />}
-          canPickFolders={!isMobile}
-          canReveal={canReveal}
-          canWrite={!isMobile || mobileTaskWrite}
-          onBack={() => navigate("projects")}
-          onOpenGlossary={openGlossaryForProject}
-          // 4c：openMeeting 的第三个参数是 fromHistory，时间线给的是 (id, 毫秒, 标签页)
-          onOpenMeeting={(meetingId, seekMs, tab) => openMeeting(meetingId, seekMs, false, tab)}
-          onOpenRequirement={openRequirementDetail}
-          onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
-          onOpenPreviewTarget={setPreviewTarget}
-          isMobile={isMobile}
-          onOpenTask={setTaskDrawerId}
-          onProjectUpdated={refreshProjects}
-          onOpenProject={openProjectDetail}
-          onProjectsChanged={refreshProjects}
-          projectId={openProjectId}
-          projects={projects}
-          reloadKey={boardVersion}
-        />
-      );
+    content = (
+      <ProjectDetailPage
+        apiClient={apiClient}
+        key={openProjectId}
+        // 关系图是项目详情的一个标签页；地址栏里的视图（深链、前进后退）通过 viewMode 带进来
+        graphTab={
+          isMobile ? undefined : (
+            <ProjectGraph
+              apiClient={apiClient}
+              expanded={graphExpanded}
+              focus={graphFocus}
+              local={graphLocal}
+              onLocalChange={changeGraphLocal}
+              onOpenTask={setTaskDrawerId}
+              onBack={() => navigate("projects")}
+              onExpandChange={changeGraphExpand}
+              onOpenAttributionReview={() => {
+                applyFilters({ attribution: "needs_review" });
+                navigate("library");
+              }}
+              onOpenGlossary={openGlossaryForProject}
+              onOpenMeeting={openMeeting}
+              onOpenPreview={(fileId, startMs) => setPreviewTarget({ fileId, startMs })}
+              // 4g：问答出处带时间和标签页打开会议；材料出处打开预览抽屉到那一段
+              onOpenMeetingAt={(meetingId, seekMs, tab) => openMeeting(meetingId, seekMs ?? 0, false, tab)}
+              onOpenPreviewTarget={setPreviewTarget}
+              onOpenProject={openProjectDetail}
+              onOpenRequirement={openRequirementFromGraph}
+              onProjectsChanged={refreshProjects}
+              onSelectionChange={setGraphSelection}
+              projectId={openProjectId}
+              projects={projects}
+              selection={graphSelection}
+            />
+          )
+        }
+        viewMode={isMobile ? "list" : projectMode}
+        onViewModeChange={changeProjectMode}
+        onClaimCandidates={(projectId) => {
+          // 去需求池的「待认领」页签，只筛出本项目
+          writePersistentState(POOL_TAB_KEY, "pending", { local: true });
+          writePersistentState(POOL_PROJECTS_KEY, [projectId], POOL_PROJECTS_STORE);
+          // 记着的等级筛选、搜索词会把本项目的候选挡在外面，落到空页：一起清掉
+          writePersistentState(POOL_PRIORITIES_KEY, [], POOL_PRIORITIES_STORE);
+          writePersistentState(POOL_QUERY_KEY, "", POOL_QUERY_STORE);
+          navigate("requirements");
+        }}
+        canPickFolders={!isMobile}
+        canReveal={canReveal}
+        canWrite={!isMobile || mobileTaskWrite}
+        onBack={() => navigate("projects")}
+        onOpenGlossary={openGlossaryForProject}
+        // 4c：openMeeting 的第三个参数是 fromHistory，时间线给的是 (id, 毫秒, 标签页)
+        onOpenMeeting={(meetingId, seekMs, tab) => openMeeting(meetingId, seekMs, false, tab)}
+        onOpenRequirement={openRequirementDetail}
+        onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
+        onOpenPreviewTarget={setPreviewTarget}
+        isMobile={isMobile}
+        onOpenTask={setTaskDrawerId}
+        onProjectUpdated={refreshProjects}
+        onOpenProject={openProjectDetail}
+        onProjectsChanged={refreshProjects}
+        projectId={openProjectId}
+        projects={projects}
+        reloadKey={boardVersion}
+      />
+    );
   } else if (view === "graph" && !isMobile) {
     content = (
       <OverviewGraph

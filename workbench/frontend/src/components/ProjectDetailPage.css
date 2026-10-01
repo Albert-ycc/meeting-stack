@@ -55,8 +55,70 @@
   white-space: nowrap;
 }
 
-.detail-head__row .view-mode-toggle {
-  margin-left: auto;
+/* 座次：和海报左上角的座次同一个小方块 */
+.detail-head__seat {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  border: 1px solid var(--line-strong);
+}
+
+/* 四个标签页：需求与任务 / 录音 / 关系图 / 材料 */
+.project-tabs {
+  display: flex;
+  gap: 22px;
+  margin-top: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.project-tabs button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-bottom: -1px;
+  padding: 8px 0 9px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.project-tabs button:hover {
+  color: var(--ink);
+}
+
+.project-tabs button[aria-selected="true"] {
+  color: var(--heading);
+  font-weight: 600;
+  border-bottom-color: var(--signal);
+}
+
+.project-tabs small {
+  color: var(--faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 关系图放在标签页里：画布自己的面包屑、标题、视图切换由页头代替；高度扣掉页头和标签栏 */
+.detail-tab-graph .project-graph.page-content {
+  height: calc(100vh - 250px);
+  min-height: 520px;
+  padding: 0;
+}
+
+.detail-tab-graph .project-graph__crumb,
+.detail-tab-graph .project-graph__title,
+.detail-tab-graph .project-graph__mode {
+  display: none;
 }
 
 .detail-head__actions {
@@ -94,8 +156,13 @@
   border-color: var(--signal-dark);
 }
 
+.detail-head__title h1:focus {
+  outline: none;
+}
+
 .detail-head__subtitle {
   margin: 6px 0 0;
+  overflow-wrap: anywhere;
   color: var(--ink-faint);
   font-size: 12px;
 }

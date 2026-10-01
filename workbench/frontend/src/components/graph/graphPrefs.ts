@@ -2,7 +2,6 @@ import type { GraphWindow } from "./graphTypes";
 
 /*
  * 关系图的个人偏好，存在本机 localStorage，关掉再开还在：
- * - 项目详情页上次看的是关系图还是清单（按项目）；
  * - 手动选过的时间窗（按项目，没选过就交给后端按会数自动定）；
  * - 每周打开关系图的次数，上线 4 周后拿来判断默认视图要不要改回清单（只在本机统计）。
  * 存储不可用时一律当成没存过。
@@ -26,15 +25,6 @@ function write(key: string, value: string) {
   } catch {
     // 存不下只是下次回到默认
   }
-}
-
-/** 没选过时默认关系图；是否改回清单由用户决定，系统不自动切。 */
-export function readProjectMode(projectId: string): ProjectViewMode {
-  return read(`mode.${projectId}`) === "list" ? "list" : "graph";
-}
-
-export function writeProjectMode(projectId: string, mode: ProjectViewMode) {
-  write(`mode.${projectId}`, mode);
 }
 
 export function readGraphWindow(projectId: string): GraphWindow | null {

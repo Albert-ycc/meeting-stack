@@ -13,6 +13,8 @@ import type {
   MaterialBrowsePayload,
   MaterialRoot,
   ProjectMeetingRow,
+  ProjectRecordingRow,
+  ProjectWorkPayload,
   ProjectSubfoldersPayload,
   CandidateDetail,
   CandidateExtraction,
@@ -1115,6 +1117,12 @@ export const api = {
     ),
   projectMeetings: (projectId: string) =>
     read<ProjectMeetingRow[]>(`/api/projects/${encodeURIComponent(projectId)}/meetings`),
+  /** 项目详情「需求与任务」（R06-5～13） */
+  projectWork: (projectId: string) =>
+    read<ProjectWorkPayload>(`/api/projects/${encodeURIComponent(projectId)}/work`),
+  /** 项目详情「录音」：倒序，每场带关联需求和抽出的任务数（R06-10） */
+  projectRecordings: (projectId: string) =>
+    read<ProjectRecordingRow[]>(`/api/projects/${encodeURIComponent(projectId)}/recordings`),
   requirements: (filters: RequirementFilters = {}) =>
     read<RequirementsPayload>(`/api/requirements${queryString(filters)}`),
   requirement: (requirementId: string) =>

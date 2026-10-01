@@ -1,0 +1,480 @@
+/* 项目列表：座次面板（两列同尺寸）与未排座次的列表行 */
+
+.project-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.project-tag {
+  flex: none;
+  padding: 1px 7px;
+  color: var(--signal-dark);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  background: var(--signal-bg);
+  border: 1px solid var(--signal-line);
+  border-radius: var(--r-pill);
+}
+
+.project-stale {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--warn);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.project-reqs__list {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+}
+
+.project-reqs__list li {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-reqs__none,
+.project-latest__none {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.project-latest {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.project-latest__line {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.project-latest__line span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-latest__line time {
+  flex: none;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.project-latest__meta {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.project-enter,
+.project-edit {
+  flex: none;
+  white-space: nowrap;
+}
+
+.project-enter {
+  padding: 5px 14px;
+  color: var(--ink);
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  transition: border-color 140ms ease, color 140ms ease;
+}
+
+.project-enter:hover {
+  color: var(--signal-dark);
+  border-color: var(--signal-line);
+}
+
+.project-edit {
+  padding: 5px 4px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+}
+
+.project-edit:hover {
+  color: var(--signal-dark);
+}
+
+.project-panel__name {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+}
+
+/* ---- 面板 ---- */
+
+.project-panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.project-panel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-stage);
+  cursor: pointer;
+  transition: border-color 140ms ease;
+}
+
+.project-panel:hover {
+  border-color: var(--line-strong);
+}
+
+.project-panel__head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.project-panel__seat {
+  flex: none;
+  color: var(--heading);
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.project-panel__head h2 {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  color: var(--heading);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.project-panel__body {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: 24px;
+}
+
+.project-reqs {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.project-panel__side {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.project-panel__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.project-stats {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  margin: 0;
+  gap: 2px 14px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* ---- 未排座次 ---- */
+
+.project-unseated {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 28px 0;
+}
+
+.project-unseated__title {
+  display: flex;
+  align-items: baseline;
+  margin: 0;
+  gap: 10px;
+  color: var(--heading);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.project-unseated__title span {
+  color: var(--ink-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.project-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-stage);
+}
+
+.project-row {
+  display: grid;
+  height: 76px;
+  align-items: center;
+  grid-template-columns: minmax(190px, 1.3fr) 180px minmax(0, 1.2fr) auto minmax(0, 1.4fr) auto;
+  gap: 24px;
+  padding: 0 20px;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.project-row:first-child {
+  border-top: 0;
+}
+
+.project-row:hover {
+  background: var(--surface-2);
+}
+
+.project-row:first-child:hover {
+  border-radius: var(--r-stage) var(--r-stage) 0 0;
+}
+
+.project-row:last-child:hover {
+  border-radius: 0 0 var(--r-stage) var(--r-stage);
+}
+
+.project-row__name {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.project-row__title {
+  display: flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  color: var(--heading);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.project-row__title i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.project-row .rhythm {
+  gap: 2px;
+}
+
+.project-row .rhythm__bars {
+  height: 28px;
+}
+
+.project-row .rhythm__head {
+  display: none;
+}
+
+.project-row__nums {
+  display: flex;
+  margin: 0;
+  gap: 22px;
+}
+
+.project-row__nums div {
+  display: flex;
+  min-width: 28px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.project-row__nums dt {
+  order: 2;
+  color: var(--ink-faint);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.project-row__nums dd {
+  margin: 0;
+  color: var(--heading);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.project-row__ops {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.project-more {
+  align-self: flex-start;
+  padding: 4px 0;
+  color: var(--signal-dark);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+}
+
+.projects-empty {
+  margin: 0;
+  padding: 36px 16px;
+  color: var(--ink-faint);
+  font-size: 13px;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-stage);
+}
+
+/* 窄一点的屏：最近一场会挪到第二行铺满整行，信息一样不少 */
+@media (max-width: 1180px) {
+  .project-row {
+    height: auto;
+    min-height: 76px;
+    grid-template-columns: minmax(150px, 1fr) 160px minmax(0, 1.2fr) auto auto;
+    gap: 8px 20px;
+    padding: 12px 20px;
+  }
+
+  /* DOM 里「最近一场会」排在操作按钮前，要显式指定行，否则按钮会被挤到第三行 */
+  .project-row__ops {
+    grid-column: 5;
+    grid-row: 1;
+  }
+
+  .project-row .project-latest {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 12px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--line);
+  }
+
+  .project-row .project-latest__line {
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+}
+
+@media (max-width: 1023px) {
+  .project-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 767px) {
+  .project-panel__body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .project-row {
+    height: auto;
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 12px;
+    padding: 14px 16px;
+  }
+
+  .project-row .project-latest {
+    grid-row: auto;
+    flex-direction: column;
+    gap: 3px;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .project-row__name {
+    grid-column: 1;
+  }
+
+  .project-row__ops {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .project-row .rhythm,
+  .project-row .project-reqs,
+  .project-row__nums,
+  .project-row .project-latest {
+    grid-column: 1 / -1;
+  }
+
+  .project-row .rhythm__head {
+    display: flex;
+  }
+
+  /* 触屏上可点的元素至少 32×32 */
+  .project-panel__name,
+  .project-enter,
+  .project-edit,
+  .project-more {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .project-edit {
+    padding: 5px 8px;
+  }
+}
