@@ -144,6 +144,8 @@ export function TasksPage({
   const [queryError, setQueryError] = useState("");
   const [creating, setCreating] = useState(false);
   const busyRef = useRef(false);
+  // 正在跑的那次写操作（含它之后的重新取数）：提示条上的［撤销］要等它做完再跑，不能被互斥直接丢掉
+  const runningRef = useRef<Promise<void> | null>(null);
   const loadSeqRef = useRef(0);
 
   // 查询区：草稿态（输入中）与已应用态（点「查询」才生效）分开，和需求池同一套模式。
@@ -285,14 +287,18 @@ export function TasksPage({
     if (busyRef.current) return; // ref 级互斥：双击同帧不会连发两个写请求
     busyRef.current = true;
     setBusy(true);
-    try {
-      await action();
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : "操作失败，请稍后重试", { tone: "error" });
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
+    const running = (async () => {
+      try {
+        await action();
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "操作失败，请稍后重试", { tone: "error" });
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    })();
+    runningRef.current = running;
+    await running;
   };
 
   // 页面别处有写操作后：重取本页数据，并让待确认的审核卡也重取
@@ -307,11 +313,14 @@ export function TasksPage({
     showToast(message, {
       tone: tone === "success" ? undefined : "error",
       onUndo: undo
-        ? () =>
-            run(async () => {
+        ? async () => {
+            // 提示是在这次操作的重新取数之前弹出的：刚弹出就点［撤销］时等那次做完，不被互斥吞掉
+            await runningRef.current;
+            await run(async () => {
               await undo();
               await refresh();
-            })
+            });
+          }
         : undefined,
     });
   };

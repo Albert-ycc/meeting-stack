@@ -723,6 +723,35 @@ describe("审查补丁", () => {
     expect(apiClient.undoTaskComplete).toHaveBeenCalledWith(["t-fresh"]);
   });
 
+  it("完成后重新取数还没回来就点［撤销］：等那次做完再撤销，不被互斥吞掉", async () => {
+    const items = seedTasks();
+    const base = serverTodo(items) as unknown as (...args: unknown[]) => Promise<unknown>;
+    let release: () => void = () => {};
+    let hold = false;
+    const todo = vi.fn().mockImplementation(async (...args: unknown[]) => {
+      if (hold) {
+        hold = false;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return base(...args);
+    });
+    const apiClient = makeClient(items, { todo } as unknown as Partial<ApiClient>);
+    renderPage(apiClient);
+    const row = await todoRow("安排与华谊的会");
+
+    hold = true;
+    await userEvent.click(within(row).getByRole("button", { name: /^完成「/ }));
+    const toast = await screen.findByRole("status");
+    await userEvent.click(within(toast).getByRole("button", { name: "撤销" }));
+    expect(apiClient.undoTaskComplete).not.toHaveBeenCalled();
+    release();
+
+    await waitFor(() => expect(apiClient.undoTaskComplete).toHaveBeenCalledWith([expect.any(String)]));
+    expect(await screen.findByText(/^已撤销，「安排与华谊的会」回到未完成/)).toBeInTheDocument();
+  });
+
   it("结果提示用共用的底部深色条（不占文档流），带撤销；失败用错误样式", async () => {
     const apiClient = makeClient();
     renderPage(apiClient);
