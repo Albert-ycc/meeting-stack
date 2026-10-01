@@ -1,0 +1,382 @@
+/*
+ * 选来源弹层（R04-3、R04-7）：第一步选会（按日期分组、往下滚自动加载），第二步选原话（点选、拖选、连选）。
+ * 弹层框架、标题、底栏沿用 PoolDialogs.css；列表、行、摘要的样式都在这里写全，选择器带上 .source-picker 或写成
+ * 两个类，比 PoolDialogs.css 里旧的 .source-picker__* 规则优先——那一段（.source-picker 起到 .source-picker__preview.is-over）
+ * 已经被这里取代，可以在那边删掉，删了这里的样子不变。
+ */
+
+/* 只让列表自己滚：标题、搜索、已选摘要和底栏始终在弹层里，矮窗口也不被推出去 */
+.pool-dialog.source-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(760px, 100%);
+}
+
+.pool-dialog.source-picker > * {
+  flex: none;
+}
+
+.pool-dialog.source-picker > .source-picker__meetings,
+.pool-dialog.source-picker > .source-picker__lines {
+  flex: 0 1 auto;
+}
+
+.source-picker__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
+.source-picker__search {
+  position: relative;
+  display: block;
+  flex: 1 1 260px;
+}
+
+.source-picker__search svg {
+  position: absolute;
+  top: 50%;
+  left: 13px;
+  color: var(--muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.source-picker__search input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px 0 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.source-picker__search input:focus {
+  border-color: var(--signal);
+  outline: none;
+}
+
+.source-picker__scope {
+  flex: none;
+  min-width: 112px;
+  max-width: 220px;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+/* ---------- 第一步：选来源会议 ---------- */
+
+.pool-dialog.source-picker .source-picker__meetings {
+  display: block;
+  min-height: 96px;
+  max-height: min(52vh, 440px);
+  margin: 0 -8px;
+  padding: 0 8px;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 0;
+}
+
+.source-picker__day + .source-picker__day {
+  margin-top: 12px;
+}
+
+.source-picker__day ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.source-picker__meetings .source-picker__day li + li {
+  border-top: 0;
+}
+
+.source-picker__day-title {
+  margin: 0;
+  padding: 2px 8px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.source-picker__meetings .source-picker__meeting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-picker__meetings .source-picker__meeting:hover,
+.source-picker__meetings .source-picker__meeting:focus-visible {
+  background: rgb(var(--fg-rgb) / 0.05);
+}
+
+.source-picker__meetings .source-picker__meeting-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-picker__meetings .source-picker__tag {
+  flex: none;
+  max-width: 42%;
+  padding: 2px 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font-family: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-picker__meeting svg {
+  flex: none;
+  color: var(--faint);
+}
+
+.source-picker__meeting:hover svg {
+  color: var(--ink);
+}
+
+.source-picker__more {
+  margin: 0;
+  padding: 12px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.source-picker__more.is-error {
+  color: var(--danger);
+}
+
+.source-picker__meetings .source-picker__more button {
+  display: inline;
+  width: auto;
+  margin-left: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--signal-dark);
+  font: inherit;
+  cursor: pointer;
+}
+
+.source-picker__foot {
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0;
+}
+
+.source-picker__foot > div {
+  display: flex;
+  gap: 10px;
+}
+
+.source-picker__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- 第二步：选原话 ---------- */
+
+.source-picker__head h2:focus {
+  outline: none;
+}
+
+.source-picker__back {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0 6px -4px;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.source-picker__back:hover {
+  color: var(--ink);
+}
+
+.source-picker__guide {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.source-picker__search--find {
+  flex: 0 1 220px;
+}
+
+.source-picker__search--find input {
+  height: 34px;
+  font-size: 13px;
+}
+
+.pool-dialog.source-picker .source-picker__lines {
+  display: grid;
+  min-height: 96px;
+  max-height: min(48vh, 400px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  list-style: none;
+}
+
+.source-picker__lines li + li {
+  border-top: 1px solid var(--line);
+}
+
+.source-picker__lines .source-picker__line:hover {
+  background: rgb(var(--fg-rgb) / 0.04);
+}
+
+/* 拖选靠 pointer 事件，不依赖浏览器的文本选区：行上的字不能被选中 */
+.source-picker__lines .source-picker__line {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0 10px;
+  width: 100%;
+  padding: 10px 14px 10px 17px;
+  border: 0;
+  background: none;
+  box-shadow: inset 3px 0 0 transparent;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.source-picker__lines.has-speakers .source-picker__line {
+  grid-template-columns: 60px 92px minmax(0, 1fr);
+}
+
+.source-picker__lines .source-picker__line.is-picked,
+.source-picker__lines .source-picker__line.is-picked:hover {
+  background: color-mix(in srgb, var(--signal) 11%, transparent);
+  box-shadow: inset 3px 0 0 var(--signal);
+}
+
+.source-picker__line .source-picker__time {
+  color: var(--signal-dark);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 22px;
+}
+
+.source-picker__speaker {
+  overflow: hidden;
+  color: var(--ok);
+  font-size: 12px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-picker__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-picker__summary {
+  display: grid;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.source-picker__summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.source-picker__summary-head small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-picker__anchor {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--signal);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.source-picker__summary .source-picker__preview {
+  margin: 0;
+  max-height: 4.8em;
+  overflow-y: auto;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.source-picker__summary .source-picker__preview.is-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.source-picker__summary .source-picker__preview.is-over {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.source-picker__link {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--signal-dark);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}

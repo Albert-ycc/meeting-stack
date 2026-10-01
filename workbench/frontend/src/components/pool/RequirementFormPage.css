@@ -167,6 +167,12 @@
   outline: none;
 }
 
+/* 需求名和同项目已有的重名（S11-b）：红框，焦点在里面时也保持红色 */
+.form-field input.is-invalid,
+.form-field input.is-invalid:focus {
+  border-color: var(--danger);
+}
+
 .form-field__textarea {
   position: relative;
   display: block;
@@ -185,15 +191,15 @@
   color: var(--danger);
 }
 
+/*
+ * 所属项目、优先级（修改时再加状态）排一行：每格至少 248px（比最宽的一组按钮宽），
+ * 窗口窄、右边墙上预览占了地方时放不下就换行，按钮组不会再压到邻格上。
+ * 两格（新增、认领）时撑成各半，三格（修改）时各占三分之一。
+ */
 .form-field__row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 24px;
-}
-
-/* 修改需求：所属项目、优先级、状态一行（S11） */
-.form-field__row--three {
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+  gap: 22px 24px;
 }
 
 .form-segmented {
@@ -205,8 +211,10 @@
   border-radius: 10px;
 }
 
+/* 按钮不缩、字不折行：P0～P3、进行中、已完成、已搁置都完整显示 */
 .form-segmented button {
-  min-width: 60px;
+  flex: none;
+  min-width: 56px;
   padding: 8px 14px;
   border: 0;
   border-radius: 8px;
@@ -215,6 +223,7 @@
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 700;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -223,23 +232,27 @@
   color: var(--surface);
 }
 
+/* 撞名的提示：需求名输入框下面一行红字（S11-b）；认领页再多一行「改个名字」「改为合并到这条需求」 */
 .form-conflict {
   display: grid;
   gap: 10px;
-  margin-top: -10px;
-  padding: 12px 14px;
-  border: 1px solid var(--warn-line);
-  border-radius: 10px;
-  background: var(--warn-bg);
-  color: var(--ink);
+  margin-top: -14px;
+  color: var(--danger);
   font-size: 13px;
 }
 
 .form-conflict p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 0;
 }
 
-.form-conflict div {
+.form-conflict svg {
+  flex: none;
+}
+
+.form-conflict__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -247,7 +260,7 @@
   color: var(--muted);
 }
 
-.form-conflict button {
+.form-conflict__actions button {
   padding: 5px 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-pill);
@@ -258,10 +271,180 @@
   cursor: pointer;
 }
 
-.form-conflict button.is-primary {
+.form-conflict__actions button.is-primary {
   border-color: var(--heading);
   background: var(--heading);
   color: var(--surface);
+}
+
+.form-conflict__actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 所属项目的下拉（S02-b）：按座次列在前，顶上能搜 */
+.project-select {
+  position: relative;
+}
+
+.project-select__trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-select__trigger:focus-visible,
+.project-select__trigger[aria-expanded="true"] {
+  border-color: var(--signal);
+  outline: none;
+}
+
+.project-select__trigger:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.project-select__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-select__placeholder {
+  flex: 1;
+  color: var(--muted);
+}
+
+.project-select__caret {
+  flex: none;
+  color: var(--muted);
+}
+
+.project-select__seat {
+  display: inline-grid;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: normal;
+}
+
+/* 比底部固定的操作栏（z-index 30）高：靠近窗口底部时下拉不被它盖住 */
+.project-select__menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+/* 下面放不下时往上展开 */
+.project-select__menu[data-side="above"] {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.project-select__search {
+  position: relative;
+  display: block;
+}
+
+.project-select__search svg {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  color: var(--muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.project-select .project-select__search input {
+  padding: 9px 12px 9px 34px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.project-select__list {
+  display: grid;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.project-select__section {
+  margin: 8px 8px 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-select__option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-select__option.is-active {
+  background: rgb(var(--fg-rgb) / 0.06);
+}
+
+.project-select__option[aria-selected="true"] {
+  font-weight: 600;
+}
+
+.project-select__check {
+  flex: none;
+  margin-left: auto;
+  color: var(--heading);
+}
+
+.project-select__hint {
+  margin: 0;
+  padding: 4px 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-select__empty {
+  margin: 0;
+  padding: 14px 8px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
 }
 
 .form-source {
