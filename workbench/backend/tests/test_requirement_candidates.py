@@ -413,3 +413,147 @@ def test_insert_candidate_keeps_ai_text_claimable(tmp_path):
     )
     with db.transaction() as connection, pytest.raises(ValueError):
         insert_candidate(connection, meeting_id=meeting_id("cvm"), title="  ")
+
+
+def test_insert_candidate_tolerates_overlong_titles_and_bad_anchors(tmp_path):
+    """AI 给的标题超长时截到 200（原样就能认领），时间锚超出录音或不是毫秒数时当没有，不让整场抽取失败。"""
+    client, headers, db = make_world(tmp_path)
+    with db.transaction() as connection:
+        long_title = insert_candidate(
+            connection, meeting_id=meeting_id("cvm"), title="导" * 280, anchor_ms=747000 * 10
+        )
+        odd_anchor = insert_candidate(
+            connection,
+            meeting_id=meeting_id("cvm"),
+            title="科室会预约后台导出",
+            quote=QUOTES["export"][1],
+            anchor_ms="00:09:36",
+        )
+    assert (
+        len(
+            db.query_one("SELECT title FROM requirement_candidates WHERE id=?", (long_title,))[
+                "title"
+            ]
+        )
+        == 200
+    )
+    anchors = db.query_all("SELECT candidate_id, anchor_ms FROM requirement_sources ORDER BY id")
+    assert anchors == [
+        {"candidate_id": long_title, "anchor_ms": None},
+        {"candidate_id": odd_anchor, "anchor_ms": None},
+    ]
+    claimed = post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{long_title}/claim",
+        {"title": "导" * 200},
+    )
+    assert claimed.status_code == 200, claimed.text
+
+
+# ---------------------------------------------------------------- 认领页改了项目（R01-7/8 与撞名）
+
+
+def test_unassigned_candidate_can_merge_after_a_claim_conflict(tmp_path):
+    """未归项目的候选在认领页选了华夏，撞上华夏已有的同名需求：改为合并到那条需求，会议归属不动。"""
+    client, headers, db = make_world(tmp_path)
+    existing = create(
+        client, headers, "huaxia", "医生资质 AI 审核规则", "P1", meeting_keys=("huaxia",)
+    )
+    candidate_id = candidate(db, "doctor", "医生资质 AI 审核规则")
+
+    conflict = post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{candidate_id}/claim",
+        {"title": "医生资质 AI 审核规则", "project_id": project_id("huaxia")},
+    )
+    assert conflict.status_code == 409 and conflict.json()["existing"]["id"] == existing
+    targets = client.get(
+        f"/api/requirement-candidates/{candidate_id}/merge-targets",
+        params={"project_id": project_id("huaxia")},
+    ).json()
+    assert [item["id"] for item in targets["items"]] == [existing]
+
+    merged = post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{candidate_id}/merge",
+        {"requirement_id": existing, "project_id": project_id("huaxia")},
+    )
+
+    assert merged.status_code == 200, merged.text
+    detail = merged.json()
+    assert [
+        (source["kind"], source["anchor_ms"], source["via_candidate_title"])
+        for source in detail["sources"]
+    ] == [("merged", QUOTES["doctor"][2], "医生资质 AI 审核规则")]
+    assert {meeting["id"] for meeting in detail["meetings"]} == {
+        meeting_id("huaxia"),
+        meeting_id("doctor"),
+    }
+    assert db.query_one("SELECT project_id FROM meetings WHERE id=?", (meeting_id("doctor"),)) == {
+        "project_id": None
+    }
+
+
+def test_merge_targets_follow_the_project_picked_on_the_claim_page(tmp_path):
+    client, headers, db = make_world(tmp_path)
+    create(client, headers, "cvm", "直播间运营六项修正", "P1", meeting_keys=("cvm",))
+    same_name = create(
+        client, headers, "huaxia", "科室会预约后台导出", "P2", meeting_keys=("huaxia",)
+    )
+    candidate_id = candidate(db, "export", "科室会预约后台导出")
+    path = f"/api/requirement-candidates/{candidate_id}"
+
+    by_meeting = client.get(f"{path}/merge-targets").json()
+    assert [item["title"] for item in by_meeting["items"]] == ["直播间运营六项修正"]
+    picked = client.get(f"{path}/merge-targets", params={"project_id": project_id("huaxia")}).json()
+    assert (picked["project_id"], [item["id"] for item in picked["items"]]) == (
+        project_id("huaxia"),
+        [same_name],
+    )
+    missing = client.get(f"{path}/merge-targets", params={"project_id": "project-missing"})
+    assert missing.status_code == 404
+    # 不带项目时按会议归属（CVM），并进华夏的需求算跨项目
+    assert post(client, headers, f"{path}/merge", {"requirement_id": same_name}).status_code == 400
+    merged = post(
+        client,
+        headers,
+        f"{path}/merge",
+        {"requirement_id": same_name, "project_id": project_id("huaxia")},
+    )
+    assert merged.status_code == 200, merged.text
+    assert db.query_one("SELECT project_id FROM meetings WHERE id=?", (meeting_id("cvm"),)) == {
+        "project_id": project_id("cvm")
+    }
+
+
+def test_claim_defaults_to_the_candidates_own_project_and_summary(tmp_path):
+    client, headers, db = make_world(tmp_path)
+    export = candidate(db, "export", "科室会预约后台导出", summary=EXPORT_SUMMARY)
+    hospital = candidate(
+        db,
+        "hospital",
+        "医院名单匹配规则",
+        summary="客户一次给上千家医院，能匹配上的告知成功，匹配不上的退回客户再确认。",
+    )
+
+    claimed = post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{export}/claim",
+        {"title": "科室会预约后台导出"},
+    ).json()
+    assert (claimed["project_name"], claimed["summary"], claimed["priority"]) == (
+        "CVM 云讲堂",
+        EXPORT_SUMMARY,
+        "P2",
+    )
+    cleared = post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{hospital}/claim",
+        {"title": "医院名单匹配规则", "summary": ""},
+    ).json()
+    assert (cleared["project_name"], cleared["summary"]) == ("华夏基金会科普同行", "")

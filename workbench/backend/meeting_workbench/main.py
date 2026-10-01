@@ -450,7 +450,7 @@ class RequirementCreateInput(BaseModel):
     priority: str = Field(max_length=8)
     folder_paths: list[str] = Field(default_factory=list, max_length=100)
     # v17：说明（服务层限 70 字）和来源，都可空。
-    summary: str = Field(default="", max_length=500)
+    summary: str | None = Field(default=None, max_length=500)
     source: RequirementSourceInput | None = None
 
 
@@ -479,8 +479,8 @@ class CandidateClaimInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, max_length=200)
-    summary: str = Field(default="", max_length=500)
-    # 未归项目的候选要先选项目；不传时服务层给出「先选所属项目」。
+    # 不传（null）时用 AI 写的说明，空串是清空；项目不传时随来源会议归属，未归项目的要先选。
+    summary: str | None = Field(default=None, max_length=500)
     project_id: str | None = Field(default=None, max_length=64)
     priority: str = Field(default="P2", max_length=8)
     folder_paths: list[str] = Field(default_factory=list, max_length=100)
@@ -490,6 +490,8 @@ class CandidateMergeInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     requirement_id: str = Field(min_length=1, max_length=64)
+    # 认领页上改选了项目、撞名后改为合并时带上；不传按来源会议的归属。
+    project_id: str | None = Field(default=None, max_length=64)
 
 
 class RequirementMeetingsInput(BaseModel):
@@ -4682,8 +4684,8 @@ def create_app(
         return requirement_candidates.get_candidate(db, candidate_id)
 
     @app.get("/api/requirement-candidates/{candidate_id}/merge-targets")
-    def requirement_candidate_merge_targets(candidate_id: str):
-        return requirement_candidates.merge_targets(db, candidate_id)
+    def requirement_candidate_merge_targets(candidate_id: str, project_id: str | None = None):
+        return requirement_candidates.merge_targets(db, candidate_id, project_id)
 
     @app.post("/api/requirement-candidates/{candidate_id}/claim")
     def claim_requirement_candidate(candidate_id: str, body: CandidateClaimInput):
@@ -4707,7 +4709,7 @@ def create_app(
     def merge_requirement_candidate(candidate_id: str, body: CandidateMergeInput):
         try:
             return requirement_candidates.merge_candidate(
-                task_service, candidate_id, body.requirement_id
+                task_service, candidate_id, body.requirement_id, project_id=body.project_id
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error

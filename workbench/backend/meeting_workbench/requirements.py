@@ -31,7 +31,9 @@ REQUIREMENT_PRIORITIES = ("P0", "P1", "P2", "P3")
 REQUIREMENT_STATUSES = ("active", "done", "shelved")
 # 需求详情文件夹卡片的预览文件数
 FOLDER_PREVIEW_LIMIT = 6
-# 说明是一两句话，最多 70 字；会上原话在逐字稿里一次可能选中好几句，最多 1000 字。
+# 需求名最多 200 字（和接口一致）；说明是一两句话，最多 70 字；会上原话在逐字稿里一次可能选中好几句，
+# 最多 1000 字。
+TITLE_MAX_CHARS = 200
 SUMMARY_MAX_CHARS = 70
 QUOTE_MAX_CHARS = 1000
 # 未完成任务在前，其余（已完成/已过期/已取消）在后，同组按创建时间倒序
@@ -149,21 +151,29 @@ def origin_of(sources: list[dict[str, Any]]) -> dict[str, Any] | None:
     return next((source for source in sources if source["kind"] == "origin"), None)
 
 
+def anchor_in_recording(anchor_ms: Any, duration_ms: int | None) -> bool:
+    """时间锚是不小于 0 的整数毫秒；知道录音时长时不超过时长（超出的锚点画不出标记、也跳不过去）。"""
+    if isinstance(anchor_ms, bool) or not isinstance(anchor_ms, int) or anchor_ms < 0:
+        return False
+    return not duration_ms or anchor_ms <= duration_ms
+
+
 def clean_source(connection: Any, source: dict[str, Any]) -> dict[str, Any]:
     """来源入参：会议必填且存在；原话和时间锚可空（只选了会、没挑原话）。"""
     meeting_id = str(source.get("meeting_id") or "").strip()
     if not meeting_id:
         raise ValueError("来源要先选会议")
-    if connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
+    meeting = connection.execute(
+        "SELECT duration_ms FROM meetings WHERE id=?", (meeting_id,)
+    ).fetchone()
+    if meeting is None:
         raise NotFoundError(f"会议不存在：{meeting_id}")
     quote = str(source.get("quote") or "").strip()
     if len(quote) > QUOTE_MAX_CHARS:
         raise ValueError(f"原话最多 {QUOTE_MAX_CHARS} 字")
     anchor_ms = source.get("anchor_ms")
-    if anchor_ms is not None and (
-        isinstance(anchor_ms, bool) or not isinstance(anchor_ms, int) or anchor_ms < 0
-    ):
-        raise ValueError("时间锚必须是不小于 0 的毫秒数")
+    if anchor_ms is not None and not anchor_in_recording(anchor_ms, meeting["duration_ms"]):
+        raise ValueError("时间锚要落在这场会的录音里")
     return {"meeting_id": meeting_id, "quote": quote, "anchor_ms": anchor_ms}
 
 
@@ -191,9 +201,10 @@ def set_origin_source(connection: Any, requirement_id: str, source: dict[str, An
     )
 
 
-def follow_up_count(meeting_ids: set[str], origin: dict[str, Any] | None) -> int:
-    """「之后又跟进了几场」＝关联会议里除提出它的那场以外的场数（R02-4）。"""
-    return len(meeting_ids - {origin["meeting_id"]}) if origin else max(len(meeting_ids) - 1, 0)
+def follow_up_count(meeting_count: int) -> int:
+    """「之后又跟进了几场」＝关联会议数减 1（R02-4）。来源会议一定在关联会议里：选定来源时同时关联，
+    移出关联时它的原话跟着去掉（db 里的 requirement_sources_follow_unlink 触发器）。"""
+    return max(meeting_count - 1, 0)
 
 
 # ---------------------------------------------------------------- 列表 / 详情组装
@@ -303,7 +314,7 @@ def _requirement_summary(db: Database, requirement: dict[str, Any]) -> dict[str,
         "project_seat": seats.get(requirement["project_id"]),
         "open_task_count": open_task_count,
         "meeting_count": meeting_stats["n"] or 0,
-        "latest_meeting_date": meeting_stats["latest"] if meeting_stats["n"] else None,
+        "latest_meeting_date": meeting_stats["latest"],
         "folder_count": folder_count,
     }
 
@@ -369,9 +380,7 @@ def get_requirement(task_service: TaskService, requirement_id: str) -> dict[str,
     # R05：合并进来的原话和提出它的那句一起列，按会议时间先后；头部波形取提出它的那场会。
     detail["sources"] = sources
     detail["source"] = origin_of(sources)
-    detail["follow_up_count"] = follow_up_count(
-        {meeting["id"] for meeting in detail["meetings"]}, detail["source"]
-    )
+    detail["follow_up_count"] = follow_up_count(len(detail["meetings"]))
     open_placeholders = ", ".join("?" for _ in OPEN_TASK_STATUSES)
     task_rows = db.query_all(
         f"""SELECT t.* FROM tasks t WHERE t.requirement_id=?

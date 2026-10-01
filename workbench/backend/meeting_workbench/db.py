@@ -1334,7 +1334,7 @@ CREATE TABLE IF NOT EXISTS glossary_mining_seeds (
 );
 
 -- v17 需求池改版（260930）：需求候选＝AI 从会议纪要里抽出来、还没认领的需求，认领后才建成需求。
--- 不放进 requirements：那张表被关系图、决议、会议卡片、时间线等二十多个模块直接查，候选混进去会到处漏。
+-- 不放进 requirements：那张表被关系图、决议、会议卡片、时间线等 18 个模块直接查，候选混进去会到处漏。
 -- 候选不存项目，跟着来源会议当前的归属走（认领前会议改了归属，候选随之改）。
 -- status：pending 待认领、claimed 已认领、merged 已合并、dropped 已丢掉。处理过的行留着，重新抽取时
 -- 据此跳过；requirement_id 是认领建成或合并进去的那条需求。丢掉的 30 天内能撤销，name_key（轻键）
@@ -1382,6 +1382,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_requirement_sources_origin_requirement
     ON requirement_sources(requirement_id) WHERE kind = 'origin' AND requirement_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_requirement_sources_origin_candidate
     ON requirement_sources(candidate_id) WHERE kind = 'origin' AND candidate_id IS NOT NULL;
+-- 需求的来源一定在它的关联会议里（选定来源会议时同时关联，R04-4）：一场会从需求的关联会议里
+-- 移出（详情页移除、会议页改关联、整组替换、撤销建成需求），这场会的原话也从来源里去掉。
+CREATE TRIGGER IF NOT EXISTS requirement_sources_follow_unlink
+AFTER DELETE ON requirement_meetings
+BEGIN
+    DELETE FROM requirement_sources
+     WHERE requirement_id = OLD.requirement_id AND meeting_id = OLD.meeting_id;
+END;
 """
 
 # 1g：关系图的持久版本号。这些表每次增删改都给 app_state 里的 graph_rev 加一，图接口拿它
@@ -1810,6 +1818,13 @@ class Database:
                 """INSERT OR IGNORE INTO app_state(key, value, updated_at)
                    VALUES ('related_rev', '0', ?)""",
                 (now,),
+            )
+            # v17：需求候选只从这之后建的抽取批次里出，上线前的历史会议不自动回填（260804 任务抽取上线时
+            # 出过存量轰炸）；历史会议在会议详情手动补抽。写一次、之后不改。
+            connection.execute(
+                """INSERT OR IGNORE INTO app_state(key, value, updated_at)
+                   VALUES ('requirement_candidates_since', ?, ?)""",
+                (now, now),
             )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

@@ -612,17 +612,21 @@ V17_INDEXES = (
     *V17_OLD_TABLE_INDEXES,
 )
 V17_COLUMNS = (("projects", "seat"), ("requirements", "summary"), ("tasks", "candidate_id"))
+V17_TRIGGERS = ("requirement_sources_follow_unlink",)
 
 
 def _downgrade_to_v16(connection: sqlite3.Connection) -> None:
-    """把刚建好的 v17 库退回 v16 的形状：先删老表上的两个新索引（带索引的列删不掉），再删两张新表
-    和三个新列。"""
+    """把刚建好的 v17 库退回 v16 的形状：先删新触发器（它引用来源表）和老表上的两个新索引（带索引的列
+    删不掉），再删两张新表、三个新列和候选上线时刻键。"""
+    for trigger in V17_TRIGGERS:
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for index in V17_OLD_TABLE_INDEXES:
         connection.execute(f"DROP INDEX IF EXISTS {index}")
     for table in ("requirement_sources", "requirement_candidates"):
         connection.execute(f"DROP TABLE IF EXISTS {table}")
     for table, column in V17_COLUMNS:
         connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    connection.execute("DELETE FROM app_state WHERE key='requirement_candidates_since'")
     connection.execute("PRAGMA user_version=16")
 
 
@@ -1384,6 +1388,7 @@ def test_version_seventeen_migration_adds_candidates_sources_and_seat(tmp_path):
     objects = _schema_objects(db)
     assert not set(V17_TABLES) & objects["table"]
     assert not set(V17_INDEXES) & objects["index"]
+    assert not set(V17_TRIGGERS) & objects["trigger"]
     backups: list[int] = []
 
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
@@ -1393,6 +1398,10 @@ def test_version_seventeen_migration_adds_candidates_sources_and_seat(tmp_path):
     objects = _schema_objects(db)
     assert set(V17_TABLES) <= objects["table"]
     assert set(V17_INDEXES) <= objects["index"] and len(V17_INDEXES) == 8
+    assert set(V17_TRIGGERS) <= objects["trigger"]
+    # 候选上线时刻：迁移时写一次，之后不改；在它之前的纪要不自动抽候选
+    since = db.query_one("SELECT value FROM app_state WHERE key='requirement_candidates_since'")
+    assert since and since["value"]
     for table, column in V17_COLUMNS:
         assert column in {row["name"] for row in db.query_all(f"PRAGMA table_info({table})")}
     assert db.query_one("SELECT seat FROM projects") == {"seat": None}
@@ -1412,6 +1421,51 @@ def test_version_seventeen_migration_adds_candidates_sources_and_seat(tmp_path):
     db.initialize()
     assert db.user_version() == 17
     assert db.query_all("SELECT type, name, sql FROM sqlite_master ORDER BY type, name") == snapshot
+    assert (
+        db.query_one("SELECT value FROM app_state WHERE key='requirement_candidates_since'")
+        == since
+    )
+
+
+def test_unlinking_a_meeting_drops_its_quotes_from_the_requirement(tmp_path):
+    """来源一定在关联会议里：一场会从需求的关联会议里移出，这场会的原话（提出的、合并进来的）都去掉，
+    别的会的原话不动；候选的来源不受影响。"""
+    db = Database(tmp_path / "workbench.sqlite3")
+    db.initialize()
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '医米科研用药', 'x')")
+    for meeting_id in ("m-jd", "m-edc"):
+        db.execute(
+            "INSERT INTO meetings(id, title, project_id) VALUES (?, '会', 'p')", (meeting_id,)
+        )
+    db.execute(
+        """INSERT INTO requirements(id, project_id, title, priority, created_at, updated_at)
+           VALUES ('r', 'p', '京东科研仓对接', 'P0', 'x', 'x')"""
+    )
+    db.execute(
+        """INSERT INTO requirement_candidates(id, meeting_id, title, name_key, created_at, updated_at)
+           VALUES ('c', 'm-jd', '京东仓签收凭证', '京东仓签收凭证', 'x', 'x')"""
+    )
+    for meeting_id in ("m-jd", "m-edc"):
+        db.execute(
+            "INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES ('r', ?, 'x')",
+            (meeting_id,),
+        )
+    insert = """INSERT INTO requirement_sources(requirement_id, candidate_id, kind, meeting_id,
+                                                created_at)
+                VALUES (?, ?, ?, ?, 'x')"""
+    db.execute(insert, ("r", None, "origin", "m-jd"))
+    db.execute(insert, ("r", None, "merged", "m-jd"))
+    db.execute(insert, ("r", None, "merged", "m-edc"))
+    db.execute(insert, (None, "c", "origin", "m-jd"))
+
+    db.execute("DELETE FROM requirement_meetings WHERE requirement_id='r' AND meeting_id='m-jd'")
+
+    assert db.query_all(
+        "SELECT requirement_id, candidate_id, meeting_id FROM requirement_sources ORDER BY id"
+    ) == [
+        {"requirement_id": "r", "candidate_id": None, "meeting_id": "m-edc"},
+        {"requirement_id": None, "candidate_id": "c", "meeting_id": "m-jd"},
+    ]
 
 
 def test_version_seventeen_rollback_marker_keeps_candidates_and_seats(tmp_path):

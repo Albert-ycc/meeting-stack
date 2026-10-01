@@ -471,6 +471,9 @@ def merge_project(connection: Any, src_id: str, dst_id: str) -> dict[str, Any]:
         "UPDATE projects SET also_names=?, origin='manual' WHERE id=?", (_dump_also(also), dst_id)
     )
     connection.execute("DELETE FROM projects WHERE id=?", (src_id,))
+    # v17：dst 没排座次时接过 src 的座次（需求池「我的方向」），删掉 src 之后再写，避开座次唯一索引。
+    if src["seat"] is not None and dst["seat"] is None:
+        connection.execute("UPDATE projects SET seat=? WHERE id=?", (src["seat"], dst_id))
     return {
         "meetings_moved": meetings,
         "tasks_moved": tasks,

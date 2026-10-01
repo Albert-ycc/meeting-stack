@@ -75,7 +75,7 @@ def requirement_items(connection: Any) -> list[dict[str, Any]]:
                 "folder_count": row["folder_count"],
                 "latest_meeting_date": linked["at"],
                 "source": origin,
-                "follow_up_count": follow_up_count(linked["ids"], origin),
+                "follow_up_count": follow_up_count(len(linked["ids"])),
                 "similar_requirement": None,
                 "default_action": None,
                 "can_merge": False,

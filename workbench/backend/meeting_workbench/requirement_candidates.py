@@ -6,6 +6,8 @@
 已经被手动挂到别的需求上的任务不跟着动。
 
 候选不存项目，跟着来源会议当前的归属走；会议没归项目时是「未归项目」，认领时必须选定项目。
+认领页上可以改项目：撞名后「改为合并到那条需求」、合并弹层列的需求，都按认领页上选的项目来
+（project_id 参数），不改会议归属。
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ from .project_seats import MEETING_TIME_SQL, seat_ranks
 from .requirements import (
     QUOTE_MAX_CHARS,
     SUMMARY_MAX_CHARS,
+    TITLE_MAX_CHARS,
+    anchor_in_recording,
     clean_source,
     follow_up_count,
     get_requirement,
@@ -63,10 +67,16 @@ def insert_candidate(
 ) -> str:
     """在调用方的事务里建一条待认领候选和它提出时的那句原话，返回候选 id。
 
-    AI 写的说明和原话超长时截断，保证候选原样就能认领；相近需求不存在时当没有。"""
-    title = (title or "").strip()
+    AI 给的东西不因为一处不合规就让整场抽取失败：标题、说明、原话超长时截断（保证候选原样就能
+    认领），时间锚不是录音里的时间点时当没有，相近需求不存在时当没有。"""
+    title = (title or "").strip()[:TITLE_MAX_CHARS].strip()
     if not title:
         raise ValueError("候选标题不能为空")
+    meeting = connection.execute(
+        "SELECT duration_ms FROM meetings WHERE id=?", (meeting_id,)
+    ).fetchone()
+    if meeting is not None and not anchor_in_recording(anchor_ms, meeting["duration_ms"]):
+        anchor_ms = None
     source = clean_source(
         connection,
         {
@@ -214,7 +224,7 @@ def candidate_items(
                 "folder_count": 0,
                 "latest_meeting_date": latest_row["latest"] if latest_row else None,
                 "source": origin,
-                "follow_up_count": follow_up_count(meeting_ids, origin),
+                "follow_up_count": follow_up_count(len(meeting_ids)),
                 "similar_requirement": (
                     {key: target[key] for key in ("id", "title", "status")}
                     if mergeable_target
@@ -267,12 +277,13 @@ def list_dropped(db: Database, *, now: datetime | None = None) -> dict[str, Any]
     }
 
 
-def merge_targets(db: Database, candidate_id: str) -> dict[str, Any]:
+def merge_targets(db: Database, candidate_id: str, project_id: str | None = None) -> dict[str, Any]:
     """合并弹层（S03）：候选所属项目里进行中、已搁置的需求，AI 判断的相近需求排第一、标 recommended。
-    每条带提出它的那场会（没有来源时取最近一场关联会议）。不跨项目，未归项目的候选没有可选的。"""
+    每条带提出它的那场会（没有来源时取最近一场关联会议）。不跨项目；project_id 是认领页上改选的项目
+    （候选改了所属项目后按新项目列，R01-8），不传时取来源会议的归属，未归项目的候选没有可选的。"""
     with db.autocommit() as connection:
         candidate = _candidate_row(connection, candidate_id)
-        project_id = candidate["project_id"]
+        project_id = _merge_project(connection, candidate, project_id)
         if project_id is None:
             return {"project_id": None, "items": []}
         rows = [
@@ -333,6 +344,17 @@ def _candidate_row(connection: Any, candidate_id: str) -> dict[str, Any]:
     if row is None:
         raise NotFoundError(f"候选不存在：{candidate_id}")
     return dict(row)
+
+
+def _merge_project(
+    connection: Any, candidate: dict[str, Any], project_id: str | None
+) -> str | None:
+    """合并按哪个项目来：认领页上选的项目优先，不传时取来源会议当前的归属。"""
+    if not project_id:
+        return candidate["project_id"]
+    if connection.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone() is None:
+        raise NotFoundError(f"项目不存在：{project_id}")
+    return project_id
 
 
 def _pending_candidate(connection: Any, candidate_id: str) -> dict[str, Any]:
@@ -413,46 +435,54 @@ def claim_candidate(
     candidate_id: str,
     *,
     title: str,
-    summary: str | None,
-    project_id: str | None,
+    summary: str | None = None,
+    project_id: str | None = None,
     priority: str = CLAIM_DEFAULT_PRIORITY,
     folder_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """认领（S02）：标题、说明、所属项目、优先级可改，建成进行中的需求，来源会议、原话、时间锚一并带入。
+    project_id、summary 不传时取候选自己的（项目随来源会议归属、AI 写的说明）；summary 传空串是清空。
 
     同项目已有同名需求时不新建，抛 RequirementTitleConflict（带那条需求，前端提示改名或合并过去）。"""
-    if not project_id:
-        raise ValueError("候选还没归项目，认领前先选所属项目")
     with task_service.db.transaction() as connection:
         candidate = _pending_candidate(connection, candidate_id)
+        project_id = project_id or candidate["project_id"]
+        if not project_id:
+            raise ValueError("候选还没归项目，认领前先选所属项目")
         requirement_id = insert_requirement(
             connection,
             project_id=project_id,
             title=title,
             priority=priority,
             folder_paths=folder_paths,
-            summary=summary,
+            summary=candidate["summary"] if summary is None else summary,
         )
         _hand_over(connection, candidate, requirement_id, merged=False)
     return get_requirement(task_service, requirement_id)
 
 
 def merge_candidate(
-    task_service: TaskService, candidate_id: str, requirement_id: str
+    task_service: TaskService,
+    candidate_id: str,
+    requirement_id: str,
+    *,
+    project_id: str | None = None,
 ) -> dict[str, Any]:
-    """合并（S03）：这场会关联到目标需求、原话追加到它的来源，候选消失。目标只能是候选所属项目里
-    进行中或已搁置的需求。"""
+    """合并（S03，或认领撞名后「改为合并到那条需求」）：这场会关联到目标需求、原话追加到它的来源，
+    候选消失。目标只能是所属项目里进行中或已搁置的需求；所属项目是认领页上选的 project_id，
+    不传时取来源会议的归属。不改会议归属。"""
     with task_service.db.transaction() as connection:
         candidate = _pending_candidate(connection, candidate_id)
-        if candidate["project_id"] is None:
-            raise ValueError("候选还没归项目，不能合并；先认领并选所属项目")
+        project_id = _merge_project(connection, candidate, project_id)
+        if project_id is None:
+            raise ValueError("候选还没归项目，不能合并；先在认领页选所属项目")
         target = connection.execute(
             "SELECT id, project_id, status FROM requirements WHERE id=?", (requirement_id,)
         ).fetchone()
         if target is None:
             raise NotFoundError(f"需求不存在：{requirement_id}")
-        if target["project_id"] != candidate["project_id"]:
-            raise ValueError("只能合并到候选所属项目里的需求")
+        if target["project_id"] != project_id:
+            raise ValueError("只能合并到所属项目里的需求")
         if target["status"] not in MERGE_TARGET_STATUSES:
             raise ValueError("不能合并到已完成的需求")
         _hand_over(connection, candidate, requirement_id, merged=True)

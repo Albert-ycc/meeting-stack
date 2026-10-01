@@ -579,3 +579,88 @@ def test_candidates_never_reach_requirement_counts_or_old_list(tmp_path):
     assert old_list["total"] == 11
     assert set(old_list["counts"]) == {"active", "done", "shelved", "all"}
     assert "京东仓签收凭证" not in {item["title"] for item in old_list["items"]}
+
+
+def test_source_anchor_must_fall_inside_the_recording(tmp_path):
+    """这场会录了 747000 毫秒：锚点超出录音画不出标记、也跳不过去，接口不收。"""
+    client, headers, db = make_world(tmp_path)
+    base = {"project_id": project_id("cvm"), "title": "科室会预约后台导出", "priority": "P2"}
+
+    beyond = client.post(
+        "/api/requirements",
+        json={**base, "source": {"meeting_id": meeting_id("cvm"), "anchor_ms": 747001}},
+        headers=headers,
+    )
+    assert beyond.status_code == 400
+    at_end = client.post(
+        "/api/requirements",
+        json={
+            **base,
+            "summary": None,
+            "source": {"meeting_id": meeting_id("cvm"), "anchor_ms": 747000},
+        },
+        headers=headers,
+    )
+    assert at_end.status_code == 200, at_end.text
+    assert (at_end.json()["source"]["anchor_ms"], at_end.json()["summary"]) == (747000, "")
+
+
+def test_unlinking_the_source_meeting_drops_its_quote(tmp_path):
+    """来源一定在关联会议里：详情页移除、整组替换（会议页改关联同一条路）把提出它的那场会移出后，
+    来源跟着去掉；跟进场数＝关联会议数减 1。"""
+    client, headers, db = make_world(tmp_path)
+    json_headers = {**headers, "Content-Type": "application/json"}
+    requirement_id = create(
+        client,
+        headers,
+        "yimi",
+        "京东科研仓对接",
+        "P0",
+        source_key="inbound",
+        meeting_keys=("hengtiao", "edc"),
+    )
+    detail = client.get(f"/api/requirements/{requirement_id}").json()
+    assert (len(detail["meetings"]), detail["follow_up_count"]) == (3, 2)
+
+    removed = client.delete(
+        f"/api/requirements/{requirement_id}/meetings/{meeting_id('jd')}", headers=json_headers
+    ).json()
+
+    assert (removed["source"], removed["sources"], removed["follow_up_count"]) == (None, [], 1)
+    poster = wall(client, status="active")["items"][0]
+    assert (poster["source"], poster["meeting_count"], poster["follow_up_count"]) == (None, 2, 1)
+
+    other = create(client, headers, "yimi", "京东仓签收凭证", "P1", source_key="receipt")
+    replaced = client.put(
+        f"/api/requirements/{other}/meetings",
+        json={"meeting_ids": [meeting_id("edc")]},
+        headers=headers,
+    ).json()
+    assert (replaced["source"], [meeting["id"] for meeting in replaced["meetings"]]) == (
+        None,
+        [meeting_id("edc")],
+    )
+
+
+def test_project_merge_hands_the_seat_to_an_unseated_target(tmp_path):
+    client, headers, db = make_world(tmp_path)
+    seat(client, headers, "yimi", "hengrui", "huaxia")
+
+    # 恒瑞（第 2 位）并进还没排座次的寻呼随访项目：寻呼接过第 2 位
+    merged = client.post(
+        f"/api/projects/{project_id('hengrui')}/merge-into/{project_id('pager')}",
+        json={},
+        headers=headers,
+    )
+    assert merged.status_code == 200, merged.text
+    projects = {project["id"]: project for project in client.get("/api/projects").json()}
+    assert projects[project_id("pager")]["seat"] == 2
+
+    # 两个都排了座次：目标留自己的，名次照样连续
+    client.post(
+        f"/api/projects/{project_id('yimi')}/merge-into/{project_id('huaxia')}",
+        json={},
+        headers=headers,
+    )
+    projects = {project["id"]: project for project in client.get("/api/projects").json()}
+    assert (projects[project_id("pager")]["seat"], projects[project_id("huaxia")]["seat"]) == (1, 2)
