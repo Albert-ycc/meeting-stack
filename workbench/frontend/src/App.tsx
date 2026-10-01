@@ -888,6 +888,9 @@ export default function App({ apiClient = api }: AppProps) {
         page: document.documentElement.scrollTop,
         transcript: document.querySelector<HTMLElement>(".transcript-scroll")?.scrollTop ?? 0,
       };
+      // 先压历史、再盖上新增页：新增页一挂上就滚到顶，等它挂上以后再压，浏览器给会议这一条记下的滚动位置就是 0，
+      // 后退时它按 0 恢复，盖掉我们放回去的位置
+      history.pushState({ app: true }, "", `${window.location.pathname}${window.location.search}#requirements/new`);
       historySyncRef.current = false;
       setMeetingFormPrefill(prefill);
       return;
