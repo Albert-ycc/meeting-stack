@@ -526,6 +526,42 @@ def test_create_rejects_bad_summary_and_source(tmp_path):
     assert db.query_one("SELECT COUNT(*) AS n FROM requirements") == {"n": 1}
 
 
+def test_titles_drop_zero_width_characters(tmp_path):
+    """需求名里的零宽字符（从飞书、微信复制常带）不算字：绕不过同项目不重名，只有零宽字符等于没写。"""
+    client, headers, db = make_world(tmp_path)
+    create(client, headers, "yimi", "赠药横跳拦截", "P0")
+
+    twin = client.post(
+        "/api/requirements",
+        json={"project_id": project_id("yimi"), "title": "赠药横跳拦截\u200b", "priority": "P1"},
+        headers=headers,
+    )
+    assert twin.status_code == 409
+    blank = client.post(
+        "/api/requirements",
+        json={"project_id": project_id("yimi"), "title": "\u200b\u2060", "priority": "P1"},
+        headers=headers,
+    )
+    assert blank.status_code == 400
+    cleaned = client.post(
+        "/api/requirements",
+        json={
+            "project_id": project_id("cvm"),
+            "title": "\ufeff科室会预约后台导出\u200d",
+            "priority": "P2",
+        },
+        headers=headers,
+    )
+    assert cleaned.status_code == 200 and cleaned.json()["title"] == "科室会预约后台导出"
+    with db.transaction() as connection:
+        candidate_id = insert_candidate(
+            connection, meeting_id=meeting_id("cvm"), title="科室会预约\u200b后台导出 "
+        )
+    assert db.query_one(
+        "SELECT title, name_key FROM requirement_candidates WHERE id=?", (candidate_id,)
+    ) == {"title": "科室会预约后台导出", "name_key": "科室会预约后台导出"}
+
+
 def test_update_replaces_or_clears_source_and_keeps_linked_meetings(tmp_path):
     client, headers, db = make_world(tmp_path)
     requirement_id = create(client, headers, "yimi", "京东科研仓对接", "P0", source_key="inbound")

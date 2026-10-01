@@ -117,22 +117,6 @@
   font-size: 11px;
 }
 
-.direction-chip--unassigned {
-  border: 1px dashed var(--line-strong);
-  background: transparent;
-  color: var(--muted);
-}
-
-.direction-chip--unassigned.is-selected {
-  border-style: solid;
-}
-
-.direction-bar__divider {
-  width: 1px;
-  height: 20px;
-  background: var(--line-strong);
-}
-
 .direction-bar__hint {
   margin-left: auto;
   color: var(--muted);
@@ -221,5 +205,26 @@
 
 .direction-menu__seat:disabled {
   color: var(--faint);
+  cursor: default;
+}
+
+/* 项目名太长时截断（全名在悬停提示里），条不被撑出横向滚动 */
+.direction-chip__name {
+  overflow: hidden;
+  max-width: 14em;
+  text-overflow: ellipsis;
+}
+
+/* 「未排座次」里有被选着的项目：芯片上标出来 */
+.direction-chip__picked {
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--signal);
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.direction-chip--more:disabled {
   cursor: default;
 }

@@ -38,8 +38,17 @@ import {
   type RequirementFormResult,
   type RequirementPrefill,
 } from "./components/pool/RequirementFormPage";
-import { POOL_TAB_KEY, RequirementPoolPage } from "./components/pool/RequirementPoolPage";
-import { writePersistentState } from "./viewState";
+import {
+  POOL_PRIORITIES_KEY,
+  POOL_PRIORITIES_STORE,
+  POOL_PROJECTS_KEY,
+  POOL_PROJECTS_STORE,
+  POOL_QUERY_KEY,
+  POOL_QUERY_STORE,
+  POOL_TAB_KEY,
+  RequirementPoolPage,
+} from "./components/pool/RequirementPoolPage";
+import { readPersistentState, writePersistentState } from "./viewState";
 import { SearchPage } from "./components/SearchPage";
 import { setDraft as setAskDraft } from "./components/ask/askStore";
 import { TaskDrawer } from "./components/TaskDrawer";
@@ -865,11 +874,29 @@ export default function App({ apiClient = api }: AppProps) {
       return;
     }
     // 认领、新建后新海报挂在「进行中」的墙上（S02、S09 的流转）；合并的留在原来的页签
-    if (result.kind !== "merged") writePersistentState(POOL_TAB_KEY, "active", { local: true });
+    let unfiltered = false;
+    if (result.kind !== "merged") {
+      writePersistentState(POOL_TAB_KEY, "active", { local: true });
+      // 记着的筛选会把新海报挡住（项目、优先级不含它，名称搜不到它）：清空筛选，不然「挂上墙了」墙上却没有
+      const projectIds = readPersistentState<string[]>(POOL_PROJECTS_KEY, [], POOL_PROJECTS_STORE);
+      const priorities = readPersistentState<string[]>(POOL_PRIORITIES_KEY, [], POOL_PRIORITIES_STORE);
+      const query = readPersistentState(POOL_QUERY_KEY, "", POOL_QUERY_STORE).trim().toLowerCase();
+      unfiltered =
+        (projectIds.length > 0 && !projectIds.includes(requirement.project_id)) ||
+        (priorities.length > 0 && !priorities.includes(requirement.priority)) ||
+        (query !== "" && !requirement.title.toLowerCase().includes(query));
+      if (unfiltered) {
+        writePersistentState(POOL_PROJECTS_KEY, [], POOL_PROJECTS_STORE);
+        writePersistentState(POOL_PRIORITIES_KEY, [], POOL_PRIORITIES_STORE);
+        writePersistentState(POOL_QUERY_KEY, "", POOL_QUERY_STORE);
+      }
+    }
     setPoolFlash(
       result.kind === "merged"
         ? `已合并到「${requirement.title}」`
-        : `已${result.kind === "claimed" ? "认领" : "新建"}「${requirement.title}」，挂上墙了`,
+        : `已${result.kind === "claimed" ? "认领" : "新建"}「${requirement.title}」，挂上墙了${
+            unfiltered ? "；原来的筛选会挡住它，已清空筛选" : ""
+          }`,
     );
     void refreshProjects();
     leaveRequirementForm();
@@ -1240,6 +1267,7 @@ export default function App({ apiClient = api }: AppProps) {
         onCancel={leaveRequirementForm}
         onDone={finishRequirementForm}
         onOpenProject={openProjectDetail}
+        onOpenRequirement={openRequirementDetail}
         prefill={requirementForm.mode === "create" ? requirementForm.prefill : undefined}
         projects={projects}
         requirementId={requirementForm.mode === "edit" ? requirementForm.requirementId : undefined}

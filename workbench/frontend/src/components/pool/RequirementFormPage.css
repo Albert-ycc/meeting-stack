@@ -54,6 +54,27 @@
   font-size: 13px;
 }
 
+.form-page__alert button {
+  margin-left: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--signal-dark);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 底栏左边的失败原因（固定在窗口底部，长表单、矮窗口也看得见） */
+.form-actions__error {
+  align-self: center;
+  margin: 0 auto 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 13px;
+}
+
 .form-page__body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 384px;

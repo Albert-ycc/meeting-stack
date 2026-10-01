@@ -13,7 +13,9 @@ import "./RequirementPoolPage.css";
 
 /** 页签和筛选记在本机（R02-8），刷新、关掉再开都保持上次的选择 */
 export const POOL_TAB_KEY = "requirementPool.tab";
-const PERSIST = { local: true } as const;
+export const POOL_PROJECTS_KEY = "requirementPool.projects";
+export const POOL_PRIORITIES_KEY = "requirementPool.priorities";
+export const POOL_QUERY_KEY = "requirementPool.q";
 // 墙上一次挂完：现在是几十条的量级，不分页
 const WALL_LIMIT = 500;
 
@@ -46,6 +48,17 @@ interface RequirementPoolPageProps {
   onProjectsChanged?: () => void | Promise<void>;
 }
 
+// 本机记着的值可能被扩展、手改或旧版本写坏：形状不对就当没记，不能让整页白屏
+const isTab = (value: unknown) => TABS.some((item) => item.key === value);
+const isStringList = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === "string");
+const isPriorityList = (value: unknown) =>
+  Array.isArray(value) && value.every((item) => (REQUIREMENT_PRIORITIES as readonly unknown[]).includes(item));
+const isString = (value: unknown) => typeof value === "string";
+export const POOL_TAB_STORE = { local: true, valid: isTab } as const;
+export const POOL_PROJECTS_STORE = { local: true, valid: isStringList } as const;
+export const POOL_PRIORITIES_STORE = { local: true, valid: isPriorityList } as const;
+export const POOL_QUERY_STORE = { local: true, valid: isString } as const;
+
 function toggled<T>(values: T[], value: T): T[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
@@ -67,14 +80,14 @@ export function RequirementPoolPage({
   onProjectsChanged,
 }: RequirementPoolPageProps) {
   const { toastNode, showToast } = useToast(3000);
-  const [tab, setTab] = usePersistentState<PoolTab>(POOL_TAB_KEY, "active", PERSIST);
-  const [projectIds, setProjectIds] = usePersistentState<string[]>("requirementPool.projects", [], PERSIST);
+  const [tab, setTab] = usePersistentState<PoolTab>(POOL_TAB_KEY, "active", POOL_TAB_STORE);
+  const [projectIds, setProjectIds] = usePersistentState<string[]>(POOL_PROJECTS_KEY, [], POOL_PROJECTS_STORE);
   const [priorities, setPriorities] = usePersistentState<RequirementPriority[]>(
-    "requirementPool.priorities",
+    POOL_PRIORITIES_KEY,
     [],
-    PERSIST,
+    POOL_PRIORITIES_STORE,
   );
-  const [query, setQuery] = usePersistentState("requirementPool.q", "", PERSIST);
+  const [query, setQuery] = usePersistentState(POOL_QUERY_KEY, "", POOL_QUERY_STORE);
   const [draftQuery, setDraftQuery] = useState(query);
   const [payload, setPayload] = useState<RequirementPoolPayload | null>(null);
   const [failed, setFailed] = useState(false);
@@ -97,6 +110,11 @@ export function RequirementPoolPage({
       if (request !== requestRef.current) return;
       setPayload(next);
       setFailed(false);
+      // 记着的项目已经删掉、合并掉，或者是条上没有的「未归项目」：条上看不到它被选着，墙却被它筛了，去掉
+      const known = new Set(next.projects.map((project) => project.id));
+      if (projectIds.some((id) => !known.has(id))) {
+        setProjectIds((current) => current.filter((id) => known.has(id)));
+      }
     } catch {
       if (request === requestRef.current) setFailed(true);
     }
@@ -137,8 +155,10 @@ export function RequirementPoolPage({
       await apiClient.saveProjectSeats(ids);
       showToast("座次已保存");
       await refreshAfterChange();
-    } catch (err) {
-      showToast(err instanceof Error ? `座次没保存：${err.message}` : "座次没保存，请稍后重试");
+    } catch {
+      // 多半是项目在别处改过（删掉、合并、另一个窗口排过座次）：重新取一遍，用新的一排再拖
+      showToast("座次没保存：项目有变化，已刷新，请再拖一次");
+      await load();
     }
   };
 
@@ -149,7 +169,9 @@ export function RequirementPoolPage({
       showToast(`已丢掉「${item.title}」，30 天内可以在「已丢掉」里撤销`);
       await load();
     } catch (err) {
+      // 多半是在别处已经认领、合并或丢掉了：提示原因，墙上换成最新的
       showToast(err instanceof Error ? err.message : "丢掉失败，请稍后重试");
+      await load();
     } finally {
       setBusyId(null);
     }
@@ -254,7 +276,6 @@ export function RequirementPoolPage({
           onToggle={(projectId) => setProjectIds((current) => toggled(current, projectId))}
           projects={payload.projects}
           selected={projectIds}
-          unassignedCount={payload.unassigned_count}
         />
       )}
 
@@ -324,7 +345,11 @@ export function RequirementPoolPage({
         <MergeCandidateDialog
           apiClient={apiClient}
           candidate={merging}
-          onClose={() => setMerging(null)}
+          onClose={() => {
+            // 没合成（取消，或候选在别处已经处理了）：墙上换成最新的
+            setMerging(null);
+            void load();
+          }}
           onMerged={(requirement) => {
             setMerging(null);
             showToast(`已合并到「${requirement.title}」`);

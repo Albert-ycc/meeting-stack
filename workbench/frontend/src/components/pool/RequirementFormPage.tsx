@@ -45,9 +45,11 @@ interface RequirementFormPageProps {
   onCancel: () => void;
   onDone: (result: RequirementFormResult) => void;
   onOpenProject?: (projectId: string) => void;
+  /** 候选已经被认领、合并时，提示里的［打开那条需求］ */
+  onOpenRequirement?: (requirementId: string) => void;
 }
 
-/** 说明按字数算（一个表情也是一个字），和后端的 70 字一致 */
+/** 说明按码点数，和后端的 70 字一致（一个汉字、一个常见表情各算一个；组合表情按它的码点数算） */
 export function summaryLength(value: string): number {
   return [...value.trim()].length;
 }
@@ -140,6 +142,7 @@ export function RequirementFormPage({
   onCancel,
   onDone,
   onOpenProject,
+  onOpenRequirement,
 }: RequirementFormPageProps) {
   const claiming = mode === "claim";
   const editing = mode === "edit";
@@ -160,6 +163,13 @@ export function RequirementFormPage({
   const [error, setError] = useState("");
   const [conflict, setConflict] = useState<TitleConflict | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
+  const conflictRef = useRef<HTMLDivElement>(null);
+
+  // 从滚动过的需求池点进来时页面停在半截：二级页从页头开始看
+  useEffect(() => {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }, []);
   const prevProjectRef = useRef(projectId);
 
   useEffect(() => {
@@ -207,6 +217,11 @@ export function RequirementFormPage({
       active = false;
     };
   }, [apiClient, editing, requirementId]);
+
+  // 撞名的提示在需求名底下：窗口矮、页面滚过时滚到看得见的地方
+  useEffect(() => {
+    if (conflict) conflictRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [conflict]);
 
   // 换了所属项目，原来那个项目根目录下的文件夹不再合法（D6），清空重选；撞名的提示也作废
   useEffect(() => {
@@ -293,8 +308,17 @@ export function RequirementFormPage({
       const data = err instanceof ApiError ? (err.data as TitleConflict | null) : null;
       if (err instanceof ApiError && err.status === 409 && data?.existing) {
         setConflict(data);
+      } else if (claiming && err instanceof ApiError && err.status === 404) {
+        setError("这条候选已经不在了（纪要重新抽取时换掉了），回需求池看看新的候选");
       } else {
         setError(err instanceof Error ? err.message : "保存失败，请稍后重试");
+        // 候选在别处已经认领、合并或丢掉：重读一遍，页上显示它的状态，表单不能再提交
+        if (claiming && candidateId && err instanceof ApiError && err.status === 409) {
+          void apiClient
+            .requirementCandidate(candidateId)
+            .then(setCandidate)
+            .catch(() => undefined);
+        }
       }
       setSaving(false);
     }
@@ -353,6 +377,11 @@ export function RequirementFormPage({
       {handled && candidate && (
         <p className="form-page__alert" role="alert">
           这条候选已经{candidate.status === "claimed" ? "认领" : candidate.status === "merged" ? "合并" : "丢掉"}了。
+          {candidate.requirement_id && onOpenRequirement && (
+            <button onClick={() => onOpenRequirement(candidate.requirement_id!)} type="button">
+              打开那条需求
+            </button>
+          )}
         </p>
       )}
 
@@ -383,7 +412,7 @@ export function RequirementFormPage({
           </label>
 
           {conflict?.existing && (
-            <div className="form-conflict" role="alert">
+            <div className="form-conflict" ref={conflictRef} role="alert">
               <p>
                 「{project?.name ?? "这个项目"}」里已有同名需求「{conflict.existing.title}」（
                 {REQUIREMENT_STATUS_LABELS[conflict.existing.status]}），不会重复新建。
@@ -490,7 +519,15 @@ export function RequirementFormPage({
                   )}
                 </SourcePanel>
               ) : (
-                <p className="form-source form-source--empty">{candidate ? "这条候选没有来源" : "正在读取…"}</p>
+                <p className="form-source form-source--empty">
+                  {loadError
+                    ? "读不到这条候选"
+                    : !candidate
+                      ? "正在读取…"
+                      : handled
+                        ? "来源已经跟着候选挂到需求上了"
+                        : "这条候选没有来源"}
+                </p>
               )}
             </div>
           )}
@@ -570,13 +607,13 @@ export function RequirementFormPage({
         </aside>
       </div>
 
-      {error && (
-        <p className="form-page__alert" role="alert">
-          {error}
-        </p>
-      )}
-
       <footer className="form-actions">
+        {/* 失败原因写在固定的操作栏里：表单长、窗口矮的时候也看得见 */}
+        {error && (
+          <p className="form-actions__error" role="alert">
+            {error}
+          </p>
+        )}
         <button className="form-actions__cancel" disabled={saving} onClick={onCancel} type="button">
           取消
         </button>

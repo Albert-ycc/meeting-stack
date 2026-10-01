@@ -203,4 +203,67 @@ describe("RequirementPoolPage", () => {
     await userEvent.click(within(screen.getByText("墙上还没有需求").parentElement!).getByRole("button", { name: /新建需求/ }));
     expect(handlers.onCreateRequirement).toHaveBeenCalledTimes(1);
   });
+
+  it("本机记着的筛选被写坏（非法 JSON、类型不对）时不白屏，按默认筛选取", async () => {
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.tab", JSON.stringify("nope"));
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.projects", "null");
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.priorities", JSON.stringify(["P9", 1]));
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.q", "123");
+    const requirementPool = vi.fn().mockResolvedValue(poolPayload());
+    renderPage({ requirementPool });
+
+    expect(await screen.findByRole("article", { name: "需求：京东科研仓对接" })).toBeInTheDocument();
+    expect(requirementPool).toHaveBeenCalledWith({
+      status: "active",
+      project_id: undefined,
+      priority: undefined,
+      q: undefined,
+      limit: 500,
+    });
+  });
+
+  it("记着的项目已经删掉、合并掉了：从筛选里去掉，重新取", async () => {
+    window.localStorage.setItem(
+      "meeting-workbench:view:requirementPool.projects",
+      JSON.stringify([YIMI, "project-deleted", "unassigned"]),
+    );
+    const requirementPool = vi.fn().mockResolvedValue(poolPayload());
+    renderPage({ requirementPool });
+
+    await waitFor(() =>
+      expect(requirementPool).toHaveBeenLastCalledWith(expect.objectContaining({ project_id: YIMI })),
+    );
+    expect(requirementPool).toHaveBeenCalledWith(
+      expect.objectContaining({ project_id: `${YIMI},project-deleted,unassigned` }),
+    );
+  });
+
+  it("丢掉失败（候选在别处已经处理了）：提示原因，墙上重新取", async () => {
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.tab", JSON.stringify("pending"));
+    const requirementPool = vi
+      .fn()
+      .mockResolvedValueOnce(poolPayload({ status: "pending", items: [candidateItem()] }))
+      .mockResolvedValue(poolPayload({ status: "pending", items: [] }));
+    const dropCandidate = vi.fn().mockRejectedValue(new Error("这条候选已经丢掉了"));
+    renderPage({ requirementPool, dropCandidate });
+
+    const poster = await screen.findByRole("article", { name: "候选：京东仓签收凭证" });
+    await userEvent.click(within(poster).getByRole("button", { name: "丢掉" }));
+    await expectToast("这条候选已经丢掉了");
+    expect(await screen.findByText("没有待认领的候选")).toBeInTheDocument();
+    expect(requirementPool).toHaveBeenCalledTimes(2);
+  });
+
+  it("座次没存上（项目在别处改过）：提示后重新取，用新的一排再拖", async () => {
+    const requirementPool = vi.fn().mockResolvedValue(poolPayload());
+    const saveProjectSeats = vi.fn().mockRejectedValue(new Error("项目不存在：project-a44ff42eac0740c6"));
+    renderPage({ requirementPool, saveProjectSeats });
+    await screen.findByRole("article", { name: "需求：京东科研仓对接" });
+
+    await userEvent.click(screen.getByRole("button", { name: /未排座次/ }));
+    await userEvent.click(screen.getByRole("button", { name: "排入座次" }));
+    await expectToast("座次没保存：项目有变化，已刷新，请再拖一次");
+    expect(screen.getByRole("status")).not.toHaveTextContent("project-a44ff42eac0740c6");
+    await waitFor(() => expect(requirementPool).toHaveBeenCalledTimes(2));
+  });
 });

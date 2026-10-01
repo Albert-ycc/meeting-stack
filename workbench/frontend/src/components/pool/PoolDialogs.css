@@ -62,9 +62,12 @@
   text-align: center;
 }
 
+/* 可选的需求多时列表自己滚，底部的［合并］留在弹层里 */
 .merge-targets {
   display: grid;
   gap: 8px;
+  max-height: min(48vh, 420px);
+  overflow-y: auto;
 }
 
 .merge-target {

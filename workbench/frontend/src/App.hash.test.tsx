@@ -7,6 +7,7 @@ import type { ApiClient } from "./api";
 import { forgetOverviewCache } from "./components/graph/OverviewGraph";
 import { foldersPayload, overviewPayload } from "./components/graph/overviewFixtures";
 import { forgetGraphCache } from "./components/graph/ProjectGraph";
+import { candidateItem } from "./components/pool/poolFixtures";
 import { focusPayload, payload } from "./components/graph/testFixtures";
 
 function desktopMatchMedia() {
@@ -215,6 +216,33 @@ describe("地址栏锚点直达", () => {
     expect(screen.queryByRole("heading", { name: "认领候选" })).not.toBeInTheDocument();
     expect(requirementCandidate).not.toHaveBeenCalled();
     expect(window.location.hash).toBe("#requirements");
+  });
+
+  it("认领后新海报会被本机记着的筛选挡住：回需求池时清空筛选，提示里说一声", async () => {
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.priorities", JSON.stringify(["P0"]));
+    window.history.replaceState(null, "", "/#requirements/claim/candidate-receipt");
+    const requirementCandidate = vi.fn().mockResolvedValue({ ...candidateItem(), sources: [] });
+    const claimCandidate = vi.fn().mockResolvedValue({
+      id: "requirement-receipt",
+      title: "京东仓签收凭证",
+      project_id: candidateItem().project_id,
+      priority: "P2",
+    });
+    const requirementPool = vi.fn().mockResolvedValue(emptyPool());
+    render(<App apiClient={client({ requirementCandidate, claimCandidate, requirementPool })} />);
+
+    await screen.findByDisplayValue("京东仓签收凭证");
+    await userEvent.click(screen.getByRole("button", { name: "认领" }));
+
+    expect(await screen.findByRole("heading", { name: "需求池" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "已认领「京东仓签收凭证」，挂上墙了；原来的筛选会挡住它，已清空筛选",
+      ),
+    );
+    await waitFor(() =>
+      expect(requirementPool).toHaveBeenLastCalledWith(expect.objectContaining({ status: "active", priority: undefined })),
+    );
   });
 
   it("冷加载带 #requirements/<id>/edit 打开修改需求页", async () => {

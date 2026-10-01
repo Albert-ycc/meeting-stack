@@ -10,6 +10,7 @@ v17（需求池改版 260930）：需求多了说明和来源。来源＝提出�
 from __future__ import annotations
 
 import sqlite3
+import unicodedata
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -54,8 +55,14 @@ class RequirementTitleConflict(ConflictError):
         self.existing = existing
 
 
+def clean_title(title: str | None) -> str:
+    """需求名去掉零宽字符这类看不见的格式字符（从飞书、微信复制常带），再去首尾空白：
+    不然「赠药横跳拦截」后面多一个零宽空格就能绕过同项目不重名，只粘一个零宽空格能建出看不见名字的需求。"""
+    return "".join(char for char in (title or "") if unicodedata.category(char) != "Cf").strip()
+
+
 def _normalize_title(title: str) -> str:
-    title = title.strip()
+    title = clean_title(title)
     if not title:
         raise ValueError("需求标题不能为空")
     return title

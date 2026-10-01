@@ -414,6 +414,49 @@ describe("RequirementFormPage", () => {
   });
 });
 
+describe("RequirementFormPage 候选在别处处理了", () => {
+  it("认领时候选已在别处合并：失败原因写在底部操作栏，重读后显示它已合并，能打开那条需求", async () => {
+    const requirementCandidate = vi
+      .fn()
+      .mockResolvedValueOnce(candidateDetail())
+      .mockResolvedValue(candidateDetail({ status: "merged", requirement_id: "requirement-jd", source: null, sources: [] }));
+    const claimCandidate = vi.fn().mockRejectedValue(new ApiError("这条候选已经合并了", 409, { detail: "这条候选已经合并了" }));
+    const onOpenRequirement = vi.fn();
+    renderForm({ requirementCandidate, claimCandidate }, { onOpenRequirement });
+    await screen.findByDisplayValue("京东仓签收凭证");
+
+    await userEvent.click(submitButton("认领"));
+
+    const footerAlert = await screen.findByText("这条候选已经合并了");
+    expect(footerAlert.closest(".form-actions")).not.toBeNull();
+    expect(await screen.findByText("这条候选已经合并了。")).toBeInTheDocument();
+    expect(screen.getByText("来源已经跟着候选挂到需求上了")).toBeInTheDocument();
+    expect(submitButton("认领")).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "打开那条需求" }));
+    expect(onOpenRequirement).toHaveBeenCalledWith("requirement-jd");
+  });
+
+  it("认领时候选已经不在了（纪要重抽换掉了）：说人话，不露内部 id", async () => {
+    renderForm({
+      requirementCandidate: vi.fn().mockResolvedValue(candidateDetail()),
+      claimCandidate: vi.fn().mockRejectedValue(new ApiError("候选不存在：candidate-476af978", 404)),
+    });
+    await screen.findByDisplayValue("京东仓签收凭证");
+
+    await userEvent.click(submitButton("认领"));
+    const alert = await screen.findByText(/这条候选已经不在了/);
+    expect(alert).toHaveTextContent("回需求池看看新的候选");
+    expect(alert).not.toHaveTextContent("candidate-476af978");
+  });
+
+  it("读不到候选时来源一栏不再一直写「正在读取」", async () => {
+    renderForm({ requirementCandidate: vi.fn().mockRejectedValue(new Error("候选不存在：candidate-x")) });
+
+    expect(await screen.findByText("读不到这条候选")).toBeInTheDocument();
+    expect(screen.queryByText("正在读取…")).not.toBeInTheDocument();
+  });
+});
+
 describe("quoteOf", () => {
   it("连着的几句拼成原话，时间锚取第一句；倒着选也一样", () => {
     expect(quoteOf(CVM_SEGMENTS, 1, 2)).toEqual({ quote: "那我有办法导出 excel 吗？是没有办法，", anchor_ms: 576900 });

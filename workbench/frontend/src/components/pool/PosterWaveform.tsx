@@ -147,8 +147,15 @@ export function PosterWaveform({ artifactId, markers, bars = 96, height = 28, on
             event.stopPropagation();
             onActivate();
           }}
+          onKeyDown={(event) => {
+            if (!onActivate || (event.key !== "Enter" && event.key !== " ")) return;
+            event.preventDefault();
+            event.stopPropagation();
+            onActivate();
+          }}
           preserveAspectRatio="none"
           role={onActivate ? "button" : "img"}
+          tabIndex={onActivate ? 0 : undefined}
           viewBox={`0 0 ${width} ${height}`}
         >
           {values.map((value, index) => {

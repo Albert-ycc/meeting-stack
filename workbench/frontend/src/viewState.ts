@@ -13,6 +13,8 @@ const memory = new Map<string, unknown>();
 interface PersistOptions {
   /** 写 localStorage：关掉标签页、重开浏览器也保留 */
   local?: boolean;
+  /** 存着的值形状不对（被扩展、手改或旧版本写坏）时当没存，用默认值；不传不校验 */
+  valid?: (value: unknown) => boolean;
 }
 
 function storageFor(options: PersistOptions): Storage {
@@ -20,13 +22,17 @@ function storageFor(options: PersistOptions): Storage {
 }
 
 function readStored<T>(key: string, initial: T, options: PersistOptions): T {
-  if (memory.has(key)) return memory.get(key) as T;
+  if (memory.has(key)) {
+    const remembered = memory.get(key);
+    return !options.valid || options.valid(remembered) ? (remembered as T) : initial;
+  }
   try {
     const raw = storageFor(options).getItem(STORAGE_PREFIX + key);
     if (raw !== null) {
-      const parsed = JSON.parse(raw) as T;
+      const parsed: unknown = JSON.parse(raw);
+      if (options.valid && !options.valid(parsed)) return initial;
       memory.set(key, parsed);
-      return parsed;
+      return parsed as T;
     }
   } catch {
     // 存储不可用或内容损坏：用默认值。
@@ -50,7 +56,7 @@ export function usePersistentState<T>(
   options: PersistOptions = {},
 ): [T, (next: SetStateAction<T>) => void] {
   const local = Boolean(options.local);
-  const [value, setValue] = useState<T>(() => readStored(key, initial, { local }));
+  const [value, setValue] = useState<T>(() => readStored(key, initial, { local, valid: options.valid }));
   const update = useCallback(
     (next: SetStateAction<T>) => {
       setValue((previous) => {
@@ -62,6 +68,11 @@ export function usePersistentState<T>(
     [key, local],
   );
   return [value, update];
+}
+
+/** 在页面外读一个记着的值（读不到、形状不对时是 initial）：比如认领完回需求池前看看筛选会不会把新海报挡住。 */
+export function readPersistentState<T>(key: string, initial: T, options: PersistOptions = {}): T {
+  return readStored(key, initial, { local: Boolean(options.local), valid: options.valid });
 }
 
 /** 在页面外改一个记着的值（页面下次挂载时读到）：比如认领完回需求池，要落在「进行中」页签。 */

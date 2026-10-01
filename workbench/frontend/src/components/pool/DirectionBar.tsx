@@ -3,14 +3,10 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import type { PoolProject } from "../../types";
 import "./DirectionBar.css";
 
-/** 筛选里代表「未归项目」的值（和后端 /api/requirement-pool 的 project_id=unassigned 一致） */
-export const UNASSIGNED = "unassigned";
-
 interface DirectionBarProps {
   /** 已排座次的在前（按名次），其后是未排座次的（按项目最近一场会） */
   projects: PoolProject[];
-  unassignedCount: number;
-  /** 选中的项目（多选），可含 UNASSIGNED */
+  /** 选中的项目（多选） */
   selected: string[];
   canWrite: boolean;
   onToggle: (projectId: string) => void;
@@ -38,11 +34,11 @@ function HandleIcon() {
 /**
  * 需求池顶部的「我的方向」条（R03）：项目之间的先后代表这一阶段的个人工作方向。
  * 拖动排序、点选筛选；未排座次的项目收在「未排座次 +N」里，按最近会议排，可以排入座次或拖进来；
- * 已排座次的项目拖到「未排座次」上就移出座次。「未归项目」不能排座次，只能点选筛选。
+ * 已排座次的项目拖到「未排座次」上就移出座次（全都排了座次时，拖动中也会出现这个落点）。
+ * 「未归项目」不出现在条上、不能拖动排序（R03 异常与边界）。
  */
 export function DirectionBar({
   projects,
-  unassignedCount,
   selected,
   canWrite,
   onToggle,
@@ -58,6 +54,7 @@ export function DirectionBar({
   const [menuOpen, setMenuOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  const seatsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -101,31 +98,22 @@ export function DirectionBar({
     setDragId(projectId);
   };
 
-  // 落在某个已排座次的项目上：按指针在它左半还是右半，插到它前面或后面
-  const overChip = (event: DragEvent, projectId: string) => {
-    if (!dragId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = "move";
-    setOverUnseat(false);
-    if (projectId === dragId) {
-      // 停在自己原来的位置上：放下等于没动
-      setInsertAt(seatedIds.indexOf(dragId));
-      return;
-    }
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    const before = event.clientX < rect.left + rect.width / 2;
-    const index = rest.indexOf(projectId);
-    setInsertAt(before ? index : index + 1);
-  };
-
-  // 落在条上的空白处：排到最后
+  // 指针在条上的哪儿就插到哪儿：数一数中线在指针左边的项目（不算拖着的那个）。
+  // 落在项目上、项目之间的缝里、条尾的空白处都一样算，不会因为落在缝里就排到最后
   const overBar = (event: DragEvent) => {
     if (!dragId) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     setOverUnseat(false);
-    setInsertAt(rest.length);
+    const chips = Array.from(seatsRef.current?.querySelectorAll<HTMLElement>("[data-seat-id]") ?? []).filter(
+      (chip) => chip.dataset.seatId !== dragId,
+    );
+    setInsertAt(
+      chips.filter((chip) => {
+        const rect = chip.getBoundingClientRect();
+        return rect.left + rect.width / 2 < event.clientX;
+      }).length,
+    );
   };
 
   const dropOnBar = (event: DragEvent) => {
@@ -169,6 +157,9 @@ export function DirectionBar({
     : dragId && insertAt !== null
       ? `松手放到第 ${insertAt + 1} 位`
       : "拖动排序，点选筛选";
+  const draggingSeated = dragId !== null && seatedIds.includes(dragId);
+  // 选中的项目里有收在「未排座次」里的：芯片上标出来，不然墙被筛了却看不出是谁筛的
+  const pickedUnseated = unseated.filter((project) => selected.includes(project.id)).length;
 
   return (
     <div className={`direction-bar ${dragId ? "is-dragging" : ""}`}>
@@ -178,6 +169,7 @@ export function DirectionBar({
         data-testid="direction-seats"
         onDragOver={overBar}
         onDrop={dropOnBar}
+        ref={seatsRef}
         role="group"
         aria-label="已排座次的项目"
       >
@@ -189,17 +181,19 @@ export function DirectionBar({
               className={`direction-chip ${selected.includes(project.id) ? "is-selected" : ""} ${
                 dragId === project.id ? "is-placeholder" : ""
               }`}
+              data-seat-id={project.id}
               draggable={draggable}
               onClick={() => onToggle(project.id)}
               onDragEnd={reset}
-              onDragOver={(event) => overChip(event, project.id)}
               onDragStart={(event) => startDrag(event, project.id)}
               title={canWrite ? "拖动调整座次，点一下只看这个项目" : undefined}
               type="button"
             >
               {canWrite && <HandleIcon />}
               <span className="direction-chip__seat">{project.seat}</span>
-              <span className="direction-chip__name">{project.name}</span>
+              <span className="direction-chip__name" title={project.name}>
+                {project.name}
+              </span>
               <span className="direction-chip__count">{project.count}</span>
             </button>
           </span>
@@ -207,22 +201,31 @@ export function DirectionBar({
         {lineBefore === seated.length && <span aria-hidden="true" className="direction-bar__line" />}
       </div>
 
-      {unseated.length > 0 && (
+      {(unseated.length > 0 || draggingSeated) && (
         <div className="direction-bar__more" ref={moreRef}>
           <button
             aria-expanded={menuOpen}
             aria-haspopup="true"
-            className={`direction-chip direction-chip--more ${overUnseat ? "is-drop-target" : ""}`}
-            onClick={() => setMenuOpen((open) => !open)}
+            className={`direction-chip direction-chip--more ${overUnseat ? "is-drop-target" : ""} ${
+              pickedUnseated ? "is-selected" : ""
+            }`}
+            disabled={unseated.length === 0 && !draggingSeated}
+            onClick={() => unseated.length > 0 && setMenuOpen((open) => !open)}
             onDragLeave={() => setOverUnseat(false)}
             onDragOver={overUnseatZone}
             onDrop={dropOnUnseat}
             type="button"
           >
-            未排座次 <span className="direction-chip__count">+{unseated.length}</span>
-            <span aria-hidden="true" className="direction-chip__caret">▾</span>
+            未排座次
+            {unseated.length > 0 && <span className="direction-chip__count">+{unseated.length}</span>}
+            {pickedUnseated > 0 && <span className="direction-chip__picked">已选 {pickedUnseated}</span>}
+            {unseated.length > 0 && (
+              <span aria-hidden="true" className="direction-chip__caret">
+                ▾
+              </span>
+            )}
           </button>
-          {menuOpen && (
+          {menuOpen && unseated.length > 0 && (
             <div className="direction-menu" role="dialog" aria-label="未排座次的项目">
               <p className="direction-menu__title">未排座次的项目，按最近会议排</p>
               <ul>
@@ -261,16 +264,6 @@ export function DirectionBar({
           )}
         </div>
       )}
-
-      <span aria-hidden="true" className="direction-bar__divider" />
-      <button
-        aria-pressed={selected.includes(UNASSIGNED)}
-        className={`direction-chip direction-chip--unassigned ${selected.includes(UNASSIGNED) ? "is-selected" : ""}`}
-        onClick={() => onToggle(UNASSIGNED)}
-        type="button"
-      >
-        未归项目 <span className="direction-chip__count">{unassignedCount}</span>
-      </button>
 
       <span aria-live="polite" className="direction-bar__hint">
         {saving ? "正在保存座次…" : hint}

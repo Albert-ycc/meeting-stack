@@ -26,6 +26,7 @@ from .requirements import (
     TITLE_MAX_CHARS,
     anchor_in_recording,
     clean_source,
+    clean_title,
     follow_up_count,
     get_requirement,
     insert_requirement,
@@ -70,7 +71,7 @@ def insert_candidate(
 
     AI 给的东西不因为一处不合规就让整场抽取失败：标题、说明、原话超长时截断（保证候选原样就能
     认领），时间锚不是录音里的时间点时当没有，相近需求不存在时当没有。"""
-    title = (title or "").strip()[:TITLE_MAX_CHARS].strip()
+    title = clean_title(title)[:TITLE_MAX_CHARS].strip()
     if not title:
         raise ValueError("候选标题不能为空")
     meeting = connection.execute(
@@ -410,7 +411,7 @@ def save_extracted(
     result: dict[str, Any] = {"by_no": {}, "created": [], "merged": [], "skipped": []}
     seen: set[str] = set()
     for index, item in enumerate(items, 1):
-        title = _one_line(item.get("title"))[:TITLE_MAX_CHARS].strip()
+        title = clean_title(_one_line(item.get("title")))[:TITLE_MAX_CHARS].strip()
         key = light_key(title)
         if not key:
             continue
