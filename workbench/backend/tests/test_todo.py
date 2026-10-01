@@ -589,3 +589,69 @@ def test_transition_errors_name_statuses_in_chinese(tmp_path, monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "任务已经是「已完成」，不能改成「已确认」，刷新后再看"
+
+
+def test_undoing_a_confirm_takes_back_the_link_it_made(tmp_path, monkeypatch):
+    """撤销确认时，确认时挂上的需求一起撤回（用户 261001 拍板）：AI 配好候选的那条回到挂候选，
+    没挂过的回到不挂；全部确认的撤销也一样。确认前就挂着、确认没动它的，撤销后照样挂着。"""
+    client, headers, db, candidate_id, tasks = make_cvm_world(tmp_path, monkeypatch)
+    six = create_requirement(client, headers, "cvm", "直播间运营六项修正")
+    link_meeting(client, headers, six, meeting_id("cvm"))
+    script, chase = tasks["话术修改稿发执行群走默示确认"], tasks["催填节后三场信息"]
+    db.execute("UPDATE tasks SET candidate_id=? WHERE id=?", (candidate_id, script))
+
+    client.post(f"/api/tasks/{script}/confirm", json={"requirement_id": six}, headers=headers)
+    client.post(f"/api/tasks/{script}/reject", json={}, headers=headers)  # 已确认的不能驳回，不影响
+    undone = client.post(
+        "/api/tasks/undo-review", json={"task_ids": [script]}, headers=headers
+    ).json()
+    assert undone["reverted"] == [script]
+    row = db.query_one(
+        "SELECT status, requirement_id, candidate_id, confirm_undo FROM tasks WHERE id=?", (script,)
+    )
+    assert row == {
+        "status": "pending_confirm",
+        "requirement_id": None,
+        "candidate_id": candidate_id,
+        "confirm_undo": None,
+    }
+    events = client.get(f"/api/tasks/{script}").json()["events"]
+    assert [event["body"] for event in events[-2:]] == [
+        "撤销确认：挂接回到确认前的样子",
+        "撤销上一步，恢复为待确认",
+    ]
+
+    result = client.post(
+        f"/api/review-cards/{meeting_id('cvm')}/confirm-all", json={}, headers=headers
+    ).json()
+    assert db.query_one("SELECT requirement_id FROM tasks WHERE id=?", (chase,)) == {
+        "requirement_id": six
+    }
+    client.post("/api/tasks/undo-review", json={"task_ids": result["confirmed"]}, headers=headers)
+    assert db.query_all("SELECT id, requirement_id, candidate_id FROM tasks ORDER BY id") == sorted(
+        [
+            {"id": chase, "requirement_id": None, "candidate_id": None},
+            {"id": script, "requirement_id": None, "candidate_id": candidate_id},
+        ],
+        key=lambda row: row["id"],
+    )
+
+
+def test_undo_does_not_hang_back_on_a_handled_candidate(tmp_path, monkeypatch):
+    """确认时从 AI 配好的候选改挂需求，候选随后被丢掉：撤销确认时需求撤回，但不挂回丢掉的候选。"""
+    client, headers, db, candidate_id, tasks = make_cvm_world(tmp_path, monkeypatch)
+    six = create_requirement(client, headers, "cvm", "直播间运营六项修正")
+    script = tasks["话术修改稿发执行群走默示确认"]
+    db.execute("UPDATE tasks SET candidate_id=? WHERE id=?", (candidate_id, script))
+    client.post(f"/api/tasks/{script}/confirm", json={"requirement_id": six}, headers=headers)
+    client.post(f"/api/requirement-candidates/{candidate_id}/drop", json={}, headers=headers)
+
+    client.post("/api/tasks/undo-review", json={"task_ids": [script]}, headers=headers)
+
+    assert db.query_one(
+        "SELECT status, requirement_id, candidate_id FROM tasks WHERE id=?", (script,)
+    ) == {
+        "status": "pending_confirm",
+        "requirement_id": None,
+        "candidate_id": None,
+    }

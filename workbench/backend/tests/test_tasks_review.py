@@ -261,8 +261,9 @@ def test_undo_restores_recent_confirm_and_reject(tmp_path):
     assert kinds == ["confirmed", "reverted"]
 
 
-def test_undo_after_confirm_with_requirement_change_keeps_requirement_id(tmp_path):
-    """D25：撤销只回退状态，确认时改过的字段（含 requirement_id）保持修改后的值。"""
+def test_undo_after_confirm_with_requirement_change_takes_the_link_back(tmp_path):
+    """D25：确认时顺带挂了需求，撤销照样能撤（挂接留痕写在「已确认」之前）。
+    261001 起撤销连挂接一起退回：需求和随它改的项目回到确认前；确认时改的其他字段（标题）保持修改后的值。"""
     client, settings = make_client(tmp_path)
     headers = write_headers(client)
     project_id = client.post(
@@ -275,9 +276,12 @@ def test_undo_after_confirm_with_requirement_change_keeps_requirement_id(tmp_pat
     ).json()["id"]
     db = Database(settings.database_path)
     insert_task(db, "p1", "pending_confirm")
+    before = db.query_one("SELECT requirement_id, project_id FROM tasks WHERE id='p1'")
 
     confirmed = client.post(
-        "/api/tasks/p1/confirm", json={"requirement_id": requirement_id}, headers=headers
+        "/api/tasks/p1/confirm",
+        json={"requirement_id": requirement_id, "title": "改过的标题"},
+        headers=headers,
     ).json()
     assert confirmed["requirement_id"] == requirement_id
     assert confirmed["project_id"] == project_id
@@ -290,8 +294,11 @@ def test_undo_after_confirm_with_requirement_change_keeps_requirement_id(tmp_pat
     assert task_status(db, "p1") == "pending_confirm"
 
     after_undo = client.get("/api/tasks/p1").json()
-    assert after_undo["requirement_id"] == requirement_id
-    assert after_undo["project_id"] == project_id
+    assert (after_undo["requirement_id"], after_undo["project_id"]) == (
+        before["requirement_id"],
+        before["project_id"],
+    )
+    assert after_undo["title"] == "改过的标题"
 
 
 def test_undo_refuses_when_task_moved_on(tmp_path):

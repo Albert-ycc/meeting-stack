@@ -1029,6 +1029,19 @@ class TaskService:
             changes += ["status='confirmed'", "status_changed_at=?", "updated_at=?"]
             values += [now, now, task_id]
             connection.execute(f"UPDATE tasks SET {', '.join(changes)} WHERE id=?", tuple(values))
+            # 确认时挂接变了（挂需求、挂候选，连带项目）：记下确认前的样子，撤销确认时一起还原（用户 261001 拍板）
+            after = self._row(connection, task_id)
+            link_keys = ("requirement_id", "candidate_id", "project_id")
+            before = {key: task.get(key) for key in link_keys}
+            connection.execute(
+                "UPDATE tasks SET confirm_undo=? WHERE id=?",
+                (
+                    json.dumps(before)
+                    if any(after.get(key) != before[key] for key in link_keys)
+                    else None,
+                    task_id,
+                ),
+            )
             # 需求留痕要写在「已确认」之前：undo_review 认「最后一条事件必须就是这次确认
             # 本身」，'confirmed' 必须留在最后一条，否则撤销会把这条任务判定为不可撤销（D25）。
             for body in link_events:
@@ -1146,12 +1159,63 @@ class TaskService:
                        WHERE id=?""",
                     (now, now, task_id),
                 )
+                if last["kind"] == "confirmed":
+                    self._restore_link_before_confirm(connection, task_id, now)
                 connection.execute(
                     "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'reverted', ?, ?)",
                     (task_id, "撤销上一步，恢复为待确认", now),
                 )
             reverted.append(task_id)
         return {"reverted": reverted, "failed": failed}
+
+    @staticmethod
+    def _restore_link_before_confirm(connection: Any, task_id: str, now: str) -> None:
+        """撤销确认时把确认时挂上的需求、候选（和连带改的项目）退回确认前的样子。
+
+        确认前挂的东西这期间可能没了：需求被删、候选已认领或丢掉、项目被删——那一项就留空，不挂回不存在或
+        已处理的东西。确认后挂接没变过（undo_review 已保证最后一条事件就是这次确认）。"""
+        row = connection.execute("SELECT confirm_undo FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None or not row["confirm_undo"]:
+            return
+        try:
+            before = json.loads(row["confirm_undo"])
+        except (TypeError, ValueError):
+            before = None
+        connection.execute("UPDATE tasks SET confirm_undo=NULL WHERE id=?", (task_id,))
+        if not isinstance(before, dict):
+            return
+
+        def alive(table: str, value: Any, extra: str = "") -> Any:
+            if not value:
+                return None
+            found = connection.execute(
+                f"SELECT 1 FROM {table} WHERE id=?{extra}", (value,)
+            ).fetchone()
+            return value if found else None
+
+        requirement_id = alive("requirements", before.get("requirement_id"))
+        candidate_id = (
+            None
+            if requirement_id
+            else alive(
+                "requirement_candidates", before.get("candidate_id"), " AND status='pending'"
+            )
+        )
+        project_id = alive("projects", before.get("project_id"))
+        if requirement_id:
+            # 任务挂了需求时项目必须是需求的项目（resolve_requirement_and_project 的不变量）
+            project_id = connection.execute(
+                "SELECT project_id FROM requirements WHERE id=?", (requirement_id,)
+            ).fetchone()["project_id"]
+        connection.execute(
+            "UPDATE tasks SET requirement_id=?, candidate_id=?, project_id=?, updated_at=? WHERE id=?",
+            (requirement_id, candidate_id, project_id, now, task_id),
+        )
+        connection.execute(
+            """INSERT INTO task_events(task_id, kind, body, created_at)
+               VALUES (?, 'requirement_changed', ?, ?)""",
+            (task_id, "撤销确认：挂接回到确认前的样子", now),
+        )
 
     def undo_complete(self, task_ids: list[str]) -> dict[str, Any]:
         """撤销刚才的完成（R06-11、R07-12）：10 分钟内退回完成前的已确认或进行中。

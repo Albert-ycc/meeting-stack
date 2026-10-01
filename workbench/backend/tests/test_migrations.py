@@ -615,7 +615,7 @@ V17_COLUMNS = (("projects", "seat"), ("requirements", "summary"), ("tasks", "can
 V17_TRIGGERS = ("requirement_sources_follow_unlink",)
 
 
-V18_COLUMNS = (("tasks", "due_date"), ("tasks", "due_phrase"))
+V18_COLUMNS = (("tasks", "due_date"), ("tasks", "due_phrase"), ("tasks", "confirm_undo"))
 
 
 def _downgrade_to_v17(connection: sqlite3.Connection) -> None:
@@ -1579,7 +1579,7 @@ def test_version_eighteen_migration_adds_task_due_without_backfill(tmp_path):
             """
         )
     columns = {row["name"] for row in db.query_all("PRAGMA table_info(tasks)")}
-    assert not {"due_date", "due_phrase"} & columns
+    assert not {"due_date", "due_phrase", "confirm_undo"} & columns
     backups: list[int] = []
 
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
