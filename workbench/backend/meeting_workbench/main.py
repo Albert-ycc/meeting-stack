@@ -4618,8 +4618,19 @@ def create_app(
                 summary=body.summary,
                 source=body.source.model_dump() if body.source else None,
             )
+        except requirements.RequirementTitleConflict as error:
+            # 撞名带上那条需求：新增、修改页在需求名下方指出撞的是哪一条（R04-9）
+            return JSONResponse({"detail": str(error), "existing": error.existing}, status_code=409)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    # 要排在 /api/requirements/{requirement_id} 前面，不然 title-check 会被当成需求 id
+    @app.get("/api/requirements/title-check")
+    def requirement_title_check(project_id: str, title: str, exclude_id: str | None = None):
+        existing = requirements.title_conflict(
+            task_service, project_id=project_id, title=title, exclude_id=exclude_id
+        )
+        return {"existing": existing}
 
     @app.get("/api/requirements/{requirement_id}")
     def requirement_detail(requirement_id: str):
@@ -4641,6 +4652,8 @@ def create_app(
                 source=body.source.model_dump() if body.source else None,
                 source_given="source" in body.model_fields_set,
             )
+        except requirements.RequirementTitleConflict as error:
+            return JSONResponse({"detail": str(error), "existing": error.existing}, status_code=409)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
 

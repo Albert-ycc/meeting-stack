@@ -75,6 +75,22 @@ def normalize_summary(summary: str | None) -> str:
     return summary
 
 
+def title_conflict(
+    task_service: TaskService, *, project_id: str, title: str, exclude_id: str | None = None
+) -> dict[str, Any] | None:
+    """新增、修改页边填边查重（R04-9）：同项目里和它重名的那条需求，没有返回 None。
+    名字的比较和保存时的唯一约束一致：去掉零宽字符和首尾空白，ASCII 不分大小写。"""
+    title = clean_title(title)
+    if not title or not project_id:
+        return None
+    row = task_service.db.query_one(
+        """SELECT id, title, status FROM requirements
+            WHERE project_id=? AND lower(trim(title))=lower(trim(?)) AND id IS NOT ?""",
+        (project_id, title, exclude_id),
+    )
+    return dict(row) if row else None
+
+
 def _title_conflict(connection: Any, project_id: str, title: str) -> RequirementTitleConflict:
     row = connection.execute(
         """SELECT id, title, status FROM requirements

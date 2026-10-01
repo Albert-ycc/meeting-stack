@@ -17,6 +17,7 @@ import type {
   CandidateDetail,
   CandidateExtraction,
   RequirementSourceInput,
+  TitleConflict,
   DroppedCandidates,
   MergeTargets,
   PoolFilters,
@@ -1096,6 +1097,11 @@ export const api = {
     /** v17：来源（提出它的会议、原话、时间锚），选定的会议同时加进关联会议 */
     source?: RequirementSourceInput | null;
   }) => write<RequirementDetail>("/api/requirements", "POST", data),
+  /** 新增、修改页边填边查重（R04-9）：同项目里重名的那条需求，没有是 null；修改时传 excludeId 不和自己比 */
+  requirementTitleCheck: (projectId: string, title: string, excludeId?: string) =>
+    read<{ existing: TitleConflict["existing"] }>(
+      `/api/requirements/title-check${queryString({ project_id: projectId, title, exclude_id: excludeId })}`,
+    ),
   /** v17 需求池海报墙：正式需求和待认领候选一起排 */
   requirementPool: (filters: PoolFilters) =>
     read<RequirementPoolPayload>(`/api/requirement-pool${queryString(filters)}`),

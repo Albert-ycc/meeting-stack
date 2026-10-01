@@ -120,6 +120,8 @@ def test_duplicate_title_in_same_project_conflicts_409(tmp_path):
         headers=headers,
     )
     assert duplicate.status_code == 409
+    # 带上撞的那一条，新增页在需求名下方指出来（R04-9）
+    assert duplicate.json()["existing"]["title"] == "发药日历"
 
     other_project_id, _ = make_project_with_root(client, headers, browse_root, name="ACME")
     elsewhere_ok = client.post(
@@ -128,6 +130,52 @@ def test_duplicate_title_in_same_project_conflicts_409(tmp_path):
         headers=headers,
     )
     assert elsewhere_ok.status_code == 200
+
+    # 修改：改成同项目已有的名字，或者换到一个已有同名需求的项目，都 409 并带上那一条
+    renamed = client.post(
+        "/api/requirements",
+        json={"project_id": project_id, "title": "取药提醒", "priority": "P1"},
+        headers=headers,
+    ).json()["id"]
+    rename = client.patch(
+        f"/api/requirements/{renamed}", json={"title": "发药日历"}, headers=headers
+    )
+    assert rename.status_code == 409
+    assert rename.json()["existing"]["title"] == "发药日历"
+    moved = client.patch(
+        f"/api/requirements/{elsewhere_ok.json()['id']}",
+        json={"project_id": project_id, "folder_paths": []},
+        headers=headers,
+    )
+    assert moved.status_code == 409
+    assert moved.json()["existing"]["title"] == "发药日历"
+
+
+def test_title_check_finds_the_same_name_in_the_project(tmp_path):
+    """R04-9：边填边查重，和保存时的唯一约束同一个比法；修改时不和自己比。"""
+    client, settings, browse_root = make_requirement_client(tmp_path)
+    headers = write_headers(client)
+    project_id, _root = make_project_with_root(client, headers, browse_root)
+    other_project_id, _ = make_project_with_root(client, headers, browse_root, name="ACME")
+    existing_id = client.post(
+        "/api/requirements",
+        json={"project_id": project_id, "title": "Excel 导出", "priority": "P1"},
+        headers=headers,
+    ).json()["id"]
+
+    def check(title, project=project_id, **extra):
+        response = client.get(
+            "/api/requirements/title-check",
+            params={"project_id": project, "title": title, **extra},
+        )
+        assert response.status_code == 200
+        return response.json()["existing"]
+
+    assert check(" excel 导出​ ") == {"id": existing_id, "title": "Excel 导出", "status": "active"}
+    assert check("Excel 导出", exclude_id=existing_id) is None
+    assert check("Excel 导出", project=other_project_id) is None
+    assert check("Excel 导出单") is None
+    assert check("​ ") is None
 
 
 def test_update_requirement_rename_and_priority_status(tmp_path):
