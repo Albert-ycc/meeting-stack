@@ -21,6 +21,10 @@ npx vitest run
 npm run typecheck
 ```
 
+改了路由、浏览器历史、盖在页面上的二级页、滚动位置这一类：vitest（jsdom）测不出来，提交前要在真浏览器里点一遍。
+2026-10-01 需求池收尾时就有两处用例全绿、真浏览器里却是错的：React 换了一层结构，把会议页卸掉重建了；浏览器后退时按历史记录恢复滚动，
+盖掉了代码放回去的位置。另外，Playwright 自带的 Chromium 解不了 m4a 里的 AAC，测播放只能看 `paused`，看不到时间往前走。
+
 ## 用例不能依赖跑它的机器
 
 声档实际跑在用户的 Mac 上（macOS、太平洋时区、装着 Homebrew 的 tesseract），开发常在 Linux、UTC 的环境里。
