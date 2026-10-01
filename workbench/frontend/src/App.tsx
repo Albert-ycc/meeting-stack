@@ -1227,28 +1227,29 @@ export default function App({ apiClient = api }: AppProps) {
         tags={tags}
       />
     );
-    content = meetingFormPrefill ? (
+    // 会议页始终挂在同一个位置，盖上新增页时只是藏起来：取消回来，查找词、播放进度、没保存的修改都还在。
+    // 结构要两种情况一样，换成另一层 React 会把会议页卸掉重建；没盖的时候 display: contents，排版和没有这层一样
+    content = (
       <>
-        {/* 会议页留着不卸载，只是藏起来：新增页取消回来，滚动、播放、没保存的修改都还在 */}
-        <div hidden>{meetingPage}</div>
-        <RequirementFormPage
-          apiClient={apiClient}
-          canPickFolders={!isMobile}
-          key="new-from-meeting"
-          mode="create"
-          onCancel={leaveRequirementForm}
-          onDirtyChange={(dirty) => {
-            formDirtyRef.current = dirty;
-          }}
-          onDone={finishRequirementForm}
-          onOpenProject={(projectId) => confirmLeaveForm() && openProjectDetail(projectId)}
-          onOpenRequirement={(requirementId) => confirmLeaveForm() && openRequirementDetail(requirementId)}
-          prefill={meetingFormPrefill}
-          projects={projects}
-        />
+        <div style={{ display: meetingFormPrefill ? "none" : "contents" }}>{meetingPage}</div>
+        {meetingFormPrefill && (
+          <RequirementFormPage
+            apiClient={apiClient}
+            canPickFolders={!isMobile}
+            key="new-from-meeting"
+            mode="create"
+            onCancel={leaveRequirementForm}
+            onDirtyChange={(dirty) => {
+              formDirtyRef.current = dirty;
+            }}
+            onDone={finishRequirementForm}
+            onOpenProject={(projectId) => confirmLeaveForm() && openProjectDetail(projectId)}
+            onOpenRequirement={(requirementId) => confirmLeaveForm() && openRequirementDetail(requirementId)}
+            prefill={meetingFormPrefill}
+            projects={projects}
+          />
+        )}
       </>
-    ) : (
-      meetingPage
     );
   } else if (searchActive) {
     content = (

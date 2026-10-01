@@ -822,6 +822,28 @@ describe("需求二级页的来去（R04-1、R04-8）", () => {
     expect(api.meeting).toHaveBeenCalledTimes(1);
   });
 
+  it("新增页盖在会议页上：会议页不卸载，取消回来逐字稿里的查找词还在（不只是不重读接口）", async () => {
+    render(<App apiClient={meetingClient()} />);
+    await openCvmFromLibrary();
+    await userEvent.type(screen.getByLabelText("在本次逐字稿中搜索"), "导出");
+    expect(screen.queryByTestId("segment-seg-568390")).not.toBeInTheDocument();
+    const text = screen.getByTestId("segment-seg-576900").querySelector(".segment-text")!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, text.textContent!.length);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent.mouseUp(screen.getByTestId("segment-seg-576900"));
+    await userEvent.click(screen.getByRole("button", { name: "建成需求" }));
+    await screen.findByRole("heading", { name: "新增需求" });
+
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    expect(await screen.findByRole("heading", { name: "260929 云课堂直播运营问题对齐" })).toBeInTheDocument();
+    expect(screen.getByLabelText("在本次逐字稿中搜索")).toHaveValue("导出");
+    expect(screen.queryByTestId("segment-seg-568390")).not.toBeInTheDocument();
+  });
+
   it("从逐字稿选句建成需求：直接进新需求的详情页，提示「需求已创建」；后退回到那场会，返回按钮还是原来的（R04-8）", async () => {
     const created = {
       id: "requirement-export",
