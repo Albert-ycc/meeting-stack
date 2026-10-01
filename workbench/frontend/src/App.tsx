@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { api, ApiError, type ApiClient } from "./api";
 import type {
@@ -202,7 +202,12 @@ export default function App({ apiClient = api }: AppProps) {
     | { mode: "edit"; requirementId: string }
     | null
   >(null);
-  // 认领、新建后回到需求池时提示一句；改完需求回到详情页时也提示一句
+  // 从逐字稿选句进来的新增页（S10）盖在会议页上：会议页不卸载、只是藏起来，取消回来滚动位置、播放进度、
+  // 返回去处都还在（R04-1、审查 M7）。meetingScrollRef 记着盖上之前整页和逐字稿框各滚到哪了
+  const [meetingFormPrefill, setMeetingFormPrefill] = useState<RequirementPrefill | null>(null);
+  const meetingFormRef = useRef<RequirementPrefill | null>(null);
+  const meetingScrollRef = useRef<{ page: number; transcript: number } | null>(null);
+  // 认领、合并后回到需求池时提示一句；建完、改完需求进详情页时也提示一句
   const [poolFlash, setPoolFlash] = useState<PoolFlash | null>(null);
   const [requirementFlash, setRequirementFlash] = useState<string | null>(null);
   // 从项目详情页跳进词典时预选中的项目 chip；普通侧栏导航进词典时为 null（不预筛）。
@@ -387,6 +392,17 @@ export default function App({ apiClient = api }: AppProps) {
           "",
           `${window.location.pathname}${window.location.search}#meetings/${encodeURIComponent(meetingId)}`,
         );
+      }
+      if (meetingFormRef.current && meetingId === openMeetingIdRef.current) {
+        // 从盖在会议页上的新增页退回来（取消、浏览器后退）：揭开新增页，会议页原样还在
+        setMeetingFormPrefill(null);
+        if (!seekMs) return;
+      }
+      // 退回到一场会：回到当初打开它时所在的视图，返回按钮和侧栏才对得上（审查 M7：从需求详情后退回到
+      // 会议，返回按钮写着「需求详情」、点了却去录音档案）
+      const behind = (window.history.state as { behind?: string } | null)?.behind;
+      if (behind && behind !== "requirementForm" && behind in VIEW_LABELS && meetingId !== openMeetingIdRef.current) {
+        setView(behind as AppView);
       }
       if (meetingId && (meetingId !== openMeetingIdRef.current || seekMs)) {
         historyHandlersRef.current.openMeeting(meetingId, seekMs);
@@ -664,6 +680,8 @@ export default function App({ apiClient = api }: AppProps) {
 
   const resetDetailState = () => {
     detailRequestSequence.current += 1;
+    setMeetingFormPrefill(null);
+    meetingScrollRef.current = null;
     setDetail(null);
     setOpenMeetingId(null);
     setDetailDirty(false);
@@ -683,6 +701,7 @@ export default function App({ apiClient = api }: AppProps) {
   };
 
   openMeetingIdRef.current = openMeetingId;
+  meetingFormRef.current = meetingFormPrefill;
   detailDirtyRef.current = detailDirty;
   historyHandlersRef.current = {
     openMeeting: (meetingId: string, seekMs = 0) => openMeeting(meetingId, seekMs, true),
@@ -824,9 +843,28 @@ export default function App({ apiClient = api }: AppProps) {
 
   // 新增、认领、修改需求的二级页（R04-1）：保存或放弃后回到进入前的页面
   const openRequirementCreate = (prefill?: RequirementPrefill) => {
+    if (prefill && openMeetingId) {
+      meetingScrollRef.current = {
+        page: document.documentElement.scrollTop,
+        transcript: document.querySelector<HTMLElement>(".transcript-scroll")?.scrollTop ?? 0,
+      };
+      historySyncRef.current = false;
+      setMeetingFormPrefill(prefill);
+      return;
+    }
     setRequirementForm({ mode: "create", prefill });
     performNavigate("requirementForm");
   };
+
+  // 新增页从会议页上揭开（会议还开着）：滚动放回盖上之前的位置
+  useLayoutEffect(() => {
+    const saved = meetingScrollRef.current;
+    if (meetingFormPrefill || !saved || !openMeetingId) return;
+    meetingScrollRef.current = null;
+    const box = document.querySelector<HTMLElement>(".transcript-scroll");
+    if (box) box.scrollTop = saved.transcript;
+    document.documentElement.scrollTop = saved.page;
+  }, [meetingFormPrefill, openMeetingId]);
 
   const openRequirementEdit = (requirementId: string) => {
     setRequirementForm({ mode: "edit", requirementId });
@@ -852,6 +890,12 @@ export default function App({ apiClient = api }: AppProps) {
   };
 
   const leaveRequirementForm = () => {
+    if (meetingFormPrefill) {
+      // 盖在会议页上的：后退一条就揭开；没有可退的（不会发生，兜底）就地揭开
+      if ((window.history.state as { app?: boolean } | null)?.app) window.history.back();
+      else setMeetingFormPrefill(null);
+      return;
+    }
     // 是本应用压进来的历史就后退，回到进入前的页签和筛选
     const fallback = formFallback();
     if ((window.history.state as { app?: boolean } | null)?.app) window.history.back();
@@ -868,15 +912,21 @@ export default function App({ apiClient = api }: AppProps) {
       leaveRequirementForm();
       return;
     }
-    if (requirementForm?.mode === "create" && requirementForm.prefill) {
-      // 逐字稿选句建的（S10）：回到那场会，新需求挂在归档归属的关联需求里
+    if (result.kind === "created") {
+      // 新增需求创建后直接进新需求的详情页，轻提示「需求已创建」（R04-8、S09-d）。新增页那一条历史换成详情页，
+      // 后退回到进新增页之前的地方：需求池，或者选句的那场会
+      setRequirementFlash("需求已创建");
       void refreshProjects();
-      leaveRequirementForm();
+      openRequirementDetail(requirement.id);
+      historySyncRef.current = true;
       return;
     }
-    // 认领、新建后新海报挂在「进行中」的墙上（S02、S09 的流转）；合并的留在原来的页签
+    const candidateId = requirementForm?.mode === "claim" ? requirementForm.candidateId : undefined;
+    // 认领后回到「进行中」，新海报按排序落位、高亮 3 秒（R01-13、S02-c）；合并后回到「待认领」，提示带［撤销］（R01-14、S03-b）
     let unfiltered = false;
-    if (result.kind !== "merged") {
+    if (result.kind === "merged") {
+      writePersistentState(POOL_TAB_KEY, "pending", { local: true });
+    } else {
       writePersistentState(POOL_TAB_KEY, "active", { local: true });
       // 记着的筛选会把新海报挡住（项目、优先级不含它，名称搜不到它）：清空筛选，不然「挂上墙了」墙上却没有
       const projectIds = readPersistentState<string[]>(POOL_PROJECTS_KEY, [], POOL_PROJECTS_STORE);
@@ -892,14 +942,17 @@ export default function App({ apiClient = api }: AppProps) {
         writePersistentState(POOL_QUERY_KEY, "", POOL_QUERY_STORE);
       }
     }
-    setPoolFlash({
-      message:
-        result.kind === "merged"
-          ? `已合并到「${requirement.title}」`
-          : `已${result.kind === "claimed" ? "认领" : "新建"}「${requirement.title}」，挂上墙了${
-              unfiltered ? "；原来的筛选会挡住它，已清空筛选" : ""
-            }`,
-    });
+    setPoolFlash(
+      result.kind === "merged"
+        ? {
+            message: `已合并到「${requirement.title}」，这场会和原话已加进去`,
+            undoMergeCandidateId: candidateId,
+          }
+        : {
+            message: `已认领「${requirement.title}」${unfiltered ? "；原来的筛选会挡住它，已清空筛选" : ""}`,
+            highlightId: requirement.id,
+          },
+    );
     void refreshProjects();
     leaveRequirementForm();
   };
@@ -914,7 +967,9 @@ export default function App({ apiClient = api }: AppProps) {
   // 用户操作产生的切换压入历史，浏览器后退键就能回到上一个视图或关掉会议。
   useEffect(() => {
     if (!hashReadyRef.current) return;
-    const path = openMeetingId
+    const path = meetingFormPrefill
+      ? "#requirements/new"
+      : openMeetingId
       ? `#meetings/${encodeURIComponent(openMeetingId)}`
       : view === "glossary"
         ? glossaryProjectId
@@ -972,13 +1027,20 @@ export default function App({ apiClient = api }: AppProps) {
     } else if (!fromHistory && sameBase && !wasExpanded && nowExpanded) {
       history.pushState({ app: true, graphExpand: true }, "", url);
     } else if (fromHistory || sameBase) history.replaceState(rootState(), "", url);
-    else history.pushState(nowLocal ? { app: true, localRoot: true } : { app: true }, "", url);
+    // 打开一场会时记下它盖在哪个视图上：后退回到这场会时照它放回去（返回按钮、侧栏对得上）
+    else
+      history.pushState(
+        nowLocal ? { app: true, localRoot: true } : path.startsWith("#meetings/") ? { app: true, behind: view } : { app: true },
+        "",
+        url,
+      );
   }, [
     glossaryProjectId,
     graphExpanded,
     graphLocal,
     graphSelection,
     isMobile,
+    meetingFormPrefill,
     openMeetingId,
     openProjectId,
     openRequirementId,
@@ -1079,7 +1141,7 @@ export default function App({ apiClient = api }: AppProps) {
   } else if (detailState === "error") {
     content = <AsyncState message={detailError} state="error" />;
   } else if (detail) {
-    content = (
+    const meetingPage = (
       <MeetingDetailPage
         apiClient={apiClient}
         canWriteTasks={!isMobile || mobileTaskWrite}
@@ -1127,6 +1189,26 @@ export default function App({ apiClient = api }: AppProps) {
         projects={projects}
         tags={tags}
       />
+    );
+    content = meetingFormPrefill ? (
+      <>
+        {/* 会议页留着不卸载，只是藏起来：新增页取消回来，滚动、播放、没保存的修改都还在 */}
+        <div hidden>{meetingPage}</div>
+        <RequirementFormPage
+          apiClient={apiClient}
+          canPickFolders={!isMobile}
+          key="new-from-meeting"
+          mode="create"
+          onCancel={leaveRequirementForm}
+          onDone={finishRequirementForm}
+          onOpenProject={openProjectDetail}
+          onOpenRequirement={openRequirementDetail}
+          prefill={meetingFormPrefill}
+          projects={projects}
+        />
+      </>
+    ) : (
+      meetingPage
     );
   } else if (searchActive) {
     content = (
@@ -1440,7 +1522,7 @@ export default function App({ apiClient = api }: AppProps) {
     <LinksFlagsContext.Provider value={linksFlags}>
       <RecentAnswersContext.Provider value={recentAnswers}>
         <AppShell
-          activeView={view}
+          activeView={meetingFormPrefill ? "requirementForm" : view}
           glossaryBadge={glossaryPending}
           health={healthLevel}
           isMobile={isMobile}

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,7 +7,7 @@ import type { ApiClient } from "./api";
 import { forgetOverviewCache } from "./components/graph/OverviewGraph";
 import { foldersPayload, overviewPayload } from "./components/graph/overviewFixtures";
 import { forgetGraphCache } from "./components/graph/ProjectGraph";
-import { candidateItem } from "./components/pool/poolFixtures";
+import { candidateItem, CVM, EXPORT_SOURCE } from "./components/pool/poolFixtures";
 import { focusPayload, payload } from "./components/graph/testFixtures";
 
 function desktopMatchMedia() {
@@ -237,7 +237,7 @@ describe("地址栏锚点直达", () => {
     expect(await screen.findByRole("heading", { name: "需求池" })).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent(
-        "已认领「京东仓签收凭证」，挂上墙了；原来的筛选会挡住它，已清空筛选",
+        "已认领「京东仓签收凭证」；原来的筛选会挡住它，已清空筛选",
       ),
     );
     await waitFor(() =>
@@ -725,5 +725,150 @@ describe("搜索里的材料（3f）", () => {
     const drawer = await screen.findByRole("dialog", { name: "材料预览" });
     expect(getMaterialPreview).toHaveBeenCalledWith(9);
     expect(drawer.querySelector("audio")?.getAttribute("src")).toBe("/api/materials/files/9/media");
+  });
+});
+
+// 云课堂那场会：会名、录音时间、时长、逐字稿照生产库（同 TranscriptPanel 用例、后端 requirement_pool_world）
+const CVM_MEETING = {
+  id: EXPORT_SOURCE.meeting_id,
+  title: EXPORT_SOURCE.meeting_title,
+  status: "published",
+  tags: [],
+  recording_date: EXPORT_SOURCE.recording_date,
+  duration_ms: EXPORT_SOURCE.duration_ms,
+  project_id: CVM,
+  project_name: "CVM 云讲堂",
+  artifacts: [],
+  segments: (
+    [
+      [568390, "SPEAKER_03", "预约审核查看。"],
+      [576900, "SPEAKER_01", "那我有办法导出 excel 吗？"],
+      [581000, "SPEAKER_01", "是没有办法，"],
+    ] as const
+  ).map(([start, speaker, text], ordinal) => ({
+    id: `seg-${start}`,
+    ordinal,
+    start_ms: start,
+    end_ms: start + 1000,
+    speaker_label: speaker,
+    text,
+  })),
+  speakers: [],
+  events: [],
+  current_transcript_version_id: "tv-cvm",
+  transcript_versions: [
+    { id: "tv-cvm", meeting_id: EXPORT_SOURCE.meeting_id, version_no: 1, kind: "funasr", published: 0, created_at: "2026-09-30T02:40:40Z" },
+  ],
+  minutes_versions: [],
+};
+
+function meetingClient(overrides: Partial<ApiClient> = {}) {
+  return client({
+    meetings: vi.fn().mockResolvedValue({
+      items: [{ id: CVM_MEETING.id, title: CVM_MEETING.title, status: "published", tags: [] }],
+      limit: 50,
+      offset: 0,
+      total: 1,
+    }),
+    meeting: vi.fn().mockResolvedValue(CVM_MEETING),
+    projects: vi.fn().mockResolvedValue([{ id: CVM, name: "CVM 云讲堂", color: "#f0783b", seat: 4 }]),
+    transcriptVersionSegments: vi.fn(),
+    ...overrides,
+  } as Partial<ApiClient>);
+}
+
+async function openCvmFromLibrary() {
+  fireEvent.click(await screen.findByRole("button", { name: "录音档案" }));
+  await userEvent.click(await screen.findByRole("button", { name: /260929 云课堂直播运营问题对齐/ }));
+  await screen.findByRole("heading", { name: "260929 云课堂直播运营问题对齐" });
+}
+
+/** 在逐字稿里选中「那我有办法导出 excel 吗？是没有办法，」，点［建成需求］ */
+async function pickExportQuote() {
+  const textOf = (id: string) => screen.getByTestId(`segment-seg-${id}`).querySelector(".segment-text")!.firstChild!;
+  const range = document.createRange();
+  range.setStart(textOf("576900"), 0);
+  range.setEnd(textOf("581000"), 6);
+  window.getSelection()!.removeAllRanges();
+  window.getSelection()!.addRange(range);
+  fireEvent.mouseUp(screen.getByTestId("segment-seg-581000"));
+  await userEvent.click(screen.getByRole("button", { name: "建成需求" }));
+}
+
+function currentNav() {
+  return screen.getAllByRole("button").find((button) => button.getAttribute("aria-current") === "page");
+}
+
+describe("需求二级页的来去（R04-1、R04-8）", () => {
+  it("从逐字稿选句进新增页再取消：原地回到那场会，返回按钮、侧栏都还是原来的，会议不重读（审查 M7）", async () => {
+    const api = meetingClient();
+    render(<App apiClient={api} />);
+    await openCvmFromLibrary();
+
+    await pickExportQuote();
+
+    expect(await screen.findByRole("heading", { name: "新增需求" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#requirements/new"));
+    expect(screen.queryByRole("heading", { name: "260929 云课堂直播运营问题对齐" })).not.toBeInTheDocument();
+    expect(currentNav()).toHaveTextContent("需求池");
+
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    expect(await screen.findByRole("heading", { name: "260929 云课堂直播运营问题对齐" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe(`#meetings/${CVM_MEETING.id}`));
+    expect(screen.queryByRole("heading", { name: "新增需求" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "← 返回录音档案" })).toBeInTheDocument();
+    expect(currentNav()).toHaveTextContent("录音档案");
+    expect(api.meeting).toHaveBeenCalledTimes(1);
+  });
+
+  it("从逐字稿选句建成需求：直接进新需求的详情页，提示「需求已创建」；后退回到那场会，返回按钮还是原来的（R04-8）", async () => {
+    const created = {
+      id: "requirement-export",
+      project_id: CVM,
+      project_name: "CVM 云讲堂",
+      project_color: "#f0783b",
+      title: "科室会预约后台导出",
+      summary: "",
+      priority: "P2",
+      status: "active",
+      created_at: "2026-10-01T09:00:00Z",
+      updated_at: "2026-10-01T09:00:00Z",
+      open_task_count: 0,
+      meeting_count: 1,
+      latest_meeting_date: EXPORT_SOURCE.recording_date,
+      folder_count: 0,
+      folders: [],
+      meetings: [],
+      tasks: [],
+      source: EXPORT_SOURCE,
+      sources: [EXPORT_SOURCE],
+    };
+    const createRequirement = vi.fn().mockResolvedValue(created);
+    const api = meetingClient({ createRequirement, requirement: vi.fn().mockResolvedValue(created) });
+    render(<App apiClient={api} />);
+    await openCvmFromLibrary();
+    await pickExportQuote();
+
+    await userEvent.type(await screen.findByLabelText("需求名"), "科室会预约后台导出");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(await screen.findByRole("heading", { name: "科室会预约后台导出" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#requirements/requirement-export"));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("需求已创建"));
+    expect(createRequirement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "科室会预约后台导出",
+        project_id: CVM,
+        source: expect.objectContaining({ quote: "那我有办法导出 excel 吗？是没有办法，", anchor_ms: 576900 }),
+      }),
+    );
+
+    // 新增页那一条换成了详情页：后退一次就回到选句的那场会
+    act(() => window.history.back());
+
+    expect(await screen.findByRole("heading", { name: "260929 云课堂直播运营问题对齐" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "← 返回录音档案" })).toBeInTheDocument();
+    expect(currentNav()).toHaveTextContent("录音档案");
   });
 });
