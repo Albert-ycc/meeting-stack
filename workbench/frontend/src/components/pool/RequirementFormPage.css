@@ -170,6 +170,11 @@
   gap: 24px;
 }
 
+/* 修改需求：所属项目、优先级、状态一行（S11） */
+.form-field__row--three {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr);
+}
+
 .form-segmented {
   display: inline-flex;
   justify-self: start;
@@ -296,6 +301,27 @@
   margin: 0;
   color: var(--muted);
   font-size: 12px;
+}
+
+/* 新增、修改时来源面板底下的［换一个］［清空来源］ */
+.form-source__actions {
+  display: flex;
+  gap: 16px;
+}
+
+.form-source__actions button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--signal-dark);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.form-source__actions button:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 
 .form-folders {

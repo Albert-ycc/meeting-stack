@@ -33,7 +33,11 @@ import { readProjectMode, writeProjectMode, type ProjectViewMode } from "./compo
 import { ProjectsPage } from "./components/ProjectsPage";
 import { RequirementDetailPage } from "./components/RequirementDetailPage";
 import { RequirementsPage } from "./components/RequirementsPage";
-import { RequirementFormPage, type RequirementFormResult } from "./components/pool/RequirementFormPage";
+import {
+  RequirementFormPage,
+  type RequirementFormResult,
+  type RequirementPrefill,
+} from "./components/pool/RequirementFormPage";
 import { POOL_TAB_KEY, RequirementPoolPage } from "./components/pool/RequirementPoolPage";
 import { writePersistentState } from "./viewState";
 import { SearchPage } from "./components/SearchPage";
@@ -180,12 +184,17 @@ export default function App({ apiClient = api }: AppProps) {
   // 从关系图点进需求页时，面包屑写「关系图」，返回回到画布
   const [requirementFromGraph, setRequirementFromGraph] = useState<{ projectId: string; selection: string } | null>(null);
   const [openRequirementId, setOpenRequirementId] = useState<string | null>(null);
-  // 新增、认领需求的二级页（地址 #requirements/new、#requirements/claim/<候选 id>）
+  // 新增、认领、修改需求的二级页（地址 #requirements/new、#requirements/claim/<候选 id>、#requirements/<id>/edit）；
+  // 从逐字稿选句进来的新增（S10）带着来源，刷新后来源不在了，就是一张空的新增页
   const [requirementForm, setRequirementForm] = useState<
-    { mode: "create" } | { mode: "claim"; candidateId: string } | null
+    | { mode: "create"; prefill?: RequirementPrefill }
+    | { mode: "claim"; candidateId: string }
+    | { mode: "edit"; requirementId: string }
+    | null
   >(null);
-  // 认领、新建后回到需求池时提示一句
+  // 认领、新建后回到需求池时提示一句；改完需求回到详情页时也提示一句
   const [poolFlash, setPoolFlash] = useState<string | null>(null);
+  const [requirementFlash, setRequirementFlash] = useState<string | null>(null);
   // 从项目详情页跳进词典时预选中的项目 chip；普通侧栏导航进词典时为 null（不预筛）。
   const [glossaryProjectId, setGlossaryProjectId] = useState<string | null>(null);
   const [taskDrawerId, setTaskDrawerId] = useState<string | null>(null);
@@ -445,6 +454,16 @@ export default function App({ apiClient = api }: AppProps) {
         setView("requirementForm");
       } else if (candidateId) {
         setRequirementForm({ mode: "claim", candidateId });
+        setView("requirementForm");
+      }
+    } else if (/^#requirements\/[^/]+\/edit$/.test(hash)) {
+      // 修改需求的二级页（S11）只在电脑上有：手机上退回需求详情
+      const requirementId = decodeURIComponent(hash.slice("#requirements/".length, -"/edit".length));
+      if (isMobileRef.current) {
+        setOpenRequirementId(requirementId);
+        setView("requirementDetail");
+      } else {
+        setRequirementForm({ mode: "edit", requirementId });
         setView("requirementForm");
       }
     } else if (hash.startsWith("#requirements/")) {
@@ -793,9 +812,14 @@ export default function App({ apiClient = api }: AppProps) {
     else openProjectGraph(origin.projectId, origin.selection);
   };
 
-  // 新增、认领需求的二级页（R04-1）：保存或放弃后回到进入前的页面
-  const openRequirementCreate = () => {
-    setRequirementForm({ mode: "create" });
+  // 新增、认领、修改需求的二级页（R04-1）：保存或放弃后回到进入前的页面
+  const openRequirementCreate = (prefill?: RequirementPrefill) => {
+    setRequirementForm({ mode: "create", prefill });
+    performNavigate("requirementForm");
+  };
+
+  const openRequirementEdit = (requirementId: string) => {
+    setRequirementForm({ mode: "edit", requirementId });
     performNavigate("requirementForm");
   };
 
@@ -804,14 +828,42 @@ export default function App({ apiClient = api }: AppProps) {
     performNavigate("requirementForm");
   };
 
+  // 冷启动直接打开二级页、没有可退的历史时去哪：修改回需求详情，逐字稿选句建的回那场会，其余回需求池
+  const formFallback = (): (() => void) | undefined => {
+    if (requirementForm?.mode === "edit") {
+      const { requirementId } = requirementForm;
+      return () => openRequirementDetail(requirementId);
+    }
+    if (requirementForm?.mode === "create" && requirementForm.prefill) {
+      const meetingId = requirementForm.prefill.source.meeting_id;
+      return () => openMeeting(meetingId);
+    }
+    return undefined;
+  };
+
   const leaveRequirementForm = () => {
-    // 是本应用压进来的历史就后退，回到进入前的页签和筛选；冷启动直接打开的去需求池
+    // 是本应用压进来的历史就后退，回到进入前的页签和筛选
+    const fallback = formFallback();
     if ((window.history.state as { app?: boolean } | null)?.app) window.history.back();
+    else if (fallback) fallback();
     else navigate("requirements");
   };
 
   const finishRequirementForm = (result: RequirementFormResult) => {
     const { requirement } = result;
+    if (result.kind === "edited") {
+      // 改完回到需求详情（S11 → S12）
+      setRequirementFlash("已保存");
+      void refreshProjects();
+      leaveRequirementForm();
+      return;
+    }
+    if (requirementForm?.mode === "create" && requirementForm.prefill) {
+      // 逐字稿选句建的（S10）：回到那场会，新需求挂在归档归属的关联需求里
+      void refreshProjects();
+      leaveRequirementForm();
+      return;
+    }
     // 认领、新建后新海报挂在「进行中」的墙上（S02、S09 的流转）；合并的留在原来的页签
     if (result.kind !== "merged") writePersistentState(POOL_TAB_KEY, "active", { local: true });
     setPoolFlash(
@@ -848,7 +900,9 @@ export default function App({ apiClient = api }: AppProps) {
               : view === "requirementForm" && requirementForm
                 ? requirementForm.mode === "create"
                   ? "#requirements/new"
-                  : `#requirements/claim/${encodeURIComponent(requirementForm.candidateId)}`
+                  : requirementForm.mode === "edit"
+                    ? `#requirements/${encodeURIComponent(requirementForm.requirementId)}/edit`
+                    : `#requirements/claim/${encodeURIComponent(requirementForm.candidateId)}`
               : view === "overview"
                 ? ""
                 : view === "projectDetail" || view === "requirementDetail" || view === "requirementForm"
@@ -1157,7 +1211,7 @@ export default function App({ apiClient = api }: AppProps) {
         canWrite
         flash={poolFlash}
         onClaimCandidate={openCandidateClaim}
-        onCreateRequirement={openRequirementCreate}
+        onCreateRequirement={() => openRequirementCreate()}
         onFlashShown={() => setPoolFlash(null)}
         onOpenMeeting={(meetingId, atMs) => openMeeting(meetingId, atMs)}
         onOpenRequirement={openRequirementDetail}
@@ -1170,12 +1224,20 @@ export default function App({ apiClient = api }: AppProps) {
         apiClient={apiClient}
         canPickFolders={!isMobile}
         candidateId={requirementForm.mode === "claim" ? requirementForm.candidateId : undefined}
-        key={requirementForm.mode === "claim" ? requirementForm.candidateId : "new"}
+        key={
+          requirementForm.mode === "claim"
+            ? requirementForm.candidateId
+            : requirementForm.mode === "edit"
+              ? `edit-${requirementForm.requirementId}`
+              : "new"
+        }
         mode={requirementForm.mode}
         onCancel={leaveRequirementForm}
         onDone={finishRequirementForm}
         onOpenProject={openProjectDetail}
+        prefill={requirementForm.mode === "create" ? requirementForm.prefill : undefined}
         projects={projects}
+        requirementId={requirementForm.mode === "edit" ? requirementForm.requirementId : undefined}
       />
     );
   } else if (view === "requirementDetail" && openRequirementId) {
@@ -1185,7 +1247,11 @@ export default function App({ apiClient = api }: AppProps) {
         canPickFolders={!isMobile}
         canWrite={!isMobile || mobileTaskWrite}
         backLabel={requirementFromGraph ? "关系图" : undefined}
+        flash={requirementFlash}
         onBack={leaveRequirement}
+        // 电脑上编辑需求是二级页（R04-1）；手机端本期不改，还是原来的弹窗
+        onEdit={isMobile ? undefined : () => openRequirementEdit(openRequirementId)}
+        onFlashShown={() => setRequirementFlash(null)}
         onOpenInGraph={isMobile ? undefined : (projectId, requirementId) => openProjectGraph(projectId, `r:${requirementId}`)}
         onOpenMeeting={openMeeting}
         onOpenPreview={(fileId) => setPreviewTarget({ fileId })}

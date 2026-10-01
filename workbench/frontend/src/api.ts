@@ -16,6 +16,7 @@ import type {
   ProjectSubfoldersPayload,
   CandidateDetail,
   CandidateExtraction,
+  RequirementSourceInput,
   DroppedCandidates,
   MergeTargets,
   PoolFilters,
@@ -1092,6 +1093,8 @@ export const api = {
     folder_paths?: string[];
     /** v17：说明，最多 70 字，可空 */
     summary?: string;
+    /** v17：来源（提出它的会议、原话、时间锚），选定的会议同时加进关联会议 */
+    source?: RequirementSourceInput | null;
   }) => write<RequirementDetail>("/api/requirements", "POST", data),
   /** v17 需求池海报墙：正式需求和待认领候选一起排 */
   requirementPool: (filters: PoolFilters) =>
@@ -1156,6 +1159,9 @@ export const api = {
       priority?: RequirementPriority;
       status?: RequirementStatus;
       folder_paths?: string[];
+      summary?: string;
+      /** 传了才改来源：对象是换掉提出它的那句，null 是清空 */
+      source?: RequirementSourceInput | null;
     },
   ) =>
     write<RequirementDetail>(

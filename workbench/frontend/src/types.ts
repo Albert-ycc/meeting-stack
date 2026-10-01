@@ -1619,6 +1619,13 @@ export interface RequirementSource {
   via_candidate_title: string | null;
 }
 
+/** 新建、修改需求时传的来源：会议必填，原话和时间锚可空（只选了会、没挑原话） */
+export interface RequirementSourceInput {
+  meeting_id: string;
+  quote?: string;
+  anchor_ms?: number | null;
+}
+
 /** 需求池的状态：待认领（候选）＋需求的三态 */
 export type PoolStatus = "pending" | RequirementStatus;
 export type PoolTab = PoolStatus | "all";

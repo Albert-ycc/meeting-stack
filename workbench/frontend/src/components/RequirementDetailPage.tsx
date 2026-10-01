@@ -45,6 +45,11 @@ interface RequirementDetailPageProps {
   onOpenInGraph?: (projectId: string, requirementId: string) => void;
   /** 4d：材料文件夹的小签打开预览抽屉；没传时小签不可点 */
   onOpenPreview?: (fileId: number) => void;
+  /** ［编辑需求］打开修改需求的二级页（R04-1）；不传时用弹窗（手机端） */
+  onEdit?: () => void;
+  /** 从修改页回来时提示一句，显示一次 */
+  flash?: string | null;
+  onFlashShown?: () => void;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -125,8 +130,16 @@ export function RequirementDetailPage({
   backLabel = "需求池",
   onOpenInGraph,
   onOpenPreview,
+  onEdit,
+  flash,
+  onFlashShown,
 }: RequirementDetailPageProps) {
   const { toastNode, showToast } = useToast();
+  useEffect(() => {
+    if (!flash) return;
+    showToast(flash);
+    onFlashShown?.();
+  }, [flash, onFlashShown, showToast]);
   // 成功用轻提示一闪而过；失败用不会自己消失的红色提示条，原因看得清。
   const { notice, setNotice, dismissNotice } = useNotice();
   const [detail, setDetail] = useState<RequirementDetail | null>(null);
@@ -338,7 +351,13 @@ export function RequirementDetailPage({
               {context.state === "loading" ? "正在准备…" : "复制给 Claude Code"}
             </button>
             {canWrite && (
-              <button className="requirement-detail__edit" onClick={() => setEditing(true)} type="button">编辑需求</button>
+              <button
+                className="requirement-detail__edit"
+                onClick={() => (onEdit ? onEdit() : setEditing(true))}
+                type="button"
+              >
+                编辑需求
+              </button>
             )}
           </div>
         </div>

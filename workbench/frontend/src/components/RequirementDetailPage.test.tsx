@@ -609,3 +609,33 @@ describe("RequirementDetailPage 决议卡的「可能过时」（4e）", () => {
     await waitFor(() => expect(undoRelation).toHaveBeenCalledWith(57));
   });
 });
+
+describe("RequirementDetailPage 修改需求（R04-1）", () => {
+  it("给了 onEdit 时［编辑需求］去修改需求的二级页、不再弹窗；从修改页回来提示一次", async () => {
+    const onEdit = vi.fn();
+    const onFlashShown = vi.fn();
+    render(
+      <RequirementDetailPage
+        apiClient={{ requirement: vi.fn().mockResolvedValue(baseDetail()) } as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        flash="已保存"
+        onBack={vi.fn()}
+        onEdit={onEdit}
+        onFlashShown={onFlashShown}
+        onOpenMeeting={vi.fn()}
+        onOpenProject={vi.fn()}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId="req-1"
+      />,
+    );
+    await screen.findByRole("heading", { name: "北辰仓快递配送" });
+
+    expect(screen.getByRole("status")).toHaveTextContent("已保存");
+    expect(onFlashShown).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: "编辑需求" }));
+    expect(onEdit).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});

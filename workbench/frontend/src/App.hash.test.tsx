@@ -217,6 +217,27 @@ describe("地址栏锚点直达", () => {
     expect(window.location.hash).toBe("#requirements");
   });
 
+  it("冷加载带 #requirements/<id>/edit 打开修改需求页", async () => {
+    window.history.replaceState(null, "", "/#requirements/requirement-jd/edit");
+    const requirement = vi.fn().mockReturnValue(new Promise(() => {}));
+    render(<App apiClient={client({ requirement })} />);
+
+    expect(await screen.findByRole("heading", { name: "修改需求" })).toBeInTheDocument();
+    await waitFor(() => expect(requirement).toHaveBeenCalledWith("requirement-jd"));
+    expect(window.location.hash).toBe("#requirements/requirement-jd/edit");
+  });
+
+  it("手机上打开修改需求的地址退回需求详情（手机端本期不改）", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ ...desktopMatchMedia(), matches: true })));
+    window.history.replaceState(null, "", "/#requirements/requirement-jd/edit");
+    const requirement = vi.fn().mockReturnValue(new Promise(() => {}));
+    render(<App apiClient={client({ requirement })} />);
+
+    expect(await screen.findByText("正在读取需求…")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "修改需求" })).not.toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#requirements/requirement-jd"));
+  });
+
   it("冷加载带 #projects/<id>/graph?sel=m:<id> 打开关系图并选中那场会；换选中只改地址栏不压历史", async () => {
     forgetGraphCache();
     window.history.replaceState(null, "", "/#projects/p/graph?sel=m:a");
