@@ -103,6 +103,28 @@ describe("TranscriptPanel", () => {
     raf.mockRestore();
   });
 
+  it("跳进会议时跟到的头一句滚到框的正中，之后播放推进只挪到刚好看得见（R02-10）", () => {
+    const original = Element.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      // 从原话时间锚 00:00:05 打开：这一句滚到正中
+      const { rerender } = render(
+        <TranscriptPanel currentTimeMs={5_000} editable={false} onSeek={vi.fn()} segments={segments} />,
+      );
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: "center", behavior: "smooth" });
+      expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByTestId("segment-seg-b"));
+
+      // 播放回到前一句（往回拖了进度）：只挪到刚好看得见
+      rerender(<TranscriptPanel currentTimeMs={1_000} editable={false} onSeek={vi.fn()} segments={segments} />);
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: "nearest", behavior: "smooth" });
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it("rowAtLine：上沿不超过阅读线的最后一行", () => {
     const rows = [
       { startMs: 0, top: 0 },

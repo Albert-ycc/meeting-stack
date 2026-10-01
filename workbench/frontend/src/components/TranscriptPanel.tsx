@@ -117,12 +117,16 @@ export function TranscriptPanel({
 
   // 播放时跟随当前句。编辑模式、焦点在面板里（正在打字或检索）、或刚手动滚过时不跟，
   // 否则一边听一边改字，页面会被拽到播放位置，光标所在的那句跑出视野。
+  // 打开会议后头一回跟到的那句（从原话时间锚、决议时间点跳进来的）滚到框的正中，一眼看得到（R02-10）；
+  // 之后播放推进只挪到刚好看得见，免得一句一句地晃
+  const followedRef = useRef(false);
   useEffect(() => {
     if (editable) return;
     if (panelRef.current?.contains(document.activeElement)) return;
     if (Date.now() - manualScrollAtRef.current < 4000) return;
     if (typeof activeRef.current?.scrollIntoView === "function") {
-      activeRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      activeRef.current.scrollIntoView({ block: followedRef.current ? "nearest" : "center", behavior: "smooth" });
+      followedRef.current = true;
     }
     reportRef.current?.(null);
   }, [activeId, editable]);
