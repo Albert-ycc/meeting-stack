@@ -716,3 +716,30 @@ def test_project_merge_hands_the_seat_to_an_unseated_target(tmp_path):
     )
     projects = {project["id"]: project for project in client.get("/api/projects").json()}
     assert (projects[project_id("pager")]["seat"], projects[project_id("huaxia")]["seat"]) == (1, 2)
+
+
+def test_copy_for_claude_code_carries_summary_and_quotes(tmp_path):
+    """R02-9、R05-5：［接下］和［复制给 Claude Code］复制的背景里有说明、会上原话和时间锚，
+    提出它的那句和合并进来的都列上，按会议时间、时间锚先后。"""
+    client, headers, db = make_world(tmp_path)
+    requirement_id = create(
+        client, headers, "yimi", "京东科研仓对接", "P0", summary=JD_SUMMARY, source_key="inbound"
+    )
+    candidate_id = candidate(db, "receipt", "京东仓签收凭证")
+    client.post(
+        f"/api/requirement-candidates/{candidate_id}/merge",
+        json={"requirement_id": requirement_id},
+        headers=headers,
+    )
+
+    markdown = client.get(f"/api/requirements/{requirement_id}/context").json()["markdown"]
+
+    head = markdown.split("\n## 会议")[0]
+    assert head.endswith(
+        "\n## 说明\n"
+        f"{JD_SUMMARY}\n"
+        "\n## 会上原话\n"
+        f"- 00:13:45 「{QUOTES['inbound'][1]}」（260916 医米京东科研仓系统对接 · 提出）\n"
+        f"- 00:31:49 「{QUOTES['receipt'][1]}」"
+        "（260916 医米京东科研仓系统对接 · 合并自候选「京东仓签收凭证」）\n"
+    )

@@ -35,6 +35,7 @@ from .cards import (
 from .db import GRAPH_REV_KEY
 from .file_stems import STEM_NO, stem_usability
 from .relation_read import mention_union
+from .project_seats import MEETING_TIME_SQL
 from .rendering import format_clock
 
 INDEX_VERSION = 2
@@ -552,6 +553,11 @@ def render(data: IndexData) -> str:
 
 CONTEXT_QUOTE = "> 声档生成的背景。纪要是完整的，先读纪要；原话在「逐字稿」里，时间戳是录音时间。这里不摘材料的内容，文件请直接打开看。"
 CONTEXT_TITLE = "# {title}（{project} · 需求 · {priority} · {status}）"
+CONTEXT_SUMMARY = "## 说明"
+CONTEXT_SOURCES = "## 会上原话"
+CONTEXT_ORIGIN = "提出"
+CONTEXT_MERGED = "合并自候选「{title}」"
+CONTEXT_MERGED_PLAIN = "合并进来的"
 CONTEXT_FOLDERS = "## 文件夹"
 CONTEXT_MEETINGS = "## 会议"
 CONTEXT_DECIDED = "## 定了什么"
@@ -584,7 +590,8 @@ def _context_decision(item: dict[str, Any], meetings: dict[str, dict[str, Any]])
 
 
 def requirement_context(conn: Any, requirement_id: str) -> dict[str, Any]:
-    """一个需求交给 Claude Code 的背景：{markdown, paths, cards_missing}。最多 8 条语句，什么都不写盘。
+    """一个需求交给 Claude Code 的背景（海报上的［接下］和详情页的［复制给 Claude Code］，R02-9、R05-5）：
+    {markdown, paths, cards_missing}。最多 8 条语句，什么都不写盘。
 
     - markdown 一律绝对路径（不知道你粘到哪个目录）；空的节不写，标题和引用那一行总在。
     - 规矩和索引一样：只写定下来的，不摘材料原文，没有分数。只有一处不同：这个需求所有关联会的决议都写上，
@@ -594,9 +601,17 @@ def requirement_context(conn: Any, requirement_id: str) -> dict[str, Any]:
     """
     # 1. 需求、项目名和全部文件夹
     row = conn.execute(
-        """SELECT q.id, q.project_id, q.title, q.priority, q.status, p.name AS project_name,
+        f"""SELECT q.id, q.project_id, q.title, q.priority, q.status, q.summary,
+                  p.name AS project_name,
                   (SELECT json_group_array(path) FROM (SELECT f.path FROM requirement_folders f
                     WHERE f.requirement_id = q.id ORDER BY f.id)) AS folders_json,
+                  (SELECT json_group_array(json_array(kind, quote, anchor_ms, via_candidate_title,
+                                                      title))
+                     FROM (SELECT s.kind, s.quote, s.anchor_ms, s.via_candidate_title, m.title
+                             FROM requirement_sources s JOIN meetings m ON m.id = s.meeting_id
+                            WHERE s.requirement_id = q.id AND s.quote != ''
+                            ORDER BY julianday({MEETING_TIME_SQL}), COALESCE(s.anchor_ms, 0), s.id)
+                  ) AS sources_json,
                   (SELECT json_group_array(json_array(r.id, r.path))
                      FROM project_material_roots r WHERE r.project_id = q.project_id) AS roots_json
              FROM requirements q LEFT JOIN projects p ON p.id = q.project_id WHERE q.id = ?""",
@@ -675,6 +690,19 @@ def requirement_context(conn: Any, requirement_id: str) -> dict[str, Any]:
         if body:
             lines.extend(["", heading, *body])
 
+    # 需求名之后先给说明和会上原话（R02-9：需求名、说明、来源原话与时间锚、关联会议纪要、材料文件夹路径）
+    section(CONTEXT_SUMMARY, [_one_line(row["summary"])] if row["summary"] else [])
+    source_lines = []
+    for kind, quote, anchor_ms, via, meeting_title in json.loads(row["sources_json"] or "[]"):
+        if via:
+            where = CONTEXT_MERGED.format(title=_one_line(via))
+        else:
+            where = CONTEXT_MERGED_PLAIN if kind == "merged" else CONTEXT_ORIGIN
+        clock = f"{format_clock(anchor_ms)} " if anchor_ms is not None else ""
+        source_lines.append(
+            f"- {clock}「{_one_line(quote)}」（{_one_line(meeting_title)} · {where}）"
+        )
+    section(CONTEXT_SOURCES, source_lines)
     section(CONTEXT_FOLDERS, [f"- {path}" for path in folders])
     meeting_lines = []
     for entry in linked:
