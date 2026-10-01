@@ -57,6 +57,7 @@ from .attribution import (
     recognition_profile,
 )
 from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
+from . import project_seats, requirement_candidates, requirement_pool
 from . import search as search_module
 from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
@@ -431,6 +432,16 @@ class CardsTargetInput(BaseModel):
     meeting_id: str | None = Field(default=None, max_length=200)
 
 
+class RequirementSourceInput(BaseModel):
+    """v17：需求的来源——提出它的会议、会上原话和时间锚（毫秒）。原话和时间锚可空（只选了会）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    meeting_id: str = Field(min_length=1, max_length=200)
+    quote: str = Field(default="", max_length=2000)
+    anchor_ms: int | None = Field(default=None, ge=0, le=24 * 3600 * 1000)
+
+
 class RequirementCreateInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -438,6 +449,9 @@ class RequirementCreateInput(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     priority: str = Field(max_length=8)
     folder_paths: list[str] = Field(default_factory=list, max_length=100)
+    # v17：说明（服务层限 70 字）和来源，都可空。
+    summary: str = Field(default="", max_length=500)
+    source: RequirementSourceInput | None = None
 
 
 class RequirementUpdateInput(BaseModel):
@@ -448,6 +462,34 @@ class RequirementUpdateInput(BaseModel):
     priority: str | None = Field(default=None, max_length=8)
     status: str | None = Field(default=None, max_length=16)
     folder_paths: list[str] | None = Field(default=None, max_length=100)
+    summary: str | None = Field(default=None, max_length=500)
+    # 传了 source 才改来源：对象是换掉提出它的那句，null 是清空。
+    source: RequirementSourceInput | None = None
+
+
+class ProjectSeatsInput(BaseModel):
+    """「我的方向」整排保存：排了座次的项目，从第 1 位起的先后。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+class CandidateClaimInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(default="", max_length=500)
+    # 未归项目的候选要先选项目；不传时服务层给出「先选所属项目」。
+    project_id: str | None = Field(default=None, max_length=64)
+    priority: str = Field(default="P2", max_length=8)
+    folder_paths: list[str] = Field(default_factory=list, max_length=100)
+
+
+class CandidateMergeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requirement_id: str = Field(min_length=1, max_length=64)
 
 
 class RequirementMeetingsInput(BaseModel):
@@ -4571,6 +4613,8 @@ def create_app(
                 title=body.title,
                 priority=body.priority,
                 folder_paths=body.folder_paths,
+                summary=body.summary,
+                source=body.source.model_dump() if body.source else None,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
@@ -4591,9 +4635,90 @@ def create_app(
                 status=body.status,
                 folder_paths=body.folder_paths,
                 folder_paths_given="folder_paths" in body.model_fields_set,
+                summary=body.summary,
+                source=body.source.model_dump() if body.source else None,
+                source_given="source" in body.model_fields_set,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    # v17 需求池改版：海报墙、项目座次、需求候选。
+
+    @app.get("/api/requirement-pool")
+    def requirement_pool_endpoint(
+        status: str = "active",
+        project_id: str | None = None,
+        priority: str | None = None,
+        q: str | None = None,
+        limit: int = Query(default=200, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ):
+        try:
+            return requirement_pool.list_pool(
+                db,
+                status=status,
+                project_id=project_id,
+                priority=priority,
+                q=q,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.put("/api/project-seats")
+    def put_project_seats(body: ProjectSeatsInput):
+        try:
+            return project_seats.set_project_seats(db, body.project_ids)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/requirement-candidates/dropped")
+    def dropped_requirement_candidates():
+        return requirement_candidates.list_dropped(db)
+
+    @app.get("/api/requirement-candidates/{candidate_id}")
+    def requirement_candidate_detail(candidate_id: str):
+        return requirement_candidates.get_candidate(db, candidate_id)
+
+    @app.get("/api/requirement-candidates/{candidate_id}/merge-targets")
+    def requirement_candidate_merge_targets(candidate_id: str):
+        return requirement_candidates.merge_targets(db, candidate_id)
+
+    @app.post("/api/requirement-candidates/{candidate_id}/claim")
+    def claim_requirement_candidate(candidate_id: str, body: CandidateClaimInput):
+        try:
+            return requirement_candidates.claim_candidate(
+                task_service,
+                candidate_id,
+                title=body.title,
+                summary=body.summary,
+                project_id=body.project_id,
+                priority=body.priority,
+                folder_paths=body.folder_paths,
+            )
+        except requirements.RequirementTitleConflict as error:
+            # 认领撞名不新建：带上那条需求，前端提示改名或改为合并过去（R01 异常与边界）。
+            return JSONResponse({"detail": str(error), "existing": error.existing}, status_code=409)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/requirement-candidates/{candidate_id}/merge")
+    def merge_requirement_candidate(candidate_id: str, body: CandidateMergeInput):
+        try:
+            return requirement_candidates.merge_candidate(
+                task_service, candidate_id, body.requirement_id
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/requirement-candidates/{candidate_id}/drop")
+    def drop_requirement_candidate(candidate_id: str, _body: dict[str, Any] | None = None):
+        return requirement_candidates.drop_candidate(db, candidate_id)
+
+    @app.post("/api/requirement-candidates/{candidate_id}/restore")
+    def restore_requirement_candidate(candidate_id: str, _body: dict[str, Any] | None = None):
+        return requirement_candidates.restore_candidate(db, candidate_id)
 
     @app.get("/api/requirements/{requirement_id}/folders/{folder_id}/files")
     def requirement_folder_files(

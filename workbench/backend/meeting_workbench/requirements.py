@@ -2,6 +2,9 @@
 
 优先级 P0–P3 只挂在需求上；任务本身不设优先级，展示时从所属需求只读派生（见 tasks.py
 `TaskService.task_summary`）。不做删除需求/删除项目——不要的需求用状态「已搁置」（D12，不镀金）。
+
+v17（需求池改版 260930）：需求多了说明和来源。来源＝提出它的会议、会上原话和时间锚（origin），
+另有从候选合并进来的原话（merged），都在 requirement_sources。
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from .materials import (
     list_folder_files,
     volume_state,
 )
+from .project_seats import MEETING_TIME_SQL, seat_ranks
 from .service import ConflictError, NotFoundError
 from .tasks import OPEN_TASK_STATUSES, TaskService, resolve_requirement_and_project
 
@@ -27,11 +31,25 @@ REQUIREMENT_PRIORITIES = ("P0", "P1", "P2", "P3")
 REQUIREMENT_STATUSES = ("active", "done", "shelved")
 # 需求详情文件夹卡片的预览文件数
 FOLDER_PREVIEW_LIMIT = 6
+# 说明是一两句话，最多 70 字；会上原话在逐字稿里一次可能选中好几句，最多 1000 字。
+SUMMARY_MAX_CHARS = 70
+QUOTE_MAX_CHARS = 1000
 # 未完成任务在前，其余（已完成/已过期/已取消）在后，同组按创建时间倒序
 _TASK_ORDER_SQL = """
     CASE WHEN t.status IN ({open_statuses}) THEN 0 ELSE 1 END,
     t.created_at DESC
 """
+# 一场会画波形用的录音：归档里的优先（和录音档案列表同一个取法）。
+AUDIO_ARTIFACT_SQL = """(SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
+    ORDER BY CASE a.source_root WHEN 'archive' THEN 0 ELSE 1 END LIMIT 1)"""
+
+
+class RequirementTitleConflict(ConflictError):
+    """同一项目下已有同名需求。existing 是那条需求（id、title、status），认领候选撞名时前端据此提示改名或合并。"""
+
+    def __init__(self, existing: dict[str, Any] | None):
+        super().__init__("该项目下已有同名需求")
+        self.existing = existing
 
 
 def _normalize_title(title: str) -> str:
@@ -39,6 +57,22 @@ def _normalize_title(title: str) -> str:
     if not title:
         raise ValueError("需求标题不能为空")
     return title
+
+
+def normalize_summary(summary: str | None) -> str:
+    summary = (summary or "").strip()
+    if len(summary) > SUMMARY_MAX_CHARS:
+        raise ValueError(f"说明最多 {SUMMARY_MAX_CHARS} 字")
+    return summary
+
+
+def _title_conflict(connection: Any, project_id: str, title: str) -> RequirementTitleConflict:
+    row = connection.execute(
+        """SELECT id, title, status FROM requirements
+            WHERE project_id=? AND lower(trim(title))=lower(trim(?))""",
+        (project_id, title),
+    ).fetchone()
+    return RequirementTitleConflict(dict(row) if row else None)
 
 
 def _assert_priority(priority: str) -> None:
@@ -83,6 +117,83 @@ def _validate_folder_paths(connection: Any, project_id: str, folder_paths: list[
             raise ValueError(f"材料文件夹不存在：{raw}")
         if resolved.parent not in root_paths:
             raise ValueError(f"材料文件夹必须是所属项目材料根目录的直接子文件夹：{raw}")
+
+
+# ---------------------------------------------------------------- 来源（v17）
+
+
+def load_sources(connection: Any, *, owner: str, ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """一批需求（owner="requirement"）或候选（owner="candidate"）的全部来源，按会议时间先后、
+    同一场会按时间锚排。每条带会议名、录音时间、时长和画波形用的录音 id。"""
+    column = {"requirement": "requirement_id", "candidate": "candidate_id"}[owner]
+    if not ids:
+        return {}
+    rows = connection.execute(
+        f"""SELECT s.id, s.{column} AS owner_id, s.kind, s.meeting_id, s.quote, s.anchor_ms,
+                   s.via_candidate_title, m.title AS meeting_title, m.recording_date,
+                   m.duration_ms, {AUDIO_ARTIFACT_SQL} AS audio_artifact_id
+              FROM requirement_sources s JOIN meetings m ON m.id = s.meeting_id
+             WHERE s.{column} IN ({", ".join("?" for _ in ids)})
+             ORDER BY julianday({MEETING_TIME_SQL}), COALESCE(s.anchor_ms, 0), s.id""",
+        tuple(ids),
+    ).fetchall()
+    sources: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        item = dict(row)
+        sources.setdefault(item.pop("owner_id"), []).append(item)
+    return sources
+
+
+def origin_of(sources: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """提出它的那句；没有来源（新建时留空）时为 None。"""
+    return next((source for source in sources if source["kind"] == "origin"), None)
+
+
+def clean_source(connection: Any, source: dict[str, Any]) -> dict[str, Any]:
+    """来源入参：会议必填且存在；原话和时间锚可空（只选了会、没挑原话）。"""
+    meeting_id = str(source.get("meeting_id") or "").strip()
+    if not meeting_id:
+        raise ValueError("来源要先选会议")
+    if connection.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
+        raise NotFoundError(f"会议不存在：{meeting_id}")
+    quote = str(source.get("quote") or "").strip()
+    if len(quote) > QUOTE_MAX_CHARS:
+        raise ValueError(f"原话最多 {QUOTE_MAX_CHARS} 字")
+    anchor_ms = source.get("anchor_ms")
+    if anchor_ms is not None and (
+        isinstance(anchor_ms, bool) or not isinstance(anchor_ms, int) or anchor_ms < 0
+    ):
+        raise ValueError("时间锚必须是不小于 0 的毫秒数")
+    return {"meeting_id": meeting_id, "quote": quote, "anchor_ms": anchor_ms}
+
+
+def set_origin_source(connection: Any, requirement_id: str, source: dict[str, Any] | None) -> None:
+    """在调用方的事务里换掉需求「提出它的那句」，source 为 None 时清空。选定的会议同时加进
+    关联会议（R04-4）；换掉或清空来源不动关联会议，合并进来的原话也不动。"""
+    clean = clean_source(connection, source) if source is not None else None
+    connection.execute(
+        "DELETE FROM requirement_sources WHERE requirement_id=? AND kind='origin'",
+        (requirement_id,),
+    )
+    if clean is None:
+        return
+    now = utc_now()
+    connection.execute(
+        """INSERT INTO requirement_sources
+               (requirement_id, kind, meeting_id, quote, anchor_ms, created_at)
+           VALUES (?, 'origin', ?, ?, ?, ?)""",
+        (requirement_id, clean["meeting_id"], clean["quote"], clean["anchor_ms"], now),
+    )
+    connection.execute(
+        """INSERT OR IGNORE INTO requirement_meetings(requirement_id, meeting_id, created_at)
+           VALUES (?, ?, ?)""",
+        (requirement_id, clean["meeting_id"], now),
+    )
+
+
+def follow_up_count(meeting_ids: set[str], origin: dict[str, Any] | None) -> int:
+    """「之后又跟进了几场」＝关联会议里除提出它的那场以外的场数（R02-4）。"""
+    return len(meeting_ids - {origin["meeting_id"]}) if origin else max(len(meeting_ids) - 1, 0)
 
 
 # ---------------------------------------------------------------- 列表 / 详情组装
@@ -171,8 +282,10 @@ def _requirement_summary(db: Database, requirement: dict[str, Any]) -> dict[str,
         f"SELECT COUNT(*) AS n FROM tasks WHERE requirement_id=? AND status IN ({open_placeholders})",
         (requirement["id"], *OPEN_TASK_STATUSES),
     )["n"]
+    # 录音时间混着两种时区写法，最晚的一场按儒略日比（SQLite 的 MAX 聚合里裸列取自最大那一行）。
     meeting_stats = db.query_one(
-        """SELECT COUNT(*) AS n, MAX(m.recording_date) AS latest
+        f"""SELECT COUNT(*) AS n, MAX(julianday({MEETING_TIME_SQL})) AS jd,
+                   {MEETING_TIME_SQL} AS latest
              FROM requirement_meetings rm JOIN meetings m ON m.id=rm.meeting_id
             WHERE rm.requirement_id=?""",
         (requirement["id"],),
@@ -181,13 +294,16 @@ def _requirement_summary(db: Database, requirement: dict[str, Any]) -> dict[str,
         "SELECT COUNT(*) AS n FROM requirement_folders WHERE requirement_id=?",
         (requirement["id"],),
     )["n"]
+    with db.autocommit() as connection:
+        seats = seat_ranks(connection)
     return {
         **requirement,
         "project_name": project["name"] if project else None,
         "project_color": project["color"] if project else None,
+        "project_seat": seats.get(requirement["project_id"]),
         "open_task_count": open_task_count,
         "meeting_count": meeting_stats["n"] or 0,
-        "latest_meeting_date": meeting_stats["latest"],
+        "latest_meeting_date": meeting_stats["latest"] if meeting_stats["n"] else None,
         "folder_count": folder_count,
     }
 
@@ -246,6 +362,16 @@ def get_requirement(task_service: TaskService, requirement_id: str) -> dict[str,
             ORDER BY m.recording_date DESC""",
         (requirement_id,),
     )
+    with db.autocommit() as connection:
+        sources = load_sources(connection, owner="requirement", ids=[requirement_id]).get(
+            requirement_id, []
+        )
+    # R05：合并进来的原话和提出它的那句一起列，按会议时间先后；头部波形取提出它的那场会。
+    detail["sources"] = sources
+    detail["source"] = origin_of(sources)
+    detail["follow_up_count"] = follow_up_count(
+        {meeting["id"] for meeting in detail["meetings"]}, detail["source"]
+    )
     open_placeholders = ", ".join("?" for _ in OPEN_TASK_STATUSES)
     task_rows = db.query_all(
         f"""SELECT t.* FROM tasks t WHERE t.requirement_id=?
@@ -266,10 +392,15 @@ def insert_requirement(
     title: str,
     priority: str,
     folder_paths: list[str] | None = None,
+    summary: str | None = None,
+    source: dict[str, Any] | None = None,
 ) -> str:
-    """在调用方的事务里建需求，返回需求 id（建成需求的提示要和改归属、关联会放进同一个事务）。"""
+    """在调用方的事务里建需求，返回需求 id（建成需求的提示要和改归属、关联会放进同一个事务）。
+
+    source 是提出它的会议、原话和时间锚（逐字稿选句建、需求池新建时选了来源会议），可空。"""
     title = _normalize_title(title)
     _assert_priority(priority)
+    summary = normalize_summary(summary)
     folder_paths = folder_paths or []
     requirement_id = f"requirement-{uuid.uuid4().hex}"
     now = utc_now()
@@ -278,17 +409,20 @@ def insert_requirement(
         _validate_folder_paths(connection, project_id, folder_paths)
     try:
         connection.execute(
-            """INSERT INTO requirements(id, project_id, title, priority, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'active', ?, ?)""",
-            (requirement_id, project_id, title, priority, now, now),
+            """INSERT INTO requirements
+                   (id, project_id, title, summary, priority, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'active', ?, ?)""",
+            (requirement_id, project_id, title, summary, priority, now, now),
         )
     except sqlite3.IntegrityError as error:
-        raise ConflictError("该项目下已有同名需求") from error
+        raise _title_conflict(connection, project_id, title) from error
     for raw in folder_paths:
         connection.execute(
             "INSERT INTO requirement_folders(requirement_id, path, created_at) VALUES (?, ?, ?)",
             (requirement_id, str(Path(raw).resolve(strict=False)), now),
         )
+    if source is not None:
+        set_origin_source(connection, requirement_id, source)
     return requirement_id
 
 
@@ -299,6 +433,8 @@ def create_requirement(
     title: str,
     priority: str,
     folder_paths: list[str] | None = None,
+    summary: str | None = None,
+    source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     with task_service.db.transaction() as connection:
         requirement_id = insert_requirement(
@@ -307,6 +443,8 @@ def create_requirement(
             title=title,
             priority=priority,
             folder_paths=folder_paths,
+            summary=summary,
+            source=source,
         )
     return get_requirement(task_service, requirement_id)
 
@@ -321,7 +459,12 @@ def update_requirement(
     status: str | None = None,
     folder_paths: list[str] | None = None,
     folder_paths_given: bool = False,
+    summary: str | None = None,
+    source: dict[str, Any] | None = None,
+    source_given: bool = False,
 ) -> dict[str, Any]:
+    """source_given 时换掉提出它的那句（source 为 None 是清空）；状态只在进行中、已完成、
+    已搁置之间切换，不能改回待认领（R04-5，待认领的是候选，不在需求表里）。"""
     db = task_service.db
     if priority is not None:
         _assert_priority(priority)
@@ -348,6 +491,11 @@ def update_requirement(
             if normalized_title != requirement["title"]:
                 changes.append("title=?")
                 values.append(normalized_title)
+        if summary is not None:
+            normalized_summary = normalize_summary(summary)
+            if normalized_summary != requirement["summary"]:
+                changes.append("summary=?")
+                values.append(normalized_summary)
         if project_changed:
             changes.append("project_id=?")
             values.append(project_id)
@@ -357,7 +505,7 @@ def update_requirement(
         if status is not None and status != requirement["status"]:
             changes.append("status=?")
             values.append(status)
-        if changes:
+        if changes or source_given:
             changes.append("updated_at=?")
             values.append(now)
             values.append(requirement_id)
@@ -366,7 +514,12 @@ def update_requirement(
                     f"UPDATE requirements SET {', '.join(changes)} WHERE id=?", tuple(values)
                 )
             except sqlite3.IntegrityError as error:
-                raise ConflictError("该项目下已有同名需求") from error
+                raise _title_conflict(
+                    connection, target_project_id, title or requirement["title"]
+                ) from error
+
+        if source_given:
+            set_origin_source(connection, requirement_id, source)
 
         if folder_paths_given:
             connection.execute(

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -1332,6 +1332,56 @@ CREATE TABLE IF NOT EXISTS glossary_mining_seeds (
     terms_json TEXT NOT NULL,
     mined_at TEXT NOT NULL
 );
+
+-- v17 需求池改版（260930）：需求候选＝AI 从会议纪要里抽出来、还没认领的需求，认领后才建成需求。
+-- 不放进 requirements：那张表被关系图、决议、会议卡片、时间线等二十多个模块直接查，候选混进去会到处漏。
+-- 候选不存项目，跟着来源会议当前的归属走（认领前会议改了归属，候选随之改）。
+-- status：pending 待认领、claimed 已认领、merged 已合并、dropped 已丢掉。处理过的行留着，重新抽取时
+-- 据此跳过；requirement_id 是认领建成或合并进去的那条需求。丢掉的 30 天内能撤销，name_key（轻键）
+-- 一直留着，「同一项目下同名候选以后不再提示」靠它。similar_requirement_id 是 AI 判断的相近需求。
+CREATE TABLE IF NOT EXISTS requirement_candidates (
+    id TEXT PRIMARY KEY,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    extraction_id INTEGER,
+    title TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    similar_requirement_id TEXT REFERENCES requirements(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'claimed', 'merged', 'dropped')),
+    requirement_id TEXT REFERENCES requirements(id) ON DELETE SET NULL,
+    dropped_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_requirement_candidates_meeting
+    ON requirement_candidates(meeting_id, status);
+CREATE INDEX IF NOT EXISTS idx_requirement_candidates_status
+    ON requirement_candidates(status, name_key);
+
+-- v17：需求的来源＝提出它的会议、会上原话和时间锚。属于一条需求或一条候选（二选一），认领、合并时
+-- 整行改挂过去。origin 是提出它的那句，每条至多一句；merged 是合并进来的原话，via_candidate_title
+-- 记合并自哪条候选。
+CREATE TABLE IF NOT EXISTS requirement_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requirement_id TEXT REFERENCES requirements(id) ON DELETE CASCADE,
+    candidate_id TEXT REFERENCES requirement_candidates(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('origin', 'merged')),
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    quote TEXT NOT NULL DEFAULT '',
+    anchor_ms INTEGER,
+    via_candidate_title TEXT,
+    created_at TEXT NOT NULL,
+    CHECK ((requirement_id IS NULL) <> (candidate_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_requirement_sources_requirement
+    ON requirement_sources(requirement_id);
+CREATE INDEX IF NOT EXISTS idx_requirement_sources_candidate
+    ON requirement_sources(candidate_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_requirement_sources_origin_requirement
+    ON requirement_sources(requirement_id) WHERE kind = 'origin' AND requirement_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_requirement_sources_origin_candidate
+    ON requirement_sources(candidate_id) WHERE kind = 'origin' AND candidate_id IS NOT NULL;
 """
 
 # 1g：关系图的持久版本号。这些表每次增删改都给 app_state 里的 graph_rev 加一，图接口拿它
@@ -1438,6 +1488,22 @@ class Database:
                 connection.execute(
                     "ALTER TABLE projects ADD COLUMN also_names TEXT NOT NULL DEFAULT '[]'"
                 )
+            if "seat" not in project_columns:
+                # v17：项目座次（需求池「我的方向」），NULL 是未排座次。只管排序和展示，不参与归属判断。
+                connection.execute("ALTER TABLE projects ADD COLUMN seat INTEGER")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_seat ON projects(seat) "
+                "WHERE seat IS NOT NULL"
+            )
+            requirement_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(requirements)").fetchall()
+            }
+            if "summary" not in requirement_columns:
+                # v17：需求的说明（一两句话，最多 70 字），可空。
+                connection.execute(
+                    "ALTER TABLE requirements ADD COLUMN summary TEXT NOT NULL DEFAULT ''"
+                )
             link_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(project_links)").fetchall()
@@ -1507,6 +1573,15 @@ class Database:
                 )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_requirement ON tasks(requirement_id)"
+            )
+            if "candidate_id" not in task_columns:
+                # v17：挂在需求候选上的任务。认领后随需求走、合并后挂到目标需求、丢掉后清空。
+                connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN candidate_id "
+                    "TEXT REFERENCES requirement_candidates(id) ON DELETE SET NULL"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_candidate ON tasks(candidate_id)"
             )
             minutes_columns = {
                 row["name"]

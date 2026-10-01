@@ -43,6 +43,7 @@ from .project_names import (
 )
 from .project_folders import pending_folders, queue_pending_folder
 from .project_profile import norm_key
+from .project_seats import project_latest_meetings, seat_ranks
 from .semantic import SemanticIndex
 from .service import ConflictError, NotFoundError
 
@@ -1121,6 +1122,8 @@ class TaskService:
         open_task_counts = {row["project_id"]: row["n"] for row in open_task_rows}
         with self.db.autocommit() as connection:
             pending = pending_folders(connection)
+            seats = seat_ranks(connection)
+            latest_meetings = project_latest_meetings(connection)
         material_roots_by_project: dict[str, list[dict[str, Any]]] = {}
         for row in self.db.query_all(
             "SELECT * FROM project_material_roots ORDER BY project_id, created_at, id"
@@ -1137,6 +1140,9 @@ class TaskService:
             project["material_roots"] = material_roots_by_project.get(project["id"], [])
             project["also_names"] = also_entries(project.get("also_names"))
             project["pending_folder"] = pending.get(project["id"])
+            # v17：座次给名次（库里的 seat 只是排序键，可能有空位），未排为 None。
+            project["seat"] = seats.get(project["id"])
+            project["latest_meeting_date"] = (latest_meetings.get(project["id"]) or {}).get("date")
         return projects
 
     def create_project(
@@ -1405,6 +1411,7 @@ class TaskService:
         project["also_names"] = also_entries(project.get("also_names"))
         with self.db.autocommit() as connection:
             project["pending_folder"] = pending_folders(connection, project_id).get(project_id)
+            project["seat"] = seat_ranks(connection).get(project_id)
         return project
 
     def project_board(self, project_id: str) -> dict[str, Any]:

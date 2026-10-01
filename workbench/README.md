@@ -283,7 +283,7 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 - 所有写接口要求同源、双提交 CSRF 与 `application/json`
 - 移动端界面只读，用于资料库、检索、播放和阅读；接口权限仍由 Tailnet ACL 控制，不把 UA 或屏幕尺寸当成鉴权凭据
 - 大录音通过 4 MiB JSON 分块上传，仅接受 `m4a/mp3/wav`，不会在浏览器或服务端一次性展开整段 Base64
-- 数据库使用 schema v16；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层、项目材料的文件名索引、材料内容和第四期的深度关联都保存在 SQLite。
+- 数据库使用 schema v17；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层、项目材料的文件名索引、材料内容、第四期的深度关联和需求池（需求候选、需求来源、项目座次）都保存在 SQLite。
   外部文件与数据库草稿冲突时，必须明确选择保留草稿、
   采用外部版本或丢弃草稿；音频完整性及发布恢复冲突只能由对应复验流程关闭，解决一种冲突不会清除其他冲突
 - 逐字稿和纪要保存携带页面打开时的基础版本；遇到并发变化返回 409，并保留浏览器中的未保存文字
@@ -649,11 +649,13 @@ PDF 文字；图片认出的字、录音转的字、代码、数据和字幕文�
 
 ## 数据库迁移
 
-首次启动会自动备份并把数据库迁移到当前 schema v16（v7 曾新增 tasks / task_events /
+首次启动会自动备份并把数据库迁移到当前 schema v17（v7 曾新增 tasks / task_events /
 deliverables / task_extractions / notifications 五张表及 projects.origin 列；v8 新增
 术语词典 glossary_terms / glossary_suggestions 两张表，快照导出到
 `~/.meeting-workbench/glossary-snapshot.json` 供转写侧消费；v9 新增 `meetings.project_origin` 与
-`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`；v16 新增深度关联——`relations`、`decisions`、`decision_scan`、`mention_extractions`、`meeting_related_scan`、`meeting_windows`、`meeting_window_passages`、`material_file_events`、`glossary_candidates`、`glossary_mining_scan`、`glossary_mining_seeds` 十一张表，`meetings`、`requirement_meetings` 上各一个索引，以及文件流水、离开项目、版本号的触发器；`meeting_windows`、`meeting_window_passages`、`meeting_related_scan` 能重算，不进备份。都是只加不改）。
+`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`；v16 新增深度关联——`relations`、`decisions`、`decision_scan`、`mention_extractions`、`meeting_related_scan`、`meeting_windows`、`meeting_window_passages`、`material_file_events`、`glossary_candidates`、`glossary_mining_scan`、`glossary_mining_seeds` 十一张表，`meetings`、`requirement_meetings` 上各一个索引，以及文件流水、离开项目、版本号的触发器；`meeting_windows`、`meeting_window_passages`、`meeting_related_scan` 能重算，不进备份；v17 新增需求池改版——`requirement_candidates`（需求候选）、`requirement_sources`（需求来源：会议、会上原话、时间锚）两张表，`projects.seat`、`requirements.summary`、`tasks.candidate_id` 三列，迁移里不回填任何候选。都是只加不改）。
+
+**从 v17 退回 v16**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=16` 后用 v16 的代码启动。不要删 v17 的表、列和索引：v16 不读它们，新建需求时说明照默认值留空；回滚期间需求池里看不到待认领的候选。回到 v17 时自动从 16 升到 17（再做一次迁移前备份），候选、来源和座次都在。
 
 **从 v16 退回 v15**：见上一节「深度关联」的回滚步骤。
 
