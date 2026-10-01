@@ -1798,7 +1798,13 @@ textarea {
 .inline-search { display: flex; width: min(300px, 70%); align-items: center; gap: 6px; padding: 2px 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
 .inline-search input { width: 100%; padding: 5px 0; font-size: 10px; background: transparent; border: 0; outline: 0; }
 .segment-count { color: var(--ink-faint); font-size: 9px; }
-.transcript-scroll { max-height: 690px; overflow-y: auto; scroll-behavior: smooth; }
+.transcript-scroll { position: relative; max-height: 690px; overflow-y: auto; scroll-behavior: smooth; }
+/* 逐字稿选中一段时浮出的［建成需求］（S04）：时间锚 + 按钮 */
+.transcript-pick { position: absolute; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 5px 5px 5px 11px; white-space: nowrap; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
+.transcript-pick__time { color: var(--ink-soft); font-family: var(--font-mono); font-size: 11px; }
+.transcript-pick button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px; color: #fff; font-size: 12px; font-weight: 600; background: var(--signal); border: 0; border-radius: 8px; cursor: pointer; }
+.transcript-pick button svg { width: 12px; height: 12px; }
+.transcript-pick small { color: var(--danger); font-size: 11px; }
 .transcript-row { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); transition: background 120ms ease; }
 .transcript-row.is-current { background: var(--surface-2); box-shadow: inset 3px 0 var(--signal); }
 .segment-time { height: max-content; padding: 3px 4px; color: var(--signal-dark); font-size: 9px; background: transparent; border: 0; }

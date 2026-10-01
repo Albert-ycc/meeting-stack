@@ -36,6 +36,7 @@ import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
 import { MeetingTasksPanel } from "./MeetingTasksPanel";
 import { MinutesCorrectionsBar } from "./MinutesCorrectionsBar";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
+import type { RequirementPrefill } from "./pool/RequirementFormPage";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeAction, type NoticeTone } from "./Notice";
 import { useLinksFlags } from "./links/LinksFlagsContext";
@@ -74,6 +75,8 @@ interface MeetingDetailPageProps {
   onOpenPreview?: (target: PreviewTarget) => void;
   /** ［抽需求候选］之后提示里的［去看看］：打开需求池的「待认领」页签 */
   onOpenPendingCandidates?: () => void;
+  /** 逐字稿选中一段［建成需求］（R01-10）：带着来源（这场会、选中的原话、第一句的时间）去新增需求页 */
+  onCreateRequirement?: (prefill: RequirementPrefill) => void;
 }
 
 type DetailTab = "transcript" | "minutes" | "tasks";
@@ -277,6 +280,7 @@ export function MeetingDetailPage({
   onOpenMeeting,
   onOpenPreview,
   onOpenPendingCandidates,
+  onCreateRequirement,
 }: MeetingDetailPageProps) {
   const playerRef = useRef<AudioPlayerHandle>(null);
   const [currentMs, setCurrentMs] = useState(initialSeekMs);
@@ -1313,6 +1317,24 @@ export function MeetingDetailPage({
                 disabled={isSaving}
                 editable={!isMobile && editingTranscript}
                 onChange={changeSegments}
+                onCreateRequirement={
+                  onCreateRequirement && canWriteTasks && !isMobile
+                    ? (pick) =>
+                        onCreateRequirement({
+                          source: {
+                            meeting_id: meeting.id,
+                            meeting_title: meeting.title,
+                            recording_date: meeting.recording_date ?? null,
+                            duration_ms: meeting.duration_ms ?? null,
+                            audio_artifact_id: audio?.id ?? null,
+                            quote: pick.quote,
+                            anchor_ms: pick.anchorMs,
+                          },
+                          // 所属项目默认取会议归属（页上刚改过的也算）
+                          projectId: liveProject.id,
+                        })
+                    : undefined
+                }
                 onMerge={merge}
                 onReadingTimeChange={noteReadingTime}
                 onSeek={seekFromTranscript}

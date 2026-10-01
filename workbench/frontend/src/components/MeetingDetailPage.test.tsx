@@ -1855,3 +1855,56 @@ describe("MeetingDetailPage 抽需求候选（R01-4）", () => {
     expect(screen.queryByRole("button", { name: "抽需求候选" })).not.toBeInTheDocument();
   });
 });
+
+describe("MeetingDetailPage 逐字稿选句建需求（R01-10）", () => {
+  it("选中一段［建成需求］：带着这场会、选中的原话、第一句的时间和会议归属去新增需求页", () => {
+    // 有录音时播放器会去取波形；让它一直等着，用例里不真建播放器
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    const onCreateRequirement = vi.fn();
+    const page: MeetingDetail = {
+      ...meeting(false),
+      project_id: "project-a",
+      project_name: "云图AI",
+      recording_date: "2026-07-10T09:00:00+08:00",
+      duration_ms: 60_000,
+      artifacts: [{ id: 42, kind: "audio", role: "source", path: "/x/vm-1.m4a" } as MeetingDetail["artifacts"][number]],
+    };
+    render(
+      <MeetingDetailPage
+        apiClient={client(vi.fn())}
+        canWriteTasks
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={page}
+        onBack={vi.fn()}
+        onCreateRequirement={onCreateRequirement}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[{ id: "project-a", name: "云图AI", color: "#376f68" }]}
+        tags={[]}
+      />,
+    );
+
+    const text = screen.getByTestId("segment-seg-main").querySelector(".segment-text")!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 3);
+    range.setEnd(text, text.textContent!.length);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    fireEvent.mouseUp(screen.getByTestId("segment-seg-main"));
+    fireEvent.click(screen.getByRole("button", { name: "建成需求" }));
+
+    expect(onCreateRequirement).toHaveBeenCalledWith({
+      source: {
+        meeting_id: "vm-1",
+        meeting_title: "对照测试会议",
+        recording_date: "2026-07-10T09:00:00+08:00",
+        duration_ms: 60_000,
+        audio_artifact_id: 42,
+        quote: "FunASR 当前工作稿",
+        anchor_ms: 0,
+      },
+      projectId: "project-a",
+    });
+    vi.unstubAllGlobals();
+  });
+});

@@ -1079,6 +1079,11 @@ export default function App({ apiClient = api }: AppProps) {
           writePersistentState(POOL_TAB_KEY, "pending", { local: true });
           navigate("requirements");
         }}
+        onCreateRequirement={(prefill) => {
+          if (detailNavigationLocked) return;
+          if (detailDirty && !window.confirm("当前会议仍有未保存修改。放弃这些修改并离开吗？")) return;
+          openRequirementCreate(prefill);
+        }}
         onOpenRequirement={openRequirementDetail}
         onOpenTasks={() => navigate("tasks")}
         onGlossaryChanged={() => void loadGlossaryPending()}
