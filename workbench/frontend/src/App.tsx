@@ -48,6 +48,7 @@ import {
   POOL_QUERY_STORE,
   POOL_TAB_KEY,
   RequirementPoolPage,
+  mergedMessage,
 } from "./components/pool/RequirementPoolPage";
 import { readPersistentState, writePersistentState } from "./viewState";
 import { SearchPage } from "./components/SearchPage";
@@ -945,7 +946,7 @@ export default function App({ apiClient = api }: AppProps) {
     setPoolFlash(
       result.kind === "merged"
         ? {
-            message: `已合并到「${requirement.title}」，这场会和原话已加进去`,
+            message: mergedMessage(requirement.title),
             undoMergeCandidateId: candidateId,
           }
         : {
