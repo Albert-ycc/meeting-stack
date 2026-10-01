@@ -1,5 +1,6 @@
 /* 一张需求＝一张悬赏海报（方案 A 白盒画廊）：外框是一道粗墨线，里面一层细线的衬纸。
  * 同一面墙上的海报同宽同高，底栏在卡内；优先级只靠排序和右上角的小标签。 */
+/* 海报：外框圆角和全站卡片一致；内衬按同心角收小（24 − 12 内边距 − 2 边框 = 10） */
 .poster {
   position: relative;
   display: flex;
@@ -7,6 +8,7 @@
   min-width: 0;
   padding: 12px;
   border: 2px solid var(--ink);
+  border-radius: var(--r-card);
   background: var(--surface);
   cursor: pointer;
   transition: transform 220ms var(--exp), box-shadow 220ms var(--exp);
@@ -36,6 +38,7 @@
   min-width: 0;
   padding: 18px 18px 14px;
   border: 1px solid var(--line);
+  border-radius: 10px;
 }
 
 .poster__head {

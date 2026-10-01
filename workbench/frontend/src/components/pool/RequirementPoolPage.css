@@ -294,11 +294,13 @@
   margin-bottom: 18px;
   padding: 10px;
   border: 2px solid var(--ink);
+  border-radius: 16px;
   background: var(--surface);
 }
 
 .pool-empty__poster span {
   border: 1px dashed var(--line-strong);
+  border-radius: 6px;
 }
 
 .pool-empty__title {
