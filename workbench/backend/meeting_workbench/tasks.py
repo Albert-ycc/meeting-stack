@@ -43,6 +43,7 @@ from .project_names import (
 )
 from .project_folders import pending_folders, queue_pending_folder
 from .project_profile import norm_key
+from .project_cards import card_stats, empty_stats
 from .project_seats import project_latest_meetings, seat_ranks
 from .semantic import SemanticIndex
 from . import task_due
@@ -1363,6 +1364,10 @@ class TaskService:
     # ------------------------------------------------------------------ 项目聚合与看板
 
     def list_projects(self) -> list[dict[str, Any]]:
+        from .requirement_candidates import reconcile_moved  # 函数内导入：它导入了本模块
+
+        # 会议事后改了归属的候选先按新项目重核，卡片上的待认领数和需求池同一口径
+        reconcile_moved(self.db)
         rows = self.db.query_all(
             """SELECT p.*,
                       COUNT(DISTINCT m.id) AS meeting_count,
@@ -1416,6 +1421,7 @@ class TaskService:
             pending = pending_folders(connection)
             seats = seat_ranks(connection)
             latest_meetings = project_latest_meetings(connection)
+            cards = card_stats(connection)
         material_roots_by_project: dict[str, list[dict[str, Any]]] = {}
         for row in self.db.query_all(
             "SELECT * FROM project_material_roots ORDER BY project_id, created_at, id"
@@ -1435,6 +1441,8 @@ class TaskService:
             # v17：座次给名次（库里的 seat 只是排序键，可能有空位），未排为 None。
             project["seat"] = seats.get(project["id"])
             project["latest_meeting_date"] = (latest_meetings.get(project["id"]) or {}).get("date")
+            # 项目列表卡片（R06-2）：进行中需求标题、待认领数、近 12 周会议节奏、最近一场会、录音时长
+            project.update(cards.get(project["id"]) or empty_stats())
         return projects
 
     def create_project(

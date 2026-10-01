@@ -428,6 +428,9 @@ P0～P3、候选排在 P3 之后，再按最近一场会；没排座次的项目
   `list_tasks`；`/api/tasks/<id>/requirement-options` 给挂到需求的推荐和范围；`/api/review-cards` 按会议出审核卡，
   `confirm-all` 逐条走 `_confirm(only_pending=True, link_for=…)`——只从待确认起步、在同一个事务里按任务当前的挂接
   定挂哪条，不拿事务外算好的推荐去覆盖别人刚做的选择。
+- 项目页（`project_cards.py`、`project_work.py`）：`/api/projects` 合并卡片数字（`card_stats`，周按北京日历）；
+  `/api/projects/<id>/work` 给「需求与任务」，`/api/projects/<id>/recordings` 给「录音」（包一层现有的
+  `requirements.project_meetings`，加任务数、按真实时刻重排）。两处读待认领候选前都先跑 `reconcile_moved`。
 - 丢掉的候选 30 天内能在「已丢掉」抽屉里撤销（列出项目、来源会议、丢掉时间、还剩几天），丢掉时摘下的任务记在 `drop_undo`，
   撤销时这期间没被挂到别处的挂回去；同项目以后不再提示同名的。
   会议页归属条不再出「像是新需求」，关系图的会议面板照旧（`AttributionBar` 的 `requirementHints`）。

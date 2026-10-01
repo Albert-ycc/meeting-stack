@@ -72,7 +72,7 @@ def group_of(due: str | None, today: date) -> str:
     return "later"
 
 
-def _todo_order(task: dict[str, Any]) -> tuple:
+def todo_order(task: dict[str, Any]) -> tuple:
     """组内按截止由早到晚，再按来源会议时间由近到远；没有来源会议的排在同截止的最后，彼此按建的先后倒序。"""
     meeting_at = _timestamp(task.get("meeting_recording_date"))
     return (
@@ -120,7 +120,7 @@ def list_todo(
                 "key": key,
                 "label": label,
                 "count": len(grouped[key]),
-                "items": sorted(grouped[key], key=_todo_order),
+                "items": sorted(grouped[key], key=todo_order),
             }
             for key, label in GROUPS
         ],

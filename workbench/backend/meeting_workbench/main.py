@@ -57,7 +57,7 @@ from .attribution import (
     recognition_profile,
 )
 from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
-from . import project_seats, requirement_candidates, requirement_pool, todo
+from . import project_seats, project_work, requirement_candidates, requirement_pool, todo
 from . import search as search_module
 from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
@@ -4424,6 +4424,14 @@ def create_app(
                 return graph_module.meeting_quotes(connection, meeting_id, at, wide=span == "wide")
             except graph_module.GraphNotFound as error:
                 raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/projects/{project_id}/work")
+    def project_work_endpoint(project_id: str):
+        return project_work.project_work(task_service, project_id)
+
+    @app.get("/api/projects/{project_id}/recordings")
+    def project_recordings_endpoint(project_id: str):
+        return project_work.project_recordings(task_service, project_id)
 
     @app.get("/api/projects/{project_id}/meetings")
     def project_meetings_endpoint(project_id: str):
