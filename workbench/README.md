@@ -378,8 +378,13 @@ P0～P3、候选排在 P3 之后，再按最近一场会；没排座次的项目
 - 海报上的波形取 `/api/media/<id>/peaks` 的真实峰值：进入视口才取，同时最多 3 个，取过的缓存；
   原话的位置画成一道橙线，点原话时间打开会议、从那一秒开始放。
 - 「我的方向」拖动排座次后 `PUT /api/project-seats` 整排保存（只传排了座次的项目，先后就是名次）。
-- 认领（`#requirements/claim/<候选 id>`）和新增（`#requirements/new`）是二级页：浏览器后退能回到需求池，
-  保存后回到「进行中」页签。认领撞上同项目的同名需求时接口返回 409 并带回那一条，页面上改为合并到它。
+- 认领（`#requirements/claim/<候选 id>`）、新增（`#requirements/new`）、修改（`#requirements/<id>/edit`）是同一张
+  二级页（`components/pool/RequirementFormPage.tsx`）：浏览器后退回到进入前的页面，手机上打开这几个地址退回列表或详情。
+  认领撞上同项目的同名需求时接口返回 409 并带回那一条，页面上改为合并到它。新增、修改时来源由
+  `SourcePickerDialog` 选（先选会，再从逐字稿挑原话）；会议详情逐字稿选中一段的［建成需求］带着来源进新增页
+  （`TranscriptPanel` 的 `onCreateRequirement`，原话只取正文里选中的字，时间锚取第一句开头）。
+- 需求详情头部和海报一致，「出自录音」卡（`RequirementSourceCard`）画提出它的那场会的波形，这场会里的原话打标记，
+  全部原话按会议时间列在下面。
 - 候选来自会后抽取（`tasks.py` 的 `_extract_one`，和任务同一次调 AI，发给 AI 的只有纪要、逐字稿和同项目需求、
   候选的名字）：只对 `app_state.requirement_candidates_since`（v17 迁移时写下）之后建的批次、并且是这之后才进声档的会
   （`meetings.created_at`）出候选，历史会议的纪要重新导入、重新生成都只抽任务。每场会一次最多 5 条；原话要整句在

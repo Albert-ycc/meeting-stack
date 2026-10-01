@@ -1,0 +1,135 @@
+/* 需求详情的「出自录音」（S12/S13）：卡片外壳沿用 requirement-detail__card */
+.source-card {
+  display: grid;
+  gap: 18px;
+  padding: 22px 28px;
+}
+
+.source-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+}
+
+.source-card__head strong {
+  color: var(--heading);
+  font-size: 16px;
+}
+
+.source-card__meeting {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.source-card__meta {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.source-card__open {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--signal-dark);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.source-card__wave {
+  position: relative;
+  padding-top: 30px;
+}
+
+/* 波形上方的时间签：提出的实心、合并进来的空心，竖线由波形自己画 */
+.source-card__flags {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 24px;
+}
+
+.source-card__flag {
+  position: absolute;
+  top: 0;
+  max-width: 46%;
+  overflow: hidden;
+  padding: 3px 8px;
+  border: 1px solid var(--signal);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--signal-dark);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+
+.source-card__flag.is-origin {
+  background: var(--signal);
+  color: #fff;
+}
+
+.source-card__axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.source-card__quotes {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.source-card__quotes li {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+  padding: 16px 0;
+}
+
+.source-card__quotes li + li {
+  border-top: 1px solid var(--line);
+}
+
+.source-card__time {
+  justify-self: start;
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--signal) 12%, transparent);
+  color: var(--signal-dark);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.source-card__time.is-meeting {
+  font-family: inherit;
+  font-weight: 600;
+}
+
+.source-card__quote small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-card__quote p {
+  margin: 4px 0 0;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.6;
+}

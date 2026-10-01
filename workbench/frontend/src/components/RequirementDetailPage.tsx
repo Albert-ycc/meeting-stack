@@ -13,7 +13,7 @@ import type {
   TaskStatus,
 } from "../types";
 import { FolderIcon } from "./FolderIcon";
-import { PriorityBadge, RequirementStatusBadge } from "./RequirementBadges";
+import { REQUIREMENT_STATUS_LABELS } from "./RequirementBadges";
 import { RequirementModal } from "./RequirementModal";
 import { MaterialFolderPickerModal } from "./MaterialFolderPickerModal";
 import { LinkMeetingsModal } from "./LinkMeetingsModal";
@@ -26,6 +26,7 @@ import { NoticeBanner, useNotice } from "./Notice";
 import { DecisionLogCard } from "./decisions/DecisionLogCard";
 import { MentionedBadge } from "./files/MentionedBadge";
 import { useMentionedCounts } from "./files/useMentionedCounts";
+import { RequirementSourceCard } from "./pool/RequirementSourceCard";
 
 interface RequirementDetailPageProps {
   apiClient: ApiClient;
@@ -338,8 +339,39 @@ export function RequirementDetailPage({
           <span>/</span>
           <span>{detail.title}</span>
         </nav>
+        {/* R05-1：头部和海报一致——座次、项目、等级在上，需求名最醒目，说明在下；已完成、已搁置盖个章 */}
+        <div className="requirement-detail__meta">
+          {detail.project_seat ? <span className="requirement-detail__seat">{detail.project_seat}</span> : null}
+          <button
+            className="requirement-detail__project"
+            onClick={() => onOpenProject(detail.project_id)}
+            type="button"
+          >
+            {detail.project_name}
+          </button>
+          <span className={`requirement-detail__level requirement-detail__level--${detail.priority.toLowerCase()}`}>
+            {detail.priority}
+          </span>
+          {detail.status === "active" && <span className="requirement-detail__status">进行中</span>}
+          {onOpenInGraph && detail.status === "active" && (
+            <button
+              className="text-button requirement-detail__graph"
+              onClick={() => onOpenInGraph(detail.project_id, detail.id)}
+              type="button"
+            >
+              在关系图里看
+            </button>
+          )}
+        </div>
         <div className="requirement-detail__title-row">
-          <h1>{detail.title}</h1>
+          <div className="requirement-detail__title">
+            <h1>{detail.title}</h1>
+            {detail.status !== "active" && (
+              <span className={`requirement-detail__stamp requirement-detail__stamp--${detail.status}`}>
+                {REQUIREMENT_STATUS_LABELS[detail.status]}
+              </span>
+            )}
+          </div>
           <div className="requirement-detail__actions">
             <button
               className="requirement-detail__copy"
@@ -361,29 +393,10 @@ export function RequirementDetailPage({
             )}
           </div>
         </div>
-        <div className="requirement-detail__meta">
-          <button
-            className="requirement-detail__project"
-            onClick={() => onOpenProject(detail.project_id)}
-            type="button"
-          >
-            <i style={{ background: detail.project_color }} />
-            {detail.project_name}
-          </button>
-          <PriorityBadge priority={detail.priority} />
-          <RequirementStatusBadge status={detail.status} />
-          <span className="requirement-detail__created">创建于 {formatMonthDay(detail.created_at)}</span>
-          {onOpenInGraph && detail.status === "active" && (
-            <button
-              className="text-button requirement-detail__graph"
-              onClick={() => onOpenInGraph(detail.project_id, detail.id)}
-              type="button"
-            >
-              在关系图里看
-            </button>
-          )}
-        </div>
+        {detail.summary && <p className="requirement-detail__summary">{detail.summary}</p>}
       </header>
+
+      <RequirementSourceCard onOpenMeeting={onOpenMeeting} origin={detail.source ?? null} sources={detail.sources ?? []} />
 
       <section className="requirement-detail__card">
         <header className="requirement-detail__card-head">

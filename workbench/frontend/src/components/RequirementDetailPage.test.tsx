@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -91,7 +91,11 @@ describe("RequirementDetailPage", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "北辰仓快递配送" })).toBeInTheDocument();
-    expect(screen.getByText("创建于 09-07")).toBeInTheDocument();
+    // 头部和海报一致：项目、等级、进行中在需求名上面；没有来源时不画「出自录音」
+    expect(screen.getByRole("button", { name: "云图科研用药" })).toBeInTheDocument();
+    expect(screen.getByText("P0")).toHaveClass("requirement-detail__level--p0");
+    expect(screen.getByText("进行中", { selector: ".requirement-detail__meta *" })).toHaveClass("requirement-detail__status");
+    expect(screen.queryByRole("region", { name: "出自录音" })).not.toBeInTheDocument();
     // 会议标题在「关联会议」表和任务行「来源会议」列都会出现，两处都得有
     expect(screen.getAllByText("260908 云图需求梳理与北辰科研仓对接")).toHaveLength(2);
     expect(screen.getByText("91 个文件")).toBeInTheDocument();
@@ -637,5 +641,83 @@ describe("RequirementDetailPage 修改需求（R04-1）", () => {
     await userEvent.click(screen.getByRole("button", { name: "编辑需求" }));
     expect(onEdit).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
+
+describe("RequirementDetailPage 头部和出自录音（R05）", () => {
+  // 来源照生产库那场会（会名、录音时间、时长、原话、时间锚，见后端 requirement_pool_world）
+  const origin = {
+    id: 1,
+    kind: "origin" as const,
+    meeting_id: "vm-20260916-190150-2eebb406",
+    meeting_title: "260916 医米京东科研仓系统对接",
+    recording_date: "2026-09-16T19:01:50-07:00",
+    duration_ms: 3033387,
+    audio_artifact_id: null,
+    quote: "就是这个入库单的这个单据，你得需要从你们的一米这个系统里面给我们这个库房推过来。",
+    anchor_ms: 825270,
+    via_candidate_title: null,
+  };
+  const merged = {
+    ...origin,
+    id: 2,
+    kind: "merged" as const,
+    quote: "强制要求患者除了传教和随行码嗯患者手持身份证跟药盒拍照，然后还要传这个随货通行单，",
+    anchor_ms: 1909360,
+    via_candidate_title: "京东仓签收凭证",
+  };
+
+  function renderDetail(overrides: Partial<RequirementDetail>, onOpenMeeting = vi.fn()) {
+    render(
+      <RequirementDetailPage
+        apiClient={{ requirement: vi.fn().mockResolvedValue(baseDetail(overrides)) } as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        onBack={vi.fn()}
+        onOpenMeeting={onOpenMeeting}
+        onOpenProject={vi.fn()}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId="req-1"
+      />,
+    );
+    return onOpenMeeting;
+  }
+
+  it("需求名最醒目，座次、项目、等级在上，说明在下；出自录音列出提出的和合并进来的原话", async () => {
+    const onOpenMeeting = renderDetail({
+      title: "京东科研仓对接",
+      project_name: "医米科研用药",
+      project_seat: 1,
+      summary: "把京东科研仓当作一个药房接进医米。",
+      source: origin,
+      sources: [origin, merged],
+    });
+
+    expect(await screen.findByRole("heading", { name: "京东科研仓对接" })).toBeInTheDocument();
+    expect(screen.getByText("1", { selector: ".requirement-detail__meta *" })).toHaveClass("requirement-detail__seat");
+    expect(screen.getByText("把京东科研仓当作一个药房接进医米。")).toHaveClass("requirement-detail__summary");
+    const card = within(screen.getByRole("region", { name: "出自录音" }));
+    expect(card.getByText("260916 医米京东科研仓系统对接")).toBeInTheDocument();
+    expect(card.getByText("提出 · 会上原话")).toBeInTheDocument();
+    expect(card.getByText("合并自候选「京东仓签收凭证」")).toBeInTheDocument();
+    expect(card.getByText(`「${merged.quote}」`)).toBeInTheDocument();
+    expect(card.getByText("00:13:45 提出")).toBeInTheDocument();
+    expect(card.getByText("00:31:49 合并 · 京东仓签收凭证")).toBeInTheDocument();
+
+    await userEvent.click(card.getByRole("button", { name: /从 00:31:49 开始放/ }));
+    expect(onOpenMeeting).toHaveBeenLastCalledWith("vm-20260916-190150-2eebb406", 1909360);
+    await userEvent.click(card.getByRole("button", { name: /打开会议/ }));
+    expect(onOpenMeeting).toHaveBeenLastCalledWith("vm-20260916-190150-2eebb406", 825270);
+  });
+
+  it("已完成、已搁置在需求名后面盖章，不再挂「进行中」", async () => {
+    renderDetail({ status: "done" });
+    expect(await screen.findByText("已完成")).toHaveClass("requirement-detail__stamp--done");
+    expect(screen.queryByText("进行中", { selector: ".requirement-detail__meta *" })).not.toBeInTheDocument();
+    cleanup();
+
+    renderDetail({ status: "shelved" });
+    expect(await screen.findByText("已搁置")).toHaveClass("requirement-detail__stamp--shelved");
   });
 });
