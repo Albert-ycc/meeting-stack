@@ -145,7 +145,8 @@ describe("地址栏锚点直达", () => {
     render(<App apiClient={client({ requirementPool })} />);
 
     expect(await screen.findByRole("heading", { name: "需求池" })).toBeInTheDocument();
-    expect(requirementPool).toHaveBeenCalledWith(expect.objectContaining({ status: "active" }));
+    // 取数在页面挂上以后的 effect 里：标题先出来，调用可能晚一拍
+    await waitFor(() => expect(requirementPool).toHaveBeenCalledWith(expect.objectContaining({ status: "active" })));
     expect(window.location.hash).toBe("#requirements");
   });
 
@@ -186,7 +187,7 @@ describe("地址栏锚点直达", () => {
     render(<App apiClient={client({ requirementCandidate })} />);
 
     expect(await screen.findByRole("heading", { name: "认领候选" })).toBeInTheDocument();
-    expect(requirementCandidate).toHaveBeenCalledWith("candidate-1");
+    await waitFor(() => expect(requirementCandidate).toHaveBeenCalledWith("candidate-1"));
     expect(window.location.hash).toBe("#requirements/claim/candidate-1");
   });
 
