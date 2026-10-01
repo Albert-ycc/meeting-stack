@@ -1,0 +1,225 @@
+.direction-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-stage);
+  background: var(--surface);
+}
+
+.direction-bar__label {
+  padding-right: 14px;
+  border-right: 1px solid var(--line-strong);
+  color: var(--heading);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.direction-bar__seats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+}
+
+.direction-bar__slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 拖动时的插入位置：橙色竖线 */
+.direction-bar__line {
+  width: 2px;
+  height: 26px;
+  border-radius: 2px;
+  background: var(--signal);
+}
+
+.direction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 160ms var(--exp), color 160ms var(--exp);
+}
+
+.direction-chip:hover {
+  border-color: var(--line-strong);
+}
+
+.direction-chip[draggable="true"] {
+  cursor: grab;
+}
+
+.direction-chip.is-selected {
+  background: var(--heading);
+  color: var(--surface);
+}
+
+.direction-chip.is-selected .direction-chip__seat,
+.direction-chip.is-selected .direction-chip__count,
+.direction-chip.is-selected .direction-chip__handle {
+  color: rgb(var(--bg-rgb) / 0.7);
+}
+
+/* 拖走的那个留一个虚线框，标出它原来的位置 */
+.direction-chip.is-placeholder {
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+  color: transparent;
+}
+
+.direction-chip.is-placeholder * {
+  visibility: hidden;
+}
+
+.direction-chip__handle {
+  color: var(--faint);
+}
+
+.direction-chip__seat {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.direction-chip__count {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.direction-chip--more {
+  border-color: var(--line-strong);
+  background: transparent;
+}
+
+.direction-chip--more.is-drop-target {
+  border-color: var(--signal);
+  background: var(--signal-bg);
+}
+
+.direction-chip__caret {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.direction-chip--unassigned {
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+  color: var(--muted);
+}
+
+.direction-chip--unassigned.is-selected {
+  border-style: solid;
+}
+
+.direction-bar__divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line-strong);
+}
+
+.direction-bar__hint {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.direction-bar__more {
+  position: relative;
+}
+
+.direction-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 340px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-stage);
+  background: var(--surface);
+  box-shadow: 0 16px 40px rgb(0 0 0 / calc(0.4 * var(--shadow-k)));
+}
+
+.direction-menu__title {
+  margin: 0 0 6px;
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.direction-menu ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.direction-menu li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+.direction-menu li:hover,
+.direction-menu li.is-selected {
+  background: var(--surface-2);
+}
+
+.direction-menu li[draggable="true"] {
+  cursor: grab;
+}
+
+.direction-menu__name {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.direction-menu li.is-selected .direction-menu__name {
+  font-weight: 700;
+}
+
+.direction-menu__seat {
+  flex: none;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--signal);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.direction-menu__seat:disabled {
+  color: var(--faint);
+  cursor: default;
+}

@@ -1,0 +1,417 @@
+/* 新增、认领需求的二级页（S02 / S09）：左表单、右墙上预览、底部固定操作栏 */
+
+/* 至少撑满顶栏以下的一屏，内容短时操作栏也落在视口最底 */
+.form-page {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-height: calc(100vh - 74px);
+}
+
+.form-page__head {
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.form-page__crumb {
+  margin: 0;
+  color: var(--signal);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.form-page__crumb span {
+  color: var(--muted-2);
+}
+
+.form-page__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 28px;
+  margin-top: 8px;
+}
+
+.form-page__title h1 {
+  margin: 0;
+  color: var(--heading);
+  font-size: 40px;
+  line-height: 1.25;
+}
+
+.form-page__title p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.form-page__alert {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.form-page__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 384px;
+  align-items: start;
+  gap: 48px;
+}
+
+@media (max-width: 1280px) {
+  .form-page__body {
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 28px;
+  }
+}
+
+.form-card {
+  display: grid;
+  gap: 22px;
+  padding: 32px 40px 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+}
+
+.form-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.form-field__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--heading);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.form-field__label--split {
+  justify-content: space-between;
+}
+
+.form-field__label--split small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.form-field__ai {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--signal-bg);
+  color: var(--signal);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.form-field__optional {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.form-field input,
+.form-field textarea,
+.form-field select {
+  width: 100%;
+  padding: 11px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.form-field textarea {
+  min-height: 98px;
+  padding-bottom: 30px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.form-field input:focus,
+.form-field textarea:focus,
+.form-field select:focus {
+  border-color: var(--signal);
+  outline: none;
+}
+
+.form-field__textarea {
+  position: relative;
+  display: block;
+}
+
+.form-field__counter {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.form-field__counter.is-over {
+  color: var(--danger);
+}
+
+.form-field__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+
+.form-segmented {
+  display: inline-flex;
+  justify-self: start;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+}
+
+.form-segmented button {
+  min-width: 60px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.form-segmented button[aria-pressed="true"] {
+  background: var(--heading);
+  color: var(--surface);
+}
+
+.form-conflict {
+  display: grid;
+  gap: 10px;
+  margin-top: -10px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn-line);
+  border-radius: 10px;
+  background: var(--warn-bg);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.form-conflict p {
+  margin: 0;
+}
+
+.form-conflict div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.form-conflict button {
+  padding: 5px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.form-conflict button.is-primary {
+  border-color: var(--heading);
+  background: var(--heading);
+  color: var(--surface);
+}
+
+.form-source {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 16px 18px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.form-source--empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.form-source__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.form-source__head strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.form-source__head span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.form-source__quote {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.form-source__anchor {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--signal);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.form-source__more {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.form-folders {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.form-folders li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+}
+
+.form-folders li strong {
+  flex: none;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.form-folders li span {
+  flex: 1;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.form-folders li button {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--signal);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.form-folders__pick {
+  justify-self: stretch;
+  padding: 12px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.form-folders__pick:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.form-preview {
+  position: sticky;
+  top: 24px;
+  display: grid;
+  gap: 10px;
+}
+
+.form-preview__label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 底部操作栏：贴住视口底（sticky，不管侧栏多宽），横跨内容区，抵掉 page-content 的左右和底部内边距 */
+.form-actions {
+  position: sticky;
+  z-index: 30;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin: auto -40px -70px;
+  padding: 16px 40px;
+  border-top: 1px solid var(--line);
+  background: rgb(var(--bg-rgb) / 0.92);
+  backdrop-filter: blur(8px);
+}
+
+.form-actions__cancel,
+.form-actions__submit {
+  min-width: 74px;
+  padding: 10px 22px;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.form-actions__cancel {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.form-actions__submit {
+  border: 1px solid var(--signal);
+  background: var(--signal);
+  color: #fff;
+  font-weight: 600;
+}
+
+.form-actions__submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

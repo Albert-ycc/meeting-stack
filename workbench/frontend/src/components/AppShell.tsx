@@ -7,6 +7,7 @@ export type AppView =
   | "library"
   | "requirements"
   | "requirementDetail"
+  | "requirementForm"
   | "tasks"
   | "glossary"
   | "jobs"
@@ -47,6 +48,12 @@ const icons: Record<AppView, ReactNode> = {
     </svg>
   ),
   requirementDetail: (
+    <svg viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3.2 13V2" />
+      <path d="M3.2 2.6c1.3-.8 2.5-.8 3.8 0s2.5.8 3.8 0v5.6c-1.3.8-2.5.8-3.8 0s-2.5-.8-3.8 0" />
+    </svg>
+  ),
+  requirementForm: (
     <svg viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3.2 13V2" />
       <path d="M3.2 2.6c1.3-.8 2.5-.8 3.8 0s2.5.8 3.8 0v5.6c-1.3.8-2.5.8-3.8 0s-2.5-.8-3.8 0" />
@@ -158,10 +165,10 @@ const navItems: Array<{ view: AppView; label: string; desktopOnly?: boolean }> =
   { view: "jobs", label: "转写录音", desktopOnly: true },
 ];
 
-/** 需求详情页没有自己的侧栏入口，跟需求池共用高亮（同 projectDetail 挂在 projects 下的思路，但这里要求显式高亮）。 */
+/** 需求详情页、新增和认领需求的二级页没有自己的侧栏入口，跟需求池共用高亮（同 projectDetail 挂在 projects 下的思路，但这里要求显式高亮）。 */
 function isNavItemActive(itemView: AppView, activeView: AppView): boolean {
   if (itemView === activeView) return true;
-  return itemView === "requirements" && activeView === "requirementDetail";
+  return itemView === "requirements" && (activeView === "requirementDetail" || activeView === "requirementForm");
 }
 
 export function AppShell({

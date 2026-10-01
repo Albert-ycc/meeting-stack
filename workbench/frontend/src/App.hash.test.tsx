@@ -45,6 +45,20 @@ function client(overrides: Partial<ApiClient> = {}) {
   } as unknown as ApiClient;
 }
 
+function emptyPool() {
+  return {
+    items: [],
+    total: 0,
+    limit: 500,
+    offset: 0,
+    status: "active",
+    counts: { pending: 0, active: 0, done: 0, shelved: 0, all: 0 },
+    projects: [],
+    unassigned_count: 0,
+    dropped_count: 0,
+  };
+}
+
 beforeEach(() => {
   vi.stubGlobal("matchMedia", vi.fn(() => desktopMatchMedia()));
   Object.defineProperty(document, "hidden", { configurable: true, value: false });
@@ -124,12 +138,26 @@ describe("地址栏锚点直达", () => {
     expect(window.location.hash).toBe("#meetings/vm-1");
   });
 
-  it("冷加载带 #requirements 停在需求池页", async () => {
+  it("冷加载带 #requirements 停在需求池海报墙", async () => {
     window.history.replaceState(null, "", "/#requirements");
+    const requirementPool = vi.fn().mockResolvedValue(emptyPool());
+
+    render(<App apiClient={client({ requirementPool })} />);
+
+    expect(await screen.findByRole("heading", { name: "需求池" })).toBeInTheDocument();
+    expect(requirementPool).toHaveBeenCalledWith(expect.objectContaining({ status: "active" }));
+    expect(window.location.hash).toBe("#requirements");
+  });
+
+  it("手机上需求池本期不改，还是原来的只读列表", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ ...desktopMatchMedia(), matches: true })));
+    window.history.replaceState(null, "", "/#requirements");
+    const requirementPool = vi.fn();
 
     render(
       <App
         apiClient={client({
+          requirementPool,
           requirements: vi.fn().mockResolvedValue({
             items: [],
             total: 0,
@@ -142,6 +170,49 @@ describe("地址栏锚点直达", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "需求" })).toBeInTheDocument();
+    expect(requirementPool).not.toHaveBeenCalled();
+  });
+
+  it("冷加载带 #requirements/new 打开新增需求页，#requirements/claim/<id> 打开认领页", async () => {
+    window.history.replaceState(null, "", "/#requirements/new");
+    const requirementCandidate = vi.fn().mockReturnValue(new Promise(() => {}));
+    const { unmount } = render(<App apiClient={client({ requirementCandidate })} />);
+
+    expect(await screen.findByRole("heading", { name: "新增需求" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#requirements/new");
+    unmount();
+
+    window.history.replaceState(null, "", "/#requirements/claim/candidate-1");
+    render(<App apiClient={client({ requirementCandidate })} />);
+
+    expect(await screen.findByRole("heading", { name: "认领候选" })).toBeInTheDocument();
+    expect(requirementCandidate).toHaveBeenCalledWith("candidate-1");
+    expect(window.location.hash).toBe("#requirements/claim/candidate-1");
+  });
+
+  it("手机上打开新增、认领的地址退回需求池（手机端只读）", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ ...desktopMatchMedia(), matches: true })));
+    window.history.replaceState(null, "", "/#requirements/claim/candidate-1");
+    const requirementCandidate = vi.fn();
+
+    render(
+      <App
+        apiClient={client({
+          requirementCandidate,
+          requirements: vi.fn().mockResolvedValue({
+            items: [],
+            total: 0,
+            limit: 10,
+            offset: 0,
+            counts: { active: 0, done: 0, shelved: 0, all: 0 },
+          }),
+        })}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "需求" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "认领候选" })).not.toBeInTheDocument();
+    expect(requirementCandidate).not.toHaveBeenCalled();
     expect(window.location.hash).toBe("#requirements");
   });
 

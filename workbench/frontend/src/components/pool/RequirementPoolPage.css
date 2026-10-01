@@ -1,0 +1,354 @@
+/* 需求池海报墙（样板屏 S05）：页头、页签与筛选、「我的方向」条、4 列同宽同高的海报网格 */
+
+.pool-page {
+  display: grid;
+  gap: 18px;
+}
+
+.pool-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.pool-eyebrow {
+  display: block;
+  color: var(--signal);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+
+.pool-head__row {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  margin-top: 6px;
+}
+
+.pool-head__row h1 {
+  flex: none;
+  margin: 0;
+  color: var(--heading);
+  font-size: 40px;
+  line-height: 1.25;
+}
+
+.pool-head__row p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.pool-head__side {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 36px;
+}
+
+.pool-count {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-left: 28px;
+  border-left: 1px solid var(--line-strong);
+}
+
+.pool-count strong {
+  color: var(--heading);
+  font-size: 44px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.pool-count span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.pool-create {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 11px 18px;
+  border: 1px solid var(--signal);
+  border-radius: 12px;
+  background: var(--signal);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pool-create:hover {
+  background: var(--signal-dark);
+  border-color: var(--signal-dark);
+}
+
+.pool-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+
+.pool-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  background: rgb(var(--fg-rgb) / 0.05);
+}
+
+.pool-tabs button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.pool-tabs button span {
+  color: var(--muted-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pool-tabs button[aria-selected="true"] {
+  background: var(--raised);
+  color: var(--heading);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(0 0 0 / calc(0.3 * var(--shadow-k)));
+}
+
+.pool-tabs button[aria-selected="true"] span {
+  color: var(--signal);
+}
+
+/* 待认领里有候选：页签角上一个橙点 */
+.pool-tabs button.has-dot::after {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--signal);
+  content: "";
+}
+
+.pool-filters__right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pool-filters__label {
+  margin-right: 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pool-priorities {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.pool-priorities button {
+  min-width: 40px;
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pool-priorities button[aria-pressed="true"] {
+  border-color: var(--heading);
+  background: var(--heading);
+  color: var(--surface);
+}
+
+.pool-clear {
+  padding: 4px 6px;
+  border: 0;
+  background: none;
+  color: var(--signal);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pool-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 260px;
+  margin-left: 10px;
+  padding: 7px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.pool-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+/* 同宽同高：4 列，每一排取最高那张的高度，所有排一样高 */
+.pool-wall {
+  display: grid;
+  grid-auto-rows: 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 24px;
+  margin-top: 14px;
+}
+
+@media (max-width: 1500px) {
+  .pool-wall {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
+  .pool-wall {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pool-head {
+    flex-wrap: wrap;
+  }
+
+  .pool-head__row {
+    flex-wrap: wrap;
+  }
+}
+
+.pool-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 60px 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.pool-state--error {
+  color: var(--danger);
+}
+
+.pool-state button {
+  padding: 5px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pool-empty {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 90px 0 60px;
+  text-align: center;
+}
+
+/* 一张空着的海报：外框墨线、衬纸虚线 */
+.pool-empty__poster {
+  display: grid;
+  width: 120px;
+  height: 148px;
+  margin-bottom: 18px;
+  padding: 10px;
+  border: 2px solid var(--ink);
+  background: var(--surface);
+}
+
+.pool-empty__poster span {
+  border: 1px dashed var(--line-strong);
+}
+
+.pool-empty__title {
+  margin: 0;
+  color: var(--heading);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.pool-empty__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.pool-empty__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 10px 18px;
+  border: 1px solid var(--signal);
+  border-radius: 12px;
+  background: var(--signal);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pool-empty__action.is-secondary {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.pool-dropped {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pool-dropped button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}

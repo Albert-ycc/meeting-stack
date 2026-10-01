@@ -33,6 +33,9 @@ import { readProjectMode, writeProjectMode, type ProjectViewMode } from "./compo
 import { ProjectsPage } from "./components/ProjectsPage";
 import { RequirementDetailPage } from "./components/RequirementDetailPage";
 import { RequirementsPage } from "./components/RequirementsPage";
+import { RequirementFormPage, type RequirementFormResult } from "./components/pool/RequirementFormPage";
+import { POOL_TAB_KEY, RequirementPoolPage } from "./components/pool/RequirementPoolPage";
+import { writePersistentState } from "./viewState";
 import { SearchPage } from "./components/SearchPage";
 import { setDraft as setAskDraft } from "./components/ask/askStore";
 import { TaskDrawer } from "./components/TaskDrawer";
@@ -80,6 +83,7 @@ const VIEW_LABELS: Record<AppView, string> = {
   library: "录音档案",
   requirements: "需求池",
   requirementDetail: "需求详情",
+  requirementForm: "需求池",
   tasks: "任务池",
   glossary: "词典",
   jobs: "转写录音",
@@ -176,6 +180,12 @@ export default function App({ apiClient = api }: AppProps) {
   // 从关系图点进需求页时，面包屑写「关系图」，返回回到画布
   const [requirementFromGraph, setRequirementFromGraph] = useState<{ projectId: string; selection: string } | null>(null);
   const [openRequirementId, setOpenRequirementId] = useState<string | null>(null);
+  // 新增、认领需求的二级页（地址 #requirements/new、#requirements/claim/<候选 id>）
+  const [requirementForm, setRequirementForm] = useState<
+    { mode: "create" } | { mode: "claim"; candidateId: string } | null
+  >(null);
+  // 认领、新建后回到需求池时提示一句
+  const [poolFlash, setPoolFlash] = useState<string | null>(null);
   // 从项目详情页跳进词典时预选中的项目 chip；普通侧栏导航进词典时为 null（不预筛）。
   const [glossaryProjectId, setGlossaryProjectId] = useState<string | null>(null);
   const [taskDrawerId, setTaskDrawerId] = useState<string | null>(null);
@@ -422,6 +432,20 @@ export default function App({ apiClient = api }: AppProps) {
         setGraphFocus(selection);
         setGraphExpanded(graphMode ? params.get("expand") : null);
         setView("projectDetail");
+      }
+    } else if (hash === "#requirements/new" || hash.startsWith("#requirements/claim/")) {
+      // 新增、认领需求的二级页只在电脑上有（手机端只读）：照 #graph 的规矩退回需求池
+      const candidateId = hash.startsWith("#requirements/claim/")
+        ? decodeURIComponent(hash.slice("#requirements/claim/".length))
+        : null;
+      if (isMobileRef.current) {
+        setView("requirements");
+      } else if (candidateId === null) {
+        setRequirementForm({ mode: "create" });
+        setView("requirementForm");
+      } else if (candidateId) {
+        setRequirementForm({ mode: "claim", candidateId });
+        setView("requirementForm");
       }
     } else if (hash.startsWith("#requirements/")) {
       const requirementId = decodeURIComponent(hash.slice("#requirements/".length));
@@ -769,6 +793,36 @@ export default function App({ apiClient = api }: AppProps) {
     else openProjectGraph(origin.projectId, origin.selection);
   };
 
+  // 新增、认领需求的二级页（R04-1）：保存或放弃后回到进入前的页面
+  const openRequirementCreate = () => {
+    setRequirementForm({ mode: "create" });
+    performNavigate("requirementForm");
+  };
+
+  const openCandidateClaim = (candidateId: string) => {
+    setRequirementForm({ mode: "claim", candidateId });
+    performNavigate("requirementForm");
+  };
+
+  const leaveRequirementForm = () => {
+    // 是本应用压进来的历史就后退，回到进入前的页签和筛选；冷启动直接打开的去需求池
+    if ((window.history.state as { app?: boolean } | null)?.app) window.history.back();
+    else navigate("requirements");
+  };
+
+  const finishRequirementForm = (result: RequirementFormResult) => {
+    const { requirement } = result;
+    // 认领、新建后新海报挂在「进行中」的墙上（S02、S09 的流转）；合并的留在原来的页签
+    if (result.kind !== "merged") writePersistentState(POOL_TAB_KEY, "active", { local: true });
+    setPoolFlash(
+      result.kind === "merged"
+        ? `已合并到「${requirement.title}」`
+        : `已${result.kind === "claimed" ? "认领" : "新建"}「${requirement.title}」，挂上墙了`,
+    );
+    void refreshProjects();
+    leaveRequirementForm();
+  };
+
   // 项目详情页「在词典中查看 →」：跳去词典页并预选中这个项目的 chip。
   const openGlossaryForProject = (projectId: string) => {
     performNavigate("glossary");
@@ -791,9 +845,13 @@ export default function App({ apiClient = api }: AppProps) {
             ? overviewPath(overviewSelection)
             : view === "requirementDetail" && openRequirementId
               ? `#requirements/${openRequirementId}`
+              : view === "requirementForm" && requirementForm
+                ? requirementForm.mode === "create"
+                  ? "#requirements/new"
+                  : `#requirements/claim/${encodeURIComponent(requirementForm.candidateId)}`
               : view === "overview"
                 ? ""
-                : view === "projectDetail" || view === "requirementDetail"
+                : view === "projectDetail" || view === "requirementDetail" || view === "requirementForm"
                   ? ""
                   : `#${view}`;
     const fromHistory = historySyncRef.current;
@@ -843,6 +901,7 @@ export default function App({ apiClient = api }: AppProps) {
     openRequirementId,
     overviewSelection,
     projectMode,
+    requirementForm,
     view,
   ]);
 
@@ -1077,7 +1136,8 @@ export default function App({ apiClient = api }: AppProps) {
       />
     );
   } else if (view === "requirements") {
-    content = (
+    // 手机端需求池本期不改（R02 备注），维持原来的只读列表
+    content = isMobile ? (
       <RequirementsPage
         apiClient={apiClient}
         canPickFolders={!isMobile}
@@ -1085,6 +1145,32 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenProject={openProjectDetail}
         onOpenRequirement={openRequirementDetail}
         onProjectsChanged={refreshProjects}
+        projects={projects}
+      />
+    ) : (
+      <RequirementPoolPage
+        apiClient={apiClient}
+        canWrite
+        flash={poolFlash}
+        onClaimCandidate={openCandidateClaim}
+        onCreateRequirement={openRequirementCreate}
+        onFlashShown={() => setPoolFlash(null)}
+        onOpenMeeting={(meetingId, atMs) => openMeeting(meetingId, atMs)}
+        onOpenRequirement={openRequirementDetail}
+        onProjectsChanged={refreshProjects}
+      />
+    );
+  } else if (view === "requirementForm" && requirementForm) {
+    content = (
+      <RequirementFormPage
+        apiClient={apiClient}
+        canPickFolders={!isMobile}
+        candidateId={requirementForm.mode === "claim" ? requirementForm.candidateId : undefined}
+        key={requirementForm.mode === "claim" ? requirementForm.candidateId : "new"}
+        mode={requirementForm.mode}
+        onCancel={leaveRequirementForm}
+        onDone={finishRequirementForm}
+        onOpenProject={openProjectDetail}
         projects={projects}
       />
     );

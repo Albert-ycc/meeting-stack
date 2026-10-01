@@ -106,6 +106,10 @@ export interface Project {
   cards_written?: number;
   /** 盘不在时先建了项目、插上后再补建的文件夹（旧后端没有） */
   pending_folder?: PendingProjectFolder | null;
+  /** v17：需求池「我的方向」里的座次名次，从 1 开始连续；未排座次为 null（旧后端没有） */
+  seat?: number | null;
+  /** v17：归属这个项目的会议里录音时间最晚的一场 */
+  latest_meeting_date?: string | null;
 }
 
 /** waiting：等资料盘插上；stopped：建不了（位置不存在、没权限……），reason 说为什么，不再每轮重试 */
@@ -1593,6 +1597,145 @@ export interface RequirementSummary {
   /** 关联会议里最新的 recording_date 原值 */
   latest_meeting_date: string | null;
   folder_count: number;
+  /** v17：说明（一两句话，最多 70 字），旧后端没有 */
+  summary?: string;
+  /** v17：所属项目的座次名次，未排座次为 null */
+  project_seat?: number | null;
+}
+
+/** v17：需求的来源——提出它的会议、会上原话和时间锚（origin），或合并进来的原话（merged） */
+export interface RequirementSource {
+  id: number;
+  kind: "origin" | "merged";
+  meeting_id: string;
+  meeting_title: string;
+  recording_date: string | null;
+  duration_ms: number | null;
+  /** 画波形用的录音（/api/media/<id>/peaks）；这场会没有录音时为 null */
+  audio_artifact_id: number | null;
+  quote: string;
+  anchor_ms: number | null;
+  /** 合并自哪条候选 */
+  via_candidate_title: string | null;
+}
+
+/** 需求池的状态：待认领（候选）＋需求的三态 */
+export type PoolStatus = "pending" | RequirementStatus;
+export type PoolTab = PoolStatus | "all";
+
+/** 海报墙上的一张海报：正式需求或待认领候选，字段对齐 */
+export interface PoolItem {
+  kind: "requirement" | "candidate";
+  id: string;
+  title: string;
+  summary: string;
+  status: PoolStatus;
+  /** 候选没有等级 */
+  priority: RequirementPriority | null;
+  /** 候选跟着来源会议的归属走，会议没归项目时为 null（未归项目） */
+  project_id: string | null;
+  project_name: string | null;
+  project_color: string | null;
+  project_seat: number | null;
+  open_task_count: number;
+  meeting_count: number;
+  folder_count: number;
+  latest_meeting_date: string | null;
+  /** 提出它的那句；没有来源时海报不显示来源录音 */
+  source: RequirementSource | null;
+  /** 之后又跟进了几场＝关联会议数减 1 */
+  follow_up_count: number;
+  /** 候选：AI 判断的相近需求（还能合并时才有），默认动作是合并 */
+  similar_requirement: { id: string; title: string; status: RequirementStatus } | null;
+  default_action: "claim" | "merge" | null;
+  /** 候选所属项目下有进行中或已搁置的需求时才能合并 */
+  can_merge: boolean;
+  created_at: string;
+  updated_at: string;
+  /** 候选认领建成或合并进去的需求 */
+  requirement_id?: string | null;
+  dropped_at?: string | null;
+}
+
+/** 「我的方向」条上的项目：已排座次的在前（seat 是名次），其后按最近会议排；count 是当前页签下的条数 */
+export interface PoolProject {
+  id: string;
+  name: string;
+  color: string;
+  seat: number | null;
+  latest_meeting_date: string | null;
+  count: number;
+}
+
+export interface PoolCounts {
+  pending: number;
+  active: number;
+  done: number;
+  shelved: number;
+  all: number;
+}
+
+export interface RequirementPoolPayload {
+  items: PoolItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  status: PoolTab;
+  /** 随项目、优先级、名称变，不随所选页签变 */
+  counts: PoolCounts;
+  projects: PoolProject[];
+  unassigned_count: number;
+  /** 30 天内丢掉、还能撤销的候选 */
+  dropped_count: number;
+}
+
+export interface PoolFilters {
+  status: PoolTab;
+  /** 逗号分隔的多个项目，unassigned 是未归项目 */
+  project_id?: string;
+  /** 逗号分隔的多个优先级 */
+  priority?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** 候选自己的状态：认领、合并、丢掉过的候选不在墙上，认领页打开时才看得到 */
+export type CandidateStatus = "pending" | "claimed" | "merged" | "dropped";
+
+/** 认领页用：海报上的字段加全部来源 */
+export interface CandidateDetail extends Omit<PoolItem, "status"> {
+  status: CandidateStatus;
+  sources: RequirementSource[];
+}
+
+export interface DroppedCandidates {
+  items: Array<Omit<PoolItem, "status"> & { status: CandidateStatus; restore_until: string }>;
+  total: number;
+  undo_days: number;
+}
+
+export interface MergeTarget {
+  id: string;
+  title: string;
+  status: RequirementStatus;
+  priority: RequirementPriority;
+  /** 提出它的那场会（没有来源时取最近一场关联会议） */
+  meeting_title: string | null;
+  recording_date: string | null;
+  /** AI 判断的相近需求 */
+  recommended: boolean;
+}
+
+export interface MergeTargets {
+  project_id: string | null;
+  items: MergeTarget[];
+}
+
+/** 认领撞名（409）：同项目已有的那条需求 */
+export interface TitleConflict {
+  detail: string;
+  existing: { id: string; title: string; status: RequirementStatus } | null;
 }
 
 export interface RequirementFile {
@@ -1633,6 +1776,11 @@ export interface RequirementDetail extends RequirementSummary {
   meetings: RequirementMeeting[];
   /** 未完成的在前，已完成、已过期、已取消在后 */
   tasks: Task[];
+  /** v17：提出它的那句（头部波形取这场会） */
+  source?: RequirementSource | null;
+  /** v17：提出它的和合并进来的原话，按会议时间先后 */
+  sources?: RequirementSource[];
+  follow_up_count?: number;
 }
 
 export interface RequirementFilters {

@@ -1,0 +1,327 @@
+/* 一张需求＝一张悬赏海报（方案 A 白盒画廊）：外框是一道粗墨线，里面一层细线的衬纸。
+ * 同一面墙上的海报同宽同高，底栏在卡内；优先级只靠排序和右上角的小标签。 */
+.poster {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 2px solid var(--ink);
+  background: var(--surface);
+  cursor: pointer;
+  transition: transform 220ms var(--exp), box-shadow 220ms var(--exp);
+}
+
+.poster:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 32px rgb(0 0 0 / calc(0.35 * var(--shadow-k)));
+}
+
+.poster:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 3px;
+}
+
+.poster--preview,
+.poster--preview:hover {
+  cursor: default;
+  transform: none;
+  box-shadow: none;
+}
+
+.poster__mat {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  padding: 18px 18px 14px;
+  border: 1px solid var(--line);
+}
+
+.poster__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 22px;
+}
+
+.poster__project {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.poster__project.is-unassigned {
+  color: var(--muted);
+}
+
+.poster__project-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.poster__seat {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.poster__tag {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--ink);
+  border-radius: 3px;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.poster__tag--p0 {
+  border-color: var(--signal);
+  background: var(--signal);
+  color: #fff;
+}
+
+.poster__tag--ai {
+  border-color: var(--line-strong);
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+
+.poster__title {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 16px 0 0;
+  color: var(--heading);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.poster__title.is-placeholder,
+.poster__summary.is-placeholder {
+  color: var(--faint);
+}
+
+/* 说明区固定三行高，同一排海报的统计行、录音区对得齐 */
+.poster__body {
+  height: calc(14px * 1.65 * 3);
+  margin-top: 18px;
+}
+
+.poster__summary {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.65;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.poster__summary.is-short {
+  -webkit-line-clamp: 2;
+}
+
+.poster__similar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: calc(14px * 1.65);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.poster__similar svg {
+  flex: none;
+  color: var(--signal);
+}
+
+.poster__similar b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.poster__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 14px 0 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.poster__stats > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 10px 8px 0;
+}
+
+.poster__stats > div + div {
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.poster__stats dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.poster__stats dd {
+  margin: 0;
+  color: var(--heading);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.poster__source {
+  min-height: 108px;
+  margin-top: 12px;
+}
+
+.poster__source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.poster__anchor {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--signal);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.poster__anchor:hover {
+  color: var(--signal-dark);
+}
+
+.poster__anchor-play {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid currentColor;
+}
+
+.poster__meeting {
+  overflow: hidden;
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.poster__meeting-meta {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.poster__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.poster__date {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.poster__date b {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.poster__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.poster__text-action {
+  padding: 4px 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.poster__text-action:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.poster__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid var(--ink);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.poster__pill.is-primary {
+  background: var(--heading);
+  border-color: var(--heading);
+  color: var(--surface);
+}
+
+.poster__pill:hover:not(:disabled) {
+  border-color: var(--signal);
+}
+
+.poster__text-action:disabled,
+.poster__pill:disabled {
+  cursor: default;
+}

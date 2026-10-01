@@ -14,9 +14,14 @@ import type {
   MaterialRoot,
   ProjectMeetingRow,
   ProjectSubfoldersPayload,
+  CandidateDetail,
+  DroppedCandidates,
+  MergeTargets,
+  PoolFilters,
   RequirementDetail,
   RequirementFilesPayload,
   RequirementFilters,
+  RequirementPoolPayload,
   RequirementPriority,
   RequirementStatus,
   RequirementsPayload,
@@ -1084,7 +1089,57 @@ export const api = {
     title: string;
     priority: RequirementPriority;
     folder_paths?: string[];
+    /** v17：说明，最多 70 字，可空 */
+    summary?: string;
   }) => write<RequirementDetail>("/api/requirements", "POST", data),
+  /** v17 需求池海报墙：正式需求和待认领候选一起排 */
+  requirementPool: (filters: PoolFilters) =>
+    read<RequirementPoolPayload>(`/api/requirement-pool${queryString(filters)}`),
+  /** 「我的方向」整排保存：排了座次的项目从第 1 位起的先后，不在里面的回到未排座次 */
+  saveProjectSeats: (projectIds: string[]) =>
+    write<{ seats: Array<{ project_id: string; seat: number }> }>("/api/project-seats", "PUT", {
+      project_ids: projectIds,
+    }),
+  requirementCandidate: (candidateId: string) =>
+    read<CandidateDetail>(`/api/requirement-candidates/${encodeURIComponent(candidateId)}`),
+  /** projectId：认领页上改选的项目，不传按来源会议的归属 */
+  candidateMergeTargets: (candidateId: string, projectId?: string | null) =>
+    read<MergeTargets>(
+      `/api/requirement-candidates/${encodeURIComponent(candidateId)}/merge-targets${queryString({
+        project_id: projectId ?? undefined,
+      })}`,
+    ),
+  /** 撞名时抛 ApiError(409)，data 是 TitleConflict（带同项目已有的那条需求） */
+  claimCandidate: (
+    candidateId: string,
+    data: {
+      title: string;
+      summary?: string;
+      project_id?: string;
+      priority?: RequirementPriority;
+      folder_paths?: string[];
+    },
+  ) =>
+    write<RequirementDetail>(
+      `/api/requirement-candidates/${encodeURIComponent(candidateId)}/claim`,
+      "POST",
+      data,
+    ),
+  mergeCandidate: (candidateId: string, requirementId: string, projectId?: string | null) =>
+    write<RequirementDetail>(
+      `/api/requirement-candidates/${encodeURIComponent(candidateId)}/merge`,
+      "POST",
+      projectId ? { requirement_id: requirementId, project_id: projectId } : { requirement_id: requirementId },
+    ),
+  dropCandidate: (candidateId: string) =>
+    write<CandidateDetail>(`/api/requirement-candidates/${encodeURIComponent(candidateId)}/drop`, "POST", {}),
+  restoreCandidate: (candidateId: string) =>
+    write<CandidateDetail>(
+      `/api/requirement-candidates/${encodeURIComponent(candidateId)}/restore`,
+      "POST",
+      {},
+    ),
+  droppedCandidates: () => read<DroppedCandidates>("/api/requirement-candidates/dropped"),
   updateRequirement: (
     requirementId: string,
     data: {
