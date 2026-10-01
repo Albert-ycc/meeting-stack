@@ -41,6 +41,15 @@ function client(overrides: Partial<ApiClient> = {}) {
     projects: vi.fn().mockResolvedValue([]),
     tags: vi.fn().mockResolvedValue([]),
     tasks: vi.fn().mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0, counts: {} }),
+    todo: vi.fn().mockResolvedValue({
+      today: "2026-09-30",
+      week_end: "2026-10-04",
+      total: 0,
+      groups: [],
+      counts: {},
+      project_counts: {},
+      projects: [],
+    }),
     jobs: vi.fn().mockResolvedValue({ items: [] }),
     ...overrides,
   } as unknown as ApiClient;
@@ -72,12 +81,12 @@ afterEach(() => {
 });
 
 describe("地址栏锚点直达", () => {
-  it("冷加载带 #tasks 停在任务页，锚点不被首帧清掉", async () => {
+  it("冷加载带 #tasks 停在待办页，锚点不被首帧清掉", async () => {
     window.history.replaceState(null, "", "/#tasks");
 
     render(<App apiClient={client()} />);
 
-    expect(await screen.findByRole("heading", { name: "任务" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "待办" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#tasks");
   });
 
@@ -444,7 +453,7 @@ describe("局部图和来龙去脉的地址（4f）", () => {
     forgetGraphCache();
     window.history.replaceState(null, "", "/#tasks");
     render(<App apiClient={localClient()} />);
-    await screen.findByRole("heading", { name: "任务" });
+    await screen.findByRole("heading", { name: "待办" });
     window.history.pushState({ app: true }, "", "/#projects/p/graph?file=7");
     window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
     expect(await screen.findByRole("heading", { name: "以『文件7.xlsx』为中心" })).toBeInTheDocument();

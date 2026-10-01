@@ -92,6 +92,27 @@ describe("LinkPicker", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("Esc 收起后焦点回到打开它的按钮；Tab 离开就收起", async () => {
+    const trigger = document.createElement("button");
+    trigger.textContent = "挂到需求";
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const { onClose } = setup();
+    await screen.findAllByRole("option");
+
+    await userEvent.keyboard("{Escape}");
+    expect(document.activeElement).toBe(trigger);
+
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    screen.getByRole("textbox", { name: "搜索需求" }).focus();
+    onClose.mockClear();
+    outside.focus();
+    expect(onClose).toHaveBeenCalled();
+    trigger.remove();
+    outside.remove();
+  });
+
   it("已确认任务只列进行中需求；没有可挂的给出提示", async () => {
     setup(vi.fn().mockResolvedValue(payload({ can_link_candidates: false, recommended: [], default: null, options: [] })));
 

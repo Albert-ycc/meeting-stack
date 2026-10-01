@@ -33,7 +33,17 @@ export interface TaskEditModalProps {
    * 负责人默认选「我」。仅新建模式生效；不传时和以前完全一样。
    */
   fixedRequirement?: { id: string; title: string; priority: RequirementPriority };
+  /** 待确认的任务点保存时是否同时确认，默认是。审核卡打开的传 false：只保存，确认留给卡上的［确认］ */
+  confirmOnSave?: boolean;
 }
+
+type EditableStatus = "confirmed" | "in_progress" | "done";
+
+const STATUS_CHOICES: Array<{ value: EditableStatus; label: string }> = [
+  { value: "confirmed", label: "已确认" },
+  { value: "in_progress", label: "进行中" },
+  { value: "done", label: "已完成" },
+];
 
 /** 快速新建项目时给一个默认识别色，用户可到项目页再调整。 */
 const DEFAULT_PROJECT_COLOR = "#3ecf8e";
@@ -48,6 +58,7 @@ export function TaskEditModal({
   defaultProjectId = null,
   defaultRequirementId = null,
   fixedRequirement,
+  confirmOnSave = true,
 }: TaskEditModalProps) {
   const isEdit = task !== null;
   const lockedRequirement = isEdit ? null : (fixedRequirement ?? null);
@@ -63,6 +74,12 @@ export function TaskEditModal({
   );
   const [requirementOptions, setRequirementOptions] = useState<RequirementSummary[]>([]);
   const [assignee, setAssignee] = useState<TaskAssignee>(task?.assignee ?? (fixedRequirement ? "me" : "ai"));
+  // 截止：只有动过才提交（清空提交 null），没动过不带 due_date，免得把纪要抽到的日期冲掉
+  const [dueDate, setDueDate] = useState(task?.due_date ?? "");
+  const [dueTouched, setDueTouched] = useState(false);
+  // 状态分段只对已确认、进行中的任务出现；保存时变了才调状态接口
+  const editableStatus = task?.status === "confirmed" || task?.status === "in_progress" ? task.status : null;
+  const [status, setStatus] = useState<EditableStatus>(editableStatus ?? "confirmed");
   // 项目下拉和需求下拉只留一个开着：project | requirement | null
   const [openMenu, setOpenMenu] = useState<"project" | "requirement" | null>(null);
   const [creatingProject, setCreatingProject] = useState(false);
@@ -119,11 +136,12 @@ export function TaskEditModal({
       ? { title: task.requirement_title, priority: task.requirement_priority }
       : null;
 
+  const confirming = isEdit && task.status === "pending_confirm" && confirmOnSave;
   const primaryLabel = !isEdit
     ? lockedRequirement
       ? "创建"
       : "创建任务"
-    : task.status === "pending_confirm"
+    : confirming
       ? "保存并确认"
       : "保存";
 
@@ -209,19 +227,23 @@ export function TaskEditModal({
     savingRef.current = true;
     setSaving(true);
     setError("");
+    // 只保存不确认的待确认任务：需求的选择还在审核卡上，没动过需求下拉就不带 requirement_id，免得把它清掉
+    const keepLink = isEdit && task.status === "pending_confirm" && !confirmOnSave && requirementId === (task.requirement_id ?? null);
     const payload = {
       title: trimmed,
       ...(!isEdit || projectTouched ? { project_id: projectId } : {}),
-      requirement_id: requirementId,
+      ...(keepLink ? {} : { requirement_id: requirementId }),
       assignee,
+      ...(dueTouched ? { due_date: dueDate || null } : {}),
     };
     try {
       if (!isEdit) {
         await apiClient.createTask(payload);
-      } else if (task.status === "pending_confirm") {
+      } else if (confirming) {
         await apiClient.confirmTask(task.id, payload);
       } else {
         await apiClient.updateTask(task.id, payload);
+        if (editableStatus && status !== editableStatus) await apiClient.setTaskStatus(task.id, status);
       }
       onSaved();
       onClose();
@@ -514,6 +536,58 @@ export function TaskEditModal({
               ))}
             </div>
           </div>
+          <div className="task-edit-modal__field">
+            <span className="task-edit-modal__label">截止</span>
+            <div className="task-edit-modal__due">
+              <input
+                aria-label="截止"
+                disabled={!canWrite}
+                max="2099-12-31"
+                min="2000-01-01"
+                onChange={(event) => {
+                  setDueDate(event.target.value);
+                  setDueTouched(true);
+                }}
+                type="date"
+                value={dueDate}
+              />
+              <button
+                className="task-edit-modal__due-clear"
+                disabled={!canWrite || !dueDate}
+                onClick={() => {
+                  setDueDate("");
+                  setDueTouched(true);
+                }}
+                type="button"
+              >
+                清空＝未定
+              </button>
+              {isEdit && task.due_phrase ? (
+                <span className="task-edit-modal__due-note">纪要原话：{task.due_phrase}</span>
+              ) : isEdit && !task.due_date ? (
+                <span className="task-edit-modal__due-note">纪要里没抽到时间</span>
+              ) : null}
+            </div>
+          </div>
+
+          {editableStatus && (
+            <div className="task-edit-modal__field">
+              <span className="task-edit-modal__label">状态</span>
+              <div aria-label="状态" className="task-edit-modal__segmented task-edit-modal__segmented--three" role="group">
+                {STATUS_CHOICES.map((choice) => (
+                  <button
+                    aria-pressed={status === choice.value}
+                    disabled={!canWrite}
+                    key={choice.value}
+                    onClick={() => setStatus(choice.value)}
+                    type="button"
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {error && (

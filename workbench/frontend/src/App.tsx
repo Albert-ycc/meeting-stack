@@ -112,7 +112,7 @@ const VIEW_LABELS: Record<AppView, string> = {
   requirements: "需求池",
   requirementDetail: "需求详情",
   requirementForm: "需求池",
-  tasks: "任务池",
+  tasks: "待办",
   glossary: "词典",
   jobs: "转写录音",
   projects: "项目管理",
@@ -1473,6 +1473,7 @@ export default function App({ apiClient = api }: AppProps) {
       <TasksPage
         apiClient={apiClient}
         canWrite={!isMobile || mobileTaskWrite}
+        onClaimCandidate={openCandidateClaim}
         onOpenMeeting={openMeeting}
         onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
         onOpenProject={openProjectDetail}

@@ -520,7 +520,8 @@ class TaskCreateInput(BaseModel):
     requirement_id: str | None = Field(default=None, max_length=64)
     assignee: str = "me"
     # 截止 YYYY-MM-DD，空是未定截止（R07-2）
-    due_date: str | None = Field(default=None, max_length=10)
+    # 长度放宽到 32：格式由 parse_due_input 校验，报「截止日期格式应为 YYYY-MM-DD」而不是字段名
+    due_date: str | None = Field(default=None, max_length=32)
 
 
 class TaskUpdateInput(BaseModel):
@@ -534,7 +535,8 @@ class TaskUpdateInput(BaseModel):
     requirement_id: str | None = Field(default=None, max_length=64)
     assignee: str | None = None
     # 同上：传 null 是清空截止、不挂候选。挂候选和挂需求二选一（R07-8）。
-    due_date: str | None = Field(default=None, max_length=10)
+    # 长度放宽到 32：格式由 parse_due_input 校验，报「截止日期格式应为 YYYY-MM-DD」而不是字段名
+    due_date: str | None = Field(default=None, max_length=32)
     candidate_id: str | None = Field(default=None, max_length=64)
 
 

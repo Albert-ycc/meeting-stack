@@ -157,7 +157,7 @@ const navItems: Array<{ view: AppView; label: string; desktopOnly?: boolean }> =
   { view: "overview", label: "工作台" },
   { view: "library", label: "录音档案" },
   { view: "requirements", label: "需求池" },
-  { view: "tasks", label: "任务池" },
+  { view: "tasks", label: "待办" },
   { view: "glossary", label: "词典" },
   { view: "projects", label: "项目管理" },
   // 全部项目概览（2c）：画布只在电脑上有

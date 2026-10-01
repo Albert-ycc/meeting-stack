@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 
 import type { ApiClient } from "../../api";
 import type { LinkOption, RequirementOptionsPayload } from "../../types";
@@ -59,6 +59,10 @@ export function LinkPicker({
   const requestRef = useRef(0);
   const onLoadedRef = useRef(onLoaded);
   onLoadedRef.current = onLoaded;
+  // 打开前焦点在哪（触发按钮）：按 Esc 收起时还回去，键盘用户不会掉到页面开头
+  const returnFocusRef = useRef<Element | null>(
+    typeof document === "undefined" ? null : document.activeElement,
+  );
 
   useEffect(() => {
     const request = ++requestRef.current;
@@ -94,7 +98,16 @@ export function LinkPicker({
     if (event.key === "Escape") {
       event.stopPropagation();
       onClose();
+      const target = returnFocusRef.current;
+      if (target instanceof HTMLElement && target.isConnected) target.focus();
     }
+  };
+  // 用 Tab 离开选择器就收起，不留一个盖住下面几行按钮的浮层
+  const onBlur = (event: FocusEvent<HTMLDivElement>) => {
+    const next = event.relatedTarget;
+    if (next instanceof Node && rootRef.current?.contains(next)) return;
+    if (next === null) return; // 点在浮层空白处或切走窗口：交给点外面关闭的逻辑
+    onClose();
   };
 
   const searching = query.trim() !== "";
@@ -107,7 +120,7 @@ export function LinkPicker({
 
   const row = (option: LinkOption) => (
     <button
-      aria-pressed={option.id === selectedId}
+      aria-selected={option.id === selectedId}
       className={`link-picker__option ${option.id === selectedId ? "is-selected" : ""}`}
       key={option.id}
       onClick={() => onPick(option)}
@@ -122,7 +135,7 @@ export function LinkPicker({
   );
 
   return (
-    <div aria-label="挂到需求" className="link-picker" onKeyDown={onKeyDown} ref={rootRef} role="dialog">
+    <div aria-label="挂到需求" className="link-picker" onBlur={onBlur} onKeyDown={onKeyDown} ref={rootRef} role="dialog">
       <input
         aria-label="搜索需求"
         className="link-picker__search"

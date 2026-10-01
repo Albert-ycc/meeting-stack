@@ -1,17 +1,31 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { AsyncState } from "./AsyncState";
+import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeTone } from "./Notice";
 import { Pagination } from "./Pagination";
+import { DirectionBar } from "./pool/DirectionBar";
 import { PriorityBadge } from "./RequirementBadges";
 import { TaskDrawer } from "./TaskDrawer";
 import { TaskEditModal } from "./TaskEditModal";
+import { ReviewCardsPanel } from "./todo/ReviewCardsPanel";
+import { RowMenu, type RowMenuItem } from "./todo/RowMenu";
+import { TodoGroups } from "./todo/TodoGroups";
 import type { ApiClient } from "../api";
-import type { Project, RequirementSummary, Task, TaskAssignee, TaskDetail, TaskStatus } from "../types";
+import type {
+  LinkOption,
+  PoolProject,
+  Project,
+  RequirementSummary,
+  Task,
+  TaskAssignee,
+  TaskDetail,
+  TaskStatus,
+  TodoFilters,
+  TodoPayload,
+} from "../types";
+import { usePersistentState } from "../viewState";
 
 import "./TasksPage.css";
-import { NoticeBanner, useNotice } from "./Notice";
-import { usePersistentState } from "../viewState";
 
 interface TasksPageProps {
   apiClient: ApiClient;
@@ -20,44 +34,51 @@ interface TasksPageProps {
   onOpenProject: (projectId: string) => void;
   onOpenMeeting: (meetingId: string, seekMs?: number) => void;
   onOpenRequirement: (id: string) => void;
+  /** 待确认页签里候选的「认领」：进需求池的认领二级页 */
+  onClaimCandidate: (candidateId: string) => void;
   /** 3g：任务抽屉里的文件交付物点了打开预览抽屉 */
   onOpenPreview?: (fileId: number) => void;
 }
 
-type TabKey = "all" | "pending" | "in_progress" | "done" | "expired" | "cancelled";
-type LoadState = "loading" | "ready" | "error";
+type TabKey = "pending" | "open" | "done" | "cancelled" | "expired";
 
 const TABS: Array<{ key: TabKey; label: string }> = [
-  { key: "all", label: "全部" },
   { key: "pending", label: "待确认" },
-  { key: "in_progress", label: "进行中" },
+  { key: "open", label: "未完成" },
   { key: "done", label: "已完成" },
-  { key: "expired", label: "已过期" },
   { key: "cancelled", label: "已取消" },
+  { key: "expired", label: "已过期" },
 ];
 
-// 每个页签向服务端要哪些状态；页签数字取服务端 counts，不再拉一大页在前端自己数。
+const TAB_KEYS = TABS.map((tab) => tab.key) as string[];
+
+// 每个页签对应哪些状态：页签数字和「我的方向」条上的数字都按它从服务端的计数里加出来。
 const TAB_STATUSES: Record<TabKey, TaskStatus[]> = {
-  all: [],
   pending: ["pending_confirm"],
-  in_progress: ["confirmed", "in_progress"],
+  open: ["confirmed", "in_progress"],
   done: ["done"],
-  expired: ["expired"],
   cancelled: ["cancelled"],
+  expired: ["expired"],
 };
 
-const EMPTY_MESSAGE: Record<TabKey, string> = {
-  all: "这里还没有任务。",
-  pending: "这里还没有任务。会议纪要生成后，AI 会自动把拍板事项整理到这里等你确认。",
-  in_progress: "这里还没有任务。",
+// 已完成、已取消、已过期三个页签是分页的清单；待确认走审核卡，未完成走分组。
+type ListTab = "done" | "cancelled" | "expired";
+const LIST_TABS: ListTab[] = ["done", "cancelled", "expired"];
+const isListTab = (tab: TabKey): tab is ListTab => (LIST_TABS as string[]).includes(tab);
+
+const EMPTY_MESSAGE: Record<ListTab, string> = {
   done: "这里还没有任务。",
-  expired: "没有已过期的草稿。待确认草稿放太久没处理会自动归到这里，随时可以恢复。",
   cancelled: "这里还没有任务。",
+  expired: "没有已过期的草稿。待确认草稿放太久没处理会自动归到这里，随时可以恢复。",
 };
 
 const PAGE_SIZE = 10;
 const REQUIREMENT_OPTIONS_LIMIT = 200;
-const UNDO_VISIBLE_MS = 15_000;
+const NONE_PROJECT = "none";
+// 完成后能撤销多久：和后端 UNDO_WINDOW_SECONDS=600 对齐
+const UNDO_COMPLETE_WINDOW_MS = 10 * 60 * 1000;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const isValidDate = (value: string) => value === "" || (DATE_RE.test(value) && !Number.isNaN(Date.parse(value)));
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
   pending_confirm: "待确认",
@@ -79,13 +100,15 @@ const STATUS_TONE: Record<TaskStatus, string> = {
 
 const ASSIGNEE_SHORT: Record<TaskAssignee, string> = { ai: "AI", me: "我" };
 
-// 页签和所属项目下拉共用一套求和：statuses 为空（全部页签）时把所有状态加起来。
 function sumCounts(counts: Partial<Record<TaskStatus, number>>, statuses: TaskStatus[]): number {
-  return (statuses.length ? statuses : (Object.keys(counts) as TaskStatus[])).reduce(
-    (sum, status) => sum + (counts[status] ?? 0),
-    0,
-  );
+  return statuses.reduce((sum, status) => sum + (counts[status] ?? 0), 0);
 }
+
+function toggled<T>(values: T[], value: T): T[] {
+  return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+}
+
+const isStringList = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === "string");
 
 export function TasksPage({
   apiClient,
@@ -94,50 +117,42 @@ export function TasksPage({
   onOpenProject,
   onOpenMeeting,
   onOpenRequirement,
+  onClaimCandidate,
   onOpenPreview,
 }: TasksPageProps) {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [total, setTotal] = useState(0);
-  const [statusCounts, setStatusCounts] = useState<Partial<Record<TaskStatus, number>>>({});
-  const [projectCounts, setProjectCounts] = useState<Record<string, Partial<Record<TaskStatus, number>>> | null>(null);
-  const [state, setState] = useState<LoadState>("loading");
+  const [todo, setTodo] = useState<TodoPayload | null>(null);
+  const [listTasks, setListTasks] = useState<Task[]>([]);
+  const [listTotal, setListTotal] = useState(0);
+  // 切到分页清单的页签后，清单还没取回来之前显示加载中，不露出上一个页签的行
+  const [listFresh, setListFresh] = useState(false);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const { notice, setNotice, dismissNotice } = useNotice();
-  const [undoIds, setUndoIds] = useState<string[]>([]);
-  const [activeTab, setActiveTab] = usePersistentState<TabKey>("tasks.activeTab", "all");
+  // 旧值（本机存过的 all、in_progress）不在页签里，读回来就当没存，落到默认的「未完成」
+  const [activeTab, setActiveTab] = usePersistentState<TabKey>("tasks.activeTab", "open", {
+    valid: (value) => typeof value === "string" && TAB_KEYS.includes(value),
+  });
   const [page, setPage] = usePersistentState("tasks.page", 0);
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [projectIds, setProjectIds] = usePersistentState<string[]>("tasks.projectIds", [], { valid: isStringList });
   const [busy, setBusy] = useState(false);
-  const [menuTaskId, setMenuTaskId] = useState<string | null>(null);
-  // 更多操作菜单的键盘操作：Esc 收起并把焦点还给「⋯」，上下键在菜单项间移动。
-  const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
-    const index = items.indexOf(document.activeElement as HTMLElement);
-    if (event.key === "Escape") {
-      event.stopPropagation();
-      const trigger = event.currentTarget.parentElement?.querySelector<HTMLElement>(".task-menu__trigger");
-      setMenuTaskId(null);
-      trigger?.focus();
-    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const step = event.key === "ArrowDown" ? 1 : -1;
-      items[(index + step + items.length) % items.length]?.focus();
-    }
-  };
+  const [reloadKey, setReloadKey] = useState(0);
   const [drawerTaskId, setDrawerTaskId] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  // 从审核卡打开的修改弹窗只保存、不确认：确认留给卡上的［确认］，卡上选的需求不能被弹窗冲掉
+  const [editFromCard, setEditFromCard] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [queryError, setQueryError] = useState("");
   const [creating, setCreating] = useState(false);
   const busyRef = useRef(false);
   const loadSeqRef = useRef(0);
 
-  // 查询区：草稿态（输入中）与已应用态（点「查询」才生效）分开，和需求池同一套模式
-  const [projectDraft, setProjectDraft] = usePersistentState("tasks.projectDraft", "");
+  // 查询区：草稿态（输入中）与已应用态（点「查询」才生效）分开，和需求池同一套模式。
+  // 所属项目不在这里：它是「我的方向」条上的点选，点一下立刻生效。
   const [requirementDraft, setRequirementDraft] = usePersistentState("tasks.requirementDraft", "");
   const [assigneeDraft, setAssigneeDraft] = usePersistentState<"" | TaskAssignee>("tasks.assigneeDraft", "");
   const [dateFromDraft, setDateFromDraft] = usePersistentState("tasks.dateFromDraft", "");
   const [dateToDraft, setDateToDraft] = usePersistentState("tasks.dateToDraft", "");
   const [nameDraft, setNameDraft] = usePersistentState("tasks.nameDraft", "");
 
-  const [appliedProjectId, setAppliedProjectId] = usePersistentState("tasks.appliedProjectId", "");
   const [appliedRequirementId, setAppliedRequirementId] = usePersistentState("tasks.appliedRequirementId", "");
   const [appliedAssignee, setAppliedAssignee] = usePersistentState<"" | TaskAssignee>("tasks.appliedAssignee", "");
   const [appliedDateFrom, setAppliedDateFrom] = usePersistentState("tasks.appliedDateFrom", "");
@@ -146,49 +161,63 @@ export function TasksPage({
 
   const [requirementOptions, setRequirementOptions] = useState<RequirementSummary[]>([]);
 
+  const projectKey = projectIds.join(",");
+
   const load = useCallback(async () => {
     // 请求序号守卫：轮询与写操作尾随的 load 可能并发，慢的旧响应不许覆盖新响应。
     const seq = ++loadSeqRef.current;
     try {
-      const statuses = TAB_STATUSES[activeTab];
-      const payload = await apiClient.tasks({
-        ...(statuses.length ? { status: statuses.join(",") } : {}),
-        ...(appliedProjectId ? { project_id: appliedProjectId } : {}),
+      const filters: TodoFilters = {
+        ...(projectKey ? { project_id: projectKey } : {}),
         ...(appliedRequirementId ? { requirement_id: appliedRequirementId } : {}),
         ...(appliedAssignee ? { assignee: appliedAssignee } : {}),
         ...(appliedDateFrom ? { meeting_date_from: appliedDateFrom } : {}),
         ...(appliedDateTo ? { meeting_date_to: appliedDateTo } : {}),
         ...(appliedName ? { q: appliedName } : {}),
-        limit: PAGE_SIZE,
-        offset: page * PAGE_SIZE,
-      });
+      };
+      // 待办接口不论哪个页签都取：页签数字、「我的方向」条的数字和「未完成」的分组都从它来
+      const [todoPayload, listPayload] = await Promise.all([
+        apiClient.todo(filters),
+        isListTab(activeTab)
+          ? apiClient.tasks({
+              ...filters,
+              status: TAB_STATUSES[activeTab].join(","),
+              limit: PAGE_SIZE,
+              offset: page * PAGE_SIZE,
+            })
+          : null,
+      ]);
       if (seq !== loadSeqRef.current) return;
-      // 当前页被操作空了（比如确认掉第 2 页最后一条），退到最后一个有内容的页，而不是停在空页上。
-      if (payload.items.length === 0 && page > 0 && payload.total > 0) {
-        setPage(Math.max(0, Math.ceil(payload.total / PAGE_SIZE) - 1));
+      // 当前页被操作空了（比如恢复掉最后一页的最后一条），退到最后一个有内容的页，而不是停在空页上。
+      if (listPayload && listPayload.items.length === 0 && page > 0 && listPayload.total > 0) {
+        setPage(Math.max(0, Math.ceil(listPayload.total / PAGE_SIZE) - 1));
         return;
       }
-      setTasks(payload.items);
-      setTotal(payload.total);
-      setStatusCounts(payload.counts ?? {});
-      setProjectCounts(payload.project_counts ?? null);
-      // 刷新后已不在列表里的（被别处确认、过期、删除）从勾选里剔掉，批量操作只作用于看得见的行。
-      setSelected((current) => {
-        if (current.size === 0) return current;
-        const visible = new Set(payload.items.map((task) => task.id));
-        const next = new Set([...current].filter((id) => visible.has(id)));
-        return next.size === current.size ? current : next;
-      });
+      setTodo(todoPayload);
+      if (listPayload) {
+        setListTasks(listPayload.items);
+        setListTotal(listPayload.total);
+      }
+      setListFresh(true);
       setState("ready");
-      setMenuTaskId(null); // 列表刷新后收起更多菜单，避免弹层挂在已卸载行上
-    } catch {
+      setLoadError("");
+      // 记着的项目已经删掉或合并掉：条上看不到它被选着，列表却被它筛了，去掉（「未归项目」不在条上，保留）
+      const known = new Set(todoPayload.projects.map((project) => project.id));
+      if (projectIds.some((id) => id !== NONE_PROJECT && !known.has(id))) {
+        setProjectIds((current) => current.filter((id) => id === NONE_PROJECT || known.has(id)));
+      }
+    } catch (error) {
       if (seq !== loadSeqRef.current) return;
+      // 条件存在本机，刷新后还会失败：把后端给的原因带出来（比如日期格式不对的 400），并给［重置筛选］
+      setLoadError(error instanceof Error ? error.message : "");
       setState("error");
     }
+    // projectIds 只用来剪枝，换条件由 projectKey 触发重取
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     apiClient,
     activeTab,
-    appliedProjectId,
+    projectKey,
     appliedRequirementId,
     appliedAssignee,
     appliedDateFrom,
@@ -196,6 +225,19 @@ export function TasksPage({
     appliedName,
     page,
   ]);
+
+  // useNotice 只自动收起成功提示；提醒和失败这里也在 10 秒后收起（仍可手动 ✕）
+  const noticeKey = notice?.key;
+  const noticeTone = notice?.tone;
+  useEffect(() => {
+    if (noticeKey === undefined || noticeTone === "success") return;
+    const timer = window.setTimeout(dismissNotice, UNDO_NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [noticeKey, noticeTone, dismissNotice]);
+
+  // 提示条上的［撤销］可能在筛选变了以后才点：刷新要用最新的 load，不是创建那一刻的
+  const loadRef = useRef(load);
+  loadRef.current = load;
 
   useEffect(() => {
     void load();
@@ -209,21 +251,15 @@ export function TasksPage({
     return () => window.clearInterval(interval);
   }, [load]);
 
-  // 撤销入口只留一小会儿，过了窗口自动收起。
-  useEffect(() => {
-    if (undoIds.length === 0) return;
-    const timer = window.setTimeout(() => setUndoIds([]), UNDO_VISIBLE_MS);
-    return () => window.clearTimeout(timer);
-  }, [undoIds]);
-
-  // 所属需求下拉：跟随所属项目草稿收窄范围，只列进行中的需求（未提交查询前就能看到，属于表单自身的联动）
+  // 所属需求下拉：只选了一个项目时收窄到该项目进行中的需求（未提交查询前就能看到，属于表单自身的联动）
+  const scopedProjectId = projectIds.length === 1 && projectIds[0] !== NONE_PROJECT ? projectIds[0] : "";
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const payload = await apiClient.requirements({
           status: "active",
-          ...(projectDraft ? { project_id: projectDraft } : {}),
+          ...(scopedProjectId ? { project_id: scopedProjectId } : {}),
           limit: REQUIREMENT_OPTIONS_LIMIT,
         });
         if (!cancelled) setRequirementOptions(payload.items);
@@ -234,49 +270,30 @@ export function TasksPage({
     return () => {
       cancelled = true;
     };
-  }, [apiClient, projectDraft]);
+  }, [apiClient, scopedProjectId]);
 
-  // 换了所属项目草稿，之前选的所属需求可能不属于新项目了，清空重选
-  useEffect(() => {
-    setRequirementDraft("");
-  }, [projectDraft]);
-
-  const tabStatuses = TAB_STATUSES[activeTab];
+  const counts = todo?.counts ?? {};
   const tabCounts: Record<TabKey, number> = {
-    all: sumCounts(statusCounts, TAB_STATUSES.all),
-    pending: sumCounts(statusCounts, TAB_STATUSES.pending),
-    in_progress: sumCounts(statusCounts, TAB_STATUSES.in_progress),
-    done: sumCounts(statusCounts, TAB_STATUSES.done),
-    expired: sumCounts(statusCounts, TAB_STATUSES.expired),
-    cancelled: sumCounts(statusCounts, TAB_STATUSES.cancelled),
+    pending: sumCounts(counts, TAB_STATUSES.pending),
+    open: sumCounts(counts, TAB_STATUSES.open),
+    done: sumCounts(counts, TAB_STATUSES.done),
+    cancelled: sumCounts(counts, TAB_STATUSES.cancelled),
+    expired: sumCounts(counts, TAB_STATUSES.expired),
   };
 
-  // 所属项目下拉的数字跟随当前页签：切到「进行中」就是各项目还剩多少待办。服务端没给 project_counts 时只显示名字。
-  const projectOptions: Array<{ key: string; label: string; count: number | null }> = [
-    {
-      key: "",
-      label: "全部项目",
-      count: projectCounts
-        ? Object.values(projectCounts).reduce((sum, counts) => sum + sumCounts(counts, tabStatuses), 0)
-        : null,
-    },
-    ...projects.map((project) => ({
-      key: project.id,
-      label: project.name,
-      count: projectCounts ? sumCounts(projectCounts[project.id] ?? {}, tabStatuses) : null,
-    })),
-    {
-      key: "none",
-      label: "未归属",
-      count: projectCounts ? sumCounts(projectCounts.none ?? {}, tabStatuses) : null,
-    },
-  ];
+  // 「我的方向」条上每个项目的数字跟随当前页签：切到「未完成」就是各项目还剩多少待办。
+  const tabStatuses = TAB_STATUSES[activeTab];
+  const directionProjects: PoolProject[] = (todo?.projects ?? []).map((project) => ({
+    ...project,
+    count: sumCounts(todo?.project_counts[project.id] ?? {}, tabStatuses),
+  }));
+  const noneCount = sumCounts(todo?.project_counts[NONE_PROJECT] ?? {}, tabStatuses);
 
   const run = async (action: () => Promise<void>) => {
     if (busyRef.current) return; // ref 级互斥：双击同帧不会连发两个写请求
     busyRef.current = true;
     setBusy(true);
-    setUndoIds([]); // 新的写操作开始，上一步的撤销入口作废
+    setNotice(""); // 新的写操作开始，上一步的提示和撤销入口作废
     try {
       await action();
     } catch (error) {
@@ -287,306 +304,286 @@ export function TasksPage({
     }
   };
 
-  // 确认/驳回之后给一个撤销入口：误点不再是一锤子买卖。
-  const offerUndo = (ids: string[], message: string, partial = false) => {
-    // 带撤销的提示和撤销入口同时收起；批量里有失败的用提醒色，留到用户关掉。
-    setNotice(message, partial ? "warning" : "success", UNDO_VISIBLE_MS);
-    setUndoIds(ids);
+  // 页面别处有写操作后：重取本页数据，并让待确认的审核卡也重取
+  const refresh = async () => {
+    setReloadKey((key) => key + 1);
+    await loadRef.current();
+  };
+
+  // 页面所有结果提示和撤销都走这一个入口（审核卡也用它）：带 undo 就出［撤销］，停 10 秒。
+  const notify = (message: string, undo?: () => Promise<void>, tone: NoticeTone = "success") => {
+    setNotice(
+      message,
+      tone,
+      undo ? UNDO_NOTICE_MS : undefined,
+      undo
+        ? [
+            {
+              label: "撤销",
+              onClick: () =>
+                void run(async () => {
+                  await undo();
+                  await refresh();
+                }),
+            },
+          ]
+        : undefined,
+    );
+  };
+
+  const undoReview = async (ids: string[]) => {
+    const result = await apiClient.undoTaskReview(ids);
+    notify(
+      result.failed.length
+        ? `已撤销 ${result.reverted.length} 项，${result.failed.length} 项已无法撤销`
+        : `已撤销 ${result.reverted.length} 项，恢复为待确认`,
+      undefined,
+      result.failed.length ? "warning" : "success",
+    );
   };
 
   const confirmOne = (task: Task) =>
     run(async () => {
       await apiClient.confirmTask(task.id, {});
-      offerUndo([task.id], "任务已确认");
+      notify("任务已确认", () => undoReview([task.id]));
       await load();
     });
 
   const rejectOne = (task: Task) =>
     run(async () => {
       await apiClient.rejectTask(task.id);
-      offerUndo([task.id], "任务已驳回");
+      notify("任务已驳回", () => undoReview([task.id]));
       await load();
     });
 
   const restoreExpired = (task: Task) =>
     run(async () => {
       await apiClient.setTaskStatus(task.id, "pending_confirm");
-      setNotice("已恢复到待确认");
+      notify("已恢复到待确认，重新计 7 天");
       await load();
     });
 
-  const markDone = (task: Task) =>
+  const completeOne = (task: Task) =>
     run(async () => {
       await apiClient.setTaskStatus(task.id, "done");
-      setNotice("已标记完成");
+      notify(`已完成「${task.title}」`, async () => {
+        const result = await apiClient.undoTaskComplete([task.id]);
+        if (result.failed.length > 0) {
+          notify(result.failed[0].error || "已经过了 10 分钟，没法撤销了", undefined, "warning");
+        } else {
+          notify(`已撤销，「${task.title}」回到未完成`);
+        }
+      });
+      await load();
+    });
+
+  // 「已完成」页签里完成不满 10 分钟的行上的［撤销完成］
+  const undoCompleteOne = (task: Task) =>
+    run(async () => {
+      const result = await apiClient.undoTaskComplete([task.id]);
+      if (result.failed.length > 0) {
+        notify(result.failed[0].error || "已经过了 10 分钟，没法撤销了", undefined, "warning");
+      } else {
+        notify(`已撤销，「${task.title}」回到未完成`);
+      }
       await load();
     });
 
   const startOne = (task: Task) =>
     run(async () => {
       await apiClient.setTaskStatus(task.id, "in_progress");
-      setNotice("已开始处理");
+      notify("已开始处理");
       await load();
     });
 
   const cancelOne = (task: Task) =>
     run(async () => {
       await apiClient.setTaskStatus(task.id, "cancelled");
-      setNotice("任务已取消");
+      notify("任务已取消");
       await load();
     });
 
   const restoreOne = (task: Task) =>
     run(async () => {
       await apiClient.setTaskStatus(task.id, "confirmed");
-      setNotice("任务已恢复");
+      notify("任务已恢复");
       await load();
     });
 
   const backOne = (task: Task) =>
     run(async () => {
       await apiClient.setTaskStatus(task.id, "confirmed");
-      setNotice("已回退到已确认");
+      notify("已回退到已确认");
       await load();
     });
 
-  const reviewSelected = (kind: "confirm" | "reject") => {
-    const ids = [...selected];
-    if (ids.length === 0) return;
-    void run(async () => {
-      if (kind === "confirm") {
-        const result = await apiClient.batchConfirmTasks(ids);
-        offerUndo(
-          result.confirmed,
-          result.failed.length ? `已确认 ${result.confirmed.length} 项，${result.failed.length} 项失败` : `已确认 ${result.confirmed.length} 项`,
-          result.failed.length > 0,
-        );
-      } else {
-        const result = await apiClient.batchRejectTasks(ids);
-        offerUndo(
-          result.rejected,
-          result.failed.length ? `已驳回 ${result.rejected.length} 项，${result.failed.length} 项失败` : `已驳回 ${result.rejected.length} 项`,
-          result.failed.length > 0,
-        );
-      }
-      setSelected(new Set());
+  // 挂到需求：选需求写 requirement_id，选候选写 candidate_id，「不挂」两个都清；撤销把原来的挂接写回去。
+  const linkOne = (task: Task, option: LinkOption | null) =>
+    run(async () => {
+      const body =
+        option === null
+          ? { requirement_id: null, candidate_id: null }
+          : option.kind === "requirement"
+            ? { requirement_id: option.id }
+            : { candidate_id: option.id };
+      const original = task.requirement_id
+        ? { requirement_id: task.requirement_id }
+        : task.candidate_id
+          ? { candidate_id: task.candidate_id }
+          : { requirement_id: null, candidate_id: null };
+      await apiClient.updateTask(task.id, body);
+      notify(option ? `已挂到「${option.title}」` : "已设为不挂需求", async () => {
+        await apiClient.updateTask(task.id, original);
+        notify("已撤销，挂接回到原来的样子");
+      });
       await load();
     });
-  };
-
-  const undoReview = () => {
-    const ids = undoIds;
-    if (ids.length === 0) return;
-    void run(async () => {
-      const result = await apiClient.undoTaskReview(ids);
-      setNotice(
-        result.failed.length
-          ? `已撤销 ${result.reverted.length} 项，${result.failed.length} 项已无法撤销`
-          : `已撤销 ${result.reverted.length} 项，恢复为待确认`,
-        result.failed.length ? "warning" : "success",
-      );
-      await load();
-    });
-  };
-
-  const toggleSelected = (taskId: string) =>
-    setSelected((current) => {
-      const next = new Set(current);
-      if (next.has(taskId)) next.delete(taskId);
-      else next.add(taskId);
-      return next;
-    });
-
-  const allVisibleSelected = tasks.length > 0 && tasks.every((task) => selected.has(task.id));
-  const toggleSelectAllVisible = () =>
-    setSelected((current) => {
-      if (allVisibleSelected) {
-        const next = new Set(current);
-        tasks.forEach((task) => next.delete(task.id));
-        return next;
-      }
-      const next = new Set(current);
-      tasks.forEach((task) => next.add(task.id));
-      return next;
-    });
-
-  const resetListing = () => {
-    setMenuTaskId(null); // 切页签清掉更多菜单，避免残留透明遮罩拦截点击
-    setSelected(new Set());
-    setPage(0);
-    setTasks([]);
-    setState("loading");
-  };
 
   const switchTab = (key: TabKey) => {
     if (key === activeTab) return;
-    resetListing();
+    setNotice(""); // 上一个页签的提示（尤其是失败）不带到新页签
+    setPage(0);
+    setListFresh(false);
+    setListTasks([]);
     setActiveTab(key);
+  };
+
+  const toggleProject = (projectId: string) => {
+    setProjectIds((current) => toggled(current, projectId));
+    // 换了项目范围，之前按的所属需求可能不在新范围里，清掉免得结果莫名为空
+    if (requirementDraft || appliedRequirementId) {
+      setRequirementDraft("");
+      setAppliedRequirementId("");
+    }
+    setPage(0);
+  };
+
+  const saveSeats = async (ids: string[]) => {
+    try {
+      await apiClient.saveProjectSeats(ids);
+      notify("座次已保存");
+    } catch {
+      // 多半是项目在别处改过（删掉、合并、另一个窗口排过座次）：重新取一遍，用新的一排再拖
+      notify("座次没保存：项目有变化，已刷新，请再拖一次", undefined, "warning");
+    }
+    await load();
   };
 
   const applyQuery = (event: FormEvent) => {
     event.preventDefault();
-    setAppliedProjectId(projectDraft);
+    if (!isValidDate(dateFromDraft) || !isValidDate(dateToDraft)) {
+      setQueryError("来源会议日期要填成 年-月-日，例如 2026-09-30");
+      return;
+    }
+    setQueryError("");
     setAppliedRequirementId(requirementDraft);
     setAppliedAssignee(assigneeDraft);
     setAppliedDateFrom(dateFromDraft);
     setAppliedDateTo(dateToDraft);
     setAppliedName(nameDraft);
     setPage(0);
-    setSelected(new Set());
   };
 
   const resetQuery = () => {
-    setProjectDraft("");
+    setQueryError("");
+    setProjectIds([]);
     setRequirementDraft("");
     setAssigneeDraft("");
     setDateFromDraft("");
     setDateToDraft("");
     setNameDraft("");
-    setAppliedProjectId("");
     setAppliedRequirementId("");
     setAppliedAssignee("");
     setAppliedDateFrom("");
     setAppliedDateTo("");
     setAppliedName("");
     setPage(0);
-    setSelected(new Set());
   };
 
-  const openDrawer = (task: Task) => {
-    setMenuTaskId(null);
-    setDrawerTaskId(task.id);
-  };
+  // 审核卡只认会议这一层的筛选；对象要稳定，免得面板每次渲染都重取
+  const panelFilters = useMemo(
+    () => ({
+      ...(projectKey ? { project_id: projectKey } : {}),
+      ...(appliedDateFrom ? { meeting_date_from: appliedDateFrom } : {}),
+      ...(appliedDateTo ? { meeting_date_to: appliedDateTo } : {}),
+    }),
+    [projectKey, appliedDateFrom, appliedDateTo],
+  );
 
-  // 行内操作只出后端状态机允许的动作：pending→确认/修改/驳回（平铺）、confirmed→开始处理/完成/取消、
-  // in_progress→完成/取消、cancelled→恢复、expired→恢复/直接确认/驳回；done 是终态，不给状态按钮。
+  // 分页清单里的行内操作：cancelled→恢复、expired→恢复/直接确认/驳回；done 只在完成 10 分钟内给［撤销完成］。
   const renderRowActions = (task: Task) => {
-    if (!canWrite || task.status === "done") return null;
-
-    const primary: Array<{ label: string; accent?: boolean; act: () => void }> = [];
-    const menu: Array<{ label: string; act: () => void }> = [];
-
-    if (task.status === "pending_confirm") {
-      // 待确认给任务挂需求要走「修改」，藏进 ⋯ 多一步，所以三个操作都平铺显示
-      primary.push({ label: "确认", accent: true, act: () => void confirmOne(task) });
-      primary.push({ label: "修改", act: () => setEditingTask(task) });
-      primary.push({ label: "驳回", act: () => void rejectOne(task) });
-    } else if (task.status === "confirmed" || task.status === "in_progress") {
-      if (task.status === "confirmed") {
-        primary.push({ label: "开始处理", act: () => void startOne(task) });
-      } else {
-        menu.push({ label: "回退", act: () => void backOne(task) });
-      }
-      primary.push({ label: "标记完成", accent: true, act: () => void markDone(task) });
-      menu.push({ label: "修改", act: () => setEditingTask(task) });
-      menu.push({ label: "取消任务", act: () => void cancelOne(task) });
-    } else if (task.status === "cancelled") {
-      primary.push({ label: "恢复", act: () => void restoreOne(task) });
-    } else if (task.status === "expired") {
-      primary.push({ label: "恢复", act: () => void restoreExpired(task) });
-      menu.push({ label: "直接确认", act: () => void confirmOne(task) });
-      menu.push({ label: "驳回", act: () => void rejectOne(task) });
-    }
-
-    if (primary.length === 0 && menu.length === 0) return null;
-
-    return (
-      <span className="task-row__actions">
-        {primary.map((action) => (
+    if (!canWrite) return null;
+    if (task.status === "done") {
+      const doneAt = Date.parse(task.status_changed_at);
+      if (!(Date.now() - doneAt < UNDO_COMPLETE_WINDOW_MS)) return null;
+      return (
+        <span className="task-row__actions">
           <button
-            className={action.accent ? "text-button text-button--accent" : "text-button"}
+            aria-label={`撤销完成：${task.title}`}
+            className="text-button text-button--accent"
             disabled={busy}
-            key={action.label}
-            onClick={(event) => {
-              event.stopPropagation();
-              action.act();
-            }}
+            onClick={() => void undoCompleteOne(task)}
             type="button"
           >
-            {action.label}
+            撤销完成
           </button>
-        ))}
-        {menu.length > 0 && (
-          <span className="task-menu">
-            <button
-              aria-expanded={menuTaskId === task.id}
-              aria-haspopup="menu"
-              aria-label="更多操作"
-              className="task-menu__trigger"
-              disabled={busy}
-              onClick={(event) => {
-                event.stopPropagation();
-                setMenuTaskId(menuTaskId === task.id ? null : task.id);
-              }}
-              type="button"
-            >
-              ⋯
-            </button>
-            {menuTaskId === task.id && (
-              <div
-                className="task-menu__pop"
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={onMenuKeyDown}
-                ref={(element) => {
-                  // 菜单一打开焦点就落到第一项，键盘用户可以直接上下选。
-                  if (element && !element.contains(document.activeElement)) {
-                    element.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-                  }
-                }}
-                role="menu"
-              >
-                {menu.map((action) => (
-                  <button
-                    key={action.label}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setMenuTaskId(null);
-                      action.act();
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    {action.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </span>
-        )}
-      </span>
-    );
+        </span>
+      );
+    }
+    if (task.status === "cancelled") {
+      return (
+        <span className="task-row__actions">
+          <button
+            aria-label={`恢复：${task.title}`}
+            className="text-button"
+            disabled={busy}
+            onClick={() => void restoreOne(task)}
+            type="button"
+          >
+            恢复
+          </button>
+        </span>
+      );
+    }
+    if (task.status === "expired") {
+      const menu: RowMenuItem[] = [
+        { label: "直接确认", act: () => void confirmOne(task) },
+        { label: "驳回", act: () => void rejectOne(task) },
+      ];
+      return (
+        <span className="task-row__actions">
+          <button
+            aria-label={`恢复：${task.title}`}
+            className="text-button"
+            disabled={busy}
+            onClick={() => void restoreExpired(task)}
+            type="button"
+          >
+            恢复
+          </button>
+          <RowMenu disabled={busy} items={menu} label={`更多操作：${task.title}`} />
+        </span>
+      );
+    }
+    return null;
   };
-
-  const showCheckboxColumn = activeTab === "pending" && canWrite;
 
   const renderRow = (task: Task) => (
     <tr
       className="tasks-table__row"
       key={task.id}
-      onClick={() => openDrawer(task)}
+      onClick={() => setDrawerTaskId(task.id)}
       onKeyDown={(event) => {
-        // 只响应行本身聚焦时的回车/空格，避免劫持行内按钮（确认/驳回/勾选/所属项目/所属需求）的原生激活
+        // 只响应行本身聚焦时的回车/空格，避免劫持行内按钮的原生激活
         if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          openDrawer(task);
+          setDrawerTaskId(task.id);
         }
       }}
       role="button"
       tabIndex={0}
     >
-      {showCheckboxColumn && (
-        <td className="tasks-table__select-cell" onClick={(event) => event.stopPropagation()}>
-          <input
-            aria-label={`选择任务：${task.title}`}
-            checked={selected.has(task.id)}
-            className="task-select"
-            disabled={busy}
-            onChange={() => toggleSelected(task.id)}
-            type="checkbox"
-          />
-        </td>
-      )}
       <td className="tasks-table__title">{task.title}</td>
       <td>
         {task.project_name && task.project_id ? (
@@ -636,33 +633,70 @@ export function TasksPage({
     </tr>
   );
 
+  const pendingCount = tabCounts.pending;
+
   return (
     <section className="page-content tasks-page">
-      <header className="page-heading tasks-heading">
-        <div>
-          <span className="eyebrow">TASKS / 任务代办</span>
-          <h1>任务</h1>
-          <p>会议纪要生成的拍板事项会先在这里等你确认，确认后进入你的待办清单。</p>
+      <header className="tasks-head">
+        <div className="tasks-head__title">
+          <span className="tasks-head__eyebrow">TODO / 待办</span>
+          <div className="tasks-head__row">
+            <h1>待办</h1>
+            <p>会上答应的事和需求拆出来的步骤，都在这里按截止排</p>
+          </div>
         </div>
-        {canWrite && (
-          <button className="tasks-create" onClick={() => setCreating(true)} type="button">
-            ＋ 新建任务
-          </button>
-        )}
+        <div className="tasks-head__side">
+          <div className="tasks-count">
+            <strong>{todo ? tabCounts.open : "–"}</strong>
+            <span>件 未完成</span>
+          </div>
+          {canWrite && (
+            <button className="tasks-create" onClick={() => setCreating(true)} type="button">
+              ＋ 新建任务
+            </button>
+          )}
+        </div>
       </header>
 
+      <div aria-label="任务状态" className="tasks-tabs" role="tablist">
+        {TABS.map((tab) => (
+          <button
+            aria-selected={activeTab === tab.key}
+            className={tab.key === "pending" && pendingCount > 0 ? "has-dot" : undefined}
+            key={tab.key}
+            onClick={() => switchTab(tab.key)}
+            role="tab"
+            type="button"
+          >
+            {tab.label}
+            <span>{todo ? tabCounts[tab.key] : "–"}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* 「未归项目」在条内、芯片之后：DirectionBar 本身不能改，这里让它的根 display: contents，
+          标签、芯片、未排座次、提示都成为这个白底条的子项，用 order 把竖线和虚线胶囊插到提示之前 */}
+      <div className="todo-direction">
+        <DirectionBar
+          canWrite={canWrite}
+          onSeatsChange={saveSeats}
+          onToggle={toggleProject}
+          projects={directionProjects}
+          selected={projectIds}
+        />
+        <span aria-hidden="true" className="todo-direction__sep" />
+        <button
+          aria-pressed={projectIds.includes(NONE_PROJECT)}
+          className={`direction-chip todo-direction__none ${projectIds.includes(NONE_PROJECT) ? "is-selected" : ""}`}
+          onClick={() => toggleProject(NONE_PROJECT)}
+          type="button"
+        >
+          未归项目
+          <span className="direction-chip__count">{noneCount}</span>
+        </button>
+      </div>
+
       <form className="tasks-query" onSubmit={applyQuery}>
-        <label className="tasks-query__field">
-          <span>所属项目</span>
-          <select onChange={(event) => setProjectDraft(event.target.value)} value={projectDraft}>
-            {projectOptions.map((option) => (
-              <option key={option.key || "all"} value={option.key}>
-                {option.label}
-                {option.count != null ? `（${option.count}）` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
         <label className="tasks-query__field">
           <span>所属需求</span>
           <select onChange={(event) => setRequirementDraft(event.target.value)} value={requirementDraft}>
@@ -691,6 +725,8 @@ export function TasksPage({
           <span className="tasks-query__daterange">
             <input
               aria-label="开始日期"
+              max="2099-12-31"
+              min="2000-01-01"
               onChange={(event) => setDateFromDraft(event.target.value)}
               type="date"
               value={dateFromDraft}
@@ -698,6 +734,8 @@ export function TasksPage({
             <span aria-hidden="true">–</span>
             <input
               aria-label="结束日期"
+              max="2099-12-31"
+              min="2000-01-01"
               onChange={(event) => setDateToDraft(event.target.value)}
               type="date"
               value={dateToDraft}
@@ -722,114 +760,120 @@ export function TasksPage({
         </span>
       </form>
 
-      <div className="tasks-table-card">
-        <div aria-label="任务状态" className="tasks-tabs" role="tablist">
-          {TABS.map((tab) => (
-            <button
-              aria-selected={activeTab === tab.key}
-              key={tab.key}
-              onClick={() => switchTab(tab.key)}
-              role="tab"
-              type="button"
-            >
-              {tab.label}
-              <span>{tabCounts[tab.key]}</span>
-            </button>
-          ))}
-        </div>
+      {queryError && (
+        <p className="tasks-query__error" role="alert">
+          {queryError}
+        </p>
+      )}
 
-        <NoticeBanner notice={notice} onDismiss={dismissNotice}>
-          {canWrite && undoIds.length > 0 && (
-            <button
-              className="text-button text-button--accent action-banner__undo"
-              disabled={busy}
-              onClick={undoReview}
-              type="button"
-            >
-              撤销
-            </button>
-          )}
-        </NoticeBanner>
+      {/* 固定在视口底部的浮层，不占文档流：出现、消失时列表不会跳，连点也不会点错行 */}
+      <NoticeBanner className="tasks-toast" notice={notice} onDismiss={dismissNotice} />
 
-        {activeTab === "pending" && canWrite && selected.size > 0 && (
-          <div aria-label="批量操作" className="tasks-batchbar" role="toolbar">
-            <span>已选 {selected.size} 项</span>
-            <button
-              className="text-button text-button--accent"
-              disabled={busy}
-              onClick={() => reviewSelected("confirm")}
-              type="button"
-            >
-              确认所选
-            </button>
-            <button
-              className="text-button"
-              disabled={busy}
-              onClick={() => reviewSelected("reject")}
-              type="button"
-            >
-              驳回所选
-            </button>
-            <button
-              className="text-button text-button--muted"
-              disabled={busy}
-              onClick={() => setSelected(new Set())}
-              type="button"
-            >
-              取消选择
-            </button>
-          </div>
-        )}
-
-        {state === "loading" && <AsyncState state="loading" />}
-        {state === "error" && <AsyncState message="任务读取失败" state="error" />}
-        {state === "ready" && tasks.length === 0 && (
-          <AsyncState message={EMPTY_MESSAGE[activeTab]} state="empty" />
-        )}
-        {state === "ready" && tasks.length > 0 && (
+      <div className={`tasks-table-card ${isListTab(activeTab) ? "" : "tasks-table-card--floating"}`}>
+        {state === "error" && (
           <>
-            <table className="tasks-table">
-              <thead>
-                <tr>
-                  {showCheckboxColumn && (
-                    <th>
-                      <input
-                        aria-label="全选本页"
-                        checked={allVisibleSelected}
-                        className="task-select"
-                        onChange={toggleSelectAllVisible}
-                        type="checkbox"
-                      />
-                    </th>
-                  )}
-                  <th>任务名称</th>
-                  <th>所属项目</th>
-                  <th>所属需求</th>
-                  <th>优先级</th>
-                  <th>状态</th>
-                  <th>执行方</th>
-                  <th>来源会议</th>
-                  <th>停滞</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>{tasks.map(renderRow)}</tbody>
-            </table>
-            <div className="tasks-table__pagination">
-              <p className="tasks-table__count">共 {total} 条</p>
-              <Pagination onChange={setPage} page={page} pageCount={Math.max(1, Math.ceil(total / PAGE_SIZE))} />
-            </div>
+            <AsyncState message={loadError ? `任务读取失败：${loadError}` : "任务读取失败"} state="error" />
+            <p className="tasks-error-actions">
+              <button
+                className="text-button text-button--accent"
+                onClick={() => {
+                  resetQuery();
+                  void load();
+                }}
+                type="button"
+              >
+                重置筛选
+              </button>
+            </p>
+          </>
+        )}
+        {state === "loading" && <AsyncState state="loading" />}
+
+        {state === "ready" && activeTab === "pending" && (
+          <>
+            <p className="tasks-hint">待确认放 7 天没处理会自动过期</p>
+            <ReviewCardsPanel
+              apiClient={apiClient}
+              canWrite={canWrite}
+              filters={panelFilters}
+              onChanged={() => void load()}
+              onClaimCandidate={onClaimCandidate}
+              onEditTask={(task) => {
+                setEditFromCard(true);
+                setEditingTask(task);
+              }}
+              onNotify={notify}
+              onOpenMeeting={onOpenMeeting}
+              reloadKey={reloadKey}
+            />
+          </>
+        )}
+
+        {state === "ready" && activeTab === "open" && todo && (
+          <TodoGroups
+            apiClient={apiClient}
+            busy={busy}
+            canWrite={canWrite}
+            groups={todo.groups}
+            onBack={(task) => void backOne(task)}
+            onCancel={(task) => void cancelOne(task)}
+            onComplete={(task) => void completeOne(task)}
+            onEdit={(task) => {
+              setEditFromCard(false);
+              setEditingTask(task);
+            }}
+            onLink={(task, option) => void linkOne(task, option)}
+            onOpenMeeting={onOpenMeeting}
+            onOpenProject={onOpenProject}
+            onOpenRequirement={onOpenRequirement}
+            onOpenTask={(task) => setDrawerTaskId(task.id)}
+            onStart={(task) => void startOne(task)}
+            today={todo.today}
+          />
+        )}
+
+        {state === "ready" && isListTab(activeTab) && (
+          <>
+            {activeTab === "expired" && <p className="tasks-hint">待确认放 7 天没处理自动归到这里</p>}
+            {!listFresh && <AsyncState state="loading" />}
+            {listFresh && listTasks.length === 0 && <AsyncState message={EMPTY_MESSAGE[activeTab]} state="empty" />}
+            {listFresh && listTasks.length > 0 && (
+              <>
+                <table className="tasks-table">
+                  <thead>
+                    <tr>
+                      <th>任务名称</th>
+                      <th>所属项目</th>
+                      <th>所属需求</th>
+                      <th>优先级</th>
+                      <th>状态</th>
+                      <th>执行方</th>
+                      <th>来源会议</th>
+                      <th>停滞</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>{listTasks.map(renderRow)}</tbody>
+                </table>
+                <div className="tasks-table__pagination">
+                  <p className="tasks-table__count">共 {listTotal} 条</p>
+                  <Pagination
+                    onChange={setPage}
+                    page={page}
+                    pageCount={Math.max(1, Math.ceil(listTotal / PAGE_SIZE))}
+                  />
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
-
-      {menuTaskId && <div className="task-menu__scrim" onClick={() => setMenuTaskId(null)} />}
 
       {drawerTaskId && (
         <TaskDrawer
           apiClient={apiClient}
           canWrite={canWrite}
-          onChanged={() => void load()}
+          onChanged={() => void refresh()}
           onClose={() => setDrawerTaskId(null)}
           onOpenMeeting={onOpenMeeting}
           onOpenPreview={onOpenPreview}
@@ -842,10 +886,12 @@ export function TasksPage({
         <TaskEditModal
           apiClient={apiClient}
           canWrite={canWrite}
+          confirmOnSave={!editFromCard}
           onClose={() => setEditingTask(null)}
           onSaved={() => {
+            notify(editFromCard ? `已保存「${editingTask.title}」，确认请在卡上点［确认］` : `已保存「${editingTask.title}」`);
             setEditingTask(null);
-            void load();
+            void refresh();
           }}
           projects={projects}
           task={editingTask as TaskDetail}
@@ -857,8 +903,9 @@ export function TasksPage({
           canWrite={canWrite}
           onClose={() => setCreating(false)}
           onSaved={() => {
+            notify("已新建任务");
             setCreating(false);
-            void load();
+            void refresh();
           }}
           projects={projects}
           task={null}

@@ -37,7 +37,7 @@ interface OverviewPageProps {
   /** 3g：本机打开声档时才给［打开文件夹］ */
   canReveal?: boolean;
   onProjectsChanged?: () => void | Promise<void>;
-  /** 确认待办之后通知外层刷新侧栏「任务池」角标。 */
+  /** 确认待办之后通知外层刷新侧栏「待办」角标。 */
   onTasksChanged?: () => void;
 }
 
@@ -89,7 +89,7 @@ function niceTicks(max: number): number[] {
   const s = step * mult;
   return [0, s, s * 2, s * 3];
 }
-// 工作台只展示最近 5 条待确认，超出引导进任务池。
+// 工作台只展示最近 5 条待确认，超出引导进待办。
 const PENDING_LIMIT = 5;
 // 后端各服务的正常取值不统一，只有落在这个集合外的才值得占版面。
 const HEALTHY_SERVICE_STATES = new Set(["healthy", "ok", "ready", "enabled"]);
@@ -429,7 +429,7 @@ export function OverviewPage({
             <h2>待办任务</h2>
           </div>
           <button className="text-button text-button--accent" onClick={onOpenTasks} type="button">
-            进任务池
+            进待办
           </button>
         </div>
 
@@ -498,7 +498,7 @@ export function OverviewPage({
         {jobsInteractive && todoState === "ready" && pendingTotal > pendingTasks.length && (
           <div className="todo-board__more">
             <button className="text-button" onClick={onOpenTasks} type="button">
-              还有 {pendingTotal - pendingTasks.length} 条，进任务池查看
+              还有 {pendingTotal - pendingTasks.length} 条，进待办查看
             </button>
           </div>
         )}

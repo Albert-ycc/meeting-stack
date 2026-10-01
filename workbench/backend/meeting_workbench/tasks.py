@@ -50,6 +50,14 @@ from .service import ConflictError, NotFoundError
 
 TASK_STATUSES = ("pending_confirm", "confirmed", "in_progress", "done", "cancelled", "expired")
 ASSIGNEE_VALUES = ("ai", "me")
+STATUS_LABELS = {
+    "pending_confirm": "待确认",
+    "confirmed": "已确认",
+    "in_progress": "进行中",
+    "done": "已完成",
+    "cancelled": "已取消",
+    "expired": "已过期",
+}
 # 未完成任务＝待确认＋已确认＋进行中；项目/需求卡片上的「未完成任务」数字统一按这个口径。
 OPEN_TASK_STATUSES = ("pending_confirm", "confirmed", "in_progress")
 
@@ -499,8 +507,10 @@ class TaskService:
             return  # 同状态幂等（重复确认/重复点击不报错）
         allowed = STATUS_TRANSITIONS.get(status, set())
         if target not in allowed:
+            # 这句会原样显示在页面的提示里：状态写中文
+            label = STATUS_LABELS.get
             raise ConflictError(
-                f"任务状态不能从 {status} 变更为 {target}（允许：{', '.join(sorted(allowed)) or '无'}）"
+                f"任务已经是「{label(status, status)}」，不能改成「{label(target, target)}」，刷新后再看"
             )
 
     @staticmethod
@@ -1037,13 +1047,18 @@ class TaskService:
         return self.get_task(task_id)
 
     def _reject(self, task_id: str) -> bool:
-        """返回这次是否真的发生了「→ 已取消」的流转；已取消再驳回是空操作。"""
+        """返回这次是否真的发生了「→ 已取消」的流转；已取消再驳回是空操作。
+
+        驳回只针对草稿（待确认、已过期）：页面数据旧了的时候，别处刚确认、推进过的任务不能被「驳回」
+        取消掉——撤销驳回只回到待确认，原来的已确认就丢了。已确认的任务不要了走「取消任务」。"""
         now = utc_now()
         with self.db.transaction() as connection:
             task = self._row(connection, task_id)
-            self._assert_transition(task["status"], "cancelled")
             if task["status"] == "cancelled":
                 return False
+            if task["status"] not in ("pending_confirm", "expired"):
+                raise ConflictError("这条任务已经不是待确认的了，刷新后再看")
+            self._assert_transition(task["status"], "cancelled")
             connection.execute(
                 """UPDATE tasks SET status='cancelled', status_changed_at=?, updated_at=?
                    WHERE id=?""",

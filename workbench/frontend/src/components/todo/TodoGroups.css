@@ -1,0 +1,481 @@
+/* 「未完成」页签：五个截止分组，每组一张表格卡片（列头 + 单行任务，各列跨行对齐）。
+   窄屏（< 1100px）退回两行：标题与操作一行，其余信息折到第二行。 */
+
+.todo-groups {
+  display: grid;
+  gap: 22px;
+  padding: 16px 18px 20px;
+}
+
+.todo-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--heading);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.todo-group__head span {
+  min-width: 20px;
+  padding: 1px 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  background: var(--surface-2);
+  border-radius: var(--r-pill);
+  font-variant-numeric: tabular-nums;
+}
+
+.todo-group--overdue .todo-group__head {
+  color: var(--danger-strong, var(--danger));
+}
+
+.todo-group--overdue .todo-group__head span {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.todo-group__empty {
+  margin: 0;
+  padding: 10px 14px;
+  color: var(--faint);
+  font-size: 13px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-stage);
+}
+
+.todo-group__panel {
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-stage);
+}
+
+.todo-group__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.todo-group__more {
+  margin-top: 8px;
+  padding: 4px 2px;
+  color: var(--signal);
+  font: inherit;
+  font-size: 13px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* ---- 窄屏：两行 ---- */
+
+.todo-cols {
+  display: none;
+}
+
+.todo-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "check task actions"
+    ". meta meta";
+  align-items: center;
+  gap: 6px 12px;
+  padding: 11px 0;
+}
+
+.todo-row + .todo-row {
+  border-top: 1px solid var(--line);
+}
+
+.todo-row__check-cell {
+  grid-area: check;
+}
+
+.todo-row__task {
+  grid-area: task;
+}
+
+.todo-row__actions {
+  grid-area: actions;
+}
+
+.todo-row__meta {
+  grid-area: meta;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  min-width: 0;
+}
+
+/* ---- 单元格通用 ---- */
+
+.todo-row__cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.todo-row__check-cell {
+  justify-content: center;
+  cursor: pointer;
+}
+
+.todo-row__check {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--signal);
+}
+
+.todo-row__check:disabled {
+  cursor: default;
+}
+
+.todo-row__title {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.todo-row__title:hover {
+  color: var(--signal-dark);
+}
+
+.todo-row__state,
+.todo-row__stall {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 11px;
+  white-space: nowrap;
+  border-radius: var(--r-pill);
+}
+
+.todo-row__state {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.todo-row__stall {
+  color: var(--warn);
+  background: var(--warn-bg);
+}
+
+/* 需求列：未挂灰块 / 已挂深色块带旗子 / 挂候选虚线框 */
+.todo-row__none-chip,
+.todo-row__requirement,
+.todo-row__candidate {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  border-radius: 4px;
+}
+
+.todo-row__none-chip {
+  color: var(--muted);
+  background: var(--surface-2);
+}
+
+.todo-row__requirement {
+  color: var(--surface);
+  background: var(--heading);
+  border: 0;
+  cursor: pointer;
+}
+
+.todo-row__requirement svg {
+  flex: none;
+}
+
+.todo-row__requirement span,
+.todo-row__candidate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-row__requirement:hover {
+  background: var(--signal);
+}
+
+.todo-row__candidate {
+  display: block;
+  color: var(--muted);
+  border: 1px dashed var(--line-strong);
+}
+
+.todo-row__project {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 0;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.todo-row__project i {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.todo-row__project span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-row__project:hover {
+  color: var(--signal-dark);
+}
+
+.todo-row__none,
+.todo-row__due.is-undated {
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.todo-row__assignee {
+  padding: 1px 7px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.todo-row__due {
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.todo-row__due.is-undated {
+  font-family: inherit;
+}
+
+.todo-row__due.is-late {
+  color: var(--danger-strong, var(--danger));
+  font-weight: 600;
+}
+
+/* 来源：只有会议名收缩省略，日期和原话锚不收缩；右侧留出和操作列之间的空隙 */
+.todo-row__source {
+  gap: 0;
+  padding-right: 12px;
+}
+
+.todo-row__meeting {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-row__meeting-date {
+  flex-shrink: 0;
+  white-space: pre;
+}
+
+.todo-row__anchor {
+  flex: none;
+  flex-shrink: 0;
+  margin-left: 10px;
+  padding: 0;
+  color: var(--signal);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.todo-row__anchor:hover {
+  color: var(--signal-dark);
+}
+
+/* 操作列：描边胶囊［完成］、链接图标＋挂到需求、⋯ */
+.todo-row__actions {
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.todo-row__done {
+  flex: none;
+  padding: 3px 12px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+
+.todo-row__done:hover:not(:disabled) {
+  color: var(--signal-dark);
+  border-color: var(--signal-line);
+}
+
+.todo-row__link {
+  position: relative;
+}
+
+.todo-row__link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 2px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.todo-row__link-btn:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+/* ---- 宽屏：表格 ---- */
+
+@media (min-width: 1100px) {
+  .todo-group__panel {
+    --todo-cols: 22px minmax(0, 1.6fr) 100px 84px 44px 124px minmax(0, 1.4fr) 152px;
+  }
+
+  .todo-cols {
+    display: grid;
+    grid-template-columns: var(--todo-cols);
+    column-gap: 10px;
+    padding: 14px 0 8px;
+    color: var(--faint);
+    font-size: 12px;
+  }
+
+  .todo-cols__ops {
+    text-align: right;
+  }
+
+  .todo-row {
+    grid-template-columns: var(--todo-cols);
+    grid-template-areas: none;
+    gap: 0 10px;
+    min-height: 52px;
+    padding: 8px 0;
+  }
+
+  .todo-row__check-cell,
+  .todo-row__task,
+  .todo-row__actions {
+    grid-area: auto;
+  }
+
+  .todo-row__meta {
+    display: contents;
+  }
+}
+
+@media (max-width: 1099px) {
+  .todo-row__actions {
+    justify-self: end;
+  }
+}
+
+@media (max-width: 767px) {
+  .todo-groups {
+    padding: 12px 10px 16px;
+  }
+
+  .todo-group__panel {
+    padding: 0 12px;
+  }
+
+  .todo-row {
+    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-areas:
+      "check task"
+      ". meta"
+      ". actions";
+  }
+
+  /* 手机上勾选框、⋯ 的点击区域至少 32×32 */
+  .todo-row__check-cell {
+    width: 32px;
+    height: 32px;
+  }
+
+  /* 原生勾选框画不大点击区：手机上自绘成 32×32 的框，只有中间 17×17 可见 */
+  .todo-row__check {
+    box-sizing: border-box;
+    width: 32px;
+    height: 32px;
+    border: 7.5px solid transparent;
+    border-radius: 5px;
+    outline: 1.5px solid var(--muted-2);
+    outline-offset: -7.5px;
+    background-clip: content-box;
+    appearance: none;
+  }
+
+  .todo-row__check:checked {
+    background-color: var(--signal);
+  }
+
+  .todo-row__check:focus-visible {
+    outline-color: var(--signal);
+    outline-width: 2px;
+  }
+
+  .todo-row .task-menu__trigger {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .todo-row__done,
+  .todo-row__link-btn {
+    min-height: 32px;
+  }
+
+  .todo-row__actions {
+    justify-self: end;
+  }
+}

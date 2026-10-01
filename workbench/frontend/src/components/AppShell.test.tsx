@@ -17,8 +17,8 @@ describe("AppShell responsive permissions", () => {
       </AppShell>,
     );
 
-    // 任务代办对移动端开放；转写流水线仅桌面端
-    expect(screen.getByRole("button", { name: /任务/ })).toBeInTheDocument();
+    // 待办对移动端开放；转写流水线仅桌面端
+    expect(screen.getByRole("button", { name: /待办/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /撰写/ })).not.toBeInTheDocument();
     expect(screen.getByText("只读访问")).toBeInTheDocument();
   });
@@ -36,7 +36,8 @@ describe("AppShell responsive permissions", () => {
       </AppShell>,
     );
 
-    expect(screen.getByRole("button", { name: /任务/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /待办/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /任务池/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /转写/ })).toBeInTheDocument();
   });
 

@@ -1,0 +1,598 @@
+/* 待确认页签的审核卡：一场会一张，卡内先候选、后待确认任务，卡底「全部确认」 */
+
+.review-cards {
+  display: grid;
+  gap: 16px;
+}
+
+.review-empty {
+  margin: 0;
+  padding: 48px 0;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.review-card {
+  padding: 22px 24px 18px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-card);
+}
+
+.review-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.review-card__title {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--heading);
+  font-size: 16px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-card__meta {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.review-card__side {
+  display: inline-flex;
+  flex: none;
+  align-items: baseline;
+  gap: 14px;
+  margin-left: auto;
+}
+
+.review-open {
+  padding: 0;
+  color: var(--signal);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* 处理完的卡：整张压暗，沉在页签底部；收起时只剩一行 */
+.review-card.is-done {
+  color: var(--muted);
+  background: var(--stage);
+}
+
+.review-card.is-done .review-card__title {
+  color: var(--ink-2);
+}
+
+.review-card.is-collapsed {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 14px 24px;
+}
+
+.review-card__counts {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-section {
+  margin-top: 20px;
+}
+
+.review-section__title {
+  margin: 0 0 10px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.review-section__title span {
+  margin-left: 4px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+
+/* 需求候选 */
+.review-candidates {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-candidate {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 14px;
+  font-size: 12px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: var(--r-stage);
+}
+
+.review-candidate.is-handled {
+  opacity: 0.6;
+}
+
+.review-tag {
+  flex: none;
+  padding: 1px 6px;
+  color: var(--muted);
+  font-size: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+
+.review-candidate__title {
+  flex: none;
+  max-width: 220px;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-candidate__summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-candidate__actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 原话时间：点了跳到会议详情对应位置 */
+.review-seek {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  color: var(--signal);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.review-seek:hover {
+  text-decoration: underline;
+}
+
+.review-muted {
+  color: var(--faint);
+}
+
+/* 待确认任务表 */
+.review-tasks {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.review-tasks th {
+  padding: 0 8px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  text-align: left;
+}
+
+.review-tasks th:first-child,
+.review-tasks td:first-child {
+  padding-left: 0;
+}
+
+.review-tasks th:last-child {
+  text-align: right;
+}
+
+.review-tasks th:nth-child(2) {
+  width: 64px;
+}
+
+.review-tasks th:nth-child(3) {
+  width: 80px;
+}
+
+.review-tasks th:nth-child(4) {
+  width: 112px;
+}
+
+.review-tasks th:nth-child(5) {
+  width: 270px;
+}
+
+.review-tasks th:nth-child(6) {
+  width: 160px;
+}
+
+.review-tasks td {
+  padding: 11px 8px;
+  vertical-align: middle;
+  border-top: 1px solid var(--line);
+}
+
+.review-task__title {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.review-task__due {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.review-task__actions {
+  text-align: right;
+}
+
+.review-task__buttons {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* 已确认、已驳回的行就地置灰，仍留在卡里 */
+.review-task.is-handled .review-task__title,
+.review-task.is-handled .review-task__due,
+.review-task.is-handled .review-assignee,
+.review-task.is-handled .review-task__link {
+  color: var(--faint);
+}
+
+.review-task.is-rejected .review-task__title {
+  text-decoration: line-through;
+}
+
+.review-assignee {
+  padding: 1px 7px;
+  font-size: 11px;
+  background: rgb(var(--fg-rgb) / 0.07);
+  border-radius: 4px;
+}
+
+/* 挂到需求 */
+.review-link-wrap {
+  position: relative;
+}
+
+.review-link {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 6px;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+
+.review-link--trigger {
+  width: 100%;
+  padding: 6px 10px;
+  color: var(--ink);
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.review-link--trigger:hover,
+.review-link--trigger[aria-expanded="true"] {
+  border-color: var(--signal-line);
+}
+
+.review-link--trigger:focus-visible {
+  outline: 2px solid var(--signal-line);
+  outline-offset: 1px;
+}
+
+.review-link--static {
+  padding: 2px 8px;
+  background: rgb(var(--fg-rgb) / 0.05);
+  border-radius: 4px;
+}
+
+.review-link__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-link--static .review-link__name {
+  flex: 0 1 auto;
+}
+
+.review-link__flag,
+.review-link__caret {
+  flex: none;
+  color: var(--muted);
+}
+
+.review-link__kind {
+  flex: none;
+  padding: 0 5px;
+  color: var(--muted);
+  font-size: 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+}
+
+.review-recommend {
+  flex: none;
+  padding: 0 6px;
+  color: var(--signal);
+  font-size: 10px;
+  background: var(--signal-bg);
+  border-radius: var(--r-pill);
+}
+
+/* 按钮 */
+.review-button {
+  padding: 4px 14px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+
+.review-button:hover:not(:disabled) {
+  border-color: var(--ink-2);
+}
+
+.review-button--dark {
+  color: var(--bg);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.review-button--dark:hover:not(:disabled) {
+  border-color: var(--ink);
+  opacity: 0.88;
+}
+
+.review-button--signal {
+  padding: 8px 20px;
+  color: #fff;
+  font-size: 13px;
+  background: var(--signal);
+  border-color: var(--signal);
+}
+
+.review-button--signal:hover:not(:disabled) {
+  border-color: var(--signal);
+  opacity: 0.9;
+}
+
+.review-button:disabled,
+.review-text-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.review-button:focus-visible,
+.review-text-button:focus-visible,
+.review-open:focus-visible,
+.review-seek:focus-visible {
+  outline: 2px solid var(--signal-line);
+  outline-offset: 2px;
+}
+
+.review-text-button {
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.review-text-button:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.review-text-button--signal,
+.review-text-button--signal:hover:not(:disabled) {
+  color: var(--signal);
+  font-weight: 600;
+}
+
+.review-state {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.review-candidate .review-state {
+  flex: none;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.review-state--ok {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+/* 卡底 */
+.review-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 8px;
+  padding-top: 14px;
+  color: var(--muted);
+  font-size: 11px;
+  border-top: 1px solid var(--line);
+}
+
+/* 窄屏：6 列表格放不下，任务行改成纵向卡片——任务名 / 负责人·截止·原话 / 挂到需求（整宽）/ 操作 */
+@media (max-width: 767px) {
+  .review-card {
+    padding: 16px 14px 14px;
+  }
+
+  .review-card__head {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .review-card__title {
+    flex: 1 0 100%;
+    white-space: normal;
+  }
+
+  .review-card__side {
+    margin-left: 0;
+  }
+
+  .review-card.is-collapsed {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .review-card.is-collapsed .review-card__counts {
+    margin-left: 0;
+  }
+
+  .review-candidate {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    row-gap: 6px;
+  }
+
+  .review-candidate__title {
+    flex: 1 1 0;
+    max-width: none;
+    white-space: normal;
+  }
+
+  .review-candidate__summary {
+    flex: 1 0 100%;
+    order: 3;
+    white-space: normal;
+  }
+
+  .review-candidate .review-seek,
+  .review-candidate .review-state {
+    order: 4;
+    max-width: none;
+    white-space: normal;
+  }
+
+  .review-candidate__actions {
+    flex: 1 0 100%;
+    order: 5;
+    justify-content: flex-end;
+  }
+
+  .review-tasks,
+  .review-tasks tbody {
+    display: block;
+  }
+
+  .review-tasks thead {
+    display: none;
+  }
+
+  .review-task {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .review-tasks td,
+  .review-tasks td:first-child {
+    min-width: 0;
+    padding: 0;
+    border-top: 0;
+  }
+
+  .review-task__title {
+    grid-column: 1 / -1;
+  }
+
+  .review-task__link {
+    grid-column: 1 / -1;
+  }
+
+  .review-task__actions {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+
+  .review-task__buttons {
+    justify-content: flex-start;
+  }
+
+  .review-link-wrap .link-picker {
+    right: auto;
+    left: 0;
+    width: 100%;
+  }
+
+  /* 手指点的按钮至少 32×32；文字按钮视觉不变，只放大点击区域 */
+  .review-text-button,
+  .review-open,
+  .review-seek {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .review-seek {
+    justify-content: flex-start;
+  }
+
+  .review-button,
+  .review-link--trigger {
+    min-height: 32px;
+  }
+
+  .review-card__foot {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}

@@ -562,3 +562,30 @@ def test_confirm_all_reports_unexpected_errors_per_task(tmp_path, monkeypatch):
     assert db.query_one("SELECT status FROM tasks WHERE id=?", (chase,)) == {
         "status": "pending_confirm"
     }
+
+
+def test_reject_only_takes_drafts(tmp_path, monkeypatch):
+    """页面数据旧了：别处刚确认的任务点「驳回」不会被取消（409），已确认还是已确认；截止格式不对报中文。"""
+    client, headers, db, candidate_id, tasks = make_cvm_world(tmp_path, monkeypatch)
+    chase = tasks["催填节后三场信息"]
+    client.post(f"/api/tasks/{chase}/confirm", json={}, headers=headers)
+
+    rejected = client.post(f"/api/tasks/{chase}/reject", json={}, headers=headers)
+
+    assert rejected.status_code == 409
+    assert db.query_one("SELECT status FROM tasks WHERE id=?", (chase,)) == {"status": "confirmed"}
+    bad = client.patch(f"/api/tasks/{chase}", json={"due_date": "202610-01-15"}, headers=headers)
+    assert bad.status_code == 400 and bad.json()["detail"] == "截止日期格式应为 YYYY-MM-DD"
+
+
+def test_transition_errors_name_statuses_in_chinese(tmp_path, monkeypatch):
+    """页面会原样显示后端的报错：状态写中文，不露 done、confirmed 这类内部名字。"""
+    client, headers, db, candidate_id, tasks = make_cvm_world(tmp_path, monkeypatch)
+    chase = tasks["催填节后三场信息"]
+    client.post(f"/api/tasks/{chase}/confirm", json={}, headers=headers)
+    client.post(f"/api/tasks/{chase}/status", json={"status": "done"}, headers=headers)
+
+    response = client.post(f"/api/tasks/{chase}/confirm", json={}, headers=headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "任务已经是「已完成」，不能改成「已确认」，刷新后再看"

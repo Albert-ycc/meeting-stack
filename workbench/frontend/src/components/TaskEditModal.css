@@ -241,6 +241,49 @@
   border-radius: 12px;
 }
 
+.task-edit-modal__segmented--three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.task-edit-modal__due {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.task-edit-modal__due input {
+  min-height: 36px;
+  padding: 6px 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.task-edit-modal__due-clear {
+  padding: 6px 4px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+}
+
+.task-edit-modal__due-clear:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.task-edit-modal__due-clear:disabled {
+  opacity: 0.5;
+}
+
+.task-edit-modal__due-note {
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
 .task-edit-modal__segmented button {
   min-height: 34px;
   padding: 6px 10px;

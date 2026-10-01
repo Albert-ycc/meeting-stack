@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -404,5 +404,122 @@ describe("TaskEditModal 从需求详情新建（fixedRequirement，R05-6，S12-c
     expect(within(dialog).queryByRole("group", { name: "挂到需求" })).not.toBeInTheDocument();
     expect(within(dialog).getByText("所属需求")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "交给 AI" })).toBeInTheDocument();
+  });
+});
+
+describe("TaskEditModal 截止与状态", () => {
+  const confirmed = (overrides: Partial<Task> = {}) =>
+    makeTask({ status: "confirmed", title: "「人身健康」明天开发完、28号再测", due_date: "2026-09-28", due_phrase: "明天", ...overrides });
+
+  function open(task: Task | null, overrides: Partial<ApiClient> = {}) {
+    const apiClient = makeClient({ setTaskStatus: vi.fn().mockResolvedValue({}), ...overrides } as Partial<ApiClient>);
+    render(<TaskEditModal apiClient={apiClient} canWrite onClose={vi.fn()} onSaved={vi.fn()} projects={PROJECTS} task={task} />);
+    return apiClient;
+  }
+
+  it("有纪要原话时在截止旁小字写出来；没有截止也没有原话时写纪要里没抽到时间", () => {
+    open(confirmed());
+    expect(screen.getByLabelText("截止")).toHaveValue("2026-09-28");
+    expect(screen.getByText("纪要原话：明天")).toBeInTheDocument();
+  });
+
+  it("没有截止、没有原话：提示纪要里没抽到时间", () => {
+    open(confirmed({ due_date: null, due_phrase: null }));
+    expect(screen.getByLabelText("截止")).toHaveValue("");
+    expect(screen.getByText("纪要里没抽到时间")).toBeInTheDocument();
+  });
+
+  it("截止没动过就不提交 due_date，免得冲掉纪要抽到的日期", async () => {
+    const apiClient = open(confirmed());
+
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(apiClient.updateTask).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(apiClient.updateTask).mock.calls[0][1]).not.toHaveProperty("due_date");
+  });
+
+  it("改了截止才提交，提交新日期", async () => {
+    const apiClient = open(confirmed());
+
+    fireEvent.change(screen.getByLabelText("截止"), { target: { value: "2026-10-03" } });
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(apiClient.updateTask).toHaveBeenCalledWith("t1", expect.objectContaining({ due_date: "2026-10-03" }));
+  });
+
+  it("点「清空＝未定」提交 null", async () => {
+    const apiClient = open(confirmed());
+
+    await userEvent.click(screen.getByRole("button", { name: "清空＝未定" }));
+    expect(screen.getByLabelText("截止")).toHaveValue("");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(apiClient.updateTask).toHaveBeenCalledWith("t1", expect.objectContaining({ due_date: null }));
+  });
+
+  it("待确认任务保存并确认时，改了截止一并随确认提交", async () => {
+    const apiClient = open(makeTask({ due_date: null }));
+
+    fireEvent.change(screen.getByLabelText("截止"), { target: { value: "2026-10-03" } });
+    await userEvent.click(screen.getByRole("button", { name: "保存并确认" }));
+
+    expect(apiClient.confirmTask).toHaveBeenCalledWith("t1", expect.objectContaining({ due_date: "2026-10-03" }));
+  });
+
+  it("新建任务也能填截止", async () => {
+    const apiClient = open(null);
+
+    await userEvent.type(screen.getByPlaceholderText("要完成的事，例如：整理本周产品周报"), "给出定好的积分规则");
+    fireEvent.change(screen.getByLabelText("截止"), { target: { value: "2026-10-02" } });
+    await userEvent.click(screen.getByRole("button", { name: "创建任务" }));
+
+    expect(apiClient.createTask).toHaveBeenCalledWith(expect.objectContaining({ title: "给出定好的积分规则", due_date: "2026-10-02" }));
+  });
+
+  it("已确认、进行中的任务有状态分段，改了状态保存时调 setTaskStatus", async () => {
+    const apiClient = open(confirmed());
+    const group = screen.getByRole("group", { name: "状态" });
+    expect(group.querySelector('[aria-pressed="true"]')).toHaveTextContent("已确认");
+
+    await userEvent.click(screen.getByRole("button", { name: "进行中" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(apiClient.updateTask).toHaveBeenCalled();
+    expect(apiClient.setTaskStatus).toHaveBeenCalledWith("t1", "in_progress");
+  });
+
+  it("状态没改就不调 setTaskStatus", async () => {
+    const apiClient = open(confirmed({ status: "in_progress" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(apiClient.setTaskStatus).not.toHaveBeenCalled();
+  });
+
+  it("待确认的任务和新建不出状态分段", () => {
+    open(makeTask());
+    expect(screen.queryByRole("group", { name: "状态" })).not.toBeInTheDocument();
+  });
+});
+
+describe("TaskEditModal 只保存不确认（审核卡打开）", () => {
+  it("confirmOnSave=false：按钮写「保存」，待确认的任务走 updateTask，没动需求就不带 requirement_id", async () => {
+    const apiClient = makeClient();
+    render(
+      <TaskEditModal apiClient={apiClient} canWrite confirmOnSave={false} onClose={vi.fn()} onSaved={vi.fn()} projects={PROJECTS} task={makeTask()} />,
+    );
+
+    expect(screen.queryByRole("button", { name: "保存并确认" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(apiClient.confirmTask).not.toHaveBeenCalled();
+    expect(apiClient.updateTask).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(apiClient.updateTask).mock.calls[0][1]).not.toHaveProperty("requirement_id");
+  });
+
+  it("截止输入框限定 2000～2099 年", () => {
+    render(<TaskEditModal apiClient={makeClient()} canWrite onClose={vi.fn()} onSaved={vi.fn()} projects={PROJECTS} task={null} />);
+    expect(screen.getByLabelText("截止")).toHaveAttribute("min", "2000-01-01");
+    expect(screen.getByLabelText("截止")).toHaveAttribute("max", "2099-12-31");
   });
 });
