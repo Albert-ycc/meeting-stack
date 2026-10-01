@@ -942,8 +942,9 @@ describe("需求二级页的来去（R04-1、R04-8）", () => {
     await pickExportQuote();
     await screen.findByRole("heading", { name: "新增需求" });
 
-    fireEvent.click(screen.getByRole("button", { name: "任务池" }));
-    await screen.findByRole("heading", { name: "任务" });
+    // 侧栏「任务池」已改名「待办」（项目页与待办改版 R07-1）
+    fireEvent.click(screen.getByRole("button", { name: "待办" }));
+    await screen.findByRole("heading", { name: "待办" });
     act(() => window.history.back());
 
     expect(await screen.findByRole("heading", { name: "新增需求" })).toBeInTheDocument();
