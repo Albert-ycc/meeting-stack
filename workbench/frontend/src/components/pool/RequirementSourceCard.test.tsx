@@ -5,7 +5,7 @@ import type { RequirementSource } from "../../types";
 import { stubPeaksFetch } from "./peaksFixtures";
 import { JD_SOURCE } from "./poolFixtures";
 import { clearPeaksCache } from "./PosterWaveform";
-import { RequirementSourceCard } from "./RequirementSourceCard";
+import { RequirementQuotes, RequirementSourceCover } from "./RequirementSourceCard";
 
 /*
  * 来源照生产库逐字稿抄（会 vm-20260916-190150-2eebb406，时长 3033387 ms，和 poolFixtures、后端
@@ -33,12 +33,22 @@ const MERGED = source({
   via_candidate_title: "京东仓签收凭证",
 });
 
-function renderCard(props: Partial<Parameters<typeof RequirementSourceCard>[0]> = {}) {
-  const onOpenMeeting = vi.fn();
-  const view = render(
-    <RequirementSourceCard onOpenMeeting={onOpenMeeting} origin={ORIGIN} sources={[ORIGIN, MERGED]} {...props} />,
+type SourceSectionProps = Parameters<typeof RequirementQuotes>[0];
+
+/** 详情页里两块挨着放：头部那张票的封面「出自录音」（波形、时间签）和下面的「来源」 */
+function SourceSection(props: SourceSectionProps) {
+  return (
+    <>
+      <RequirementSourceCover onOpenMeeting={props.onOpenMeeting} origin={props.origin} sources={props.sources} />
+      <RequirementQuotes {...props} />
+    </>
   );
-  return { onOpenMeeting, card: within(screen.getByRole("region", { name: "出自录音" })), ...view };
+}
+
+function renderCard(props: Partial<SourceSectionProps> = {}) {
+  const onOpenMeeting = vi.fn();
+  const view = render(<SourceSection onOpenMeeting={onOpenMeeting} origin={ORIGIN} sources={[ORIGIN, MERGED]} {...props} />);
+  return { onOpenMeeting, card: within(view.container), ...view };
 }
 
 beforeEach(() => clearPeaksCache());
@@ -136,6 +146,17 @@ describe("出自录音：波形和时间签", () => {
       const wave = container.querySelector<HTMLElement>(".source-card__wave")!;
       expect(wave.style.getPropertyValue("--flag-rows")).toBe("2");
     });
+  });
+});
+
+describe("出自录音：没有来源（R02 异常）", () => {
+  it("封面是一条静音线，写「没有来源录音」；「来源」整块不画", () => {
+    const { container } = render(<SourceSection onOpenMeeting={vi.fn()} origin={null} sources={[]} />);
+
+    expect(screen.getByText("没有来源录音")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "出自录音" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "来源" })).not.toBeInTheDocument();
+    expect(container.querySelector(".poster-wave")).toBeNull();
   });
 });
 
@@ -294,14 +315,14 @@ describe("出自录音：撤销合并（R01-14，S03-b）", () => {
 
   it("没有 undo_merge 的、或没传 onUndoMerge 的不显示；撤销进行中按钮置灰", () => {
     const { rerender } = render(
-      <RequirementSourceCard onOpenMeeting={vi.fn()} onUndoMerge={vi.fn()} origin={origin} sources={[origin, { ...MERGED, audio_artifact_id: null }]} />,
+      <SourceSection onOpenMeeting={vi.fn()} onUndoMerge={vi.fn()} origin={origin} sources={[origin, { ...MERGED, audio_artifact_id: null }]} />,
     );
     expect(screen.queryByRole("button", { name: "撤销合并" })).not.toBeInTheDocument();
 
-    rerender(<RequirementSourceCard onOpenMeeting={vi.fn()} origin={origin} sources={[origin, withUndo]} />);
+    rerender(<SourceSection onOpenMeeting={vi.fn()} origin={origin} sources={[origin, withUndo]} />);
     expect(screen.queryByRole("button", { name: "撤销合并" })).not.toBeInTheDocument();
 
-    rerender(<RequirementSourceCard onOpenMeeting={vi.fn()} onUndoMerge={vi.fn()} origin={origin} sources={[origin, withUndo]} undoBusy />);
+    rerender(<SourceSection onOpenMeeting={vi.fn()} onUndoMerge={vi.fn()} origin={origin} sources={[origin, withUndo]} undoBusy />);
     expect(screen.getByRole("button", { name: "撤销合并" })).toBeDisabled();
   });
 });

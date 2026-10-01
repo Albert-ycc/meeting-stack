@@ -723,16 +723,19 @@ describe("RequirementDetailPage 头部和出自录音（R05）", () => {
     expect(await screen.findByRole("heading", { name: "京东科研仓对接" })).toBeInTheDocument();
     expect(screen.getByText("1", { selector: ".requirement-detail__meta *" })).toHaveClass("requirement-detail__seat");
     expect(screen.getByText("把京东科研仓当作一个药房接进医米。")).toHaveClass("requirement-detail__summary");
+    // 头部那张票的封面：会议信息、波形上的时间签、「打开会议」
     const card = within(screen.getByRole("region", { name: "出自录音" }));
     expect(card.getByText("260916 医米京东科研仓系统对接")).toBeInTheDocument();
-    expect(card.getByText("提出 · 会上原话")).toBeInTheDocument();
-    expect(card.getByText("合并自候选「京东仓签收凭证」")).toBeInTheDocument();
-    expect(card.getByText(`「${merged.quote}」`)).toBeInTheDocument();
     // 时间签在峰值取到以后才画（取不到整块波形都不画，见下面的用例）
     expect(await card.findByText("00:13:45 提出")).toBeInTheDocument();
     expect(card.getByText("00:31:49 合并 · 京东仓签收凭证")).toBeInTheDocument();
+    // 下面的「来源」：提出的和合并进来的原话
+    const quotes = within(screen.getByRole("region", { name: "来源" }));
+    expect(quotes.getByText("提出 · 会上原话")).toBeInTheDocument();
+    expect(quotes.getByText("合并自候选「京东仓签收凭证」")).toBeInTheDocument();
+    expect(quotes.getByText(`「${merged.quote}」`)).toBeInTheDocument();
 
-    await userEvent.click(card.getByRole("button", { name: /从 00:31:49 开始放/ }));
+    await userEvent.click(quotes.getByRole("button", { name: /从 00:31:49 开始放/ }));
     expect(onOpenMeeting).toHaveBeenLastCalledWith("vm-20260916-190150-2eebb406", 1909360);
     await userEvent.click(card.getByRole("button", { name: /打开会议/ }));
     expect(onOpenMeeting).toHaveBeenLastCalledWith("vm-20260916-190150-2eebb406", 825270);
@@ -744,9 +747,36 @@ describe("RequirementDetailPage 头部和出自录音（R05）", () => {
 
     const card = within(await screen.findByRole("region", { name: "出自录音" }));
     expect(card.getByText("260916 医米京东科研仓系统对接")).toBeInTheDocument();
-    expect(card.getByRole("button", { name: /从 00:13:45 开始放/ })).toBeInTheDocument();
     expect(card.queryByText("00:00")).not.toBeInTheDocument();
     expect(card.queryByText("00:13:45 提出")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "来源" })).toContainElement(
+      screen.getByRole("button", { name: /从 00:13:45 开始放/ }),
+    );
+  });
+
+  it("票根：待办、会议、材料三个数，点了滚到对应的卡；没有来源时封面是静音线，日子写建的那天", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderDetail({ source: null, sources: [] });
+
+    expect(await screen.findByText("没有来源录音")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "出自录音" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "来源" })).not.toBeInTheDocument();
+    expect(screen.getByText("09-07").parentElement).toHaveTextContent("09-07 新建");
+
+    await userEvent.click(screen.getByRole("button", { name: /^3\s*待办$/ }));
+    expect(scrollIntoView.mock.contexts.at(-1)).toHaveTextContent("关联已有任务");
+    await userEvent.click(screen.getByRole("button", { name: /^1\s*会议$/ }));
+    expect(scrollIntoView.mock.contexts.at(-1)).toHaveTextContent("＋ 关联会议");
+    await userEvent.click(screen.getByRole("button", { name: /^1\s*材料$/ }));
+    expect(scrollIntoView.mock.contexts.at(-1)).toHaveTextContent("V1.5.7-北辰仓快递配送-260914");
+    delete (Element.prototype as Partial<Element>).scrollIntoView;
+  });
+
+  it("票根的日子：有来源时写那场会的日子「会上提出」", async () => {
+    renderDetail({ source: origin, sources: [origin] });
+    expect(await screen.findByText("09-17")).toBeInTheDocument();
+    expect(screen.getByText("09-17").parentElement).toHaveTextContent("09-17 会上提出");
   });
 
   it("已完成、已搁置在需求名后面盖章，不再挂「进行中」", async () => {
@@ -926,7 +956,7 @@ describe("RequirementDetailPage 撤销合并（R01-14，S03-b）", () => {
       />,
     );
 
-    const card = within(await screen.findByRole("region", { name: "出自录音" }));
+    const card = within(await screen.findByRole("region", { name: "来源" }));
     const button = card.getByRole("button", { name: "撤销合并" });
     expect(button.closest("li")).toHaveTextContent("合并自候选「京东仓签收凭证」");
     fireEvent.click(button);

@@ -27,7 +27,7 @@ import { NoticeBanner, useNotice } from "./Notice";
 import { DecisionLogCard } from "./decisions/DecisionLogCard";
 import { MentionedBadge } from "./files/MentionedBadge";
 import { useMentionedCounts } from "./files/useMentionedCounts";
-import { RequirementSourceCard } from "./pool/RequirementSourceCard";
+import { RequirementQuotes, RequirementSourceCover } from "./pool/RequirementSourceCard";
 import { unmergedMessage } from "./pool/RequirementPoolPage";
 import { copiedMessage, copyFailureReason, copyRequirementBackground } from "./pool/requirementCopy";
 
@@ -157,6 +157,10 @@ export function RequirementDetailPage({
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [expandedFiles, setExpandedFiles] = useState<Map<number, { items: RequirementFile[]; capped: boolean }>>(new Map());
   const [expandLoading, setExpandLoading] = useState<Set<number>>(new Set());
+  // 票根上的三个数点了滚到对应的卡
+  const meetingsRef = useRef<HTMLElement>(null);
+  const foldersRef = useRef<HTMLElement>(null);
+  const tasksRef = useRef<HTMLElement>(null);
   // 4d：材料文件夹文件行的小签「3 场会提到」，一个列表一次请求
   const mentioned = useMentionedCounts(
     apiClient,
@@ -366,64 +370,103 @@ export function RequirementDetailPage({
           <span>/</span>
           <span className="requirement-detail__crumb-current" title={detail.title}>{detail.title}</span>
         </nav>
-        {/* R05-1：头部和海报一致——座次、项目、等级在上，需求名最醒目，说明在下；已完成、已搁置盖个章 */}
-        <div className="requirement-detail__meta">
-          {detail.project_seat ? <span className="requirement-detail__seat">{detail.project_seat}</span> : null}
-          <button
-            className="requirement-detail__project"
-            onClick={() => onOpenProject(detail.project_id)}
-            type="button"
-          >
-            {detail.project_name}
-          </button>
-          <span className={`requirement-detail__level requirement-detail__level--${detail.priority.toLowerCase()}`}>
-            {detail.priority}
-          </span>
-          {detail.status === "active" && <span className="requirement-detail__status">进行中</span>}
-          {onOpenInGraph && detail.status === "active" && (
-            <button
-              className="text-button requirement-detail__graph"
-              onClick={() => onOpenInGraph(detail.project_id, detail.id)}
-              type="button"
-            >
-              在关系图里看
-            </button>
-          )}
-        </div>
-        <div className="requirement-detail__title-row">
-          <div className="requirement-detail__title">
-            <h1>{detail.title}</h1>
-            {detail.status !== "active" && (
-              <span className={`requirement-detail__stamp requirement-detail__stamp--${detail.status}`}>
-                {REQUIREMENT_STATUS_LABELS[detail.status]}
-              </span>
-            )}
-          </div>
-          <div className="requirement-detail__actions">
-            <button
-              className="requirement-detail__copy"
-              disabled={context.state === "loading"}
-              onClick={copyForClaudeCode}
-              type="button"
-            >
-              <CopyIcon />
-              {context.state === "loading" ? "正在准备…" : "复制给 Claude Code"}
-            </button>
-            {canWrite && (
+        {/* R05-1：头部和海报一致——一张票：上面声纹封面，中间座次、项目、等级、需求名（最醒目）、说明，
+            虚线撕口下面是待办 / 会议 / 材料三个数；已完成、已搁置在需求名后面盖个章 */}
+        <div className="requirement-ticket">
+          <RequirementSourceCover onOpenMeeting={onOpenMeeting} origin={detail.source ?? null} sources={detail.sources ?? []} />
+          <div className="requirement-ticket__body">
+            <div className="requirement-detail__meta">
+              {detail.project_seat ? <span className="requirement-detail__seat">{detail.project_seat}</span> : null}
               <button
-                className="requirement-detail__edit"
-                onClick={() => (onEdit ? onEdit() : setEditing(true))}
+                className="requirement-detail__project"
+                onClick={() => onOpenProject(detail.project_id)}
                 type="button"
               >
-                编辑需求
+                {detail.project_name}
               </button>
-            )}
+              <span className={`requirement-detail__level requirement-detail__level--${detail.priority.toLowerCase()}`}>
+                {detail.priority}
+              </span>
+              {detail.status === "active" && <span className="requirement-detail__status">进行中</span>}
+              {onOpenInGraph && detail.status === "active" && (
+                <button
+                  className="text-button requirement-detail__graph"
+                  onClick={() => onOpenInGraph(detail.project_id, detail.id)}
+                  type="button"
+                >
+                  在关系图里看
+                </button>
+              )}
+            </div>
+            <div className="requirement-detail__title-row">
+              <div className="requirement-detail__title">
+                <h1>{detail.title}</h1>
+                {detail.status !== "active" && (
+                  <span className={`requirement-detail__stamp requirement-detail__stamp--${detail.status}`}>
+                    {REQUIREMENT_STATUS_LABELS[detail.status]}
+                  </span>
+                )}
+              </div>
+              <div className="requirement-detail__actions">
+                <button
+                  className="requirement-detail__copy"
+                  disabled={context.state === "loading"}
+                  onClick={copyForClaudeCode}
+                  type="button"
+                >
+                  <CopyIcon />
+                  {context.state === "loading" ? "正在准备…" : "复制给 Claude Code"}
+                </button>
+                {canWrite && (
+                  <button
+                    className="requirement-detail__edit"
+                    onClick={() => (onEdit ? onEdit() : setEditing(true))}
+                    type="button"
+                  >
+                    编辑需求
+                  </button>
+                )}
+              </div>
+            </div>
+            {detail.summary && <p className="requirement-detail__summary">{detail.summary}</p>}
+          </div>
+          <div aria-hidden="true" className="requirement-ticket__perf" />
+          <div className="requirement-ticket__stub">
+            <div className="requirement-ticket__stats">
+              {(
+                [
+                  ["待办", detail.open_task_count, tasksRef],
+                  ["会议", detail.meetings.length, meetingsRef],
+                  ["材料", detail.folders.length, foldersRef],
+                ] as const
+              ).map(([label, count, target]) => (
+                <button
+                  className={count ? "" : "is-zero"}
+                  key={label}
+                  onClick={() => target.current?.scrollIntoView?.({ behavior: "smooth", block: "start" })}
+                  type="button"
+                >
+                  <b>{count}</b>
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+            <span className="requirement-ticket__date">
+              {detail.source ? (
+                <>
+                  <b>{formatMonthDay(detail.source.recording_date)}</b> 会上提出
+                </>
+              ) : (
+                <>
+                  <b>{formatMonthDay(detail.created_at)}</b> 新建
+                </>
+              )}
+            </span>
           </div>
         </div>
-        {detail.summary && <p className="requirement-detail__summary">{detail.summary}</p>}
       </header>
 
-      <RequirementSourceCard
+      <RequirementQuotes
         onOpenMeeting={onOpenMeeting}
         onUndoMerge={canWrite ? undoMerge : undefined}
         origin={detail.source ?? null}
@@ -431,7 +474,7 @@ export function RequirementDetailPage({
         undoBusy={mutating}
       />
 
-      <section className="requirement-detail__card">
+      <section className="requirement-detail__card" ref={meetingsRef}>
         <header className="requirement-detail__card-head">
           <strong>关联会议</strong>
           <span className="requirement-detail__count">{detail.meetings.length}</span>
@@ -483,7 +526,7 @@ export function RequirementDetailPage({
         requirementId={requirementId}
       />
 
-      <section className="requirement-detail__card">
+      <section className="requirement-detail__card" ref={foldersRef}>
         <header className="requirement-detail__card-head">
           <strong>材料文件夹</strong>
           <span className="requirement-detail__count">{detail.folders.length}</span>
@@ -570,7 +613,7 @@ export function RequirementDetailPage({
         )}
       </section>
 
-      <section className="requirement-detail__card">
+      <section className="requirement-detail__card" ref={tasksRef}>
         <header className="requirement-detail__card-head">
           <strong>任务</strong>
           <span className="requirement-detail__count requirement-detail__count--muted">未完成 {detail.open_task_count}</span>

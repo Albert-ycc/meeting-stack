@@ -1,8 +1,39 @@
-/* 需求详情的「出自录音」（S12/S13）：卡片外壳沿用 requirement-detail__card */
-.source-card {
+/* 需求详情头部那张票的封面「出自录音」（S12/S13）：浅底，和海报的声纹封面一个意思 */
+.source-cover {
   display: grid;
-  gap: 18px;
-  padding: 22px 28px;
+  gap: 14px;
+  padding: 18px 28px 16px;
+  border-bottom: 1px solid var(--line);
+  border-radius: 21px 21px 0 0;
+  background: var(--surface-2);
+}
+
+/* 没有来源录音：一条静音线 */
+.source-cover.is-silent {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 64px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.source-cover__silence {
+  width: 100%;
+  height: 2px;
+  background: repeating-linear-gradient(90deg, rgb(var(--fg-rgb) / 0.16) 0 2px, transparent 2px 3px);
+}
+
+.source-cover__silence-label {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* 「来源」：卡片外壳沿用 requirement-detail__card */
+.source-card {
+  padding: 18px 28px 6px;
 }
 
 .source-card__head {
@@ -13,8 +44,9 @@
 }
 
 .source-card__head strong {
-  color: var(--heading);
-  font-size: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .source-card__meeting {
@@ -94,7 +126,6 @@
   display: grid;
   margin: 0;
   padding: 0;
-  border-top: 1px solid var(--line);
   list-style: none;
 }
 
@@ -167,8 +198,12 @@
 
 /* 手机：卡片内边距收小让波形宽一点；每条原话的时间放在原话上面，不再把原话挤进 160 像素的窄列 */
 @media (max-width: 767px) {
+  .source-cover {
+    padding: 14px 16px;
+  }
+
   .source-card {
-    padding: 18px 16px;
+    padding: 16px 16px 4px;
   }
 
   .source-card__quotes li {

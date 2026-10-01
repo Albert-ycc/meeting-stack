@@ -64,7 +64,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
-  margin-top: 8px;
+  margin-top: 12px;
 }
 
 /* 需求名是头部最醒目的（R05-1）；已完成、已搁置在名字后面盖个章（S13） */
@@ -79,7 +79,7 @@
 .requirement-detail__title h1 {
   margin: 0;
   color: var(--heading);
-  font-size: clamp(30px, 3.2vw, 44px);
+  font-size: clamp(26px, 2.6vw, 38px);
   line-height: 1.2;
   overflow-wrap: anywhere;
 }
@@ -104,7 +104,7 @@
 
 .requirement-detail__summary {
   max-width: 920px;
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   color: var(--ink-soft);
   font-size: 15px;
   line-height: 1.7;
@@ -150,18 +150,20 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: 12px;
 }
 
 .requirement-detail__seat {
   display: inline-grid;
   place-items: center;
-  width: 20px;
+  min-width: 20px;
   height: 20px;
-  border: 1px solid var(--line-strong);
+  padding: 0 5px;
+  border-radius: 5px;
+  background: rgb(var(--fg-rgb) / 0.06);
   color: var(--ink-2);
   font-family: var(--font-mono);
   font-size: 11px;
+  font-weight: 600;
 }
 
 .requirement-detail__project {
@@ -178,10 +180,10 @@
 }
 
 .requirement-detail__level {
-  padding: 1px 6px;
-  border: 1px solid var(--ink);
-  border-radius: 3px;
-  color: var(--ink);
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--muted);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -192,6 +194,112 @@
   border-color: var(--signal);
   background: var(--signal);
   color: #fff;
+}
+
+.requirement-detail__level--p1 {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+
+/* ── 头部这张票（R05-1，和需求池海报同一套：声纹封面 + 中段 + 撕口 + 票根） ── */
+.requirement-ticket {
+  margin-top: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 22px;
+  background: var(--surface);
+}
+
+.requirement-ticket__body {
+  padding: 22px 28px 24px;
+}
+
+/* 撕口：虚线，两侧各咬一个半圆缺口（盖住外框，露出页面底色） */
+.requirement-ticket__perf {
+  position: relative;
+  margin: 0 18px;
+  border-top: 1.5px dashed var(--line-strong);
+}
+
+.requirement-ticket__perf::before,
+.requirement-ticket__perf::after {
+  position: absolute;
+  top: -10px;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--bg);
+  content: "";
+}
+
+.requirement-ticket__perf::before {
+  left: -28px;
+  clip-path: inset(0 0 0 50%);
+}
+
+.requirement-ticket__perf::after {
+  right: -28px;
+  clip-path: inset(0 50% 0 0);
+}
+
+.requirement-ticket__stub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 28px 16px;
+}
+
+.requirement-ticket__stats {
+  display: flex;
+  gap: 8px;
+}
+
+/* 三个数点了滚到下面对应的卡 */
+.requirement-ticket__stats button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 72px;
+  padding: 4px 10px 4px 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.requirement-ticket__stats b {
+  color: var(--heading);
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.requirement-ticket__stats button.is-zero b {
+  color: var(--faint);
+  font-weight: 400;
+}
+
+.requirement-ticket__stats button:hover b {
+  color: var(--signal);
+}
+
+.requirement-ticket__date {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.requirement-ticket__date b {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-weight: 600;
 }
 
 .requirement-detail__status {
@@ -470,6 +578,31 @@
 
 /* 手机上三张表不再按列排：标题独占一行，其余字段在下面顺排，表头隐藏。 */
 @media (max-width: 767px) {
+  .requirement-ticket__body {
+    padding: 18px 16px 20px;
+  }
+
+  .requirement-ticket__perf {
+    margin: 0 10px;
+  }
+
+  .requirement-ticket__perf::before {
+    left: -20px;
+  }
+
+  .requirement-ticket__perf::after {
+    right: -20px;
+  }
+
+  .requirement-ticket__stub {
+    flex-wrap: wrap;
+    padding: 12px 16px 14px;
+  }
+
+  .requirement-ticket__stats button {
+    min-width: 60px;
+  }
+
   /* 头部：需求名占满一行，两个按钮折到它下面（并排的话标题只剩 90 来像素宽，折成竖条） */
   .requirement-detail__title-row {
     flex-direction: column;

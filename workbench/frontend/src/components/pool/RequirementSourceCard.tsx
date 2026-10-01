@@ -7,19 +7,6 @@ import { anchorLabel } from "./PosterCard";
 import { PosterWaveform, usePeaks, type Peaks } from "./PosterWaveform";
 import "./RequirementSourceCard.css";
 
-interface RequirementSourceCardProps {
-  /** 提出它的那句（头部波形取这场会）；没有时取来源里的第一场会 */
-  origin: RequirementSource | null;
-  /** 提出它的和合并进来的原话，按会议时间先后（R05-2） */
-  sources: RequirementSource[];
-  /** 点波形、时间签、原话时间：打开那场会，从这一秒开始放（同 R02） */
-  onOpenMeeting: (meetingId: string, atMs?: number) => void;
-  /** 合并进来的原话还在撤销时限内（R01-14）时，那一行给［撤销合并］；不传就不画这个按钮 */
-  onUndoMerge?: (candidateId: string) => void;
-  /** 撤销在进行中：按钮置灰，免得连点 */
-  undoBusy?: boolean;
-}
-
 function sourceLabel(source: RequirementSource, waveMeetingId: string): string {
   const where = source.meeting_id === waveMeetingId ? "" : ` · ${source.meeting_title}`;
   // 选了来源会议、没挑原话：不能写「会上原话」，那一行底下没有原话
@@ -152,23 +139,38 @@ function SourceWave({ wave, marks, peaks, firstAnchor, onOpenMeeting }: SourceWa
   );
 }
 
+interface SourceProps {
+  /** 提出它的那句（波形取这场会）；没有时取来源里的第一场会 */
+  origin: RequirementSource | null;
+  /** 提出它的和合并进来的原话，按会议时间先后（R05-2） */
+  sources: RequirementSource[];
+  /** 点波形、时间签、原话时间：打开那场会，从这一秒开始放（同 R02） */
+  onOpenMeeting: (meetingId: string, atMs?: number) => void;
+}
+
 /**
- * 需求详情的「出自录音」（R05-1、R05-2，S12/S13）：提出它的那场会的真实波形，这场会里的原话在波形上打标记
- * （提出的实心、合并进来的空心），底下按会议时间先后列出全部原话。没有来源时不画（同 R02）。
- * 这场会没有录音文件、或峰值接口取不到时，只显示会议信息和原话时间锚：波形、时间签、坐标轴都不画，也不留空位（R02 异常）。
+ * 需求详情头部那张票的封面「出自录音」（R05-1，S12/S13）：提出它的那场会的真实波形，这场会里的原话在波形上打标记
+ * （提出的实心、合并进来的空心）。和海报一样，没有来源时是一条静音线。
+ * 这场会没有录音文件、或峰值接口取不到时，只显示会议信息：波形、时间签、坐标轴都不画，也不留空位（R02 异常）。
  */
-export function RequirementSourceCard({ origin, sources, onOpenMeeting, onUndoMerge, undoBusy = false }: RequirementSourceCardProps) {
+export function RequirementSourceCover({ origin, sources, onOpenMeeting }: SourceProps) {
   const wave = origin ?? sources[0] ?? null;
   const peaks = usePeaks(wave?.audio_artifact_id ?? null);
-  const now = useExpiryClock(sources.flatMap((source) => (source.undo_merge ? [source.undo_merge.until] : [])));
-  if (!wave) return null;
+  if (!wave) {
+    return (
+      <div className="source-cover is-silent">
+        <span aria-hidden="true" className="source-cover__silence" />
+        <span className="source-cover__silence-label">没有来源录音</span>
+      </div>
+    );
+  }
   const marks = sources.filter((source) => source.meeting_id === wave.meeting_id && source.anchor_ms !== null);
   // 提出的那句排第一：波形上它之前的柱子加深
   marks.sort((left, right) => (left.kind === "origin" ? -1 : right.kind === "origin" ? 1 : 0));
   const firstAnchor = origin?.anchor_ms ?? marks[0]?.anchor_ms ?? undefined;
 
   return (
-    <section aria-label="出自录音" className="requirement-detail__card source-card">
+    <section aria-label="出自录音" className="source-cover">
       <header className="source-card__head">
         <strong>出自录音</strong>
         <span className="source-card__meeting">{wave.meeting_title}</span>
@@ -190,7 +192,29 @@ export function RequirementSourceCard({ origin, sources, onOpenMeeting, onUndoMe
           wave={wave}
         />
       )}
+    </section>
+  );
+}
 
+interface RequirementQuotesProps extends SourceProps {
+  /** 合并进来的原话还在撤销时限内（R01-14）时，那一行给［撤销合并］；不传就不画这个按钮 */
+  onUndoMerge?: (candidateId: string) => void;
+  /** 撤销在进行中：按钮置灰，免得连点 */
+  undoBusy?: boolean;
+}
+
+/** 需求详情的「来源」（R05-2）：提出它的和合并进来的原话按会议时间先后列出。没有来源时不画（同 R02）。 */
+export function RequirementQuotes({ origin, sources, onOpenMeeting, onUndoMerge, undoBusy = false }: RequirementQuotesProps) {
+  const now = useExpiryClock(sources.flatMap((source) => (source.undo_merge ? [source.undo_merge.until] : [])));
+  const wave = origin ?? sources[0] ?? null;
+  if (!wave || sources.length === 0) return null;
+
+  return (
+    <section aria-label="来源" className="requirement-detail__card source-card">
+      <header className="requirement-detail__card-head">
+        <strong>来源</strong>
+        <span className="requirement-detail__count">{sources.length}</span>
+      </header>
       <ol className="source-card__quotes">
         {sources.map((source) => (
           <li key={source.id}>
