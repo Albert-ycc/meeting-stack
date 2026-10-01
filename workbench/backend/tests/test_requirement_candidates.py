@@ -339,6 +339,7 @@ def test_merge_can_be_undone_within_ten_minutes(tmp_path):
     assert response.status_code == 200, response.text
     restored = response.json()
     assert (restored["status"], restored["requirement_id"]) == ("pending", None)
+    assert restored["kept_task_count"] == 0
     assert [
         (s["kind"], s["quote"], s["anchor_ms"], s["via_candidate_title"])
         for s in restored["sources"]
@@ -427,6 +428,8 @@ def test_merge_undo_only_takes_back_what_that_merge_brought(tmp_path):
     response = post(client, headers, f"/api/requirement-candidates/{first}/unmerge")
 
     assert response.status_code == 200, response.text
+    # 改挂到别处、没退回的任务有几条：提示里要说一声
+    assert response.json()["kept_task_count"] == 1
     detail = client.get(f"/api/requirements/{target}").json()
     # 同一场会后来又合并进一条：关联留着，那一条的原话也留着
     assert [meeting["id"] for meeting in detail["meetings"]] == [meeting_id("cvm")]
@@ -512,8 +515,37 @@ def test_drop_detaches_tasks_and_can_be_undone_within_30_days(tmp_path):
     restored = post(client, headers, f"/api/requirement-candidates/{candidate_id}/restore").json()
     assert (restored["status"], restored["dropped_at"]) == ("pending", None)
     assert titles(wall(client, status="pending")) == ["科室会预约后台导出"]
-    # 撤销不会把任务挂回来
-    assert db.query_one("SELECT candidate_id FROM tasks") == {"candidate_id": None}
+    # 撤销回到丢掉之前的样子：摘下来的任务挂回来（第二轮审查一般-5，和撤销合并一致）
+    assert db.query_one("SELECT candidate_id FROM tasks") == {"candidate_id": candidate_id}
+    assert wall(client, status="pending")["items"][0]["open_task_count"] == 1
+    assert [
+        row["body"]
+        for row in db.query_all(
+            "SELECT body FROM task_events WHERE task_id='task-mobilize' ORDER BY id"
+        )
+    ] == [
+        "移出候选「科室会预约后台导出」：候选丢掉了",
+        "撤销丢掉：回到候选「科室会预约后台导出」",
+    ]
+
+
+def test_restore_leaves_tasks_attached_elsewhere_in_the_meantime(tmp_path):
+    """丢掉以后、撤销之前，摘下来的任务被挂到了别的需求上：撤销不把它拽回来。"""
+    client, headers, db = make_world(tmp_path)
+    other = create(client, headers, "cvm", "直播间运营六项修正", "P1", meeting_keys=("cvm",))
+    candidate_id = candidate(db, "export", "科室会预约后台导出", summary=EXPORT_SUMMARY)
+    task_on_candidate(
+        db, "task-mobilize", "持续盯预约场次并在群里动员报名", 487620, MOBILIZE_QUOTE, candidate_id
+    )
+    post(client, headers, f"/api/requirement-candidates/{candidate_id}/drop")
+    client.patch("/api/tasks/task-mobilize", json={"requirement_id": other}, headers=headers)
+
+    post(client, headers, f"/api/requirement-candidates/{candidate_id}/restore")
+
+    assert db.query_one("SELECT requirement_id, candidate_id FROM tasks") == {
+        "requirement_id": other,
+        "candidate_id": None,
+    }
 
 
 def test_restore_window_closes_after_30_days(tmp_path):

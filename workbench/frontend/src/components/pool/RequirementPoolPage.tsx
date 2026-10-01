@@ -24,6 +24,9 @@ const HIGHLIGHT_MS = 3000;
 
 /** 合并成功的轻提示（R01-14）：从认领页合并回来时由 App 用同一句 */
 export const mergedMessage = (title: string) => `已合并到「${title}」，这场会和原话已加进去`;
+/** 撤销合并以后：这 10 分钟里被改挂到别处的任务没有退回，说一声 */
+export const unmergedMessage = (keptTaskCount = 0) =>
+  keptTaskCount > 0 ? `已撤销合并；有 ${keptTaskCount} 条任务已经挂到别处，没有退回` : "已撤销合并";
 
 function findPoster(wall: HTMLElement | null, id: string): HTMLElement | null {
   if (!wall) return null;
@@ -170,8 +173,8 @@ export function RequirementPoolPage({
   const undoMerge = useCallback(
     async (candidateId: string) => {
       try {
-        await apiClient.undoCandidateMerge(candidateId);
-        showToast("已撤销合并");
+        const result = await apiClient.undoCandidateMerge(candidateId);
+        showToast(unmergedMessage(result?.kept_task_count));
       } catch (err) {
         showToast(err instanceof Error ? err.message : "撤销失败，请稍后重试");
       }

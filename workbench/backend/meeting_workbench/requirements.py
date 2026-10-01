@@ -10,6 +10,7 @@ v17（需求池改版 260930）：需求多了说明和来源。来源＝提出�
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import unicodedata
 import uuid
@@ -60,9 +61,17 @@ class RequirementTitleConflict(ConflictError):
 
 
 def clean_title(title: str | None) -> str:
-    """需求名去掉零宽字符这类看不见的格式字符（从飞书、微信复制常带），再去首尾空白：
-    不然「赠药横跳拦截」后面多一个零宽空格就能绕过同项目不重名，只粘一个零宽空格能建出看不见名字的需求。"""
-    return "".join(char for char in (title or "") if unicodedata.category(char) != "Cf").strip()
+    """需求名去掉零宽字符这类看不见的格式字符（从飞书、微信复制常带），不换行空格、全角空格这类
+    看着和空格一样的统一成一个普通空格，再去首尾空白：不然「赠药横跳拦截」后面多一个零宽空格、
+    「EDC 系统选型」中间换成不换行空格，就能绕过同项目不重名；只粘一个零宽空格能建出看不见名字的需求。
+    前端 RequirementFormPage 的 cleanTitle 和这里同一个规矩。"""
+    kept = []
+    for char in title or "":
+        category = unicodedata.category(char)
+        if category == "Cf":
+            continue
+        kept.append(" " if category == "Zs" else char)
+    return re.sub(" {2,}", " ", "".join(kept)).strip()
 
 
 def _normalize_title(title: str) -> str:

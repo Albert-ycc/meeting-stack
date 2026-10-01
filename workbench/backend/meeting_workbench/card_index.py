@@ -597,6 +597,7 @@ def requirement_context(conn: Any, requirement_id: str) -> dict[str, Any]:
     - 规矩和索引一样：只写定下来的，不摘材料原文，没有分数。只有一处不同：这个需求所有关联会的决议都写上，
       不管卡片在不在项目文件夹里（复制是你当场点的，「先不要」管的是往你的盘上写文件）。
     - paths：旧按钮复制的全部（各场会的 canonical_dir 加需求文件夹），再加卡片和交付物的路径。
+    - markdown_paths：正文里真写进去的路径（复制提示里的 N 按它数）。
     - cards_missing：关联的会里，纪要卡片不在项目文件夹里的场数。
     """
     # 1. 需求、项目名和全部文件夹
@@ -741,8 +742,15 @@ def requirement_context(conn: Any, requirement_id: str) -> dict[str, Any]:
     legacy = [entry["canonical_dir"] for entry in linked if entry["canonical_dir"]] + folders
     cards = [entry["card"] for entry in linked if entry["card"]]
     paths = list(dict.fromkeys([*legacy, *cards, *produced_paths]))
+    # 正文里真写进去的路径：文件夹、每场会的卡片（没有卡片时是归档文件夹）、产出。提示「复制了 N 个文件路径」
+    # 按它数——paths 还带着有卡片的会的归档文件夹，正文里没写
+    written = [entry["card"] or entry["canonical_dir"] for entry in linked]
+    markdown_paths = list(
+        dict.fromkeys([*folders, *(path for path in written if path), *produced_paths])
+    )
     return {
         "markdown": "\n".join(lines) + "\n",
         "paths": paths,
+        "markdown_paths": markdown_paths,
         "cards_missing": sum(1 for entry in linked if not entry["card"]),
     }

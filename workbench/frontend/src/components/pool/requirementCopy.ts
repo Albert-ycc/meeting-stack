@@ -7,8 +7,11 @@ import type { RequirementContext } from "../../types";
  * 把需求背景复制出去，轻提示是同一句。没有任何文件路径时不说「0 个」。
  * 有会的纪要不在项目文件夹里时多带一句，让人知道粘出去的是归档文件夹里的纪要。
  */
-export function copiedMessage(context: Pick<RequirementContext, "paths" | "cards_missing">): string {
-  const pathCount = context.paths?.length ?? 0;
+export function copiedMessage(
+  context: Pick<RequirementContext, "paths" | "markdown_paths" | "cards_missing">,
+): string {
+  // 数正文里真写进去的路径：paths 还带着有卡片的会的归档文件夹，正文里没写（第二轮审查一般-2）
+  const pathCount = (context.markdown_paths ?? context.paths)?.length ?? 0;
   const cardsMissing = context.cards_missing ?? 0;
   const head = pathCount > 0 ? `已复制需求背景和 ${pathCount} 个文件路径` : "已复制需求背景";
   const tail = cardsMissing > 0 ? `；有 ${cardsMissing} 场会的纪要不在项目文件夹里，带的是归档文件夹` : "";

@@ -486,6 +486,15 @@ describe("RequirementPoolPage 合并后的撤销（R01-14，S03-b）", () => {
     expect(within(screen.getByRole("status")).queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
   });
 
+  it("撤销合并时有任务这 10 分钟里改挂到了别处、没有退回：提示里说一声", async () => {
+    const undoCandidateMerge = vi.fn().mockResolvedValue({ kept_task_count: 1 });
+    await mergeFromWall({ undoCandidateMerge } as Partial<ApiClient>);
+
+    fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+
+    await expectToast("已撤销合并；有 1 条任务已经挂到别处，没有退回");
+  });
+
   it("撤销失败（比如合并已经超过 10 分钟）：提示后端返回的原因，墙上换成最新的", async () => {
     const undoCandidateMerge = vi
       .fn()

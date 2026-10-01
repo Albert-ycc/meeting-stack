@@ -64,7 +64,12 @@ export function summaryLength(value: string): number {
 
 /** 和后端 clean_title 一致：去掉零宽字符这类不可见的格式字符（Unicode Cf），再去首尾空白 */
 export function cleanTitle(value: string): string {
-  return value.replace(/\p{Cf}/gu, "").trim();
+  // 和后端 clean_title 同一个规矩：去掉零宽字符，不换行空格、全角空格统一成一个普通空格，去首尾空白
+  return value
+    .replace(/\p{Cf}/gu, "")
+    .replace(/\p{Zs}/gu, " ")
+    .replace(/ {2,}/g, " ")
+    .trim();
 }
 
 function recency(project: Project): number {

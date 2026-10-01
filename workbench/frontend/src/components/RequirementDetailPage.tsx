@@ -28,6 +28,7 @@ import { DecisionLogCard } from "./decisions/DecisionLogCard";
 import { MentionedBadge } from "./files/MentionedBadge";
 import { useMentionedCounts } from "./files/useMentionedCounts";
 import { RequirementSourceCard } from "./pool/RequirementSourceCard";
+import { unmergedMessage } from "./pool/RequirementPoolPage";
 import { copiedMessage } from "./pool/requirementCopy";
 
 interface RequirementDetailPageProps {
@@ -216,13 +217,13 @@ export function RequirementDetailPage({
 
   // 页面上的写操作统一走这里：进行中禁用按钮防连点，失败给出原因，成功后静默刷新。
   const [mutating, setMutating] = useState(false);
-  const mutate = async (action: () => Promise<unknown>, success?: string) => {
+  const mutate = async <T,>(action: () => Promise<T>, success?: string | ((result: T) => string)) => {
     if (mutating) return;
     setMutating(true);
     setNotice("");
     try {
-      await action();
-      if (success) showToast(success);
+      const result = await action();
+      if (success) showToast(typeof success === "function" ? success(result) : success);
       await load();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
@@ -281,7 +282,10 @@ export function RequirementDetailPage({
 
   // 合并进来的原话 10 分钟内可撤销（R01-14）：候选回到待认领，这次合并带进来的原话、会议、任务退回去
   const undoMerge = (candidateId: string) =>
-    void mutate(() => apiClient.undoCandidateMerge(candidateId), "已撤销合并");
+    void mutate(
+      () => apiClient.undoCandidateMerge(candidateId),
+      (result) => unmergedMessage(result?.kept_task_count),
+    );
 
   const removeFolder = (folderId: number) =>
     void mutate(() => apiClient.removeRequirementFolder(requirementId, folderId), "已移除材料文件夹");

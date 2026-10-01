@@ -1159,7 +1159,7 @@ export const api = {
   droppedCandidates: () => read<DroppedCandidates>("/api/requirement-candidates/dropped"),
   /** 合并后 10 分钟内撤销（R01-14）：候选回到待认领，合并带进去的原话、关联会议、任务都退回；过了时间 409 */
   undoCandidateMerge: (candidateId: string) =>
-    write<CandidateDetail>(
+    write<CandidateDetail & { kept_task_count?: number }>(
       `/api/requirement-candidates/${encodeURIComponent(candidateId)}/unmerge`,
       "POST",
       {},

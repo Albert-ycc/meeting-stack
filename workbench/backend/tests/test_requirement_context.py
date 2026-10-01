@@ -110,6 +110,26 @@ def test_paths_include_the_old_material_list_plus_cards_and_deliverables(tmp_pat
     assert len(paths) == len(set(paths))
 
 
+def test_markdown_paths_are_exactly_the_paths_written_in_the_text(tmp_path):
+    """复制提示「已复制需求背景和 N 个文件路径」的 N 按正文里真写进去的路径数：有卡片的会只写卡片，
+    它的归档文件夹不写，也不算（第二轮审查一般-2：之前按 paths 数，多算了周会的归档文件夹）。"""
+    db, _settings, _writer, root, old_root = world(tmp_path)
+
+    result = context(db)
+
+    assert result["markdown_paths"] == [
+        f"{root}/需求/初审规则",
+        f"{root}/声档会议记录/260926 初审规则沟通.md",
+        f"{old_root}/声档会议记录/260924 别处的会.md",
+        "/Volumes/资料盘/会议纪要与录音/260923 老会",
+        f"{root}/声档会议记录/260920 周会.md",
+        f"{root}/需求/初审规则/方案v1.docx",
+    ]
+    assert all(path in result["markdown"] for path in result["markdown_paths"])
+    assert "/Volumes/资料盘/会议纪要与录音/260920 周会" in result["paths"]
+    assert "/Volumes/资料盘/会议纪要与录音/260920 周会" not in result["markdown"]
+
+
 def test_empty_sections_are_left_out(tmp_path):
     db, _settings, _writer, _root, _old_root = world(tmp_path)
     result = context(db, "r-0")
@@ -118,6 +138,7 @@ def test_empty_sections_are_left_out(tmp_path):
         + card_index.CONTEXT_QUOTE
         + "\n",
         "paths": [],
+        "markdown_paths": [],
         "cards_missing": 0,
     }
     done = context(db, "r-2")
@@ -181,7 +202,7 @@ def test_endpoint_and_404(tmp_path):
            VALUES ('r', 'p', '初审规则 V2', 'P1', 'shelved', 'x', 'x')"""
     )
     payload = client.get("/api/requirements/r/context").json()
-    assert set(payload) == {"markdown", "paths", "cards_missing"}
+    assert set(payload) == {"markdown", "paths", "markdown_paths", "cards_missing"}
     assert payload["markdown"].startswith("# 初审规则 V2（云图AI · 需求 · P1 · 搁置）")
     missing = client.get("/api/requirements/nope/context")
     assert missing.status_code == 404 and missing.json()["detail"] == "需求不存在"

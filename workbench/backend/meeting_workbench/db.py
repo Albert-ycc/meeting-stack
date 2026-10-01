@@ -1359,6 +1359,8 @@ CREATE TABLE IF NOT EXISTS requirement_candidates (
     -- 原来的项目），10 分钟内撤销合并按它原样退回（R01-14）；撤销后清空
     merged_at TEXT,
     merge_undo TEXT,
+    -- 丢掉时从候选上摘下来的任务（JSON 数组），撤销丢掉时这期间没被挂到别处的挂回去
+    drop_undo TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -1606,7 +1608,13 @@ class Database:
                     "PRAGMA table_info(requirement_candidates)"
                 ).fetchall()
             }
-            for name in ("project_id_seen", "dropped_project_id", "merged_at", "merge_undo"):
+            for name in (
+                "project_id_seen",
+                "dropped_project_id",
+                "merged_at",
+                "merge_undo",
+                "drop_undo",
+            ):
                 if name not in candidate_columns:
                     connection.execute(f"ALTER TABLE requirement_candidates ADD COLUMN {name} TEXT")
             minutes_columns = {

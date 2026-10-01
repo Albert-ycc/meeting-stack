@@ -526,6 +526,37 @@ def test_create_rejects_bad_summary_and_source(tmp_path):
     assert db.query_one("SELECT COUNT(*) AS n FROM requirements") == {"n": 1}
 
 
+def test_titles_fold_look_alike_spaces(tmp_path):
+    """不换行空格、全角空格看着和普通空格一样：统一成一个普通空格，连着的空格并成一个，
+    绕不过同项目不重名（第二轮审查建议 6：之前「EDC 系统选型」中间换成不换行空格就能建出两条）。"""
+    client, headers, db = make_world(tmp_path)
+    create(client, headers, "yimi", "EDC 系统选型", "P1")
+
+    for title in ("EDC\u00a0系统选型", "EDC\u3000系统选型", "EDC  系统选型"):
+        response = client.post(
+            "/api/requirements",
+            json={"project_id": project_id("yimi"), "title": title, "priority": "P2"},
+            headers=headers,
+        )
+        assert response.status_code == 409, repr(title)
+        assert response.json()["existing"]["title"] == "EDC 系统选型"
+    check = client.get(
+        "/api/requirements/title-check",
+        params={"project_id": project_id("yimi"), "title": "EDC\u00a0系统选型"},
+    ).json()
+    assert check["existing"]["title"] == "EDC 系统选型"
+    cleaned = client.post(
+        "/api/requirements",
+        json={
+            "project_id": project_id("cvm"),
+            "title": "\u00a0科室会预约\u00a0后台导出\u3000",
+            "priority": "P2",
+        },
+        headers=headers,
+    )
+    assert cleaned.status_code == 200 and cleaned.json()["title"] == "科室会预约 后台导出"
+
+
 def test_titles_drop_zero_width_characters(tmp_path):
     """需求名里的零宽字符（从飞书、微信复制常带）不算字：绕不过同项目不重名，只有零宽字符等于没写。"""
     client, headers, db = make_world(tmp_path)

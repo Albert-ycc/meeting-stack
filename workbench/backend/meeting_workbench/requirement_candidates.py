@@ -2,7 +2,7 @@
 
 候选认领后才建成正式需求（进行中，优先级默认 P2）；合并＝把它的会和原话并进同项目一条进行中或已搁置的
 需求，候选随即消失；丢掉的 30 天内能撤销，同一项目下同名候选以后不再提示（name_key 留着）。
-挂在候选上的任务：认领后随需求走、合并后挂到目标需求、丢掉后回到未挂需求（撤销丢掉不会再挂回来）。
+挂在候选上的任务：认领后随需求走、合并后挂到目标需求、丢掉后回到未挂需求（撤销丢掉时，这期间没被挂到别处的挂回来）。
 已经被手动挂到别的需求上的任务不跟着动。
 
 候选不存项目，跟着来源会议当前的归属走；会议没归项目时是「未归项目」，认领时必须选定项目。
@@ -1214,12 +1214,16 @@ def unmerge_candidate(
                                        WHERE requirement_id=? AND meeting_id=?)""",
                 (requirement_id, meeting_id, requirement_id, meeting_id),
             )
+        # 这 10 分钟里被改挂到别处的任务不动，记下几条，提示里说一声（第二轮审查建议 7）
+        kept = 0
         for task in record["tasks"]:
-            if connection.execute(
+            if not connection.execute(
                 """UPDATE tasks SET requirement_id=NULL, candidate_id=?, project_id=?, updated_at=?
                     WHERE id=? AND requirement_id=?""",
                 (candidate_id, task["project_id"], stamp, task["id"], requirement_id),
             ).rowcount:
+                kept += 1
+            else:
                 connection.execute(
                     """INSERT INTO task_events(task_id, kind, body, created_at)
                        VALUES (?, 'requirement_changed', ?, ?)""",
@@ -1232,25 +1236,45 @@ def unmerge_candidate(
                 WHERE id=?""",
             (stamp, candidate_id),
         )
-    return get_candidate(task_service.db, candidate_id)
+    return {**get_candidate(task_service.db, candidate_id), "kept_task_count": kept}
 
 
 def drop_candidate(
     db: Database, candidate_id: str, *, now: datetime | None = None
 ) -> dict[str, Any]:
-    """丢掉：候选移出墙面，挂在它上面的任务回到未挂需求。30 天内能撤销。"""
+    """丢掉：候选移出墙面，挂在它上面的任务回到未挂需求（记下是哪几条，撤销时挂回去）。30 天内能撤销。"""
     stamp = (now or datetime.now(UTC)).isoformat()
     with db.transaction() as connection:
         candidate = _pending_candidate(connection, candidate_id)
+        task_ids = [
+            row["id"]
+            for row in connection.execute(
+                "SELECT id FROM tasks WHERE candidate_id=? ORDER BY id", (candidate_id,)
+            ).fetchall()
+        ]
         # 「同项目丢掉过的不再提示」按丢掉时的项目算：会议后来改了归属，丢掉的名字不跟着搬家
         connection.execute(
             """UPDATE requirement_candidates
-                  SET status='dropped', dropped_at=?, dropped_project_id=?, updated_at=?
+                  SET status='dropped', dropped_at=?, dropped_project_id=?, drop_undo=?, updated_at=?
                 WHERE id=?""",
-            (stamp, candidate["project_id"], stamp, candidate_id),
+            (
+                stamp,
+                candidate["project_id"],
+                json.dumps(task_ids) if task_ids else None,
+                stamp,
+                candidate_id,
+            ),
         )
         connection.execute(
             "UPDATE tasks SET candidate_id=NULL WHERE candidate_id=?", (candidate_id,)
+        )
+        connection.executemany(
+            """INSERT INTO task_events(task_id, kind, body, created_at)
+               VALUES (?, 'requirement_changed', ?, ?)""",
+            [
+                (task_id, f"移出候选「{candidate['title']}」：候选丢掉了", stamp)
+                for task_id in task_ids
+            ],
         )
     return get_candidate(db, candidate_id)
 
@@ -1258,8 +1282,10 @@ def drop_candidate(
 def restore_candidate(
     db: Database, candidate_id: str, *, now: datetime | None = None
 ) -> dict[str, Any]:
-    """撤销丢掉：30 天内回到待认领。之前挂在它上面的任务不会再挂回来。"""
+    """撤销丢掉：30 天内回到待认领，丢掉时摘下来的任务挂回去，回到丢掉之前的样子（和撤销合并一致）。
+    这期间已经被挂到别的需求或候选上的任务不动。"""
     moment = now or datetime.now(UTC)
+    stamp = moment.isoformat()
     with db.transaction() as connection:
         candidate = _candidate_row(connection, candidate_id)
         if candidate["status"] != "dropped":
@@ -1268,10 +1294,22 @@ def restore_candidate(
             days=DROP_UNDO_DAYS
         ):
             raise ConflictError(f"丢掉超过 {DROP_UNDO_DAYS} 天，不能撤销了")
+        for task_id in json.loads(candidate["drop_undo"] or "[]"):
+            if connection.execute(
+                """UPDATE tasks SET candidate_id=?, updated_at=?
+                    WHERE id=? AND candidate_id IS NULL AND requirement_id IS NULL""",
+                (candidate_id, stamp, task_id),
+            ).rowcount:
+                connection.execute(
+                    """INSERT INTO task_events(task_id, kind, body, created_at)
+                       VALUES (?, 'requirement_changed', ?, ?)""",
+                    (task_id, f"撤销丢掉：回到候选「{candidate['title']}」", stamp),
+                )
         connection.execute(
             """UPDATE requirement_candidates
-                  SET status='pending', dropped_at=NULL, dropped_project_id=NULL, updated_at=?
+                  SET status='pending', dropped_at=NULL, dropped_project_id=NULL, drop_undo=NULL,
+                      updated_at=?
                 WHERE id=?""",
-            (moment.isoformat(), candidate_id),
+            (stamp, candidate_id),
         )
     return get_candidate(db, candidate_id)

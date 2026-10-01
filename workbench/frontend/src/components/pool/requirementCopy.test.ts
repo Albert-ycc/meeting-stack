@@ -38,6 +38,13 @@ describe("copiedMessage（海报「接下」和详情「复制给 Claude Code」
     expect(copiedMessage(context({ paths: ["/a"] }))).toBe("已复制需求背景和 1 个文件路径，去 Claude Code 粘贴");
   });
 
+  it("N 按正文里真写进去的路径数（markdown_paths）：有卡片的会，归档文件夹不写也不算；旧后端没有就退回 paths", () => {
+    expect(copiedMessage(context({ paths: ["/a", "/b", "/c"], markdown_paths: ["/a", "/c"] }))).toBe(
+      "已复制需求背景和 2 个文件路径，去 Claude Code 粘贴",
+    );
+    expect(copiedMessage(context({ paths: ["/a", "/b"], markdown_paths: [] }))).toBe("已复制需求背景，去 Claude Code 粘贴");
+  });
+
   it("一个路径都没有时不说「0 个文件路径」", () => {
     expect(copiedMessage(context({ paths: [] }))).toBe("已复制需求背景，去 Claude Code 粘贴");
   });

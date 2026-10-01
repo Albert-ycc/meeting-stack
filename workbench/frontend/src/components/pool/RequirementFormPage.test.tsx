@@ -1066,6 +1066,13 @@ describe("RequirementFormPage 空名（审查 B12）", () => {
     expect(submitButton("认领")).toBeDisabled();
   });
 
+  it("cleanTitle 和后端 clean_title 一致：不换行空格、全角空格统一成一个普通空格，连着的空格并成一个", () => {
+    expect(cleanTitle("EDC\u00a0系统选型")).toBe("EDC 系统选型");
+    expect(cleanTitle("EDC\u3000系统选型")).toBe("EDC 系统选型");
+    expect(cleanTitle("EDC  系统选型")).toBe("EDC 系统选型");
+    expect(cleanTitle("\u00a0科室会预约\u00a0后台导出\u3000")).toBe("科室会预约 后台导出");
+  });
+
   it("cleanTitle 和后端 clean_title 一致：去掉 Unicode Cf 类字符，再去首尾空白", () => {
     expect(cleanTitle("​ 赠药‍横跳拦截⁠ ")).toBe("赠药横跳拦截");
     expect(cleanTitle("﻿")).toBe("");

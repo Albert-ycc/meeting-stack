@@ -1793,6 +1793,8 @@ export interface RequirementContext {
   markdown: string;
   /** 旧［复制材料清单］的全部路径，加上卡片和交付物的路径 */
   paths: string[];
+  /** 正文里真写进去的路径：复制提示「N 个文件路径」按它数；旧后端没有，退回 paths */
+  markdown_paths?: string[];
   /** 关联的会里，纪要卡片不在项目文件夹里的场数 */
   cards_missing: number;
 }
