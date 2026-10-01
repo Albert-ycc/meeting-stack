@@ -42,6 +42,9 @@ interface AttributionBarProps {
   onProjectsChanged?: () => Promise<void> | void;
   /** 建成需求后提示里的［打开需求］ */
   onOpenRequirement?: (requirementId: string) => void;
+  /** 已归项目的会上出「像是『P』里的一个新需求」。会议页不出：改由需求池的待认领候选承接（R01-11）；
+   * 关系图的会议面板照旧出 */
+  requirementHints?: boolean;
 }
 
 const RECENT_CHANGE_DAYS = 30;
@@ -164,6 +167,7 @@ export function AttributionBar({
   onNotice,
   onProjectsChanged,
   onOpenRequirement,
+  requirementHints = false,
 }: AttributionBarProps) {
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -310,7 +314,8 @@ export function AttributionBar({
     />
   );
   // 已归项目的会（自动或你归的）：「像是『P』里的一个新需求」
-  const requirementHint = hint?.kind === "requirement" && (state === "auto" || state === "manual") ? hint : null;
+  const requirementHint =
+    requirementHints && hint?.kind === "requirement" && (state === "auto" || state === "manual") ? hint : null;
 
   if (state === "auto") {
     const literal = attribution.evidence.filter(

@@ -1783,3 +1783,75 @@ describe("MeetingDetailPage 相关材料栏（4d）", () => {
     }
   });
 });
+
+describe("MeetingDetailPage 抽需求候选（R01-4）", () => {
+  const withMinutes: MeetingDetail = {
+    ...meeting(false),
+    current_minutes_version_id: "mv-1",
+    minutes_versions: [
+      {
+        id: "mv-1",
+        meeting_id: "vm-1",
+        version_no: 1,
+        kind: "generated",
+        published: 1,
+        markdown: "# 纪要",
+        created_at: "2026-09-30T02:46:40Z",
+      },
+    ],
+  };
+
+  function renderPage(page: MeetingDetail, api: Partial<ApiClient>, props: { canWriteTasks?: boolean } = {}) {
+    const onOpenPendingCandidates = vi.fn();
+    render(
+      <MeetingDetailPage
+        apiClient={{ transcriptVersionSegments: vi.fn(), ...api } as unknown as ApiClient}
+        canWriteTasks={props.canWriteTasks ?? true}
+        initialSeekMs={0}
+        isMobile={false}
+        meeting={page}
+        onBack={vi.fn()}
+        onOpenPendingCandidates={onOpenPendingCandidates}
+        onReload={vi.fn().mockResolvedValue(undefined)}
+        projects={[]}
+        tags={[]}
+      />,
+    );
+    return { onOpenPendingCandidates };
+  }
+
+  it("有纪要的会在归档归属里能手动补抽，抽完提示放在待认领，［去看看］打开需求池", async () => {
+    const extractRequirementCandidates = vi.fn().mockResolvedValue({ status: "done", created: 2, merged: 1 });
+    const { onOpenPendingCandidates } = renderPage(withMinutes, { extractRequirementCandidates });
+
+    await userEvent.click(screen.getByRole("button", { name: "抽需求候选" }));
+
+    expect(extractRequirementCandidates).toHaveBeenCalledWith("vm-1");
+    expect(await screen.findByText("抽出 2 条需求候选，另有 1 条并进了已有的候选，放在需求池「待认领」")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "去看看" }));
+    expect(onOpenPendingCandidates).toHaveBeenCalledTimes(1);
+  });
+
+  it("没抽出来、没配 AI、抽失败各给一句；没抽出来时不给［去看看］", async () => {
+    const extractRequirementCandidates = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "done", created: 0, merged: 0 })
+      .mockResolvedValueOnce({ status: "unavailable", created: 0, merged: 0 })
+      .mockResolvedValueOnce({ status: "failed", created: 0, merged: 0 });
+    renderPage(withMinutes, { extractRequirementCandidates });
+    const button = screen.getByRole("button", { name: "抽需求候选" });
+
+    await userEvent.click(button);
+    expect(await screen.findByText("这场会没抽出新的需求候选")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "去看看" })).not.toBeInTheDocument();
+    await userEvent.click(button);
+    expect(await screen.findByText("没配置 AI，抽不了需求候选")).toBeInTheDocument();
+    await userEvent.click(button);
+    expect(await screen.findByRole("alert")).toHaveTextContent("抽需求候选失败，请稍后再试");
+  });
+
+  it("还没有纪要、或者不能写（手机只读）时没有这个按钮", () => {
+    renderPage(meeting(false), {});
+    expect(screen.queryByRole("button", { name: "抽需求候选" })).not.toBeInTheDocument();
+  });
+});

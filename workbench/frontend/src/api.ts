@@ -15,6 +15,7 @@ import type {
   ProjectMeetingRow,
   ProjectSubfoldersPayload,
   CandidateDetail,
+  CandidateExtraction,
   DroppedCandidates,
   MergeTargets,
   PoolFilters,
@@ -1130,6 +1131,13 @@ export const api = {
       `/api/requirement-candidates/${encodeURIComponent(candidateId)}/merge`,
       "POST",
       projectId ? { requirement_id: requirementId, project_id: projectId } : { requirement_id: requirementId },
+    ),
+  /** 会议详情［抽需求候选］：历史会议手动补抽，只抽候选、不动任务（同步，等 AI 回完） */
+  extractRequirementCandidates: (meetingId: string) =>
+    write<CandidateExtraction>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/requirement-candidates/extract`,
+      "POST",
+      {},
     ),
   dropCandidate: (candidateId: string) =>
     write<CandidateDetail>(`/api/requirement-candidates/${encodeURIComponent(candidateId)}/drop`, "POST", {}),

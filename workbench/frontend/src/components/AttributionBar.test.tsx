@@ -389,3 +389,21 @@ describe("AttributionBar 刚改过", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe("AttributionBar 像是新需求下线（R01-11）", () => {
+  const hint = { kind: "requirement" as const, name: "数据看板", spoken: [], project_id: "p-a", project_name: "云图AI" };
+
+  it("自动归属的会上不再出「像是『云图AI』里的一个新需求」，改由需求池的待认领候选承接", () => {
+    setup(attribution({ name_hint: hint }));
+
+    expect(screen.getByRole("group", { name: "项目归属" })).toBeInTheDocument();
+    expect(screen.queryByText(/新需求/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /建成需求/ })).not.toBeInTheDocument();
+  });
+
+  it("你归的会没有最近的改动时，只有「像是新需求」也不出归属条", () => {
+    setup(attribution({ state: "manual", origin: "manual", method: null, name_hint: hint }));
+
+    expect(screen.queryByRole("group", { name: "项目归属" })).not.toBeInTheDocument();
+  });
+});

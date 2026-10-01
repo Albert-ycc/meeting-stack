@@ -1021,6 +1021,10 @@ export default function App({ apiClient = api }: AppProps) {
         }}
         onOpenMeeting={(meetingId, seekMs) => openMeeting(meetingId, seekMs)}
         onOpenPreview={setPreviewTarget}
+        onOpenPendingCandidates={() => {
+          writePersistentState(POOL_TAB_KEY, "pending", { local: true });
+          navigate("requirements");
+        }}
         onOpenRequirement={openRequirementDetail}
         onOpenTasks={() => navigate("tasks")}
         onGlossaryChanged={() => void loadGlossaryPending()}

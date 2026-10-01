@@ -10,6 +10,7 @@ import type {
   AsrGoldSample,
   AsrShadowRun,
   AttributionState,
+  CandidateExtraction,
   GlossarySuggestion,
   LoadState,
   MeetingConflict,
@@ -71,9 +72,18 @@ interface MeetingDetailPageProps {
   onOpenMeeting?: (meetingId: string, seekMs: number) => void;
   /** 4d：相关材料栏里点条目打开预览抽屉并定位到那一段 */
   onOpenPreview?: (target: PreviewTarget) => void;
+  /** ［抽需求候选］之后提示里的［去看看］：打开需求池的「待认领」页签 */
+  onOpenPendingCandidates?: () => void;
 }
 
 type DetailTab = "transcript" | "minutes" | "tasks";
+
+/** ［抽需求候选］的结果提示 */
+function candidateExtractionNotice({ created, merged }: CandidateExtraction): string {
+  const joined = merged ? `${merged} 条并进了已有的候选` : "";
+  if (created) return `抽出 ${created} 条需求候选${joined ? `，另有 ${joined}` : ""}，放在需求池「待认领」`;
+  return joined ? `没有新的需求候选，${joined}` : "这场会没抽出新的需求候选";
+}
 
 // 检查器主项目下拉里的特殊取值：「不归项目」（没项目的会上显式标一下）和「交给 AI 判断」。
 const MARK_NO_PROJECT = "__none__";
@@ -266,6 +276,7 @@ export function MeetingDetailPage({
   onGlossaryChanged,
   onOpenMeeting,
   onOpenPreview,
+  onOpenPendingCandidates,
 }: MeetingDetailPageProps) {
   const playerRef = useRef<AudioPlayerHandle>(null);
   const [currentMs, setCurrentMs] = useState(initialSeekMs);
@@ -708,6 +719,31 @@ export function MeetingDetailPage({
   const changeRequirements = (next: RequirementRef[]) => {
     revisions.current.classification += 1;
     setSelectedRequirementRefs(next);
+  };
+  // R01-4：候选上线前的历史会议手动补抽需求候选，抽出来的放进需求池「待认领」；不动本场任务
+  const [extractingCandidates, setExtractingCandidates] = useState(false);
+  const extractCandidates = async () => {
+    if (extractingCandidates) return;
+    setExtractingCandidates(true);
+    setNotice("");
+    try {
+      const result = await apiClient.extractRequirementCandidates(meeting.id);
+      if (result.status === "unavailable") setNotice("没配置 AI，抽不了需求候选", "warning");
+      else if (result.status === "failed") setNotice("抽需求候选失败，请稍后再试", "error");
+      else
+        setNotice(
+          candidateExtractionNotice(result),
+          "success",
+          undefined,
+          result.created + result.merged > 0 && onOpenPendingCandidates
+            ? [{ label: "去看看", onClick: onOpenPendingCandidates }]
+            : undefined,
+        );
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "抽需求候选失败", "error");
+    } finally {
+      setExtractingCandidates(false);
+    }
   };
   const commitTranscript = async (baseVersionId: string | null) => {
     const snapshot = segments.map((segment) => ({ ...segment }));
@@ -1370,6 +1406,19 @@ export function MeetingDetailPage({
                   projects={projects}
                   selected={selectedRequirementRefs}
                 />
+                {canWriteTasks && meeting.current_minutes_version_id && (
+                  <div className="classification-candidates">
+                    <button
+                      className="text-button"
+                      disabled={extractingCandidates || isSaving}
+                      onClick={() => void extractCandidates()}
+                      type="button"
+                    >
+                      {extractingCandidates ? "正在抽需求候选…" : "抽需求候选"}
+                    </button>
+                    <span className="muted">从这场会的纪要里抽，放进需求池「待认领」</span>
+                  </div>
+                )}
                 <fieldset className="tag-checklist" disabled={isSaving}>
                   <legend>标签</legend>
                   {tags.length === 0 ? <span className="muted">暂无标签，请先在项目页创建。</span> : tags.map((tag) => (

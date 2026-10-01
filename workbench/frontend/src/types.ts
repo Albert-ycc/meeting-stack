@@ -1732,6 +1732,13 @@ export interface MergeTargets {
   items: MergeTarget[];
 }
 
+/** 会议详情［抽需求候选］的结果：新建几条、并进已有候选几条 */
+export interface CandidateExtraction {
+  status: "done" | "unavailable" | "failed";
+  created: number;
+  merged: number;
+}
+
 /** 认领撞名（409）：同项目已有的那条需求 */
 export interface TitleConflict {
   detail: string;

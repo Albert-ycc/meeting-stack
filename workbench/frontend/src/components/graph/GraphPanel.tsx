@@ -230,6 +230,7 @@ function MeetingPanelBody({
           onProjectsChanged={props.onChanged}
           onSeek={(ms) => audio && player.play(audio, ms, title)}
           projects={projects}
+          requirementHints
         />
       )}
       {brief.evidence_quotes.length > 0 && (
@@ -877,6 +878,7 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
           onProjectsChanged={props.onChanged}
           onSeek={(ms) => brief.meeting.audio_url && player.play(brief.meeting.audio_url, ms, brief.meeting.title)}
           projects={props.projects}
+          requirementHints
         />
       )}
       {edge.kind === "cue" && edge.meeting_id && (

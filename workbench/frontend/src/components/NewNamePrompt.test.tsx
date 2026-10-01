@@ -114,6 +114,8 @@ function setup(
       onProjectsChanged={onProjectsChanged}
       onSeek={onSeek}
       projects={PROJECTS}
+      // 按关系图会议面板的用法挂：会议页从 R01-11 起不出「像是新需求」
+      requirementHints
     />,
   );
   return { onChange, onNotice, onSeek, onPlayMeeting, onProjectsChanged, onOpenRequirement, apiClient };

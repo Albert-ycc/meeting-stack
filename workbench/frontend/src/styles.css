@@ -1625,6 +1625,19 @@ textarea {
 .classification-form .primary-button { min-height: 36px; font-size: 10px; }
 
 .classification-inspector > label { display: flex; flex-direction: column; gap: 6px; color: var(--ink-soft); font-size: 9px; }
+/* 关联需求下面的［抽需求候选］：一行文字按钮带一句说明 */
+.classification-candidates { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-top: -4px; }
+.classification-candidates .text-button {
+  width: auto;
+  min-height: 0;
+  padding: 4px 0;
+  color: var(--signal-dark);
+  font-size: 11px;
+  background: transparent;
+  border: 0;
+}
+.classification-candidates .text-button:disabled { color: var(--ink-soft); }
+.classification-candidates .muted { font-size: 9px; }
 .tag-checklist { display: flex; max-height: 156px; flex-direction: column; gap: 6px; margin: 3px 0; padding: 9px; overflow-y: auto; border: 1px solid var(--line); }
 .tag-checklist legend { padding: 0 4px; color: var(--ink-soft); font-size: 9px; }
 .tag-checklist label { display: flex; align-items: center; gap: 7px; font-size: 10px; }

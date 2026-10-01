@@ -67,7 +67,12 @@ MEETINGS: dict[str, tuple[str, str, str, int, str | None, list[tuple[int, str, s
         "2026-09-21T19:15:03-07:00",
         152885,
         "hengrui",
-        [(78260, "SPEAKER_00", "没东西啊，"), (78860, "SPEAKER_00", "在我这里面要去加。")],
+        [
+            (44570, "SPEAKER_00", "他在哪里可以看到他的积分啊，"),
+            (73850, "SPEAKER_01", "我的上面才有积分的入口嘛，"),
+            (78260, "SPEAKER_00", "没东西啊，"),
+            (78860, "SPEAKER_00", "在我这里面要去加。"),
+        ],
     ),
     "blackcard": (
         "vm-20260921-192149-f9d22c68",
@@ -75,7 +80,10 @@ MEETINGS: dict[str, tuple[str, str, str, int, str | None, list[tuple[int, str, s
         "2026-09-21T19:21:49-07:00",
         105665,
         "hengrui",
-        [],
+        [
+            (52500, "SPEAKER_00", "亲友也有百分之十的积分。"),
+            (80160, "SPEAKER_02", "主要是这个积分要不要限制分买了，"),
+        ],
     ),
     "huaxia": (
         "vm-20260914-003009-1dffbbce",
@@ -95,6 +103,12 @@ MEETINGS: dict[str, tuple[str, str, str, int, str | None, list[tuple[int, str, s
         747000,
         "cvm",
         [
+            (330820, "SPEAKER_01", "它其实要读白介素十七，"),
+            (335530, "SPEAKER_01", "就是 IL 杠十七 a 是一个错误的读法，"),
+            (387880, "SPEAKER_01", "要把它的比例稍微缩小一点，"),
+            (389820, "SPEAKER_01", "比如说搜到百分之九十五，"),
+            (391400, "SPEAKER_01", "然后确保所有的画面都可以呈现出来。"),
+            (526090, "SPEAKER_01", "然后可能前面四列需要去把它填充满一百场。"),
             (568390, "SPEAKER_03", "预约审核查看。"),
             (576900, "SPEAKER_01", "那我有办法导出 excel 吗？"),
             (581000, "SPEAKER_01", "是没有办法，"),
@@ -155,6 +169,41 @@ QUOTES = {
 }
 
 
+# 纪要只抄「一分钟摘要」里的几句（260930 只读取出，一字不改），会后抽取的用例拿它当 AI 读到的纪要。
+MINUTES = {
+    "jd": (
+        "本场是医米（科研用药）与京东科研仓的系统对接会，50 分钟里把「怎么对接、对接什么、医米改什么、"
+        "什么时候对上」四件事逐条过完。会议先把对接链路定下来：药品由药企按调拨函发往京东科研仓，"
+        "医米以自身主体在京东开放平台注册应用、审核资质、创建应用，用接口方式向京东下采购单与销售出库单，"
+        "京东仓按单收货发货、把入库明细与物流状态回推医米；医米系统内把京东科研仓当作一个药房来管，"
+        "原有的知百家药房不再承担这条线。"
+    ),
+    "cvm": (
+        "本场会议 12 分 31 秒，前五分钟为静默等待，有效讨论从 05:03 起，共形成六条待办。"
+        "AI 主持话术中的「IL 杠十七 a」要改读「白介素十七」[00:05:30]，会后由承接方转达执行同事 [00:11:30]。"
+        "直播间画面里 PPT 呈现不完整，需把画面比例缩到约 95% 后实测 [00:06:29]。"
+        "科室会预约在后台看不到，会上承诺当天开好权限 [00:07:59]，开通后的查看路径是「点计划」→"
+        "「预约审核」[00:09:02]，该页面不支持导出 Excel [00:09:41]。"
+        "共享预约表前四列要补齐到一百场 [00:08:46]，承接方同意代为填充 [00:10:03]，"
+        "目前编到第十四场，插入时要按实际排期定位 [00:10:20]。"
+    ),
+    "family": (
+        "亲友不单设积分比例，跟分销员走同一比例，换算口径就是一个积分抵一块钱 [00:00:19][00:00:22]。"
+        "黑卡长期没有自购会不会自动注销、注销之后亲友的折扣还在不在，这两个连带问题当场没有答案 "
+        "[00:00:32][00:00:34]，约定会后再问 [00:00:39]。亲友本人在哪里看自己的积分——系统现状是"
+        "「我的」页面下只有黑卡分销员带积分入口，亲友此前没有 [00:01:13]，结论是把亲友的积分入口加在"
+        "「我的」页面 [00:01:18]。"
+    ),
+    "blackcard": (
+        "场景是持卡人把黑卡分享给亲友、亲友一直买、持卡人自己一年不买，系统判定之后把黑卡注销，"
+        "那么亲友还能不能继续买 [00:00:13][00:00:16][00:00:17][00:00:20]。答复是分享链接任何人点击都能"
+        "完成购买，不影响 [00:00:23][00:00:27][00:00:29]。亲友这条路径的权益口径同时被完整复述了一遍："
+        "亲友购买七折，另有百分之十的积分 [00:00:51][00:00:52]。"
+    ),
+    "doctor": "本场约 13 分钟，有效讨论集中在开头 7 分钟，主线是把医生资质审核的 AI 识别与提示规则收敛成一套。",
+}
+
+
 def project_id(key: str) -> str:
     return PROJECTS[key][0]
 
@@ -167,6 +216,24 @@ def source(quote_key: str) -> dict[str, Any]:
     """接口入参里的来源：会议、原话、时间锚。"""
     meeting_key, quote, anchor_ms = QUOTES[quote_key]
     return {"meeting_id": meeting_id(meeting_key), "quote": quote, "anchor_ms": anchor_ms}
+
+
+def seed_minutes(db: Database, key: str) -> str:
+    """给会议挂一版 AI 写的纪要（摘要段照 MINUTES）并设为当前版本，返回版本 id。"""
+    mid = meeting_id(key)
+    title = MEETINGS[key][1]
+    number = db.query_one(
+        "SELECT COUNT(*) + 1 AS n FROM minutes_versions WHERE meeting_id=?", (mid,)
+    )["n"]
+    version_id = f"mv-{mid}-{number}"
+    db.execute(
+        """INSERT INTO minutes_versions
+               (id, meeting_id, version_no, markdown, html, kind, published, created_at)
+           VALUES (?, ?, ?, ?, '<p></p>', 'generated', 1, ?)""",
+        (version_id, mid, number, f"# {title}\n\n## 一分钟摘要\n\n{MINUTES[key]}\n", utc_now()),
+    )
+    db.execute("UPDATE meetings SET current_minutes_version_id=? WHERE id=?", (version_id, mid))
+    return version_id
 
 
 def seed_world(db: Database, *, projects: tuple[str, ...] = tuple(PROJECTS)) -> None:

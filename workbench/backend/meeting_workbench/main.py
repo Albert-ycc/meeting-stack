@@ -4892,6 +4892,11 @@ def create_app(
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
 
+    @app.post("/api/meetings/{meeting_id}/requirement-candidates/extract")
+    def extract_requirement_candidates(meeting_id: str, _body: dict[str, Any] | None = None):
+        # 会议详情［抽需求候选］：历史会议手动补抽（R01-4），只抽候选、不动任务
+        return task_service.extract_requirement_candidates(meeting_id)
+
     @app.get("/api/tags")
     def tags():
         return db.query_all("SELECT * FROM tags ORDER BY name")

@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .db import Database, utc_now
+from .llm import neutralise
 from .project_profile import light_key
 from .project_seats import MEETING_TIME_SQL, seat_ranks
 from .requirements import (
@@ -118,6 +119,341 @@ def insert_candidate(
         (candidate_id, source["meeting_id"], source["quote"], source["anchor_ms"], now),
     )
     return candidate_id
+
+
+# ---------------------------------------------------------------- 会后抽取（R01-2～6、9）
+
+# 每场会最多出 5 条候选（R01-5）
+MAX_CANDIDATES_PER_MEETING = 5
+# 提示词里列给 AI 对照的同项目需求、待认领候选，各取最近改过的这么多条
+CONTEXT_LIMIT = 40
+_CONTEXT_STATUS = {"active": "进行中", "shelved": "已搁置"}
+
+
+def candidates_wanted(connection: Any, batch_created_at: str | None) -> bool:
+    """这一批抽取要不要出候选：只认候选上线时刻（迁移写下的 requirement_candidates_since）之后建的
+    批次，上线前的历史会议不自动回填（R01-4）。没有这个键时一律不出：宁可漏抽，不轰炸。"""
+    if not batch_created_at:
+        return False
+    row = connection.execute(
+        """SELECT julianday(?) >= julianday(value) AS wanted
+             FROM app_state WHERE key='requirement_candidates_since'""",
+        (batch_created_at,),
+    ).fetchone()
+    return bool(row and row["wanted"])
+
+
+def _replaceable(connection: Any, meeting_id: str) -> list[str]:
+    """重抽时整条换掉的候选（R01-5）：这场会提出的、还没处理的，并且没有别的会并进来的原话。
+    并进过别的会原话的留着，不然那几场会的原话会跟着没了。"""
+    return [
+        row["id"]
+        for row in connection.execute(
+            """SELECT c.id FROM requirement_candidates c
+                WHERE c.meeting_id = ? AND c.status = 'pending'
+                  AND NOT EXISTS (SELECT 1 FROM requirement_sources s
+                                   WHERE s.candidate_id = c.id AND s.meeting_id <> c.meeting_id)""",
+            (meeting_id,),
+        ).fetchall()
+    ]
+
+
+def _one_line(text: Any) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _listed(title: str) -> str:
+    """列进对照清单的名字：一行，尖括号换成全角，名字里的「</existing_requirements>」关不掉标签。"""
+    return _one_line(neutralise(title, TITLE_MAX_CHARS))
+
+
+def extraction_context(connection: Any, meeting_id: str) -> dict[str, Any]:
+    """抽候选时给 AI 对照的（R01-6）：会议所属项目里进行中、已搁置的需求和其他待认领候选，
+    编号 R1…、C1…（refs 记编号对应的是哪一条）。这场会重抽时要换掉的候选不列；会议没归项目时不对照。"""
+    meeting = connection.execute(
+        "SELECT project_id FROM meetings WHERE id=?", (meeting_id,)
+    ).fetchone()
+    project_id = meeting["project_id"] if meeting else None
+    context: dict[str, Any] = {"project_id": project_id, "refs": {}, "lines": []}
+    if project_id is None:
+        return context
+    requirements = connection.execute(
+        f"""SELECT id, title, status FROM requirements
+             WHERE project_id = ? AND status IN ({", ".join("?" for _ in MERGE_TARGET_STATUSES)})
+             ORDER BY julianday(updated_at) DESC, id LIMIT ?""",
+        (project_id, *MERGE_TARGET_STATUSES, CONTEXT_LIMIT),
+    ).fetchall()
+    replaceable = set(_replaceable(connection, meeting_id))
+    candidates = [
+        row
+        for row in connection.execute(
+            """SELECT c.id, c.title FROM requirement_candidates c
+                 JOIN meetings m ON m.id = c.meeting_id
+                WHERE c.status = 'pending' AND m.project_id = ?
+                ORDER BY julianday(c.updated_at) DESC, c.id LIMIT ?""",
+            (project_id, CONTEXT_LIMIT + len(replaceable)),
+        ).fetchall()
+        if row["id"] not in replaceable
+    ][:CONTEXT_LIMIT]
+    for index, row in enumerate(requirements, 1):
+        code = f"R{index}"
+        context["refs"][code] = ("requirement", row["id"])
+        context["lines"].append(
+            f"{code} {_listed(row['title'])}（{_CONTEXT_STATUS[row['status']]}）"
+        )
+    for index, row in enumerate(candidates, 1):
+        code = f"C{index}"
+        context["refs"][code] = ("candidate", row["id"])
+        context["lines"].append(f"{code} {_listed(row['title'])}（待认领）")
+    return context
+
+
+def prompt_rules(context: dict[str, Any], *, with_tasks: bool) -> str:
+    """提示词里抽候选的规则和对照清单。和任务同一次抽取时（R01-2），任务可以挂到候选上。"""
+    if context["project_id"] is None:
+        listing = "（这场会没归项目，不用对照，same_as 一律填 null）"
+    else:
+        listing = (
+            "\n".join(context["lines"]) or "（这个项目还没有进行中、已搁置的需求和待认领的候选）"
+        )
+    task_link = (
+        "- tasks 里的任务是在为某条需求候选做事时，requirement_no 填那条候选的 no，否则填 null。\n"
+        if with_tasks
+        else ""
+    )
+    return (
+        "抽「需求候选」，放进 requirements：\n"
+        "- 需求＝要交付的一块功能或改造（要写 PRD、画原型的那种）；任务＝某个人要去做的一个动作"
+        "（发材料、问口径、约会）。同一件事只放一边。\n"
+        "- 只抽会上提出、要交付的功能或改造；背景介绍、已经上线的功能、只抱怨不说要改什么的不抽。"
+        "宁缺勿滥，没有就返回空列表，不要编造。\n"
+        f"- 最多 {MAX_CANDIDATES_PER_MEETING} 条，按重要性从高到低排列。\n"
+        "- title 是需求名：十来个字的名词短语，说清要做什么（如「科室会预约后台导出」），不写成句子。\n"
+        "- summary 是说明：40～70 个字，说清谁在哪个环节遇到什么问题、要做成什么样，"
+        "只写纪要和逐字稿里有的。\n"
+        "- anchor_quote 必须是逐字稿里提出这件事的原句摘录（短、可回听定位）。\n"
+        "- same_as：<existing_requirements> 里说的是同一件事、或明显相近（同一件事的一部分、换了个说法）"
+        "的，填它的编号（如 R2、C1），没有填 null。\n"
+        f"{task_link}"
+        "<existing_requirements>\n"
+        f"{listing}\n"
+        "</existing_requirements>\n"
+    )
+
+
+def item_no(value: Any) -> int | None:
+    """AI 写的候选序号：1、"1"、"#1" 都认，认不出时 None。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        digits = value.strip().lstrip("#").strip()
+        return int(digits) if digits.isdigit() else None
+    return None
+
+
+def _same_as(
+    connection: Any, code: Any, refs: dict[str, tuple[str, str]], project_id: str | None
+) -> tuple[str, str] | None:
+    """AI 填的 same_as 编号：对照清单里有、并且现在还在同项目、还能并进去的才算。"""
+    if project_id is None or not isinstance(code, str):
+        return None
+    ref = refs.get(code.strip().upper())
+    if ref is None:
+        return None
+    kind, ref_id = ref
+    if kind == "requirement":
+        row = connection.execute(
+            f"""SELECT 1 FROM requirements
+                 WHERE id = ? AND project_id = ?
+                   AND status IN ({", ".join("?" for _ in MERGE_TARGET_STATUSES)})""",
+            (ref_id, project_id, *MERGE_TARGET_STATUSES),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """SELECT 1 FROM requirement_candidates c JOIN meetings m ON m.id = c.meeting_id
+                WHERE c.id = ? AND c.status = 'pending' AND m.project_id = ?""",
+            (ref_id, project_id),
+        ).fetchone()
+    return (kind, ref_id) if row else None
+
+
+def _same_name(
+    connection: Any, key: str, project_id: str | None, requirement_keys: dict[str, str]
+) -> tuple[str, str] | None:
+    """AI 没认出、但名字完全相同的：先找同项目的待认领候选，再找进行中、已搁置的需求。"""
+    if project_id is None:
+        return None
+    row = connection.execute(
+        """SELECT c.id FROM requirement_candidates c JOIN meetings m ON m.id = c.meeting_id
+            WHERE c.status = 'pending' AND c.name_key = ? AND m.project_id = ?
+            ORDER BY c.created_at, c.id LIMIT 1""",
+        (key, project_id),
+    ).fetchone()
+    if row is not None:
+        return ("candidate", row["id"])
+    if key in requirement_keys:
+        return ("requirement", requirement_keys[key])
+    return None
+
+
+def _dropped_before(connection: Any, key: str, meeting_id: str, project_id: str | None) -> bool:
+    """同项目丢掉过同名候选的不再提示（R01-9）；会议没归项目时只看这场会自己丢掉过的。"""
+    return (
+        connection.execute(
+            """SELECT 1 FROM requirement_candidates c JOIN meetings m ON m.id = c.meeting_id
+                WHERE c.status = 'dropped' AND c.name_key = ?
+                  AND (c.meeting_id = ? OR (? IS NOT NULL AND m.project_id = ?))
+                LIMIT 1""",
+            (key, meeting_id, project_id, project_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def _handled_before(connection: Any, key: str, meeting_id: str) -> bool:
+    """这场会出过、已经认领或合并的同名候选，以及这场会已经关联着的同名需求：再抽一遍不再冒出来
+    （R01-5「已认领、已合并的不动」）。名字不同的相近需求照常出候选，默认合并过去。"""
+    if (
+        connection.execute(
+            """SELECT 1 FROM requirement_candidates
+                WHERE meeting_id = ? AND name_key = ? AND status IN ('claimed', 'merged')
+                LIMIT 1""",
+            (meeting_id, key),
+        ).fetchone()
+        is not None
+    ):
+        return True
+    return any(
+        light_key(row["title"]) == key
+        for row in connection.execute(
+            """SELECT r.title FROM requirements r
+                 JOIN requirement_meetings rm ON rm.requirement_id = r.id
+                WHERE rm.meeting_id = ?""",
+            (meeting_id,),
+        ).fetchall()
+    )
+
+
+def _merge_into_candidate(
+    connection: Any, candidate_id: str, meeting_id: str, quote: str, anchor_ms: int | None
+) -> None:
+    """不另出一条：这场会和原话并进那条待认领候选（R01-6）。这场会已经在它的来源里时不重复加。"""
+    if (
+        connection.execute(
+            "SELECT 1 FROM requirement_sources WHERE candidate_id=? AND meeting_id=?",
+            (candidate_id, meeting_id),
+        ).fetchone()
+        is not None
+    ):
+        return
+    meeting = connection.execute(
+        "SELECT duration_ms FROM meetings WHERE id=?", (meeting_id,)
+    ).fetchone()
+    if meeting is not None and not anchor_in_recording(anchor_ms, meeting["duration_ms"]):
+        anchor_ms = None
+    source = clean_source(
+        connection, {"meeting_id": meeting_id, "quote": quote, "anchor_ms": anchor_ms}
+    )
+    now = utc_now()
+    connection.execute(
+        """INSERT INTO requirement_sources
+               (candidate_id, kind, meeting_id, quote, anchor_ms, created_at)
+           VALUES (?, 'merged', ?, ?, ?, ?)""",
+        (candidate_id, source["meeting_id"], source["quote"], source["anchor_ms"], now),
+    )
+    connection.execute(
+        "UPDATE requirement_candidates SET updated_at=? WHERE id=?", (now, candidate_id)
+    )
+
+
+def save_extracted(
+    connection: Any,
+    *,
+    meeting_id: str,
+    items: list[dict[str, Any]],
+    context: dict[str, Any],
+    extraction_id: int | None = None,
+) -> dict[str, Any]:
+    """在调用方的事务里把 AI 抽出的候选落库。返回 by_no（AI 的序号 → 候选 id，同一次抽出的任务按它
+    挂上去）、created、merged（并进的已有候选）、skipped（没出的和原因）。
+
+    - 这场会还没处理的候选整条换掉；已认领、已合并、已丢掉的不动（R01-5）。
+    - 和同项目进行中、已搁置的需求相近：建候选，默认动作是合并到那一条（R01-6）。
+    - 和同项目别的待认领候选相近：不另出一条，把这场会和原话并进那条（R01-6）。
+    - AI 没认出、但名字完全相同的，照相近处理。
+    - 同项目丢掉过的同名候选不再提示（R01-9）；这场会出过、认领或合并了的同名候选，和这场会已经关联着的
+      同名需求，也不再出。
+    - 每场会最多 5 条（R01-5）；原话在逐字稿里找不到的不当原话，只留来源会议。"""
+    for candidate_id in _replaceable(connection, meeting_id):
+        connection.execute("DELETE FROM requirement_candidates WHERE id=?", (candidate_id,))
+    meeting = connection.execute(
+        "SELECT project_id FROM meetings WHERE id=?", (meeting_id,)
+    ).fetchone()
+    if meeting is None:
+        raise NotFoundError(f"会议不存在：{meeting_id}")
+    project_id = meeting["project_id"]
+    # 抽取期间会议改了归属：AI 对照的是旧项目的清单，编号作废，只按名字兜底
+    refs = context["refs"] if project_id == context["project_id"] else {}
+    requirement_keys: dict[str, str] = {}
+    if project_id is not None:
+        for row in connection.execute(
+            f"""SELECT id, title FROM requirements
+                 WHERE project_id = ?
+                   AND status IN ({", ".join("?" for _ in MERGE_TARGET_STATUSES)})
+                 ORDER BY created_at, id""",
+            (project_id, *MERGE_TARGET_STATUSES),
+        ).fetchall():
+            requirement_keys.setdefault(light_key(row["title"]), row["id"])
+
+    result: dict[str, Any] = {"by_no": {}, "created": [], "merged": [], "skipped": []}
+    seen: set[str] = set()
+    for index, item in enumerate(items, 1):
+        title = _one_line(item.get("title"))[:TITLE_MAX_CHARS].strip()
+        key = light_key(title)
+        if not key:
+            continue
+        if key in seen:
+            result["skipped"].append(f"「{title}」和这次抽出的另一条同名")
+            continue
+        if len(result["created"]) + len(result["merged"]) >= MAX_CANDIDATES_PER_MEETING:
+            result["skipped"].append(f"「{title}」超过每场会 {MAX_CANDIDATES_PER_MEETING} 条")
+            continue
+        if _dropped_before(connection, key, meeting_id, project_id):
+            result["skipped"].append(f"「{title}」同名的候选丢掉过")
+            continue
+        if _handled_before(connection, key, meeting_id):
+            result["skipped"].append(f"「{title}」这场会已经出过，认领或合并了")
+            continue
+        target = _same_as(connection, item.get("same_as"), refs, project_id) or _same_name(
+            connection, key, project_id, requirement_keys
+        )
+        quote = str(item.get("anchor_quote") or "").strip()[:QUOTE_MAX_CHARS]
+        anchor_ms = TaskService._locate_anchor(connection, meeting_id, quote)
+        if anchor_ms is None:
+            quote = ""
+        no = item_no(item.get("no")) or index
+        if target is not None and target[0] == "candidate":
+            _merge_into_candidate(connection, target[1], meeting_id, quote, anchor_ms)
+            seen.add(key)
+            result["merged"].append(target[1])
+            result["by_no"][no] = target[1]
+            continue
+        candidate_id = insert_candidate(
+            connection,
+            meeting_id=meeting_id,
+            title=title,
+            summary=_one_line(item.get("summary")),
+            quote=quote,
+            anchor_ms=anchor_ms,
+            extraction_id=extraction_id,
+            similar_requirement_id=target[1] if target is not None else None,
+        )
+        seen.add(key)
+        result["created"].append(candidate_id)
+        result["by_no"][no] = candidate_id
+    return result
 
 
 # ---------------------------------------------------------------- 读
