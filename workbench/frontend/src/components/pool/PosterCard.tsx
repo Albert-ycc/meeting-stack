@@ -142,7 +142,43 @@ export function PosterCard({
       }}
       tabIndex={preview ? -1 : 0}
     >
-      <div className="poster__mat">
+      {/* 封面：提出它的那场会的真实波形（R02-3）；没有来源时换成一条静音线，同一排的标题照样对齐 */}
+      {source ? (
+        <section className="poster__cover">
+          <div className="poster__cover-top">
+            <p className="poster__meeting">{source.meeting_title}</p>
+            {source.anchor_ms !== null && (
+              <button
+                className="poster__anchor"
+                onClick={(event) => {
+                  stop(event);
+                  openSource();
+                }}
+                tabIndex={preview ? -1 : 0}
+                type="button"
+              >
+                <span aria-hidden="true" className="poster__anchor-play" />
+                原话 {anchorLabel(source.anchor_ms)}
+              </button>
+            )}
+          </div>
+          <PosterWaveform
+            artifactId={source.audio_artifact_id}
+            height={30}
+            label={`${source.meeting_title} 的录音波形`}
+            markers={source.anchor_ms !== null ? [{ atMs: source.anchor_ms }] : []}
+            onActivate={preview || !onOpenMeeting ? undefined : openSource}
+          />
+          <p className="poster__meeting-meta">{meta}</p>
+        </section>
+      ) : (
+        <div className="poster__cover is-silent">
+          <span aria-hidden="true" className="poster__silence" />
+          <span className="poster__silence-label">没有来源录音</span>
+        </div>
+      )}
+
+      <div className="poster__body">
         <header className="poster__head">
           <span className={`poster__project ${item.project_id ? "" : "is-unassigned"}`}>
             {item.project_seat !== null && <span className="poster__seat">{item.project_seat}</span>}
@@ -158,69 +194,40 @@ export function PosterCard({
         </header>
 
         <h3 className={`poster__title ${item.title ? "" : "is-placeholder"}`}>{item.title || "需求名"}</h3>
-        {/* 说明区固定三行高：有「像已有需求」时说明收成两行、这一句占第三行，同一排的统计行对得齐 */}
-        <div className="poster__body">
+        {(item.summary || preview) && (
           <p
             className={`poster__summary ${item.summary ? "" : "is-placeholder"} ${
               candidate && item.similar_requirement ? "is-short" : ""
             }`}
           >
-            {item.summary || (preview ? "说明" : "")}
+            {item.summary || "说明"}
           </p>
-          {candidate && item.similar_requirement && (
-            <p className="poster__similar">
-              <LinkIcon />
-              像已有需求：<b>{item.similar_requirement.title}</b>
-            </p>
-          )}
-        </div>
+        )}
+        {candidate && item.similar_requirement && (
+          <p className="poster__similar">
+            <LinkIcon />
+            像已有需求：<b>{item.similar_requirement.title}</b>
+          </p>
+        )}
+      </div>
 
+      {/* 票根：虚线撕口下面是数字和操作 */}
+      <div aria-hidden="true" className="poster__perf" />
+      <div className="poster__stub">
         <dl className="poster__stats">
-          <div>
-            <dt>待办</dt>
-            <dd>{item.open_task_count}</dd>
-          </div>
-          <div>
-            <dt>会议</dt>
-            <dd>{item.meeting_count}</dd>
-          </div>
-          <div>
-            <dt>材料</dt>
-            <dd>{item.folder_count}</dd>
-          </div>
+          {(
+            [
+              ["待办", item.open_task_count],
+              ["会议", item.meeting_count],
+              ["材料", item.folder_count],
+            ] as const
+          ).map(([label, count]) => (
+            <div className={count ? "" : "is-zero"} key={label}>
+              <dt>{label}</dt>
+              <dd>{count}</dd>
+            </div>
+          ))}
         </dl>
-
-        <section className="poster__source">
-          {source && (
-            <>
-              <div className="poster__source-head">
-                <span>出自录音</span>
-                {source.anchor_ms !== null && (
-                  <button
-                    className="poster__anchor"
-                    onClick={(event) => {
-                      stop(event);
-                      openSource();
-                    }}
-                    tabIndex={preview ? -1 : 0}
-                    type="button"
-                  >
-                    <span aria-hidden="true" className="poster__anchor-play" />
-                    原话 {anchorLabel(source.anchor_ms)}
-                  </button>
-                )}
-              </div>
-              <PosterWaveform
-                artifactId={source.audio_artifact_id}
-                label={`${source.meeting_title} 的录音波形`}
-                markers={source.anchor_ms !== null ? [{ atMs: source.anchor_ms }] : []}
-                onActivate={preview || !onOpenMeeting ? undefined : openSource}
-              />
-              <p className="poster__meeting">{source.meeting_title}</p>
-              <p className="poster__meeting-meta">{meta}</p>
-            </>
-          )}
-        </section>
 
         <footer className="poster__foot">
           <span className="poster__date">

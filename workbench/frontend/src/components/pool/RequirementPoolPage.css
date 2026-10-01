@@ -225,10 +225,9 @@
   font-size: 14px;
 }
 
-/* 同宽同高：4 列，每一排取最高那张的高度，所有排一样高 */
+/* 同宽；同一排取这一排最高那张的高度，不再全墙一样高：一排都是没填说明、没有录音的，这一排就矮 */
 .pool-wall {
   display: grid;
-  grid-auto-rows: 1fr;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 24px;
   margin-top: 14px;
@@ -286,21 +285,29 @@
   text-align: center;
 }
 
-/* 一张空着的海报：外框墨线、衬纸虚线 */
+/* 一张空着的海报：和墙上的海报同一个样子，上面一截封面、下面一道撕口虚线 */
 .pool-empty__poster {
   display: grid;
+  grid-template-rows: 34px 1fr;
   width: 120px;
   height: 148px;
   margin-bottom: 18px;
-  padding: 10px;
-  border: 2px solid var(--ink);
-  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
   background: var(--surface);
 }
 
+.pool-empty__poster::before {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  content: "";
+}
+
 .pool-empty__poster span {
-  border: 1px dashed var(--line-strong);
-  border-radius: 6px;
+  align-self: end;
+  margin: 0 10px 30px;
+  border-top: 1.5px dashed var(--line-strong);
 }
 
 .pool-empty__title {

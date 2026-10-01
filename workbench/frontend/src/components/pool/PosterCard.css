@@ -1,22 +1,27 @@
-/* 一张需求＝一张悬赏海报（方案 A 白盒画廊）：外框是一道粗墨线，里面一层细线的衬纸。
- * 同一面墙上的海报同宽同高，底栏在卡内；优先级只靠排序和右上角的小标签。 */
-/* 海报：外框圆角和全站卡片一致；内衬按同心角收小（24 − 12 内边距 − 2 边框 = 10） */
+/* 一张需求＝一张票：上面是提出它的那场会的声纹封面，中间是需求本身，虚线撕口下面是票根（数字和操作）。
+ * 细线外框，没有的内容不占位；同一排的海报等高，多出来的高度留在需求和撕口之间，票根始终贴底。 */
 .poster {
+  /* 票根撕口两侧的半圆缺口要和海报背后的底色一致；放在别的底色上时由外层改这个变量 */
+  --poster-notch-bg: var(--bg);
   position: relative;
   display: flex;
+  flex-direction: column;
   height: 100%;
   min-width: 0;
-  padding: 12px;
-  border: 2px solid var(--ink);
-  border-radius: var(--r-card);
+  border: 1px solid var(--line-strong);
+  border-radius: 20px;
   background: var(--surface);
   cursor: pointer;
-  transition: transform 220ms var(--exp), box-shadow 220ms var(--exp);
+  transition:
+    transform 220ms var(--exp),
+    box-shadow 220ms var(--exp),
+    border-color 220ms var(--exp);
 }
 
 .poster:hover {
   transform: translateY(-2px);
-  box-shadow: 0 14px 32px rgb(0 0 0 / calc(0.35 * var(--shadow-k)));
+  border-color: rgb(var(--fg-rgb) / 0.22);
+  box-shadow: 0 12px 28px rgb(0 0 0 / calc(0.3 * var(--shadow-k)));
 }
 
 .poster:focus-visible {
@@ -28,23 +33,110 @@
 .poster--preview:hover {
   cursor: default;
   transform: none;
+  border-color: var(--line-strong);
   box-shadow: none;
 }
 
-/* 认领、新建后落位的那张：外框外面再描一圈橙线，3 秒后去掉（R01-13、S02-c），不动版面 */
+/* 认领、新建后落位的那张：外面描一圈橙线，3 秒后去掉（R01-13、S02-c），不动版面 */
 .poster--highlight {
   outline: 2px solid var(--signal);
   outline-offset: 5px;
 }
 
-.poster__mat {
+/* ── 封面 ── */
+.poster__cover {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 98px;
+  padding: 13px 18px 11px;
+  border-bottom: 1px solid var(--line);
+  border-radius: 19px 19px 0 0;
+  background: var(--surface-2);
+}
+
+.poster__cover-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.poster__meeting {
+  overflow: hidden;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.poster__anchor {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--signal-bg);
+  color: var(--signal);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.poster__anchor:hover {
+  background: var(--signal);
+  color: #fff;
+}
+
+.poster__anchor-play {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid currentColor;
+}
+
+.poster__meeting-meta {
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 没有来源录音：一条静音线，和有波形的封面一样高 */
+.poster__cover.is-silent {
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.poster__silence {
+  width: 100%;
+  height: 2px;
+  background: repeating-linear-gradient(90deg, rgb(var(--fg-rgb) / 0.16) 0 2px, transparent 2px 3px);
+}
+
+.poster__silence-label {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* ── 需求本身 ── */
+.poster__body {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-width: 0;
-  padding: 18px 18px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  padding: 16px 20px 18px;
 }
 
 .poster__head {
@@ -52,13 +144,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: 22px;
+  min-height: 20px;
 }
 
 .poster__project {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
   color: var(--ink-2);
   font-size: 13px;
@@ -78,20 +170,23 @@
   display: inline-grid;
   flex: none;
   place-items: center;
-  width: 18px;
+  min-width: 18px;
   height: 18px;
-  border: 1px solid var(--line-strong);
+  padding: 0 4px;
+  border-radius: 5px;
+  background: rgb(var(--fg-rgb) / 0.06);
   color: var(--ink-2);
   font-family: var(--font-mono);
   font-size: 11px;
+  font-weight: 600;
 }
 
 .poster__tag {
   flex: none;
-  padding: 1px 6px;
-  border: 1px solid var(--ink);
-  border-radius: 3px;
-  color: var(--ink);
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--muted);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -104,9 +199,15 @@
   color: #fff;
 }
 
+.poster__tag--p1 {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+
 .poster__tag--ai {
-  border-color: var(--line-strong);
-  color: var(--muted);
+  border-color: var(--signal-line);
+  background: var(--signal-bg);
+  color: var(--signal);
   font-family: var(--font-sans);
   font-weight: 500;
 }
@@ -115,9 +216,9 @@
   display: -webkit-box;
   overflow: hidden;
   overflow-wrap: anywhere;
-  margin: 16px 0 0;
+  margin: 10px 0 0;
   color: var(--heading);
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 700;
   line-height: 1.4;
   -webkit-box-orient: vertical;
@@ -129,17 +230,11 @@
   color: var(--faint);
 }
 
-/* 说明区固定三行高，同一排海报的统计行、录音区对得齐 */
-.poster__body {
-  height: calc(14px * 1.65 * 3);
-  margin-top: 18px;
-}
-
 .poster__summary {
   display: -webkit-box;
   overflow: hidden;
   overflow-wrap: anywhere;
-  margin: 0;
+  margin: 6px 0 0;
   color: var(--muted);
   font-size: 14px;
   line-height: 1.65;
@@ -156,10 +251,9 @@
   align-items: center;
   gap: 6px;
   overflow: hidden;
-  margin: 0;
+  margin: 8px 0 0;
   color: var(--muted);
   font-size: 13px;
-  line-height: calc(14px * 1.65);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -170,99 +264,80 @@
 }
 
 .poster__similar b {
+  overflow: hidden;
   color: var(--ink);
   font-weight: 600;
+  text-overflow: ellipsis;
 }
 
+/* ── 撕口：虚线，两侧各咬一个半圆缺口（盖住外框，露出背后的底色） ── */
+.poster__perf {
+  position: relative;
+  flex: none;
+  margin: 0 16px;
+  border-top: 1.5px dashed var(--line-strong);
+}
+
+.poster__perf::before,
+.poster__perf::after {
+  position: absolute;
+  top: -10px;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--poster-notch-bg);
+  content: "";
+}
+
+/* 只留伸进海报里的那半个圆，外面那半截不画 */
+.poster__perf::before {
+  left: -26px;
+  clip-path: inset(0 0 0 50%);
+}
+
+.poster__perf::after {
+  right: -26px;
+  clip-path: inset(0 50% 0 0);
+}
+
+/* ── 票根 ── */
+.poster__stub {
+  flex: none;
+  padding: 14px 20px 14px;
+}
+
+/* 数字在上、名称在下；DOM 里名称在前，读屏先念名称 */
 .poster__stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 14px 0 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  margin: 0;
 }
 
 .poster__stats > div {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 8px 10px 8px 0;
-}
-
-.poster__stats > div + div {
-  padding-left: 10px;
-  border-left: 1px solid var(--line);
+  flex-direction: column-reverse;
+  gap: 1px;
 }
 
 .poster__stats dt {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 
 .poster__stats dd {
   margin: 0;
   color: var(--heading);
-  font-size: 18px;
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
   font-variant-numeric: tabular-nums;
 }
 
-.poster__source {
-  min-height: 108px;
-  margin-top: 12px;
-}
-
-.poster__source-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.poster__anchor {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--signal);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
-
-.poster__anchor:hover {
-  color: var(--signal-dark);
-}
-
-.poster__anchor-play {
-  width: 0;
-  height: 0;
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-  border-left: 6px solid currentColor;
-}
-
-.poster__meeting {
-  overflow: hidden;
-  margin: 10px 0 0;
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 600;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.poster__meeting-meta {
-  margin: 4px 0 0;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 12px;
+.poster__stats .is-zero dd {
+  color: var(--faint);
+  font-weight: 400;
 }
 
 .poster__foot {
@@ -270,9 +345,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-top: auto;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+  margin-top: 12px;
 }
 
 .poster__date {
@@ -287,7 +360,7 @@
 .poster__date b {
   color: var(--ink);
   font-family: var(--font-mono);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 /* 候选海报一行三个操作（丢掉、合并、认领）：窄的列宽下让日子让位，按钮不折行 */
@@ -295,7 +368,7 @@
   display: inline-flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   white-space: nowrap;
 }
 
@@ -318,9 +391,9 @@
   align-items: center;
   gap: 4px;
   padding: 4px 12px;
-  border: 1px solid var(--ink);
+  border: 1px solid var(--line-strong);
   border-radius: var(--r-pill);
-  background: transparent;
+  background: var(--surface);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
@@ -328,15 +401,22 @@
   cursor: pointer;
 }
 
+.poster__pill:hover:not(:disabled) {
+  border-color: var(--signal);
+  color: var(--signal);
+}
+
 .poster__pill.is-primary,
 .poster__pill.is-copied {
-  background: var(--heading);
   border-color: var(--heading);
+  background: var(--heading);
   color: var(--surface);
 }
 
-.poster__pill:hover:not(:disabled) {
+.poster__pill.is-primary:hover:not(:disabled) {
   border-color: var(--signal);
+  background: var(--signal);
+  color: #fff;
 }
 
 .poster__text-action:disabled,
