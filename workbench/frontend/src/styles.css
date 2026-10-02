@@ -2521,6 +2521,11 @@ textarea {
   }
 }
 
+/* 检索词原样回显在标题里：一长串不带空格的字符会把标题撑到几千 px，整页横向滚动。
+   标题块是 flex 子项，要 min-width:0 才肯收窄；任意字符处折行，最多两行，完整的词搜索框里还在 */
+.search-page .page-heading > div:first-child { min-width: 0; }
+.search-page .page-heading h1 { display: -webkit-box; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
 /* 搜索页的材料（3f）：计数写成一句，材料行和会议行同一个格子 */
 .record-count--text span { margin-top: 0; color: var(--ink-soft); font-size: 13px; white-space: nowrap; }
 .material-hit__name { display: flex; min-width: 0; align-items: center; gap: 6px; }
