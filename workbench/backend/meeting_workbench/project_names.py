@@ -1,7 +1,8 @@
 """项目名字与项目整理（第一期 1b-2）。
 
-- 近似重名：新建项目时名字和已有项目的正式名或叫法归一化后相同，或者较短的一方
-  （3 字以上）是较长一方的子序列，就先问「是不是它」，带 force 才仍然新建。
+- 近似重名：新建项目时名字和已有项目的正式名或叫法归一化后相同，或者相近（names_similar：
+  较短的一方 3 字以上，原样出现在较长一方里，或只是中间少了连着的一段字），就先问「是不是它」，
+  带 force 才仍然新建。
 - 也叫：2–20 字、不能纯数字、不能是通用词、一个叫法只能指向一个项目；改名时旧名
   自动进也叫（source=former）。
 - 新项目建好后，在「没认出」的会里按名字找，命中的变成「待你选」，不调模型、不静默归属。
@@ -32,7 +33,6 @@ from .project_profile import (
     Cue,
     _fts_phrase,
     count_cues,
-    is_subsequence,
     norm_key,
 )
 from .service import ConflictError, NotFoundError
@@ -171,6 +171,27 @@ def add_former_name(
 # ---------------------------------------------------------------------- 近似重名
 
 
+def names_similar(key_a: str, key_b: str) -> bool:
+    """两个名字（都是 norm_key）算不算「相近」：新建项目问「是不是它」、新项目回扫、同名文件夹三处共用。
+
+    较短一方至少 3 个字，并且满足下面任一条：
+    - 原样出现在较长一方里，多出来的字只在开头或结尾（「云图科研」和「云图科研用药」）；
+    - 较长一方只是在较短一方中间多了一段连着的字，头尾都对得上（缩写、少写或多写一两个字：
+      「云图用药」和「云图科研用药」）。
+    以前只要求较短一方是较长一方的子序列，字散在几处也算：「智慧医院」会被当成「智慧医疗院区」
+    的相近名（中间多了「疗」、结尾又多了「区」），只是多问一句，但问得太多。完全相同的是「同名」，
+    不是相近，各处在这之前先判。"""
+    short, long = sorted((key_a, key_b), key=len)
+    if len(short) < 3 or short == long:
+        return False
+    if short in long:
+        return True
+    return any(
+        long.startswith(short[:split]) and long.endswith(short[split:])
+        for split in range(1, len(short))
+    )
+
+
 def find_similar_project(
     connection: Any, name: str, *, exclude_project_id: str | None = None
 ) -> dict[str, Any] | None:
@@ -192,11 +213,7 @@ def find_similar_project(
                 other = norm_key(candidate)
                 if not other:
                     continue
-                if match == "same":
-                    hit = other == key
-                else:
-                    short, long = sorted((key, other), key=len)
-                    hit = len(short) >= 3 and short != long and is_subsequence(short, long)
+                hit = other == key if match == "same" else names_similar(key, other)
                 if hit:
                     return {
                         "id": row["id"],
@@ -277,8 +294,7 @@ def rescan_unresolved_for_project(connection: Any, project_id: str) -> list[str]
             prefiltered.add(meeting["id"])
         name_key = norm_key(meeting["new_project_name"] or "")
         if name_key and project_key:
-            short, long = sorted((name_key, project_key), key=len)
-            if name_key == project_key or (len(short) >= 3 and is_subsequence(short, long)):
+            if name_key == project_key or names_similar(name_key, project_key):
                 named.add(meeting["id"])
     for needle in needles:
         if len(needle) >= 3:
@@ -548,8 +564,7 @@ def _match_kind(folder_name: str, names: list[str]) -> str | None:
             continue
         if key == folder_key:
             return "exact"
-        short, long = sorted((key, folder_key), key=len)
-        if len(short) >= 3 and is_subsequence(short, long):
+        if names_similar(key, folder_key):
             best = "similar"
     return best
 
