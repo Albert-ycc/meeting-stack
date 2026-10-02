@@ -244,6 +244,52 @@ def test_folder_files_from_index_needs_the_root_online(tmp_path):
     assert [item["relative_path"] for item in online["items"]] == ["b.xlsx"]
 
 
+def test_requirement_folder_inside_a_nested_root_is_listed_from_the_inner_root(tmp_path):
+    """同一项目挂了 /X 和 /X/交付（允许嵌套），外层的索引整棵跳过 交付/，文件只在内层的行里。
+    需求文件夹 /X/交付/需求A 要到内层查，不能按 id 先对上外层、查成空的。"""
+    _client, db, root, root_id = graph_world(tmp_path)
+    inner = root / "交付"
+    inner.mkdir()
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, ?)",
+        (str(inner), utc_now()),
+    )
+    inner_id = db.query_one("SELECT id FROM project_material_roots WHERE path=?", (str(inner),))[
+        "id"
+    ]
+    assert inner_id > root_id
+    index_done(db, root_id)
+    index_done(db, inner_id)
+    add_file(db, root_id, "合同.docx")
+    prototype = add_file(db, inner_id, "需求A/原型.pdf", mtime=2)
+    add_file(db, inner_id, "需求A/报价单.xlsx", mtime=1)
+    folder_id = add_folder(db, "r1", inner / "需求A")
+
+    with db.autocommit() as connection:
+        listed = material_graph.folder_files_from_index(
+            connection,
+            "p",
+            str(inner / "需求A"),
+            limit=10,
+            offset=0,
+            state_of=lambda path: ROOT_ONLINE,
+        )
+        result = {
+            "roots": [
+                {"root_id": root_id, "path": str(root)},
+                {"root_id": inner_id, "path": str(inner)},
+            ],
+            "folders": [{"folder_id": folder_id, "path": str(inner / "需求A")}],
+            "loose": {},
+        }
+        material_graph.decorate_roots(connection, "p", result, counts=None)
+
+    assert sorted(item["relative_path"] for item in listed["items"]) == ["原型.pdf", "报价单.xlsx"]
+    folder = result["folders"][0]
+    assert folder["root_id"] == inner_id
+    assert [item["file_id"] for item in folder["recent_files"]][0] == prototype
+
+
 # ---------------------------------------------------------------------- 文件面板和交付物
 
 

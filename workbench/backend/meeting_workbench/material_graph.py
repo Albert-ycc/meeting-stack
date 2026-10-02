@@ -42,6 +42,20 @@ def rel_under(root_path: str, path: str) -> str | None:
     return None
 
 
+def deepest_root(roots: Iterable[tuple[int, str]], path: str) -> tuple[int, str] | None:
+    """path 落在哪个根目录里：同一项目可以挂嵌套的两个根目录，外层的索引整棵跳过内层，文件只在内层的
+    行里，所以取包含它的最深的那个。回 (根目录 id, 相对路径)，相对路径为 "" 是根目录本身。"""
+    best: tuple[int, str, int] | None = None
+    for root_id, root_path in roots:
+        rel = rel_under(root_path, path)
+        if rel is None:
+            continue
+        depth = len(str(root_path).rstrip("/"))
+        if best is None or depth > best[2]:
+            best = (int(root_id), rel, depth)
+    return (best[0], best[1]) if best is not None else None
+
+
 def file_kind(row: dict[str, Any]) -> str:
     """和预览的 state.kind 一样的分法（活文件）：done、pending、waiting、unreadable、names_only。"""
     ext = str(row.get("ext") or "")
@@ -109,11 +123,9 @@ def decorate_roots(
     # 需求文件夹落在哪个根目录下、相对路径是什么
     folder_rel: dict[int, tuple[int, str]] = {}
     for folder in result.get("folders", []):
-        for root_id, root_path in roots.items():
-            rel = rel_under(root_path, str(folder["path"]))
-            if rel:
-                folder_rel[int(folder["folder_id"])] = (root_id, rel)
-                break
+        located = deepest_root(roots.items(), str(folder["path"]))
+        if located is not None and located[1]:
+            folder_rel[int(folder["folder_id"])] = located
     for item in result.get("roots", []):
         root_id = int(item["root_id"])
         excluded = [rel for owner, rel in folder_rel.values() if owner == root_id]
@@ -222,10 +234,11 @@ def folder_files_from_index(
             WHERE r.project_id = ? ORDER BY r.id""",
         (project_id,),
     ).fetchall()
+    located = deepest_root(((root["id"], str(root["path"])) for root in roots), folder_path)
     for root in roots:
-        rel = rel_under(str(root["path"]), folder_path)
-        if not rel:
+        if located is None or not located[1] or root["id"] != located[0]:
             continue
+        rel = located[1]
         if root["state"] != "done" or state_of(str(root["path"])) != ROOT_ONLINE:
             return None
         rows = connection.execute(
