@@ -59,6 +59,7 @@ import { MaterialPreviewDrawer } from "./components/MaterialPreview";
 import { TasksPage } from "./components/TasksPage";
 import { LinksFlagsContext, linksFlagsFrom, type LinksFlags } from "./components/links/LinksFlagsContext";
 import { RecentAnswersContext, createRecentAnswerStore } from "./components/links/useRelationAnswer";
+import { isComposingKeydown } from "./keyboard";
 import { uploadRecordingInChunks } from "./upload";
 
 interface AppProps {
@@ -1233,6 +1234,10 @@ export default function App({ apiClient = api }: AppProps) {
         aria-label="全局检索"
         disabled={detailNavigationLocked}
         onChange={(event) => setQuery(event.target.value)}
+        // 输入法用回车选字时浏览器也派发回车（Safari 尤其），不拦会隐式提交表单、把没敲完的拼音拿去搜
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && isComposingKeydown(event)) event.preventDefault();
+        }}
         maxLength={200}
         placeholder="搜索会议、原句、材料或关键词"
         value={query}

@@ -633,6 +633,19 @@ describe("手工导入录音", () => {
   });
 });
 
+describe("全局检索框和输入法", () => {
+  it("输入法选字的回车不触发表单提交，正常回车照常提交", async () => {
+    render(<App apiClient={client()} />);
+    const input = await screen.findByLabelText("全局检索");
+    fireEvent.change(input, { target: { value: "sui" } });
+
+    // 浏览器对组合中的回车也派发 keydown；拦掉它的默认动作，表单就不会被隐式提交
+    expect(fireEvent.keyDown(input, { key: "Enter", isComposing: true, keyCode: 229 })).toBe(false);
+    expect(fireEvent.keyDown(input, { key: "Enter", keyCode: 229 })).toBe(false);
+    expect(fireEvent.keyDown(input, { key: "Enter", keyCode: 13 })).toBe(true);
+  });
+});
+
 describe("列表页检索条件", () => {
   it("待办查过的条件，去别的页面再回来还在", async () => {
     const todo = vi.fn().mockResolvedValue({
