@@ -541,6 +541,71 @@ describe("浏览历史与返回", () => {
     expect(screen.queryByRole("heading", { name: "可编辑会议" })).not.toBeInTheDocument();
   });
 
+  // 真浏览器的后退：地址先回到上一条，依次派发 popstate、hashchange。rendered：两个事件之间 React 有没有渲染完
+  function browserBack(hash: string, rendered = true) {
+    const popstate = () => {
+      window.history.replaceState({ app: true }, "", `/${hash}`);
+      window.dispatchEvent(new PopStateEvent("popstate", { state: { app: true } }));
+    };
+    const hashchange = () => window.dispatchEvent(new HashChangeEvent("hashchange"));
+    if (rendered) {
+      act(popstate);
+      act(hashchange);
+    } else {
+      act(() => {
+        popstate();
+        hashchange();
+      });
+    }
+  }
+
+  it("从检索结果打开会议，浏览器后退（popstate 后紧跟 hashchange）：检索结果还在", async () => {
+    const search = vi.fn().mockResolvedValue({
+      mode: "exact",
+      items: [
+        {
+          segment_id: null,
+          meeting_id: "vm-page-1",
+          title: "第一页会议",
+          start_ms: null,
+          end_ms: null,
+          text: "决定成立数理协会",
+          match_kind: "minutes",
+          matched: "数理协会",
+        },
+      ],
+    });
+    render(<App apiClient={client({ search } as Partial<ApiClient>)} />);
+    fireEvent.click(await screen.findByRole("button", { name: "录音档案" }));
+    await screen.findByText("会议录音档案");
+    await userEvent.type(screen.getByLabelText("全局检索"), "数理协会");
+    await userEvent.click(screen.getByRole("button", { name: "检索" }));
+    await userEvent.click(await screen.findByRole("button", { name: "打开纪要" }));
+    await screen.findByRole("heading", { name: "可编辑会议" });
+    expect(screen.getByRole("button", { name: "← 返回检索结果" })).toBeInTheDocument();
+
+    browserBack("#library");
+
+    expect(screen.queryByRole("heading", { name: "可编辑会议" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "“数理协会”" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开纪要" })).toBeInTheDocument();
+  });
+
+  it("会议有没保存的修改时浏览器后退：只问一次，两个事件之间没来得及渲染也不再问一遍", async () => {
+    render(<App apiClient={client()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "录音档案" }));
+    await userEvent.click(await screen.findByRole("button", { name: /第一页会议/ }));
+    await screen.findByRole("heading", { name: "可编辑会议" });
+    await userEvent.click(screen.getByRole("button", { name: "编辑逐字稿" }));
+    await userEvent.type(screen.getByLabelText("00:00 逐字稿"), "改了");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    browserBack("#library", false);
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("会议录音档案")).toBeInTheDocument();
+  });
+
   it("冷加载带 #meetings/<id> 直接打开那场会", async () => {
     window.history.replaceState(null, "", "/#meetings/vm-page-1");
     const meeting = vi.fn().mockResolvedValue(detail);

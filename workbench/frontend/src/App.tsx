@@ -1159,12 +1159,27 @@ export default function App({ apiClient = api }: AppProps) {
   ]);
 
   // 浏览器前进/后退或手动改地址栏 hash 时反向同步视图。
+  // 浏览器在 hash 变了的前进、后退（以及手改地址栏）里会先后发 popstate、hashchange，同一次导航只能认一次：
+  // 第二遍时会议已经关了，会被当成「从别处切过来」清掉检索结果；没来得及渲染的话还会把「放弃修改吗」再问一遍。
+  // popstate 处理完记下落到的地址（处理中可能替换、压回了地址），紧跟着的 hashchange 读到的还是它就跳过
   useEffect(() => {
-    window.addEventListener("popstate", applyHash);
-    window.addEventListener("hashchange", applyHash);
+    let handledHref: string | null = null;
+    const onPopState = () => {
+      handledHref = null;
+      applyHash();
+      handledHref = window.location.href;
+    };
+    const onHashChange = () => {
+      const handled = handledHref;
+      handledHref = null;
+      if (handled === window.location.href) return;
+      applyHash();
+    };
+    window.addEventListener("popstate", onPopState);
+    window.addEventListener("hashchange", onHashChange);
     return () => {
-      window.removeEventListener("popstate", applyHash);
-      window.removeEventListener("hashchange", applyHash);
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("hashchange", onHashChange);
     };
   }, [applyHash]);
 
