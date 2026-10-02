@@ -2001,48 +2001,84 @@ class Database:
         meeting_id: str,
         segments: Iterable[dict[str, Any]],
     ) -> None:
-        normalized = list(segments)
-        old_ids = [
-            row[0]
-            for row in connection.execute(
-                "SELECT id FROM segments WHERE version_id = ?", (version_id,)
-            ).fetchall()
-        ]
-        connection.execute("DELETE FROM segments_fts WHERE version_id = ?", (version_id,))
-        connection.execute("DELETE FROM segments WHERE version_id = ?", (version_id,))
-        if old_ids:
-            placeholders = ",".join("?" for _ in old_ids)
-            connection.execute(
-                f"DELETE FROM embeddings WHERE segment_id IN ({placeholders})", old_ids
-            )
-        for ordinal, segment in enumerate(normalized):
-            segment_id = segment.get("id") or f"seg-{uuid.uuid4().hex}"
+        """让这个版本的段落恰好是 segments（顺序号按传入顺序重排）。
+
+        id 在、文字没变的老段原地保留：段落行、全文索引行、向量、金标样本的链接都不动，顺序号、
+        时间、说话人变了就地更新。只有删掉的、改了文字的、新增的段才删了重写。以前是整版先全删
+        再原样写回，拆一段、合两段也会把这个版本所有段落的向量删光（语义索引要把整场会重新编码）。"""
+        wanted = []
+        for ordinal, segment in enumerate(segments):
             start_ms = max(0, int(segment.get("start_ms", 0)))
-            end_ms = max(start_ms, int(segment.get("end_ms", start_ms)))
-            values = (
-                segment_id,
-                version_id,
-                meeting_id,
-                # ordinal 由服务端按传入顺序重排，不采信客户端字段：否则两段都传同一个
-                # ordinal 会撞 UNIQUE(version_id, ordinal) 直接 500。
-                ordinal,
-                start_ms,
-                end_ms,
-                segment.get("speaker_label"),
-                segment.get("speaker_name"),
-                str(segment.get("text", "")).strip(),
+            wanted.append(
+                (
+                    segment.get("id") or f"seg-{uuid.uuid4().hex}",
+                    # ordinal 由服务端按传入顺序重排，不采信客户端字段：否则两段都传同一个
+                    # ordinal 会撞 UNIQUE(version_id, ordinal) 直接 500。
+                    ordinal,
+                    start_ms,
+                    max(start_ms, int(segment.get("end_ms", start_ms))),
+                    segment.get("speaker_label"),
+                    segment.get("speaker_name"),
+                    str(segment.get("text", "")).strip(),
+                )
+            )
+        if len({item[0] for item in wanted}) != len(wanted):
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: segments.id")
+        existing = {
+            row[0]: tuple(row[1:])
+            for row in connection.execute(
+                """SELECT id, ordinal, start_ms, end_ms, speaker_label, speaker_name, text
+                     FROM segments WHERE version_id = ?""",
+                (version_id,),
+            )
+        }
+        kept = {
+            item[0]: item
+            for item in wanted
+            if item[0] in existing and existing[item[0]][5] == item[6]
+        }
+        doomed = [segment_id for segment_id in existing if segment_id not in kept]
+        # 全文索引行：这个版本里除了留下的老段，全清掉（删掉的、改了字的，连带历史遗留的孤儿行）
+        connection.execute(
+            """DELETE FROM segments_fts
+                WHERE version_id = ? AND segment_id NOT IN (SELECT value FROM json_each(?))""",
+            (version_id, json.dumps(list(kept))),
+        )
+        if doomed:
+            doomed_json = json.dumps(doomed)
+            connection.execute(
+                "DELETE FROM embeddings WHERE segment_id IN (SELECT value FROM json_each(?))",
+                (doomed_json,),
             )
             connection.execute(
-                """INSERT INTO segments
-                   (id, version_id, meeting_id, ordinal, start_ms, end_ms,
-                    speaker_label, speaker_name, text)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                values,
+                "DELETE FROM segments WHERE id IN (SELECT value FROM json_each(?))", (doomed_json,)
             )
-            connection.execute(
-                "INSERT INTO segments_fts(segment_id, meeting_id, version_id, text) VALUES (?, ?, ?, ?)",
-                (segment_id, meeting_id, version_id, values[-1]),
+        # 老段的顺序号要换的，先停到负数再放到最终位置：UNIQUE(version_id, ordinal) 是逐行检查的，
+        # 直接加一减一会撞上还没挪走的邻居。
+        moving = [item for item in kept.values() if existing[item[0]][0] != item[1]]
+        if moving:
+            connection.executemany(
+                "UPDATE segments SET ordinal = ? WHERE id = ?",
+                [(-item[1] - 1, item[0]) for item in moving],
             )
+        connection.executemany(
+            """UPDATE segments
+                  SET ordinal = ?, start_ms = ?, end_ms = ?, speaker_label = ?, speaker_name = ?
+                WHERE id = ?""",
+            [(*item[1:6], item[0]) for item in kept.values() if existing[item[0]] != item[1:]],
+        )
+        fresh = [item for item in wanted if item[0] not in kept]
+        connection.executemany(
+            """INSERT INTO segments
+               (id, version_id, meeting_id, ordinal, start_ms, end_ms,
+                speaker_label, speaker_name, text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(item[0], version_id, meeting_id, *item[1:]) for item in fresh],
+        )
+        connection.executemany(
+            "INSERT INTO segments_fts(segment_id, meeting_id, version_id, text) VALUES (?, ?, ?, ?)",
+            [(item[0], meeting_id, version_id, item[6]) for item in fresh],
+        )
 
     @staticmethod
     def sync_transcript_metadata_with_connection(

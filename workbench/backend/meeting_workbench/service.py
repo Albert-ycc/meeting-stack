@@ -246,8 +246,15 @@ class MeetingService:
         return draft_id
 
     def _ensure_draft_with_connection(
-        self, connection: Any, meeting_id: str, *, force_new: bool = False
+        self,
+        connection: Any,
+        meeting_id: str,
+        *,
+        force_new: bool = False,
+        copy_segments: bool = True,
     ) -> tuple[str, str | None, dict[str, str]]:
+        """copy_segments=False：只建新草稿版本并给出旧段落 id 到新 id 的对照，不先复制段落；
+        调用方马上整版写入（save_segments），先复制再删掉重写等于每行写两遍。"""
         meeting = connection.execute(
             "SELECT current_transcript_version_id FROM meetings WHERE id=?", (meeting_id,)
         ).fetchone()
@@ -283,7 +290,8 @@ class MeetingService:
             segment_id_map[str(segment["id"])] = new_segment_id
             segment["id"] = new_segment_id
             copied.append(segment)
-        self.db.replace_segments_with_connection(connection, draft_id, meeting_id, copied)
+        if copy_segments:
+            self.db.replace_segments_with_connection(connection, draft_id, meeting_id, copied)
         connection.execute(
             """UPDATE meetings SET current_transcript_version_id=?,
                status='draft_modified', updated_at=? WHERE id=?""",
@@ -327,7 +335,7 @@ class MeetingService:
             ):
                 raise ConflictError("逐字稿版本已变化，请保留本地内容并重新加载")
             version_id, based_on_id, segment_id_map = self._ensure_draft_with_connection(
-                connection, meeting_id, force_new=True
+                connection, meeting_id, force_new=True, copy_segments=False
             )
             write_segments = [dict(segment) for segment in segments]
             if based_on_id is not None:
