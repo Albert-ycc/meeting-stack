@@ -647,12 +647,16 @@ def save_extracted(
         result["by_no"][no] = candidate_id
     for candidate_id in replaceable_ids - kept:
         # 有人挂过任务的不撤：已确认的、别的会的任务挂在上面（项目页与待办改版 R07-8），撤下会让任务的挂接
-        # 悄悄没了。这场会自己抽出的草稿挂着的不算，那是 AI 上次的配对，照旧撤下。
+        # 悄悄没了。这场会自己抽出的草稿挂着的不算，那是 AI 上次的配对，照旧撤下；但用户手动改挂过的
+        # 草稿（有 requirement_changed 事件，同 todo.recommend 区分 paired / current）算有人挂过。
         if connection.execute(
             """SELECT 1 FROM tasks t JOIN requirement_candidates c ON c.id = t.candidate_id
                 WHERE t.candidate_id = ?
                   AND NOT (t.meeting_id IS c.meeting_id
-                           AND t.status IN ('pending_confirm', 'expired'))""",
+                           AND t.status IN ('pending_confirm', 'expired')
+                           AND NOT EXISTS (SELECT 1 FROM task_events e
+                                            WHERE e.task_id = t.id
+                                              AND e.kind = 'requirement_changed'))""",
             (candidate_id,),
         ).fetchone():
             continue

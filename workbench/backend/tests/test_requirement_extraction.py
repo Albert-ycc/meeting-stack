@@ -768,6 +768,42 @@ def test_re_extraction_keeps_the_same_candidate_and_its_tasks(tmp_path, monkeypa
     }
 
 
+def test_re_extraction_keeps_a_candidate_the_user_hung_a_draft_on(tmp_path, monkeypatch):
+    """R01-5 撤下没再抽到的候选时，这场会自己草稿挂着的照旧撤——那是 AI 上次的配对；但用户手动把草稿
+    改挂到这条候选上的，算有人挂过，不撤，不然挂接悄悄没了（判据同 todo.recommend 的 paired / current）。"""
+    client, headers, db, settings = make_world(tmp_path)
+    seed_minutes(db, "cvm")
+    fake_ai(
+        monkeypatch,
+        reply(
+            SCRIPT,
+            EXPORT,
+            SHEET,
+            tasks=[{**SCRIPT_TASK, "requirement_no": 1}, {**CHASE_TASK, "requirement_no": 3}],
+        ),
+    )
+    scan(db, settings, "cvm")
+    wall = pending(client)
+    export_id = wall["科室会预约后台导出"]["id"]
+    sheet_id = wall["共享预约表补齐一百场"]["id"]
+    drafts = tasks_of(db, "cvm")
+    script_task = drafts["话术修改稿发执行群走默示确认"]["id"]
+    changed = client.patch(
+        f"/api/tasks/{script_task}", json={"candidate_id": export_id}, headers=headers
+    )
+    assert changed.status_code == 200, changed.text
+
+    fake_ai(monkeypatch, reply(SCRIPT, tasks=[{**CHASE_TASK, "requirement_no": 1}]))
+    re_extract(client, headers, "cvm")
+
+    assert db.query_one("SELECT candidate_id FROM tasks WHERE id=?", (script_task,)) == {
+        "candidate_id": export_id
+    }
+    assert set(pending(client)) == {"AI 主持话术读法修正", "科室会预约后台导出"}
+    # AI 自己配上的照旧不算：共享预约表那条只挂着 AI 配的草稿，没再抽到就撤下
+    assert db.query_one("SELECT 1 FROM requirement_candidates WHERE id=?", (sheet_id,)) is None
+
+
 def test_malformed_requirements_leave_existing_candidates_alone(tmp_path, monkeypatch):
     """AI 回的 requirements 缺了、不是列表：当格式不对，不是「一条都没有」——原来待认领的不动，
     同一次的任务照常；手动补抽报失败。"""
