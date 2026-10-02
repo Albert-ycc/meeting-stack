@@ -20,7 +20,7 @@ import {
   type DayStamp,
 } from "../../format";
 import type { MeetingSummary, RequirementSource, Segment } from "../../types";
-import { useDialogFocus } from "../useDialog";
+import { useDialogEscape, useDialogFocus } from "../useDialog";
 import { anchorLabel } from "./PosterCard";
 import "./PoolDialogs.css";
 import "./SourcePickerDialog.css";
@@ -662,19 +662,12 @@ interface SourcePickerDialogProps {
 export function SourcePickerDialog({ apiClient, projectId, projectName, onClose, onPicked }: SourcePickerDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocus(dialogRef);
+  useDialogEscape(dialogRef, onClose);
   const [query, setQuery] = useState("");
   const [onlyProject, setOnlyProject] = useState(Boolean(projectId));
   const [meeting, setMeeting] = useState<MeetingSummary | null>(null);
   const pages = useMeetingPages(apiClient, query, onlyProject && projectId ? projectId : null);
   const listScrollTop = useRef(0);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing) onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
 
   return (
     <div className="pool-dialog__overlay">

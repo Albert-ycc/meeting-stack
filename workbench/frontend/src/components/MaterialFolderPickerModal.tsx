@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ApiClient } from "../api";
 import { formatMonthDay } from "../format";
 import type { MaterialFolderStat, ProjectSubfoldersRoot } from "../types";
-import { useBackdropDismiss, useDialogFocus } from "./useDialog";
+import { useBackdropDismiss, useDialogEscape, useDialogFocus } from "./useDialog";
 import { FolderIcon } from "./FolderIcon";
 import "./MaterialFolderPickerModal.css";
 
@@ -35,6 +35,7 @@ export function MaterialFolderPickerModal({
 }: MaterialFolderPickerModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocus(dialogRef);
+  useDialogEscape(dialogRef, onCancel);
   const backdrop = useBackdropDismiss(onCancel);
   const [roots, setRoots] = useState<ProjectSubfoldersRoot[] | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -60,14 +61,6 @@ export function MaterialFolderPickerModal({
       active = false;
     };
   }, [apiClient, projectId]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing) onCancel();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onCancel]);
 
   const activeRoot = roots?.find((root) => root.root_id === activeRootId) ?? null;
   const visibleFolders = useMemo(() => {

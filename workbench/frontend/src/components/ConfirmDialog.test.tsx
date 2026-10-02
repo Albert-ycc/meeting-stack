@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { useConfirm } from "./ConfirmDialog";
+import { useDialogEscape, useDialogFocus } from "./useDialog";
 
 function Harness({ onResult }: { onResult: (confirmed: boolean) => void }) {
   const [confirm, dialog] = useConfirm();
@@ -141,6 +142,54 @@ describe("ConfirmDialog", () => {
 
     fireEvent.keyDown(dialog, { key: "Escape" });
     await waitFor(() => expect(onResult).toHaveBeenCalledWith(false));
+  });
+
+  describe("盖在别的弹窗上", () => {
+    function Underlay({ onEscape }: { onEscape: () => void }) {
+      const ref = useRef<HTMLDivElement>(null);
+      useDialogFocus(ref);
+      useDialogEscape(ref, onEscape);
+      return <div aria-label="下面的弹窗" ref={ref} role="dialog" />;
+    }
+    function Page({ onResult, onUnderEscape }: { onResult: (confirmed: boolean) => void; onUnderEscape: () => void }) {
+      const [confirm, dialog] = useConfirm();
+      return (
+        <div>
+          <Underlay onEscape={onUnderEscape} />
+          <button onClick={async () => onResult(await confirm({ title: "丢弃草稿？", confirmLabel: "丢弃", tone: "danger" }))} type="button">
+            打开确认
+          </button>
+          {dialog}
+        </div>
+      );
+    }
+
+    it("Esc 只取消确认框，下面的弹窗不关；确认框没了再按才轮到它", async () => {
+      const onResult = vi.fn();
+      const onUnderEscape = vi.fn();
+      render(<Page onResult={onResult} onUnderEscape={onUnderEscape} />);
+      await userEvent.click(screen.getByRole("button", { name: "打开确认" }));
+      await screen.findByRole("alertdialog");
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      await waitFor(() => expect(onResult).toHaveBeenCalledWith(false));
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(onUnderEscape).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(onUnderEscape).toHaveBeenCalledTimes(1);
+    });
+
+    it("焦点不在确认框里（落在页面上）Esc 也取消确认框", async () => {
+      const onResult = vi.fn();
+      render(<Page onResult={onResult} onUnderEscape={vi.fn()} />);
+      await userEvent.click(screen.getByRole("button", { name: "打开确认" }));
+      await screen.findByRole("alertdialog");
+
+      fireEvent.keyDown(document.body, { key: "Escape" });
+
+      await waitFor(() => expect(onResult).toHaveBeenCalledWith(false));
+    });
   });
 
   it("在弹窗里按下、到背景上松开不算点背景", async () => {

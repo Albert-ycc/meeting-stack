@@ -607,3 +607,39 @@ describe("ProjectFormModal 编辑：合并与删除", () => {
     expect(onDeleted).toHaveBeenCalled();
   });
 });
+
+describe("ProjectFormModal 按 Esc", () => {
+  it("选目录的弹窗盖在表单上：Esc 只关取径器，填了的内容还在；再按一次才关表单（焦点在不在取径器里都一样）", async () => {
+    const { onClose } = renderCreate(makeClient());
+    await userEvent.type(screen.getByPlaceholderText("例如：互联网医院"), "新项目");
+
+    await userEvent.click(screen.getByRole("button", { name: "＋ 添加目录" }));
+    await screen.findByRole("dialog", { name: "添加材料根目录" });
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "添加材料根目录" })).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText("例如：互联网医院")).toHaveValue("新项目");
+
+    // 再开一次，这回焦点落在页面上、不在取径器里
+    await userEvent.click(screen.getByRole("button", { name: "＋ 添加目录" }));
+    await screen.findByRole("dialog", { name: "添加材料根目录" });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "添加材料根目录" })).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("正在创建时 Esc 不关表单", async () => {
+    const createProjectWith = vi.fn().mockReturnValue(new Promise(() => undefined));
+    const { onClose } = renderCreate(makeClient({ createProjectWith } as Partial<ApiClient>));
+    await userEvent.type(screen.getByPlaceholderText("例如：互联网医院"), "新项目");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+    expect(createProjectWith).toHaveBeenCalledTimes(1);
+
+    await userEvent.keyboard("{Escape}");
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});

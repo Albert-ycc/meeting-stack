@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../api";
-import { useBackdropDismiss, useDialogFocus } from "./useDialog";
+import { useBackdropDismiss, useDialogEscape, useDialogFocus } from "./useDialog";
 import type { RequirementDetail, Task, TaskStatus } from "../types";
 import "./LinkTasksModal.css";
 
@@ -45,6 +45,9 @@ export function LinkTasksModal({ apiClient, requirementId, projectId, onCancel, 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const backdrop = useBackdropDismiss(onCancel, saving);
+  useDialogEscape(dialogRef, () => {
+    if (!saving) onCancel();
+  });
   const [error, setError] = useState("");
   const statusFieldRef = useRef<HTMLDivElement>(null);
 
@@ -81,14 +84,6 @@ export function LinkTasksModal({ apiClient, requirementId, projectId, onCancel, 
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [statusMenuOpen]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && !saving) onCancel();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onCancel, saving]);
 
   const toggleStatus = (status: TaskStatus) =>
     setStatuses((current) => {

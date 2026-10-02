@@ -4,7 +4,7 @@ import { ApiError } from "../api";
 import type { ApiClient } from "../api";
 import type { MaterialBrowsePayload } from "../types";
 import { FolderIcon } from "./FolderIcon";
-import { useBackdropDismiss, useDialogFocus } from "./useDialog";
+import { useBackdropDismiss, useDialogEscape, useDialogFocus } from "./useDialog";
 import "./MaterialRootPickerModal.css";
 
 export interface MaterialRootPickerModalProps {
@@ -53,6 +53,7 @@ export function MaterialRootPickerModal({
   const close = () => {
     if (!busy) onClose();
   };
+  useDialogEscape(cardRef, close);
   // 只做选择的弹窗：点背景关
   const backdrop = useBackdropDismiss(close, busy);
 
@@ -88,10 +89,12 @@ export function MaterialRootPickerModal({
         aria-label={title}
         aria-modal="true"
         className="material-picker__card"
-        // 点到行这类不能聚焦的地方时焦点落在弹窗上，Esc 照样能关
+        // 点到行这类不能聚焦的地方时焦点落在弹窗上，下面的 Esc 拦截才接得住
         tabIndex={-1}
         onKeyDown={(event) => {
-          // 自己处理 Esc，别再冒泡到外层表单弹窗把它也关了
+          // 取径器会盖在关系图的节点面板里面（graph/MaterialPanels），面板的容器在 React 里听 Esc 取消选中：
+          // 焦点在取径器里时 Esc 在这一层处理完、不再往上冒，不然会把面板连同取径器一起收掉。
+          // 焦点不在取径器里时（比如点了「›」后那个按钮被换掉了）由 useDialogEscape 接
           if (event.key === "Escape" && !event.nativeEvent.isComposing) {
             event.stopPropagation();
             close();

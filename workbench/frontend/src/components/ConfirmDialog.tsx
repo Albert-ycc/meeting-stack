@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
 
 import "./ConfirmDialog.css";
-import { useBackdropDismiss, useDialogFocus } from "./useDialog";
+import { useBackdropDismiss, useDialogEscape, useDialogFocus } from "./useDialog";
 
 export interface ConfirmOptions {
   title: string;
@@ -35,6 +35,7 @@ function ConfirmDialog({ options, onDone }: ConfirmDialogProps) {
   const cancel = () => {
     if (!busy) onDone(false);
   };
+  useDialogEscape(dialogRef, cancel);
   const backdrop = useBackdropDismiss(cancel, busy);
 
   const confirm = async () => {
@@ -60,12 +61,6 @@ function ConfirmDialog({ options, onDone }: ConfirmDialogProps) {
         aria-labelledby="confirm-modal-title"
         aria-modal="true"
         className="confirm-modal__card"
-        onKeyDown={(event) => {
-          if (event.key === "Escape" && !event.nativeEvent.isComposing) {
-            event.stopPropagation();
-            cancel();
-          }
-        }}
         ref={dialogRef}
         role="alertdialog"
       >

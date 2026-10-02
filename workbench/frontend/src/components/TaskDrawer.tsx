@@ -9,7 +9,7 @@ import { DeliverableModal } from "./DeliverableModal";
 import { PriorityBadge } from "./RequirementBadges";
 import { isComposingKeydown } from "../keyboard";
 import "./TaskDrawer.css";
-import { isTopDialog, useDialogFocus } from "./useDialog";
+import { useDialogEscape, useDialogFocus } from "./useDialog";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice } from "./Notice";
 import type { NoticeFn } from "./graph/panelParts";
 import { RelationQuestion } from "./links/RelationQuestion";
@@ -56,6 +56,7 @@ export function TaskDrawer({
 }: TaskDrawerProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
   useDialogFocus(drawerRef);
+  useDialogEscape(drawerRef, onClose);
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [state, setState] = useState<LoadState>("loading");
   const { notice, setNotice, dismissNotice } = useNotice();
@@ -100,15 +101,6 @@ export function TaskDrawer({
     },
   });
   answeringRef.current = answering;
-
-  // 关闭交互：点遮罩、按 Esc。背景滚动锁定与焦点进出由 useDialogFocus 负责。
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && !deliverableOpen && isTopDialog(drawerRef.current)) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, deliverableOpen]);
 
   const act = async (run: () => Promise<TaskDetail>, doneMessage: string) => {
     if (busyRef.current) return; // ref 级互斥：双击不会连发两个状态请求

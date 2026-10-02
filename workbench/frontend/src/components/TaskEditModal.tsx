@@ -11,7 +11,7 @@ import type {
   TaskAssignee,
 } from "../types";
 import { isComposingKeydown } from "../keyboard";
-import { useDialogFocus } from "./useDialog";
+import { useDialogEscape, useDialogFocus } from "./useDialog";
 import { PriorityBadge } from "./RequirementBadges";
 import { SimilarProjectQuestion } from "./SimilarProjectQuestion";
 import "./TaskEditModal.css";
@@ -188,15 +188,11 @@ export function TaskEditModal({
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [onClose]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.isComposing) return;
-      if (openMenuRef.current) closeMenus();
-      else if (!savingRef.current) onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  // 下拉开着时 Esc 先收下拉，再按才关弹窗
+  useDialogEscape(cardRef, () => {
+    if (openMenuRef.current) closeMenus();
+    else if (!savingRef.current) onClose();
+  });
 
   const takeProject = (id: string) => {
     setProjectId(id);

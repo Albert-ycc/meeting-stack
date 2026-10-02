@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { type ApiClient } from "../api";
 import "./TaskReExtractModal.css";
-import { useDialogFocus } from "./useDialog";
+import { useDialogEscape, useDialogFocus } from "./useDialog";
 
 interface TaskReExtractModalProps {
   apiClient: ApiClient;
@@ -27,14 +27,9 @@ export function TaskReExtractModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && !submitting) onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, submitting]);
+  useDialogEscape(dialogRef, () => {
+    if (!submitting) onClose();
+  });
 
   const focusTextarea = useCallback(() => {
     textareaRef.current?.focus();

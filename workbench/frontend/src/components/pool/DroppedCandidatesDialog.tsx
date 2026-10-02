@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../../api";
 import { formatMonthDay, formatMonthDayClock } from "../../format";
 import type { DroppedCandidates } from "../../types";
-import { useBackdropDismiss, useDialogFocus } from "../useDialog";
+import { useBackdropDismiss, useDialogEscape, useDialogFocus } from "../useDialog";
 import "./PoolDialogs.css";
 
 interface DroppedCandidatesDialogProps {
@@ -48,6 +48,9 @@ export function DroppedCandidatesDialog({ apiClient, onClose, onRestored }: Drop
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const backdrop = useBackdropDismiss(onClose, busyId !== null);
+  useDialogEscape(dialogRef, () => {
+    if (!busyId) onClose();
+  });
 
   const load = useCallback(async () => {
     try {
@@ -61,14 +64,6 @@ export function DroppedCandidatesDialog({ apiClient, onClose, onRestored }: Drop
   useEffect(() => {
     void load();
   }, [load]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && !busyId) onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [busyId, onClose]);
 
   const restore = async (id: string, title: string) => {
     setBusyId(id);

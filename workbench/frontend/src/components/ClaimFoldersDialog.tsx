@@ -5,7 +5,7 @@ import { formatDate } from "../format";
 import type { ClaimItem, ClaimItemResult, ClaimResult, UnclaimedFolder } from "../types";
 import { FolderIcon } from "./FolderIcon";
 import { NoticeBanner, useNotice } from "./Notice";
-import { useBackdropDismiss, useDialogFocus } from "./useDialog";
+import { useBackdropDismiss, useDialogEscape, useDialogFocus } from "./useDialog";
 import "./ClaimFoldersDialog.css";
 
 interface ClaimFoldersDialogProps {
@@ -114,6 +114,7 @@ export function ClaimFoldersDialog({ apiClient, folders, onClose, onChanged }: C
   const close = () => {
     if (!busy) onClose(summaryText(totals, hints));
   };
+  useDialogEscape(cardRef, close);
   const backdrop = useBackdropDismiss(close, busy);
 
   const update = (path: string, change: Partial<Row>) =>
@@ -204,14 +205,8 @@ export function ClaimFoldersDialog({ apiClient, folders, onClose, onChanged }: C
         aria-labelledby="claim-dialog-title"
         aria-modal="true"
         className="claim-dialog__card"
-        // 点到行这类不能聚焦的地方时焦点落在弹窗上，Esc 照样能关
+        // 点到行这类不能聚焦的地方时焦点落在弹窗上，Tab 接着从弹窗里走
         tabIndex={-1}
-        onKeyDown={(event) => {
-          if (event.key === "Escape" && !event.nativeEvent.isComposing) {
-            event.stopPropagation();
-            close();
-          }
-        }}
         ref={cardRef}
         role="dialog"
       >

@@ -4,7 +4,7 @@ import type { ApiClient } from "../../api";
 import { formatMonthDay } from "../../format";
 import type { MergeTarget, RequirementDetail } from "../../types";
 import { REQUIREMENT_STATUS_LABELS } from "../RequirementBadges";
-import { useDialogFocus } from "../useDialog";
+import { useDialogEscape, useDialogFocus } from "../useDialog";
 import "./PoolDialogs.css";
 
 interface MergeCandidateDialogProps {
@@ -36,6 +36,9 @@ export function MergeCandidateDialog({
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const shownProject = projectName ?? candidate.project_name;
+  useDialogEscape(dialogRef, () => {
+    if (!saving) onClose();
+  });
 
   useEffect(() => {
     let active = true;
@@ -57,14 +60,6 @@ export function MergeCandidateDialog({
       active = false;
     };
   }, [apiClient, candidate.id, preferredId, projectId]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && !saving) onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose, saving]);
 
   const merge = async () => {
     if (!choice || saving) return;

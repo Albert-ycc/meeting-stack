@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { type ApiClient } from "../api";
 import type { DeliverableKind } from "../types";
 import "./DeliverableModal.css";
-import { useDialogFocus } from "./useDialog";
+import { useDialogEscape, useDialogFocus } from "./useDialog";
 
 interface DeliverableModalProps {
   apiClient: ApiClient;
@@ -57,6 +57,9 @@ export function DeliverableModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const savingRef = useRef(false);
+  useDialogEscape(dialogRef, () => {
+    if (!savingRef.current) onClose();
+  });
 
   const recognition = useMemo(() => recognizeUrl(url), [url]);
 
@@ -64,14 +67,6 @@ export function DeliverableModal({
   useEffect(() => {
     if (recognition) setKind(recognition.kind);
   }, [recognition]);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && !savingRef.current) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const canSave = url.trim().length > 0 && !saving;
 

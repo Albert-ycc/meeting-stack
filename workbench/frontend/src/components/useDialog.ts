@@ -5,7 +5,7 @@ import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type RefObject }
  * - 打开时焦点移进弹窗（优先带 autoFocus 的控件，其次第一个可聚焦元素），Tab 在弹窗内循环；
  * - 关闭后焦点回到打开它的那个按钮；
  * - 弹窗开着时页面本身不滚动；
- * - Esc 关闭，但中文输入法组合输入中的 Esc 只取消候选词，不关弹窗（判 event.isComposing）；
+ * - Esc 关闭（useDialogEscape）：弹窗叠着弹窗时一次只关最上面那层；中文输入法组合输入中的 Esc 只取消候选词，不关弹窗；
  * - 有输入内容的表单弹窗点背景不关，只能 ✕ / 取消 / Esc 关，避免误触丢掉填了一半的内容；
  *   只做选择的弹窗（选文件夹、关联会议/任务）点背景关，用 useBackdropDismiss 判定。
  */
@@ -101,6 +101,30 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>) {
 /** 这个弹窗是不是最上面那层：抽屉上再盖抽屉时，Esc 只该关最上面的，各层自己的 Esc 监听先问一句 */
 export function isTopDialog(root: HTMLElement | null): boolean {
   return root !== null && dialogStack[dialogStack.length - 1] === root;
+}
+
+/**
+ * 按 Esc 关弹窗，全站统一从这里走，弹窗自己不再写 Esc 监听、也不用 stopPropagation 或「子弹窗开着」的标志防着：
+ * 只有最上面那一层（isTopDialog）响应，弹窗里再开弹窗、抽屉上再盖弹窗，一次 Esc 只关一层。
+ * ref 要和 useDialogFocus 用的是同一个。onEscape 每次渲染换成最新的，里面自己判断现在能不能关（比如保存中不关）。
+ *
+ * 每个弹窗只在挂载时登记一次监听，挂在 window 的冒泡阶段：下层弹窗的监听总是排在上层前面，
+ * 上层关掉、从栈里退出的那一刻下层已经问过「我是不是最上层」，不会同一次按键里连下层一起关；
+ * 元素上、document 上的监听都排在 window 前面，先看到这次 Esc，不会撞上弹窗已经消失了的页面
+ * （GlossaryTermEditor 靠看确认框还在不在来避让，就靠这个顺序）。
+ */
+export function useDialogEscape(ref: RefObject<HTMLElement | null>, onEscape: () => void) {
+  const latest = useRef(onEscape);
+  latest.current = onEscape;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // keyCode 229：Safari 里组合输入结束那一下 isComposing 已经是 false
+      if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
+      if (isTopDialog(ref.current)) latest.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [ref]);
 }
 
 /**

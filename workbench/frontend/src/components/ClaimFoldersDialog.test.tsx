@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -248,6 +248,30 @@ describe("ClaimFoldersDialog 处理勾选的", () => {
     const { onClose } = renderDialog();
     await userEvent.click(screen.getByRole("button", { name: "以后再说" }));
     expect(onClose).toHaveBeenCalledWith("");
+  });
+});
+
+describe("ClaimFoldersDialog 按 Esc", () => {
+  it("焦点在不在弹窗里都关；输入法组合中的 Esc 不关", () => {
+    const { onClose } = renderDialog();
+
+    fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("正在处理时不关：等这一批发完", async () => {
+    const claimFolders = vi.fn().mockReturnValue(new Promise(() => undefined));
+    const { onClose } = renderDialog({ claimFolders } as Partial<ApiClient>);
+    await userEvent.click(screen.getByRole("button", { name: "全选「建成项目」" }));
+    await userEvent.click(screen.getByRole("button", { name: "处理勾选的 3 个" }));
+    expect(claimFolders).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
 

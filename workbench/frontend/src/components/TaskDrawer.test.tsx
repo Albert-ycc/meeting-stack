@@ -314,6 +314,33 @@ describe("TaskDrawer 在问的产出（4e）", () => {
   });
 });
 
+describe("TaskDrawer 上再盖登记交付物的弹窗", () => {
+  it("Esc 只关弹窗，任务抽屉留着；弹窗关了再按才关抽屉", async () => {
+    const onCloseTask = vi.fn();
+    const apiClient = { task: vi.fn().mockResolvedValue(makeTask("confirmed")) } as unknown as ApiClient;
+    render(
+      <TaskDrawer
+        apiClient={apiClient}
+        canWrite
+        onChanged={vi.fn()}
+        onClose={onCloseTask}
+        onOpenMeeting={vi.fn()}
+        taskId="t1"
+      />,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /登记交付物/ }));
+    const modal = await screen.findByRole("dialog", { name: /交付物/ });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(modal).not.toBeInTheDocument();
+    expect(onCloseTask).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "任务详情" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onCloseTask).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("TaskDrawer 上再盖一层抽屉", () => {
   it("材料预览盖在任务抽屉上：Esc 只关最上面的预览，预览关了再按才关任务抽屉", async () => {
     const onCloseTask = vi.fn();

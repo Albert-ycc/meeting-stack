@@ -7,7 +7,7 @@ import type { FolderMatch, FolderMatchesPayload, Project, SimilarProjectSuggesti
 import { isComposingKeydown } from "../keyboard";
 import { pollWhileChecking } from "./checkingPoll";
 import { FolderIcon } from "./FolderIcon";
-import { useDialogFocus } from "./useDialog";
+import { useDialogEscape, useDialogFocus } from "./useDialog";
 import { MaterialRootPickerModal } from "./MaterialRootPickerModal";
 import { PROJECT_PARENT_PICKER } from "./ProjectParentRow";
 import { SimilarProjectQuestion } from "./SimilarProjectQuestion";
@@ -102,10 +102,6 @@ export function ProjectFormModal({
 
   const cardRef = useRef<HTMLDivElement>(null);
   useDialogFocus(cardRef);
-  const pickerOpenRef = useRef(pickerOpen);
-  useEffect(() => {
-    pickerOpenRef.current = pickerOpen;
-  }, [pickerOpen]);
   const savingRef = useRef(false);
 
   // 盘没插时项目已经建好：不管点［知道了］、✕ 还是 Esc 关，都要让外面刷新列表、进详情
@@ -113,18 +109,10 @@ export function ProjectFormModal({
     if (created) onSaved(created);
     onClose();
   };
-  const closeRef = useRef(close);
-  closeRef.current = close;
-
-  // Esc 关闭；子级取径器开着时不关（那一层自己处理）。表单弹窗点背景不关，免得丢掉填了一半的内容。
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.isComposing || pickerOpenRef.current) return;
-      if (!savingRef.current) closeRef.current();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  // 表单弹窗点背景不关，免得丢掉填了一半的内容，只能 ✕ / 取消 / Esc 关
+  useDialogEscape(cardRef, () => {
+    if (!savingRef.current) close();
+  });
 
   const trimmedName = name.trim();
 

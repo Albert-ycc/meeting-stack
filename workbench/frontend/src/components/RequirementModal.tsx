@@ -12,7 +12,7 @@ import type {
 import { isComposingKeydown } from "../keyboard";
 import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATUS_LABELS } from "./RequirementBadges";
 import { MaterialFolderPickerModal } from "./MaterialFolderPickerModal";
-import { useDialogFocus } from "./useDialog";
+import { useDialogEscape, useDialogFocus } from "./useDialog";
 import "./RequirementModal.css";
 
 export interface RequirementModalProps {
@@ -73,6 +73,9 @@ export function RequirementModal({
   const [error, setError] = useState("");
   const prevProjectIdRef = useRef(projectId);
   const projectFieldRef = useRef<HTMLDivElement>(null);
+  useDialogEscape(dialogRef, () => {
+    if (!saving) onClose();
+  });
 
   // 编辑态若手上只有列表页给的摘要（没有 folders 字段），先补一次详情，避免保存时把已有文件夹当成空覆盖掉。
   useEffect(() => {
@@ -110,15 +113,6 @@ export function RequirementModal({
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [projectMenuOpen]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.isComposing || pickerOpen || saving) return;
-      onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose, pickerOpen, saving]);
 
   const currentProject = projects.find((project) => project.id === projectId) ?? null;
   const trimmedTitle = title.trim();

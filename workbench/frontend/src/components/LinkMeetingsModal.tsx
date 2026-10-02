@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ApiClient } from "../api";
 import { formatDurationText, formatMonthDayClock } from "../format";
 import type { MeetingSummary, RequirementDetail } from "../types";
-import { useBackdropDismiss, useDialogFocus } from "./useDialog";
+import { useBackdropDismiss, useDialogEscape, useDialogFocus } from "./useDialog";
 import "./LinkMeetingsModal.css";
 
 interface LinkMeetingsModalProps {
@@ -33,6 +33,9 @@ export function LinkMeetingsModal({
   const [selected, setSelected] = useState<Set<string>>(new Set(selectedIds));
   const [saving, setSaving] = useState(false);
   const backdrop = useBackdropDismiss(onCancel, saving);
+  useDialogEscape(dialogRef, () => {
+    if (!saving) onCancel();
+  });
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -49,14 +52,6 @@ export function LinkMeetingsModal({
       active = false;
     };
   }, [apiClient, projectId]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && !saving) onCancel();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onCancel, saving]);
 
   const rows = useMemo(() => {
     const keyword = search.trim();

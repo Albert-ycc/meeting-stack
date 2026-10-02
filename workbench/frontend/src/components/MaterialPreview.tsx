@@ -16,7 +16,7 @@ import type { MiniPlayerHandle, PlayOptions } from "./graph/MiniPlayer";
 import type { NoticeFn } from "./graph/panelParts";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice } from "./Notice";
 import { claimSound } from "./soundFocus";
-import { isTopDialog, useDialogFocus } from "./useDialog";
+import { useDialogEscape, useDialogFocus } from "./useDialog";
 import "./MaterialPreview.css";
 
 /** 缩略图、PDF 第一页读不出来（盘拔了、生成超时）时换成这一行灰字，不显示破图 */
@@ -367,6 +367,7 @@ export function MaterialPreviewDrawer({
 }: MaterialPreviewDrawerProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
   useDialogFocus(drawerRef);
+  useDialogEscape(drawerRef, onClose);
   const [data, setData] = useState<MaterialFilePreview | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   // 4f：按了［来龙去脉］才取；要 v16 的表（useLinksFlags 不为 null）和 graphTrace 接口
@@ -429,14 +430,6 @@ export function MaterialPreviewDrawer({
   useEffect(() => {
     if (startMs !== null && startMs !== undefined) play(materialMediaUrl(fileId), startMs, "", { clip: false });
   }, [fileId, play, startMs]);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && isTopDialog(drawerRef.current)) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const copyPath = async () => {
     if (!data) return;

@@ -186,6 +186,32 @@ describe("RequirementModal", () => {
     );
   });
 
+  it("选文件夹的弹窗盖在需求弹窗上：Esc 只关上面那层，再按一次才关需求弹窗", async () => {
+    const onClose = vi.fn();
+    render(
+      <RequirementModal
+        apiClient={{ projectMaterialSubfolders: vi.fn().mockResolvedValue(subfolders) } as unknown as ApiClient}
+        canPickFolders
+        defaultProjectId="project-a"
+        mode="create"
+        onClose={onClose}
+        onSaved={vi.fn()}
+        projects={projects}
+      />,
+    );
+    await userEvent.type(screen.getByPlaceholderText("例如：北辰仓快递配送"), "填了一半");
+    await userEvent.click(screen.getByRole("button", { name: "选择文件夹" }));
+    await screen.findByRole("dialog", { name: "选择材料文件夹" });
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "选择材料文件夹" })).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText("例如：北辰仓快递配送")).toHaveValue("填了一半");
+
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("D22：从没有根目录的项目点「去挂根目录」时，整个需求弹窗一起关掉，不留已填内容", async () => {
     const projectMaterialSubfolders = vi.fn().mockResolvedValue({ roots: [] });
     const onClose = vi.fn();
