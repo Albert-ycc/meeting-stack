@@ -29,7 +29,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="meeting-workbench")
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("serve", help="在 127.0.0.1:8765 启动工作台")
-    subcommands.add_parser("scan", help="扫描正式归档与中转产物")
+    scan = subcommands.add_parser("scan", help="扫描正式归档与中转产物")
+    scan.add_argument(
+        "--allow-mass-cleanup",
+        action="store_true",
+        help="这一次照清失效记录：某个根要清的超过它现有记录的一半、或根里一个文件都没发现时，"
+        "默认跳过并告警；盘上确实删掉了这么多归档时才用",
+    )
     semantic = subcommands.add_parser("semantic-index", help="构建本地语义索引")
     semantic.add_argument("--force", action="store_true")
     subcommands.add_parser("download-model", help="安装期下载固定本地语义模型")
@@ -1104,7 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result.issues == 0 else 1
     db = _database(settings)
     if args.command == "scan":
-        report = ArchiveImporter(db, settings).scan()
+        report = ArchiveImporter(db, settings).scan(allow_mass_cleanup=args.allow_mass_cleanup)
         print(
             json.dumps(
                 {name: getattr(report, name) for name in report.__dataclass_fields__},

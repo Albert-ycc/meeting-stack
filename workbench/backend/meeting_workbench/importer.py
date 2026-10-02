@@ -121,6 +121,10 @@ class ScanReport:
     # 某个根本轮一个文件都没发现、库里却还有它的记录：更像是根配错了或盘没挂好，
     # 而不是文件真被删光了，这一侧的失效记录本轮不清理，这里记下跳过了几侧。
     stale_cleanup_skipped: int = 0
+    # 某个根这一轮要清掉的记录超过它现有记录的一半、且多于 MASS_CLEANUP_MIN_RECORDS 条：更像是盘上
+    # 一下子少了一大片（误删、盘没挂对），这一侧本轮不清，这里记下跳过了几侧；
+    # 命令行 scan --allow-mass-cleanup 确认之后照清。
+    mass_cleanup_skipped: int = 0
     # Whisper 对照稿只是参考版本：它坏了只跳过对照稿，不进 errors，
     # 否则这场会的纪要永远排在它后面导不进来，全库清理也一直停着。
     reference_skipped: int = 0
@@ -184,6 +188,8 @@ ROOT_SOURCE_LABELS = {
     "archive": ("archive", "history", "draft"),
     "staging": ("staging",),
 }
+# 一个根这一轮要清的记录多于这个数、又超过它现有记录的一半，就不清（比例保护）。
+MASS_CLEANUP_MIN_RECORDS = 20
 
 
 def is_noise(path: Path) -> bool:
@@ -394,12 +400,16 @@ class ArchiveImporter:
         # 正处在「0 发现、跳过清理」状态的根。后台每 15 秒扫一轮，暂存根被正常清空时
         # 会一直跳过，warning 只在开始跳过时记一次，这一侧恢复后再出现才再记。
         self._cleanup_skipping_roots: set[str] = set()
+        # 正处在「要清的记录超过一半」状态的根，warning 同样只在开始跳过时记一次。
+        self._mass_cleanup_skipping_roots: set[str] = set()
 
-    def scan(self) -> ScanReport:
+    def scan(self, *, allow_mass_cleanup: bool = False) -> ScanReport:
+        """allow_mass_cleanup：这一轮不做两道清理保护（根里一个文件都没发现、要清的记录超过
+        一半），只给命令行 scan --allow-mass-cleanup 用；后台循环不传。"""
         with self.archive_lock:
-            return self._scan_locked()
+            return self._scan_locked(allow_mass_cleanup=allow_mass_cleanup)
 
-    def _scan_locked(self) -> ScanReport:
+    def _scan_locked(self, *, allow_mass_cleanup: bool = False) -> ScanReport:
         report = ScanReport()
         archive_available = root_available(self.settings.archive_root)
         walked_roots: set[str] = set()
@@ -436,19 +446,26 @@ class ArchiveImporter:
             except RECOVERABLE_SOURCE_ERRORS:
                 report.errors += 1
         if report.errors == 0:
-            self._cleanup_stale_artifacts(all_bundles, report, walked_roots)
+            self._cleanup_stale_artifacts(
+                all_bundles, report, walked_roots, allow_mass_cleanup=allow_mass_cleanup
+            )
         return report
 
     def _cleanup_stale_artifacts(
-        self, bundles: list[SourceBundle], report: ScanReport, walked_roots: set[str]
+        self,
+        bundles: list[SourceBundle],
+        report: ScanReport,
+        walked_roots: set[str],
+        *,
+        allow_mass_cleanup: bool = False,
     ) -> None:
         discovered = {str(path) for bundle in bundles for path in bundle.files}
-        available_roots: set[str] = set()
+        cleanup_roots: dict[str, tuple[str, ...]] = {}
         # 只在本轮真正走过的根里清理；发现阶段没进去的根，它的记录一条都不能动。
         for root in sorted(walked_roots):
             labels = ROOT_SOURCE_LABELS[root]
             found_any = any(bundle.source_root in labels for bundle in bundles)
-            if not found_any:
+            if not found_any and not allow_mass_cleanup:
                 remaining = self.db.query_one(
                     "SELECT COUNT(*) AS n FROM artifacts WHERE source_root IN (%s)"
                     % ",".join("?" for _ in labels),
@@ -465,26 +482,51 @@ class ArchiveImporter:
                         )
                     continue
             self._cleanup_skipping_roots.discard(root)
-            available_roots.update(labels)
-        if not available_roots:
+            cleanup_roots[root] = labels
+        if not cleanup_roots:
             return
         # 隔离目录、没走进去的符号链接本次没被遍历进 discovered，但文件仍在磁盘上。
         # 若不豁免，清理会把这些会议的 artifact 记录一并删掉，界面上音频直接断链。
         exempt = [Path(value) for value in report.quarantined_directories]
         exempt.extend(Path(value) for value in report.unwalked)
+        root_of_label = {label: root for root, labels in cleanup_roots.items() for label in labels}
         rows = self.db.query_all(
             "SELECT id, path, source_root FROM artifacts WHERE source_root IN (%s)"
-            % ",".join("?" for _ in available_roots),
-            tuple(sorted(available_roots)),
+            % ",".join("?" for _ in root_of_label),
+            tuple(sorted(root_of_label)),
         )
-        stale = []
+        existing = dict.fromkeys(cleanup_roots, 0)
+        stale_by_root: dict[str, list[int]] = {root: [] for root in cleanup_roots}
         for row in rows:
+            root = root_of_label[row["source_root"]]
+            existing[root] += 1
             if row["path"] in discovered:
                 continue
             candidate = Path(row["path"])
             if any(candidate.is_relative_to(directory) for directory in exempt):
                 continue
-            stale.append(row["id"])
+            stale_by_root[root].append(row["id"])
+        stale: list[int] = []
+        for root, ids in stale_by_root.items():
+            if (
+                not allow_mass_cleanup
+                and len(ids) > MASS_CLEANUP_MIN_RECORDS
+                and len(ids) * 2 > existing[root]
+            ):
+                report.mass_cleanup_skipped += 1
+                if root not in self._mass_cleanup_skipping_roots:
+                    self._mass_cleanup_skipping_roots.add(root)
+                    logger.warning(
+                        "扫描根 %s 这一轮要清掉 %d 条失效记录，超过它现有 %d 条的一半，跳过清理；"
+                        "确认盘上真的少了这么多，用命令行 meeting-workbench scan "
+                        "--allow-mass-cleanup 清一次",
+                        root,
+                        len(ids),
+                        existing[root],
+                    )
+                continue
+            self._mass_cleanup_skipping_roots.discard(root)
+            stale.extend(ids)
         if not stale:
             return
         with self.db.transaction() as connection:
