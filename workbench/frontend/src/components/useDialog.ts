@@ -84,6 +84,11 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>) {
   }, []);
 }
 
+/** 这个弹窗是不是最上面那层：抽屉上再盖抽屉时，Esc 只该关最上面的，各层自己的 Esc 监听先问一句 */
+export function isTopDialog(root: HTMLElement | null): boolean {
+  return root !== null && dialogStack[dialogStack.length - 1] === root;
+}
+
 /**
  * 选择类弹窗的背景点击关闭：只有按下和松开都落在背景本身上才算。
  * 否则在输入框里拖选文字、松手时滑到了背景上，也会触发 overlay 的 click 把弹窗关掉。

@@ -1,7 +1,8 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import { MaterialPreviewDrawer } from "./MaterialPreview";
 import { TaskDrawer } from "./TaskDrawer";
 import type { ApiClient, RelationQuestion } from "../api";
 import { LinksFlagsContext } from "./links/LinksFlagsContext";
@@ -310,5 +311,48 @@ describe("TaskDrawer 在问的产出（4e）", () => {
     expect(await screen.findByText("还没有登记交付物")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: PRODUCED.text })).toBeNull();
     expect(view).toBeTruthy();
+  });
+});
+
+describe("TaskDrawer 上再盖一层抽屉", () => {
+  it("材料预览盖在任务抽屉上：Esc 只关最上面的预览，预览关了再按才关任务抽屉", async () => {
+    const onCloseTask = vi.fn();
+    const apiClient = {
+      task: vi.fn().mockResolvedValue(makeTask("confirmed")),
+      getMaterialPreview: vi.fn().mockReturnValue(new Promise(() => undefined)),
+    } as unknown as ApiClient;
+    render(
+      <TaskDrawer
+        apiClient={apiClient}
+        canWrite
+        onChanged={vi.fn()}
+        onClose={onCloseTask}
+        onOpenMeeting={vi.fn()}
+        taskId="t1"
+      />,
+    );
+    await screen.findByRole("dialog", { name: "任务详情" });
+    const onClosePreview = vi.fn();
+    const preview = render(
+      <MaterialPreviewDrawer
+        apiClient={apiClient}
+        canReveal
+        fileId={7}
+        isMobile={false}
+        onClose={onClosePreview}
+        onOpenInGraph={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenTask={vi.fn()}
+      />,
+    );
+    await screen.findByRole("dialog", { name: "材料预览" });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClosePreview).toHaveBeenCalledTimes(1);
+    expect(onCloseTask).not.toHaveBeenCalled();
+
+    preview.unmount();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onCloseTask).toHaveBeenCalledTimes(1);
   });
 });

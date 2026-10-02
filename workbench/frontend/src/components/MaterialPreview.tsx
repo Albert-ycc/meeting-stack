@@ -16,7 +16,7 @@ import type { MiniPlayerHandle, PlayOptions } from "./graph/MiniPlayer";
 import type { NoticeFn } from "./graph/panelParts";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice } from "./Notice";
 import { claimSound } from "./soundFocus";
-import { useDialogFocus } from "./useDialog";
+import { isTopDialog, useDialogFocus } from "./useDialog";
 import "./MaterialPreview.css";
 
 /** 缩略图、PDF 第一页读不出来（盘拔了、生成超时）时换成这一行灰字，不显示破图 */
@@ -432,7 +432,7 @@ export function MaterialPreviewDrawer({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing) onClose();
+      if (event.key === "Escape" && !event.isComposing && isTopDialog(drawerRef.current)) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
