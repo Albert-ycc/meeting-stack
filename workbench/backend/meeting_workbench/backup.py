@@ -162,6 +162,7 @@ class BackupManager:
             try:
                 source_connection.backup(destination_connection, pages=256)
                 stripped = self._strip_derived_tables(destination_connection)
+                self._leave_wal_mode(destination_connection)
                 result = destination_connection.execute("PRAGMA integrity_check").fetchone()[0]
                 if result != "ok":
                     raise sqlite3.DatabaseError(f"backup integrity check failed: {result}")
@@ -175,6 +176,18 @@ class BackupManager:
         except Exception:
             temporary.unlink(missing_ok=True)
             raise
+
+    @staticmethod
+    def _leave_wal_mode(connection: sqlite3.Connection) -> None:
+        """副本落成回滚日志模式（journal_mode=DELETE），WAL 合并进主文件，整份内容就在一个文件里。
+
+        备份接口写出的副本头部带着源库的 WAL 标记，之后每次只读打开都会在旁边建 -wal / -shm，
+        轮转删掉主文件后它们成了孤儿（生产备份目录里攒了二百多个）；而且 WAL 里还有没合并的内容时，
+        只把主文件 os.replace 过去，装上的就是一份缺内容的备份。别的连接占着、合并不了时切换会抛错或
+        回「wal」，这里一律当失败。恢复成库后 initialize 会把库落回 WAL（SCHEMA 第一句）。"""
+        mode = connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+        if str(mode).lower() != "delete":
+            raise sqlite3.DatabaseError(f"backup could not leave WAL mode: journal_mode is {mode}")
 
     @staticmethod
     def _strip_derived_tables(connection: sqlite3.Connection) -> tuple[str, ...]:
@@ -253,6 +266,8 @@ class BackupManager:
 
     @staticmethod
     def _verify_database(path: Path) -> None:
+        # 不能用 immutable=1 省掉旁路文件：它忽略 WAL，WAL 里还有已提交的内容时读到的是不完整的库，
+        # 坏副本会被校验成完好。新副本写完是回滚日志模式（_leave_wal_mode），普通只读打开也不留文件。
         connection = sqlite3.connect(read_only_uri(path), uri=True, timeout=5)
         try:
             result = connection.execute("PRAGMA integrity_check").fetchone()[0]
