@@ -165,9 +165,10 @@ const navItems: Array<{ view: AppView; label: string; desktopOnly?: boolean }> =
   { view: "jobs", label: "转写录音", desktopOnly: true },
 ];
 
-/** 需求详情页、新增和认领需求的二级页没有自己的侧栏入口，跟需求池共用高亮（同 projectDetail 挂在 projects 下的思路，但这里要求显式高亮）。 */
+/** 需求详情页、新增和认领需求的二级页跟需求池共用高亮；项目详情（清单、关系图两种模式）跟项目管理共用高亮。 */
 function isNavItemActive(itemView: AppView, activeView: AppView): boolean {
   if (itemView === activeView) return true;
+  if (itemView === "projects") return activeView === "projectDetail";
   return itemView === "requirements" && (activeView === "requirementDetail" || activeView === "requirementForm");
 }
 

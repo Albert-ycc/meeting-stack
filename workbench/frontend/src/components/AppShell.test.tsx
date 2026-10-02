@@ -69,6 +69,21 @@ describe("AppShell responsive permissions", () => {
     expect(screen.getByRole("button", { name: "需求池" })).toHaveAttribute("aria-current", "page");
   });
 
+  it("项目详情页高亮「项目管理」", () => {
+    render(
+      <AppShell
+        activeView="projectDetail"
+        health="healthy"
+        isMobile={false}
+        onNavigate={vi.fn()}
+        searchSlot={<input aria-label="全局检索" />}
+      >
+        <div />
+      </AppShell>,
+    );
+    expect(screen.getByRole("button", { name: "项目管理" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("shows a pending badge when there are unconfirmed tasks", () => {
     render(
       <AppShell
