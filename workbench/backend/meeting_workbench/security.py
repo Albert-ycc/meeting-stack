@@ -9,6 +9,11 @@ from starlette.responses import JSONResponse
 
 
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+READ_METHODS = {"GET", "HEAD"}
+# 浏览器替别的站点发请求时 Sec-Fetch-Site 才是这两个值；same-origin（本站页面）和 none（地址栏、书签）放行
+FOREIGN_SITES = {"cross-site", "same-site"}
+# iframe、embed、object 加载页面时 Sec-Fetch-Mode 也是 navigate，但页面看不到结果，服务照样会干活
+EMBEDDED_DESTINATIONS = {"iframe", "frame", "embed", "object"}
 
 
 class WriteProtectionMiddleware(BaseHTTPMiddleware):
@@ -37,10 +42,24 @@ class WriteProtectionMiddleware(BaseHTTPMiddleware):
             return False
         return bool(hostname) and hostname.lower() in self.allowed_hosts
 
+    @staticmethod
+    def _foreign_subresource(request: Request) -> bool:
+        """别的站点的页面用 <img>、fetch、<iframe> 之类发来的 GET：读不到结果，但 /api/media/N/peaks
+        这类接口会真的起 ffmpeg，等于盲打本机资源。整页导航（飞书卡片、书签）、本站页面、
+        curl 这类不带 Sec-Fetch-* 的客户端照常放行。"""
+        site = request.headers.get("sec-fetch-site", "").strip().lower()
+        if site not in FOREIGN_SITES:
+            return False
+        if request.headers.get("sec-fetch-mode", "").strip().lower() != "navigate":
+            return True
+        return request.headers.get("sec-fetch-dest", "").strip().lower() in EMBEDDED_DESTINATIONS
+
     async def dispatch(self, request: Request, call_next):
         host = request.headers.get("host")
         if not self._allowed_host(host):
             return self._secure(JSONResponse({"detail": "Host 不在允许列表"}, status_code=400))
+        if request.method in READ_METHODS and self._foreign_subresource(request):
+            return self._secure(JSONResponse({"detail": "跨站读取已拒绝"}, status_code=403))
         if request.method in WRITE_METHODS and request.url.path.startswith("/api/"):
             content_length = request.headers.get("content-length")
             if content_length:
