@@ -86,12 +86,13 @@ function ConfirmDialog({ options, onDone }: ConfirmDialogProps) {
           </div>
         )}
         <footer className="confirm-modal__footer">
-          <button disabled={busy} onClick={cancel} type="button">
+          {/* 删除、丢弃这类收不回来的操作默认落在「取消」上：弹出后手一滑按回车不会就丢了；Tab 到确认键再回车照常能用 */}
+          <button data-autofocus={tone === "danger" ? true : undefined} disabled={busy} onClick={cancel} type="button">
             {cancelLabel}
           </button>
           <button
             className={tone === "danger" ? "confirm-modal__danger" : "confirm-modal__primary"}
-            data-autofocus
+            data-autofocus={tone === "danger" ? undefined : true}
             disabled={busy}
             onClick={() => void confirm()}
             type="button"
