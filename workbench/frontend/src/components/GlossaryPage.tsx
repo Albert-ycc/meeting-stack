@@ -330,18 +330,24 @@ export function GlossaryPage({
     [confirm],
   );
 
+  // 手头那次写操作：提示条上的［撤销］比它的重载先出来，点了要等它做完再撤，不能被互斥吞掉
+  const runningRef = useRef<Promise<void> | null>(null);
   const run = async (action: () => Promise<void>) => {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
-    try {
-      await action();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
+    const running = (async () => {
+      try {
+        await action();
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    })();
+    runningRef.current = running;
+    await running;
   };
 
   // —— 导航动作 ——
@@ -488,11 +494,14 @@ export function GlossaryPage({
   };
 
   const undoSuggestion = (suggestion: GlossarySuggestion) =>
-    void run(async () => {
-      await apiClient.undoGlossarySuggestion(suggestion.id);
-      setNotice(`已撤销，「${suggestion.wrong} → ${suggestion.correct}」回到待确认`);
-      await afterSuggestionChange();
-    });
+    void (async () => {
+      await runningRef.current;
+      await run(async () => {
+        await apiClient.undoGlossarySuggestion(suggestion.id);
+        setNotice(`已撤销，「${suggestion.wrong} → ${suggestion.correct}」回到待确认`);
+        await afterSuggestionChange();
+      });
+    })();
 
   const confirmSuggestion = (suggestion: GlossarySuggestion, target: GlossaryTarget) =>
     void run(async () => {

@@ -354,6 +354,40 @@ describe("GlossaryPage", () => {
     await waitFor(() => expect(apiClient.undoGlossarySuggestion).toHaveBeenCalledWith("sug-1"));
   });
 
+  it("待确认：记入后重新取数还没回来时点提示上的［撤销］，等取数完了照样撤销，不被吞掉", async () => {
+    let release: () => void = () => undefined;
+    const hanging = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let confirmed = false;
+    const apiClient = client({
+      glossaryTerms: vi.fn().mockImplementation(async () => {
+        if (confirmed) await hanging; // 记入之后的重载卡住
+        return [generalTerm];
+      }),
+      glossarySuggestions: vi.fn().mockImplementation(async (status?: string) => {
+        if (confirmed) await hanging;
+        return status === "pending" ? [pending] : [];
+      }),
+      confirmGlossarySuggestion: vi.fn().mockImplementation(async () => {
+        confirmed = true;
+        return { ok: true, created: true, wrong: "儿生发", correct: "儿童生长发育", term: { project_name: null } };
+      }),
+      undoGlossarySuggestion: vi.fn().mockResolvedValue({ ok: true, suggestion: null }),
+    });
+    render(<GlossaryPage apiClient={apiClient} canWrite meetings={meetings} projects={projects} />);
+
+    fireEvent.click(screen.getByRole("tab", { name: /待确认/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "记入 公共" }));
+    await screen.findByText(/已记入 公共/);
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(apiClient.undoGlossarySuggestion).not.toHaveBeenCalled();
+
+    release();
+    await waitFor(() => expect(apiClient.undoGlossarySuggestion).toHaveBeenCalledWith("sug-1"));
+    expect(await screen.findByText(/已撤销/)).toBeTruthy();
+  });
+
   it("已驳回的可以恢复；正确写法已是词条时只能加到那条", async () => {
     const rejected: GlossarySuggestion = { ...pending, id: "sug-9", status: "rejected" };
     const existing: GlossarySuggestion = {
