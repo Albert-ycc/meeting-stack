@@ -712,7 +712,8 @@ export default function App({ apiClient = api }: AppProps) {
       const payload = await apiClient.meeting(meetingId);
       if (requestSequence !== detailRequestSequence.current) return;
       setDetail(payload);
-      setDetailDirty(false);
+      // 静默刷新时另一侧没保存的编辑还留在会议页里，有没有未保存修改由会议页换了详情后重新报上来
+      if (!silent) setDetailDirty(false);
       setDetailState("ready");
     } catch (error) {
       if (requestSequence !== detailRequestSequence.current) return;
