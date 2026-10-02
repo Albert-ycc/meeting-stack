@@ -821,3 +821,44 @@ def test_auto_recovery_ignores_an_unrelated_recording_name(tmp_path):
 
     assert client.app.state.recover_stalled_minutes() == 0
     assert relay.retried == []
+
+
+@pytest.mark.parametrize(
+    ("relay_status", "expect_retry"),
+    [
+        # relay 新建的任务还在流水线里：不重试
+        ("discovered", False),
+        ("queued", False),
+        # relay 按同一段录音复用了做完或失败的旧任务：用户点的是「重新转写」，要重试
+        ("published", True),
+        ("completed_unreviewed", True),
+        ("failed", True),
+    ],
+)
+def test_retranscribe_of_legacy_meeting_retries_by_relay_status_not_by_created(
+    tmp_path, monkeypatch, relay_status, expect_retry
+):
+    client, relay = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(client.app.state.settings.database_path)
+    seed_editable_meeting(db, client.app.state.settings.archive_root, meeting_id="vm-legacy")
+    relay.statuses["job-new"] = relay_status
+    app_db = client.app.state.db
+    real_execute = app_db.execute
+
+    def execute_with_stale_lastrowid(sql, params=()):
+        # Database.execute 回的是 lastrowid；连接上一次 INSERT 留下的 id 跟这次 UPDATE 命中没关系
+        real_execute(sql, params)
+        return 42
+
+    monkeypatch.setattr(app_db, "execute", execute_with_stale_lastrowid)
+
+    response = client.post("/api/meetings/vm-legacy/retranscribe", json={}, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] == "job-new"
+    assert relay.enqueued and len(relay.enqueued) == 1
+    assert relay.retried == ([("job-new", "transcribing")] if expect_retry else [])
+    assert db.query_one("SELECT source_job_id FROM meetings WHERE id='vm-legacy'") == {
+        "source_job_id": "job-new"
+    }

@@ -2905,15 +2905,13 @@ def create_app(
 
     retranscribe_lock = threading.Lock()
 
-    def ensure_relay_job(
-        meeting_id: str, hotwords: list[str] | None = None
-    ) -> tuple[dict[str, Any], bool]:
+    def ensure_relay_job(meeting_id: str, hotwords: list[str] | None = None) -> dict[str, Any]:
         meeting = db.query_one("SELECT id, source_job_id FROM meetings WHERE id = ?", (meeting_id,))
         if not meeting:
             raise HTTPException(404, "会议不存在")
         if meeting["source_job_id"]:
             try:
-                return relay.status(meeting["source_job_id"]), False
+                return relay.status(meeting["source_job_id"])
             except RelayUnavailable as error:
                 raise HTTPException(409, str(error)) from error
         audio = preferred_audio_path(meeting_id)
@@ -2926,7 +2924,7 @@ def create_app(
             current = db.query_one("SELECT source_job_id FROM meetings WHERE id = ?", (meeting_id,))
             existing_job_id = current["source_job_id"] if current else None
             if existing_job_id:
-                job_id, created = existing_job_id, False
+                job_id = existing_job_id
             else:
                 try:
                     job_id = relay.enqueue(
@@ -2934,7 +2932,7 @@ def create_app(
                     )
                 except RelayUnavailable as error:
                     raise HTTPException(409, str(error)) from error
-                rowcount = db.execute(
+                rowcount = db.execute_rowcount(
                     "UPDATE meetings SET source_job_id=?, updated_at=? WHERE id=? "
                     "AND source_job_id IS NULL",
                     (job_id, utc_now(), meeting_id),
@@ -2944,12 +2942,10 @@ def create_app(
                         "SELECT source_job_id FROM meetings WHERE id = ?", (meeting_id,)
                     )
                     job_id = current["source_job_id"]
-                created = rowcount > 0
         try:
-            status = relay.status(job_id)
+            return relay.status(job_id)
         except RelayUnavailable as error:
             raise HTTPException(409, str(error)) from error
-        return status, created
 
     def request_minutes_regeneration(
         meeting_id: str,
@@ -3270,10 +3266,12 @@ def create_app(
 
     @app.post("/api/meetings/{meeting_id}/retranscribe")
     def retranscribe(meeting_id: str, body: HotwordsModel):
-        status, created = ensure_relay_job(meeting_id, body.hotwords)
+        status = ensure_relay_job(meeting_id, body.hotwords)
         job_id = status["job_id"]
         current = status.get("status")
-        if created or current in {
+        # 看 relay 任务现在的状态，不看是不是刚建的：relay 按同一段录音幂等入队，可能交回一个
+        # 已经做完的旧任务，用户点「重新转写」就该重试它；还在流水线里的不重试。
+        if current in {
             "discovered",
             "stabilizing",
             "queued",
