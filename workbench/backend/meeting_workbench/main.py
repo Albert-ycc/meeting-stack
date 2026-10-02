@@ -118,6 +118,7 @@ from .gold_schema import GoldSchemaError, validate_gold_sample
 from .glossary import (
     DuplicateTermError,
     GlossaryError,
+    UnknownProjectError,
     confirm_suggestion,
     create_term,
     delete_term,
@@ -5327,8 +5328,10 @@ def create_app(
                 target=body.target,
                 short=body.short,
             )
-        except GlossaryError as error:
+        except UnknownProjectError as error:
             raise HTTPException(404, str(error)) from error
+        except GlossaryError as error:
+            raise HTTPException(400, str(error)) from error
         if result is None:
             raise HTTPException(404, "待确认建议不存在或已处理")
         return {"ok": True, **result, "suggestion": get_suggestion(db, suggestion_id)}

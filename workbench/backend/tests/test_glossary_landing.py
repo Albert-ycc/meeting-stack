@@ -360,6 +360,19 @@ def test_confirm_api_rejects_unknown_target_and_extra_fields(tmp_path):
     assert restore_suggestion(db, suggestion_id) is True
 
 
+def test_confirm_api_says_400_when_the_wrong_is_another_terms_spelling(tmp_path):
+    """错写撞上别的词条的写法是这条建议本身记不了（400），不是「找不到」（404 留给项目不存在）。"""
+    client, settings = make_client(tmp_path)
+    db = Database(settings.database_path)
+    create_term(db, term="张三", category="人名")
+    suggestion_id = add_suggestion(db, wrong="张三", correct="章珊")
+    clash = client.post(
+        f"/api/glossary/suggestions/{suggestion_id}/confirm", headers=write_headers(client)
+    )
+    assert clash.status_code == 400
+    assert "张三" in clash.json()["detail"]
+
+
 # —— 保存纪要时直接记入 ——
 
 

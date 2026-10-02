@@ -55,6 +55,10 @@ class GlossaryError(ValueError):
     pass
 
 
+class UnknownProjectError(GlossaryError):
+    """要记到的项目不存在：接口回 404，别的 GlossaryError 是内容本身不合规，回 400。"""
+
+
 class DuplicateTermError(GlossaryError):
     """正确写法已是另一条词条：带上那条词条在哪、有哪些错写，前端就地给「加到那条」。"""
 
@@ -656,7 +660,7 @@ def _resolve_target(
         return (row["id"], row["name"]) if row else (None, "通用")
     row = connection.execute("SELECT id, name FROM projects WHERE id=?", (target,)).fetchone()
     if row is None:
-        raise GlossaryError(f"项目不存在：{target}")
+        raise UnknownProjectError(f"项目不存在：{target}")
     return row["id"], row["name"]
 
 
