@@ -407,9 +407,10 @@ def test_loose_mentions_seed_only_qualified_meetings(tmp_path):
     assert (
         loose_mentions.seed(db, loose_settings(tmp_path, links_backfill_days=300), LOOSE_NOW) == 1
     )
-    # 0 表示只做新会：以 links_since 为界
+    # 0 表示只做新会：以 links_since 为界。会的时间不带时区、按本机时区读（2026-09-25 10:00），界线放在
+    # 前一天，东西十几个时区都落在它之后
     db.execute("DELETE FROM mention_extractions")
-    db.execute("UPDATE app_state SET value = '2026-09-25T00:00:00+00:00' WHERE key = 'links_since'")
+    db.execute("UPDATE app_state SET value = '2026-09-24T00:00:00+00:00' WHERE key = 'links_since'")
     assert loose_mentions.seed(db, loose_settings(tmp_path, links_backfill_days=0), LOOSE_NOW) == 1
 
 
