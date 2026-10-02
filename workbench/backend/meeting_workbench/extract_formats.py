@@ -931,17 +931,23 @@ class CompoundFile:
         first_minifat = struct.unpack_from("<I", header, 0x3C)[0]
         difat_first = struct.unpack_from("<I", header, 0x44)[0]
         difat_count = struct.unpack_from("<I", header, 0x48)[0]
+        # 文件里实际有几个扇区：文件头自报的个数、链长都不可信，沿链走以它为上界
+        self.sector_count = self.file_size // self.sector_size
         difat = list(struct.unpack_from("<109I", header, 0x4C))
         next_difat = difat_first
-        seen = 0
+        visited: set[int] = set()
         per = self.sector_size // 4
-        while next_difat not in (self.END, self.FREE) and seen <= difat_count:
+        while next_difat not in (self.END, self.FREE) and len(visited) <= difat_count:
+            if next_difat in visited:
+                raise CFBError("DIFAT 链绕圈")
+            visited.add(next_difat)
             block = self._sector(next_difat)
             values = struct.unpack(f"<{per}I", block)
             difat.extend(values[:-1])
             next_difat = values[-1]
-            seen += 1
         fat_ids = [value for value in difat if value not in (self.FREE, self.END)][:fat_sectors]
+        if len(set(fat_ids)) != len(fat_ids):
+            raise CFBError("FAT 扇区重复")
         fat: list[int] = []
         for sector in fat_ids:
             fat.extend(struct.unpack(f"<{per}I", self._sector(sector)))
@@ -979,11 +985,13 @@ class CompoundFile:
         self.handle.seek(offset)
         return self.handle.read(self.sector_size)
 
-    def _chain(self, start: int, table: list[int]) -> Iterator[int]:
+    def _chain(self, start: int, table: list[int], room: int) -> Iterator[int]:
+        """沿扇区表走链。room 是实际装得下的扇区数：不绕圈的链不会比它长。"""
         current = start
         steps = 0
+        limit = min(len(table), room)
         while current not in (self.END, self.FREE):
-            if current >= len(table) or steps > len(table):
+            if current >= len(table) or steps >= limit:
                 raise CFBError("扇区链断了")
             yield current
             current = table[current]
@@ -993,7 +1001,7 @@ class CompoundFile:
         parts: list[bytes] = []
         total = 0
         limit = STREAM_READ_LIMIT if size is None else min(size, STREAM_READ_LIMIT)
-        for sector in self._chain(start, self.fat):
+        for sector in self._chain(start, self.fat, self.sector_count):
             parts.append(self._sector(sector))
             total += self.sector_size
             if total >= limit:
@@ -1010,11 +1018,17 @@ class CompoundFile:
             raise CFBError(f"缺 {name}")
         start, size, _kind = entry
         if size < self.cutoff:
+            limit = min(size, STREAM_READ_LIMIT)
+            room = -(-len(self.mini_stream) // self.mini_size)
             parts = []
-            for sector in self._chain(start, self.minifat):
+            total = 0
+            for sector in self._chain(start, self.minifat, room):
                 offset = sector * self.mini_size
                 parts.append(self.mini_stream[offset : offset + self.mini_size])
-            return b"".join(parts)[:size]
+                total += self.mini_size
+                if total >= limit:
+                    break
+            return b"".join(parts)[:limit]
         return self._chain_bytes(start, size)
 
 
@@ -1212,7 +1226,7 @@ def read_xls(document: CompoundFile, out: Collector) -> None:
         if not (depth == 1 and in_sheet):
             continue
         if kind == 0x0207:  # STRING（前一个公式的文字结果）
-            if pending_formula is not None:
+            if pending_formula is not None and pending_formula[1] < ROW_COLUMNS:
                 try:
                     text = _unicode_string(body, 0)[:CELL_CHARS]
                     cells.setdefault(pending_formula[0], {})[pending_formula[1]] = text
@@ -1262,7 +1276,7 @@ def read_ppt(document: CompoundFile, out: Collector) -> None:
         raise Unreadable(PASSWORD, "PowerPoint 加密")
     data = document.stream("PowerPoint Document")
     slides: list[list[str]] = []
-    notes: list[str] = []
+    notes: list[list[str]] = []
     fallback: list[list[str]] = []
 
     def walk(start: int, end: int, context: str, depth: int) -> None:
@@ -1288,7 +1302,7 @@ def read_ppt(document: CompoundFile, out: Collector) -> None:
                 if kind == 0x03F3 and context == "slides":  # SlidePersistAtom
                     slides.append([])
                 elif kind == 0x03F3 and context == "notes":
-                    notes.append("")
+                    notes.append([])
                 elif kind in (0x0FA0, 0x0FA8):  # TextCharsAtom / TextBytesAtom
                     raw = data[body_start:body_end]
                     text = raw.decode(
@@ -1299,8 +1313,8 @@ def read_ppt(document: CompoundFile, out: Collector) -> None:
                         slides[-1].append(text)
                     elif context == "notes":
                         if not notes:
-                            notes.append("")
-                        notes[-1] += text + "\n"
+                            notes.append([])
+                        notes[-1].append(text + "\n")
                     elif context == "slide" and fallback:
                         fallback[-1].append(text)
             position = body_start + length
@@ -1313,8 +1327,8 @@ def read_ppt(document: CompoundFile, out: Collector) -> None:
     out.pages = len(pages)
     for number, texts in enumerate(pages, start=1):
         out.add("\n".join(texts), f"第 {number} 页")
-    for text in notes:
-        out.add(text, "备注")
+    for pieces in notes:
+        out.add("".join(pieces), "备注")
 
 
 def read_cfb(

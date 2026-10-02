@@ -3,6 +3,8 @@
 import codecs
 import json
 import os
+import struct
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -14,6 +16,10 @@ from meeting_workbench import extract_worker
 from meeting_workbench.extract_worker import fit_answer, handle
 
 from .material_fixtures import (
+    OLE_MAGIC,
+    _bof,
+    _ppt_record,
+    _short,
     build_cfb,
     build_doc,
     build_docx,
@@ -25,8 +31,10 @@ from .material_fixtures import (
     build_xls,
     build_xlsx,
     fake_textutil,
+    record,
     write_bytes,
     write_zip,
+    xl_string,
 )
 
 
@@ -46,6 +54,34 @@ def texts(answer: dict) -> list[str]:
 
 def locs(answer: dict) -> list:
     return [block["loc"] for block in answer["blocks"]]
+
+
+_CHILD = r"""
+import json, resource, sys, time
+from meeting_workbench.extract_worker import handle
+start = time.monotonic()
+answer = handle({"path": sys.argv[1], "ext": sys.argv[2], "layer": "text"})
+peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+answer.pop("blocks", None)
+answer["seconds"] = time.monotonic() - start
+# ru_maxrss：macOS 上是字节，Linux 上是 KB
+answer["peak_mb"] = peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
+print(json.dumps(answer))
+"""
+
+
+def read_in_child(path: Path, timeout: float = 30) -> dict:
+    """对抗样本放子进程里读：修坏了也只是这个子进程超时被杀，不会把跑用例的进程拖进 swap。"""
+    root = str(Path(extract_worker.__file__).resolve().parent.parent)
+    result = subprocess.run(
+        [sys.executable, "-c", _CHILD, str(path), path.suffix.lstrip(".")],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env={**os.environ, "PYTHONPATH": root},
+        check=True,
+    )
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 # ---------------------------------------------------------------------- 纯文字
@@ -365,6 +401,131 @@ def test_encrypted_ooxml_and_unknown_cfb(tmp_path):
         ]
         == "corrupt"
     )
+
+
+def _cfb_header(*, difat_first: int, difat_count: int, fat_sectors: int = 1) -> bytearray:
+    header = bytearray(512)
+    header[:8] = OLE_MAGIC
+    struct.pack_into("<HHHHH", header, 0x18, 0x3E, 3, 0xFFFE, 9, 6)
+    struct.pack_into("<I", header, 0x2C, fat_sectors)
+    struct.pack_into("<IIII", header, 0x30, 0xFFFFFFFE, 0, 0, 4096)
+    struct.pack_into("<I", header, 0x3C, 0xFFFFFFFE)
+    struct.pack_into("<II", header, 0x44, difat_first, difat_count)
+    struct.pack_into("<109I", header, 0x4C, *([0xFFFFFFFF] * 109))
+    return header
+
+
+def _difat_sector(next_sector: int) -> bytes:
+    return b"\xff" * 508 + struct.pack("<I", next_sector)
+
+
+def test_cfb_difat_chain_loop_is_corrupt_fast(tmp_path):
+    """DIFAT 链指回自己、文件头自报 40 亿个 DIFAT 扇区：1KB 的文件曾让读取进程几秒吃到上 GB。"""
+    self_loop = _cfb_header(difat_first=0, difat_count=0xFFFFFFFF) + _difat_sector(0)
+    answer = read_in_child(write_bytes(tmp_path / "自环.xls", bytes(self_loop)))
+    assert answer["status"] == "corrupt" and answer["seconds"] < 5
+    two_cycle = (
+        _cfb_header(difat_first=0, difat_count=0xFFFFFFFF) + _difat_sector(1) + _difat_sector(0)
+    )
+    answer = read_in_child(write_bytes(tmp_path / "两步环.xls", bytes(two_cycle)))
+    assert answer["status"] == "corrupt" and answer["seconds"] < 5
+
+
+def test_cfb_repeated_fat_sector_is_corrupt(tmp_path):
+    """DIFAT 里同一个扇区当 FAT 扇区列了 109 遍：FAT 会被拼成 109 份，文件越大放大越多。"""
+    header = _cfb_header(difat_first=0xFFFFFFFE, difat_count=0, fat_sectors=109)
+    struct.pack_into("<109I", header, 0x4C, *([0] * 109))
+    fat = struct.pack("<128I", *([0xFFFFFFFD] + [0xFFFFFFFF] * 127))
+    assert read(write_bytes(tmp_path / "重复.xls", bytes(header) + fat))["status"] == "corrupt"
+
+
+def _patch_minifat_loop(data: bytearray, stream: str, size: int) -> None:
+    """把 stream 的迷你扇区链最后一节指回第一节，并把它自报的大小改成 size。"""
+    import io
+
+    document = formats.CompoundFile(io.BytesIO(bytes(data)))
+    start, _size, _kind = document.entries[stream]
+    last = start
+    while document.minifat[last] != 0xFFFFFFFE:
+        last = document.minifat[last]
+    first_minifat = struct.unpack_from("<I", data, 0x3C)[0]
+    struct.pack_into("<I", data, (first_minifat + 1) * 512 + 4 * last, start)
+    entry = data.find((stream + "\0").encode("utf-16-le"))
+    struct.pack_into("<Q", data, entry + 0x78, size)
+
+
+def test_cfb_minifat_loop_is_corrupt(tmp_path):
+    """迷你扇区链绕圈、流自报的大小比链长：不再沿着环拼字节。"""
+    sheets = [("表", [["一段文字", 1]])]
+    data = bytearray(build_xls(tmp_path / "好.xls", sheets).read_bytes())
+    _patch_minifat_loop(data, "Workbook", 4000)
+    assert read(write_bytes(tmp_path / "环.xls", bytes(data)))["status"] == "corrupt"
+
+
+def test_cfb_minifat_loop_does_not_walk_the_whole_table(tmp_path):
+    """迷你扇区表很长、链是一节的环：曾沿环走满整张表（几百万节），拼出几百 MB 再截。"""
+    path = build_xls(tmp_path / "好.xls", [("表", [["x"]])])
+    with path.open("rb") as handle_:
+        document = formats.CompoundFile(handle_)
+    document.mini_stream = b"m" * 64
+    document.minifat = [0] * 2_000_000
+    document.entries["环"] = (0, 4000, 2)
+    walked = 0
+    chain = document._chain
+
+    def counting(*args, **kwargs):
+        nonlocal walked
+        for sector in chain(*args, **kwargs):
+            walked += 1
+            yield sector
+
+    document._chain = counting
+    with pytest.raises(formats.CFBError):
+        document.stream("环")
+    assert walked <= 1
+    document.entries["短"] = (0, 50, 2)
+    walked = 0
+    assert document.stream("短") == b"m" * 50
+    assert walked == 1
+
+
+def test_cfb_small_stream_reading_stops_at_declared_size(tmp_path):
+    """读小流沿迷你扇区链拼字节，拼够自报的大小就停：环在大小之外的不影响读。"""
+    sheets = [("表", [["一段文字", 1]])]
+    path = build_xls(tmp_path / "好.xls", sheets)
+    data = bytearray(path.read_bytes())
+    import io
+
+    size = formats.CompoundFile(io.BytesIO(bytes(data))).entries["Workbook"][1]
+    _patch_minifat_loop(data, "Workbook", size)
+    assert texts(read(write_bytes(tmp_path / "环在外.xls", bytes(data)))) == texts(read(path))
+
+
+def test_xls_formula_text_beyond_200_columns_is_skipped_fast(tmp_path):
+    """公式的文字结果落在第 60001 列：曾按最大列号把每行补成 6 万格，2 万行要跑好几分钟。"""
+    stream = _bof(0x0005) + record(0x0085, struct.pack("<IBB", 0, 0, 0) + _short("表"))
+    stream += record(0x000A) + _bof(0x0010)
+    for row in range(20_000):
+        formula = struct.pack("<HHH", row, 60_000, 0) + b"\0" * 6 + b"\xff\xff" + b"\0" * 6
+        stream += record(0x0006, formula) + record(0x0207, xl_string("x"))
+    stream += record(0x000A)
+    path = write_bytes(tmp_path / "宽.xls", build_cfb({"Workbook": stream}))
+    answer = read_in_child(path)
+    assert answer["status"] == "ok" and answer["chars"] == 0 and answer["seconds"] < 10
+
+
+def test_ppt_many_note_pieces_is_linear(tmp_path):
+    """备注里几十万条一个字的文字记录：曾逐条拼接字符串，耗时随条数平方涨。"""
+    pieces = _ppt_record(0x0FA8, b"a") * 400_000
+    notes = _ppt_record(0x03F3, b"\0" * 20) + pieces
+    body = _ppt_record(0x0FF0, notes, version=0x0F, instance=2)
+    stream = _ppt_record(0x03E8, body, version=0x0F)
+    path = write_bytes(
+        tmp_path / "备注.ppt",
+        build_cfb({"PowerPoint Document": stream, "Current User": b"\0" * 32}),
+    )
+    answer = read_in_child(path)
+    assert answer["status"] == "ok" and answer["truncated"] is True and answer["seconds"] < 10
 
 
 # ---------------------------------------------------------------------- 权限、IO、上限
