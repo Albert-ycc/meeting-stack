@@ -67,15 +67,22 @@ def project_work(task_service: TaskService, project_id: str) -> dict[str, Any]:
         (project_id,),
     )
     placeholders = ", ".join("?" for _ in PANEL_STATUSES)
-    tasks_by_requirement: dict[str, list[dict[str, Any]]] = {}
-    for row in db.query_all(
+    panel_rows = db.query_all(
         f"""SELECT t.* FROM tasks t JOIN requirements r ON r.id = t.requirement_id
              WHERE r.project_id = ? AND t.status IN ({placeholders})""",
         (project_id, *PANEL_STATUSES),
-    ):
-        tasks_by_requirement.setdefault(row["requirement_id"], []).append(
-            task_service.task_summary(row)
-        )
+    )
+    unlinked_rows = db.query_all(
+        f"""SELECT * FROM tasks
+             WHERE project_id = ? AND requirement_id IS NULL
+               AND status IN ({", ".join("?" for _ in UNLINKED_STATUSES)})""",
+        (project_id, *UNLINKED_STATUSES),
+    )
+    # 面板上的和没挂需求的任务一起取展示字段：语句条数不随任务数涨（原来逐条 task_summary，每条 5 次查询）
+    summaries = task_service.task_summaries([*panel_rows, *unlinked_rows])
+    tasks_by_requirement: dict[str, list[dict[str, Any]]] = {}
+    for summary in summaries[: len(panel_rows)]:
+        tasks_by_requirement.setdefault(summary["requirement_id"], []).append(summary)
     active: list[dict[str, Any]] = []
     closed: list[dict[str, Any]] = []
     for requirement in requirements:
@@ -93,18 +100,7 @@ def project_work(task_service: TaskService, project_id: str) -> dict[str, Any]:
             active.append({**base, "tasks": tasks})
         else:
             closed.append({**base, "all_done": bool(tasks) and open_count == 0})
-    unlinked = sorted(
-        (
-            task_service.task_summary(row)
-            for row in db.query_all(
-                f"""SELECT * FROM tasks
-                     WHERE project_id = ? AND requirement_id IS NULL
-                       AND status IN ({", ".join("?" for _ in UNLINKED_STATUSES)})""",
-                (project_id, *UNLINKED_STATUSES),
-            )
-        ),
-        key=_open_order,
-    )
+    unlinked = sorted(summaries[len(panel_rows) :], key=_open_order)
     pending_candidates = db.query_all(
         """SELECT c.id, c.title FROM requirement_candidates c
              JOIN meetings m ON m.id = c.meeting_id

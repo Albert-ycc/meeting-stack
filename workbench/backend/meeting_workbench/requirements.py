@@ -465,7 +465,7 @@ def get_requirement(
              ORDER BY {_TASK_ORDER_SQL.format(open_statuses=open_placeholders)}""",
         (requirement_id, *OPEN_TASK_STATUSES),
     )
-    detail["tasks"] = [task_service.task_summary(row) for row in task_rows]
+    detail["tasks"] = task_service.task_summaries(task_rows)
     return detail
 
 

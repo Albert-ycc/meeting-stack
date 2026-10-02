@@ -202,6 +202,22 @@ def _comment_events(connection: Any, task_ids: Iterable[str]) -> dict[str, list[
     return comments
 
 
+def _rows_by_id(
+    connection: Any, table: str, columns: str, ids: Iterable[str | None]
+) -> dict[str, Any]:
+    """按 id 一次取一批行：{id: 行}，没查到的 id 不在里面。table、columns 只传代码里写死的值。"""
+    wanted = list(dict.fromkeys(value for value in ids if value))
+    if not wanted:
+        return {}
+    return {
+        row["id"]: row
+        for row in connection.execute(
+            f"SELECT id, {columns} FROM {table} WHERE id IN ({', '.join('?' for _ in wanted)})",
+            wanted,
+        )
+    }
+
+
 def _without_surrogates(text: str) -> str:
     """模型回的文字里孤立的代理字符（JSON 里的 \\ud800 这类转义解出来的）写不进 SQLite，整批会失败：
     回复一进来就去掉，任务、候选、存档的原始回复都安全。"""
@@ -558,45 +574,64 @@ class TaskService:
         return dict(row)
 
     def task_summary(self, task: dict[str, Any]) -> dict[str, Any]:
-        meeting = self.db.query_one(
-            "SELECT title, recording_date FROM meetings WHERE id=?", (task.get("meeting_id"),)
-        )
-        project = self.db.query_one(
-            "SELECT name, color FROM projects WHERE id=?", (task.get("project_id"),)
-        )
-        requirement = self.db.query_one(
-            "SELECT title, priority, status FROM requirements WHERE id=?",
-            (task.get("requirement_id"),),
-        )
-        events = self.db.query_all(
-            "SELECT kind, body, created_at FROM task_events WHERE task_id=? ORDER BY id",
-            (task["id"],),
-        )
-        summary = dict(task)
-        summary["meeting_title"] = meeting["title"] if meeting else None
-        summary["meeting_recording_date"] = meeting["recording_date"] if meeting else None
-        summary["project_name"] = project["name"] if project else None
-        summary["project_color"] = project["color"] if project else None
-        # 任务本身不设优先级，展示用的优先级/状态从所属需求只读派生。
-        summary["requirement_title"] = requirement["title"] if requirement else None
-        summary["requirement_priority"] = requirement["priority"] if requirement else None
-        summary["requirement_status"] = requirement["status"] if requirement else None
-        # 挂在待认领候选上的任务：候选认领后才算正式挂上需求（R06 异常与边界）
-        candidate = self.db.query_one(
-            "SELECT title, status FROM requirement_candidates WHERE id=?",
-            (task.get("candidate_id"),),
-        )
-        summary["candidate_title"] = candidate["title"] if candidate else None
-        summary["candidate_status"] = candidate["status"] if candidate else None
-        stall = _stall_info(
-            task.get("status_changed_at"),
-            events,
-            self.settings.task_stall_after_days,
-        )
-        summary["stall_days"] = stall["stall_days"]
-        summary["stall_since"] = stall["stall_since"]
-        summary["stalled"] = stall["stalled"]
-        return summary
+        return self.task_summaries([task])[0]
+
+    def task_summaries(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """一批任务的展示字段：来源会议、项目、需求、候选和停滞情况。每类关联一条 IN 查询取齐，语句条数不随
+        任务数涨（原来逐条各开 5 次连接、查 5 次）。"""
+        if not tasks:
+            return []
+        with self.db.autocommit() as connection:
+            meetings = _rows_by_id(
+                connection,
+                "meetings",
+                "title, recording_date",
+                (t.get("meeting_id") for t in tasks),
+            )
+            projects = _rows_by_id(
+                connection, "projects", "name, color", (t.get("project_id") for t in tasks)
+            )
+            requirements = _rows_by_id(
+                connection,
+                "requirements",
+                "title, priority, status",
+                (t.get("requirement_id") for t in tasks),
+            )
+            candidates = _rows_by_id(
+                connection,
+                "requirement_candidates",
+                "title, status",
+                (t.get("candidate_id") for t in tasks),
+            )
+            comments = _comment_events(connection, (t["id"] for t in tasks))
+        summaries = []
+        for task in tasks:
+            meeting = meetings.get(task.get("meeting_id"))
+            project = projects.get(task.get("project_id"))
+            requirement = requirements.get(task.get("requirement_id"))
+            candidate = candidates.get(task.get("candidate_id"))
+            summary = dict(task)
+            summary["meeting_title"] = meeting["title"] if meeting else None
+            summary["meeting_recording_date"] = meeting["recording_date"] if meeting else None
+            summary["project_name"] = project["name"] if project else None
+            summary["project_color"] = project["color"] if project else None
+            # 任务本身不设优先级，展示用的优先级/状态从所属需求只读派生。
+            summary["requirement_title"] = requirement["title"] if requirement else None
+            summary["requirement_priority"] = requirement["priority"] if requirement else None
+            summary["requirement_status"] = requirement["status"] if requirement else None
+            # 挂在待认领候选上的任务：候选认领后才算正式挂上需求（R06 异常与边界）
+            summary["candidate_title"] = candidate["title"] if candidate else None
+            summary["candidate_status"] = candidate["status"] if candidate else None
+            stall = _stall_info(
+                task.get("status_changed_at"),
+                comments.get(task["id"], ()),
+                self.settings.task_stall_after_days,
+            )
+            summary["stall_days"] = stall["stall_days"]
+            summary["stall_since"] = stall["stall_since"]
+            summary["stalled"] = stall["stalled"]
+            summaries.append(summary)
+        return summaries
 
     # ------------------------------------------------------------------ CRUD
 
@@ -699,7 +734,7 @@ class TaskService:
                  LIMIT ? OFFSET ?""",
             (*params, limit, offset),
         )
-        items = [self.task_summary(row) for row in rows]
+        items = self.task_summaries(rows)
         return {
             "items": items,
             "total": total,
@@ -1852,24 +1887,34 @@ class TaskService:
                 ORDER BY COALESCE(recording_date, created_at) DESC""",
             (project_id,),
         )
-        board_meetings = []
-        for meeting in meetings:
-            tasks = self.db.query_all(
-                "SELECT * FROM tasks WHERE meeting_id=? ORDER BY created_at",
-                (meeting["id"],),
-            )
-            board_meetings.append(
-                {
-                    **dict(meeting),
-                    "tasks": [self.task_summary(row) for row in tasks],
-                }
-            )
+        # 全部会议的任务一条查询取回再按会分组（原来每场会一条），展示字段连同没关联会议的任务一次取齐
+        rows_by_meeting: dict[str, list[dict[str, Any]]] = {}
+        for row in self.db.query_all(
+            """SELECT t.* FROM tasks t JOIN meetings m ON m.id = t.meeting_id
+                WHERE m.project_id=?
+                ORDER BY t.created_at, t.rowid""",
+            (project_id,),
+        ):
+            rows_by_meeting.setdefault(row["meeting_id"], []).append(row)
         orphan_tasks = self.db.query_all(
             """SELECT * FROM tasks
                 WHERE project_id=? AND meeting_id IS NULL
                 ORDER BY created_at""",
             (project_id,),
         )
+        summaries = {
+            summary["id"]: summary
+            for summary in self.task_summaries(
+                [*(row for rows in rows_by_meeting.values() for row in rows), *orphan_tasks]
+            )
+        }
+        board_meetings = [
+            {
+                **dict(meeting),
+                "tasks": [summaries[row["id"]] for row in rows_by_meeting.get(meeting["id"], [])],
+            }
+            for meeting in meetings
+        ]
         if orphan_tasks:
             board_meetings.append(
                 {
@@ -1877,7 +1922,7 @@ class TaskService:
                     "title": "未关联会议",
                     "recording_date": None,
                     "duration_ms": None,
-                    "tasks": [self.task_summary(row) for row in orphan_tasks],
+                    "tasks": [summaries[row["id"]] for row in orphan_tasks],
                 }
             )
         project["meetings"] = board_meetings

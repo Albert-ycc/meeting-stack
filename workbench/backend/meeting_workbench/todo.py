@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime, timedelta
+from functools import cached_property
 from typing import Any
 
 from .project_seats import MEETING_TIME_SQL
@@ -159,42 +160,145 @@ def _candidate_option(row: Any) -> dict[str, Any]:
     }
 
 
-def scope_options(connection: Any, task: dict[str, Any]) -> list[dict[str, Any]]:
-    """任务能挂的需求和候选（不含推荐顺序）：需求按 P0→P3、同级按名字；候选在后，按抽出的先后倒序。"""
+def _grouped(rows: Any, key: str) -> dict[str, list[Any]]:
+    grouped: dict[str, list[Any]] = {}
+    for row in rows:
+        grouped.setdefault(row[key], []).append(row)
+    return grouped
+
+
+def _marks(values: list[str]) -> str:
+    return ", ".join("?" for _ in values)
+
+
+class _LinkContext:
+    """一批任务挂需求要用到的库里数据：用到哪类才取哪类，每类用一两条查询把这批任务的全取齐。审核卡一次给上百条
+    待确认任务算推荐，原来每条任务各查一遍范围（每场会再加几条）。单条任务（挂需求选择器、全部确认）就是
+    一批只有一条，和整批走同一份取数、同样用到才查。"""
+
+    def __init__(self, connection: Any, tasks: list[dict[str, Any]]):
+        self.connection = connection
+        self.tasks = tasks
+
+    def _ids(self, key: str, *, loose: bool = False) -> list[str]:
+        """这批任务的某个 id（loose：只算没归项目的任务）。"""
+        return sorted(
+            {
+                task[key]
+                for task in self.tasks
+                if task.get(key) and not (loose and task.get("project_id"))
+            }
+        )
+
+    @cached_property
+    def project_scope(self) -> tuple[dict[str, list[Any]], dict[str, list[Any]]]:
+        """(所属项目的进行中需求, 所属项目的待认领候选)，按项目分。"""
+        project_ids = self._ids("project_id")
+        if not project_ids:
+            return {}, {}
+        requirements = self.connection.execute(
+            f"""SELECT r.id, r.title, r.priority, r.project_id, p.name AS project_name
+                  FROM requirements r JOIN projects p ON p.id = r.project_id
+                 WHERE r.project_id IN ({_marks(project_ids)}) AND r.status = 'active'""",
+            project_ids,
+        ).fetchall()
+        candidates = self.connection.execute(
+            f"""SELECT c.id, c.title, c.meeting_id, c.created_at, m.project_id,
+                       p.name AS project_name
+                  FROM requirement_candidates c JOIN meetings m ON m.id = c.meeting_id
+                  LEFT JOIN projects p ON p.id = m.project_id
+                 WHERE c.status = 'pending' AND m.project_id IN ({_marks(project_ids)})""",
+            project_ids,
+        ).fetchall()
+        return _grouped(requirements, "project_id"), _grouped(candidates, "project_id")
+
+    @cached_property
+    def meeting_scope(self) -> tuple[dict[str, list[Any]], dict[str, list[Any]]]:
+        """没归项目的任务按来源会议划范围：(已关联这场会的进行中需求, 这场会抽出的待认领候选)，按会议分。"""
+        meeting_ids = self._ids("meeting_id", loose=True)
+        if not meeting_ids:
+            return {}, {}
+        requirements = self.connection.execute(
+            f"""SELECT r.id, r.title, r.priority, r.project_id, p.name AS project_name,
+                       rm.meeting_id
+                  FROM requirements r JOIN projects p ON p.id = r.project_id
+                  JOIN requirement_meetings rm ON rm.requirement_id = r.id
+                 WHERE rm.meeting_id IN ({_marks(meeting_ids)}) AND r.status = 'active'""",
+            meeting_ids,
+        ).fetchall()
+        candidates = self.connection.execute(
+            f"""SELECT c.id, c.title, c.meeting_id, c.created_at, m.project_id,
+                       p.name AS project_name
+                  FROM requirement_candidates c JOIN meetings m ON m.id = c.meeting_id
+                  LEFT JOIN projects p ON p.id = m.project_id
+                 WHERE c.status = 'pending' AND c.meeting_id IN ({_marks(meeting_ids)})""",
+            meeting_ids,
+        ).fetchall()
+        return _grouped(requirements, "meeting_id"), _grouped(candidates, "meeting_id")
+
+    @cached_property
+    def linked(self) -> dict[str, set[str]]:
+        """会议 → 已关联这场会的需求（不论状态）。"""
+        meeting_ids = self._ids("meeting_id")
+        linked: dict[str, set[str]] = {}
+        if meeting_ids:
+            for row in self.connection.execute(
+                f"""SELECT meeting_id, requirement_id FROM requirement_meetings
+                     WHERE meeting_id IN ({_marks(meeting_ids)})""",
+                meeting_ids,
+            ):
+                linked.setdefault(row["meeting_id"], set()).add(row["requirement_id"])
+        return linked
+
+    @cached_property
+    def current_requirements(self) -> dict[str, dict[str, Any]]:
+        """任务现在挂着的需求（可能已搁置，不在可选范围里）：需求 id → 选项。"""
+        requirement_ids = self._ids("requirement_id")
+        if not requirement_ids:
+            return {}
+        return {
+            row["id"]: _requirement_option(row)
+            for row in self.connection.execute(
+                f"""SELECT r.id, r.title, r.priority, r.project_id, p.name AS project_name
+                      FROM requirements r JOIN projects p ON p.id = r.project_id
+                     WHERE r.id IN ({_marks(requirement_ids)})""",
+                requirement_ids,
+            )
+        }
+
+    @cached_property
+    def touched(self) -> set[str]:
+        """挂着候选、并且有人手动改挂过（有 requirement_changed 事件）的任务。"""
+        task_ids = [task["id"] for task in self.tasks if task.get("candidate_id")]
+        if not task_ids:
+            return set()
+        return {
+            row["task_id"]
+            for row in self.connection.execute(
+                f"""SELECT DISTINCT task_id FROM task_events
+                     WHERE kind = 'requirement_changed' AND task_id IN ({_marks(task_ids)})""",
+                task_ids,
+            )
+        }
+
+
+def scope_options(
+    connection: Any, task: dict[str, Any], context: _LinkContext | None = None
+) -> list[dict[str, Any]]:
+    """任务能挂的需求和候选（不含推荐顺序）：需求按 P0→P3、同级按名字；候选在后，按抽出的先后倒序。
+    context 是整批任务共用的取数（审核卡），不给时按这一条任务现取。"""
+    context = context or _LinkContext(connection, [task])
     project_id = task.get("project_id")
     meeting_id = task.get("meeting_id")
     with_candidates = task["status"] in DRAFT_STATUSES or project_id is None
     if project_id:
-        requirements = connection.execute(
-            """SELECT r.id, r.title, r.priority, r.project_id, p.name AS project_name
-                 FROM requirements r JOIN projects p ON p.id = r.project_id
-                WHERE r.project_id = ? AND r.status = 'active'""",
-            (project_id,),
-        ).fetchall()
-        candidates = connection.execute(
-            """SELECT c.id, c.title, c.meeting_id, c.created_at, m.project_id,
-                      p.name AS project_name
-                 FROM requirement_candidates c JOIN meetings m ON m.id = c.meeting_id
-                 LEFT JOIN projects p ON p.id = m.project_id
-                WHERE c.status = 'pending' AND m.project_id = ?""",
-            (project_id,),
-        ).fetchall()
+        requirements_of, candidates_of = context.project_scope
+        requirements = requirements_of.get(project_id, [])
+        candidates = candidates_of.get(project_id, [])
     elif meeting_id:
-        requirements = connection.execute(
-            """SELECT r.id, r.title, r.priority, r.project_id, p.name AS project_name
-                 FROM requirements r JOIN projects p ON p.id = r.project_id
-                 JOIN requirement_meetings rm ON rm.requirement_id = r.id
-                WHERE rm.meeting_id = ? AND r.status = 'active'""",
-            (meeting_id,),
-        ).fetchall()
-        candidates = connection.execute(
-            """SELECT c.id, c.title, c.meeting_id, c.created_at, m.project_id,
-                      p.name AS project_name
-                 FROM requirement_candidates c JOIN meetings m ON m.id = c.meeting_id
-                 LEFT JOIN projects p ON p.id = m.project_id
-                WHERE c.status = 'pending' AND c.meeting_id = ?""",
-            (meeting_id,),
-        ).fetchall()
+        requirements_of, candidates_of = context.meeting_scope
+        requirements = requirements_of.get(meeting_id, [])
+        candidates = candidates_of.get(meeting_id, [])
     else:
         return []
     options = [
@@ -214,35 +318,20 @@ def scope_options(connection: Any, task: dict[str, Any]) -> list[dict[str, Any]]
     return options
 
 
-def _current_requirement(connection: Any, requirement_id: str) -> dict[str, Any] | None:
-    row = connection.execute(
-        """SELECT r.id, r.title, r.priority, r.project_id, p.name AS project_name
-             FROM requirements r JOIN projects p ON p.id = r.project_id WHERE r.id = ?""",
-        (requirement_id,),
-    ).fetchone()
-    return _requirement_option(row) if row else None
-
-
 def recommend(
-    connection: Any, task: dict[str, Any], options: list[dict[str, Any]]
+    connection: Any,
+    task: dict[str, Any],
+    options: list[dict[str, Any]],
+    context: _LinkContext | None = None,
 ) -> list[dict[str, Any]]:
     """推荐项，第一条是默认选中的；没有就只显示「不挂」。
 
     任务现在挂着的排第一：确认前用户手动挂过、或候选被合并后任务已随它挂上目标需求，默认就是它，不拿别的
     推荐去覆盖（R07 异常与边界「合并的改为推荐合并后的目标需求」）。现在挂着的需求不在可选范围里（比如已搁置）
     也照列。AI 抽取时配好、没人动过的候选标 paired，其余标 current。其后是已关联这场会的需求、同场会的候选。"""
+    context = context or _LinkContext(connection, [task])
     meeting_id = task.get("meeting_id")
-    linked = (
-        {
-            row["requirement_id"]
-            for row in connection.execute(
-                "SELECT requirement_id FROM requirement_meetings WHERE meeting_id = ?",
-                (meeting_id,),
-            ).fetchall()
-        }
-        if meeting_id
-        else set()
-    )
+    linked = context.linked.get(meeting_id, set()) if meeting_id else set()
     picked: list[dict[str, Any]] = []
 
     def pick(option: dict[str, Any], reason: str) -> None:
@@ -252,17 +341,12 @@ def recommend(
     if task.get("requirement_id"):
         current = next(
             (option for option in options if option["id"] == task["requirement_id"]), None
-        ) or _current_requirement(connection, task["requirement_id"])
+        ) or context.current_requirements.get(task["requirement_id"])
         if current is not None:
             pick(current, "current")
     for option in options:
         if option["kind"] == "candidate" and option["id"] == task.get("candidate_id"):
-            touched = connection.execute(
-                """SELECT 1 FROM task_events
-                    WHERE task_id = ? AND kind = 'requirement_changed' LIMIT 1""",
-                (task["id"],),
-            ).fetchone()
-            pick(option, "current" if touched else "paired")
+            pick(option, "current" if task["id"] in context.touched else "paired")
     for option in options:
         if option["kind"] == "requirement" and option["id"] in linked:
             pick(option, "linked")
@@ -384,65 +468,84 @@ def review_cards(
                  WHERE {" AND ".join(clauses)}""",
             tuple(params),
         ).fetchall()
-        for meeting in meetings:
-            task_rows = [
-                dict(row)
-                for row in connection.execute(
-                    """SELECT * FROM tasks
-                        WHERE meeting_id = ? AND origin = 'ai' AND status <> 'expired'
-                        ORDER BY created_at, id""",
-                    (meeting["id"],),
-                ).fetchall()
-            ]
-            candidate_ids = [
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM requirement_candidates WHERE meeting_id = ?", (meeting["id"],)
-                ).fetchall()
-            ]
-            candidates = sorted(
+        if not meetings:
+            return {"cards": [], "pending_task_count": 0, "pending_candidate_count": 0}
+        # 这批会的任务、候选、挂需求的范围各一次取齐，再按会分到各张卡里（原来每场会各查一遍，每条任务再查一遍）
+        in_scope = [meeting["id"] for meeting in meetings]
+        marks = _marks(in_scope)
+        task_rows: dict[str, list[dict[str, Any]]] = {meeting_id: [] for meeting_id in in_scope}
+        for row in connection.execute(
+            f"""SELECT * FROM tasks
+                 WHERE meeting_id IN ({marks}) AND origin = 'ai' AND status <> 'expired'
+                 ORDER BY created_at, id""",
+            in_scope,
+        ).fetchall():
+            task_rows[row["meeting_id"]].append(dict(row))
+        candidate_meeting = {
+            row["id"]: row["meeting_id"]
+            for row in connection.execute(
+                f"SELECT id, meeting_id FROM requirement_candidates WHERE meeting_id IN ({marks})",
+                in_scope,
+            ).fetchall()
+        }
+        candidates: dict[str, list[dict[str, Any]]] = {meeting_id: [] for meeting_id in in_scope}
+        if candidate_meeting:
+            for item in sorted(
                 candidate_items(
-                    connection, statuses=CANDIDATE_STATUSES, candidate_ids=candidate_ids
+                    connection, statuses=CANDIDATE_STATUSES, candidate_ids=list(candidate_meeting)
                 ),
                 key=lambda item: (item["created_at"], item["id"]),
-            )
-            requirement_titles = (
-                {
-                    row["id"]: row["title"]
-                    for row in connection.execute(
-                        f"""SELECT id, title FROM requirements
-                         WHERE id IN ({", ".join("?" for _ in candidates)})""",
-                        tuple(item["requirement_id"] for item in candidates),
-                    ).fetchall()
-                }
-                if candidates
-                else {}
-            )
-            recommendations = {
-                row["id"]: recommend(connection, row, scope_options(connection, row))
-                for row in task_rows
-                if row["status"] == "pending_confirm"
+            ):
+                candidates[candidate_meeting[item["id"]]].append(item)
+        requirement_ids = sorted(
+            {
+                item["requirement_id"]
+                for items in candidates.values()
+                for item in items
+                if item["requirement_id"]
             }
-            pending_tasks = len(recommendations)
-            pending_candidates = sum(1 for item in candidates if item["status"] == "pending")
-            if not task_rows and not candidates:
+        )
+        requirement_titles = (
+            {
+                row["id"]: row["title"]
+                for row in connection.execute(
+                    f"SELECT id, title FROM requirements WHERE id IN ({_marks(requirement_ids)})",
+                    requirement_ids,
+                ).fetchall()
+            }
+            if requirement_ids
+            else {}
+        )
+        all_rows = [row for rows in task_rows.values() for row in rows]
+        pending = [row for row in all_rows if row["status"] == "pending_confirm"]
+        link_context = _LinkContext(connection, pending)
+        recommendations = {
+            row["id"]: recommend(
+                connection, row, scope_options(connection, row, link_context), link_context
+            )
+            for row in pending
+        }
+        summaries = {summary["id"]: summary for summary in task_service.task_summaries(all_rows)}
+        for meeting in meetings:
+            rows = task_rows[meeting["id"]]
+            items = candidates[meeting["id"]]
+            pending_tasks = sum(1 for row in rows if row["status"] == "pending_confirm")
+            pending_candidates = sum(1 for item in items if item["status"] == "pending")
+            if not rows and not items:
                 continue
             cards.append(
                 {
                     "meeting": {key: meeting[key] for key in meeting.keys() if key != "jd"},
                     "tasks": [
-                        {
-                            **task_service.task_summary(row),
-                            "recommended": recommendations.get(row["id"], []),
-                        }
-                        for row in task_rows
+                        {**summaries[row["id"]], "recommended": recommendations.get(row["id"], [])}
+                        for row in rows
                     ],
                     "candidates": [
                         {
                             **public_item(item),
                             "requirement_title": requirement_titles.get(item["requirement_id"]),
                         }
-                        for item in candidates
+                        for item in items
                     ],
                     "pending_task_count": pending_tasks,
                     "pending_candidate_count": pending_candidates,
