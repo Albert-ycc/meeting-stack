@@ -245,8 +245,12 @@ def _parse_srt_cues(srt_path: Path) -> list[dict[str, Any]]:
         start = _seconds_from_srt_parts(tuple(timing.groups()[:4]))
         end = _seconds_from_srt_parts(tuple(timing.groups()[4:]))
         cue_text = "\n".join(lines[2:]).strip()
-        if start is None or end is None or end <= start or not cue_text:
+        if start is None or end is None or end < start or not cue_text:
             raise RelayControlError("minutes_plan_srt_cue")
+        # FunASR 某一块只回整段文本、没有分句时，回退句起止相同；按 10ms 最小时长钳制，
+        # 和下面的重叠钳制同一规则。
+        if end == start:
+            end = start + 0.01
         # FunASR/whisper 的说话人分句会输出重叠时间戳（多人同时说话、分句
         # 边界取整），不是损坏文件。确定性钳制归一：起点钳到前一条终点；
         # 完全被覆盖的句子保留 10ms 最小时长，文本哈希照常进计划。建计划

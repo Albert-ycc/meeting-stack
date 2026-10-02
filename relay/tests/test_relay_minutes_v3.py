@@ -481,6 +481,45 @@ class MinutesProtocolV3Tests(unittest.TestCase):
         for left, right in zip(plan["windows"], plan["windows"][1:]):
             self.assertEqual(left["end_sec"], right["start_sec"])
 
+    def test_plan_clamps_zero_duration_fallback_cue_from_funasr_chunk(self):
+        # FunASR 某一块只回整段文本没有 sentence_info 时，回退句起止相同（45:00 → 45:00）
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            srt = root / "meeting.srt"
+            plan_path = root / "minutes-plan.json"
+            def timestamp(seconds: int) -> str:
+                hours, remainder = divmod(seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                return f"{hours:02d}:{minutes:02d}:{seconds:02d},000"
+
+            blocks = [
+                f"{index + 1}\n{timestamp(index * 60)} --> {timestamp(index * 60 + 59)}\n第一块第{index + 1}句"
+                for index in range(45)
+            ]
+            blocks.append("46\n00:45:00,000 --> 00:45:00,000\n第二块只有整段文本没有分句")
+            blocks.append("47\n00:45:00,000 --> 00:49:00,000\n第三块")
+            srt.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+
+            plan = self.module.create_minutes_plan(
+                srt, plan_path, total_duration_sec=3000
+            )
+            again = self.module.create_minutes_plan(
+                srt, root / "minutes-plan-again.json", total_duration_sec=3000
+            )
+            _, errors = self.module._minutes_plan_context(
+                plan_path, source_srt_path=srt
+            )
+
+        self.assertEqual([], errors)
+        self.assertEqual(plan, again)
+        cues = [cue for window in plan["windows"] for cue in window["cues"]]
+        self.assertEqual(47, len(cues))
+        previous_end = 0.0
+        for cue in cues:
+            self.assertGreaterEqual(cue["source_start_sec"], previous_end)
+            self.assertGreater(cue["source_end_sec"], cue["source_start_sec"])
+            previous_end = cue["source_end_sec"]
+
     def test_plan_still_rejects_negative_duration_cue(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
