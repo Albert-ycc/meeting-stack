@@ -180,6 +180,10 @@ export default function App({ apiClient = api }: AppProps) {
   // 冷加载时地址栏里的 #tasks 等锚点要先被读进视图，之后才允许把视图反写回地址栏，
   // 否则首帧 view=overview 会先把 hash 清空，applyHash 再也读不到（冷加载 #tasks 被拉回工作台）。
   const hashReadyRef = useRef(false);
+  // 启动接口回来之前用户已经点过侧栏、打开过会、搜过：启动完成后不再按地址栏里的旧锚点拉回去，
+  // 反过来把用户所在的视图写回地址栏（bootSettled 变一次，让下面「视图 → 地址栏」再跑一遍）
+  const navigatedDuringBootRef = useRef(false);
+  const [bootSettled, setBootSettled] = useState(false);
   // 这一轮视图变化来自浏览器前进/后退（或冷加载），地址栏已经是对的，只能 replace 不能再 push，
   // 否则每按一次后退都会多压一条历史，后退键永远退不出去。
   const historySyncRef = useRef(false);
@@ -590,13 +594,18 @@ export default function App({ apiClient = api }: AppProps) {
         setLinksFlags(linksFlagsFrom(boot));
         setPendingCount(boot.pending_confirm_count);
         // 空锚点就是默认的工作台；启动期间用户可能已经点了别的视图，不能再拉回来。
-        if (window.location.hash) applyHash();
+        if (window.location.hash && !navigatedDuringBootRef.current) applyHash();
         hashReadyRef.current = true;
       } catch (error) {
         hashReadyRef.current = true;
         if (!active) return;
         setLibraryState("error");
         setDetailError(error instanceof Error ? error.message : "无法连接本地工作台");
+      }
+      if (active && navigatedDuringBootRef.current) {
+        // 用户在启动期间去过的地方替换掉地址栏里的旧锚点，不压历史
+        historySyncRef.current = true;
+        setBootSettled(true);
       }
       if (active) {
         await Promise.all([loadMeetings({}, 0), loadJobs()]);
@@ -722,7 +731,10 @@ export default function App({ apiClient = api }: AppProps) {
     autoplay = false,
   ) => {
     if (detailNavigationLocked) return;
-    if (!fromHistory) historySyncRef.current = false;
+    if (!fromHistory) {
+      historySyncRef.current = false;
+      navigatedDuringBootRef.current = true;
+    }
     if (
       detail &&
       detailDirty &&
@@ -790,6 +802,7 @@ export default function App({ apiClient = api }: AppProps) {
 
   const performNavigate = (nextView: AppView) => {
     historySyncRef.current = false;
+    navigatedDuringBootRef.current = true;
     resetDetailState();
     setView(nextView);
     // 从侧栏回到全部项目概览时不带上次的选中
@@ -1127,6 +1140,7 @@ export default function App({ apiClient = api }: AppProps) {
         url,
       );
   }, [
+    bootSettled,
     glossaryProjectId,
     graphExpanded,
     graphLocal,
@@ -1172,6 +1186,7 @@ export default function App({ apiClient = api }: AppProps) {
     }
     const requestSequence = ++searchRequestSequence.current;
     historySyncRef.current = false;
+    navigatedDuringBootRef.current = true;
     resetDetailState();
     if (overrides.word !== undefined) setQuery(normalized);
     setSearchScope(scope);

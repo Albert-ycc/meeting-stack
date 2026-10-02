@@ -100,6 +100,31 @@ describe("地址栏锚点直达", () => {
     expect(window.location.hash).toBe("#tasks");
   });
 
+  it("冷加载带 #tasks、启动接口还没回时点了侧栏：启动完成后留在点的那一页，地址栏换成它，不再拉回待办", async () => {
+    window.history.replaceState(null, "", "/#tasks");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const base = client();
+    const bootstrap = vi.fn(async () => {
+      await gate;
+      return (base.bootstrap as () => Promise<unknown>)();
+    });
+    render(<App apiClient={{ ...base, bootstrap } as unknown as ApiClient} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
+    expect(await screen.findByRole("heading", { name: "会议录音档案" })).toBeInTheDocument();
+    await act(async () => {
+      release();
+      await gate;
+    });
+
+    await waitFor(() => expect(window.location.hash).toBe("#library"));
+    expect(screen.getByRole("heading", { name: "会议录音档案" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "待办" })).not.toBeInTheDocument();
+  });
+
   it("冷加载带 #glossary 停在词典页", async () => {
     window.history.replaceState(null, "", "/#glossary");
 
