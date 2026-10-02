@@ -137,16 +137,25 @@ def _validate_date_only(value: str) -> None:
 def recording_date_range(
     column: str, date_from: str | None, date_to: str | None
 ) -> tuple[list[str], list[str]]:
-    """会议日期筛选（任务池、待确认审核卡、会议列表共用）：按 recording_date 前 10 位的日期比，起止两头
-    都含当天。recording_date 带时刻（2026-09-30T10:00:00+08:00），整串和「2026-09-30」比会把结束日当天
-    的会全漏掉。"""
+    """会议日期筛选（任务池、待确认审核卡、会议列表共用）：把 recording_date 换算成本机日历的日期再比，
+    起止两头都含当天，这样筛选结果和列表上显示的日期是同一套（界面按本机时区显示）。
+
+    recording_date 带时刻（2026-09-30T10:00:00+08:00），整串和「2026-09-30」比会把结束日当天的会全漏掉；
+    库里还混着 -07:00 和 +00:00（后者带小数秒）两种偏移，取前 10 位比的话前 10 位不是同一套日历
+    （5/20 06:06 UTC 在太平洋是 5/19 23 点，列表上显示 5/19）。所以带偏移的（或结尾是 Z 的）按瞬时
+    换算（SQLite 的 localtime，随进程时区）；没带时区的是本机时间、日期就是它自己的前 10 位，不换算。
+    """
+    day = (
+        f"CASE WHEN {column} GLOB '*[+-][0-9][0-9]:[0-9][0-9]' OR {column} GLOB '*Z' "
+        f"THEN date({column}, 'localtime') ELSE substr({column}, 1, 10) END"
+    )
     clauses: list[str] = []
     params: list[str] = []
     if date_from is not None:
-        clauses.append(f"substr({column}, 1, 10) >= ?")
+        clauses.append(f"({day}) >= ?")
         params.append(date_from)
     if date_to is not None:
-        clauses.append(f"substr({column}, 1, 10) <= ?")
+        clauses.append(f"({day}) <= ?")
         params.append(date_to)
     return clauses, params
 

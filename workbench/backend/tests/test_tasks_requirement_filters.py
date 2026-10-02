@@ -5,6 +5,7 @@ from meeting_workbench.db import Database, utc_now
 
 from .test_tasks_api import make_client, write_headers
 from .test_tasks_review import insert_task
+from .test_timeline import shanghai  # noqa: F401  会议日期按本机日历比，本机时区钉成北京时间
 
 
 def test_filter_by_requirement_id_and_none(tmp_path):
@@ -86,13 +87,14 @@ def test_filter_by_meeting_date_range_matches_meetings_endpoint_convention(tmp_p
 
 def test_meeting_date_range_includes_the_end_day(tmp_path):
     """「会议日期 至 9/30」要含 9/30 当天：recording_date 带时刻，整串和 2026-09-30 比会把当天的会漏掉。
-    任务池和会议列表同一口径（按 recording_date 前 10 位的日期，两头都含）。"""
+    任务池和会议列表同一口径（换算成本机日历的日期再比，两头都含）；进程时区钉成上海，三场会
+    分别落在 9/29、9/30、10/1（另一个时区下哪天不同，见 test_recording_date_range_tz.py）。"""
     client, settings = make_client(tmp_path)
     db = Database(settings.database_path)
     for meeting_id, recording_date in (
-        ("vm-0929", "2026-09-29T23:30:00-07:00"),
+        ("vm-0929", "2026-09-29T20:30:00+08:00"),
         ("vm-0930", "2026-09-30T10:00:00+08:00"),
-        ("vm-1001", "2026-10-01T00:10:00+00:00"),
+        ("vm-1001", "2026-10-01T00:10:00+08:00"),
     ):
         db.execute(
             """INSERT INTO meetings(id, title, recording_date, created_at, updated_at)

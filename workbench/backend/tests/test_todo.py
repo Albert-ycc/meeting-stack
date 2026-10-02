@@ -16,6 +16,7 @@ from meeting_workbench.todo import group_of
 from .requirement_pool_world import meeting_id, project_id, seed_world
 from .test_task_due import CARD_MEETING, CARD_PROJECT, make_cvm_world, seed_card_meeting
 from .test_tasks_api import make_client, write_headers
+from .test_timeline import shanghai  # noqa: F401  会议日期按本机日历比，本机时区钉成北京时间
 
 TODAY = date(2026, 9, 30)
 
@@ -337,11 +338,14 @@ def cards(client, **params):
 
 
 def test_review_cards_date_range_includes_the_end_day(tmp_path, monkeypatch):
-    """审核卡按「会议日期 至 X」筛：X 当天的会也在（口径同任务池，按 recording_date 前 10 位的日期）。"""
+    """审核卡按「会议日期 至 X」筛：X 当天的会也在（口径同任务池，换算成本机日历的日期再比）。
+    会录于太平洋 09-29 19:26，进程时区钉成上海就是 09-30 10:26，要拿 09-30 去筛。"""
     client, headers, db, candidate_id, tasks = make_cvm_world(tmp_path, monkeypatch)
-    day = db.query_one("SELECT recording_date FROM meetings WHERE id=?", (meeting_id("cvm"),))[
+    recorded = db.query_one("SELECT recording_date FROM meetings WHERE id=?", (meeting_id("cvm"),))[
         "recording_date"
-    ][:10]
+    ]
+    assert recorded == "2026-09-29T19:26:37-07:00"
+    day = "2026-09-30"
 
     payload = cards(client, meeting_date_from=day, meeting_date_to=day)
 
