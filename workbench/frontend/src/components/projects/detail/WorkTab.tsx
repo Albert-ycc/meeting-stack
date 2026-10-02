@@ -450,8 +450,8 @@ export function WorkTab({
           apiClient={apiClient}
           canWrite={canWrite}
           onClose={() => setEditing(null)}
-          onSaved={() => {
-            showToast(`已保存「${editing.title}」`);
+          onSaved={({ title }) => {
+            showToast(`已保存「${title}」`);
             setEditing(null);
             void refreshAfterWrite();
           }}

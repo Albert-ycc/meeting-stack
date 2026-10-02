@@ -958,8 +958,8 @@ export function TasksPage({
           canWrite={canWrite}
           confirmOnSave={!editFromCard}
           onClose={() => setEditingTask(null)}
-          onSaved={() => {
-            notify(editFromCard ? `已保存「${editingTask.title}」，确认请在卡上点［确认］` : `已保存「${editingTask.title}」`);
+          onSaved={({ title }) => {
+            notify(editFromCard ? `已保存「${title}」，确认请在卡上点［确认］` : `已保存「${title}」`);
             setEditingTask(null);
             void refresh();
           }}

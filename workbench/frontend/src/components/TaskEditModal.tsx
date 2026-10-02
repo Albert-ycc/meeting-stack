@@ -22,7 +22,8 @@ export interface TaskEditModalProps {
   task?: Task | null;
   canWrite: boolean;
   onClose: () => void;
-  onSaved: () => void;
+  /** 带回保存后的标题：提示要用改过的名字，不是打开弹窗时的 */
+  onSaved: (saved: { title: string }) => void;
   /** 仅新建模式（task 为空）生效 */
   defaultProjectId?: string | null;
   /** 仅新建模式生效 */
@@ -248,7 +249,7 @@ export function TaskEditModal({
         await apiClient.updateTask(task.id, payload);
         if (editableStatus && status !== editableStatus) await apiClient.setTaskStatus(task.id, status);
       }
-      onSaved();
+      onSaved({ title: trimmed });
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败，请稍后重试");

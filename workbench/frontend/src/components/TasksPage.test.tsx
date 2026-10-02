@@ -745,6 +745,22 @@ describe("审查补丁", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("已保存「确认发卡名单口径」");
   });
 
+  it("弹窗里改了名再保存：提示用改后的名字", async () => {
+    const items = seedTasks();
+    const apiClient = makeClient(items);
+    renderPage(apiClient);
+    await userEvent.click(await screen.findByRole("tab", { name: /待确认/ }));
+    await screen.findByTestId("review-cards");
+
+    act(() => panelProps().onEditTask(items.find((task) => task.id === "t-pending")!));
+    const input = await screen.findByDisplayValue("确认发卡名单口径");
+    await userEvent.clear(input);
+    await userEvent.type(input, "确认发卡名单范围");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("已保存「确认发卡名单范围」");
+  });
+
   it("已完成页签：完成不满 10 分钟的行有［撤销完成］，过了窗口不显示", async () => {
     const items = seedTasks();
     const fresh = makeTask("t-fresh", "done", "给出定好的积分规则", { status_changed_at: new Date(Date.now() - 2 * 60_000).toISOString() });

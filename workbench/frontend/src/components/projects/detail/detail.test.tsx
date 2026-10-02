@@ -371,6 +371,20 @@ describe("需求与任务：海报和任务面板", () => {
     expect(await screen.findByRole("dialog", { name: "修改任务" })).toBeInTheDocument();
   });
 
+  it("修改弹窗里改了名再保存：提示用改后的名字", async () => {
+    setup();
+    const panel = await screen.findByRole("region", { name: "「赠药横跳拦截」的任务" });
+    await userEvent.click(within(panel).getByRole("button", { name: "更多操作：把跨政策横跳卡控作为需求立项并修复" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "修改" }));
+    const dialog = await screen.findByRole("dialog", { name: "修改任务" });
+    const input = within(dialog).getByDisplayValue("把跨政策横跳卡控作为需求立项并修复");
+    await userEvent.clear(input);
+    await userEvent.type(input, "跨政策横跳卡控立项");
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByText("已保存「跨政策横跳卡控立项」")).toBeInTheDocument();
+  });
+
   it("菜单里的「改挂需求」弹出选择器，选了另一条需求就改挂，提示带撤销", async () => {
     const { api } = setup();
     const panel = await screen.findByRole("region", { name: "「赠药横跳拦截」的任务" });
