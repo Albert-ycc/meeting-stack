@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # Backups run every 24 hours.  Six hours of scheduling/runtime grace keeps
     # a small delay from paging while still detecting a dead daily session.
     backup_stale_after_seconds: int = 30 * 60 * 60
+    # 备份留几份：本机和外置盘镜像各留这么多（每份几百 MB，本机在系统盘上）。最小 1。
+    backup_retention: int = 14
     qwen_binary: Path = Field(
         default_factory=lambda: Path.home() / ".venvs/mlx-qwen3-asr/bin/mlx-qwen3-asr"
     )
@@ -129,6 +131,20 @@ class Settings(BaseSettings):
     related_margin: float = 0.05
     # 从材料里挖词
     glossary_mining_enabled: bool = True
+
+    @field_validator("backup_retention", mode="before")
+    @classmethod
+    def _backup_retention_is_a_whole_number_of_at_least_one(cls, value: object) -> int:
+        # 填错了要说人话：0 份会把刚生成的备份也轮转掉，非整数 pydantic 只会报英文的 int_parsing
+        try:
+            number = 0 if isinstance(value, bool) else int(str(value).strip())
+        except ValueError:
+            number = 0
+        if number < 1:
+            raise ValueError(
+                f"MEETING_WORKBENCH_BACKUP_RETENTION 要写成不小于 1 的整数，比如 14，现在是 {value!r}"
+            )
+        return number
 
     @field_validator("allowed_hosts", mode="before")
     @classmethod

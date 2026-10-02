@@ -58,10 +58,13 @@ class BackupResult:
 
 
 class BackupManager:
-    def __init__(self, db: Database, settings: Settings, *, retention: int = 14):
+    def __init__(self, db: Database, settings: Settings, *, retention: int | None = None):
         self.db = db
         self.settings = settings
-        self.retention = retention
+        # 默认用设置里的 MEETING_WORKBENCH_BACKUP_RETENTION，本机和镜像两个目录共用
+        self.retention = settings.backup_retention if retention is None else retention
+        if self.retention < 1:
+            raise ValueError("retention 不能小于 1：0 份会把刚生成的新副本也轮转掉")
 
     def create(self, *, now: datetime | None = None) -> BackupResult:
         now = (now or datetime.now(UTC)).astimezone(UTC)
