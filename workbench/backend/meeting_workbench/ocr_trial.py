@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .ocr_engines import image_size, machine_info
+from .vision_helper import find_swiftc
 from .material_walk import (
     IMAGE_EXTS,
     NAME_ONLY_DIRS,
@@ -142,19 +143,26 @@ def pick_images(
 # —— 引擎 ——
 
 
-def vision_engine(workdir: Path, *, system: str | None = None) -> tuple[Engine | None, str | None]:
-    """返回 (引擎, 不能用的原因)。"""
+def vision_engine(
+    workdir: Path,
+    *,
+    system: str | None = None,
+    find: Callable[[], str | None] = find_swiftc,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[Engine | None, str | None]:
+    """返回 (引擎, 不能用的原因)。找编译器和服务里编 Vision 程序是同一套（vision_helper.find_swiftc）：
+    不用 which，每台 Mac 上都有 /usr/bin/swiftc 占位程序，没装命令行工具时一调用就弹安装对话框。"""
     if (system or platform.system()) != "Darwin":
         return None, "Vision 只能在 Mac 上跑"
-    swiftc = shutil.which("swiftc")
-    if not swiftc:
+    if not find():
         return None, "没找到 swiftc：先在终端运行 xcode-select --install 装 Xcode 命令行工具"
     source = workdir / "vision_ocr.swift"
     binary = workdir / "vision-ocr"
     source.write_text(SWIFT_SOURCE, encoding="utf-8")
     try:
-        result = subprocess.run(
-            [swiftc, "-O", "-o", str(binary), str(source)],
+        # 经 xcrun 调（带上 SDK 路径），和 vision_helper.VisionBuild.compile 一样
+        result = run(
+            ["xcrun", "swiftc", "-O", "-o", str(binary), str(source)],
             capture_output=True,
             text=True,
             timeout=300,

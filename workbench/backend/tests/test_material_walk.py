@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import zipfile
 import zlib
 from pathlib import Path
@@ -281,6 +282,26 @@ def test_collect_and_pick_images_spread_across_folders(tmp_path):
     assert sorted(folders) == sorted(["合同", "合同", "白板", "白板", "截图"])
     assert ocr_trial.pick_images(images, [root], limit=5) == picked
     assert len(ocr_trial.pick_images(images, [root], limit=50)) == 10
+
+
+def test_trial_finds_swiftc_like_the_service_does(tmp_path, monkeypatch):
+    """每台 Mac 上都有 /usr/bin/swiftc 占位程序，which 总能找到它，没装命令行工具时一调用就弹安装对话框。
+    试跑和服务一样先问 xcode-select（vision_helper.find_swiftc），编译经 xcrun。"""
+    monkeypatch.setattr(ocr_trial.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, "", "error: 假的编译失败")
+
+    engine, reason = ocr_trial.vision_engine(tmp_path, system="Darwin", find=lambda: None, run=run)
+    assert engine is None and "没找到 swiftc" in reason and calls == []
+
+    engine, reason = ocr_trial.vision_engine(
+        tmp_path, system="Darwin", find=lambda: "/Library/x/swiftc", run=run
+    )
+    assert engine is None and "假的编译失败" in reason
+    assert calls[0][:3] == ["xcrun", "swiftc", "-O"]
 
 
 def test_engines_explain_what_to_install(tmp_path, monkeypatch):
