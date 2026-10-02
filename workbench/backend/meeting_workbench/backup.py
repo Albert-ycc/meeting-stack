@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -18,6 +19,8 @@ import fcntl
 from .config import Settings
 from .db import Database
 from .material_fts import mark_for_rebuild
+
+logger = logging.getLogger(__name__)
 
 # 可从 segments 重算的派生数据，备份时清空。embeddings 占主库七成体积，
 # 而服务启动后的后台循环会调 SemanticIndex.rebuild() 自动补齐，
@@ -288,13 +291,29 @@ class BackupManager:
         verified: list[Path] = []
         removed = False
         for path in sorted(directory.glob("workbench-*.sqlite3"), reverse=True):
-            try:
-                if path.is_symlink() or not path.is_file():
-                    raise OSError("backup snapshot is not a regular file")
-                self._verify_database(path)
-            except (OSError, sqlite3.DatabaseError):
+            if path.is_symlink() or not path.is_file():
                 path.unlink(missing_ok=True)
                 removed = True
+                continue
+            try:
+                self._verify_database(path)
+            except sqlite3.DatabaseError as error:
+                # 只有明确判定损坏（完整性检查不是 ok、不是数据库、页面损坏）才删；
+                # 被锁、磁盘 I/O 这类瞬时错误判定不了，留着下一次再验，也不计入保留份数。
+                code = getattr(error, "sqlite_errorcode", None)
+                if code is None:
+                    # _verify_database 自己下的结论（integrity_check 不是 ok）
+                    corrupt = not isinstance(error, sqlite3.OperationalError)
+                else:
+                    corrupt = code & 0xFF in {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}
+                if not corrupt:
+                    logger.warning("备份 %s 这次校验不了，先保留：%s", path, error)
+                    continue
+                path.unlink(missing_ok=True)
+                removed = True
+                continue
+            except OSError as error:
+                logger.warning("备份 %s 这次校验不了，先保留：%s", path, error)
                 continue
             verified.append(path)
         for path in verified[self.retention :]:

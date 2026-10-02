@@ -356,3 +356,51 @@ def test_backup_strips_related_windows_and_their_mark(tmp_path):
     # 主库不动
     assert db.query_one("SELECT COUNT(*) AS n FROM meeting_windows") == {"n": 1}
     assert db.query_one("SELECT value FROM app_state WHERE key='related_chunk_mark'") is not None
+
+
+def _two_local_backups(tmp_path):
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        archive_root=tmp_path / "missing-archive",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    manager = BackupManager(db, settings)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    older = manager.create(now=start).local_path
+    newer = manager.create(now=start + timedelta(days=1)).local_path
+    return manager, settings, older, newer
+
+
+def test_rotation_keeps_a_snapshot_whose_check_failed_for_a_transient_reason(tmp_path):
+    manager, settings, older, newer = _two_local_backups(tmp_path)
+    real_verify = BackupManager._verify_database
+
+    def flaky(path):
+        if path == older:
+            # 外置盘一次瞬时 I/O 错误 / 被别人锁住：判定不了，不能当成坏备份删掉
+            raise sqlite3.OperationalError("disk I/O error")
+        real_verify(path)
+
+    with patch.object(BackupManager, "_verify_database", staticmethod(flaky)):
+        manager._rotate(settings.backup_dir)
+
+    assert older.exists()
+    assert newer.exists()
+
+
+def test_rotation_still_removes_a_snapshot_that_failed_integrity_check(tmp_path):
+    manager, settings, older, newer = _two_local_backups(tmp_path)
+    real_verify = BackupManager._verify_database
+
+    def judged_corrupt(path):
+        if path == older:
+            raise sqlite3.DatabaseError("backup integrity check failed: page 3 is never used")
+        real_verify(path)
+
+    with patch.object(BackupManager, "_verify_database", staticmethod(judged_corrupt)):
+        manager._rotate(settings.backup_dir)
+
+    assert not older.exists()
+    assert newer.exists()
