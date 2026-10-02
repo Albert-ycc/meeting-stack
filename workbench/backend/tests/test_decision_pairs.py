@@ -622,7 +622,14 @@ def test_comparing_ignores_the_busy_signal(tmp_path):
     assert worker.tick()["state"] == "ok"
 
 
-def test_prompt_preview_never_sends(tmp_path):
+def test_prompt_preview_never_sends(tmp_path, monkeypatch):
+    # 同一年的会不写年份：「今年」钉在造数据的 NOW，不随跑它的那天变
+    class Stopped(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(decision_pairs, "datetime", Stopped)
     db = two_meetings(tmp_path)
     db.execute("UPDATE decision_scan SET pair_state = 'done' WHERE meeting_id = 'new'")
     with db.autocommit() as connection:
