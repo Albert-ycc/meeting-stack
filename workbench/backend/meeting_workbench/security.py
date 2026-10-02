@@ -14,6 +14,8 @@ READ_METHODS = {"GET", "HEAD"}
 FOREIGN_SITES = {"cross-site", "same-site"}
 # iframe、embed、object 加载页面时 Sec-Fetch-Mode 也是 navigate，但页面看不到结果，服务照样会干活
 EMBEDDED_DESTINATIONS = {"iframe", "frame", "embed", "object"}
+# 预取（speculation rules、<link rel=prerender>）同样是 navigate、dest 是 document，只有 Sec-Purpose 说明没人在看
+SPECULATIVE_PURPOSES = ("prefetch", "prerender")
 
 
 class WriteProtectionMiddleware(BaseHTTPMiddleware):
@@ -52,7 +54,12 @@ class WriteProtectionMiddleware(BaseHTTPMiddleware):
             return False
         if request.headers.get("sec-fetch-mode", "").strip().lower() != "navigate":
             return True
-        return request.headers.get("sec-fetch-dest", "").strip().lower() in EMBEDDED_DESTINATIONS
+        if request.headers.get("sec-fetch-dest", "").strip().lower() in EMBEDDED_DESTINATIONS:
+            return True
+        purpose = (
+            f"{request.headers.get('sec-purpose', '')};{request.headers.get('purpose', '')}".lower()
+        )
+        return any(word in purpose for word in SPECULATIVE_PURPOSES)
 
     async def dispatch(self, request: Request, call_next):
         host = request.headers.get("host")

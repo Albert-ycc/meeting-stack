@@ -54,6 +54,22 @@ REFUSED = [
     pytest.param(fetch_headers("cross-site", "navigate", "embed"), id="跨站的 <embed>"),
     pytest.param(fetch_headers("cross-site", "navigate", "object"), id="跨站的 <object>"),
     pytest.param(fetch_headers("same-site", "navigate", "iframe"), id="同站的 <iframe>"),
+    # 浏览器后台预取：模式是 navigate、dest 是 document，只有 Sec-Purpose 说明不是用户在点
+    pytest.param(
+        {**fetch_headers("cross-site", "navigate", "document"), "Sec-Purpose": "prefetch"},
+        id="跨站的预取（speculation rules）",
+    ),
+    pytest.param(
+        {
+            **fetch_headers("cross-site", "navigate", "document"),
+            "Sec-Purpose": "prefetch;prerender",
+        },
+        id="跨站的预渲染",
+    ),
+    pytest.param(
+        {**fetch_headers("same-site", "navigate", "document"), "Purpose": "prefetch"},
+        id="同站的旧式 Purpose: prefetch",
+    ),
     pytest.param({"Sec-Fetch-Site": "cross-site"}, id="只有 Site、没有 Mode"),
     pytest.param(
         {"Sec-Fetch-Site": " Cross-Site ", "Sec-Fetch-Mode": "No-Cors"}, id="大小写和空白不影响判断"
@@ -68,6 +84,10 @@ ALLOWED = [
     pytest.param(fetch_headers("same-origin", "no-cors", "image"), id="同源的 <img>"),
     pytest.param(fetch_headers("same-origin", "cors", "empty"), id="同源的 fetch"),
     pytest.param(fetch_headers("same-origin", "navigate", "iframe"), id="同源的 <iframe>"),
+    pytest.param(
+        {**fetch_headers("same-origin", "navigate", "document"), "Sec-Purpose": "prefetch"},
+        id="本站自己的预取",
+    ),
     pytest.param({}, id="curl、老浏览器：不带 Sec-Fetch-*"),
 ]
 
