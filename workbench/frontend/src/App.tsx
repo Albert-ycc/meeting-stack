@@ -445,9 +445,6 @@ export default function App({ apiClient = api }: AppProps) {
     const hash = window.location.hash;
     // 表单页上有没保存的改动时按了浏览器后退、前进：先问；留下就把表单页的地址放回去（审查 B1）
     const formPath = formPathRef.current;
-    // 地址就是正开着的这张表单页：什么都不做。浏览器后退会先后发 popstate、hashchange，前一次拦下后把地址
-    // 放回来了，后一次读到的就是表单页自己——当成「打开新增页」处理会关掉会议页、换成一张空白新增页
-    if (formPath && hash === formPath) return;
     if (formPath && formDirtyRef.current) {
       if (!window.confirm(LEAVE_FORM_CONFIRM)) {
         history.pushState({ app: true }, "", formPath);
