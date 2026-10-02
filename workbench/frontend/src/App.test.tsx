@@ -294,6 +294,16 @@ describe("App refresh and navigation safety", () => {
     expect(pendingPolls()).toBeGreaterThan(before);
   });
 
+  it("转写台账返回 5xx：工作台「进行中转写」写读取失败，不说「没有正在处理的录音」", async () => {
+    const jobs = vi.fn().mockRejectedValue(new ApiError("relayctl 不存在", 503));
+    render(<App apiClient={client({ jobs } as Partial<ApiClient>)} />);
+
+    const card = (await screen.findAllByText("进行中转写"))[0].closest("button")!;
+    await waitFor(() => expect(card).toHaveTextContent("转写状态读取失败"));
+    expect(card).toHaveTextContent("—");
+    expect(screen.queryByText("没有正在处理的录音")).not.toBeInTheDocument();
+  });
+
   it("refreshes the visible library every fifteen seconds and immediately after returning to it", async () => {
     vi.useFakeTimers();
     const meetings = vi.fn().mockResolvedValue({

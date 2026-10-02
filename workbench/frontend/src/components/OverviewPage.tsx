@@ -22,6 +22,8 @@ interface OverviewPageProps {
   health: HealthPayload | null;
   jobs: Job[];
   jobsAvailable: boolean;
+  /** 转写台账这次没读到（中转停了、relayctl 出错的 5xx）：手上的 jobs 不作数，不能说「没有在处理」 */
+  jobsFailed?: boolean;
   jobsInteractive?: boolean;
   meetings: MeetingSummary[];
   onOpenJobs: () => void;
@@ -143,6 +145,7 @@ export function OverviewPage({
   health,
   jobs,
   jobsAvailable,
+  jobsFailed = false,
   jobsInteractive = true,
   meetings,
   onOpenJobs,
@@ -357,21 +360,23 @@ export function OverviewPage({
         {jobsInteractive ? (
           <button disabled={!jobsAvailable} onClick={onOpenJobs} type="button">
             <span>进行中转写</span>
-            <strong><CountUp value={jobsAvailable ? activeJobs.length : "—"} /></strong>
+            <strong><CountUp value={jobsAvailable && !jobsFailed ? activeJobs.length : "—"} /></strong>
             <small>
               {!jobsAvailable
                 ? "接口待接入"
-                : failedJobs
-                  ? `${failedJobs} 个异常 · ${activeJobs.length} 个处理中`
-                  : activeJobs.length
-                    ? `${activeJobs.length} 个录音处理中`
-                    : "没有正在处理的录音"}
+                : jobsFailed
+                  ? "转写状态读取失败"
+                  : failedJobs
+                    ? `${failedJobs} 个异常 · ${activeJobs.length} 个处理中`
+                    : activeJobs.length
+                      ? `${activeJobs.length} 个录音处理中`
+                      : "没有正在处理的录音"}
             </small>
           </button>
         ) : (
           <div className="metric-static">
             <span>进行中转写</span>
-            <strong><CountUp value={jobsAvailable ? activeJobs.length : "—"} /></strong>
+            <strong><CountUp value={jobsAvailable && !jobsFailed ? activeJobs.length : "—"} /></strong>
             <small>桌面端处理</small>
           </div>
         )}
@@ -573,6 +578,14 @@ export function OverviewPage({
               <div>
                 <strong>任务控制接口尚未开放</strong>
                 <p>资料库可正常使用；这里不会根据数据库推测或伪造任务成功状态。</p>
+              </div>
+            </div>
+          ) : jobsFailed ? (
+            <div className="contract-empty">
+              <span>!</span>
+              <div>
+                <strong>转写状态读取失败</strong>
+                <p>到「转写录音」页看具体原因；恢复后这里会自动更新。</p>
               </div>
             </div>
           ) : activeJobs.length === 0 ? (

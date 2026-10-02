@@ -1418,6 +1418,7 @@ export default function App({ apiClient = api }: AppProps) {
         health={health}
         jobs={jobs}
         jobsAvailable={jobsAvailable}
+        jobsFailed={jobsStale}
         jobsInteractive={!isMobile}
         meetings={meetings}
         onOpenJobs={() => navigate("jobs")}
