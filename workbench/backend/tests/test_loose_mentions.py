@@ -16,7 +16,7 @@ from meeting_workbench.loose_mentions import Line, LooseMentionTask
 
 from .test_file_mentions import add_file, ns
 from .test_file_mentions import setup as fm_setup
-from .test_graph import add_meeting
+from .test_graph import add_meeting, stop_clock
 from .test_relations import rev
 
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
@@ -998,7 +998,7 @@ def test_seed_does_nothing_when_the_ai_layer_is_off(tmp_path):
 # ---------------------------------------------------------------------- 接口（都是读，GET 不写库）
 
 
-def test_endpoints_carry_the_loose_rows_and_answers_work(tmp_path):
+def test_endpoints_carry_the_loose_rows_and_answers_work(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from meeting_workbench.config import Settings
@@ -1034,8 +1034,15 @@ def test_endpoints_carry_the_loose_rows_and_answers_work(tmp_path):
     )
     first = add_file(db, root_id, "报价单 v1.xlsx", day="2026-09-10")
     second = add_file(db, root_id, "报价/报价单 v2.xlsx", day="2026-09-18")
+    # 关系图按路由取的今天定时间窗：今天停在此刻，会按同一天往回数
+    today = stop_clock(monkeypatch)
     add_meeting(
-        db, "m", ago=1, project_id="p", segments=talk("上周那版报价单再看一下", "那版报价单还要改")
+        db,
+        "m",
+        ago=1,
+        project_id="p",
+        today=today,
+        segments=talk("上周那版报价单再看一下", "那版报价单还要改"),
     )
     done_with(
         db,
