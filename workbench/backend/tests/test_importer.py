@@ -2153,7 +2153,8 @@ def test_recording_timestamp_in_the_id_is_read_as_local_wall_clock(tmp_path):
     # 归档目录写的是 260729，界面上的日期必须是同一天。
     assert (parsed.year, parsed.month, parsed.day) == (2026, 7, 29)
     assert (parsed.hour, parsed.minute) == (2, 9)
-    assert parsed.utcoffset() == datetime.now().astimezone().utcoffset()
+    # 偏移按录音那一刻算（夏令时与否看的是 7 月 29 日，不是跑用例的今天）。
+    assert parsed.utcoffset() == datetime(2026, 7, 29, 2, 9, 3).astimezone().utcoffset()
 
 
 def test_rescan_repairs_a_recording_date_that_was_stored_as_utc(tmp_path):
@@ -2186,7 +2187,7 @@ def test_rescan_repairs_a_recording_date_that_was_stored_as_utc(tmp_path):
         "recording_date"
     ]
     assert datetime.fromisoformat(recorded_at).utcoffset() == (
-        datetime.now().astimezone().utcoffset()
+        datetime(2026, 7, 29, 2, 9, 3).astimezone().utcoffset()
     )
 
 
