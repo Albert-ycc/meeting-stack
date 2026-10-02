@@ -94,6 +94,40 @@ Google Fonts CDN**，否则断网时字体掉回系统默认。
 
 普通局域网不开放端口。启用远程访问时，Tailscale ACL 是设备身份边界，应用不另建账号。
 
+## 前端开发
+
+`cd frontend && npm run dev` 起 127.0.0.1:5173 的开发服务器，把 `/api` 代理给一份后端。代理目标读
+`MEETING_WORKBENCH_PORT`，和后端是同一个变量名，同一组变量起前后端就对得上；没设时指向 8865，不是生产的
+8765：忘了起后端只会请求失败，不会读到生产数据。显式设成 8765 也照样连，但启动时会打一行红色警告。
+
+后端不设环境变量时，数据目录、归档根、任务队列库这些默认都指向生产在用的位置（`~/.meeting-workbench`、
+`~/MeetingArchive`、`~/.meeting-relay`）。开发用的后端要全部指到自己的目录再起：
+
+```bash
+DEV=$HOME/workbench-dev && mkdir -p $DEV/{data,archive,staging,browse,home}
+cd workbench
+HOME=$DEV/home \
+MEETING_WORKBENCH_PORT=8865 \
+MEETING_WORKBENCH_DATA_DIR=$DEV/data \
+MEETING_WORKBENCH_ARCHIVE_ROOT=$DEV/archive \
+MEETING_WORKBENCH_STAGING_ROOT=$DEV/staging \
+MEETING_WORKBENCH_MATERIAL_BROWSE_ROOT=$DEV/browse \
+MEETING_WORKBENCH_RELAY_JOBS_DB=$DEV/data/relay-jobs.sqlite3 \
+MEETING_WORKBENCH_CSRF_COOKIE_NAME=meeting_workbench_dev_csrf \
+.venv/bin/meeting-workbench serve
+```
+
+另开一个终端 `cd workbench/frontend && npm run dev`，打开 http://127.0.0.1:5173。后端换了端口，前端传同一个值：
+`MEETING_WORKBENCH_PORT=8866 npm run dev`。
+
+- `HOME` 指到空目录：别的按 `~` 找的默认位置（AI 密钥文件、通知日志之类）都落进这个空目录，读不到生产那份。
+- `CSRF_COOKIE_NAME` 要换：浏览器的 cookie 不分端口，不换的话，开发实例和开着的生产页面会来回覆盖对方的 CSRF cookie。
+- 在 worktree 里没有 `.venv` 时借主仓库的：`PYTHONPATH=<worktree>/workbench/backend <主仓库>/workbench/.venv/bin/python -m meeting_workbench.cli serve`，
+  不带 `PYTHONPATH` 导入的会是主仓库的代码。
+- 开发服务器上点写操作会得到 403「跨源写入已拒绝」：Vite 的代理把请求的 Host 改成了后端地址，和浏览器带的
+  Origin 对不上，被后端的跨源校验挡下。开发服务器适合调样式和只读页面；要点写操作，先 `npm run build`，
+  直接打开后端自己的端口（后端服务 `frontend/dist`）。
+
 ## 常用维护
 
 ```bash
