@@ -56,14 +56,19 @@ export function MaterialRootPickerModal({
   // 只做选择的弹窗：点背景关
   const backdrop = useBackdropDismiss(close, busy);
 
+  // 进下一级还没回来就点了返回上一级：只认最后一次点的，慢回来的旧请求丢掉
+  const loadSeqRef = useRef(0);
   const load = async (path?: string) => {
+    const seq = ++loadSeqRef.current;
     setState("loading");
     setSelected(null);
     try {
       const result = await apiClient.browseMaterials(path);
+      if (seq !== loadSeqRef.current) return;
       setPayload(result);
       setState("ready");
     } catch (reason) {
+      if (seq !== loadSeqRef.current) return;
       setLoadError(reason instanceof ApiError ? reason.message : "目录读取失败");
       setState("error");
     }

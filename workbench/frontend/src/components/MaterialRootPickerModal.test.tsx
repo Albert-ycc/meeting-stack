@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -189,5 +189,26 @@ describe("MaterialRootPickerModal", () => {
 
     await userEvent.click(await screen.findByText("蓝鲸云"));
     expect(screen.getByRole("button", { name: "处理中…" })).toBeDisabled();
+  });
+  it("进下一级还没回来就点「返回上一级」：慢回来的那一级不盖掉后点的", async () => {
+    let resolveDeeper!: (value: MaterialBrowsePayload) => void;
+    const browseMaterials = vi
+      .fn()
+      .mockResolvedValueOnce(payloadAt("/Volumes/资料盘/蓝鲸云", "/Volumes/资料盘", ["星河随访系统"]))
+      .mockReturnValueOnce(new Promise<MaterialBrowsePayload>((resolve) => (resolveDeeper = resolve)))
+      .mockResolvedValueOnce(payloadAt("/Volumes/资料盘", null, ["蓝鲸云", "黄金"]));
+    const apiClient = makeClient({ browseMaterials } as Partial<ApiClient>);
+    render(<MaterialRootPickerModal apiClient={apiClient} onClose={vi.fn()} onConfirm={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "进入 星河随访系统" }));
+    await userEvent.click(screen.getByRole("button", { name: "‹ 返回上一级" }));
+    expect(await screen.findByText("黄金")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveDeeper(payloadAt("/Volumes/资料盘/蓝鲸云/星河随访系统", "/Volumes/资料盘/蓝鲸云", ["随访表单"]));
+    });
+
+    expect(screen.getByText("黄金")).toBeInTheDocument();
+    expect(screen.queryByText("随访表单")).toBeNull();
   });
 });
