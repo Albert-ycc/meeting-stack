@@ -45,7 +45,10 @@ import { RelatedMaterials } from "./links/RelatedMaterials";
 interface MeetingDetailPageProps {
   apiClient: ApiClient;
   initialSeekMs: number;
-  /** 从需求池、需求详情点原话时间进来：跳到那一秒并开始放（R02-3、S05-c） */
+  /**
+   * 从需求池、需求详情点原话时间进来：跳到那一秒并开始放（R02-3、S05-c）；时间是 0 也放。
+   * 带了时间锚（initialSeekMs > 0：检索结果、词典「听到」、会议卡片的时间点链接）的打开不用传，总是放。
+   */
   autoplay?: boolean;
   /** 新增页盖在会议页上：停下录音，页面上看不到播放器，接着放就只能取消回去才停得了 */
   covered?: boolean;
@@ -288,10 +291,19 @@ export function MeetingDetailPage({
     viewAtRef.current = Date.now();
     setViewMs(milliseconds);
   }, []);
-  const seekFromTranscript = useCallback((milliseconds: number) => {
-    setViewMs(null);
+  // 点时间 = 跳到那里并开始放（页面上所有的时间锚都一样）。录音还没读到时播放器先记着，读到、跳到那一秒以后再放；
+  // 浏览器不让放（Safari 的自动播放限制）时播放器把拒绝吞掉，安静地停在那个位置
+  const seekAndPlay = useCallback((milliseconds: number) => {
     playerRef.current?.seekTo(milliseconds);
+    playerRef.current?.play();
   }, []);
+  const seekFromTranscript = useCallback(
+    (milliseconds: number) => {
+      setViewMs(null);
+      seekAndPlay(milliseconds);
+    },
+    [seekAndPlay],
+  );
   // 在放时，手动滚动后 4 秒回到播放位置；暂停时停在滚到的地方
   useEffect(() => {
     if (!playing || viewMs === null) return;
@@ -733,7 +745,7 @@ export function MeetingDetailPage({
 
   useEffect(() => {
     if (initialSeekMs > 0) playerRef.current?.seekTo(initialSeekMs);
-    if (autoplay) playerRef.current?.play();
+    if (autoplay || initialSeekMs > 0) playerRef.current?.play();
   }, [initialSeekMs, autoplay]);
 
   useEffect(() => {
@@ -1188,7 +1200,7 @@ export function MeetingDetailPage({
             onOpenRequirement={onOpenRequirement}
             onPlayMeeting={onOpenMeeting}
             onProjectsChanged={onClassificationSaved}
-            onSeek={(milliseconds) => playerRef.current?.seekTo(milliseconds)}
+            onSeek={seekAndPlay}
             projects={projects}
           />
         )}
@@ -1451,10 +1463,10 @@ export function MeetingDetailPage({
                 onGoldDirtyChange={changeGoldDirty}
                 onRetryGold={() => void loadGoldSamples()}
                 onSaveGold={saveGoldSample}
-                onSeek={(milliseconds) => playerRef.current?.seekTo(milliseconds)}
+                onSeek={seekAndPlay}
               />
             ) : candidateState === "ready" ? (
-                <TranscriptPanel currentTimeMs={currentMs} editable={false} onSeek={(milliseconds) => playerRef.current?.seekTo(milliseconds)} segments={candidateSegments} />
+                <TranscriptPanel currentTimeMs={currentMs} editable={false} onSeek={seekAndPlay} segments={candidateSegments} />
             ) : (
               <div className="comparison-empty">
                 <span>{engine === "qwen" ? "Q" : "W"}</span>
@@ -1640,7 +1652,7 @@ export function MeetingDetailPage({
             <MinutesEvidencePanel
               evidence={evidenceVersionId === currentMinutesVersionId ? evidence : null}
               message={evidenceMessage}
-              onSeek={(milliseconds) => playerRef.current?.seekTo(milliseconds)}
+              onSeek={seekAndPlay}
               state={typeof apiClient.minutesEvidence === "function"
                 ? evidenceVersionId === currentMinutesVersionId ? evidenceState : "loading"
                 : "missing"}
