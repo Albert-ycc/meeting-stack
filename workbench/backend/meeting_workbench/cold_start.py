@@ -28,6 +28,10 @@ WEAK_METHODS = ("semantic", "task_majority")
 WEAK_METHOD_LABELS = {"semantic": "内容相近", "task_majority": "任务多数"}
 # 复评要调 LLM，每轮扫描只做几场，免得升级后第一轮扫描卡太久。
 REEVAL_PER_ROUND = 5
+# 同一条复评抛错累计这么多次就不再试，按「保持原样」收口（method=reeval_kept，和没有纪要时同一种状态）。
+# 固定抛错的条目不收口，待复评数永远大于 0，cold_start_done 写不上，每轮扫描还要再试它们一次。
+# 次数记在 project_links.attempts 上，AI 暂时调不通时的重试也记在这一列，两种合起来数。
+REEVAL_MAX_ERRORS = 3
 PUBLIC_SCOPE = "通用"
 GROUPS_EVENT = "glossary_groups_organized"
 GROUPS_UNDONE_EVENT = "glossary_groups_organize_undone"
@@ -102,10 +106,21 @@ def reevaluate_weak(db: Database, linker: ProjectLinker, *, limit: int) -> dict[
                     processed += 1
             except Exception:
                 logger.exception("弱归属复评失败 meeting_id=%s", row["meeting_id"])
+                # 抛满 REEVAL_MAX_ERRORS 次：保持原样，不再算进待复评（和没有纪要时同一种状态）
                 db.execute(
-                    "UPDATE project_links SET attempts=COALESCE(attempts, 0)+1 WHERE id=?",
-                    (row["link_id"],),
+                    """UPDATE project_links
+                          SET attempts=COALESCE(attempts, 0)+1,
+                              method=CASE WHEN COALESCE(attempts, 0)+1 >= ?
+                                          THEN 'reeval_kept' ELSE method END
+                        WHERE id=?""",
+                    (REEVAL_MAX_ERRORS, row["link_id"]),
                 )
+                if int(row["attempts"] or 0) + 1 >= REEVAL_MAX_ERRORS:
+                    logger.warning(
+                        "弱归属复评抛错满 %d 次，保持原样 meeting_id=%s",
+                        REEVAL_MAX_ERRORS,
+                        row["meeting_id"],
+                    )
     remaining = db.query_one(f"SELECT COUNT(*) AS count {_WEAK_SQL}")["count"]
     return {"processed": processed, "remaining": int(remaining)}
 
