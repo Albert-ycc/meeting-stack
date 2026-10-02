@@ -2412,3 +2412,88 @@ def test_cached_sha256_reuses_fingerprint_cache_row_without_rehashing(tmp_path, 
     miss_path.write_bytes(b"never-hashed-before")
     assert importer._cached_sha256(miss_path) == "should-not-be-used"
     assert calls == [miss_path]
+
+
+def _scanned_archive_and_staging(tmp_path):
+    real_archive = tmp_path / "real-archive"
+    real_staging = tmp_path / "real-staging"
+    write_meeting(real_archive, "正式会议", official=True, transcript_text="正式稿内容")
+    write_meeting(real_staging, "staging-copy", official=False, transcript_text="降级稿内容")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=real_archive,
+        staging_root=real_staging,
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        semantic_enabled=False,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    assert ArchiveImporter(db, settings).scan().errors == 0
+    return db, settings, real_archive, real_staging
+
+
+def _artifact_count(db, source_root):
+    return db.query_one("SELECT COUNT(*) AS n FROM artifacts WHERE source_root=?", (source_root,))[
+        "n"
+    ]
+
+
+@pytest.mark.parametrize("side", ["archive", "staging"])
+def test_symlinked_root_is_skipped_by_cleanup_as_well_as_discovery(tmp_path, side):
+    db, settings, real_archive, real_staging = _scanned_archive_and_staging(tmp_path)
+    before = _artifact_count(db, side)
+    assert before > 0
+    link = tmp_path / f"{side}-link"
+    os.symlink(real_archive if side == "archive" else real_staging, link)
+    # 同一份目录，只是配置成指向它的符号链接：发现阶段当它不可用，清理也不能动它的记录。
+    setattr(settings, f"{side}_root", link)
+
+    report = ArchiveImporter(db, settings).scan()
+
+    assert report.errors == 0
+    assert _artifact_count(db, side) == before
+
+
+def test_root_with_no_files_keeps_its_records_and_reports_the_skip(tmp_path):
+    db, settings, real_archive, _real_staging = _scanned_archive_and_staging(tmp_path)
+    before = _artifact_count(db, "archive")
+    # 归档根存在但一个文件都没有（配错目录、盘没挂好留下的空挂载点），不能当成全被删了。
+    empty = tmp_path / "empty-archive"
+    empty.mkdir()
+    settings.archive_root = empty
+
+    report = ArchiveImporter(db, settings).scan()
+
+    assert report.errors == 0
+    assert report.stale_cleanup_skipped == 1
+    assert _artifact_count(db, "archive") == before
+
+
+def test_stale_cleanup_still_removes_a_file_that_is_really_gone(tmp_path):
+    db, settings, real_archive, _real_staging = _scanned_archive_and_staging(tmp_path)
+    gone = real_archive / "正式会议" / "vm-20260101-120000.srt"
+    assert db.query_one("SELECT 1 FROM artifacts WHERE path=?", (str(gone),))
+    gone.unlink()
+
+    report = ArchiveImporter(db, settings).scan()
+
+    assert report.stale_cleanup_skipped == 0
+    assert db.query_one("SELECT 1 FROM artifacts WHERE path=?", (str(gone),)) is None
+
+
+def test_unreadable_subdirectory_counts_as_error_and_keeps_its_records(tmp_path):
+    db, settings, real_archive, _real_staging = _scanned_archive_and_staging(tmp_path)
+    sub = real_archive / "正式会议" / "whisper-ref"
+    sub.mkdir()
+    reference = sub / "vm-20260101-120000.srt"
+    reference.write_text("1\n00:00:02,000 --> 00:00:04,000\n对照\n", encoding="utf-8")
+    ArchiveImporter(db, settings).scan()
+    assert db.query_one("SELECT 1 FROM artifacts WHERE path=?", (str(reference),))
+    os.chmod(sub, 0)  # 外置盘权限抖动 / 访达里误改权限
+    try:
+        report = ArchiveImporter(db, settings).scan()
+    finally:
+        os.chmod(sub, 0o755)
+
+    assert report.errors > 0
+    assert db.query_one("SELECT 1 FROM artifacts WHERE path=?", (str(reference),))

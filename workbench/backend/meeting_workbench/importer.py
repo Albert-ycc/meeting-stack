@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -30,6 +32,7 @@ from .rendering import (
 )
 from .speaker_backfill import apply_speaker_labels_with_connection
 
+logger = logging.getLogger(__name__)
 
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".qta", ".mp4"}
 SUPPORTED_EXTENSIONS = AUDIO_EXTENSIONS | {
@@ -111,6 +114,9 @@ class ScanReport:
     # 说话人补标是降级安全的旁路：没补上不算导入失败，这里只统计不进 errors。
     speaker_backfill_applied: int = 0
     speaker_backfill_skipped: int = 0
+    # 某个根本轮一个文件都没发现、库里却还有它的记录：更像是根配错了或盘没挂好，
+    # 而不是文件真被删光了，这一侧的失效记录本轮不清理，这里记下跳过了几侧。
+    stale_cleanup_skipped: int = 0
 
     def quarantine(self, directory: Path, reason: str) -> None:
         self.quarantined += 1
@@ -143,6 +149,25 @@ def ids_in_text(value: str) -> set[str]:
 def is_degraded(path: Path) -> bool:
     lowered = {part.lower() for part in path.parts}
     return any(marker.lower() in lowered for marker in DEGRADED_MARKERS)
+
+
+def root_available(root: Path) -> bool:
+    """扫描根本轮能不能用。发现和清理必须共用这一个判断。
+
+    符号链接根一律当作不可用（和健康检查、音频巡检同口径）：发现阶段不进去，
+    清理阶段也就不能把这一侧的记录当成「本轮没发现」删掉。
+    """
+    try:
+        return root.is_dir() and not root.is_symlink()
+    except OSError:
+        return False
+
+
+# 每个扫描根管着哪几种 source_root 的记录。
+ROOT_SOURCE_LABELS = {
+    "archive": ("archive", "history", "draft"),
+    "staging": ("staging",),
+}
 
 
 def is_noise(path: Path) -> bool:
@@ -357,20 +382,23 @@ class ArchiveImporter:
 
     def _scan_locked(self) -> ScanReport:
         report = ScanReport()
-        archive_available = (
-            self.settings.archive_root.is_dir() and not self.settings.archive_root.is_symlink()
-        )
+        archive_available = root_available(self.settings.archive_root)
+        walked_roots: set[str] = set()
         bundles: list[SourceBundle] = []
-        try:
-            bundles.extend(
-                self._discover_root(self.settings.staging_root, "staging", 10, report=report)
-            )
-        except RECOVERABLE_SOURCE_ERRORS:
-            report.errors += 1
-        try:
-            bundles.extend(self._discover_archive(report=report))
-        except RECOVERABLE_SOURCE_ERRORS:
-            report.errors += 1
+        if root_available(self.settings.staging_root):
+            try:
+                bundles.extend(
+                    self._discover_root(self.settings.staging_root, "staging", 10, report=report)
+                )
+                walked_roots.add("staging")
+            except RECOVERABLE_SOURCE_ERRORS:
+                report.errors += 1
+        if archive_available:
+            try:
+                bundles.extend(self._discover_archive(report=report))
+                walked_roots.add("archive")
+            except RECOVERABLE_SOURCE_ERRORS:
+                report.errors += 1
         grouped = self._coalesce_bundles(bundles, report=report)
         report.meetings_seen = len(grouped)
         all_bundles = bundles
@@ -389,16 +417,33 @@ class ArchiveImporter:
             except RECOVERABLE_SOURCE_ERRORS:
                 report.errors += 1
         if report.errors == 0:
-            self._cleanup_stale_artifacts(all_bundles, report)
+            self._cleanup_stale_artifacts(all_bundles, report, walked_roots)
         return report
 
-    def _cleanup_stale_artifacts(self, bundles: list[SourceBundle], report: ScanReport) -> None:
+    def _cleanup_stale_artifacts(
+        self, bundles: list[SourceBundle], report: ScanReport, walked_roots: set[str]
+    ) -> None:
         discovered = {str(path) for bundle in bundles for path in bundle.files}
-        available_roots = set()
-        if self.settings.archive_root.is_dir():
-            available_roots.update({"archive", "history", "draft"})
-        if self.settings.staging_root.is_dir():
-            available_roots.add("staging")
+        available_roots: set[str] = set()
+        # 只在本轮真正走过的根里清理；发现阶段没进去的根，它的记录一条都不能动。
+        for root in sorted(walked_roots):
+            labels = ROOT_SOURCE_LABELS[root]
+            found_any = any(bundle.source_root in labels for bundle in bundles)
+            if not found_any:
+                remaining = self.db.query_one(
+                    "SELECT COUNT(*) AS n FROM artifacts WHERE source_root IN (%s)"
+                    % ",".join("?" for _ in labels),
+                    labels,
+                )["n"]
+                if remaining:
+                    report.stale_cleanup_skipped += 1
+                    logger.warning(
+                        "扫描根 %s 本轮一个文件都没发现，库里还有 %d 条记录，跳过失效记录清理",
+                        root,
+                        remaining,
+                    )
+                    continue
+            available_roots.update(labels)
         if not available_roots:
             return
         # 隔离目录本次没被遍历进 discovered，但它的文件仍在磁盘上。若不豁免，
@@ -441,7 +486,7 @@ class ArchiveImporter:
 
     def _discover_archive(self, *, report: ScanReport | None = None) -> list[SourceBundle]:
         root = self.settings.archive_root
-        if not root.exists() or root.is_symlink():
+        if not root_available(root):
             return []
         bundles: list[SourceBundle] = []
         try:
@@ -801,7 +846,7 @@ class ArchiveImporter:
         *,
         report: ScanReport | None = None,
     ) -> list[SourceBundle]:
-        if not root.exists() or root.is_symlink():
+        if not root_available(root):
             return []
         children = []
         for child in sorted(root.iterdir()):
@@ -825,14 +870,23 @@ class ArchiveImporter:
 
     @staticmethod
     def _files_under(directory: Path) -> list[Path]:
+        def walk_failed(error: OSError) -> None:
+            # rglob 会静默跳过读不了的子目录，里面的文件就成了「本轮没发现」，
+            # 清理会把它们的记录删掉。读不了就让整个目录按出错处理，不参与清理。
+            raise error
+
         files = []
-        for path in directory.rglob("*"):
-            if not path.is_file() or is_noise(path):
-                continue
-            suffix = path.suffix.lower()
-            if suffix not in SUPPORTED_EXTENSIONS and not (suffix == "" and "原文" in path.name):
-                continue
-            files.append(path)
+        for current, _dirs, names in os.walk(directory, onerror=walk_failed):
+            for name in names:
+                path = Path(current) / name
+                if not path.is_file() or is_noise(path):
+                    continue
+                suffix = path.suffix.lower()
+                if suffix not in SUPPORTED_EXTENSIONS and not (
+                    suffix == "" and "原文" in path.name
+                ):
+                    continue
+                files.append(path)
         return sorted(files)
 
     def _validated_source_files(self, directory: Path, report: ScanReport | None) -> list[Path]:
