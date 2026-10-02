@@ -1023,6 +1023,7 @@ def _assemble(
 
     requirement_nodes = shown_requirements
     shown_requirement_ids = {item["requirement_id"] for item in shown_requirements}
+    folded_requirement_ids = {item["requirement_id"] for item in hidden_requirements}
     more_requirements = (
         {
             "id": "r:more",
@@ -1150,7 +1151,14 @@ def _assemble(
     for beacon in beacons:
         sources = sorted(
             {
-                _local_end(item, project_id, visible_ids, collapsed_of, shown_requirement_ids)
+                _local_end(
+                    item,
+                    project_id,
+                    visible_ids,
+                    collapsed_of,
+                    shown_requirement_ids,
+                    folded_requirement_ids,
+                )
                 for item in beacon["items"]
             }
             - {None}
@@ -1239,7 +1247,7 @@ def _assemble(
             visible_ids=visible_ids,
             collapsed_of=collapsed_of,
             shown_requirement_ids=shown_requirement_ids,
-            folded_requirement_ids={item["requirement_id"] for item in hidden_requirements},
+            folded_requirement_ids=folded_requirement_ids,
             days=days,
             today=today,
         )
@@ -1414,19 +1422,21 @@ def _ask_edges(
     会或它的折叠组；都没有就不画线（不退到项目节点），文件照样是琥珀色。文件不在图上的线也给，前端
     两端都在时才画（钉住以后就画出来）。"""
     edges: list[dict[str, Any]] = []
-    known_requirements = shown_requirement_ids | folded_requirement_ids
 
     def task_end(row: dict[str, Any]) -> str | None:
-        # 需求不在图上的进行中需求里（结束了、暂停了）就当没有需求，退到任务的会
-        requirement_id = (
-            row["requirement_id"] if row["requirement_id"] in known_requirements else None
-        )
         item = {
-            "requirement_id": requirement_id,
+            "requirement_id": row["requirement_id"],
             "requirement_project_id": row["requirement_project_id"],
             "meeting_id": row["meeting_id"],
         }
-        return _local_end(item, project_id, visible_ids, collapsed_of, shown_requirement_ids)
+        return _local_end(
+            item,
+            project_id,
+            visible_ids,
+            collapsed_of,
+            shown_requirement_ids,
+            folded_requirement_ids,
+        )
 
     # 产出：同一对端点留最新的一条，另给 relation_ids（produced_rows 已按新到旧排）
     produced: dict[tuple[str, int], dict[str, Any]] = {}
@@ -1534,10 +1544,16 @@ def _local_end(
     visible_ids: set[str],
     collapsed_of: dict[str, str],
     shown_requirement_ids: set[str],
+    folded_requirement_ids: set[str],
 ) -> str | None:
-    if item.get("requirement_id") and item.get("requirement_project_id") == project_id:
-        rid = item["requirement_id"]
-        return f"r:{rid}" if rid in shown_requirement_ids else "r:more"
+    """本项目这一端：需求在图上用 r:<id>，折起来用 r:more；需求不在图上的进行中需求里（结束了、暂停了）
+    就当没有需求，退到会（会在别的项目、不在图上时不画线）。"""
+    rid = item.get("requirement_id")
+    if rid and item.get("requirement_project_id") == project_id:
+        if rid in shown_requirement_ids:
+            return f"r:{rid}"
+        if rid in folded_requirement_ids:
+            return "r:more"
     if item.get("meeting_id"):
         return _meeting_node_id(item["meeting_id"], visible_ids, collapsed_of)
     return None

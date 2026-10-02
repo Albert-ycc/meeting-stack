@@ -195,6 +195,33 @@ def test_beacon_task_items_name_the_requirement_they_would_leave(tmp_path):
     assert other["kind"] == "task_elsewhere" and other["requirement_id"] == "r-1"
 
 
+def test_beacon_line_from_a_finished_requirement_falls_back_not_to_r_more(tmp_path):
+    """已完成的需求关联了别的项目的会：信标线不从 r:more 连出去（没折叠时悬空、有折叠时挂错）。"""
+    _client, _settings, db = make_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    add_project(db, "q", "数据中台")
+    add_meeting(db, "m-p", ago=1, project_id="p", origin="manual")
+    add_meeting(db, "m-q", ago=1, project_id="q", origin="manual")
+    add_requirement(db, "r-done", "p", "已完成的需求", status="done")
+    db.execute(
+        "INSERT INTO requirement_meetings(requirement_id, meeting_id, created_at) VALUES ('r-done', 'm-q', ?)",
+        (utc_now(),),
+    )
+
+    def cross_ends(body):
+        return [(edge["from"], edge["to"]) for edge in body["edges"] if edge["kind"] == "cross"]
+
+    body = build(db, "p", window="28d")
+    assert [beacon["id"] for beacon in body["beacons"]] == ["b:q"]
+    assert body["requirements_more"] is None and cross_ends(body) == []
+
+    for index in range(graph.REQUIREMENT_CAP + 1):
+        add_requirement(db, f"r-{index}", "p", f"需求{index}", "P0")
+    body = build(db, "p", window="28d")
+    assert "r-done" not in body["requirements_more"]["requirement_ids"]
+    assert cross_ends(body) == []
+
+
 def test_fulltext_counts_all_spellings_once_and_ignores_window(tmp_path):
     client, _settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
