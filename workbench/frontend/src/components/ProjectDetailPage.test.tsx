@@ -9,9 +9,7 @@ import type {
   MaterialCoverageRoot,
   MaterialIndexRoot,
   ProjectBoard,
-  ProjectMeetingRow,
   RequirementsPayload,
-  RequirementSummary,
 } from "../types";
 
 const baseBoard: ProjectBoard = {
@@ -34,25 +32,6 @@ const EMPTY_REQUIREMENTS: RequirementsPayload = {
   offset: 0,
   counts: { active: 0, done: 0, shelved: 0, all: 0 },
 };
-
-function requirementRow(overrides: Partial<RequirementSummary> = {}): RequirementSummary {
-  return {
-    id: "req-1",
-    project_id: "project-1",
-    project_name: "云图科研用药",
-    project_color: "#2c8d83",
-    title: "北辰仓快递配送",
-    priority: "P0",
-    status: "active",
-    created_at: "2026-09-07T00:00:00Z",
-    updated_at: "2026-09-09T00:00:00Z",
-    open_task_count: 3,
-    meeting_count: 2,
-    latest_meeting_date: "2026-09-09T06:00:00Z",
-    folder_count: 2,
-    ...overrides,
-  };
-}
 
 function client(overrides: Partial<ApiClient> = {}) {
   return {

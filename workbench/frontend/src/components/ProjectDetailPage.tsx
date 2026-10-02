@@ -32,7 +32,6 @@ import { useConfirm } from "./ConfirmDialog";
 import { copyText } from "../clipboard";
 import { NoticeBanner, useNotice } from "./Notice";
 import { ProjectGlossary } from "./ProjectGlossary";
-import { usePersistentState } from "../viewState";
 import { ProjectTimeline } from "./decisions/ProjectTimeline";
 import { ProjectAsk } from "./ask/ProjectAsk";
 import { RecordingsTab } from "./projects/detail/RecordingsTab";
