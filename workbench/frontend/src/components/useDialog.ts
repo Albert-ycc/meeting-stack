@@ -2,7 +2,9 @@ import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type RefObject }
 
 /*
  * 弹窗与抽屉的共用行为。全站约定：
- * - 打开时焦点移进弹窗（优先带 autoFocus 的控件，其次第一个可聚焦元素），Tab 在弹窗内循环；
+ * - 打开时焦点移进弹窗（优先带 autoFocus 的控件，其次第一个可聚焦元素）；Tab、Shift+Tab 全由弹窗自己在可聚焦元素里
+ *   按文档顺序循环，不靠浏览器原生的 Tab（Safari 默认 Tab 不停在按钮上，靠原生的话焦点一下就跑出弹窗）；
+ *   只有日期这类浏览器在里面自己分格走 Tab 的输入框，在格子里的那几下还是交给浏览器；
  * - 关闭后焦点回到打开它的那个按钮；
  * - 弹窗开着时页面本身不滚动；
  * - Esc 关闭（useDialogEscape）：弹窗叠着弹窗时一次只关最上面那层；中文输入法组合输入中的 Esc 只取消候选词，不关弹窗；
@@ -37,6 +39,82 @@ function focusableIn(root: HTMLElement): HTMLElement[] {
   );
 }
 
+/** 日期、时间这类输入框，浏览器自己在里面的几个小格子（年、月、日）之间走 Tab，走完才出输入框，没有接口能知道走到哪一格 */
+const MULTI_STOP_INPUT = new Set(["date", "time", "datetime-local", "month", "week"]);
+
+function isMultiStopInput(element: Element | null): boolean {
+  return element instanceof HTMLInputElement && MULTI_STOP_INPUT.has(element.type);
+}
+
+/**
+ * 弹窗里的 Tab 停靠点：可聚焦元素按文档顺序。单选组和浏览器一样只算一个点：选中的那个，
+ * 没有选中的就取头一个（Shift+Tab 进来取最后一个）。
+ */
+function tabStops(root: HTMLElement, backward: boolean): HTMLElement[] {
+  const all = focusableIn(root);
+  const groups = new Map<string, HTMLInputElement[]>();
+  const groupKey = (radio: HTMLInputElement) => `${radio.form ? "form" : ""}:${radio.name}`;
+  for (const element of all) {
+    if (element instanceof HTMLInputElement && element.type === "radio" && element.name) {
+      const key = groupKey(element);
+      groups.set(key, [...(groups.get(key) ?? []), element]);
+    }
+  }
+  return all.filter((element) => {
+    if (!(element instanceof HTMLInputElement) || element.type !== "radio" || !element.name) return true;
+    const group = groups.get(groupKey(element)) ?? [];
+    return element === (group.find((radio) => radio.checked) ?? (backward ? group[group.length - 1] : group[0]));
+  });
+}
+
+/** 按下 Tab（backward 为 Shift+Tab）后，焦点该去 stops 里的第几个；到头了绕回另一头 */
+function tabDestination(root: HTMLElement, stops: HTMLElement[], backward: boolean): number {
+  const active = document.activeElement;
+  const last = stops.length - 1;
+  const at = stops.findIndex((stop) => stop === active);
+  if (at >= 0) return (at + (backward ? -1 : 1) + stops.length) % stops.length;
+  if (active && active !== root && root.contains(active)) {
+    // 焦点在弹窗里一个不算停靠点的元素上（tabindex=-1 的行）：从它在页面里的位置往后（往前）找最近的
+    let found = -1;
+    if (backward) {
+      for (let i = last; i >= 0 && found < 0; i -= 1) {
+        if (active.compareDocumentPosition(stops[i]) & Node.DOCUMENT_POSITION_PRECEDING) found = i;
+      }
+    } else {
+      found = stops.findIndex((stop) => active.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    if (found >= 0) return found;
+  }
+  return backward ? last : 0;
+}
+
+// 浏览器里 Tab 进这些输入框会把里面的字全选（以前点过、光标停在中间也一样），.focus() 只会还原上次的光标
+const SELECT_ON_TAB = new Set(["text", "search", "url", "tel", "password", "email", "number"]);
+
+/** 从 start 起往前（往后）找第一个聚焦得了的停靠点：个别元素聚焦不了（禁用的 fieldset 里、display:none 的），焦点没动就试下一个，不卡在原地 */
+function focusFrom(stops: HTMLElement[], start: number, backward: boolean) {
+  const before = document.activeElement;
+  for (let step = 0; step < stops.length; step += 1) {
+    const target = stops[(((start + (backward ? -step : step)) % stops.length) + stops.length) % stops.length];
+    target.focus();
+    if (document.activeElement !== before) {
+      if (target instanceof HTMLInputElement && SELECT_ON_TAB.has(target.type)) target.select();
+      return;
+    }
+  }
+}
+
+/**
+ * 日期输入框交给浏览器在年月日几格之间走 Tab 时，把走出去以后该落的那个停靠点临时挂上 tabindex=0（下个 tick 摘掉）：
+ * Safari 默认 Tab 不停在按钮上，没有它，走完最后一格焦点就越过弹窗里的按钮、跑出页面；带了 tabindex 的元素，
+ * 各家浏览器的 Tab 都会停。Chromium、Firefox 本来就停，多挂一下没有影响。
+ */
+function lendTabStop(target: HTMLElement) {
+  if (target.hasAttribute("tabindex")) return;
+  target.setAttribute("tabindex", "0");
+  window.setTimeout(() => target.removeAttribute("tabindex"), 0);
+}
+
 export function useDialogFocus(ref: RefObject<HTMLElement | null>) {
   useEffect(() => {
     const root = ref.current;
@@ -64,22 +142,29 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>) {
     });
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Tab" || dialogStack[dialogStack.length - 1] !== root) return;
-      const items = focusableIn(root);
-      if (items.length === 0) {
+      // Ctrl/Cmd+Tab 是切标签页；别人已经拦下的 Tab（自己管焦点的控件）和输入法组合中的 Tab 也不管
+      if (event.key !== "Tab" || event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey) return;
+      if (dialogStack[dialogStack.length - 1] !== root) return;
+      const stops = tabStops(root, event.shiftKey);
+      if (stops.length === 0) {
         event.preventDefault();
         return;
       }
-      const first = items[0];
-      const last = items[items.length - 1];
       const active = document.activeElement;
-      if (event.shiftKey && (active === first || !root.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (active === last || !root.contains(active))) {
-        event.preventDefault();
-        first.focus();
+      const at = stops.findIndex((stop) => stop === active);
+      const destination = tabDestination(root, stops, event.shiftKey);
+      // 日期这类输入框里有好几格，没有接口能知道走到哪一格，下面两种情形交给浏览器：
+      // 1. 焦点就在日期框里：它还没走完格子，由浏览器走；它正好是弹窗里第一个 / 最后一个时才由我们接管，不让焦点从弹窗漏出去
+      // 2. 倒着走、前一个正好是日期框（没有绕回）：浏览器落在它的最后一格，.focus() 落的是第一格
+      const leaveToBrowser =
+        (isMultiStopInput(active) && at !== (event.shiftKey ? 0 : stops.length - 1)) ||
+        (event.shiftKey && at >= 0 && destination < at && isMultiStopInput(stops[destination]));
+      if (leaveToBrowser) {
+        if (!isMultiStopInput(stops[destination])) lendTabStop(stops[destination]);
+        return;
       }
+      event.preventDefault();
+      focusFrom(stops, destination, event.shiftKey);
     };
     document.addEventListener("keydown", onKeyDown);
 
