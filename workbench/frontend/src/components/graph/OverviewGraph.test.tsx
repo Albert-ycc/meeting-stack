@@ -237,6 +237,18 @@ describe("OverviewGraph", () => {
     expect(await screen.findByText("已建成项目『云图看板』，挂上了 /Volumes/资料盘/项目/云图看板")).toBeInTheDocument();
   });
 
+  it("聚焦过的文件夹被藏起以后，这一列的 Tab 停靠点退回到剩下的第一个", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "没挂到项目的文件夹：旧资料" }));
+    await userEvent.click(within(await panel()).getByRole("button", { name: "不是项目" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "没挂到项目的文件夹：旧资料" })).not.toBeInTheDocument(),
+    );
+    const column = screen.getByRole("group", { name: "没挂到项目的文件夹" });
+    const stops = Array.from(column.querySelectorAll<HTMLElement>("[tabindex]")).filter((element) => element.tabIndex === 0);
+    expect(stops).toHaveLength(1);
+  });
+
   it("深链：选中的岛打开面板；折起来的项目选中「其余 N 个项目」；不在图上的说一声", async () => {
     const apiClient = makeClient(
       overviewPayload({ islands_more: { count: 2, project_ids: ["x1", "x2"] } }),

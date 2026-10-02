@@ -476,7 +476,12 @@ export function GraphCanvas({
   };
 
   const tabIndexFor = (node: LaidNode) => {
-    const chosen = active[node.direction] ?? layout.nodes.find((item) => item.direction === node.direction)?.id;
+    // 记下的节点可能已经不在图上了（作答、拖走、残影到期），这时退回这一侧的第一个，免得整侧 Tab 不进去
+    const remembered = active[node.direction];
+    const chosen =
+      remembered && layout.byId.has(remembered)
+        ? remembered
+        : layout.nodes.find((item) => item.direction === node.direction)?.id;
     return chosen === node.id ? 0 : -1;
   };
 

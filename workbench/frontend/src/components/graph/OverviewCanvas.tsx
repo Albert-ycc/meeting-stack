@@ -190,7 +190,12 @@ export function OverviewCanvas({
 
   // 每个区一个 Tab 停靠点，区里用方向键走
   const tabIndexFor = (node: OverviewNode) => {
-    const chosen = active[node.region] ?? focusable.find((item) => item.region === node.region)?.id;
+    // 记下的节点可能已经藏起来了（认领了、标成不是项目），这时退回这个区的第一个
+    const remembered = active[node.region];
+    const chosen =
+      remembered && focusable.some((item) => item.id === remembered)
+        ? remembered
+        : focusable.find((item) => item.region === node.region)?.id;
     return chosen === node.id ? 0 : -1;
   };
 

@@ -203,6 +203,18 @@ describe("ProjectGraph", () => {
     expect(await screen.findByText("已撤销刚才的改动")).toBeInTheDocument();
   });
 
+  it("聚焦过的门口的会作答后从图上消失，会议这一侧的 Tab 停靠点退回到剩下的第一个", async () => {
+    const graph = vi.fn().mockResolvedValueOnce(withDoorstep()).mockResolvedValue(payload());
+    render(<Harness apiClient={makeClient(payload(), { graph })} />);
+    const door = await screen.findByRole("button", { name: "可能是这个项目的会：门口的会" });
+    act(() => door.focus());
+    fireEvent.click(screen.getByRole("button", { name: "都不是" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "可能是这个项目的会：门口的会" })).toBeNull());
+    const left = screen.getByRole("group", { name: "会议" });
+    const stops = Array.from(left.querySelectorAll<HTMLElement>("[data-node-id]")).filter((element) => element.tabIndex === 0);
+    expect(stops).toHaveLength(1);
+  });
+
   it("门口的［都不是］把会标成不归项目，［归 另一个］归到那个项目", async () => {
     const apiClient = makeClient(withDoorstep());
     render(<Harness apiClient={apiClient} />);
