@@ -36,7 +36,11 @@ OWNER_OPEN_ID = "ou_<你的 open_id>"  # 只有这个用户的操作会被处理
 CHAT_ID = "oc_<目标群 chat_id>"  # 任务跟进群
 BASE = "http://127.0.0.1:8765"  # 声档
 HOME = Path.home()
-EVENTS_DIR = HOME / ".meeting-workbench" / "card-events"
+# 事件目录可用 MEETING_STACK_CARD_EVENTS_DIR 覆盖，不设时用默认目录
+EVENTS_DIR = Path(
+    os.getenv("MEETING_STACK_CARD_EVENTS_DIR", "").strip()
+    or HOME / ".meeting-workbench" / "card-events"
+).expanduser()
 PROCESSED_DIR = EVENTS_DIR / "processed"
 SEEN_FILE = HOME / ".meeting-workbench" / "card-events-seen.json"
 LOG_FILE = HOME / ".meeting-workbench" / "logs" / "card-listener.log"

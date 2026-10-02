@@ -30,7 +30,11 @@ from cards import build_status_card  # 与本目录 cards.py 同放
 OWNER_OPEN_ID = "ou_<你的 open_id>"  # 只有这个用户的操作会被处理
 CHAT_ID = "oc_<目标群 chat_id>"
 WORKBENCH_BASE = "http://127.0.0.1:8765"  # 工作台地址
-EVENTS_DIR = Path.home() / ".meeting-stack" / "card-events"
+# 事件目录可用 MEETING_STACK_CARD_EVENTS_DIR 覆盖，不设时用默认目录
+EVENTS_DIR = Path(
+    os.getenv("MEETING_STACK_CARD_EVENTS_DIR", "").strip()
+    or Path.home() / ".meeting-stack" / "card-events"
+).expanduser()
 PROCESSED_DIR = EVENTS_DIR / "processed"
 SEEN_FILE = Path.home() / ".meeting-stack" / "card-events-seen.json"
 LOG_FILE = Path.home() / ".meeting-stack" / "logs" / "card-listener.log"

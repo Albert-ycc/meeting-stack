@@ -49,12 +49,13 @@ Voice Memos 桥接只是众多入口之一，任何来源的音频文件落进�
 | `MEETING_RELAY_LARK_LOG_FILE` | `~/Library/Logs/meeting-relay-notify.log` | 通知发送日志 |
 | `MEETING_RELAY_GLOSSARY_SNAPSHOT` | `~/.meeting-workbench/glossary-snapshot.json` | 工作台写的词典快照，出纪要前按这场会挑词 |
 
-状态文件都在 `~/.meeting-relay/`：
+状态文件都在 `MEETING_RELAY_STATE_DIR`（默认 `~/.meeting-relay/`）：
 
 - `processed.txt` 已处理录音清单（防重复处理）
 - `last_meeting.json` 最近一次派单记录（同场会连续分段合并检测用）
 - `prompt-default.txt` 转写词典模板（作为 ASR 的 initial_prompt，可持续迭代）
-- `hotword-prompts/<job_id>.txt` 单场任务的热词快照（最多 20 词）
+- `hotword-prompts/<job_id>.txt` 单场任务的热词快照（最多 20 词）。这一个例外：它跟着任务队列库走，
+  放在 `MEETING_RELAY_JOBS_DB` 所在目录下，只改 `MEETING_RELAY_STATE_DIR` 不会把它挪走
 - `prompts/` 派给 Agent 的任务 prompt 存档
 
 ## 热词
