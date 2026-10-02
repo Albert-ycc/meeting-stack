@@ -80,3 +80,52 @@ def _no_real_llm(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
     yield blocked
     if blocked:
         pytest.fail(f"{NO_REAL_AI}：{blocked[0]}")
+
+
+MACHINE_PROGRAMS = frozenset({"tesseract", "xcode-select", "xcrun", "swiftc", "sysctl"})
+
+
+@pytest.fixture(autouse=True)
+def _no_machine_programs(monkeypatch: pytest.MonkeyPatch):
+    """本机装的认字、编译程序在测试里一律当没装：找程序（PATH、Homebrew 两个目录）找不到，真要起也起不来
+    （抛 FileNotFoundError，和没装时一样）。不然结果随跑它的机器变，Mac 上还会真编译 Vision 程序。
+    测试自己在临时目录里造的假程序照常能起；要假程序的用例照旧自己传 which / run。"""
+    import shutil
+    import subprocess
+    import tempfile
+
+    from meeting_workbench import ocr_engines
+
+    temp_root = os.path.realpath(tempfile.gettempdir())
+
+    def machine_program(name: object) -> bool:
+        text = os.fsdecode(name) if isinstance(name, str | bytes | os.PathLike) else ""
+        if os.path.basename(text) not in MACHINE_PROGRAMS:
+            return False
+        return not os.path.realpath(text).startswith(temp_root + os.sep)
+
+    real_which = shutil.which
+
+    def guarded_which(name, *args, **kwargs):
+        return None if machine_program(name) else real_which(name, *args, **kwargs)
+
+    real_popen = subprocess.Popen
+
+    class GuardedPopen(real_popen):  # type: ignore[misc, valid-type]
+        def __init__(self, args, *rest, **kwargs):
+            argv = [args] if isinstance(args, str | bytes | os.PathLike) else list(args)
+            # 前四个看全：taskpolicy -b <程序>、nice -n 10 <程序>
+            if any(machine_program(arg) for arg in argv[:4]):
+                raise FileNotFoundError(f"测试里不起本机程序：{argv[0]}")
+            super().__init__(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", GuardedPopen)
+    monkeypatch.setattr(shutil, "which", guarded_which)
+    monkeypatch.setattr(ocr_engines, "HOMEBREW_BINS", ())
+    # 默认参数在定义时就绑了真的 shutil.which，换掉模块属性挡不住
+    for function in (
+        ocr_engines.find_tool,
+        ocr_engines.probe_tools,
+        ocr_engines.OcrEngines.__init__,
+    ):
+        monkeypatch.setitem(function.__kwdefaults__, "which", guarded_which)

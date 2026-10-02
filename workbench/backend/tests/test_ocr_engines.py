@@ -780,6 +780,9 @@ def test_ocr_engine_command_switches_without_restart(tmp_path, monkeypatch, caps
     assert cli.main(["materials", "ocr-engine", "off"]) == 0
     out = capsys.readouterr().out
     assert "设置：off" in out and "不认字" in out
+    # 测试里本机的 swiftc、tesseract 一律当没装（conftest 挡着），不会真去编译 Vision 程序
+    assert "tesseract：没装" in out and "要等 Vision 程序编译好" in out
+    assert not (tmp_path / "data" / "bin").exists()
     assert cli.main(["materials", "ocr-engine"]) == 0
     assert "设置：off" in capsys.readouterr().out
 
