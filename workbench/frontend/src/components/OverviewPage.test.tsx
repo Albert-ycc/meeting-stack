@@ -1,5 +1,5 @@
-import { act, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, render, screen, within } from "@testing-library/react";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import type { ApiClient } from "../api";
 import type { Job, MeetingSummary, Task } from "../types";
@@ -98,7 +98,11 @@ describe("OverviewPage mobile safety", () => {
     expect(screen.getByText("本地服务全部正常")).toBeInTheDocument();
   });
 
-  it("summarises recent meetings by recording date", async () => {
+  it("本周录音按录音日期数本周的场次和总时长，上周的不算", async () => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame", "performance"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     render(
       <OverviewPage
         {...baseProps({
@@ -124,13 +128,26 @@ describe("OverviewPage mobile safety", () => {
               status: "completed_unreviewed",
               tags: [],
             },
+            {
+              id: "vm-0",
+              title: "上上周的会",
+              // 8 天前一定早于本周一零点
+              recording_date: new Date(Date.now() - 8 * 86_400_000).toISOString(),
+              duration_ms: 1_800_000,
+              status: "completed_unreviewed",
+              tags: [],
+            },
           ],
         })}
       />,
     );
     await act(async () => {});
 
-    expect(screen.getByText("本周录音")).toBeInTheDocument();
+    const week = screen.getByText("本周录音").closest("button")!;
+    expect(within(week).getByText("1 小时 10 分钟")).toBeInTheDocument();
+    // 数字从 0 滚上来（1.1 秒的动画），把动画时钟拨到头再看，不靠真等
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(week.querySelector("strong")).toHaveTextContent(/^2$/);
     expect(screen.getByText("本地服务全部正常")).toBeInTheDocument();
     expect(screen.getByText("协会MDT需求评审")).toBeInTheDocument();
     expect(screen.getAllByText("标题待生成").length).toBeGreaterThan(0);
