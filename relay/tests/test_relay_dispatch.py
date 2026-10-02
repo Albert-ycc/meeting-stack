@@ -1528,10 +1528,14 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 "MEETING_RELAY_JOBS_DB": str(root / "jobs.sqlite3"),
                 "MEETING_RELAY_ARCHIVE_ROOT": str(root / "archive"),
             }):
-                stranded = control.enqueue(first, compute_hash=False)
-                waiting = control.enqueue(second, compute_hash=False)
+                queued = {
+                    control.enqueue(first, compute_hash=False),
+                    control.enqueue(second, compute_hash=False),
+                }
                 # 上一单领走后回写没写进去：任务挂在本进程名下，但本进程已经空着手
-                self.assertEqual(stranded, module._control_claim_next()["job_id"])
+                # （同一毫秒入队的两单谁先被领由 job_id 决定，按实际领到的算）
+                stranded = module._control_claim_next()["job_id"]
+                (waiting,) = queued - {stranded}
                 with patch.object(module, "_agent_pane_available", return_value=True), \
                         patch.object(module, "_control_reconcile_pending_archives", return_value={}), \
                         patch.object(module, "_control_reconcile_codex_handoffs", return_value=0), \
@@ -1653,10 +1657,13 @@ class ControlDbLockTests(unittest.TestCase):
         self.assertNotIn("这段录音没能处理完", self.notifications)
 
     def test_exhausted_lock_does_not_fail_job_and_next_round_frees_queue(self):
-        job_id = self.control.enqueue(self.audio, compute_hash=False)
-        waiting = self.control.enqueue(self.second, compute_hash=False)
+        queued = {
+            self.control.enqueue(self.audio, compute_hash=False),
+            self.control.enqueue(self.second, compute_hash=False),
+        }
         claim = self.module._control_claim_next()
-        self.assertEqual(job_id, claim["job_id"])
+        job_id = claim["job_id"]
+        (waiting,) = queued - {job_id}
         with patch.object(
             self.control,
             "record_stage",
@@ -1677,9 +1684,10 @@ class ControlDbLockTests(unittest.TestCase):
         self.assertEqual(waiting, process.call_args.args[0]["job_id"])
 
     def test_dispatch_record_blocked_by_lock_is_written_next_round_not_reclaimed(self):
-        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        self.control.enqueue(self.audio, compute_hash=False)
         self.control.enqueue(self.second, compute_hash=False)
         claim = self.module._control_claim_next()
+        job_id = claim["job_id"]
         original = self.control.record_codex_dispatched
         with patch.object(
             self.control,
@@ -1819,6 +1827,76 @@ class ControlDbLockTests(unittest.TestCase):
         )
 
         self.assertEqual("interrupted", self.control.status(job_id)["status"])
+
+
+    def test_single_engine_config_fails_before_transcribing_with_readable_code(self):
+        for engine in ("whisper", "funasr"):
+            with self.subTest(engine=engine):
+                audio = self.root / f"vm-20261001-12000{len(engine)}-ENG.m4a"
+                audio.write_bytes(engine.encode())
+                job_id = self.control.enqueue(audio, compute_hash=False)
+                claim = self.module._control_claim_next()
+                self.notifications.clear()
+                with patch.dict(os.environ, {"TRANSCRIBE_ENGINE": engine}):
+                    result = self._process(
+                        claim,
+                        transcribe=patch.object(
+                            self.module, "transcribe", side_effect=AssertionError("不该开跑")
+                        ),
+                    )
+
+                self.assertFalse(result)
+                status = self.control.status(job_id)
+                self.assertEqual("failed", status["status"])
+                self.assertEqual(
+                    f"transcribe_engine_unsupported:{engine}", status["last_error"]
+                )
+                self.assertEqual(["转写引擎配置不支持"], self.notifications)
+
+    def test_funasr_missing_fallback_fails_as_funasr_unavailable(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        claim = self.module._control_claim_next()
+
+        result = self._process(
+            claim,
+            transcribe=patch.object(
+                self.module,
+                "transcribe",
+                side_effect=self.module.FunasrUnavailableError(
+                    ["main_transcript_spk", "main_transcript_funasr_json"]
+                ),
+            ),
+        )
+
+        self.assertFalse(result)
+        status = self.control.status(job_id)
+        self.assertEqual("failed", status["status"])
+        self.assertEqual("funasr_unavailable", status["last_error"])
+        self.assertEqual(["FunASR 转写环境缺失"], self.notifications)
+
+    def test_transcribe_reports_funasr_unavailable_when_only_whisper_output_exists(self):
+        module = self.module
+        module.PRODUCTS_DIR = self.root / "products"
+        module.DEFAULT_PROMPT_FILE = self.root / "missing-prompt.txt"
+        script = self.root / "transcribe.sh"
+        script.write_text("#!/bin/bash\n", encoding="utf-8")
+
+        def whisper_fallback(command, **kwargs):
+            work = module.PRODUCTS_DIR / self.audio.stem / self.audio.stem
+            work.mkdir(parents=True, exist_ok=True)
+            (work / f"{self.audio.stem}.txt").write_text("whisper 稿", encoding="utf-8")
+            (work / f"{self.audio.stem}.srt").write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nwhisper 稿\n", encoding="utf-8"
+            )
+            (work / "funasr.log").write_text("WARN: FunASR 环境缺失，回落 whisper 引擎", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(module.subprocess, "run", side_effect=whisper_fallback):
+            with self.assertRaises(module.FunasrUnavailableError) as caught:
+                module.transcribe(self.audio, script=script)
+
+        self.assertEqual("funasr_unavailable", str(caught.exception))
+        self.assertIsInstance(caught.exception, module.MainTranscriptBundleError)
 
 
 class InboxRescanTests(unittest.TestCase):

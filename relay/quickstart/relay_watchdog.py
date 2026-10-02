@@ -26,6 +26,7 @@ import hashlib
 import importlib.util
 import logging
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -645,6 +646,14 @@ class MainTranscriptBundleError(RuntimeError):
         )
 
 
+class FunasrUnavailableError(MainTranscriptBundleError):
+    """主稿出来了但 FunASR 的分说话人稿和原始 JSON 都没有：transcribe.sh 因 FunASR 环境缺失回落了 Whisper。"""
+
+    def __init__(self, errors: list[str]):
+        super().__init__(errors)
+        RuntimeError.__init__(self, "funasr_unavailable")
+
+
 def transcribe(
     audio: Path,
     script: Path | None = None,
@@ -743,6 +752,8 @@ def transcribe(
     bundle_errors = _main_transcript_bundle_errors(txt)
     if bundle_errors:
         log.error("主转写产物校验失败: %s", ",".join(bundle_errors))
+        if {"main_transcript_spk", "main_transcript_funasr_json"} <= set(bundle_errors):
+            raise FunasrUnavailableError(bundle_errors)
         raise MainTranscriptBundleError(bundle_errors)
     return str(txt)
 
@@ -1405,6 +1416,16 @@ _STATUS_MESSAGES: dict[str, tuple[str, str]] = {
         "{clip}在处理途中停下了，原音频还在本机，一个字节都没丢。\n"
         "去声档的失败列表点一次重试；要是连着失败，把下面这行任务号发我。",
     ),
+    "engine_unsupported": (
+        "转写引擎配置不支持",
+        "{clip}没有开始转写：当前只支持双引擎（TRANSCRIBE_ENGINE=observe，或不设）。\n"
+        "whisper / funasr 单引擎模式出的稿发布不了。改回 observe 后在声档里点重试。",
+    ),
+    "funasr_unavailable": (
+        "FunASR 转写环境缺失",
+        "{clip}转写时找不到 FunASR 环境，只回落出了 Whisper 稿，出不了能发布的纪要。\n"
+        "原音频还在本机。装好 FunASR（或检查 transcribe.sh 里的路径）后在声档里点重试。",
+    ),
     "deduplicated": (
         "这段录音跟已有的重复了",
         "库里已经有同一场录音，这次不重复转写，也不重复占额度。",
@@ -1421,7 +1442,7 @@ _STATUS_MESSAGES: dict[str, tuple[str, str]] = {
     ),
 }
 # 这些状态多半要我一起排查，附任务号方便定位；顺利的时候没人想看编号。
-_TROUBLESHOOT_STATUSES = {"failed"}
+_TROUBLESHOOT_STATUSES = {"failed", "engine_unsupported", "funasr_unavailable"}
 
 
 def _status_message(status: str, duration_min: float | None) -> tuple[str, str]:
@@ -1805,6 +1826,23 @@ def process_controlled_claim(claim: dict) -> bool:
 
     try:
         needs_transcription = start_stage in {"stabilizing", "transcribing"}
+        transcribe_engine = os.getenv("TRANSCRIBE_ENGINE", "").strip() or "observe"
+        if needs_transcription and transcribe_engine != "observe":
+            # 交接包和发布校验只认双引擎产物：单引擎跑完也发布不了，开跑前就说清楚
+            engine_code = (
+                transcribe_engine
+                if re.fullmatch(r"[a-z0-9_-]{1,32}", transcribe_engine)
+                else "invalid"
+            )
+            _control_fail(
+                job_id,
+                current_stage,
+                f"transcribe_engine_unsupported:{engine_code}",
+                expected_attempt=attempt_no,
+                expected_worker=worker_id,
+            )
+            notify_workbench_status(job_id, "engine_unsupported")
+            return False
         runtime_audio = run_blocking(
             lambda: _job_audio_path(
                 audio,
@@ -1895,6 +1933,7 @@ def process_controlled_claim(claim: dict) -> bool:
                 branch = "工作台录音 · FunASR + Whisper 双跑"
             log.info("任务 %s（%.1f 分钟）→ %s", job_id, duration_min, branch)
             transcription_error = None
+            failure_notice = "failed"
             try:
                 txt_path = transcribe(
                     runtime_audio,
@@ -1920,6 +1959,8 @@ def process_controlled_claim(claim: dict) -> bool:
             except MainTranscriptBundleError as exc:
                 txt_path = None
                 transcription_error = str(exc)
+                if isinstance(exc, FunasrUnavailableError):
+                    failure_notice = "funasr_unavailable"
             if not txt_path:
                 _control_fail(
                     job_id,
@@ -1928,7 +1969,7 @@ def process_controlled_claim(claim: dict) -> bool:
                     expected_attempt=attempt_no,
                     expected_worker=worker_id,
                 )
-                notify_workbench_status(job_id, "failed", duration_min)
+                notify_workbench_status(job_id, failure_notice, duration_min)
                 mark_processed(audio)
                 return False
             products_subdir = PRODUCTS_DIR / audio.stem / audio.stem
