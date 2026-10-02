@@ -2,7 +2,7 @@
 
 import os
 import time
-from datetime import date
+from datetime import timedelta
 
 import pytest
 from starlette.testclient import TestClient
@@ -18,6 +18,7 @@ from .test_graph import (
     add_term,
     build,
     make_db,
+    stop_clock,
 )
 from .test_tasks_api import write_headers
 
@@ -157,17 +158,18 @@ def test_wide_quotes_reach_twenty_seconds_each_side(tmp_path):
     assert [seg["text"] for seg in wide["quotes"][0]["segments"]] == ["前面", "锚点", "后面"]
 
 
-def test_moved_out_carries_date_for_the_ghost_slot(tmp_path):
+def test_moved_out_carries_date_for_the_ghost_slot(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, _settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
     add_project(db, "q", "数据中台")
-    add_meeting(db, "m-1", ago=3, project_id="p", origin="ai", today=date.today())
+    add_meeting(db, "m-1", ago=3, project_id="p", origin="ai", today=today)
     client.patch("/api/meetings/m-1", json={"project_id": "q"}, headers=write_headers(client))
 
     moved = client.get("/api/graph/projects/p").json()["moved_out"][0]
 
     assert moved["age_days"] == 3
-    assert moved["date"] == (date.today().fromordinal(date.today().toordinal() - 3)).isoformat()
+    assert moved["date"] == (today - timedelta(days=3)).isoformat()
 
 
 def test_beacon_task_items_name_the_requirement_they_would_leave(tmp_path):
@@ -394,12 +396,13 @@ def test_reveal_command_selects_the_file_on_macos(monkeypatch, tmp_path):
     assert calls == [["open", "-R", str(tmp_path)]]
 
 
-def test_drag_preview_counts_match_what_the_move_does(tmp_path):
+def test_drag_preview_counts_match_what_the_move_does(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, _settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
     add_project(db, "q", "数据中台")
     add_requirement(db, "r-1", "p", "白名单运营后台")
-    add_meeting(db, "m-1", ago=0, project_id="p", origin="manual", today=date.today())
+    add_meeting(db, "m-1", ago=0, project_id="p", origin="manual", today=today)
     add_task(db, "t-plain", meeting_id="m-1", project_id="p", status="confirmed")
     add_task(db, "t-draft", meeting_id="m-1", project_id=None)
     add_task(db, "t-done", meeting_id="m-1", project_id="p", status="done")

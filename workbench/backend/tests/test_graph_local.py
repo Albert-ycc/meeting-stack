@@ -2,14 +2,12 @@
 语句数、相关只在打开时给；来龙去脉时间单调、每边最多 3 步、级别、包含关系不算步、不走相关和在问的建议；
 错误码、只有 GET、会议和决议节点的 audio_url。"""
 
-from datetime import date
-
 from meeting_workbench import graph, graph_local
 from meeting_workbench.db import Database, utc_now
 
 from .helpers import count_reads
 from .test_file_mentions import add_file
-from .test_graph import TODAY, add_meeting, add_requirement, add_task
+from .test_graph import TODAY, add_meeting, add_requirement, add_task, stop_clock
 from .test_relation_read import literal
 from .test_relations import keyed, setup, system_row, upsert
 from .test_tasks_api import make_client, write_headers
@@ -450,7 +448,8 @@ def test_trace_of_a_moved_or_gone_file_keeps_the_lines_on_its_old_id(tmp_path):
     assert "m:m-a" in body["chain"]
 
 
-def test_endpoints_are_get_only_and_speak_plainly(tmp_path):
+def test_endpoints_are_get_only_and_speak_plainly(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, settings = make_client(tmp_path)
     db = Database(settings.database_path)
     db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', ?)", (utc_now(),))
@@ -458,8 +457,8 @@ def test_endpoints_are_get_only_and_speak_plainly(tmp_path):
         "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, ?)",
         (str(tmp_path / "云图AI"), utc_now()),
     )
-    add_meeting(db, "m", ago=1, project_id="p", today=date.today())
-    add_meeting(db, "m-free", ago=1, today=date.today())
+    add_meeting(db, "m", ago=1, project_id="p", today=today)
+    add_meeting(db, "m-free", ago=1, today=today)
     quote = add_file(db, root_id, "报价单.xlsx")
     keyed(db, quote, "k")
     literal(db, "m", "报价单", quote)

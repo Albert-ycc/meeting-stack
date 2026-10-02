@@ -2,7 +2,7 @@
 
 import json
 import time
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time as clock, timedelta
 
 
 from meeting_workbench import graph
@@ -16,6 +16,20 @@ TODAY = date(2026, 9, 26)
 
 def days_ago(n, today=TODAY):
     return f"{(today - timedelta(days=n)).isoformat()}T10:00:00"
+
+
+def stop_clock(monkeypatch):
+    """经路由的用例：路由自己取「今天」。把那几处的时钟停在此刻，用例造数据和路由用的是同一天，跑过午夜也不差一天。"""
+    moment = datetime.now()
+
+    class Stopped(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment.astimezone(tz) if tz is not None else moment
+
+    for module in ("main", "graph", "graph_local", "relation_read"):
+        monkeypatch.setattr(f"meeting_workbench.{module}.datetime", Stopped)
+    return moment.date()
 
 
 def add_project(db, project_id, name, color="#2c8d83"):
@@ -125,9 +139,18 @@ def add_term(db, term_id, term, project_id, *, is_cue=1):
 
 
 def add_requirement(
-    db, requirement_id, project_id, title, priority="P1", *, updated_ago=1, status="active"
+    db,
+    requirement_id,
+    project_id,
+    title,
+    priority="P1",
+    *,
+    updated_ago=1,
+    status="active",
+    today=TODAY,
 ):
-    stamp = (datetime.now(UTC) - timedelta(days=updated_ago)).isoformat()
+    # 和 add_meeting 一样按注入的今天倒推：图按 today 算「几周没动静」，两边要同源
+    stamp = datetime.combine(today - timedelta(days=updated_ago), clock(10), tzinfo=UTC).isoformat()
     db.execute(
         """INSERT INTO requirements(id, project_id, title, priority, status, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -409,13 +432,14 @@ def test_sql_statement_count_does_not_grow_with_meetings(tmp_path):
 
 
 def test_graph_endpoint_never_reads_disk(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, _settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
     db.execute(
         "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', '/Volumes/睡着的盘/云图AI', ?)",
         (utc_now(),),
     )
-    add_meeting(db, "m-1", ago=0, project_id="p", origin="manual", today=date.today())
+    add_meeting(db, "m-1", ago=0, project_id="p", origin="manual", today=today)
 
     def sleepy(_path):
         time.sleep(5)
@@ -431,10 +455,11 @@ def test_graph_endpoint_never_reads_disk(tmp_path, monkeypatch):
     assert roots["roots"][0]["state"] == "checking" and roots["checking"] is True
 
 
-def test_etag_changes_after_writes_and_across_days(tmp_path):
+def test_etag_changes_after_writes_and_across_days(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
-    add_meeting(db, "m-1", ago=0, project_id="p", origin="manual", today=date.today())
+    add_meeting(db, "m-1", ago=0, project_id="p", origin="manual", today=today)
 
     first = client.get("/api/graph/projects/p")
     etag = first.headers["etag"]
@@ -457,11 +482,12 @@ def test_etag_changes_after_writes_and_across_days(tmp_path):
     assert client.get("/api/graph/projects/p", params={"window": "3d"}).status_code == 422
 
 
-def test_moved_out_meetings_within_undo_window_are_listed(tmp_path):
+def test_moved_out_meetings_within_undo_window_are_listed(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, _settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
     add_project(db, "q", "数据中台")
-    add_meeting(db, "m-1", ago=0, project_id="p", origin="ai", today=date.today())
+    add_meeting(db, "m-1", ago=0, project_id="p", origin="ai", today=today)
     headers = write_headers(client)
 
     moved = client.patch("/api/meetings/m-1", json={"project_id": "q"}, headers=headers)
@@ -479,10 +505,11 @@ def test_moved_out_meetings_within_undo_window_are_listed(tmp_path):
     assert client.get("/api/graph/projects/p").json()["moved_out"] == []
 
 
-def test_confirmed_meeting_reads_as_confirmed(tmp_path):
+def test_confirmed_meeting_reads_as_confirmed(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, _settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
-    add_meeting(db, "m-1", ago=0, project_id="p", origin="ai", today=date.today())
+    add_meeting(db, "m-1", ago=0, project_id="p", origin="ai", today=today)
     add_link(db, "m-1", project_id="p", evidence=[cue("p", "初审规则", 6)])
     assert client.get("/api/graph/projects/p").json()["meetings"][0]["attribution"]["label"] == (
         "自动 · 提到『初审规则』6 次"
@@ -517,7 +544,8 @@ MINUTES = """# 初审规则沟通
 """
 
 
-def test_meeting_brief_is_small_and_carries_decisions_with_times(tmp_path):
+def test_meeting_brief_is_small_and_carries_decisions_with_times(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, _settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
     add_meeting(
@@ -526,7 +554,7 @@ def test_meeting_brief_is_small_and_carries_decisions_with_times(tmp_path):
         ago=0,
         project_id="p",
         origin="ai",
-        today=date.today(),
+        today=today,
         segments=[(0, "开场"), (5000, "初审规则这次要定下来"), (60000, "长段落" * 400)],
         minutes=MINUTES,
     )
@@ -561,13 +589,14 @@ def test_minutes_without_decision_section_says_so_not_that_nothing_was_decided()
     assert outline["summary"] == "聊了排期。"
 
 
-def test_quotes_return_segments_around_each_anchor(tmp_path):
+def test_quotes_return_segments_around_each_anchor(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, _settings, db = make_db(tmp_path)
     add_meeting(
         db,
         "m-1",
         ago=0,
-        today=date.today(),
+        today=today,
         segments=[(0, "开场"), (10_000, "第二段"), (20_000, "第三段"), (60_000, "很后面")],
     )
 
@@ -580,13 +609,14 @@ def test_quotes_return_segments_around_each_anchor(tmp_path):
     assert body["quotes"][0]["segments"][0]["speaker"] is None
 
 
-def test_cue_term_detail_lists_meetings_and_which_rely_on_it_alone(tmp_path):
+def test_cue_term_detail_lists_meetings_and_which_rely_on_it_alone(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     client, _settings, db = make_db(tmp_path)
     add_project(db, "p", "云图AI")
     add_term(db, "t-rule", "初审规则", "p")
-    add_meeting(db, "m-alone", ago=1, project_id="p", origin="ai", today=date.today())
+    add_meeting(db, "m-alone", ago=1, project_id="p", origin="ai", today=today)
     add_link(db, "m-alone", project_id="p", evidence=[cue("p", "初审规则", 4, term_id="t-rule")])
-    add_meeting(db, "m-both", ago=0, project_id="p", origin="ai", today=date.today())
+    add_meeting(db, "m-both", ago=0, project_id="p", origin="ai", today=today)
     add_link(
         db,
         "m-both",
@@ -596,7 +626,7 @@ def test_cue_term_detail_lists_meetings_and_which_rely_on_it_alone(tmp_path):
             cue("p", "云图", 5, source="name"),
         ],
     )
-    add_meeting(db, "m-other", ago=0, project_id="p", origin="manual", today=date.today())
+    add_meeting(db, "m-other", ago=0, project_id="p", origin="manual", today=today)
 
     body = client.get("/api/glossary/terms/t-rule").json()
 
