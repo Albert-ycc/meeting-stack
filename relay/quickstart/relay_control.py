@@ -1173,7 +1173,9 @@ class RelayControl:
             True if auto_pending_archive is None else bool(auto_pending_archive)
         )
         self.archive_lock_path = Path(
-            archive_lock_path or DEFAULT_ARCHIVE_LOCK_PATH
+            archive_lock_path
+            or os.getenv("MEETING_RELAY_ARCHIVE_LOCK")
+            or DEFAULT_ARCHIVE_LOCK_PATH
         ).expanduser()
         self.products_root = Path(
             os.getenv("MEETING_RELAY_PRODUCTS_ROOT", str(DEFAULT_PRODUCTS_ROOT))

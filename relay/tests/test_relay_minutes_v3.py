@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,26 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTROL_PATH = REPO_ROOT / "quickstart" / "relay_control.py"
+_ARCHIVE_LOCK_ENV = "MEETING_RELAY_ARCHIVE_LOCK"
+_original_archive_lock = None
+_lock_tempdir = None
+
+
+def setUpModule():
+    global _original_archive_lock, _lock_tempdir
+    _original_archive_lock = os.environ.get(_ARCHIVE_LOCK_ENV)
+    _lock_tempdir = tempfile.TemporaryDirectory()
+    # 默认归档锁是生产工作台正在用的 ~/.meeting-workbench/archive.lock，用例不能去抢
+    os.environ[_ARCHIVE_LOCK_ENV] = str(Path(_lock_tempdir.name) / "archive.lock")
+
+
+def tearDownModule():
+    if _original_archive_lock is None:
+        os.environ.pop(_ARCHIVE_LOCK_ENV, None)
+    else:
+        os.environ[_ARCHIVE_LOCK_ENV] = _original_archive_lock
+    if _lock_tempdir is not None:
+        _lock_tempdir.cleanup()
 
 
 def load_control_module():

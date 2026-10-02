@@ -12,22 +12,31 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WATCHDOG_PATH = REPO_ROOT / "quickstart" / "relay_watchdog.py"
 _RUNTIME_DB_ENV = "MEETING_RELAY_JOBS_DB"
+_ARCHIVE_LOCK_ENV = "MEETING_RELAY_ARCHIVE_LOCK"
 _original_runtime_db = None
+_original_archive_lock = None
 _runtime_db_tempdir = None
 
 
 def setUpModule():
-    global _original_runtime_db, _runtime_db_tempdir
+    global _original_runtime_db, _original_archive_lock, _runtime_db_tempdir
     _original_runtime_db = os.environ.get(_RUNTIME_DB_ENV)
+    _original_archive_lock = os.environ.get(_ARCHIVE_LOCK_ENV)
     _runtime_db_tempdir = tempfile.TemporaryDirectory()
     os.environ[_RUNTIME_DB_ENV] = str(Path(_runtime_db_tempdir.name) / "jobs.sqlite3")
+    # 默认归档锁是生产工作台正在用的 ~/.meeting-workbench/archive.lock，用例不能去抢
+    os.environ[_ARCHIVE_LOCK_ENV] = str(Path(_runtime_db_tempdir.name) / "archive.lock")
 
 
 def tearDownModule():
-    if _original_runtime_db is None:
-        os.environ.pop(_RUNTIME_DB_ENV, None)
-    else:
-        os.environ[_RUNTIME_DB_ENV] = _original_runtime_db
+    for name, original in (
+        (_RUNTIME_DB_ENV, _original_runtime_db),
+        (_ARCHIVE_LOCK_ENV, _original_archive_lock),
+    ):
+        if original is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = original
     if _runtime_db_tempdir is not None:
         _runtime_db_tempdir.cleanup()
 

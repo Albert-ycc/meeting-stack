@@ -18,22 +18,31 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTROL_PATH = REPO_ROOT / "quickstart" / "relay_control.py"
 _RUNTIME_DB_ENV = "MEETING_RELAY_JOBS_DB"
+_ARCHIVE_LOCK_ENV = "MEETING_RELAY_ARCHIVE_LOCK"
 _original_runtime_db = None
+_original_archive_lock = None
 _runtime_db_tempdir = None
 
 
 def setUpModule():
-    global _original_runtime_db, _runtime_db_tempdir
+    global _original_runtime_db, _original_archive_lock, _runtime_db_tempdir
     _original_runtime_db = os.environ.get(_RUNTIME_DB_ENV)
+    _original_archive_lock = os.environ.get(_ARCHIVE_LOCK_ENV)
     _runtime_db_tempdir = tempfile.TemporaryDirectory()
     os.environ[_RUNTIME_DB_ENV] = str(Path(_runtime_db_tempdir.name) / "default-jobs.sqlite3")
+    # 默认归档锁是生产工作台正在用的 ~/.meeting-workbench/archive.lock，用例不能去抢
+    os.environ[_ARCHIVE_LOCK_ENV] = str(Path(_runtime_db_tempdir.name) / "archive.lock")
 
 
 def tearDownModule():
-    if _original_runtime_db is None:
-        os.environ.pop(_RUNTIME_DB_ENV, None)
-    else:
-        os.environ[_RUNTIME_DB_ENV] = _original_runtime_db
+    for name, original in (
+        (_RUNTIME_DB_ENV, _original_runtime_db),
+        (_ARCHIVE_LOCK_ENV, _original_archive_lock),
+    ):
+        if original is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = original
     if _runtime_db_tempdir is not None:
         _runtime_db_tempdir.cleanup()
 
@@ -646,6 +655,33 @@ def archive_artifact_hashes(archive: Path) -> dict[str, str]:
         for path in sorted(archive.rglob("*"))
         if path.is_file() and path.name != "workbench-manifest.json"
     }
+
+
+class ArchiveLockIsolationTests(unittest.TestCase):
+    def test_default_archive_lock_is_isolated_from_production_workbench(self):
+        module = load_control_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            control = module.RelayControl(
+                Path(tempdir) / "jobs.sqlite3", archive_root=Path(tempdir)
+            )
+        isolated_root = Path(_runtime_db_tempdir.name).resolve()
+        lock_path = control.archive_lock_path.resolve()
+        self.assertTrue(lock_path.is_relative_to(isolated_root), lock_path)
+        self.assertNotEqual(
+            lock_path,
+            (Path.home() / ".meeting-workbench" / "archive.lock").resolve(),
+        )
+
+    def test_explicit_archive_lock_path_beats_environment(self):
+        module = load_control_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            explicit = Path(tempdir) / "explicit.lock"
+            control = module.RelayControl(
+                Path(tempdir) / "jobs.sqlite3",
+                archive_root=Path(tempdir),
+                archive_lock_path=explicit,
+            )
+        self.assertEqual(control.archive_lock_path, explicit)
 
 
 class RelayControlTests(unittest.TestCase):
