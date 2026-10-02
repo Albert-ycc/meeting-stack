@@ -336,6 +336,18 @@ def cards(client, **params):
     return response.json()
 
 
+def test_review_cards_date_range_includes_the_end_day(tmp_path, monkeypatch):
+    """审核卡按「会议日期 至 X」筛：X 当天的会也在（口径同任务池，按 recording_date 前 10 位的日期）。"""
+    client, headers, db, candidate_id, tasks = make_cvm_world(tmp_path, monkeypatch)
+    day = db.query_one("SELECT recording_date FROM meetings WHERE id=?", (meeting_id("cvm"),))[
+        "recording_date"
+    ][:10]
+
+    payload = cards(client, meeting_date_from=day, meeting_date_to=day)
+
+    assert [card["meeting"]["id"] for card in payload["cards"]] == [meeting_id("cvm")]
+
+
 def test_review_card_lists_candidates_and_drafts_of_one_meeting(tmp_path, monkeypatch):
     """每场会一张卡：候选和待确认任务都在，每条任务带默认推荐；逐条确认后任务行留在卡里。"""
     client, headers, db, candidate_id, tasks = make_cvm_world(tmp_path, monkeypatch)

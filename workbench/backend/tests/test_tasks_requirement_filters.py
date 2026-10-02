@@ -84,6 +84,35 @@ def test_filter_by_meeting_date_range_matches_meetings_endpoint_convention(tmp_p
     assert {item["id"] for item in both["items"]} == {"early-task", "late-task"}
 
 
+def test_meeting_date_range_includes_the_end_day(tmp_path):
+    """「会议日期 至 9/30」要含 9/30 当天：recording_date 带时刻，整串和 2026-09-30 比会把当天的会漏掉。
+    任务池和会议列表同一口径（按 recording_date 前 10 位的日期，两头都含）。"""
+    client, settings = make_client(tmp_path)
+    db = Database(settings.database_path)
+    for meeting_id, recording_date in (
+        ("vm-0929", "2026-09-29T23:30:00-07:00"),
+        ("vm-0930", "2026-09-30T10:00:00+08:00"),
+        ("vm-1001", "2026-10-01T00:10:00+00:00"),
+    ):
+        db.execute(
+            """INSERT INTO meetings(id, title, recording_date, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (meeting_id, meeting_id, recording_date, utc_now(), utc_now()),
+        )
+        insert_task(db, f"task-{meeting_id}", "confirmed", meeting_id=meeting_id)
+    one_day = {"meeting_date_from": "2026-09-30", "meeting_date_to": "2026-09-30"}
+
+    tasks = client.get("/api/tasks", params=one_day).json()
+    meetings = client.get(
+        "/api/meetings", params={"date_from": "2026-09-30", "date_to": "2026-09-30"}
+    ).json()
+
+    assert {item["id"] for item in tasks["items"]} == {"task-vm-0930"}
+    assert [item["id"] for item in meetings["items"]] == ["vm-0930"]
+    till = client.get("/api/tasks", params={"meeting_date_to": "2026-09-30"}).json()
+    assert {item["id"] for item in till["items"]} == {"task-vm-0929", "task-vm-0930"}
+
+
 def test_filter_by_meeting_date_from_rejects_non_date_string(tmp_path):
     """ADV-B-10 回归：meeting_date_from 不是 YYYY-MM-DD → 400，不许静默返回空结果。"""
     client, settings = make_client(tmp_path)

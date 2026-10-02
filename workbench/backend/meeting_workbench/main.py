@@ -103,7 +103,7 @@ from .project_names import (
     delete_empty_project,
     merge_project,
 )
-from .tasks import TaskService, llm_ready
+from .tasks import TaskService, llm_ready, recording_date_range
 from .hotwords import hotword_audit, normalize_hotwords
 from .attention import (
     ATTENTION_KINDS,
@@ -2060,14 +2060,12 @@ def create_app(
             else:
                 clauses.append("m.status = ?")
                 params.append(status)
-        for value, clause in (
-            (project_id, "m.project_id = ?"),
-            (date_from, "m.recording_date >= ?"),
-            (date_to, "m.recording_date <= ?"),
-        ):
-            if value is not None:
-                clauses.append(clause)
-                params.append(value)
+        if project_id is not None:
+            clauses.append("m.project_id = ?")
+            params.append(project_id)
+        date_clauses, date_params = recording_date_range("m.recording_date", date_from, date_to)
+        clauses += date_clauses
+        params += date_params
         if min_duration_ms is not None:
             clauses.append("m.duration_ms >= ?")
             params.append(min_duration_ms)

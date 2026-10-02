@@ -21,7 +21,7 @@ from .requirement_pool import project_order
 from .requirements import REQUIREMENT_PRIORITIES
 from .service import ConflictError, NotFoundError
 from .task_due import beijing_today
-from .tasks import TaskService, _validate_date_only
+from .tasks import TaskService, _validate_date_only, recording_date_range
 
 GROUPS = (
     ("overdue", "逾期"),
@@ -368,14 +368,14 @@ def review_cards(
                 parts.append(f"m.project_id IN ({', '.join('?' for _ in named)})")
                 params.extend(named)
             clauses.append(f"({' OR '.join(parts)})")
-        if meeting_date_from is not None:
-            _validate_date_only(meeting_date_from)
-            clauses.append("m.recording_date >= ?")
-            params.append(meeting_date_from)
-        if meeting_date_to is not None:
-            _validate_date_only(meeting_date_to)
-            clauses.append("m.recording_date <= ?")
-            params.append(meeting_date_to)
+        for value in (meeting_date_from, meeting_date_to):
+            if value is not None:
+                _validate_date_only(value)
+        date_clauses, date_params = recording_date_range(
+            "m.recording_date", meeting_date_from, meeting_date_to
+        )
+        clauses += date_clauses
+        params += date_params
         meetings = connection.execute(
             f"""SELECT m.id, m.title, m.recording_date, m.duration_ms, m.project_id,
                        p.name AS project_name, p.color AS project_color,

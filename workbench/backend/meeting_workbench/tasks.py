@@ -117,17 +117,33 @@ _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _validate_date_only(value: str) -> None:
-    """`meeting_date_from`/`meeting_date_to` 只接受 `YYYY-MM-DD`：这两个参数直接拼进
-    `recording_date >= ?`/`<= ?` 做字符串比较（D20），垃圾输入不报错只会让比较恒假、
-    静默返回空集，比报错更容易被误读成「这段时间真没任务」（ADV-B-10）。这里和
-    `/api/meetings` 的 `date_from`/`date_to` 是各自独立的实现，不是共用同一段代码，
-    所以只在这一处校验。"""
+    """`meeting_date_from`/`meeting_date_to` 只接受 `YYYY-MM-DD`：这两个参数直接拿去和
+    recording_date 的日期做字符串比较（D20），垃圾输入不报错只会让比较恒假、
+    静默返回空集，比报错更容易被误读成「这段时间真没任务」（ADV-B-10）。
+    `/api/meetings` 的 `date_from`/`date_to` 共用 recording_date_range，但不走这道校验。"""
     if not _DATE_ONLY_RE.match(value):
         raise ValueError("日期格式应为 YYYY-MM-DD")
     try:
         datetime.strptime(value, "%Y-%m-%d")
     except ValueError as error:
         raise ValueError("日期格式应为 YYYY-MM-DD") from error
+
+
+def recording_date_range(
+    column: str, date_from: str | None, date_to: str | None
+) -> tuple[list[str], list[str]]:
+    """会议日期筛选（任务池、待确认审核卡、会议列表共用）：按 recording_date 前 10 位的日期比，起止两头
+    都含当天。recording_date 带时刻（2026-09-30T10:00:00+08:00），整串和「2026-09-30」比会把结束日当天
+    的会全漏掉。"""
+    clauses: list[str] = []
+    params: list[str] = []
+    if date_from is not None:
+        clauses.append(f"substr({column}, 1, 10) >= ?")
+        params.append(date_from)
+    if date_to is not None:
+        clauses.append(f"substr({column}, 1, 10) <= ?")
+        params.append(date_to)
+    return clauses, params
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -585,8 +601,7 @@ class TaskService:
                 raise ValueError(f"未知任务状态：{value}")
         if assignee is not None and assignee not in ASSIGNEE_VALUES:
             raise ValueError(f"执行方必须是 {'/'.join(ASSIGNEE_VALUES)}")
-        # 来源会议日期筛选与 /api/meetings 的 date_from/date_to 同一口径（字符串比较
-        # recording_date）；任务表本身没有这一列，靠 LEFT JOIN meetings 取（1:0/1:1，不会
+        # 来源会议日期筛选与 /api/meetings 的 date_from/date_to 同一口径（recording_date_range）；任务表本身没有这一列，靠 LEFT JOIN meetings 取（1:0/1:1，不会
         # 让行数翻倍），三条查询统一带这个 JOIN，滤条件只需引用 tm.recording_date。
         joins = "LEFT JOIN meetings tm ON tm.id = t.meeting_id"
         scope_clauses: list[str] = []
@@ -605,14 +620,14 @@ class TaskService:
         if assignee:
             scope_clauses.append("t.assignee=?")
             scope_params.append(assignee)
-        if meeting_date_from is not None:
-            _validate_date_only(meeting_date_from)
-            scope_clauses.append("tm.recording_date >= ?")
-            scope_params.append(meeting_date_from)
-        if meeting_date_to is not None:
-            _validate_date_only(meeting_date_to)
-            scope_clauses.append("tm.recording_date <= ?")
-            scope_params.append(meeting_date_to)
+        for value in (meeting_date_from, meeting_date_to):
+            if value is not None:
+                _validate_date_only(value)
+        date_clauses, date_params = recording_date_range(
+            "tm.recording_date", meeting_date_from, meeting_date_to
+        )
+        scope_clauses += date_clauses
+        scope_params += date_params
         if q:
             scope_clauses.append("t.title LIKE ? ESCAPE '\\'")
             scope_params.append(f"%{escape_like_pattern(q)}%")
