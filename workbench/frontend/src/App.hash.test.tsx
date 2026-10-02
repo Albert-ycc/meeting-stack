@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import App, { MOBILE_READ_ONLY_QUERY } from "./App";
 import type { ApiClient } from "./api";
@@ -1026,6 +1026,64 @@ describe("需求二级页的来去（R04-1、R04-8）", () => {
     await pickExportQuote();
     expect(await screen.findByText("需求详情 / 260929 云课堂直播运营问题对齐 /")).toBeInTheDocument();
     play.mockRestore();
+  });
+
+  it("需求详情滚到半截打开会议，后退回来：等详情重新取回来再滚回原处，不落在顶上", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    // jsdom 不排版，scrollTop 换成能记值的属性
+    let scrollTop = 0;
+    Object.defineProperty(document.documentElement, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+    onTestFinished(() => {
+      delete (document.documentElement as { scrollTop?: number }).scrollTop;
+    });
+    window.history.replaceState(null, "", "/#requirements/requirement-export");
+    const detail = {
+      id: "requirement-export",
+      project_id: CVM,
+      project_name: "CVM 云讲堂",
+      project_color: "#f0783b",
+      title: "科室会预约后台导出",
+      summary: "",
+      priority: "P2",
+      status: "active",
+      created_at: "2026-10-01T09:00:00Z",
+      updated_at: "2026-10-01T09:00:00Z",
+      open_task_count: 0,
+      meeting_count: 1,
+      latest_meeting_date: EXPORT_SOURCE.recording_date,
+      folder_count: 0,
+      folders: [],
+      meetings: [],
+      tasks: [],
+      source: EXPORT_SOURCE,
+      sources: [EXPORT_SOURCE],
+    };
+    let releaseSecond!: () => void;
+    const requirement = vi
+      .fn()
+      .mockResolvedValueOnce(detail)
+      .mockImplementationOnce(() => new Promise((resolve) => (releaseSecond = () => resolve(detail))));
+    render(<App apiClient={meetingClient({ requirement } as Partial<ApiClient>)} />);
+    await screen.findByRole("heading", { name: "科室会预约后台导出" });
+    scrollTop = 500;
+
+    await userEvent.click(screen.getAllByRole("button", { name: /打开会议/ })[0]);
+    await screen.findByRole("heading", { name: "260929 云课堂直播运营问题对齐" });
+    scrollTop = 0;
+
+    act(() => window.history.back());
+    await screen.findByText("正在读取需求…");
+    // 详情还没取回来：先别滚
+    expect(scrollTop).toBe(0);
+    await act(async () => releaseSecond());
+    await screen.findByRole("heading", { name: "科室会预约后台导出" });
+    expect(scrollTop).toBe(500);
   });
 
   it("新增页改了没存：点侧栏、浏览器后退都先问；选留下就还在新增页，选离开才走（审查 B1）", async () => {

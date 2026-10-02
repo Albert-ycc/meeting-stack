@@ -225,6 +225,11 @@ export default function App({ apiClient = api }: AppProps) {
   const [meetingFormPrefill, setMeetingFormPrefill] = useState<RequirementPrefill | null>(null);
   const meetingFormRef = useRef<RequirementPrefill | null>(null);
   const meetingScrollRef = useRef<{ page: number; transcript: number } | null>(null);
+  // 从需求详情打开会议，退回来时要回到原来的滚动位置。需求详情退回来是重新挂上、重新取数的，浏览器在 popstate
+  // 那一刻按它记下的位置恢复时页面还是空的，落到顶上。打开会议时把位置记进需求详情那一条历史（listScroll），
+  // 退回来时取出来放这里，等详情的数据到了（onReady）再滚回去。录音档案、检索结果的数据在 App 手里，
+  // 回来时列表一下就画全了，浏览器自己恢复就是对的，不用管
+  const listScrollRef = useRef<number | null>(null);
   // 认领、合并后回到需求池时提示一句；建完、改完需求进详情页时也提示一句
   const [poolFlash, setPoolFlash] = useState<PoolFlash | null>(null);
   const [requirementFlash, setRequirementFlash] = useState<string | null>(null);
@@ -470,6 +475,16 @@ export default function App({ apiClient = api }: AppProps) {
         history.pushState({ app: true }, "", `#meetings/${encodeURIComponent(openMeetingIdRef.current)}`);
         historySyncRef.current = false;
         return;
+      }
+      const listScroll = (window.history.state as { listScroll?: number } | null)?.listScroll;
+      if (typeof listScroll === "number") {
+        listScrollRef.current = listScroll;
+        // 浏览器在 popstate 之后会按它记下的位置滚一次，这时详情还没取回来、页面不够高，会落到顶上。
+        // 这一条这次不让浏览器管，滚完再交还给它（之后从别处后退到这一条照常由浏览器恢复）
+        history.scrollRestoration = "manual";
+        window.setTimeout(() => {
+          history.scrollRestoration = "auto";
+        }, 0);
       }
     } else {
       setSearchActive(false);
@@ -744,6 +759,13 @@ export default function App({ apiClient = api }: AppProps) {
     ) {
       return;
     }
+    listScrollRef.current = null;
+    if (!fromHistory && !openMeetingId && !searchActive && view === "requirementDetail") {
+      window.history.replaceState(
+        { ...((window.history.state as Record<string, unknown> | null) ?? {}), listScroll: document.documentElement.scrollTop },
+        "",
+      );
+    }
     setInitialSeekMs(seekMs);
     setInitialAutoplay(autoplay);
     setInitialDetailTab(tab);
@@ -805,6 +827,7 @@ export default function App({ apiClient = api }: AppProps) {
   const performNavigate = (nextView: AppView) => {
     historySyncRef.current = false;
     navigatedDuringBootRef.current = true;
+    listScrollRef.current = null;
     resetDetailState();
     setView(nextView);
     // 从侧栏回到全部项目概览时不带上次的选中
@@ -976,6 +999,14 @@ export default function App({ apiClient = api }: AppProps) {
     if (box) box.scrollTop = saved.transcript;
     document.documentElement.scrollTop = saved.page;
   }, [meetingFormPrefill, openMeetingId]);
+
+  // 从会议退回需求详情、详情的数据到了：滚回打开会议之前的位置
+  const restoreListScroll = useCallback(() => {
+    const saved = listScrollRef.current;
+    if (saved === null) return;
+    listScrollRef.current = null;
+    document.documentElement.scrollTop = saved;
+  }, []);
 
   const openRequirementEdit = (requirementId: string) => {
     setRequirementForm({ mode: "edit", requirementId });
@@ -1204,6 +1235,7 @@ export default function App({ apiClient = api }: AppProps) {
     const requestSequence = ++searchRequestSequence.current;
     historySyncRef.current = false;
     navigatedDuringBootRef.current = true;
+    listScrollRef.current = null;
     resetDetailState();
     if (overrides.word !== undefined) setQuery(normalized);
     setSearchScope(scope);
@@ -1513,6 +1545,7 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenProject={openProjectDetail}
         onOpenTask={setTaskDrawerId}
         onProjectsChanged={refreshProjects}
+        onReady={restoreListScroll}
         projects={projects}
         reloadKey={boardVersion}
         requirementId={openRequirementId}

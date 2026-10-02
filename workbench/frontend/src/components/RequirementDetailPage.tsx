@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { isOldBackend, type ApiClient } from "../api";
 import { formatBytes, formatDurationText, formatMonthDay, formatMonthDayClock } from "../format";
@@ -54,6 +54,8 @@ interface RequirementDetailPageProps {
   /** 从修改页回来时提示一句，显示一次 */
   flash?: string | null;
   onFlashShown?: () => void;
+  /** 详情画出来了（App 从会议退回来时等它再把滚动放回去） */
+  onReady?: () => void;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -137,6 +139,7 @@ export function RequirementDetailPage({
   onEdit,
   flash,
   onFlashShown,
+  onReady,
 }: RequirementDetailPageProps) {
   const { toastNode, showToast } = useToast();
   const [confirm, confirmDialog] = useConfirm();
@@ -223,6 +226,10 @@ export function RequirementDetailPage({
   useEffect(() => {
     void load();
   }, [load, reloadKey]);
+
+  useLayoutEffect(() => {
+    if (state === "ready") onReady?.();
+  }, [onReady, state]);
 
   // 页面上的写操作统一走这里：进行中禁用按钮防连点，失败给出原因，成功后静默刷新。
   const [mutating, setMutating] = useState(false);
