@@ -4,5 +4,6 @@ set -euo pipefail
 
 TMUX_BIN="$(command -v tmux || echo /opt/homebrew/bin/tmux)"
 
+# ssh 把远端命令交给 shell 再解析一遍，路径里的空格、&、' 等要先转义
 ssh -o BatchMode=yes -o ConnectTimeout=10 localhost \
-  "$TMUX_BIN kill-session -t '=meeting-workbench' 2>/dev/null || true"
+  "${(q)TMUX_BIN} kill-session -t '=meeting-workbench' 2>/dev/null || true"

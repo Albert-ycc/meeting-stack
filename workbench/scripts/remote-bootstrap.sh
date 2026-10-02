@@ -14,17 +14,23 @@ PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 mkdir -p "$LOGS"
 
+# tmux 把命令交给 shell 解析，路径按单引号转义（路径里的 ' 也能对付）
+Q_ROOT="${(qq)ROOT}"
+Q_WEB_LOG="${(qq):-$LOGS/web.log}"
+Q_BACKUP_LOG="${(qq):-$LOGS/backup.log}"
+Q_INTEGRITY_LOG="${(qq):-$LOGS/integrity.log}"
+
 if ! tmux has-session -t '=meeting-workbench' 2>/dev/null; then
   tmux new-session -d -s meeting-workbench \
-    "cd '$ROOT' && exec env PYTHONDONTWRITEBYTECODE=1 MEETING_RELAY_CONTROL_ENABLED=1 .venv/bin/meeting-workbench serve >> '$LOGS/web.log' 2>&1"
+    "cd $Q_ROOT && exec env PYTHONDONTWRITEBYTECODE=1 MEETING_RELAY_CONTROL_ENABLED=1 .venv/bin/meeting-workbench serve >> $Q_WEB_LOG 2>&1"
 fi
 
 if ! tmux has-session -t '=meeting-workbench-backup' 2>/dev/null; then
   tmux new-session -d -s meeting-workbench-backup \
-    "cd '$ROOT' && while true; do PYTHONDONTWRITEBYTECODE=1 .venv/bin/meeting-workbench backup >> '$LOGS/backup.log' 2>&1; sleep 86400; done"
+    "cd $Q_ROOT && while true; do PYTHONDONTWRITEBYTECODE=1 .venv/bin/meeting-workbench backup >> $Q_BACKUP_LOG 2>&1; sleep 86400; done"
 fi
 
 if ! tmux has-session -t '=meeting-workbench-integrity' 2>/dev/null; then
   tmux new-session -d -s meeting-workbench-integrity \
-    "cd '$ROOT' && while true; do PYTHONDONTWRITEBYTECODE=1 .venv/bin/meeting-workbench verify-audio >> '$LOGS/integrity.log' 2>&1; exit_code=\$?; if (( exit_code == 2 )); then exit 2; fi; sleep 604800; done"
+    "cd $Q_ROOT && while true; do PYTHONDONTWRITEBYTECODE=1 .venv/bin/meeting-workbench verify-audio >> $Q_INTEGRITY_LOG 2>&1; exit_code=\$?; if (( exit_code == 2 )); then exit 2; fi; sleep 604800; done"
 fi

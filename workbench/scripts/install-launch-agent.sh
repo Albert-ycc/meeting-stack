@@ -15,8 +15,21 @@ fi
 
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.meeting-workbench/logs"
 
+# 路径填进 plist 前先做 XML 实体转义，再转义 sed 替换串里有特殊含义的 \、& 和分隔符 |
+plist_sed_value() {
+  local value="$1"
+  value="${value//'&'/&amp;}"
+  value="${value//'<'/&lt;}"
+  value="${value//'>'/&gt;}"
+  value="${value//'\'/\\\\}"
+  value="${value//'&'/\\&}"
+  value="${value//'|'/\\|}"
+  print -r -- "$value"
+}
+
 # 把模板里的占位符换成本机真实路径
-sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" -e "s|__HOME__|$HOME|g" "$TEMPLATE" > "$TARGET"
+sed -e "s|__REPO_ROOT__|$(plist_sed_value "$REPO_ROOT")|g" \
+  -e "s|__HOME__|$(plist_sed_value "$HOME")|g" "$TEMPLATE" > "$TARGET"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$TARGET"

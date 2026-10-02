@@ -10,5 +10,6 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 
+# ssh 把远端命令交给 shell 再解析一遍，路径里的空格、&、' 等要先转义
 ssh -o BatchMode=yes -o ConnectTimeout=10 localhost \
-  "$SCRIPT_DIR/remote-bootstrap.sh"
+  "${(q)SCRIPT_DIR}/remote-bootstrap.sh"
