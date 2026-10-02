@@ -119,6 +119,9 @@ class ScanReport:
     # 某个根本轮一个文件都没发现、库里却还有它的记录：更像是根配错了或盘没挂好，
     # 而不是文件真被删光了，这一侧的失效记录本轮不清理，这里记下跳过了几侧。
     stale_cleanup_skipped: int = 0
+    # Whisper 对照稿只是参考版本：它坏了只跳过对照稿，不进 errors，
+    # 否则这场会的纪要永远排在它后面导不进来，全库清理也一直停着。
+    reference_skipped: int = 0
 
     def quarantine(self, directory: Path, reason: str) -> None:
         self.quarantined += 1
@@ -2112,7 +2115,9 @@ class ArchiveImporter:
             reference = self._preferred_file(bundles, kinds)
             if reference:
                 break
-        if reference:
+        if not reference:
+            return
+        try:
             self._store_transcript(
                 meeting_id,
                 reference,
@@ -2120,6 +2125,9 @@ class ArchiveImporter:
                 kind_override="whisper_reference",
                 make_current=False,
             )
+        except RECOVERABLE_SOURCE_ERRORS as error:
+            report.reference_skipped += 1
+            logger.warning("会议 %s 的对照稿 %s 无法导入，已跳过：%s", meeting_id, reference, error)
 
     def _upsert_artifacts(
         self, meeting_id: str, bundles: list[SourceBundle], report: ScanReport

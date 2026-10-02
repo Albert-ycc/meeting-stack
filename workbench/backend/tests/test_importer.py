@@ -2527,5 +2527,39 @@ def test_one_transcript_json_with_a_huge_timestamp_only_fails_its_own_meeting(tm
 
     report = ArchiveImporter(db, settings).scan()
 
-    assert report.errors == 1
+    # 坏的是对照稿，只跳过它；两场会都照常导入。
+    assert report.errors == 0
+    assert report.reference_skipped == 1
     assert db.query_one("SELECT 1 FROM meetings WHERE id='vm-20260101-120000'")
+    assert db.query_one("SELECT 1 FROM meetings WHERE id='vm-20260202-120000'")
+
+
+def test_malformed_whisper_reference_is_skipped_and_minutes_still_import(tmp_path):
+    archive = tmp_path / "archive"
+    meeting_dir = write_meeting(archive, "有纪要的会", official=True, transcript_text="主稿正文")
+    (meeting_dir / "会议纪要.md").write_text("# 有纪要的会\n\n结论", encoding="utf-8")
+    (meeting_dir / "会议纪要.html").write_text("<h1>有纪要的会</h1>", encoding="utf-8")
+    whisper = meeting_dir / "whisper-ref"
+    whisper.mkdir()
+    # 对照稿只是参考版本；这里一个时间码多了一位小时
+    (whisper / "vm-20260101-120000.srt").write_text(
+        "1\n100:00:02,000 --> 100:00:04,000\n参考\n", encoding="utf-8"
+    )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        semantic_enabled=False,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+
+    for _ in range(2):  # 第二轮走快速路径，同样不能卡住
+        report = ArchiveImporter(db, settings).scan()
+        assert report.errors == 0
+        assert report.reference_skipped == 1
+
+    meeting = db.query_one("SELECT current_minutes_version_id FROM meetings")
+    assert meeting["current_minutes_version_id"]
+    assert db.exact_search("主稿正文")
