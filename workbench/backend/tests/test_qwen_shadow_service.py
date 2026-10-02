@@ -627,3 +627,32 @@ def test_long_qwen_subprocess_refreshes_heartbeat_lease(tmp_path, monkeypatch):
     assert service.run_once() is True
     assert observed[0]["heartbeat_at"] != observed[1]["heartbeat_at"]
     assert observed[0]["lease_expires_at"] != observed[1]["lease_expires_at"]
+
+
+def test_unexpected_error_marks_the_run_failed_instead_of_requeueing(tmp_path, monkeypatch):
+    """导入 SRT 时抛了意料之外的异常（比如时间行「-->」后面是空的）：记 failed、放掉租约，不留在 running 等租约过期后整段重跑。"""
+    _settings, db, _audio, _version, service = setup(tmp_path)
+    calls = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        output = Path(command[command.index("-o") + 1])
+        (output / "meeting.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:02,000\n第一句\n", encoding="utf-8"
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def broken_parse(_path):
+        raise IndexError("list index out of range")
+
+    monkeypatch.setattr("meeting_workbench.qwen_shadow.subprocess.run", fake_run)
+    monkeypatch.setattr("meeting_workbench.qwen_shadow.parse_srt", broken_parse)
+    run = service.request("vm-qwen")
+    assert service.run_once() is True
+    row = db.query_one(
+        "SELECT state, owner_id, error FROM asr_shadow_runs WHERE id=?", (run["id"],)
+    )
+    assert dict(row) == {"state": "failed", "owner_id": None, "error": "Qwen 离线转写失败"}
+    assert db.query_one("SELECT 1 AS x FROM runtime_leases WHERE name='qwen_shadow'") is None
+    assert service.run_once() is False
+    assert len(calls) == 1
