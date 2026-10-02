@@ -4,6 +4,8 @@
 
 from datetime import date
 
+import pytest
+
 from meeting_workbench import graph, graph_local
 from meeting_workbench.db import Database, utc_now
 
@@ -547,3 +549,19 @@ def test_endpoints_are_get_only_and_speak_plainly(tmp_path, monkeypatch):
     third = client.get("/api/graph/projects/p").headers["etag"]
     assert len({first, second, third}) == 3
     assert graph.GRAPH_API_VERSION == 4
+
+
+def test_node_ids_take_ascii_digits_only(tmp_path):
+    """文件 id 只认 ASCII 数字：「file:١٢」这类别的文字的数字和格式不对一样回 422（接口和函数同一个模式）。"""
+    db, root_id = setup(tmp_path)
+    quote = add_file(db, root_id, "报价单.xlsx")
+    keyed(db, quote, "k")
+    literal(db, "m", "报价单", quote)
+    arabic = "".join(chr(0x0660 + int(digit)) for digit in str(quote))
+    assert trace(db, f"file:{quote}")["center"]
+    with pytest.raises(graph_local.LocalError) as refused:
+        trace(db, f"file:{arabic}")
+    assert (refused.value.status, refused.value.text) == (422, "节点格式不对")
+    (tmp_path / "app").mkdir()
+    client, _settings = make_client(tmp_path / "app")
+    assert client.get("/api/graph/trace", params={"node": f"file:{arabic}"}).status_code == 422

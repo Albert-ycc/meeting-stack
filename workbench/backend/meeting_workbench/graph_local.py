@@ -39,8 +39,9 @@ TRACE_NODES = 12
 TRACE_LOOKAHEAD = (
     3  # 包含关系的一步先看一眼能不能接着走；没走通的展开最多这么多次（语句总数仍 ≤ 48）
 )
+# 写 [0-9] 不写 \d：接口的 Query(pattern=…) 也用这一串，那边的 \d 同样认别的文字的数字，加 re.ASCII 管不到
 NODE_PATTERN = (
-    r"^(file:\d{1,12}|m:[A-Za-z0-9_-]{1,64}|dec:[A-Za-z0-9_-]{1,64}|task:[A-Za-z0-9_-]{1,64})$"
+    r"^(file:[0-9]{1,12}|m:[A-Za-z0-9_-]{1,64}|dec:[A-Za-z0-9_-]{1,64}|task:[A-Za-z0-9_-]{1,64})$"
 )
 TRACE_TASK_STATUSES = ("confirmed", "in_progress", "done")
 
