@@ -5,6 +5,7 @@ Vision 程序只能在 Mac 上编译运行，这里都用假的常驻进程和�
 
 import json
 import os
+import signal
 import struct
 import subprocess
 import threading
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from meeting_workbench import cli, material_previews, ocr_engines, ocr_trial
+from meeting_workbench import cli, material_previews, ocr_engines, ocr_trial, vision_helper
 from meeting_workbench.config import Settings
 from meeting_workbench.material_helpers import HelperCrashed, HelperTimeout
 from meeting_workbench.ocr_engines import (
@@ -242,6 +243,37 @@ class Compiler:
             )
         Path(argv[argv.index("-o") + 1]).write_bytes(b"binary")
         return completed(argv, 0)
+
+
+def test_compile_timeout_kills_the_whole_process_group(tmp_path):
+    """编译超时：xcrun 起的 swift-frontend 是孙进程，只杀直接子进程的话它会留着接着占 CPU。
+    用假编译器（先起一个孙进程，再自己卡住）验证整组被杀。"""
+    pidfile = tmp_path / "grandchild.pid"
+    compiler = fake_bin(
+        tmp_path / "fakebin", "fake-compiler", f'sleep 300 &\necho $! > "{pidfile}"\nsleep 300\n'
+    )
+    assert VisionBuild(tmp_path, find=lambda: None).compile_run is vision_helper.run_in_group
+    grandchild = None
+    try:
+        # 超时给 5 秒：机器忙时 sh 要一会儿才起得来孙进程、写下 PID（1 秒在全量跑时不够）
+        with pytest.raises(subprocess.TimeoutExpired):
+            vision_helper.run_in_group([compiler], timeout=5, capture_output=True, text=True)
+        grandchild = int(pidfile.read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(grandchild, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail(f"孙进程 {grandchild} 超时后还活着")
+    finally:
+        if grandchild is not None:
+            try:
+                os.kill(grandchild, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_vision_build_compiles_once_and_backs_off_after_failure(tmp_path):

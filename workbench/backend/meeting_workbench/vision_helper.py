@@ -30,6 +30,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .material_helpers import HelperTimeout, run_background
+
 logger = logging.getLogger(__name__)
 
 COMPILE_TIMEOUT = 300
@@ -386,6 +388,23 @@ def swiftc_version(swiftc: str, *, run: Runner = subprocess.run) -> str:
     return lines[0] if lines else ""
 
 
+def run_in_group(
+    argv: list[str], *, timeout: float, **_kwargs: Any
+) -> subprocess.CompletedProcess[str]:
+    """编译用的 run：自己的进程组，超时杀整组。subprocess.run 超时只杀直接子进程（xcrun），
+    swift-frontend 这些孙进程会留着接着占 CPU。超时照旧抛 subprocess.TimeoutExpired。"""
+    try:
+        result = run_background(argv, timeout=timeout, background=False)
+    except HelperTimeout as error:
+        raise subprocess.TimeoutExpired(argv, timeout) from error
+    return subprocess.CompletedProcess(
+        argv,
+        result.returncode,
+        result.stdout.decode("utf-8", errors="replace"),
+        result.stderr.decode("utf-8", errors="replace"),
+    )
+
+
 class VisionBuild:
     """编译 Vision 程序：后台线程里做，最多 5 分钟；先写临时名再原子改名，源码一变就重编。
     编译失败后，源码哈希和 swiftc 版本都没变就不重编，一天最多重试一次。"""
@@ -402,6 +421,8 @@ class VisionBuild:
         self.data_dir = Path(data_dir)
         self.source = source
         self.run = run
+        # 没换 run 时编译走 run_in_group（超时杀整组）；用例换了 run 就照用
+        self.compile_run: Runner = run_in_group if run is subprocess.run else run
         self.now = now or (lambda: datetime.now(UTC))
         self.find = find or (lambda: find_swiftc(run=run))
         self.binary = binary_path(self.data_dir, source)
@@ -485,7 +506,7 @@ class VisionBuild:
         try:
             # 经 xcrun 调：它会带上 SDK 路径。直接调 xcrun --find 找到的 swiftc，在后台服务的干净环境里
             # 找不到 SDK，报 unable to load standard library（macOS 26 + 命令行工具实测）
-            result = self.run(
+            result = self.compile_run(
                 ["xcrun", "swiftc", "-O", "-o", str(temporary), str(source_file)],
                 capture_output=True,
                 text=True,
