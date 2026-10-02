@@ -86,19 +86,34 @@ export function DecisionLogCard({
   const [placed, setPlaced] = useState<PlacedLine[]>([]);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  // 需求详情页换需求时这张卡不卸载：上一个需求的决议、灰字行、展开状态都不能带过来
+  const [shownFor, setShownFor] = useState(requirementId);
+  if (shownFor !== requirementId) {
+    setShownFor(requirementId);
+    setLog(null);
+    setPlaced([]);
+    setOpenUnplaced(new Set());
+    setState(supported ? "loading" : "hidden");
+  }
+  // 只认最后一次发出的读取：静默重取、reloadKey、换需求触发的读取可能乱序回来
+  const requestRef = useRef(0);
 
   const load = useCallback(
     async (silent = false) => {
       if (typeof apiClient.requirementDecisions !== "function") return;
+      const token = ++requestRef.current;
       if (!silent) setState("loading");
       try {
         const payload = await apiClient.requirementDecisions(requirementId);
+        if (token !== requestRef.current) return;
         setLog(payload);
         setState("ready");
       } catch (reason) {
+        if (token !== requestRef.current) return;
         // 旧后台或需求没了：不画这张卡
         if (isOldBackend(reason) || (reason instanceof ApiError && reason.status === 404)) setState("hidden");
-        else if (!silent) setState("error");
+        // 静默重取失败时照旧画手上的；它顶掉的那次非静默读取还在「读取中」时要落到出错，不然一直转
+        else setState((current) => (silent && current !== "loading" ? current : "error"));
       }
     },
     [apiClient, requirementId],
