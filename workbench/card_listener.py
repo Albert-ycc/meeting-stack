@@ -204,10 +204,11 @@ def _save_seen(seen: set[str]) -> None:
 
 
 def handle_event(client: ShengdangClient, event: dict) -> None:
-    operator = event.get("event", {}).get("operator", {})
+    operator = event.get("event", {}).get("operator") or {}
     open_id = operator.get("open_id", "")
-    if open_id and open_id != OWNER_OPEN_ID:
-        log.warning("忽略非本人操作 open_id=%s", open_id)
+    # 缺 open_id 时认不出是不是本人，按非本人拒绝，不能放行
+    if open_id != OWNER_OPEN_ID:
+        log.warning("忽略非本人操作 open_id=%s", open_id or "<缺失>")
         return
     action = event.get("event", {}).get("action", {}).get("value", {})
     act = action.get("action")
