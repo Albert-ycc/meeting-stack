@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from meeting_workbench import related, related_read, relations
+from meeting_workbench import material_status, related, related_read, relations
 from meeting_workbench.db import Database, utc_now
 from meeting_workbench.deep_links import LinksWorker
 from meeting_workbench.main import create_app
@@ -1458,6 +1458,24 @@ def test_preview_passage_fresh_stale_missing_and_other_files(tmp_path):
     )
     with db.autocommit() as connection:
         assert related_read.passage(connection, row, KEY_B, 0)["stale"] is True
+
+
+def test_preview_passage_of_a_gone_file_shows_no_text(tmp_path):
+    # 片段要 30 天才清，可能是修之前顺着链接读进来的根目录外内容：文件不见了，定位段和预览一样不露正文
+    w = build(tmp_path)
+    file_id = w.db.query_one("SELECT id FROM material_files WHERE content_key = ?", (KEY_A,))["id"]
+    w.db.execute("UPDATE material_files SET gone_at = ? WHERE id = ?", (utc_now(), file_id))
+    with w.db.autocommit() as connection:
+        result = material_status.file_preview(
+            connection,
+            file_id,
+            state_of=lambda path: ROOT_ONLINE,
+            parts="preview",
+            passage_key=KEY_A,
+            passage_ordinal=0,
+        )
+    assert result["file"]["gone"] is True and result["preview"]["lines"] == []
+    assert result["passage"] is None
 
 
 def test_preview_endpoint_keys_and_mentioned_counts(tmp_path):

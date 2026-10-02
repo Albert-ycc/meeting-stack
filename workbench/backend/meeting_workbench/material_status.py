@@ -619,7 +619,12 @@ def file_preview(
         "preview": file_preview_block(connection, row, content, online=online),
     }
     if passage_ordinal is not None:
-        result["passage"] = related_read.passage(connection, row, passage_key, passage_ordinal)
+        # 文件不见了就和 preview 一样不露正文：片段要 30 天才清，可能是顺着链接读进来的根目录外内容
+        result["passage"] = (
+            None
+            if row["gone_at"] is not None
+            else related_read.passage(connection, row, passage_key, passage_ordinal)
+        )
     if parts == "preview":
         return result
     # 4d：［用本机应用打开］只在本机、白名单里的扩展名、文件没有不见时出现（前端只看这个字段）
