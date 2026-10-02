@@ -343,9 +343,13 @@ class ProjectFolderInput(BaseModel):
     name: str | None = None
 
 
+# 前端的色块和 <input type="color"> 发出来的都是 #rrggbb；库里的颜色会被前端直接当 CSS 值用，只收这一种
+HexColor = Annotated[str, StringConstraints(pattern=r"^#[0-9a-fA-F]{6}$")]
+
+
 class ProjectInput(BaseModel):
     name: str
-    color: str = "#667085"
+    color: HexColor = "#667085"
     material_roots: list[str] | None = None
     # 第一期 1b-2：挂现有文件夹或新建一个；顺手把几场会归进来；近似重名时仍然新建。
     folder: ProjectFolderInput | None = None
@@ -367,7 +371,7 @@ class ProjectUpdateInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
-    color: str | None = None
+    color: HexColor | None = None
     material_roots: list[str] | None = None
     also_names: list[str] | None = None
 
@@ -523,7 +527,7 @@ class RequirementTasksInput(BaseModel):
 
 class TagInput(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
-    color: str = "#667085"
+    color: HexColor = "#667085"
 
 
 class TaskCreateInput(BaseModel):
