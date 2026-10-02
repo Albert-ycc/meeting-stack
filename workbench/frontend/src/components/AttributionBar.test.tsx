@@ -407,6 +407,23 @@ describe("AttributionBar 刚改过", () => {
     expect(onChange.mock.calls[0][0].attribution.reassigned_from.tasks_left).toEqual([]);
   });
 
+  it("超过撤销时间后，原来是你标的「不归项目」，［改回］还是标回不归项目，不交给 AI", async () => {
+    const updateMeeting = vi.fn().mockResolvedValue(detail(null, { state: "manual_none", origin: "manual" }));
+    const { onNotice } = setup(
+      {
+        ...changed,
+        reassigned_from: { ...changed.reassigned_from!, project_id: null, project_name: null, origin_before: "manual", can_undo: false },
+      },
+      { updateMeeting },
+    );
+
+    expect(screen.getByText(/由 不归项目 改来/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "改回" }));
+
+    expect(updateMeeting).toHaveBeenCalledWith("m-1", { project_id: "" });
+    expect(onNotice.mock.calls[0][0]).toBe("已标为不归项目");
+  });
+
   it("留在旧需求上的任务移过去时一条失败：移成的从提示里去掉，没移成的留着能再点", async () => {
     const left = [
       { id: "t-1", title: "改登录页", requirement_id: "r-1", requirement_title: "登录改版" },

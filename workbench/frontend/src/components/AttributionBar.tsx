@@ -485,8 +485,11 @@ export function AttributionBar({
       </div>
     ) : null;
   }
+  // 过了撤销期就再改一次：原来在项目里就改回那个项目，原来是你标的不归项目就标回去，原来没归才交给 AI
   const revert = () =>
-    came.can_undo ? void undo() : void assign(came.project_id ?? "__ai__");
+    came.can_undo
+      ? void undo()
+      : void assign(came.project_id ?? (came.origin_before === "manual" ? "" : "__ai__"));
   const firstLeft = came.tasks_left[0];
   const cueHint = came.cue_hint;
   const fromLabel =
