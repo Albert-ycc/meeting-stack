@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import Database, utc_now
+from .glossary import TERMS_REMOVED_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -411,9 +412,12 @@ def apply_missed(
     )
     with db.autocommit() as connection:
         terms = dictionary_terms(connection, check["project_id"])
-    markdown, count = replace_missed(
-        minutes["markdown"], terms, [(row["wrong"], row["term"]) for row in missed]
-    )
+    # 体检之后词条可能删了、错写可能拿掉了，体检表还没重算：只换现在词典里还在的
+    current = {(alias, term["term"]) for term in terms for alias in term["aliases"]}
+    pairs = [
+        (row["wrong"], row["term"]) for row in missed if (row["wrong"], row["term"]) in current
+    ]
+    markdown, count = replace_missed(minutes["markdown"], terms, pairs)
     if count == 0:
         raise ConflictError("没有要改的错写")
     version_id, _ = service.save_minutes_detailed(
@@ -440,7 +444,7 @@ def apply_missed(
             "version_id": version_id,
             "based_on_id": expected_version_id,
             "replaced": count,
-            "pairs": [[row["wrong"], row["term"]] for row in missed],
+            "pairs": [[wrong, term] for wrong, term in pairs],
             "auto": actor == "auto",
         },
     )
@@ -499,13 +503,15 @@ def run_pending(
             WHERE c.meeting_id IS NULL
                OR c.minutes_version_id IS NOT m.current_minutes_version_id
                OR c.checked_at < COALESCE((SELECT MAX(updated_at) FROM glossary_terms), '')
+               OR c.checked_at < COALESCE(
+                      (SELECT value FROM app_state WHERE key = ?), '')
                OR (c.receipt_id IS NULL AND c.basis != 'chosen' AND EXISTS (
                       SELECT 1 FROM meeting_glossary_receipts r
                        WHERE r.meeting_id = m.id AND r.job_id = mv.source_job_id
                          AND r.attempt IS mv.source_attempt))
             ORDER BY m.updated_at DESC
             LIMIT ?""",
-        (limit,),
+        (TERMS_REMOVED_KEY, limit),
     )
     for row in rows:
         meeting_id = row["id"]

@@ -797,6 +797,7 @@ def undo_confirm_suggestion(
             also = json.loads(term["also"] or "[]") if "also" in term.keys() else []
             if term["source"] == "auto" and not aliases and not also:
                 connection.execute("DELETE FROM glossary_terms WHERE id=?", (term["id"],))
+                mark_terms_removed(connection)
             else:
                 connection.execute(
                     "UPDATE glossary_terms SET aliases=?, updated_at=? WHERE id=?",
@@ -1138,8 +1139,26 @@ def merge_into_term(
     )
 
 
+# 最近一次删词条的时间。删除不会让 MAX(updated_at) 变大，纪要体检（glossary_checkup.run_pending）
+# 靠它知道词典变了、要重查
+TERMS_REMOVED_KEY = "glossary_terms_removed_at"
+
+
+def mark_terms_removed(connection: Any) -> None:
+    """删了词条以后调（调用方负责开事务）。"""
+    now = utc_now()
+    connection.execute(
+        """INSERT INTO app_state(key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+        (TERMS_REMOVED_KEY, now, now),
+    )
+
+
 def delete_term(db: Database, term_id: str, snapshot_path: Path | str | None = None) -> bool:
-    changed = db.execute_rowcount("DELETE FROM glossary_terms WHERE id=?", (term_id,))
+    with db.transaction() as connection:
+        changed = connection.execute("DELETE FROM glossary_terms WHERE id=?", (term_id,)).rowcount
+        if changed:
+            mark_terms_removed(connection)
     if changed == 1 and snapshot_path is not None:
         rewrite_snapshot(db, snapshot_path)
     return changed == 1

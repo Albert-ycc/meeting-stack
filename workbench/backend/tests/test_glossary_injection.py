@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 from meeting_workbench.db import Database, utc_now
 from meeting_workbench.glossary import create_term, read_snapshot, rewrite_snapshot
 
@@ -589,3 +591,50 @@ def test_relay_selected_project_counts_as_literal_evidence(tmp_path):
         meeting_id="vm-1", title="周会", minutes_markdown="聊了进度。"
     )
     assert hinted["literal"] == {}
+
+
+def test_deleting_a_term_rechecks_the_meetings_it_flagged(tmp_path):
+    """删掉词条后，带着它「可能漏纠」的会重新体检，那一条不再挂着。"""
+    from meeting_workbench import glossary_checkup
+    from meeting_workbench.glossary import delete_term
+
+    db, service = _auto_setup(tmp_path, status="draft_modified")
+    glossary_checkup.run_pending(db, service)
+    assert [h["wrong"] for h in glossary_checkup.meeting_glossary(db, "vm-1")["missed"]] == [
+        "树立协会"
+    ]
+    term_id = db.query_one("SELECT id FROM glossary_terms WHERE term='数理协会'")["id"]
+    assert delete_term(db, term_id) is True
+    assert glossary_checkup.run_pending(db, service)["checked"] == 1
+    assert glossary_checkup.meeting_glossary(db, "vm-1")["missed"] == []
+
+
+def test_apply_only_replaces_pairs_still_in_the_dictionary(tmp_path):
+    """体检结果还没重算时点［改过来］：已经不在词典里的 (错写, 正确写法) 不替换；一条都不剩时 409。"""
+    from meeting_workbench import glossary_checkup
+    from meeting_workbench.service import ConflictError
+
+    db, service = _auto_setup(tmp_path, status="draft_modified")
+    add_minutes(
+        db, "vm-1", "mv-2", "# 纪要\n树立协会下周回复，随方照常。", kind="draft", version_no=2
+    )
+    glossary_checkup.check_meeting(db, "vm-1")
+    missed = glossary_checkup.meeting_glossary(db, "vm-1")["missed"]
+    assert sorted(h["wrong"] for h in missed) == ["树立协会", "随方"]
+    # 绕过 delete_term 直接删（体检表还是旧的）
+    db.execute("DELETE FROM glossary_terms WHERE term='随访'")
+    result = glossary_checkup.apply_missed(db, service, "vm-1", expected_version_id="mv-2")
+    assert result["replaced"] == 1
+    current = db.query_one(
+        """SELECT mv.markdown FROM meetings m JOIN minutes_versions mv
+                ON mv.id = m.current_minutes_version_id WHERE m.id='vm-1'"""
+    )
+    assert current["markdown"] == "# 纪要\n数理协会下周回复，随方照常。"
+
+    add_minutes(db, "vm-1", "mv-9", "# 纪要\n树立协会下周回复。", kind="draft", version_no=9)
+    glossary_checkup.check_meeting(db, "vm-1")
+    db.execute("DELETE FROM glossary_terms WHERE term='数理协会'")
+    with pytest.raises(ConflictError):
+        glossary_checkup.apply_missed(db, service, "vm-1", expected_version_id="mv-9")
+    current = db.query_one("SELECT markdown FROM minutes_versions WHERE id='mv-9'")
+    assert current["markdown"] == "# 纪要\n树立协会下周回复。"

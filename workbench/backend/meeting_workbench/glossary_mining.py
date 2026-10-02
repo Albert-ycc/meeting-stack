@@ -2370,6 +2370,7 @@ def undo(
                     raise CandidateError(409, TERM_CHANGED)
                 if info.get("created"):
                     connection.execute("DELETE FROM glossary_terms WHERE id = ?", (term_row["id"],))
+                    glossary.mark_terms_removed(connection)
                 else:
                     added = set(info.get("aliases") or [])
                     aliases = [
