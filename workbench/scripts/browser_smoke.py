@@ -1,11 +1,35 @@
+import argparse
+import os
+import tempfile
 from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
 
 
-BASE_URL = "http://127.0.0.1:8765"
-OUTPUT = Path.home() / ".meeting-workbench/browser-artifacts"
+# 这个冒烟会点播放、拖波形，还断言库里有会议，只能对预览实例跑：地址必须显式给，
+# 不默认 8765（生产实例）；截图默认写临时目录，不进生产状态目录。
+parser = argparse.ArgumentParser(description="对一个运行中的声档预览实例跑浏览器冒烟")
+parser.add_argument(
+    "--base-url",
+    default=os.environ.get("MEETING_WORKBENCH_SMOKE_URL", ""),
+    help="被测实例地址，例如 http://127.0.0.1:8815；也可用 MEETING_WORKBENCH_SMOKE_URL",
+)
+parser.add_argument(
+    "--output",
+    default=os.environ.get("MEETING_WORKBENCH_SMOKE_OUTPUT", ""),
+    help="截图目录；也可用 MEETING_WORKBENCH_SMOKE_OUTPUT，不给时新建一个临时目录",
+)
+args = parser.parse_args()
+if not args.base_url:
+    parser.error("请用 --base-url 或 MEETING_WORKBENCH_SMOKE_URL 指定被测实例（不默认打生产实例）")
+BASE_URL = args.base_url.rstrip("/")
+OUTPUT = (
+    Path(args.output).expanduser()
+    if args.output
+    else Path(tempfile.mkdtemp(prefix="workbench-browser-smoke-"))
+)
 OUTPUT.mkdir(parents=True, exist_ok=True)
+print(f"被测实例 {BASE_URL}，截图写到 {OUTPUT}")
 
 
 def assert_no_browser_errors(
