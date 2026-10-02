@@ -8,6 +8,10 @@
   semantic.encode_texts(…, background=True)，每批 16 个窗拿一次 encode_lock；每场会之前、每批编码之间、
   每块打分之间看忙信号和停止标记，忙了最多一批以内停下，已经算的不写半截（只有编好的窗向量按批先存下，
   它们是派生数据，下一轮不用再编码）。
+- 挪进来的旧内容：早就读过的材料挪进（或复制进）本项目的资料盘，片段 id 不大于标记、增量看不到，签名也
+  不变。每轮增量之后对比 app_state.related_contents 里记下的每个项目的内容集合，新进来的内容取 id 不大于
+  标记的片段向量，对本项目已算过、干净的会补比对一次（不看会的 chunk_mark），和结果同一个事务记进集合。
+  第一次没有记录时把当时的集合当作都比对过。
 - 打分：范围是这场会所在项目的根目录里的活文件（不在「声档会议记录/」里）；vectors.snapshot() 每 16,384 行
   一块，只取本项目的行转 float32；矩阵里没有的从 material_chunk_vectors 补，最多 6 万行，超了跳过最旧的
   内容、记 partial。每窗一个门槛 bar = max(related_floor, p95 + related_margin)，p95 是这个窗对项目背景
@@ -97,6 +101,8 @@ WINDOW_SLICE = 2_048
 WINDOW_FETCH = 1_024
 PARAM_BATCH = 400
 CHUNK_MARK_KEY = "related_chunk_mark"
+# 每个项目已经比对过的内容标识（{项目: [content_key…]}）：挪进、复制进来的旧内容靠它认出来
+CONTENTS_KEY = "related_contents"
 DEFAULT_FLOOR = 0.60
 DEFAULT_MARGIN = 0.05
 
@@ -1316,6 +1322,8 @@ class RelatedPass:
             return status
         try:
             result = self.increment(ctx)
+            if result == "done":
+                result = self.catch_up(ctx)
             if result not in ("done", "budget"):
                 return result
             more = result == "budget"
@@ -1752,38 +1760,104 @@ class RelatedPass:
             ctx.work += 1
         return "budget" if len(rows) >= INCREMENT_CHUNKS else "done"
 
+    def catch_up(self, ctx: Any) -> str:
+        """新进本项目、片段 id 不大于标记的内容（挪进、复制进来的旧材料）：对本项目干净的会补比对一次。
+        每轮最多 4,096 个片段，按内容整份处理；补完的内容和结果同一个事务记进集合。"""
+        model = model_of(ctx.settings)
+        with ctx.db.autocommit() as connection:
+            mark = read_mark(connection) or {"model": model, "id": 0}
+            current = project_contents(connection)
+            known = read_contents(connection)
+        if known is None:
+            with ctx.db.transaction() as connection:
+                save_contents(connection, current, ctx.now.isoformat())
+            return "done"
+        windows: dict[str, ProjectWindows | None] = {}
+        spent = 0
+        for project_id in sorted(set(current) | set(known)):
+            keys = current.get(project_id, set())
+            fresh = sorted(keys - known.get(project_id, set()))
+            if not fresh:
+                if known.get(project_id, set()) != keys:
+                    # 只是有内容离开了项目：去掉，回来时还能认出来
+                    with ctx.db.transaction() as connection:
+                        save_contents(connection, {project_id: keys}, ctx.now.isoformat())
+                continue
+            for part in _batches(fresh):
+                halt = self._halt(ctx, ctx.deadline)
+                if halt:
+                    return halt
+                if spent >= INCREMENT_CHUNKS:
+                    return "budget"
+                with ctx.db.autocommit() as connection:
+                    rows = [
+                        dict(row)
+                        for row in connection.execute(
+                            f"""SELECT v.chunk_id, v.vector, c.content_key, c.ordinal, c.loc, c.start_ms, c.text
+                                  FROM material_chunk_vectors v JOIN material_chunks c ON c.id = v.chunk_id
+                                 WHERE v.model = ? AND v.chunk_id <= ? AND c.content_key IN ({_marks(part)})
+                                 ORDER BY v.chunk_id""",
+                            [model, int(mark["id"]), *part],
+                        ).fetchall()
+                    ]
+                self._increment_block(
+                    ctx, rows, model, windows, project_id=project_id, contents=list(part)
+                )
+                spent += len(rows)
+                ctx.work += 1
+            with ctx.db.transaction() as connection:
+                save_contents(connection, {project_id: keys}, ctx.now.isoformat())
+        return "done"
+
     def _increment_block(
         self,
         ctx: Any,
         block: list[dict[str, Any]],
         model: str,
         windows: dict[str, ProjectWindows | None] | None = None,
+        *,
+        project_id: str | None = None,
+        contents: Sequence[str] = (),
     ) -> None:
+        """一块片段并进各项目干净的会。project_id 给了是补比对（catch_up）：只算这个项目、不看会的
+        chunk_mark、不动全局标记，把 contents 记进这个项目比对过的集合。"""
         if windows is None:
             windows = {}
         now = ctx.now.isoformat()
-        last = int(block[-1]["chunk_id"])
         keys = sorted({str(row["content_key"]) for row in block})
         with ctx.db.autocommit() as connection:
             projects: dict[str, set[str]] = {}
-            for part in _batches(keys):
-                for row in connection.execute(
-                    f"""SELECT DISTINCT r.project_id, f.content_key FROM material_files f
-                          JOIN project_material_roots r ON r.id = f.root_id
-                         WHERE f.content_key IN ({_marks(part)}) AND {_LIVE_FILE}""",
-                    list(part),
-                ).fetchall():
-                    projects.setdefault(str(row[0]), set()).add(str(row[1]))
+            if project_id is not None:
+                if keys:
+                    projects[project_id] = set(keys)
+            else:
+                for part in _batches(keys):
+                    for row in connection.execute(
+                        f"""SELECT DISTINCT r.project_id, f.content_key FROM material_files f
+                              JOIN project_material_roots r ON r.id = f.root_id
+                             WHERE f.content_key IN ({_marks(part)}) AND {_LIVE_FILE}""",
+                        list(part),
+                    ).fetchall():
+                        projects.setdefault(str(row[0]), set()).add(str(row[1]))
             self.checks.load_cues(connection)
             plans: list[tuple[Scope, str, list[Passage], dict[str, Any]]] = []
-            for project_id, contents in projects.items():
-                sig = self._sigs.get(project_id)
-                scope = load_scope(connection, project_id)
+            for target, members in projects.items():
+                sig = self._sigs.get(target)
+                scope = load_scope(connection, target)
                 if sig is None or scope is None:
                     continue
-                chunks = [row for row in block if row["content_key"] in contents]
+                chunks = [row for row in block if row["content_key"] in members]
                 plans.extend(
-                    self._increment_project(ctx, connection, scope, sig, chunks, model, windows)
+                    self._increment_project(
+                        ctx,
+                        connection,
+                        scope,
+                        sig,
+                        chunks,
+                        model,
+                        windows,
+                        catch_up=project_id is not None,
+                    )
                 )
         with ctx.db.transaction() as connection:
             for scope, meeting_id, passages, info in plans:
@@ -1802,11 +1876,28 @@ class RelatedPass:
                     "WHERE meeting_id = ?) WHERE meeting_id = ?",
                     (meeting_id, meeting_id),
                 )
-            connection.execute(
-                """INSERT INTO app_state(key, value, updated_at) VALUES (?, ?, ?)
-                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
-                (CHUNK_MARK_KEY, json.dumps({"model": model, "id": last}), now),
-            )
+            # 这一块比对过的内容记进各项目的集合（增量比过的不用补比对）
+            known = read_contents(connection)
+            if project_id is not None:
+                touched = {project_id: set(contents)}
+            else:
+                touched = projects
+            if known is not None:
+                save_contents(
+                    connection,
+                    {target: known.get(target, set()) | keys for target, keys in touched.items()},
+                    now,
+                )
+            if project_id is None and block:
+                connection.execute(
+                    """INSERT INTO app_state(key, value, updated_at) VALUES (?, ?, ?)
+                       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                    (
+                        CHUNK_MARK_KEY,
+                        json.dumps({"model": model, "id": int(block[-1]["chunk_id"])}),
+                        now,
+                    ),
+                )
 
     def _increment_project(
         self,
@@ -1817,6 +1908,8 @@ class RelatedPass:
         chunks: list[dict[str, Any]],
         model: str,
         windows: dict[str, ProjectWindows | None],
+        *,
+        catch_up: bool = False,
     ) -> list[tuple[Scope, str, list[Passage], dict[str, Any]]]:
         meetings = {
             str(row["meeting_id"]): dict(row)
@@ -1847,7 +1940,9 @@ class RelatedPass:
             never = np.iinfo(np.int64).max
             per_meeting = np.fromiter(
                 (
-                    int(meetings[meeting_id]["chunk_mark"]) if meeting_id in meetings else never
+                    (-1 if catch_up else int(meetings[meeting_id]["chunk_mark"]))
+                    if meeting_id in meetings
+                    else never
                     for meeting_id in cached.meeting_ids
                 ),
                 dtype=np.int64,
@@ -1951,6 +2046,52 @@ class RelatedPass:
                     ),
                 )
                 rank += 1
+
+
+def project_contents(connection: Any) -> dict[str, set[str]]:
+    """每个项目现在的活内容标识（和 load_scope 同一个条件），一条语句。"""
+    result: dict[str, set[str]] = {}
+    for row in connection.execute(
+        f"""SELECT DISTINCT r.project_id, f.content_key FROM material_files f
+              JOIN project_material_roots r ON r.id = f.root_id WHERE {_LIVE_FILE}"""
+    ).fetchall():
+        result.setdefault(str(row[0]), set()).add(str(row[1]))
+    return result
+
+
+def read_contents(connection: Any, key: str = CONTENTS_KEY) -> dict[str, set[str]] | None:
+    """比对过的内容集合（相关用 related_contents，可能过时用 affects_contents）；还没记过时返回 None。"""
+    row = connection.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        return None
+    try:
+        value = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    return {str(key): set(items) for key, items in value.items() if isinstance(items, list)}
+
+
+def save_contents(
+    connection: Any, changes: dict[str, set[str]], now: str, key: str = CONTENTS_KEY
+) -> None:
+    """改写其中几个项目的集合（空集合就去掉这个项目），别的项目不动。"""
+    value = read_contents(connection, key) or {}
+    for project_id, keys in changes.items():
+        if keys:
+            value[project_id] = set(keys)
+        else:
+            value.pop(project_id, None)
+    connection.execute(
+        """INSERT INTO app_state(key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+        (
+            key,
+            json.dumps({name: sorted(items) for name, items in sorted(value.items())}),
+            now,
+        ),
+    )
 
 
 def read_mark(connection: Any) -> dict[str, Any] | None:

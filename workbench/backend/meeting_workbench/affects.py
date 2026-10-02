@@ -24,6 +24,10 @@ relations.quote 是决议原文。
   条数或时间）的会什么都不写，下一轮整场再来。
 - L3：在问的影响，文件断了线、决议之后改过、决议没了或后来改了的改 cleared。
 - stat_guard：文件面板和预览在有在问的影响时 stat 一次文件，变了就先不给这几个问题（不写库）。
+- 挪进来的旧内容：早就读过的材料挪进（或复制进）本项目的资料盘，片段 id 不大于会的记号，增量看不到。
+  每轮到期的会配完以后对比 app_state.affects_contents 里记下的每个项目的内容集合，新进来的内容里有片段
+  不大于某场会记号的，对这个项目已配过的会只拿这几份内容补配一次（记号不动、只加不收），配完记进集合。
+  第一次没有记录时把当时的集合当作都配过。
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .decisions import decision_moment, project_names, superseded_sql, text_key
+from .related import project_contents, read_contents, save_contents
 from .relation_read import live_file
 from .relations import canonical, clear_missing, is_rejected, upsert_system
 from .search import _fts_phrase
@@ -58,6 +63,7 @@ LOOKBACK = timedelta(days=90)
 YEAR = timedelta(days=365)
 SUBJECT_CHARS = 6
 CAPPED = "capped:"
+CONTENTS_KEY = "affects_contents"
 
 RULE_VALUE = "value"
 RULE_CANCEL = "cancel"
@@ -800,8 +806,17 @@ _CHUNK_JOIN = """JOIN material_contents mc ON mc.content_key = c.content_key AND
   JOIN project_material_roots pr ON pr.id = f.root_id AND pr.project_id = :pid"""
 
 
+# 补配挪进来的旧内容时只看这几份内容
+_ONLY_KEYS = " AND c.content_key IN (SELECT value FROM json_each(:keys))"
+
+
 def _match_chunks(
-    connection: Any, project_id: str, needle: str, after: int, upto: int
+    connection: Any,
+    project_id: str,
+    needle: str,
+    after: int,
+    upto: int,
+    keys: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     return [
         dict(row)
@@ -811,27 +826,44 @@ def _match_chunks(
                   JOIN material_chunks c ON c.id = x.rowid
                   {_CHUNK_JOIN}
                  WHERE material_chunks_fts MATCH :q AND x.rowid > :after AND x.rowid <= :upto
-                   AND c.start_ms IS NULL""",
-            {"pid": project_id, "q": _fts_phrase(needle), "after": after, "upto": upto},
+                   AND c.start_ms IS NULL{_ONLY_KEYS if keys is not None else ""}""",
+            {
+                "pid": project_id,
+                "q": _fts_phrase(needle),
+                "after": after,
+                "upto": upto,
+                "keys": json.dumps(list(keys or [])),
+            },
         ).fetchall()
     ]
 
 
 def _short_chunks(
-    connection: Any, project_id: str, needles: Sequence[str], after: int, upto: int
+    connection: Any,
+    project_id: str,
+    needles: Sequence[str],
+    after: int,
+    upto: int,
+    keys: Sequence[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """2 个字的针合成一条语句一起查（instr），按针分组。"""
     result: dict[str, list[dict[str, Any]]] = {needle: [] for needle in needles}
     if not needles:
         return result
-    params: dict[str, Any] = {"pid": project_id, "after": after, "upto": upto}
+    params: dict[str, Any] = {
+        "pid": project_id,
+        "after": after,
+        "upto": upto,
+        "keys": json.dumps(list(keys or [])),
+    }
     ors = []
     for index, needle in enumerate(needles):
         params[f"n{index}"] = needle
         ors.append(f"instr(c.text, :n{index}) > 0")
     for row in connection.execute(
         f"""SELECT {_CHUNK_COLUMNS} FROM material_chunks c {_CHUNK_JOIN}
-             WHERE c.id > :after AND c.id <= :upto AND c.start_ms IS NULL AND ({" OR ".join(ors)})""",
+             WHERE c.id > :after AND c.id <= :upto AND c.start_ms IS NULL AND ({" OR ".join(ors)})
+                   {_ONLY_KEYS if keys is not None else ""}""",
         params,
     ).fetchall():
         item = dict(row)
@@ -870,6 +902,7 @@ def match_decision(
     after: int,
     upto: int,
     short_cache: Mapping[str, list[dict[str, Any]]] | None = None,
+    keys: Sequence[str] | None = None,
 ) -> list[_Hit] | None:
     """一条决议的候选文件（每份内容一段最好的），按顺序；10 份以上时回 None（主语太泛，一个都不写）。
     after、upto 是片段 id 的范围（只配新片段时 after 是台账里的记号）。
@@ -895,14 +928,14 @@ def match_decision(
     shorts = 0
     for rule, needle in needles:
         if len(needle) >= 3:
-            chunks = _match_chunks(connection, project_id, needle, after, upto)
+            chunks = _match_chunks(connection, project_id, needle, after, upto, keys)
         elif context["short_ok"] and shorts < SHORT_PER_DECISION:
             shorts += 1
             cached = (short_cache or {}).get(needle)
             chunks = (
                 cached
                 if cached is not None
-                else _short_chunks(connection, project_id, [needle], after, upto)[needle]
+                else _short_chunks(connection, project_id, [needle], after, upto, keys)[needle]
             )
         else:
             continue
@@ -1022,6 +1055,13 @@ def match_due(
         tried += outcome["tried"]
         written += outcome["written"]
         cleared += outcome["cleared"]
+    if stopped is None:
+        outcome = _catch_up(db, moment, stamp, busy, out_of_time)
+        if isinstance(outcome, str):
+            stopped = outcome
+        else:
+            tried += outcome["tried"]
+            written += outcome["written"]
     return {
         "tried": tried,
         "pending": len(due),
@@ -1029,6 +1069,78 @@ def match_due(
         "cleared": cleared,
         "stopped": stopped,
     }
+
+
+def _catch_up(
+    db: Any,
+    moment: datetime,
+    since: str,
+    busy: Callable[[], bool],
+    out_of_time: Callable[[], bool],
+) -> dict[str, int] | str:
+    """新进本项目、片段 id 不大于某场会记号的内容（挪进、复制进来的旧材料）：对这个项目配过、决议段没变
+    的会只拿这几份内容补配一次。配完一个项目记一次集合；停在半路的项目下一轮再来（补配只加不收，重来
+    不会多写）。片段都比会的记号新的内容走平常的增量，这里只记进集合。"""
+    stamp = _stamp(moment)
+    with db.autocommit() as connection:
+        current = project_contents(connection)
+        known = read_contents(connection, CONTENTS_KEY)
+        if known is None:
+            with db.transaction() as writer:
+                save_contents(writer, current, stamp, CONTENTS_KEY)
+            return {"tried": 0, "written": 0}
+        changed = {
+            project_id: (keys, keys - known.get(project_id, set()))
+            for project_id in set(current) | set(known)
+            if (keys := current.get(project_id, set())) != known.get(project_id, set())
+        }
+        if not changed:
+            return {"tried": 0, "written": 0}
+        rows = [dict(row) for row in connection.execute(_MEETINGS_SQL).fetchall()]
+        since_row = connection.execute(
+            "SELECT value FROM app_state WHERE key = 'links_since'"
+        ).fetchone()
+        floor = floor_of(moment, since_row[0] if since_row else None)
+    tried = written = 0
+    for project_id in sorted(changed):
+        keys, fresh = changed[project_id]
+        meetings = [
+            {**row, "full": False, "mark": int(row["affects_chunk_mark"]), "floor": floor}
+            for row in rows
+            if row["project_id"] == project_id
+            and row["affects_chunk_mark"]
+            and row["affects_hash"] in (row["section_hash"], f"{CAPPED}{row['section_hash']}")
+            and (moment_of := decision_moment(row, None)) is not None
+            and moment_of + timedelta(days=1) >= floor
+        ]
+        old: list[str] = []
+        if fresh and meetings:
+            top = max(meeting["mark"] for meeting in meetings)
+            with db.autocommit() as connection:
+                old = [
+                    str(row[0])
+                    for row in connection.execute(
+                        """SELECT content_key FROM material_chunks
+                            WHERE content_key IN (SELECT value FROM json_each(?))
+                            GROUP BY content_key HAVING MIN(id) <= ? ORDER BY content_key""",
+                        (json.dumps(sorted(fresh)), top),
+                    ).fetchall()
+                ]
+        for meeting in meetings if old else []:
+            if busy():
+                return STOP_BUSY
+            if out_of_time():
+                return STOP_BUDGET
+            outcome = _match_meeting(
+                db, meeting, moment, since, busy, out_of_time=out_of_time, keys=old
+            )
+            if isinstance(outcome, str):
+                return outcome
+            tried += outcome["tried"]
+            written += outcome["written"]
+        with db.transaction() as connection:
+            save_contents(connection, {project_id: keys}, stamp, CONTENTS_KEY)
+    return {"tried": tried, "written": written}
 
 
 def _match_meeting(
@@ -1040,14 +1152,16 @@ def _match_meeting(
     *,
     out_of_time: Callable[[], bool] | None = None,
     room: int | None = None,
+    keys: Sequence[str] | None = None,
 ) -> dict[str, int] | str:
-    """一场会：整场重配（full）或只配新片段。忙了回 STOP_BUSY；要配的决议比 room 多、或配到一半
-    out_of_time 为真回 STOP_BUDGET。这两种都什么都不写、台账不动，这场会下一轮从头再来。"""
+    """一场会：整场重配（full）或只配新片段；给了 keys 是补配挪进来的旧内容（只看这几份内容、片段 id
+    不大于 mark，只加不收）。忙了回 STOP_BUSY；要配的决议比 room 多、或配到一半 out_of_time 为真回
+    STOP_BUDGET。这两种都什么都不写、台账不动，这场会下一轮从头再来。"""
     meeting_id = str(meeting["meeting_id"])
     project_id = str(meeting["project_id"])
     full = bool(meeting["full"])
     upto = int(meeting["mark"])
-    after = 0 if full else int(meeting["affects_chunk_mark"] or 0)
+    after = 0 if full or keys is not None else int(meeting["affects_chunk_mark"] or 0)
     floor = meeting["floor"]
     decisions_sql = f"""SELECT d.id, d.text, d.start_ms FROM decisions d
                          WHERE d.meeting_id = ? AND d.gone_at IS NULL AND NOT {superseded_sql("d")}
@@ -1075,7 +1189,7 @@ def _match_meeting(
                         text, terms=context["terms"], excluded=context["excluded"]
                     )
                 shorts += [word for word in words if len(word) == 2 and word not in shorts]
-        cache = _short_chunks(connection, project_id, shorts, after, upto) if shorts else {}
+        cache = _short_chunks(connection, project_id, shorts, after, upto, keys) if shorts else {}
         rows: list[dict[str, Any]] = []
         tried = 0
         for decision, decided_at in decisions:
@@ -1093,6 +1207,7 @@ def _match_meeting(
                 after=after,
                 upto=upto,
                 short_cache=cache,
+                keys=keys,
             )
             for hit in hits or []:
                 rows.append(_row_for(decision, meeting_id, project_id, hit))
