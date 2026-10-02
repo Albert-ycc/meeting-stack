@@ -2346,14 +2346,14 @@ def create_app(
             raise HTTPException(409, _evidence_message(error)) from error
 
     @app.post("/api/meetings/{meeting_id}/asr-shadow/qwen", status_code=202)
-    def request_qwen_shadow(meeting_id: str, _body: dict[str, Any]):
+    def request_qwen_shadow(meeting_id: str, _body: EmptyInput | None = None):
         try:
             return _serialize_shadow_run(qwen.request(meeting_id))
         except QwenShadowError as error:
             raise HTTPException(409, str(error)) from error
 
     @app.post("/api/meetings/{meeting_id}/asr-shadow/qwen/{run_id}/retry", status_code=202)
-    def retry_qwen_shadow(meeting_id: str, run_id: str, _body: dict[str, Any]):
+    def retry_qwen_shadow(meeting_id: str, run_id: str, _body: EmptyInput | None = None):
         try:
             return _serialize_shadow_run(qwen.retry(meeting_id, run_id))
         except QwenShadowError as error:
@@ -2740,7 +2740,7 @@ def create_app(
             raise HTTPException(409, str(error)) from error
 
     @app.post("/api/jobs/{job_id}/stop-after-stage")
-    def stop_job_after_stage(job_id: str, _body: dict[str, Any]):
+    def stop_job_after_stage(job_id: str, _body: EmptyInput | None = None):
         try:
             result = relay.stop_after_stage(job_id)
             db.add_event("job_stop_after_stage_requested", job_id=job_id, actor="user")
@@ -2749,7 +2749,7 @@ def create_app(
             raise HTTPException(409, str(error)) from error
 
     @app.post("/api/jobs/{job_id}/cancel")
-    def cancel_job(job_id: str, _body: dict[str, Any]):
+    def cancel_job(job_id: str, _body: EmptyInput | None = None):
         try:
             result = relay.cancel(job_id)
             db.add_event("job_cancelled", job_id=job_id, actor="user")
@@ -2758,7 +2758,9 @@ def create_app(
             raise HTTPException(409, str(error)) from error
 
     @app.post("/api/jobs/{job_id}/substates/{name}/retry")
-    def retry_job_substate(job_id: str, name: Literal["whisper", "index"], _body: dict[str, Any]):
+    def retry_job_substate(
+        job_id: str, name: Literal["whisper", "index"], _body: EmptyInput | None = None
+    ):
         try:
             result = relay.retry_substate(job_id, name)
             db.add_event(
@@ -2772,7 +2774,7 @@ def create_app(
             raise HTTPException(409, str(error)) from error
 
     @app.post("/api/admin/scan")
-    async def scan(_body: dict[str, Any]):
+    async def scan(_body: EmptyInput | None = None):
         report = await run_scan()
         payload = {name: getattr(report, name) for name in report.__dataclass_fields__}
         await asyncio.to_thread(
@@ -2781,7 +2783,7 @@ def create_app(
         return payload
 
     @app.post("/api/admin/semantic/rebuild")
-    def semantic_rebuild(_body: dict[str, Any]):
+    def semantic_rebuild(_body: EmptyInput | None = None):
         try:
             indexed = semantic.rebuild(force=True)
             sync_index_substates()
@@ -2795,7 +2797,7 @@ def create_app(
             raise HTTPException(503, str(error)) from error
 
     @app.post("/api/admin/backup")
-    def create_backup(_body: dict[str, Any]):
+    def create_backup(_body: EmptyInput | None = None):
         result = BackupManager(db, settings).create()
         db.add_event("database_backup_created", actor="user")
         return {
@@ -2891,7 +2893,7 @@ def create_app(
         }
 
     @app.post("/api/meetings/{meeting_id}/glossary/undo")
-    def undo_meeting_glossary(meeting_id: str, _body: dict[str, Any] | None = None):
+    def undo_meeting_glossary(meeting_id: str, _body: EmptyInput | None = None):
         result = glossary_checkup.undo_applied(db, service, meeting_id)
         notify_relay_draft_modified(meeting_id)
         return {
@@ -3241,7 +3243,7 @@ def create_app(
         }
 
     @app.post("/api/jobs/{job_id}/acknowledge")
-    def acknowledge_job(job_id: str):
+    def acknowledge_job(job_id: str, _body: EmptyInput | None = None):
         def find(snapshot: list[dict[str, Any]] | None) -> dict[str, Any] | None:
             return next((entry for entry in snapshot or [] if entry["job_id"] == job_id), None)
 
@@ -3323,7 +3325,7 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/meetings/{meeting_id}/publish")
-    def publish(meeting_id: str, _body: dict[str, Any]):
+    def publish(meeting_id: str, _body: EmptyInput | None = None):
         result = asdict(service.publish(meeting_id))
         meeting = db.query_one("SELECT source_job_id FROM meetings WHERE id=?", (meeting_id,))
         job_id = meeting.get("source_job_id") if meeting else None
@@ -3625,7 +3627,7 @@ def create_app(
         return {key: result.get(key) for key in ("action", "from", "to", "reason")}
 
     @app.post("/api/meetings/{meeting_id}/project/confirm")
-    def confirm_meeting_project_endpoint(meeting_id: str, _body: dict[str, Any] | None = None):
+    def confirm_meeting_project_endpoint(meeting_id: str, _body: EmptyInput | None = None):
         with db.transaction() as connection:
             confirm_meeting_project(connection, meeting_id)
         sync_card(meeting_id)
@@ -3633,7 +3635,7 @@ def create_app(
             return meeting_attribution(connection, meeting_id, ai_configured=llm_ready(settings))
 
     @app.post("/api/meetings/{meeting_id}/project/undo")
-    def undo_meeting_project(meeting_id: str, _body: dict[str, Any] | None = None):
+    def undo_meeting_project(meeting_id: str, _body: EmptyInput | None = None):
         with db.transaction() as connection:
             result = undo_reassign(connection, meeting_id)
         card_effect = sync_card(meeting_id)
@@ -3692,15 +3694,15 @@ def create_app(
             raise HTTPException(400, str(error)) from error
 
     @app.post("/api/cards/retire-all")
-    def cards_retire_all(_body: dict[str, Any] | None = None):
+    def cards_retire_all(_body: EmptyInput | None = None):
         return card_writer.retire_all()
 
     @app.post("/api/cards/retire-backfilled")
-    def cards_retire_backfilled(_body: dict[str, Any] | None = None):
+    def cards_retire_backfilled(_body: EmptyInput | None = None):
         return card_writer.retire_backfilled()
 
     @app.post("/api/cards/enable")
-    def cards_enable(_body: dict[str, Any] | None = None):
+    def cards_enable(_body: EmptyInput | None = None):
         return card_writer.enable()
 
     @app.post("/api/cards/notices/dismiss")
@@ -3721,13 +3723,13 @@ def create_app(
             raise HTTPException(409, str(error)) from error
 
     @app.post("/api/projects/{project_id}/cards/pause")
-    def project_cards_pause(project_id: str, _body: dict[str, Any] | None = None):
+    def project_cards_pause(project_id: str, _body: EmptyInput | None = None):
         if db.query_one("SELECT 1 FROM projects WHERE id=?", (project_id,)) is None:
             raise HTTPException(404, "项目不存在")
         return card_writer.pause_project(project_id)
 
     @app.post("/api/projects/{project_id}/cards/resume")
-    def project_cards_resume(project_id: str, _body: dict[str, Any] | None = None):
+    def project_cards_resume(project_id: str, _body: EmptyInput | None = None):
         if db.query_one("SELECT 1 FROM projects WHERE id=?", (project_id,)) is None:
             raise HTTPException(404, "项目不存在")
         card_writer.resume_project(project_id)
@@ -3752,7 +3754,7 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/cold-start/folders/snooze")
-    def cold_start_folders_snooze():
+    def cold_start_folders_snooze(_body: EmptyInput | None = None):
         with db.transaction() as connection:
             return {"snoozed_until": cold_start.snooze_folder_suggestions(connection)}
 
@@ -3817,7 +3819,7 @@ def create_app(
         return result
 
     @app.post("/api/meetings/{meeting_id}/name-as-requirement/undo")
-    def undo_meeting_name_as_requirement(meeting_id: str, _body: dict[str, Any] | None = None):
+    def undo_meeting_name_as_requirement(meeting_id: str, _body: EmptyInput | None = None):
         with db.transaction() as connection:
             result = name_actions.undo_name_as_requirement(connection, meeting_id)
         for affected in result["meeting_ids"]:
@@ -3840,14 +3842,14 @@ def create_app(
             raise HTTPException(400, str(error)) from error
 
     @app.delete("/api/projects/{project_id}")
-    def delete_project(project_id: str):
+    def delete_project(project_id: str, _body: EmptyInput | None = None):
         with db.transaction() as connection:
             result = delete_empty_project(connection, project_id)
         rewrite_snapshot(db, settings.data_dir / "glossary-snapshot.json")
         return {"ok": True, **result}
 
     @app.post("/api/projects/{project_id}/merge-into/{target_id}")
-    def merge_project_into(project_id: str, target_id: str, _body: dict[str, Any] | None = None):
+    def merge_project_into(project_id: str, target_id: str, _body: EmptyInput | None = None):
         try:
             with db.transaction() as connection:
                 result = merge_project(connection, project_id, target_id)
@@ -4303,11 +4305,11 @@ def create_app(
             raise HTTPException(400, str(error)) from error
 
     @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/reject")
-    def reject_file_mention(meeting_id: str, stem_key: str):
+    def reject_file_mention(meeting_id: str, stem_key: str, _body: EmptyInput | None = None):
         return _mention_action(file_mentions.reject_mention, meeting_id, stem_key)
 
     @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/restore")
-    def restore_file_mention(meeting_id: str, stem_key: str):
+    def restore_file_mention(meeting_id: str, stem_key: str, _body: EmptyInput | None = None):
         return _mention_action(file_mentions.restore_mention, meeting_id, stem_key)
 
     @app.post("/api/meetings/{meeting_id}/file-mentions/{stem_key}/pick")
@@ -4316,7 +4318,7 @@ def create_app(
 
     # 4a：［现在重试］。failed 的放宽提到和决议对比放回 pending、次数清零，同时清掉 AI 循环的整体停下和退避
     @app.post("/api/links/retry")
-    def retry_links():
+    def retry_links(_body: EmptyInput | None = None):
         with db.transaction() as connection:
             requeued = links_llm_module.requeue_failed(connection)
         links_llm_worker.clear_pause()
@@ -4334,7 +4336,7 @@ def create_app(
             raise HTTPException(error.status, str(error)) from error
 
     @app.post("/api/relations/{relation_id}/undo")
-    def undo_relation(relation_id: SqlInt):
+    def undo_relation(relation_id: SqlInt, _body: EmptyInput | None = None):
         try:
             with db.transaction() as connection:
                 return relations_module.undo(connection, relation_id, utc_now())
@@ -4407,7 +4409,7 @@ def create_app(
 
     # 4d：［用本机应用打开］只在这台电脑上；扩展名白名单；传给打开程序的是 realpath
     @app.post("/api/materials/files/{file_id}/open")
-    def open_material_file(file_id: SqlInt, body: EmptyInput, request: Request):
+    def open_material_file(file_id: SqlInt, request: Request, _body: EmptyInput | None = None):
         try:
             with db.autocommit() as connection:
                 related_read.open_material(connection, file_id, local=local_request(request))
@@ -4572,7 +4574,7 @@ def create_app(
         return task_service._project_detail(project_id)
 
     @app.delete("/api/projects/{project_id}/pending-folder")
-    def project_pending_folder_drop(project_id: str):
+    def project_pending_folder_drop(project_id: str, _body: EmptyInput | None = None):
         project_folders.drop_pending(db, project_id)
         return {"ok": True}
 
@@ -4625,12 +4627,14 @@ def create_app(
         return {"ok": True}
 
     @app.delete("/api/settings/project-parent/decline")
-    def project_parent_undecline(path: str):
+    def project_parent_undecline(path: str, _body: EmptyInput | None = None):
         project_folders.undecline(db, path)
         return {"ok": True}
 
     @app.delete("/api/projects/{project_id}/material-roots/{root_id}")
-    def remove_project_material_root(project_id: str, root_id: SqlInt):
+    def remove_project_material_root(
+        project_id: str, root_id: SqlInt, _body: EmptyInput | None = None
+    ):
         materials.remove_material_root(db, project_id, root_id)
         return {"ok": True}
 
@@ -4799,16 +4803,16 @@ def create_app(
             raise HTTPException(400, str(error)) from error
 
     @app.post("/api/requirement-candidates/{candidate_id}/unmerge")
-    def unmerge_requirement_candidate(candidate_id: str, _body: dict[str, Any] | None = None):
+    def unmerge_requirement_candidate(candidate_id: str, _body: EmptyInput | None = None):
         # 合并后 10 分钟内撤销（R01-14）；过了时间、原话已经不在那条需求里时 409
         return requirement_candidates.unmerge_candidate(task_service, candidate_id)
 
     @app.post("/api/requirement-candidates/{candidate_id}/drop")
-    def drop_requirement_candidate(candidate_id: str, _body: dict[str, Any] | None = None):
+    def drop_requirement_candidate(candidate_id: str, _body: EmptyInput | None = None):
         return requirement_candidates.drop_candidate(db, candidate_id)
 
     @app.post("/api/requirement-candidates/{candidate_id}/restore")
-    def restore_requirement_candidate(candidate_id: str, _body: dict[str, Any] | None = None):
+    def restore_requirement_candidate(candidate_id: str, _body: EmptyInput | None = None):
         return requirement_candidates.restore_candidate(db, candidate_id)
 
     @app.get("/api/requirements/{requirement_id}/folders/{folder_id}/files")
@@ -4821,7 +4825,9 @@ def create_app(
         return requirements.folder_files(db, requirement_id, folder_id, limit=limit, offset=offset)
 
     @app.delete("/api/requirements/{requirement_id}/folders/{folder_id}")
-    def remove_requirement_folder(requirement_id: str, folder_id: SqlInt):
+    def remove_requirement_folder(
+        requirement_id: str, folder_id: SqlInt, _body: EmptyInput | None = None
+    ):
         return requirements.remove_folder(task_service, requirement_id, folder_id)
 
     @app.put("/api/requirements/{requirement_id}/meetings")
@@ -4830,12 +4836,14 @@ def create_app(
 
     @app.post("/api/requirements/{requirement_id}/meetings/{meeting_id}")
     def add_requirement_meeting(
-        requirement_id: str, meeting_id: str, _body: dict[str, Any] | None = None
+        requirement_id: str, meeting_id: str, _body: EmptyInput | None = None
     ):
         return requirements.add_meeting(task_service, requirement_id, meeting_id)
 
     @app.delete("/api/requirements/{requirement_id}/meetings/{meeting_id}")
-    def remove_requirement_meeting(requirement_id: str, meeting_id: str):
+    def remove_requirement_meeting(
+        requirement_id: str, meeting_id: str, _body: EmptyInput | None = None
+    ):
         return requirements.remove_meeting(task_service, requirement_id, meeting_id)
 
     @app.post("/api/requirements/{requirement_id}/tasks")
@@ -4915,7 +4923,7 @@ def create_app(
             raise HTTPException(400, str(error)) from error
 
     @app.post("/api/review-cards/{meeting_id}/confirm-all")
-    def review_card_confirm_all(meeting_id: str):
+    def review_card_confirm_all(meeting_id: str, _body: EmptyInput | None = None):
         return todo.confirm_all(task_service, meeting_id)
 
     @app.get("/api/tasks/{task_id}/requirement-options")
@@ -4997,7 +5005,7 @@ def create_app(
             raise HTTPException(400, str(error)) from error
 
     @app.post("/api/tasks/{task_id}/reject")
-    def reject_task(task_id: str):
+    def reject_task(task_id: str, _body: EmptyInput | None = None):
         return task_service.reject_task(task_id)
 
     @app.post("/api/tasks/{task_id}/status")
@@ -5030,7 +5038,9 @@ def create_app(
             raise HTTPException(400, str(error)) from error
 
     @app.delete("/api/tasks/{task_id}/deliverables/{deliverable_id}")
-    def remove_task_deliverable(task_id: str, deliverable_id: SqlInt):
+    def remove_task_deliverable(
+        task_id: str, deliverable_id: SqlInt, _body: EmptyInput | None = None
+    ):
         return task_service.remove_deliverable(task_id, deliverable_id)
 
     @app.post("/api/meetings/{meeting_id}/tasks/re-extract")
@@ -5041,7 +5051,7 @@ def create_app(
             raise HTTPException(400, str(error)) from error
 
     @app.post("/api/meetings/{meeting_id}/requirement-candidates/extract")
-    def extract_requirement_candidates(meeting_id: str, _body: dict[str, Any] | None = None):
+    def extract_requirement_candidates(meeting_id: str, _body: EmptyInput | None = None):
         # 会议详情［抽需求候选］：历史会议手动补抽（R01-4），只抽候选、不动任务
         return task_service.extract_requirement_candidates(meeting_id)
 
@@ -5094,7 +5104,7 @@ def create_app(
         return result
 
     @app.post("/api/uploads/{upload_id}/complete")
-    def complete_upload(upload_id: str, _body: dict[str, Any]):
+    def complete_upload(upload_id: str, _body: EmptyInput | None = None):
         try:
             destination = uploads.complete(upload_id)
         except UploadError as error:
@@ -5170,7 +5180,7 @@ def create_app(
         }
 
     @app.post("/api/uploads/{upload_id}/cancel")
-    def cancel_upload(upload_id: str, _body: dict[str, Any]):
+    def cancel_upload(upload_id: str, _body: EmptyInput | None = None):
         try:
             uploads.cancel(upload_id)
         except UploadError as error:
@@ -5207,7 +5217,7 @@ def create_app(
             return {"summary": cold_start.legacy_groups_summary(connection)}
 
     @app.post("/api/glossary/legacy-groups/undo")
-    def glossary_legacy_groups_undo():
+    def glossary_legacy_groups_undo(_body: EmptyInput | None = None):
         try:
             with db.transaction() as connection:
                 result = cold_start.undo_legacy_groups(db, connection)
@@ -5217,7 +5227,7 @@ def create_app(
         return result
 
     @app.post("/api/glossary/legacy-groups/dismiss")
-    def glossary_legacy_groups_dismiss():
+    def glossary_legacy_groups_dismiss(_body: EmptyInput | None = None):
         with db.transaction() as connection:
             cold_start.dismiss_legacy_groups(connection)
         return {"ok": True}
@@ -5310,7 +5320,7 @@ def create_app(
         return merged
 
     @app.delete("/api/glossary/terms/{term_id}")
-    def glossary_delete_term(term_id: str):
+    def glossary_delete_term(term_id: str, _body: EmptyInput | None = None):
         if not delete_term(db, term_id, snapshot_path=snapshot_path):
             raise HTTPException(404, "术语不存在")
         return {"ok": True}
@@ -5341,19 +5351,19 @@ def create_app(
         return {"ok": True, **result, "suggestion": get_suggestion(db, suggestion_id)}
 
     @app.post("/api/glossary/suggestions/{suggestion_id}/undo")
-    def glossary_undo_suggestion(suggestion_id: str):
+    def glossary_undo_suggestion(suggestion_id: str, _body: EmptyInput | None = None):
         if not undo_confirm_suggestion(db, suggestion_id, snapshot_path=snapshot_path):
             raise HTTPException(404, "这条建议没有确认过，或已经撤销")
         return {"ok": True, "suggestion": get_suggestion(db, suggestion_id)}
 
     @app.post("/api/glossary/suggestions/{suggestion_id}/reject")
-    def glossary_reject_suggestion(suggestion_id: str):
+    def glossary_reject_suggestion(suggestion_id: str, _body: EmptyInput | None = None):
         if not reject_suggestion(db, suggestion_id):
             raise HTTPException(404, "待确认建议不存在或已处理")
         return {"ok": True}
 
     @app.post("/api/glossary/suggestions/{suggestion_id}/restore")
-    def glossary_restore_suggestion(suggestion_id: str):
+    def glossary_restore_suggestion(suggestion_id: str, _body: EmptyInput | None = None):
         if not restore_suggestion(db, suggestion_id):
             raise HTTPException(404, "这条建议没有被驳回，或已经恢复")
         return {"ok": True, "suggestion": get_suggestion(db, suggestion_id)}
