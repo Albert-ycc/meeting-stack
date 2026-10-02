@@ -291,6 +291,12 @@ class MeetingService:
         segments: list[dict[str, Any]],
         expected_base_version_id: str | None | object = _BASE_VERSION_UNSET,
     ) -> str:
+        # 页面拆段、合段都给新段落发新 id，同一个 id 出现两次只会是请求本身坏了；
+        # 放进事务会撞 segments.id 主键变成 500，这里先挡掉。
+        segment_ids = [str(segment.get("id") or "") for segment in segments]
+        named_ids = [value for value in segment_ids if value]
+        if len(named_ids) != len(set(named_ids)):
+            raise MeetingServiceError("段落 id 重复，请刷新页面后再保存")
         with self.db.transaction() as connection:
             meeting = connection.execute(
                 "SELECT current_transcript_version_id FROM meetings WHERE id=?", (meeting_id,)

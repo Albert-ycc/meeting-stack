@@ -9,7 +9,7 @@ from meeting_workbench.db import Database
 from meeting_workbench.importer import ArchiveImporter
 from meeting_workbench.integrity import AudioIntegrityVerifier
 from meeting_workbench.parsers import parse_whisper_json
-from meeting_workbench.service import ConflictError, MeetingService
+from meeting_workbench.service import ConflictError, MeetingService, MeetingServiceError
 
 from .helpers import seed_editable_meeting
 
@@ -677,3 +677,24 @@ def test_publish_recovery_resolves_only_matching_post_commit_token(tmp_path):
         recovery_id,
         external_id,
     }
+
+
+def test_saving_a_transcript_with_duplicate_segment_ids_is_a_service_error(tmp_path):
+    db = Database(tmp_path / "workbench.sqlite3")
+    db.initialize()
+    seed_editable_meeting(db, tmp_path / "archive")
+    meeting_id = "vm-20260102-101500"
+    service = MeetingService(db)
+    base_id = service.ensure_draft(meeting_id)
+    base_segments = db.query_all(
+        "SELECT * FROM segments WHERE version_id=? ORDER BY ordinal", (base_id,)
+    )
+    edited = [dict(base_segments[0]), dict(base_segments[0], text="同一个 id 又来一次")]
+
+    with pytest.raises(MeetingServiceError, match="段落 id 重复"):
+        service.save_segments(meeting_id, edited, expected_base_version_id=base_id)
+
+    current = db.query_one(
+        "SELECT current_transcript_version_id AS v FROM meetings WHERE id=?", (meeting_id,)
+    )["v"]
+    assert current == base_id
