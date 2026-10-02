@@ -82,12 +82,14 @@ def _no_real_llm(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
         pytest.fail(f"{NO_REAL_AI}：{blocked[0]}")
 
 
-MACHINE_PROGRAMS = frozenset({"tesseract", "xcode-select", "xcrun", "swiftc", "sysctl"})
+MACHINE_PROGRAMS = frozenset(
+    {"tesseract", "xcode-select", "xcrun", "swiftc", "sysctl", "ffmpeg", "ffprobe"}
+)
 
 
 @pytest.fixture(autouse=True)
 def _no_machine_programs(monkeypatch: pytest.MonkeyPatch):
-    """本机装的认字、编译程序在测试里一律当没装：找程序（PATH、Homebrew 两个目录）找不到，真要起也起不来
+    """本机装的认字、编译、音视频程序在测试里一律当没装：找程序（PATH、Homebrew 两个目录）找不到，真要起也起不来
     （抛 FileNotFoundError，和没装时一样）。不然结果随跑它的机器变，Mac 上还会真编译 Vision 程序。
     测试自己在临时目录里造的假程序照常能起；要假程序的用例照旧自己传 which / run。"""
     import shutil

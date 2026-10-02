@@ -21,6 +21,21 @@ def test_minutes_evidence_has_a_dedicated_artifact_kind():
     assert artifact_kind(Path("/tmp/minutes-plan.json")) == "minutes_plan"
 
 
+def test_machine_ffmpeg_is_out_of_reach(tmp_path):
+    # conftest 的护栏：本机装的 ffmpeg、ffprobe 在用例里当没装，查音频指纹走「读不出就按文件哈希」那条路
+    import subprocess
+
+    from meeting_workbench.importer import normalized_pcm_fingerprint, sha256_file
+    from meeting_workbench.ocr_engines import find_tool
+
+    assert shutil.which("ffmpeg") is None and find_tool("ffprobe") is None
+    with pytest.raises(FileNotFoundError):
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=False)
+    audio = tmp_path / "a.m4a"
+    audio.write_bytes(b"fake-audio")
+    assert normalized_pcm_fingerprint(audio) == sha256_file(audio)
+
+
 def write_meeting(root, dirname, *, official, transcript_text):
     meeting_dir = root / dirname
     meeting_dir.mkdir(parents=True)
