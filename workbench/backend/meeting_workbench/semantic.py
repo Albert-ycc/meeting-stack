@@ -154,26 +154,30 @@ class SemanticIndex:
                WHERE ? OR e.segment_id IS NULL ORDER BY s.meeting_id, s.ordinal""",
             (self.settings.semantic_model, int(force)),
         )
-        if not rows:
-            return 0
-        # 32 条一批、每批拿一次编码锁，和材料向量、相关窗口轮流用模型
-        vectors = self.encode_texts([row["text"] for row in rows], background=True)
-        with self.db.transaction() as connection:
-            for row, vector in zip(rows, vectors, strict=True):
-                connection.execute(
-                    """INSERT INTO embeddings(segment_id, model, dimensions, vector, created_at)
-                       VALUES (?, ?, ?, ?, ?)
-                       ON CONFLICT(segment_id, model) DO UPDATE SET dimensions=excluded.dimensions,
-                         vector=excluded.vector, created_at=excluded.created_at""",
-                    (
-                        row["id"],
-                        self.settings.semantic_model,
-                        int(vector.shape[0]),
-                        vector.astype(np.float32).tobytes(),
-                        utc_now(),
-                    ),
-                )
-        return len(rows)
+        stored = 0
+        # 32 条一批编码、一批一写：编码要几分钟，期间用户拆段合段会删掉旧段落 id，
+        # 已经不在的段落跳过，不能让一个外键冲突把整轮编码全部回滚。
+        for start in range(0, len(rows), BACKGROUND_BATCH):
+            batch = rows[start : start + BACKGROUND_BATCH]
+            vectors = self.encode_texts([row["text"] for row in batch], background=True)
+            with self.db.transaction() as connection:
+                for row, vector in zip(batch, vectors, strict=True):
+                    stored += connection.execute(
+                        """INSERT INTO embeddings(segment_id, model, dimensions, vector, created_at)
+                           SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM segments WHERE id = ?)
+                           ON CONFLICT(segment_id, model) DO UPDATE SET
+                             dimensions=excluded.dimensions,
+                             vector=excluded.vector, created_at=excluded.created_at""",
+                        (
+                            row["id"],
+                            self.settings.semantic_model,
+                            int(vector.shape[0]),
+                            vector.astype(np.float32).tobytes(),
+                            utc_now(),
+                            row["id"],
+                        ),
+                    ).rowcount
+        return stored
 
     def search(
         self, query: str, *, limit: int = 20, scope: str | None = None

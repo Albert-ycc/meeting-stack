@@ -11,6 +11,7 @@ from meeting_workbench.db import Database
 from meeting_workbench import semantic as semantic_module
 from meeting_workbench.semantic import SemanticBusy, SemanticIndex, SemanticPaused
 from meeting_workbench.main import create_app
+from meeting_workbench.service import MeetingService
 
 
 class FakeEmbedder:
@@ -258,3 +259,51 @@ def test_health_reports_semantic_paused_while_funasr_is_busy(tmp_path):
     assert health["services"]["semantic"] == "paused"
     assert health["details"]["semantic"]["status"] == "paused"
     assert health["details"]["semantic"]["consecutive_failures"] == 0
+
+
+def test_segments_split_during_rebuild_are_skipped_not_fatal(tmp_path):
+    settings = Settings(
+        data_dir=tmp_path, database_path=tmp_path / "w.sqlite3", semantic_enabled=True
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    db.execute("INSERT INTO meetings(id,title,status) VALUES('vm-20260101-100000','t','published')")
+    version = db.create_transcript_version("vm-20260101-100000", "funasr", published=True)
+    db.replace_segments(
+        version,
+        "vm-20260101-100000",
+        [
+            {"id": f"seg-{i}", "start_ms": i * 1000, "end_ms": i * 1000 + 900, "text": f"第{i}段"}
+            for i in range(100)
+        ],
+    )
+    service = MeetingService(db)
+    service.ensure_draft("vm-20260101-100000")
+    first = db.query_one(
+        """SELECT s.id FROM segments s
+           JOIN meetings m ON m.current_transcript_version_id = s.version_id
+           ORDER BY s.ordinal LIMIT 1"""
+    )["id"]
+
+    class SplitsMidway:
+        calls = 0
+
+        def encode(self, texts, **_kwargs):
+            SplitsMidway.calls += 1
+            if SplitsMidway.calls == 2:
+                # 编码到一半，用户在页面上拆了第一段（拆段会换掉段落 id）
+                service.split_segment("vm-20260101-100000", first, 1)
+            return np.ones((len(texts), 4), dtype=np.float32)
+
+    index = SemanticIndex(db, settings, embedder=SplitsMidway(), busy_check=lambda: False)
+
+    index.rebuild()  # 不能因为外键冲突整轮回滚
+    index.rebuild()  # 下一轮把拆出来的新段落补齐
+
+    missing = db.query_one(
+        """SELECT COUNT(*) AS n FROM segments s
+           JOIN meetings m ON m.current_transcript_version_id = s.version_id
+           LEFT JOIN embeddings e ON e.segment_id = s.id
+           WHERE e.segment_id IS NULL"""
+    )["n"]
+    assert missing == 0
