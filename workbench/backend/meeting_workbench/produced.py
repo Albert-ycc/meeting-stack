@@ -35,6 +35,7 @@ from .material_rules import silent_skip
 from .project_profile import light_key
 from .relations import canonical, upsert_system
 from .search import fold
+from .task_due import BEIJING_TZ, meeting_date
 
 WINDOW = timedelta(days=14)
 EXPIRE = timedelta(days=30)
@@ -433,13 +434,12 @@ def _marks(values: Sequence[Any]) -> str:
 
 
 def _meeting_day(row: Mapping[str, Any]) -> date | None:
-    from .graph import local_day  # graph 引用的模块多，这里晚一点再引
-
-    if not row.get("meeting_id") or not (
-        row.get("recording_date") or row.get("meeting_created_at")
-    ):
+    """开会的日子，北京日历（和 file_events.beijing_day 同一套：「会后 N 天」的两边必须同一套日历）。"""
+    if not row.get("meeting_id"):
         return None
-    return local_day(row.get("recording_date"), row.get("meeting_created_at"))
+    return meeting_date(
+        {"recording_date": row.get("recording_date"), "created_at": row.get("meeting_created_at")}
+    )
 
 
 def _eligible(file: Mapping[str, Any]) -> bool:
@@ -514,12 +514,13 @@ def _match(
 
 def _evidence(pick: _Pick) -> dict[str, Any]:
     event = pick.event
-    event_day = date.fromisoformat(str(event["day"]))
+    # 流水的 day 列是本机日历（时间线用），「会后 N 天」要北京日历：按行里的瞬时重算
+    event_day = file_events.beijing_day(event)
     meeting_day = _meeting_day(pick.task.row)
     if meeting_day is not None:
         ref, since_day = REF_MEETING, meeting_day
     else:
-        ref, since_day = REF_CONFIRM, pick.task.start.astimezone().date()
+        ref, since_day = REF_CONFIRM, pick.task.start.astimezone(BEIJING_TZ).date()
     return {
         "event_id": int(event["id"]),
         "event_kind": event["kind"],

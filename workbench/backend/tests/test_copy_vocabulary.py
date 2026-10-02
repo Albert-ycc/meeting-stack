@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 
+from .test_timeline import shanghai  # noqa: F401  4e 的样本库按真实当前时间造数据，「会后 N 天」按北京日历数，本机时区钉成北京时间
+
 PACKAGE = Path(__file__).resolve().parents[1] / "meeting_workbench"
 
 FORBIDDEN = ("导致", "因为", "推翻", "影响了", "%", "相似度", "置信度", "分数")

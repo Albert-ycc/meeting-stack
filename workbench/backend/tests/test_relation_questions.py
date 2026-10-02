@@ -23,6 +23,7 @@ from .helpers import count_reads
 from .test_file_events import swept
 from .test_graph import stop_clock
 from .test_tasks_api import make_client, write_headers
+from .test_timeline import shanghai  # noqa: F401  world 按真实当前时间造数据，「会后 N 天」按北京日历数，本机时区钉成北京时间
 
 HIDDEN = {"score", "prev_json", "root_id", "evidence_json"}
 

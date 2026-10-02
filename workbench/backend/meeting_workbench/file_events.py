@@ -21,6 +21,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from .material_rules import CONTENT_EXTS
+from .task_due import BEIJING_TZ
 
 ADDED = "added"
 CHANGED = "changed"
@@ -120,6 +121,25 @@ def at_text(value: datetime | str) -> str:
         moment = moment.replace(tzinfo=UTC)
     moment = moment.astimezone(UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+def beijing_day(event: Mapping[str, Any]) -> date:
+    """这条流水在北京日历上的日期：「会后 N 天新增」拿它和会的日期比，两边必须同一套日历（会上说的相对
+    日期是北京日历）。
+
+    流水的 day 列是触发器按本机日历写的，时间线按本机日历翻页、文件和会议任务落在同一天，所以它不动；
+    这里按行里的瞬时重算，规则和触发器写 day 时一样：added、gone 取记下它的那一刻（at）；changed 在
+    修改时间落在「那一刻前 2 天到后 5 分钟」之间时取修改时间，否则也取那一刻（修改时间不可信：盘换了
+    时区、时钟不准）。tests/test_file_events_beijing_day.py 把它和触发器真实写出的 day 逐行对过。"""
+    recorded = datetime.fromisoformat(str(event["at"]))
+    instant = recorded
+    modified_ns = event.get("mtime_ns")
+    if event["kind"] == CHANGED and modified_ns is not None:
+        recorded_s = int(recorded.timestamp())
+        modified_s = int(modified_ns) // 1_000_000_000
+        if recorded_s - 2 * 86_400 <= modified_s <= recorded_s + 300:
+            instant = datetime.fromtimestamp(modified_s, UTC)
+    return instant.astimezone(BEIJING_TZ).date()
 
 
 def _day_text(value: date | str) -> str:
