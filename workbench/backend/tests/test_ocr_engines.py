@@ -514,6 +514,34 @@ def test_pdf_text_layer_is_read_whatever_the_engine(tmp_path):
     ]
 
 
+def test_pdf_same_path_replaced_is_reopened_not_read_from_the_cache(tmp_path):
+    """同名覆盖成新版后再读：每份 PDF 读之前都先发 pdf_open，Vision 程序收到 pdf_open 一律重开，
+    别的命令按路径加文件身份（inode、大小、修改时间）认缓存。Swift 那边的行为要在 Mac 上真编译才测得到，
+    这里钉住两头的约定。"""
+    db, settings, content, engines, vision, _now = pdf_setup(tmp_path, pages=[LONG])
+    path = tmp_path / "方案.pdf"
+    path.write_bytes(b"%PDF-1.7\n" + b"0" * 100)
+    extractor = PdfExtractor(engines)
+    extractor(path, "pdf", {"content_key": "q2:aa", "reason": None})
+    vision.pages = [LONG, LONG, LONG]
+    path.unlink()
+    path.write_bytes(b"%PDF-1.7\n" + b"1" * 300)
+    second = extractor(path, "pdf", {"content_key": "q2:bb", "reason": None})
+    assert second.pages == 3
+    commands = [(payload["cmd"], payload["path"]) for payload, _t in vision.requests]
+    assert commands == [
+        ("pdf_open", str(path)),
+        ("pdf_text", str(path)),
+        ("pdf_open", str(path)),
+        ("pdf_text", str(path)),
+        ("pdf_text", str(path)),
+        ("pdf_text", str(path)),
+    ]
+    assert 'openPDF(path, reuse: command != "pdf_open")' in SWIFT_SOURCE
+    assert "openPath == path, stamp != nil, openStamp == stamp" in SWIFT_SOURCE
+    assert "info.st_ino" in SWIFT_SOURCE and "info.st_size" in SWIFT_SOURCE
+
+
 def test_pdf_scanned_pages_use_vision_or_tesseract(tmp_path):
     lines = {1: [{"t": "扫 描 页 上 的 字", "x": 0.1, "y": 0.1, "h": 0.03, "p": 1}]}
     db, settings, content, engines, vision, _now = pdf_setup(

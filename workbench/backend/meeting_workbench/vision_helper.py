@@ -5,7 +5,8 @@ data_dir/bin/sd-vision-<源码哈希前 12 位>。常驻时一行一个 JSON 请
 
 - `{"cmd": "image", "path"}`：认一张图。回 `{status, width, height, pages, small, truncated, lines}`；
   lines 每行 `{t 文字, c 置信度, x, y, w, h（都是 0 到 1，原点在左上）, p 第几页}`。
-- `{"cmd": "pdf_open", "path"}`：回 `{status, pages}`；status 是 ok、password、corrupt。
+- `{"cmd": "pdf_open", "path"}`：回 `{status, pages}`；status 是 ok、password、corrupt。每次都重新打开（同名文件
+  可能已换成新版）；别的 pdf_ 命令按路径加文件身份（inode、大小、修改时间）复用打开的文档。
 - `{"cmd": "pdf_text", "path", "page"}`：一页的文字层 `{status, text}`。
 - `{"cmd": "pdf_ocr", "path", "page"}`：一页按 200dpi（长边最多 4096）渲染后认字，回 lines。
 - `{"cmd": "pdf_render", "path", "page", "out"}`：一页渲染成 PNG 写到 out（给 tesseract 用）。
@@ -189,13 +190,25 @@ func handleImage(_ path: String) -> [String: Any] {
 // MARK: - PDF
 
 var openPath: String? = nil
+var openStamp: String? = nil
 var openDocument: PDFDocument? = nil
 
-func openPDF(_ path: String) -> (PDFDocument?, String) {
-    if openPath == path, let document = openDocument {
+/// 文件身份：设备、inode、大小、修改时间。同名覆盖成新版（新 inode）、原地改写，都和缓存的对不上。
+func fileStamp(_ path: String) -> String? {
+    var info = stat()
+    guard stat(path, &info) == 0 else { return nil }
+    let modified = info.st_mtimespec
+    return "\(info.st_dev):\(info.st_ino):\(info.st_size):\(modified.tv_sec).\(modified.tv_nsec)"
+}
+
+/// 打开的文档按路径加文件身份缓存；reuse 为 false（pdf_open，每份 PDF 读之前都先发一次）时一律重开。
+func openPDF(_ path: String, reuse: Bool = true) -> (PDFDocument?, String) {
+    let stamp = fileStamp(path)
+    if reuse, openPath == path, stamp != nil, openStamp == stamp, let document = openDocument {
         return (document, "ok")
     }
     openPath = nil
+    openStamp = nil
     openDocument = nil
     guard let document = PDFDocument(url: URL(fileURLWithPath: path)) else {
         return (nil, "corrupt")
@@ -204,6 +217,7 @@ func openPDF(_ path: String) -> (PDFDocument?, String) {
         return (nil, "password")
     }
     openPath = path
+    openStamp = stamp
     openDocument = document
     return (document, "ok")
 }
@@ -246,7 +260,7 @@ func writeImage(_ image: CGImage, to path: String, type: String) -> Bool {
 
 func handlePDF(_ command: String, _ request: [String: Any]) -> [String: Any] {
     let path = request["path"] as? String ?? ""
-    let (opened, status) = openPDF(path)
+    let (opened, status) = openPDF(path, reuse: command != "pdf_open")
     guard let document = opened else { return ["status": status] }
     if command == "pdf_open" {
         return ["status": "ok", "pages": document.pageCount]
