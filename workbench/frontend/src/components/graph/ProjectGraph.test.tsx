@@ -1254,6 +1254,39 @@ describe("ProjectGraph 像是新需求、等补建的文件夹（2c）", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("已在『云图AI』建好需求『数据看板』（P2）");
   });
 
+  it("面板开着时从一个「像是新需求」换到另一个，不带上一个的会名和读失败", async () => {
+    const graph = payload({
+      suggested_requirements: [
+        { id: "nr:k1", kind: "suggested_requirement", name: "数据看板", meeting_ids: ["a"], spoken: ["数据看板"], last_day: day(0), count: 1 },
+        { id: "nr:k2", kind: "suggested_requirement", name: "审批流", meeting_ids: ["c"], spoken: ["审批流"], last_day: day(10), count: 1 },
+      ],
+      edges: [
+        { id: "e:nr:k1:a", kind: "suggested", from: "m:a", to: "nr:k1", label: "", meeting_id: "a", name: "数据看板" },
+        { id: "e:nr:k2:c", kind: "suggested", from: "m:c", to: "nr:k2", label: "", meeting_id: "c", name: "审批流" },
+      ],
+    });
+    const apiClient = makeClient(graph, {
+      // c 的简报和候选名都一直不回来，面板停在载入中
+      meetingBrief: vi.fn((meetingId: string) => (meetingId === "c" ? new Promise(() => undefined) : Promise.resolve(brief(meetingId)))),
+      nameCandidates: vi.fn((meetingId: string) =>
+        meetingId === "a" ? Promise.reject(new Error("读不到")) : new Promise(() => undefined),
+      ),
+    });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "像是新需求『数据看板』· 1 场会" }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    expect(await within(panel).findByText(/最近一场/)).toHaveTextContent("初审规则沟通 a");
+    await userEvent.click(screen.getByRole("button", { name: "像是新需求『审批流』· 1 场会" }));
+    await within(panel).findByDisplayValue("审批流");
+    expect(within(panel).queryByText(/最近一场/)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "连线：像是新需求『数据看板』" }));
+    expect(await within(panel).findByText(/逐字稿里没数到这个词/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "连线：像是新需求『审批流』" }));
+    await within(panel).findByText("会上说『审批流』");
+    expect(within(panel).queryByText(/逐字稿里没数到这个词/)).toBeNull();
+  });
+
   it("等补建的文件夹：灰色虚边，写插上后自动建；停了写原因", async () => {
     const pending = (state: "waiting" | "stopped", reason: string | null = null): GraphPayload =>
       payload({

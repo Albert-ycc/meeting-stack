@@ -834,7 +834,7 @@ function EdgePanelBody({ props, edge }: { props: GraphPanelProps; edge: GraphEdg
         <p className="graph-panel__meta">
           {edgeKindName(edge.kind)} · {edge.kind === "suggested" ? "AI 读纪要的判断" : edge.source === "minutes" ? "纪要里写到的" : "逐字稿里数出来的"}
         </p>
-        {edge.kind === "mentioned" ? <MentionEdgeBody edge={edge} props={props} /> : <SuggestedEdgeBody edge={edge} props={props} />}
+        {edge.kind === "mentioned" ? <MentionEdgeBody edge={edge} props={props} /> : <SuggestedEdgeBody edge={edge} key={edge.id} props={props} />}
         <p className="graph-panel__muted">两头：{describe(props.layout, edge.from)} ↔ {describe(props.layout, edge.to)}</p>
       </>
     );
@@ -1170,7 +1170,7 @@ export function GraphPanel(props: GraphPanelProps) {
         body = <ProjectPanelBody props={props} />;
         break;
       case "suggested_requirement":
-        body = <SuggestedRequirementBody item={node.data} props={props} />;
+        body = <SuggestedRequirementBody item={node.data} key={node.id} props={props} />;
         break;
       case "file":
         body = (
