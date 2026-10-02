@@ -772,3 +772,91 @@ describe("拼进路径的 id 一律编码", () => {
     ]);
   });
 });
+
+describe("错误响应的文案", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    setCsrfToken("");
+  });
+
+  const html = "<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center></body></html>";
+
+  it("代理返回的 HTML 错误页：界面上只写「请求失败（502）」，正文进 console", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(html, { status: 502, headers: { "Content-Type": "text/html" } })),
+    );
+
+    const error = await api.meetings().catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 502, message: "请求失败（502）" });
+    expect((error as Error).message).not.toContain("<");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0])).toContain("502 Bad Gateway");
+  });
+
+  it("后端 500 的纯文本（Internal Server Error）同样只写状态码，写接口也一样", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response("Internal Server Error", { status: 500, headers: { "Content-Type": "text/plain" } })),
+      ),
+    );
+    setCsrfToken("t");
+
+    const read = await api.projects().catch((reason: unknown) => reason);
+    const written = await api.publish("vm-1").catch((reason: unknown) => reason);
+
+    expect(read).toMatchObject({ status: 500, message: "请求失败（500）" });
+    expect(written).toMatchObject({ status: 500, message: "请求失败（500）" });
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[0])).toContain("Internal Server Error");
+  });
+
+  it("响应头说是 JSON、正文却解不开：当成非 JSON 处理，不把 SyntaxError 抛给界面", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("{\"detail\": \"半截", { status: 500, headers: { "Content-Type": "application/json" } })),
+    );
+
+    const error = await api.projects().catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 500, message: "请求失败（500）" });
+  });
+
+  it("JSON 的 detail 照旧显示，不进 console", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: "这场会还没有纪要" }), { status: 409, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+
+    const error = await api.projects().catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({ status: 409, message: "这场会还没有纪要", data: { detail: "这场会还没有纪要" } });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("JSON 里没有 detail：还是「请求失败（状态码）」", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "x" }), { status: 500, headers: { "Content-Type": "application/json" } })),
+    );
+
+    await expect(api.projects()).rejects.toMatchObject({ status: 500, message: "请求失败（500）" });
+  });
+
+  it("成功响应不受影响：非 JSON 的 2xx 仍按文本返回", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("ok", { status: 200, headers: { "Content-Type": "text/plain" } })));
+
+    await expect(api.read<string>("/api/ping")).resolves.toBe("ok");
+  });
+});

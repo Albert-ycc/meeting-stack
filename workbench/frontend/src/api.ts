@@ -536,7 +536,6 @@ function translateValidationMessage(message: string): string {
 }
 
 function formatErrorDetail(data: unknown, status: number): string {
-  if (typeof data === "string" && data) return data;
   if (typeof data !== "object" || data === null || !("detail" in data)) {
     return `请求失败（${status}）`;
   }
@@ -557,15 +556,23 @@ function formatErrorDetail(data: unknown, status: number): string {
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
-  const contentType = response.headers.get("content-type") ?? "";
-  const data = contentType.includes("application/json")
-    ? ((await response.json()) as unknown)
-    : await response.text();
-  if (!response.ok) {
-    const detail = formatErrorDetail(data, response.status);
-    throw new ApiError(detail, response.status, data);
+  const isJson = (response.headers.get("content-type") ?? "").includes("application/json");
+  if (response.ok) return (isJson ? await response.json() : await response.text()) as T;
+  const text = await response.text();
+  let data: unknown = text;
+  if (isJson) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // 响应头说是 JSON、正文却解不开（半截的、被代理换掉的）：按非 JSON 处理
+    }
   }
-  return data as T;
+  if (typeof data === "string") {
+    // 后端 500 的纯文本、代理返回的 HTML 错误页不是写给用户看的：界面上只给状态码，正文留在 console 里查
+    console.warn(`[api] ${response.status} ${response.url}`, text.slice(0, 2000));
+    throw new ApiError(`请求失败（${response.status}）`, response.status, data);
+  }
+  throw new ApiError(formatErrorDetail(data, response.status), response.status, data);
 }
 
 async function read<T>(path: string): Promise<T> {
