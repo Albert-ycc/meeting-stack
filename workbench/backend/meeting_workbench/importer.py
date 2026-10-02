@@ -122,11 +122,19 @@ class ScanReport:
     # Whisper 对照稿只是参考版本：它坏了只跳过对照稿，不进 errors，
     # 否则这场会的纪要永远排在它后面导不进来，全库清理也一直停着。
     reference_skipped: int = 0
+    # 发现阶段因为是符号链接而没走进去的目录和文件。根里别的文件照常发现时，
+    # 清理也不能把这些路径下的记录当成「本轮没发现」删掉。
+    unwalked: list[str] = field(default_factory=list)
 
     def quarantine(self, directory: Path, reason: str) -> None:
         self.quarantined += 1
         if len(self.quarantine_details) < 50:
             self.quarantine_details.append({"directory": str(directory), "reason": reason})
+
+
+def _skip_unwalked(report: ScanReport | None, path: Path) -> None:
+    if report is not None:
+        report.unwalked.append(str(path))
 
 
 @dataclass(slots=True)
@@ -451,9 +459,10 @@ class ArchiveImporter:
             available_roots.update(labels)
         if not available_roots:
             return
-        # 隔离目录本次没被遍历进 discovered，但它的文件仍在磁盘上。若不豁免，
-        # 清理会把这些会议的 artifact 记录一并删掉，界面上音频直接断链。
-        quarantined = [Path(item["directory"]) for item in report.quarantine_details]
+        # 隔离目录、没走进去的符号链接本次没被遍历进 discovered，但文件仍在磁盘上。
+        # 若不豁免，清理会把这些会议的 artifact 记录一并删掉，界面上音频直接断链。
+        exempt = [Path(item["directory"]) for item in report.quarantine_details]
+        exempt.extend(Path(value) for value in report.unwalked)
         rows = self.db.query_all(
             "SELECT id, path, source_root FROM artifacts WHERE source_root IN (%s)"
             % ",".join("?" for _ in available_roots),
@@ -464,7 +473,7 @@ class ArchiveImporter:
             if row["path"] in discovered:
                 continue
             candidate = Path(row["path"])
-            if any(candidate.is_relative_to(directory) for directory in quarantined):
+            if any(candidate.is_relative_to(directory) for directory in exempt):
                 continue
             stale.append(row["id"])
         if not stale:
@@ -508,9 +517,11 @@ class ArchiveImporter:
                 report.errors += 1
         for child in sorted(root.iterdir()):
             try:
+                if child.is_symlink():
+                    _skip_unwalked(report, child)
+                    continue
                 if (
                     not child.is_dir()
-                    or child.is_symlink()
                     or child.name in SUPPORT_DIRECTORIES
                     or child.name.startswith(".")
                 ):
@@ -556,7 +567,10 @@ class ArchiveImporter:
         self, root: Path, *, report: ScanReport | None = None
     ) -> list[SourceBundle]:
         try:
-            if not root.is_dir() or root.is_symlink():
+            if root.is_symlink():
+                _skip_unwalked(report, root)
+                return []
+            if not root.is_dir():
                 return []
         except RECOVERABLE_SOURCE_ERRORS:
             if report is not None:
@@ -565,11 +579,10 @@ class ArchiveImporter:
         bundles: list[SourceBundle] = []
         for directory in sorted(root.iterdir()):
             try:
-                if (
-                    not directory.is_dir()
-                    or directory.is_symlink()
-                    or directory.name.startswith(".")
-                ):
+                if directory.is_symlink():
+                    _skip_unwalked(report, directory)
+                    continue
+                if not directory.is_dir() or directory.name.startswith("."):
                     continue
                 files = self._validated_source_files(directory, report)
                 # 「待校对」目录校验失败时刻意不隔离：一份未完工的受管草稿
@@ -612,7 +625,9 @@ class ArchiveImporter:
         job_dirs = []
         for path in sorted(root.iterdir()):
             try:
-                if path.is_dir() and not path.is_symlink():
+                if path.is_symlink():
+                    _skip_unwalked(report, path)
+                elif path.is_dir():
                     job_dirs.append(path)
             except RECOVERABLE_SOURCE_ERRORS:
                 if report is not None:
@@ -621,7 +636,9 @@ class ArchiveImporter:
             attempt_dirs = []
             for path in sorted(job_dir.iterdir()):
                 try:
-                    if path.is_dir() and not path.is_symlink():
+                    if path.is_symlink():
+                        _skip_unwalked(report, path)
+                    elif path.is_dir():
                         attempt_dirs.append(path)
                 except RECOVERABLE_SOURCE_ERRORS:
                     if report is not None:
@@ -856,7 +873,9 @@ class ArchiveImporter:
         children = []
         for child in sorted(root.iterdir()):
             try:
-                if child.is_dir() and not child.is_symlink() and not child.name.startswith("."):
+                if child.is_symlink():
+                    _skip_unwalked(report, child)
+                elif child.is_dir() and not child.name.startswith("."):
                     children.append(child)
             except RECOVERABLE_SOURCE_ERRORS:
                 if report is not None:
@@ -874,16 +893,23 @@ class ArchiveImporter:
         return bundles
 
     @staticmethod
-    def _files_under(directory: Path) -> list[Path]:
+    def _files_under(directory: Path, report: ScanReport | None = None) -> list[Path]:
         def walk_failed(error: OSError) -> None:
             # rglob 会静默跳过读不了的子目录，里面的文件就成了「本轮没发现」，
             # 清理会把它们的记录删掉。读不了就让整个目录按出错处理，不参与清理。
             raise error
 
         files = []
-        for current, _dirs, names in os.walk(directory, onerror=walk_failed):
+        for current, dirs, names in os.walk(directory, onerror=walk_failed):
+            # os.walk 不进符号链接目录，它在 dirs 里列出来但不往下走。
+            for name in dirs:
+                if (Path(current) / name).is_symlink():
+                    _skip_unwalked(report, Path(current) / name)
             for name in names:
                 path = Path(current) / name
+                if path.is_symlink():
+                    _skip_unwalked(report, path)
+                    continue
                 if not path.is_file() or is_noise(path):
                     continue
                 suffix = path.suffix.lower()
@@ -896,7 +922,7 @@ class ArchiveImporter:
 
     def _validated_source_files(self, directory: Path, report: ScanReport | None) -> list[Path]:
         valid: list[Path] = []
-        for path in self._files_under(directory):
+        for path in self._files_under(directory, report):
             if path.suffix.lower() == ".json":
                 try:
                     load_json_file(path)

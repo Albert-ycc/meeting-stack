@@ -205,10 +205,10 @@ def test_scan_isolates_directory_discovery_error(tmp_path, monkeypatch):
     importer = ArchiveImporter(db, settings)
     original = importer._files_under
 
-    def fail_one_directory(directory):
+    def fail_one_directory(directory, *args):
         if directory == bad:
             raise OSError("simulated unreadable directory")
-        return original(directory)
+        return original(directory, *args)
 
     monkeypatch.setattr(importer, "_files_under", fail_one_directory)
 
@@ -2582,3 +2582,97 @@ def test_hex_in_fingerprint_ids_is_not_read_as_a_recording_date(tmp_path, meetin
 
 def test_vm_ids_still_carry_their_recording_date():
     assert ArchiveImporter._untitled_label("vm-20260705-101500") == "260705 未命名录音"
+
+
+def _write_plain_meeting(root, dirname, meeting_id, text):
+    directory = root / dirname
+    directory.mkdir(parents=True)
+    (directory / f"{meeting_id}.m4a").write_bytes(f"audio-{meeting_id}".encode())
+    (directory / f"{meeting_id}.srt").write_text(
+        f"1\n00:00:01,000 --> 00:00:02,000\n{text}\n", encoding="utf-8"
+    )
+    return directory
+
+
+def _relink(path, elsewhere):
+    """把目录（或文件）搬到别处，原位置换成指向它的符号链接：内容一字没变。"""
+    elsewhere.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(path), str(elsewhere))
+    os.symlink(elsewhere, path, target_is_directory=elsewhere.is_dir())
+
+
+def _paths_under(db, directory):
+    return {
+        row["path"]
+        for row in db.query_all("SELECT path FROM artifacts")
+        if Path(row["path"]).is_relative_to(directory)
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "history",
+        "archive_meeting",
+        "staging_meeting",
+        "meeting_subdir",
+        "meeting_file",
+        "pending_review",
+    ],
+)
+def test_symlinked_part_of_a_walked_root_keeps_its_records(tmp_path, case):
+    archive = tmp_path / "archive"
+    staging = tmp_path / "staging"
+    _write_plain_meeting(archive, "正式会议", "vm-20260101-120000", "正式稿")
+    relay_db = None
+    if case == "history":
+        target = _write_plain_meeting(
+            archive / "meeting-relay-历史产物", "vm-20260701-111111", "vm-20260701-111111", "历史稿"
+        ).parent
+    elif case == "archive_meeting":
+        target = _write_plain_meeting(archive, "第二场", "vm-20260102-120000", "第二场正文")
+    elif case == "staging_meeting":
+        _write_plain_meeting(staging, "降级一", "vm-20260103-120000", "降级一")
+        target = _write_plain_meeting(staging, "降级二", "vm-20260104-120000", "降级二")
+    elif case == "meeting_subdir":
+        target = write_complete_whisper_reference(archive / "正式会议", "vm-20260101-120000")
+    elif case == "meeting_file":
+        target = archive / "正式会议" / "vm-20260101-120000.m4a"
+    else:
+        pending = archive / "待校对"
+        first = write_managed_unreviewed_bundle(
+            pending / "第一场", "vm-20260712-181605-0b445e55", "job-first", text="第一场"
+        )
+        target = write_managed_unreviewed_bundle(
+            pending / "第二场", "vm-20260712-215202-23ca270d", "job-second", text="第二场"
+        )
+        relay_db = tmp_path / "relay.sqlite3"
+        with sqlite3.connect(relay_db) as connection:
+            connection.execute(
+                "CREATE TABLE jobs(job_id TEXT PRIMARY KEY, status TEXT, current_attempt INTEGER, archive_dir TEXT)"
+            )
+            connection.executemany(
+                "INSERT INTO jobs VALUES (?, 'completed_unreviewed', 1, ?)",
+                [("job-first", str(first)), ("job-second", str(target))],
+            )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=staging,
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        semantic_enabled=False,
+        **({"relay_jobs_db": relay_db} if relay_db else {}),
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    importer = ArchiveImporter(db, settings)
+    assert importer.scan().errors == 0
+    before = _paths_under(db, target)
+    assert before
+
+    # 发现阶段不进符号链接；同一个根里别的文件都还在，清理也不能把这一块当成「本轮没发现」。
+    _relink(target, tmp_path / "moved" / target.name)
+    report = importer.scan()
+
+    assert report.errors == 0
+    assert _paths_under(db, target) == before
