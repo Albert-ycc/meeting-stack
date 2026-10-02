@@ -164,16 +164,23 @@ def cut_windows(segments: Sequence[tuple[int, str]]) -> list[Window]:
     )
     if not rows:
         return []
-    last = rows[-1][0]
+    # 只为有段落的窗开窗、按排好序的开始时间二分取段：段数线性，不随时间轴长度走（坏时间戳不会卡死）
+    starts = [start_ms for start_ms, _text in rows]
+    keys = sorted(
+        {
+            k
+            for start_ms, text in rows
+            if text.strip()
+            for k in range(max(0, (start_ms - WINDOW_MS) // STEP_MS + 1), start_ms // STEP_MS + 1)
+        }
+    )
     windows: list[Window] = []
-    for k in range(last // STEP_MS + 1):
+    for k in keys:
         start = k * STEP_MS
         end = start + WINDOW_MS
-        pieces = [
-            (start_ms, text) for start_ms, text in rows if start <= start_ms < end and text.strip()
-        ]
-        if not pieces:
-            continue
+        lo = bisect.bisect_left(starts, start)
+        hi = bisect.bisect_left(starts, end)
+        pieces = [(start_ms, text) for start_ms, text in rows[lo:hi] if text.strip()]
         parts: list[tuple[int, int, int, str]] = []
         buffer = ""
         for start_ms, text in pieces:
