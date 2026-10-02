@@ -316,7 +316,7 @@ python3 task-notify/card_listener.py             # 任务确认卡片回调监�
 | `MEETING_WORKBENCH_PORT` | `8765` | Web 端口 |
 | `MEETING_RELAY_WATCH_DIR` | `~/Downloads` | 监听目录 |
 | `MEETING_RELAY_AGENT` | `claude` | 派单目标，`claude` 或 `codex` |
-| `TRANSCRIBE_ENGINE` | `observe` | `observe`=双跑、`funasr`=只主稿、`whisper`=只对照稿 |
+| `TRANSCRIBE_ENGINE` | `observe` | `observe`=双跑；relay 自动处理录音只支持它，`funasr` / `whisper` 单引擎仅供手工跑 `transcribe.sh` |
 | `MEETING_WORKBENCH_LARK_CHAT_ID` | 空 | 飞书任务确认卡发送到的群；留空则确认闭环在网页内完成 |
 | `MEETING_WORKBENCH_MATERIAL_BROWSE_ROOT` | `~` | 项目材料目录可浏览、可挂靠的范围 |
 | `MEETING_WORKBENCH_MATERIAL_CONTENT_ENABLED` | `true` | 后台读材料的正文、图片文字、录音；关掉只建文件名索引 |

@@ -7,6 +7,10 @@
 #   bash transcribe.sh <音频> <prompt 文件>  # 指定自定义词典（默认用同级 prompt.txt）
 #   TRANSCRIBE_ENGINE=whisper bash transcribe.sh <音频>   # 回切纯 whisper（v3 行为）
 #
+# 引擎开关：relay 受控模式只支持默认的 observe（双引擎）。它要 FunASR 的 .spk.txt / .funasr.json
+# 和 whisper-ref/ 对照稿，单引擎产物不全，任务会在转写或发布环节失败；FunASR 环境缺失时
+# 下面会回落成纯 whisper，在受控模式下同样会失败。funasr / whisper 单引擎只供单独手工跑本脚本时用。
+#
 # 规则：每个录音的所有产出（音频/逐字稿/字幕/JSON/纪要/HTML）统一放在一个以
 # 录音名命名的文件夹里，避免多场会议产物混在一起。
 #

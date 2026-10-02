@@ -35,8 +35,13 @@ bash transcribe.sh /绝对路径/会议文件夹/
 | 值 | 行为 |
 |---|---|
 | `observe`（默认） | FunASR 出主稿，Whisper 转后台出对照稿 |
-| `funasr` | 只跑 FunASR |
-| `whisper` | 只跑 Whisper |
+| `funasr` | 只跑 FunASR，仅供单独手工跑 `transcribe.sh` |
+| `whisper` | 只跑 Whisper，仅供单独手工跑 `transcribe.sh` |
+
+**relay 受控模式只支持 `observe`。** 交接时要 FunASR 的 `.spk.txt`、`.funasr.json`，发布时要
+`whisper-ref/` 对照稿，单引擎产物不全，任务会在转写或发布环节失败，所以别在 relay 的环境里设
+`funasr` / `whisper`。FunASR 环境缺失时脚本会大声回落成纯 Whisper，在受控模式下同样会失败，
+要先把 FunASR 装好。
 
 默认双跑是因为两个引擎的强弱互补。实测对比中，FunASR 错字更少、数字与金额更准，
 非自回归结构也不会出现整段幻觉；弱点是字母类术语（缩写、英文产品名）不如 Whisper。
