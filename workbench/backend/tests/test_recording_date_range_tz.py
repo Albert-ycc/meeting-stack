@@ -7,31 +7,13 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import time
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from meeting_workbench.tasks import recording_date_range
-
-ZONES = ("America/Los_Angeles", "Asia/Shanghai", "UTC")
-
-
-@pytest.fixture(params=ZONES)
-def process_zone(request):
-    old = os.environ.get("TZ")
-    os.environ["TZ"] = request.param
-    time.tzset()
-    yield request.param
-    if old is None:
-        os.environ.pop("TZ", None)
-    else:
-        os.environ["TZ"] = old
-    time.tzset()
-
 
 # 生产库里的两种写法（-07:00、带小数秒的 +00:00）加上跨日边界、结束日当天、没带时区的值
 VALUES = {

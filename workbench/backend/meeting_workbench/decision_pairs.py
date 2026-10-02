@@ -33,7 +33,7 @@ import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from . import llm, relations
@@ -49,6 +49,7 @@ from .decisions import (
 )
 from .file_mentions import _meeting_ns
 from .links_llm import claim_stamp
+from .task_due import beijing_today, meeting_date
 
 logger = logging.getLogger(__name__)
 
@@ -193,11 +194,11 @@ class Plan:
         return build_user(self)
 
 
-def _day_label(recording_date: str | None, created_at: str | None, today_year: int) -> str:
-    from .graph import local_day
-
-    day = local_day(recording_date, created_at)
-    if day.year == today_year:
+def _day_label(recording_date: str | None, created_at: str | None, today: date) -> str:
+    """发给 AI 的日期标签：同一年的不写年份。「今年」和会的日期都按北京日历（会上说的「今年」「去年」是
+    北京的日历）：两边必须同一套，北京元旦凌晨太平洋时区还是 12 月 31 日。"""
+    day = meeting_date({"recording_date": recording_date, "created_at": created_at}) or today
+    if day.year == today.year:
         return f"{day.month}月{day.day}日"
     return f"{day.year}年{day.month}月{day.day}日"
 
@@ -229,7 +230,7 @@ def build_plan(
     if project_id is None or not plan.live:
         return plan
     excluded = project_names(meeting["project_name"], meeting["also_names"])
-    year = (now or datetime.now(UTC)).astimezone().year
+    today = beijing_today(now or datetime.now(UTC))
     linked_rows = connection.execute(
         """SELECT rm.meeting_id, r.id, r.title FROM requirement_meetings rm
              JOIN requirements r ON r.id = rm.requirement_id
@@ -248,7 +249,7 @@ def build_plan(
     }
     mine_linked = linked.get(meeting_id, [])
     plan.reqs = [{**item, "code": f"r{index + 1}"} for index, item in enumerate(mine_linked)]
-    label = _day_label(meeting["recording_date"], meeting["created_at"], year)
+    label = _day_label(meeting["recording_date"], meeting["created_at"], today)
     for index, row in enumerate(plan.live[:THIS_LIMIT]):
         _chosen, how = effective_requirement(row, mine_linked, project_id, excluded)
         plan.this.append(
@@ -310,7 +311,7 @@ def build_plan(
                 "start_ms": row["start_ms"],
                 "meeting_id": row["meeting_id"],
                 "meeting_title": row["title"],
-                "day": _day_label(row["recording_date"], row["created_at"], year),
+                "day": _day_label(row["recording_date"], row["created_at"], today),
                 "requirement": titles.get(chosen) if chosen else None,
                 "order": decision_order(
                     row["recording_date"], row["created_at"], row["start_ms"], row["meeting_id"]

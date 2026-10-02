@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import time
 import urllib.request
 from urllib.parse import urlsplit
 
@@ -135,3 +136,18 @@ def _no_machine_programs(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pyte
         ocr_engines.OcrEngines.__init__,
     ):
         monkeypatch.setitem(function.__kwdefaults__, "which", guarded_which)
+
+
+@pytest.fixture(params=("America/Los_Angeles", "Asia/Shanghai", "UTC"))
+def process_zone(request: pytest.FixtureRequest):
+    """进程时区钉成太平洋、上海、UTC 各跑一遍（TZ 加 tzset，SQLite 的 'localtime' 也跟着变）。
+    结果按「本机日历」或「北京日历」换算的用例要求它：生产在太平洋，开发常在 UTC，用户在北京。"""
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = request.param
+    time.tzset()
+    yield request.param
+    if old is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = old
+    time.tzset()

@@ -16,6 +16,7 @@ from meeting_workbench.loose_mentions import TASK_BACKFILL, TASK_RECENT, LooseMe
 from .test_decisions import set_minutes
 from .test_graph import add_meeting, add_project, add_requirement
 from .test_loose_mentions import FakeChat, settings
+from .test_timeline import shanghai  # noqa: F401  提示词里的日期按北京日历，造数据的会议时间没带时区，本机时区钉成北京时间
 
 NOW = datetime(2026, 9, 27, 4, 0, tzinfo=UTC)
 OLD_TEXT = "阈值先按 0.8 执行"
