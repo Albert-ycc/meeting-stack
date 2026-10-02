@@ -26,6 +26,14 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def read_only_uri(path: str | Path) -> str:
+    """只读打开 SQLite 文件用的 URI（sqlite3.connect(..., uri=True)）。
+
+    路径必须经 Path.as_uri() 转义：字符串拼 `file:{path}?mode=ro` 时，路径里的 ?、# 会被当成
+    URI 语法、% 被当成转义，打开的就不是这个文件。"""
+    return f"{Path(path).resolve().as_uri()}?mode=ro"
+
+
 def escape_like_pattern(value: str) -> str:
     """转义 LIKE 通配符，供 `... LIKE ? ESCAPE '\\\\'` 场景使用；main/tasks/requirements 三处共用。"""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -1462,8 +1470,7 @@ class Database:
     def user_version(self) -> int:
         if not self.path.is_file() or self.path.stat().st_size == 0:
             return 0
-        uri = f"file:{self.path.resolve()}?mode=ro"
-        connection = sqlite3.connect(uri, uri=True, timeout=5)
+        connection = sqlite3.connect(read_only_uri(self.path), uri=True, timeout=5)
         try:
             return int(connection.execute("PRAGMA user_version").fetchone()[0])
         finally:

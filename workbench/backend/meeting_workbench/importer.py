@@ -16,7 +16,7 @@ from typing import Any
 
 from .archive_lock import ArchiveLock
 from .config import Settings
-from .db import Database, utc_now
+from .db import Database, read_only_uri, utc_now
 from .minutes_evidence import is_manifest_exempt_path, manifest_meeting_id_matches
 from .parsers import (
     load_json_file,
@@ -809,8 +809,9 @@ class ArchiveImporter:
                 return None, "输入逐字稿快照与登记不符"
         if not topic_minutes_pair(files) and not ({"minutes_md", "minutes_html"} <= kinds):
             return None, "manifest 登记的纪要产物缺失"
-        uri = f"file:{self.settings.relay_jobs_db.resolve()}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as connection:
+        with closing(
+            sqlite3.connect(read_only_uri(self.settings.relay_jobs_db), uri=True, timeout=5)
+        ) as connection:
             connection.row_factory = sqlite3.Row
             job_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()

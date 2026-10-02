@@ -17,7 +17,7 @@ from typing import Iterator
 import fcntl
 
 from .config import Settings
-from .db import Database
+from .db import Database, read_only_uri
 from .material_fts import mark_for_rebuild
 
 logger = logging.getLogger(__name__)
@@ -254,8 +254,7 @@ class BackupManager:
 
     @staticmethod
     def _verify_database(path: Path) -> None:
-        uri = f"file:{path.resolve()}?mode=ro"
-        connection = sqlite3.connect(uri, uri=True, timeout=5)
+        connection = sqlite3.connect(read_only_uri(path), uri=True, timeout=5)
         try:
             result = connection.execute("PRAGMA integrity_check").fetchone()[0]
         finally:

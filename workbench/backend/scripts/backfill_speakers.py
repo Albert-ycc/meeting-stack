@@ -28,7 +28,7 @@ from pathlib import Path
 from meeting_workbench.archive_lock import ArchiveLock
 from meeting_workbench.backup import BackupManager
 from meeting_workbench.config import Settings
-from meeting_workbench.db import Database
+from meeting_workbench.db import Database, read_only_uri
 from meeting_workbench.speaker_backfill import apply_speaker_labels_with_connection
 
 
@@ -78,8 +78,7 @@ def _database(settings: Settings) -> Database:
 def _relay_in_flight_jobs(settings: Settings) -> list[str]:
     if not settings.relay_jobs_db.is_file():
         return []
-    uri = f"file:{settings.relay_jobs_db}?mode=ro"
-    connection = sqlite3.connect(uri, uri=True, timeout=5)
+    connection = sqlite3.connect(read_only_uri(settings.relay_jobs_db), uri=True, timeout=5)
     try:
         placeholders = ",".join("?" for _ in RELAY_IN_FLIGHT_STATUSES)
         rows = connection.execute(

@@ -15,7 +15,7 @@ from typing import Any
 from .asr_eval import AsrEvaluationError, evaluate_asr, parse_engine_specs, run_qwen_shadow
 from .backup import BackupManager
 from .config import Settings
-from .db import Database, utc_now
+from .db import Database, read_only_uri, utc_now
 from .importer import ArchiveImporter
 from .integrity import AudioIntegrityError, AudioIntegrityVerifier, last_audio_integrity_result
 from .gold_export import GoldExportError, export_gold_jsonl
@@ -225,7 +225,7 @@ def _material_roots(
         raise SystemExit(
             f"找不到声档数据库：{settings.database_path}；可以用 --root 直接指定文件夹"
         )
-    connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
+    connection = sqlite3.connect(read_only_uri(settings.database_path), uri=True)
     connection.row_factory = sqlite3.Row
     try:
         chosen = _find_project(connection, project)
@@ -285,7 +285,7 @@ def _materials_status(args: argparse.Namespace, settings: Settings) -> int:
     assert settings.database_path is not None
     if not settings.database_path.exists():
         raise SystemExit(f"找不到声档数据库：{settings.database_path}")
-    connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
+    connection = sqlite3.connect(read_only_uri(settings.database_path), uri=True)
     connection.row_factory = sqlite3.Row
     try:
         chosen = _find_project(connection, args.project)
@@ -401,7 +401,7 @@ def _read_only(settings: Settings) -> sqlite3.Connection:
     assert settings.database_path is not None
     if not settings.database_path.exists():
         raise SystemExit(f"找不到声档数据库：{settings.database_path}")
-    connection = sqlite3.connect(f"file:{settings.database_path}?mode=ro", uri=True)
+    connection = sqlite3.connect(read_only_uri(settings.database_path), uri=True)
     connection.row_factory = sqlite3.Row
     return connection
 
