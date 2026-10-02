@@ -595,6 +595,7 @@ def related_meetings(
     if key in related.hub_keys(connection, project_id, [key]):
         return []
     place = {"root_id": file["root_id"], "rel_path": file["rel_path"]}
+    blocked = related.blocked_meetings(connection, project_id, key, place)
     found = connection.execute(
         f"""SELECT r.id, r.meeting_id, r.at_ms, r.quote, r.evidence_json, m.title, m.recording_date, m.created_at,
                    {AUDIO_ID_SQL.format(meeting="m.id")} AS audio_id
@@ -606,9 +607,7 @@ def related_meetings(
     )
     rows = []
     for row in found:
-        if related.is_blocked(
-            key, place, related.rejected_filter(connection, str(row["meeting_id"]), project_id)
-        ):
+        if row["meeting_id"] in blocked:
             continue
         rows.append(row)
         if len(rows) >= int(limit):

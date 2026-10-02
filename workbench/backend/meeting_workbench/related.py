@@ -1024,22 +1024,28 @@ def hub_keys(
     return hubs
 
 
-def rejected_filter(
-    connection: Any, meeting_id: str, project_id: str
-) -> tuple[set[str], set[tuple[int, str]]]:
-    """你标过不相关的：按 content_key 挡（别处的同内容副本也挡），或按 (root_id, rel_path) 挡（原地改过也挡）。"""
+def _rejected_sets(rows: Iterable[Any]) -> tuple[set[str], set[tuple[int, str]]]:
     keys: set[str] = set()
     places: set[tuple[int, str]] = set()
-    for row in connection.execute(
-        """SELECT content_key, root_id, rel_path FROM relations
-            WHERE kind = 'related' AND meeting_id = ? AND project_id = ? AND status = 'rejected'""",
-        (meeting_id, project_id),
-    ).fetchall():
+    for row in rows:
         if row["content_key"]:
             keys.add(str(row["content_key"]))
         if row["root_id"] is not None and row["rel_path"]:
             places.add((int(row["root_id"]), str(row["rel_path"])))
     return keys, places
+
+
+def rejected_filter(
+    connection: Any, meeting_id: str, project_id: str
+) -> tuple[set[str], set[tuple[int, str]]]:
+    """你标过不相关的：按 content_key 挡（别处的同内容副本也挡），或按 (root_id, rel_path) 挡（原地改过也挡）。"""
+    return _rejected_sets(
+        connection.execute(
+            """SELECT content_key, root_id, rel_path FROM relations
+                WHERE kind = 'related' AND meeting_id = ? AND project_id = ? AND status = 'rejected'""",
+            (meeting_id, project_id),
+        ).fetchall()
+    )
 
 
 def is_blocked(
@@ -1049,6 +1055,23 @@ def is_blocked(
     if content_key in keys:
         return True
     return bool(file and (int(file["root_id"]), str(file["rel_path"])) in places)
+
+
+def blocked_meetings(
+    connection: Any, project_id: str, content_key: str, file: dict[str, Any]
+) -> set[str]:
+    """is_blocked 的批量版：这份内容（file 是它所在的位置）在本项目的哪些会里被驳回过。一条语句取完，
+    不用每场会各取一次 rejected_filter；SQL 只缩小范围（同内容，或同一个位置），挡不挡还是 is_blocked 定。"""
+    return {
+        row["meeting_id"]
+        for row in connection.execute(
+            """SELECT meeting_id, content_key, root_id, rel_path FROM relations
+                WHERE kind = 'related' AND project_id = ? AND status = 'rejected'
+                  AND (content_key = ? OR (root_id = ? AND rel_path = ?))""",
+            (project_id, content_key, file["root_id"], file["rel_path"]),
+        )
+        if is_blocked(content_key, file, _rejected_sets([row]))
+    }
 
 
 # ---------------------------------------------------------------------- 连成「相关」
