@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1716,6 +1717,106 @@ class ControlDbLockTests(unittest.TestCase):
         self.assertEqual("failed", status["status"])
         self.assertEqual("worker exception: RuntimeError", status["last_error"])
         self.assertIn("这段录音没能处理完", self.notifications)
+
+
+
+class InboxRescanTests(unittest.TestCase):
+    """监听只靠实时事件会漏：停机期间落地的、移进来的录音要靠补扫和 on_moved 兜住。"""
+
+    def setUp(self):
+        self.module = load_watchdog_module()
+        self.control = self.module._relay_control_module()
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.inbox = self.root / "inbox"
+        self.inbox.mkdir()
+        (self.root / "archive").mkdir()
+        state = self.root / "state"
+        self.module.INBOX = self.inbox
+        self.module.STATE_DIR = state
+        self.module.PROCESSED_LOG = state / "processed.txt"
+        self.module.INBOX_SCAN_WATERMARK = state / "inbox-scan-watermark"
+        self.env = patch.dict(os.environ, {
+            "MEETING_RELAY_JOBS_DB": str(self.root / "jobs.sqlite3"),
+            "MEETING_RELAY_ARCHIVE_ROOT": str(self.root / "archive"),
+            "MEETING_RELAY_CONTROL_ENABLED": "1",
+        })
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.tempdir.cleanup()
+
+    def _job_count(self) -> int:
+        with sqlite3.connect(self.root / "jobs.sqlite3") as connection:
+            return connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+
+    def _set_watermark(self, value: float) -> None:
+        self.module.INBOX_SCAN_WATERMARK.parent.mkdir(parents=True, exist_ok=True)
+        self.module.INBOX_SCAN_WATERMARK.write_text(f"{value}\n", encoding="utf-8")
+
+    def test_first_rescan_only_sets_baseline_without_touching_history(self):
+        (self.inbox / "vm-20260101-090000-OLD.m4a").write_bytes(b"history")
+        handler = self.module.AudioHandler()
+
+        self.assertEqual(0, handler.rescan_inbox())
+
+        self.assertTrue(self.module.INBOX_SCAN_WATERMARK.is_file())
+        self.assertFalse((self.root / "jobs.sqlite3").exists() and self._job_count())
+
+    def test_rescan_enqueues_audio_that_landed_while_watchdog_was_down(self):
+        self._set_watermark(time.time() - 3600)
+        landed = self.inbox / "vm-20261001-090000-AAA.m4a"
+        landed.write_bytes(b"recorded while down")
+        (self.inbox / "notes.txt").write_text("不是录音", encoding="utf-8")
+        handler = self.module.AudioHandler()
+
+        self.assertEqual(1, handler.rescan_inbox())
+
+        self.assertEqual(1, self._job_count())
+        self.assertGreater(
+            float(self.module.INBOX_SCAN_WATERMARK.read_text(encoding="utf-8")),
+            time.time() - 60,
+        )
+
+    def test_rescan_skips_files_untouched_since_last_scan(self):
+        (self.inbox / "vm-20261001-090000-AAA.m4a").write_bytes(b"old")
+        self._set_watermark(time.time() + 3600)
+
+        self.assertEqual(0, self.module.AudioHandler().rescan_inbox())
+
+        self.assertFalse((self.root / "jobs.sqlite3").exists() and self._job_count())
+
+    def test_rescan_never_redispatches_an_already_handled_recording(self):
+        audio = self.inbox / "vm-20261001-090000-AAA.m4a"
+        audio.write_bytes(b"meeting")
+        job_id = self.control.enqueue(audio, compute_hash=False)
+        claim = self.control.claim_next(worker_id="worker-old")
+        self.control.fail(job_id, "transcribing", "处理过了", expected_worker=claim["worker_id"])
+        self._set_watermark(time.time() - 3600)
+
+        for _ in range(2):
+            self.module.AudioHandler().rescan_inbox()
+
+        self.assertEqual(1, self._job_count())
+        self.assertEqual("failed", self.control.status(job_id)["status"])
+        self.assertIsNone(self.control.claim_next(worker_id="worker-new"))
+
+    def test_audio_moved_into_inbox_is_enqueued(self):
+        from watchdog.events import FileMovedEvent
+
+        outside = self.root / "elsewhere"
+        outside.mkdir()
+        moved = self.inbox / "vm-20261001-100000-BBB.m4a"
+        moved.write_bytes(b"dragged in")
+        handler = self.module.AudioHandler()
+
+        handler.on_moved(FileMovedEvent(str(outside / moved.name), str(moved)))
+        handler.on_moved(
+            FileMovedEvent(str(moved), str(outside / "vm-20261001-110000-CCC.m4a"))
+        )
+
+        self.assertEqual(1, self._job_count())
 
 
 if __name__ == "__main__":

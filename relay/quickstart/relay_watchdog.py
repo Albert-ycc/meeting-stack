@@ -66,6 +66,7 @@ STATE_DIR              = _env_path("MEETING_RELAY_STATE_DIR", Path.home() / ".me
 PROCESSED_LOG          = STATE_DIR / "processed.txt"
 PROMPTS_DIR            = STATE_DIR / "prompts"
 LAST_MEETING_FILE      = STATE_DIR / "last_meeting.json"
+INBOX_SCAN_WATERMARK   = STATE_DIR / "inbox-scan-watermark"
 DEFAULT_PROMPT_FILE    = STATE_DIR / "prompt-default.txt"   # 转写词典模板（可选）
 ARCHIVE_ROOT           = _env_path("MEETING_RELAY_ARCHIVE_ROOT", Path.home() / "MeetingArchive")
 # 转写脚本默认取仓库内的实现；单独部署时用 MEETING_RELAY_TRANSCRIBE_SH 指向别处。
@@ -137,6 +138,12 @@ def _positive_interval_from_env(name: str, default: str) -> float:
 PENDING_RECONCILE_INTERVAL_SEC = _positive_interval_from_env(
     "MEETING_RELAY_PENDING_RECONCILE_INTERVAL", "30"
 )
+# 控制模式下周期性补扫监听目录（停机期间落地、事件漏掉的录音），见 AudioHandler.rescan_inbox
+INBOX_RESCAN_INTERVAL_SEC = _positive_interval_from_env(
+    "MEETING_RELAY_INBOX_RESCAN_INTERVAL", "300"
+)
+# 补扫按「上次扫描时刻」划线；留一点余量吸收文件系统时间戳粒度
+INBOX_SCAN_MARGIN_SEC = 120.0
 CODEX_CALLBACK_GRACE_SEC = float(os.getenv("MEETING_RELAY_CODEX_CALLBACK_GRACE", "30"))
 RUNTIME_HEARTBEAT_INTERVAL_SEC = 10.0
 CONTROL_ERROR_BACKOFF_MAX_SEC = 30.0
@@ -2229,6 +2236,49 @@ class AudioHandler(FileSystemEventHandler):
         if self._should_process(path):
             self._handle(path)
 
+    def on_moved(self, event):
+        # Finder 拖进来、浏览器下载完改名、vmbridge 之类先写临时名再改名，都是 moved 事件
+        if event.is_directory:
+            return
+        path = Path(event.dest_path)
+        if path.parent != INBOX:
+            return
+        if self._should_process(path):
+            self._handle(path)
+
+    def rescan_inbox(self) -> int:
+        """控制模式下的电平兜底：补上 watchdog 停机期间落地、或文件事件漏掉的录音。
+
+        只看上次扫描之后落地或改动过的文件（mtime/ctime 取大，拖进来的文件 mtime 是旧的，
+        ctime 会变）；首次启用只立基线，不翻目录里的历史文件。入队本身按 source_key 幂等，
+        已经入过队的录音不会再派一遍。
+        """
+        scan_started = time.time()
+        try:
+            watermark = float(INBOX_SCAN_WATERMARK.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            watermark = None
+        handled = 0
+        if watermark is not None:
+            for path in sorted(INBOX.iterdir()):
+                try:
+                    if not path.is_file() or path.is_symlink():
+                        continue
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if max(stat.st_mtime, stat.st_ctime) < watermark - INBOX_SCAN_MARGIN_SEC:
+                    continue
+                if not self._should_process(path):
+                    continue
+                self._handle(path)
+                handled += 1
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = INBOX_SCAN_WATERMARK.with_name(INBOX_SCAN_WATERMARK.name + ".tmp")
+        temporary.write_text(f"{scan_started}\n", encoding="utf-8")
+        os.replace(temporary, INBOX_SCAN_WATERMARK)
+        return handled
+
     def on_modified(self, event):
         if event.is_directory:
             return
@@ -2288,7 +2338,8 @@ if __name__ == "__main__":
     log.info("启动时刻：%s", time.strftime("%H:%M:%S", time.localtime(STARTUP_EPOCH)))
 
     observer = Observer()
-    observer.schedule(AudioHandler(), str(INBOX), recursive=False)
+    handler = AudioHandler()
+    observer.schedule(handler, str(INBOX), recursive=False)
     observer.start()
 
     worker_stop = threading.Event()
@@ -2307,10 +2358,19 @@ if __name__ == "__main__":
 
     watchdog_mode = "controlled" if control_enabled() else "legacy"
     next_watchdog_heartbeat = 0.0
+    next_inbox_rescan = 0.0
     try:
         while True:
             _ensure_runtime_components_alive(observer, worker, mode=watchdog_mode)
             now = time.monotonic()
+            if watchdog_mode == "controlled" and now >= next_inbox_rescan:
+                try:
+                    rescanned = handler.rescan_inbox()
+                    if rescanned:
+                        log.info("补扫监听目录：%d 段录音补入队", rescanned)
+                except Exception:
+                    log.exception("补扫监听目录失败，下一轮再扫")
+                next_inbox_rescan = now + INBOX_RESCAN_INTERVAL_SEC
             if now >= next_watchdog_heartbeat:
                 _best_effort_runtime_heartbeat(
                     "watchdog", mode=watchdog_mode, status="running"
