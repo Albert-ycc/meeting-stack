@@ -30,6 +30,7 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
 from .db import Database, utc_now
+from .task_due import beijing_today
 
 
 def _format_anchor_ms(ms: int | None) -> str:
@@ -994,10 +995,12 @@ class LarkNotifier:
             line += f"，{review} 场等你选项目。" if review else "。"
             parts.append(line)
         text = "\n".join(parts)
+        # 一天一份按北京日期记（和 tasks._digest_due 的 09:00 同一个日历）
+        day = beijing_today().isoformat()
         return self._send(
             "digest",
-            utc_now()[:10],
-            f"今日任务晨报 · {utc_now()[:10]}",
+            day,
+            f"今日任务晨报 · {day}",
             text,
             button_label="打开声档",
             button_url=f"{self.public_base_url}/#tasks",

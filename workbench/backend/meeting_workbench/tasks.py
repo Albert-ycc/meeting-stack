@@ -2636,7 +2636,8 @@ class TaskService:
     def _digest_due(self) -> bool:
         # 当天过了 09:00 都算 due（台账幂等保证一天只发一次）；精确匹配到
         # 分钟会在扫描循环某轮耗时跨过 09:00 那一分钟时把当天晨报整个漏掉。
-        now = datetime.now().astimezone()
+        # 按北京时间算，和晨报的去重键、标题日期同一个日历（Mac 在太平洋，用户按北京过日子）。
+        now = datetime.now(task_due.BEIJING_TZ)
         return (now.hour, now.minute) >= (DIGEST_HOUR, DIGEST_MINUTE)
 
     def _digest_stats(self) -> dict[str, Any]:

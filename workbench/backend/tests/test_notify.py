@@ -1,12 +1,15 @@
 """飞书通知通道与任务通知调度测试（260804 新增）。"""
 
 import json
+import os
 import shlex
 import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.error import URLError
+
+import pytest
 
 from meeting_workbench.db import Database, utc_now
 from meeting_workbench.notify import (
@@ -15,6 +18,7 @@ from meeting_workbench.notify import (
     outline_minutes,
 )
 from meeting_workbench.config import Settings
+from meeting_workbench.task_due import beijing_today
 from meeting_workbench.tasks import TaskService
 
 # 老六段式纪要：决议在「## 三、核心决议」下，逐条是三级标题。
@@ -220,10 +224,79 @@ def test_daily_digest_sends_once_per_day(tmp_path, monkeypatch):
     assert stats["total"] >= 1
     assert notifier.daily_digest(stats)
     assert len(calls) == 1
-    assert notifier._sent("digest", utc_now()[:10])
+    assert notifier._sent("digest", beijing_today().isoformat())
     # 当日不重发
     assert not notifier.daily_digest(service._digest_stats())
     assert len(calls) == 1
+
+
+@pytest.fixture
+def local_tz(request):
+    """把本机时区钉成参数给的那个，用完还原（同 test_timeline 的 shanghai）。"""
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = request.param
+    time.tzset()
+    yield request.param
+    if old is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = old
+    time.tzset()
+
+
+@pytest.mark.parametrize("local_tz", ["America/Los_Angeles", "Asia/Shanghai"], indirect=True)
+def test_daily_digest_follows_the_beijing_calendar(tmp_path, monkeypatch, local_tz):
+    """晨报的触发（09:00 以后）、去重键、标题日期都按北京日历：本机在太平洋还是北京，结果一样——
+    北京每天 09:00 以后发一次。原来按本机 09:00 触发、按 UTC 日期去重，太平洋时区同一天发两次。"""
+    from zoneinfo import ZoneInfo
+
+    from meeting_workbench import task_due, tasks
+
+    class Clock(datetime):
+        moment = None
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.moment.astimezone(tz) if tz else cls.moment.astimezone().replace(tzinfo=None)
+
+    monkeypatch.setattr(tasks, "datetime", Clock)
+    monkeypatch.setattr(task_due, "datetime", Clock)
+    db, settings = make_db(tmp_path)
+    notifier = LarkNotifier(db, webhook_url="https://hook/", public_base_url="http://x")
+    titles = []
+    monkeypatch.setattr(
+        notifier,
+        "_post",
+        lambda payload: titles.append(payload["card"]["header"]["title"]["content"]) or True,
+    )
+    service = make_service(db, settings)
+    stats = {
+        "total": 1,
+        "pending": 1,
+        "pending_sources": [],
+        "stalled": 0,
+        "stalled_titles": [],
+        "stalled_days": [],
+        "done_today": [],
+        "auto_assigned_yesterday": 0,
+        "needs_review": 0,
+    }
+    beijing = ZoneInfo("Asia/Shanghai")
+    sent = []
+    for moment in (
+        datetime(2026, 10, 1, 8, 30, tzinfo=beijing),
+        datetime(2026, 10, 1, 9, 5, tzinfo=beijing),
+        datetime(2026, 10, 1, 17, 30, tzinfo=beijing),  # 太平洋 10-01 02:30
+        datetime(2026, 10, 2, 8, 30, tzinfo=beijing),  # 太平洋 10-01 17:30，UTC 已是 10-02
+        datetime(2026, 10, 2, 9, 10, tzinfo=beijing),
+        datetime(2026, 10, 2, 23, 50, tzinfo=beijing),
+    ):
+        Clock.moment = moment
+        if service._digest_due() and notifier.daily_digest(stats):
+            sent.append(moment.isoformat())
+
+    assert sent == ["2026-10-01T09:05:00+08:00", "2026-10-02T09:10:00+08:00"]
+    assert titles == ["今日任务晨报 · 2026-10-01", "今日任务晨报 · 2026-10-02"]
 
 
 def _log_path_for(kind, ref_key):

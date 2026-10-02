@@ -898,24 +898,21 @@ def test_re_extract_row_is_running_during_llm_call(tmp_path, monkeypatch):
 
 
 def test_digest_due_any_time_after_nine(tmp_path, monkeypatch):
-    """回归：晨报判据是「当天 >= 09:00」，精确到分钟会被慢扫描轮跨过而漏发。"""
+    """回归：晨报判据是「北京时间当天 >= 09:00」，精确到分钟会被慢扫描轮跨过而漏发。"""
+    from datetime import datetime
+
+    from meeting_workbench.task_due import BEIJING_TZ
+
     client, settings = make_client(tmp_path)
     db = Database(settings.database_path)
     service = TaskService(db, settings)
     import meeting_workbench.tasks as tasks_mod
 
-    class _Now:
-        def __init__(self, hour, minute):
-            self.hour = hour
-            self.minute = minute
-
-        def astimezone(self):
-            return self
-
     for hour, minute, expected in [(8, 59, False), (9, 0, True), (14, 30, True)]:
+        moment = datetime(2026, 10, 1, hour, minute, tzinfo=BEIJING_TZ)
         monkeypatch.setattr(
             tasks_mod,
             "datetime",
-            type("_D", (), {"now": staticmethod(lambda h=hour, m=minute: _Now(h, m))}),
+            type("_D", (), {"now": staticmethod(lambda tz=None, m=moment: m.astimezone(tz))}),
         )
         assert service._digest_due() is expected
