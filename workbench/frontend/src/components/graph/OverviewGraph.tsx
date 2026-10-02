@@ -2,7 +2,7 @@
  * 全部项目概览（2c）：左侧导航「关系图」打开的页面。取数（ETag、30 秒对一次）、深链（#graph?sel=）、提示条、
  * 取径器和认领框在这里；画布是 OverviewCanvas，右侧面板是 OverviewPanel。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { ApiClient } from "../../api";
 import type { Project, UnclaimedFolder } from "../../types";
@@ -18,6 +18,7 @@ import { OverviewCanvas, PANEL_KINDS } from "./OverviewCanvas";
 import { OverviewPanel } from "./OverviewPanel";
 import type { GraphOverview, OverviewFolders } from "./overviewTypes";
 import { forgetViewportViews } from "./useGraphViewport";
+import { usePanelEscape } from "./usePanelEscape";
 import "./ProjectGraph.css";
 import "./OverviewGraph.css";
 
@@ -310,11 +311,8 @@ export function OverviewGraph({
     setWindowChoice(next);
   };
 
-  const onPanelKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-    if ((event.target as HTMLElement).closest("select, input, textarea")) return;
-    onSelectionChange(null);
-  };
+  // Esc 在哪里按都关面板（点面板里的字之后焦点在 body 上）；盖着取径器、认领框时 Esc 归它们
+  usePanelEscape(panelNode ? () => onSelectionChange(null) : null);
 
   const parentUnset = folders?.state === "unset";
   let stage: ReactNode;
@@ -355,7 +353,7 @@ export function OverviewGraph({
           selectedId={resolved}
         />
         {panelNode && (
-          <div className="project-graph__panel" onKeyDown={onPanelKeyDown}>
+          <div className="project-graph__panel">
             <OverviewPanel
               apiClient={apiClient}
               hidden={hidden}

@@ -190,6 +190,49 @@ describe("ProjectGraph", () => {
     await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(""));
   });
 
+  it("点线、点面板里的字之后焦点落在页面上：Esc 照样关面板", async () => {
+    const graph = payload({
+      edges: [
+        { id: "e:disc:r1:a", kind: "discussion", from: "m:a", to: "r:r1", label: "你关联的 a", meeting_id: "a", requirement_id: "r1" },
+      ],
+    });
+    render(<Harness apiClient={makeClient(graph)} />);
+
+    // 线是 SVG 的 path，不能聚焦：点完焦点在 body 上，画布和面板上的 onKeyDown 都收不到 Esc
+    await userEvent.click(await screen.findByRole("button", { name: "连线：你关联的 a" }));
+    await screen.findByRole("complementary", { name: "详情面板" });
+    expect(screen.getByTestId("selection")).toHaveTextContent("e:disc:r1:a");
+    expect(document.activeElement).toBe(document.body);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).not.toBeInTheDocument());
+    expect(screen.getByTestId("selection")).toHaveTextContent("");
+
+    // 点面板里的字：焦点也落回 body
+    await userEvent.click(screen.getByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByText("定了初审规则的口径"));
+    expect(document.activeElement).toBe(document.body);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).not.toBeInTheDocument());
+  });
+
+  it("面板开着时，输入框里的 Esc 只清搜索不关面板，输入法组合中的 Esc 在页面上也不关", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    await screen.findByRole("complementary", { name: "详情面板" });
+
+    const input = screen.getByRole("searchbox", { name: "在图上找" });
+    await userEvent.type(input, "初审");
+    await userEvent.keyboard("{Escape}");
+    expect(input).toHaveValue("");
+    expect(screen.getByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
+    fireEvent.keyDown(document.body, { key: "Escape", keyCode: 229 });
+    expect(screen.getByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+    expect(screen.getByTestId("selection")).toHaveTextContent("m:a");
+  });
+
   it("门口的［归这里］调接口、弹带撤销的提示，撤销也走接口", async () => {
     const apiClient = makeClient(withDoorstep());
     render(<Harness apiClient={apiClient} />);
@@ -613,6 +656,39 @@ describe("ProjectGraph 展开一场会", () => {
     const anchor = (await within(detail).findByText("初审规则就按新口径")).closest("li");
     expect(anchor).toHaveClass("is-anchor");
     expect(within(detail).getByText("王工：")).toBeInTheDocument();
+  });
+
+  it("展开的会里点决议开了面板：焦点落在页面上时 Esc 关面板，展开的会还在", async () => {
+    render(<Harness apiClient={focusClient()} initial="m:a" />);
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(within(panel).getByRole("button", { name: "展开这场会" }));
+    const view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    await userEvent.click(await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" }));
+    const detail = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(within(detail).getByText("会上 01:00 说的"));
+    expect(document.activeElement).toBe(document.body);
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull());
+    expect(screen.getByRole("application", { name: "展开的会：初审规则沟通 a" })).toBeInTheDocument();
+  });
+
+  it("展开的会里点决议开了面板，焦点在展开的会上：一次 Esc 只关面板，再按一次才回到关系图", async () => {
+    render(<Harness apiClient={focusClient()} initial="m:a" />);
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(within(panel).getByRole("button", { name: "展开这场会" }));
+    const view = await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    const decision = await within(view).findByRole("button", { name: "决议：初审规则按新口径执行，01:00" });
+    await userEvent.click(decision);
+    await screen.findByRole("complementary", { name: "详情面板" });
+
+    fireEvent.keyDown(decision, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull());
+    expect(screen.getByRole("application", { name: "展开的会：初审规则沟通 a" })).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole("application", { name: "展开的会：初审规则沟通 a" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("application", { name: /^展开的会/ })).toBeNull());
+    expect(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ })).toBeInTheDocument();
   });
 
   it("决议带台账 id（4a）时按 id 选中：面板里还是那一条", async () => {
@@ -1438,6 +1514,58 @@ describe("ProjectGraph 材料面板的补充", () => {
     await userEvent.click(within(question).getByRole("button", { name: "是它" }));
     expect(repointProjectMaterialRoot).toHaveBeenCalledWith("p", 1, "/材料/云图AI-2026");
     expect(await screen.findByText("材料根目录已改到 /材料/云图AI-2026，2 个需求文件夹一起改了")).toBeInTheDocument();
+  });
+
+  describe("取径器盖在节点面板里面时的 Esc", () => {
+    function pickerClient() {
+      return makeClient(payload(), {
+        graphRoots: vi.fn(async () => ({ ...ONLINE_ROOTS, roots: [{ ...ONLINE_ROOTS.roots[0], state: "missing" }] })),
+        renameCandidates: vi.fn(async () => ({ state: "ready", candidates: [], default_path: null })),
+        browseMaterials: vi.fn(async () => ({
+          base: "/Volumes/资料盘",
+          path: "/Volumes/资料盘",
+          parent: null,
+          breadcrumbs: [{ name: "资料盘", path: "/Volumes/资料盘" }],
+          dirs: [{ name: "蓝鲸云", path: "/Volumes/资料盘/蓝鲸云" }],
+        })),
+      });
+    }
+
+    async function openPicker() {
+      render(<Harness apiClient={pickerClient()} />);
+      await userEvent.click(await screen.findByRole("button", { name: "文件夹：云图AI" }));
+      const panel = await screen.findByRole("complementary", { name: "详情面板" });
+      await userEvent.click(await within(panel).findByRole("button", { name: "重新选…" }));
+      return screen.findByRole("dialog", { name: "添加材料根目录" });
+    }
+
+    it("焦点在取径器里：Esc 只关取径器、面板还在；再按一次才关面板", async () => {
+      const dialog = await openPicker();
+      await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "添加材料根目录" })).toBeNull());
+      expect(screen.getByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+      expect(screen.getByTestId("selection")).toHaveTextContent("root:1");
+
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull());
+    });
+
+    it("焦点不在取径器里（点「›」进下一级后被点的按钮换掉了）：Esc 照样只关取径器，面板还在", async () => {
+      await openPicker();
+      await screen.findByText("蓝鲸云");
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      expect(document.activeElement).toBe(document.body);
+
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "添加材料根目录" })).toBeNull());
+      expect(screen.getByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+      expect(screen.getByTestId("selection")).toHaveTextContent("root:1");
+
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull());
+    });
   });
 
   it("面包屑最前面是「全部项目」，链接到全部项目概览", async () => {
@@ -2569,6 +2697,21 @@ describe("ProjectGraph 第四期的线和局部图", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "图例" })).toBeNull());
   });
 
+  it("面板和［图例］都开着：第一次 Esc 只收图例，第二次才关面板（焦点在页脚的按钮上，不在画布也不在面板里）", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ }));
+    await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(screen.getByRole("button", { name: "图例" }));
+    expect(screen.getByRole("dialog", { name: "图例" })).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "图例" })).toBeNull());
+    expect(screen.getByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull());
+  });
+
   it("D11：点画布空白处也关掉图例（不只是 Esc）——画布拖拽用的是 pointerdown，合成的 mousedown 不会派发", async () => {
     render(<Harness apiClient={makeClient()} />);
     await userEvent.click(await screen.findByRole("button", { name: "图例" }));
@@ -2658,6 +2801,31 @@ describe("ProjectGraph 第四期的线和局部图", () => {
     expect(await within(screen.getByRole("complementary", { name: "详情面板" })).findByText("9/21 初审规则沟通 a 定的")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "回到关系图" }));
     expect(await screen.findByRole("application", { name: "云图AI 关系图" })).toBeInTheDocument();
+  });
+
+  it("局部图里选中一个节点：焦点落在页面上时 Esc 收掉这个节点的详情，回到中心那份文件的面板，局部图还在", async () => {
+    const apiClient = lineClient(undefined, {
+      graphFileMap: vi.fn(async () => MAP),
+      graphTrace: vi.fn(async () => ({})),
+    });
+    render(
+      <WithFlags>
+        <Harness apiClient={apiClient} />
+      </WithFlags>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /^文件：报价单v2.xlsx/ }));
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "以它为中心看" }));
+    await screen.findByRole("heading", { name: "以『报价单v2.xlsx』为中心" });
+    await userEvent.click(await screen.findByRole("button", { name: "决议：总价下调 5%" }));
+    const localPanel = await screen.findByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(localPanel).findByText("9/21 初审规则沟通 a 定的"));
+    expect(document.activeElement).toBe(document.body);
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText("9/21 初审规则沟通 a 定的")).toBeNull());
+    expect(await within(screen.getByRole("complementary", { name: "详情面板" })).findByRole("button", { name: "来龙去脉" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "以『报价单v2.xlsx』为中心" })).toBeInTheDocument();
   });
 
   it("挪过位置：换成新 id（替换，不压历史），写「这份文件挪到了『2026』文件夹里」", async () => {

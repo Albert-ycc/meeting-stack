@@ -52,6 +52,7 @@ import { attentionOrder, layoutStarMap, mentionLabel, type StarLayout } from "./
 import { MeetingFocusView } from "./MeetingFocusView";
 import { useMiniPlayer } from "./MiniPlayer";
 import { forgetViewportViews } from "./useGraphViewport";
+import { usePanelEscape } from "./usePanelEscape";
 import "./ProjectGraph.css";
 
 /** 画布开着时每 30 秒对一次数据；没变化时服务器回 304，几乎不花钱 */
@@ -1183,12 +1184,6 @@ export function ProjectGraph({
     setWindowChoice(next);
   };
 
-  const onPanelKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-    if ((event.target as HTMLElement).closest("select, input, textarea")) return;
-    select(null);
-  };
-
   const openAsk = () => {
     select(null);
     setAskOpen(true);
@@ -1219,6 +1214,17 @@ export function ProjectGraph({
 
   const shownFocus = focusData && focusData.meeting.id === expanded ? focusData : null;
   const localPayload = localData && localData.key === localKey ? localData.payload : null;
+  // 当前舞台上开着的节点面板怎么关；没有面板开着是 null。Esc 在哪里按都算（点线、点面板里的字之后焦点在 body 上）
+  let closePanel: (() => void) | null = null;
+  if (local && !expanded) {
+    // 局部图里面板一直在（没选中节点时是中心那份文件的），Esc 收的是选中的那个节点
+    if (localPayload && liveGraph && layout && graph && localSel) closePanel = () => setLocalSel(null);
+  } else if (expanded) {
+    if (focusSel && shownFocus) closePanel = () => setFocusSel(null);
+  } else if (graph && layout && resolved && !askOpen) {
+    closePanel = () => select(null);
+  }
+  usePanelEscape(closePanel);
   let stage: ReactNode;
   if (local && !expanded) {
     const panelContext = liveGraph && layout && graph
@@ -1269,14 +1275,7 @@ export function ProjectGraph({
           selectedId={localSel}
         />
         {localPayload && panelContext && (
-          <div
-            className="project-graph__panel"
-            onKeyDown={(event) => {
-              if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-              if ((event.target as HTMLElement).closest("select, input, textarea")) return;
-              setLocalSel(null);
-            }}
-          >
+          <div className="project-graph__panel">
             <LocalGraphPanel
               onClose={() => setLocalSel(null)}
               onExpandMeeting={(meetingId) => {
@@ -1314,14 +1313,7 @@ export function ProjectGraph({
           today={graph?.today ?? dayStamp(new Date().toISOString()).key}
         />
         {focusSel && shownFocus && (
-          <div
-            className="project-graph__panel"
-            onKeyDown={(event) => {
-              if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-              if ((event.target as HTMLElement).closest("select, input, textarea")) return;
-              setFocusSel(null);
-            }}
-          >
+          <div className="project-graph__panel">
             <FocusPanel
               apiClient={apiClient}
               focus={shownFocus}
@@ -1399,7 +1391,7 @@ export function ProjectGraph({
           </div>
         )}
         {resolved && !askOpen && (
-          <div className="project-graph__panel" onKeyDown={onPanelKeyDown}>
+          <div className="project-graph__panel">
             <GraphPanel
               apiClient={apiClient}
               canGoBack={trail.length > 0}

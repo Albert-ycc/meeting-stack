@@ -184,26 +184,6 @@ describe("MaterialRootPickerModal", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
-  it("取径器盖在别的容器里面（关系图的节点面板）：焦点在取径器里按 Esc，外面容器自己的 Esc 处理不会被触发", async () => {
-    const onClose = vi.fn();
-    const onAncestorKeyDown = vi.fn();
-    render(
-      <div onKeyDown={onAncestorKeyDown}>
-        <MaterialRootPickerModal apiClient={makeClient()} onClose={onClose} onConfirm={vi.fn()} />
-      </div>,
-    );
-    await userEvent.click(await screen.findByText("蓝鲸云"));
-
-    // 对照：别的键外面的容器看得到
-    await userEvent.keyboard("{ArrowDown}");
-    expect(onAncestorKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: "ArrowDown" }));
-
-    await userEvent.keyboard("{Escape}");
-
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(onAncestorKeyDown).not.toHaveBeenCalledWith(expect.objectContaining({ key: "Escape" }));
-  });
-
   it("焦点不在取径器里（点「›」进下一级后，被点的那个按钮被换掉了）：Esc 照样关", async () => {
     const onClose = vi.fn();
     render(<MaterialRootPickerModal apiClient={makeClient()} onClose={onClose} onConfirm={vi.fn()} />);

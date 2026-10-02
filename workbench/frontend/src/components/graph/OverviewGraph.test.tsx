@@ -373,6 +373,61 @@ describe("OverviewGraph", () => {
     expect(within(side).getByText(/你挂过的 4 个项目文件夹里有 3 个在/)).toBeInTheDocument();
   });
 
+  it("点面板里的字之后焦点落在页面上：Esc 照样关面板", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^项目：云图AI/ }));
+    const side = await panel();
+    await userEvent.click(within(side).getByRole("heading", { name: "云图AI" }));
+    expect(document.activeElement).toBe(document.body);
+    expect(screen.getByTestId("selection")).toHaveTextContent("p:a");
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull());
+    expect(screen.getByTestId("selection")).toHaveTextContent("");
+  });
+
+  it("面板开着时，输入法组合中的 Esc 不关", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^项目：云图AI/ }));
+    await panel();
+
+    fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
+    fireEvent.keyDown(document.body, { key: "Escape", keyCode: 229 });
+    expect(screen.getByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+  });
+
+  it("面板里再开取径器：Esc 只关取径器、面板还在；再按一次才关面板", async () => {
+    const apiClient = makeClient(
+      overviewPayload({ islands: [], bridges: [] }),
+      foldersPayload({ state: "unset", parent: null, folders: [], suggested: { path: "/Volumes/资料盘/项目", count: 3, total: 4 } }),
+      {
+        browseMaterials: vi.fn(async () => ({
+          base: "/Volumes/资料盘",
+          path: "/Volumes/资料盘",
+          parent: null,
+          breadcrumbs: [{ name: "资料盘", path: "/Volumes/资料盘" }],
+          dirs: [{ name: "项目", path: "/Volumes/资料盘/项目" }],
+        })),
+      },
+    );
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "设项目总文件夹后，这里会列出还没挂的文件夹" }));
+    const side = await panel();
+    await userEvent.click(within(side).getByRole("button", { name: "选项目总文件夹…" }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+    expect(screen.getByTestId("selection")).toHaveTextContent("folders:hint");
+
+    // 取径器关了，焦点回到面板里打开它的那个按钮；也有焦点掉到页面上的情形，都一样
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull());
+  });
+
   it("接口还没有概览时不报错", () => {
     render(<Harness apiClient={{} as ApiClient} />);
     expect(screen.getByText("这个版本的服务还没有全部项目概览")).toBeInTheDocument();
