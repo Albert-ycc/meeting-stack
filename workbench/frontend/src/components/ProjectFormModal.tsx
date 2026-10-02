@@ -315,7 +315,8 @@ export function ProjectFormModal({
   };
 
   const submit = () => {
-    if (!canSave) return;
+    // 合并/删除的确认区开着时保存按钮是禁用的，名称框里的回车也一样不提交
+    if (!canSave || danger !== null) return;
     void (isEdit ? save() : create());
   };
 

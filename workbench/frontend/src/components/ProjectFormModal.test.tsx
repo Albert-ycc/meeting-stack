@@ -561,6 +561,30 @@ describe("ProjectFormModal 编辑：合并与删除", () => {
     expect(onMerged).toHaveBeenCalledWith(OTHER);
   });
 
+  it("「合并到…」确认区开着时，名称框里回车不保存改名（和禁用的保存按钮一致）", async () => {
+    const updateProject = vi.fn().mockResolvedValue(EXISTING_PROJECT);
+    const onClose = vi.fn();
+    render(
+      <ProjectFormModal
+        apiClient={makeClient({ updateProject } as Partial<ApiClient>)}
+        canPickFolders
+        mode="edit"
+        onClose={onClose}
+        onMerged={vi.fn()}
+        onSaved={vi.fn()}
+        project={{ ...EXISTING_PROJECT, meeting_count: 3 }}
+        projects={[EXISTING_PROJECT, OTHER]}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "合并到…" }));
+    const input = screen.getByDisplayValue("云图科研用药");
+    await userEvent.type(input, "2{Enter}");
+
+    expect(updateProject).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("没有会议和需求的项目可以删除", async () => {
     const deleteProject = vi.fn().mockResolvedValue({ ok: true, tasks_unassigned: 0, terms_to_public: 0 });
     const onDeleted = vi.fn();
