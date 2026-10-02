@@ -701,6 +701,47 @@ def test_attach_tasks_dedupes_duplicate_ids(tmp_path):
     assert len(events) == 1
 
 
+def test_attach_tasks_takes_task_off_its_candidate(tmp_path):
+    """需求详情［挂任务］挂上一条挂着候选的任务：挂需求和挂候选二选一，候选让位。之后丢掉那条候选，
+    已挂到需求的任务不再被写「移出候选」。"""
+    from meeting_workbench import requirement_candidates as rc
+    from meeting_workbench import requirements as rq
+
+    from .requirement_pool_world import meeting_id, project_id, seed_world
+
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(settings.database_path)
+    seed_world(db, projects=("yimi",))
+    with db.transaction() as connection:
+        candidate = rc.insert_candidate(
+            connection, meeting_id=meeting_id("jd"), title="京东入库单推送"
+        )
+        requirement = rq.insert_requirement(
+            connection, project_id=project_id("yimi"), title="科研仓对接", priority="P2"
+        )
+        connection.execute(
+            """INSERT INTO tasks(id, title, detail, status, origin, assignee, meeting_id, project_id,
+                                 candidate_id, status_changed_at, created_at, updated_at)
+               VALUES ('t1', '推入库单', '', 'confirmed', 'ai', 'me', ?, ?, ?, ?, ?, ?)""",
+            (meeting_id("jd"), project_id("yimi"), candidate, utc_now(), utc_now(), utc_now()),
+        )
+
+    attached = client.post(
+        f"/api/requirements/{requirement}/tasks", json={"task_ids": ["t1"]}, headers=headers
+    )
+    assert attached.status_code == 200, attached.text
+    assert db.query_one("SELECT requirement_id, candidate_id FROM tasks WHERE id='t1'") == {
+        "requirement_id": requirement,
+        "candidate_id": None,
+    }
+    rc.drop_candidate(db, candidate)
+    task = client.get("/api/tasks/t1").json()
+    assert [e["body"] for e in task["events"] if e["kind"] == "requirement_changed"] == [
+        "挂到需求「科研仓对接」"
+    ]
+
+
 def test_attach_tasks_missing_id_rejects_all_and_writes_nothing(tmp_path):
     """D24：任一 id 不存在 → 整批 404，事务内一条都不写（先验证好的那条也回滚）。"""
     client, settings, browse_root = make_requirement_client(tmp_path)

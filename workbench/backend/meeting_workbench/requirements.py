@@ -817,10 +817,14 @@ def attach_tasks(
                     project_id=None,
                 )
             )
-            if resolved_requirement_id == task.get("requirement_id"):
+            if resolved_requirement_id == task.get("requirement_id") and not task.get(
+                "candidate_id"
+            ):
                 continue
+            # 挂需求和挂候选二选一：挂上需求，原来挂的候选让位（同 resolve_candidate，留痕已由「挂到需求」写过）
             connection.execute(
-                "UPDATE tasks SET requirement_id=?, project_id=?, updated_at=? WHERE id=?",
+                """UPDATE tasks SET requirement_id=?, project_id=?, candidate_id=NULL, updated_at=?
+                    WHERE id=?""",
                 (resolved_requirement_id, resolved_project_id, utc_now(), task_id),
             )
             if event_body:
