@@ -423,6 +423,44 @@
   }
 }
 
+/* 再窄五列排不下，［编辑］［进入 →］会被挤出视口：第一行只留名字、三个数和按钮，
+ * 节奏和需求挪到第二行，最近一场会第三行 */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .project-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .project-row__name {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .project-row__nums {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .project-row__ops {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .project-row .rhythm {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .project-row .project-reqs {
+    min-width: 0;
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+
+  .project-row .project-latest {
+    grid-row: 3;
+  }
+}
+
 @media (max-width: 767px) {
   .project-panel__body {
     grid-template-columns: minmax(0, 1fr);
