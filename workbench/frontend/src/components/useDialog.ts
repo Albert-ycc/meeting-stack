@@ -18,6 +18,19 @@ const dialogStack: HTMLElement[] = [];
 let scrollLocks = 0;
 let previousOverflow = "";
 
+// 带 autoFocus 的弹窗（新建任务的标题框等）挂上的那一刻焦点就进了弹窗，比下面记打开者的 effect 早，
+// 那时 activeElement 已经是弹窗里的控件。焦点移进来之前在谁身上，看最近一次 focusin 的 relatedTarget
+let focusedBefore: HTMLElement | null = null;
+if (typeof document !== "undefined") {
+  document.addEventListener(
+    "focusin",
+    (event) => {
+      focusedBefore = event.relatedTarget instanceof HTMLElement ? event.relatedTarget : null;
+    },
+    true,
+  );
+}
+
 function focusableIn(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
     (element) => !element.closest("[inert]") && element.getAttribute("aria-hidden") !== "true",
@@ -28,7 +41,8 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>) {
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    let opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (opener && root.contains(opener)) opener = focusedBefore && !root.contains(focusedBefore) ? focusedBefore : null;
     dialogStack.push(root);
 
     if (scrollLocks === 0) {

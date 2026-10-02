@@ -407,6 +407,22 @@ describe("待办：完成与撤销", () => {
     expect(onTasksChanged).toHaveBeenCalledTimes(1);
   });
 
+  it("新建任务弹窗按 Esc 关掉：焦点回到［＋ 新建任务］", async () => {
+    renderPage(makeClient());
+    await todoRow("安排与华谊的会");
+    const create = screen.getByRole("button", { name: "＋ 新建任务" });
+    create.focus();
+    await userEvent.click(create);
+    await screen.findByRole("dialog");
+
+    await userEvent.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // 按钮没有被重新挂载；是弹窗标题框 autoFocus 先抢了焦点，弹窗把它当成了打开者
+    expect(create.isConnected).toBe(true);
+    expect(document.activeElement).toBe(create);
+  });
+
   it("左侧勾选框也是完成", async () => {
     const apiClient = makeClient();
     renderPage(apiClient);
