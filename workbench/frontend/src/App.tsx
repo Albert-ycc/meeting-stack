@@ -18,6 +18,7 @@ import type {
 } from "./types";
 import { AppShell, type AppView } from "./components/AppShell";
 import { AsyncState } from "./components/AsyncState";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { FadeContent } from "./components/motion/FadeContent";
 import { MagneticButton } from "./components/motion/MagneticButton";
 import { GlossaryPage } from "./components/GlossaryPage";
@@ -1630,7 +1631,14 @@ export default function App({ apiClient = api }: AppProps) {
           searchSlot={searchSlot}
           taskBadge={pendingCount}
         >
-          <FadeContent transitionKey={view}>{content}</FadeContent>
+          <ErrorBoundary
+            onReset={() => {
+              if (openMeetingId) void loadDetail(openMeetingId);
+            }}
+            resetKey={[view, openMeetingId, searchActive, openProjectId, openRequirementId].join("|")}
+          >
+            <FadeContent transitionKey={view}>{content}</FadeContent>
+          </ErrorBoundary>
           {taskDrawerId && (
             <TaskDrawer
               apiClient={apiClient}

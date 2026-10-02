@@ -711,3 +711,48 @@ describe("重试阶段的枚举报错翻成中文", () => {
     );
   });
 });
+
+describe("拼进路径的 id 一律编码", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setCsrfToken("");
+  });
+
+  it("会议、任务这一组带 / 的 id 不会把请求打到别的接口", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("t");
+    const id = "vm-1/card";
+
+    await api.meeting(id);
+    await api.transcriptVersionSegments(id, "v/1");
+    await api.transcriptComparison(id, "v-2");
+    await api.asrGoldSamples(id);
+    await api.requestQwenShadow(id);
+    await api.minutesEvidence(id);
+    await api.updateMeeting(id, { title: "x" });
+    await api.publish(id);
+    await api.retryJob("job/1", "transcribing");
+    await api.cancelJob("job/1");
+    await api.stopAfterStage("job/1");
+    await api.retryJobSubstate("job/1", "whisper");
+
+    const paths = fetchMock.mock.calls.map(([path]) => String(path));
+    expect(paths).toEqual([
+      "/api/meetings/vm-1%2Fcard",
+      "/api/meetings/vm-1%2Fcard/transcript-versions/v%2F1/segments",
+      "/api/meetings/vm-1%2Fcard/transcript-comparison?candidate_version_id=v-2",
+      "/api/meetings/vm-1%2Fcard/asr-gold-samples",
+      "/api/meetings/vm-1%2Fcard/asr-shadow/qwen",
+      "/api/meetings/vm-1%2Fcard/minutes-evidence",
+      "/api/meetings/vm-1%2Fcard",
+      "/api/meetings/vm-1%2Fcard/publish",
+      "/api/jobs/job%2F1/retry",
+      "/api/jobs/job%2F1/cancel",
+      "/api/jobs/job%2F1/stop-after-stage",
+      "/api/jobs/job%2F1/substates/whisper/retry",
+    ]);
+  });
+});

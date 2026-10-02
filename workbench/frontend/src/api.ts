@@ -645,31 +645,31 @@ export const api = {
     read<MeetingsPayload>(
       `/api/meetings${queryString(filters)}`,
     ),
-  meeting: (meetingId: string) => read<MeetingDetail>(`/api/meetings/${meetingId}`),
+  meeting: (meetingId: string) => read<MeetingDetail>(`/api/meetings/${encodeURIComponent(meetingId)}`),
   transcriptVersionSegments: (meetingId: string, versionId: string) =>
     read<{ version: TranscriptVersion; items: Segment[] }>(
-      `/api/meetings/${meetingId}/transcript-versions/${versionId}/segments`,
+      `/api/meetings/${encodeURIComponent(meetingId)}/transcript-versions/${encodeURIComponent(versionId)}/segments`,
     ),
   transcriptComparison: (meetingId: string, candidateVersionId: string) =>
     read<TranscriptComparisonPayload>(
-      `/api/meetings/${meetingId}/transcript-comparison${queryString({ candidate_version_id: candidateVersionId })}`,
+      `/api/meetings/${encodeURIComponent(meetingId)}/transcript-comparison${queryString({ candidate_version_id: candidateVersionId })}`,
     ),
   asrGoldSamples: (meetingId: string) =>
-    read<{ items: AsrGoldSample[] }>(`/api/meetings/${meetingId}/asr-gold-samples`),
+    read<{ items: AsrGoldSample[] }>(`/api/meetings/${encodeURIComponent(meetingId)}/asr-gold-samples`),
   saveAsrGoldSample: (
     meetingId: string,
     sample: Pick<AsrGoldSample, "reference" | "entities" | "numbers" | "tags"> & { segment_id: string },
-  ) => write<AsrGoldSample>(`/api/meetings/${meetingId}/asr-gold-samples`, "POST", sample),
+  ) => write<AsrGoldSample>(`/api/meetings/${encodeURIComponent(meetingId)}/asr-gold-samples`, "POST", sample),
   requestQwenShadow: (meetingId: string) =>
-    write<AsrShadowRun>(`/api/meetings/${meetingId}/asr-shadow/qwen`, "POST", {}),
+    write<AsrShadowRun>(`/api/meetings/${encodeURIComponent(meetingId)}/asr-shadow/qwen`, "POST", {}),
   retryQwenShadow: (meetingId: string, runId: string) =>
     write<AsrShadowRun>(
-      `/api/meetings/${meetingId}/asr-shadow/qwen/${encodeURIComponent(runId)}/retry`,
+      `/api/meetings/${encodeURIComponent(meetingId)}/asr-shadow/qwen/${encodeURIComponent(runId)}/retry`,
       "POST",
       {},
     ),
   minutesEvidence: (meetingId: string) =>
-    read<MinutesEvidence>(`/api/meetings/${meetingId}/minutes-evidence`),
+    read<MinutesEvidence>(`/api/meetings/${encodeURIComponent(meetingId)}/minutes-evidence`),
   /** projectId：不传搜全部；"none" 只搜没归项目的会 */
   search: (query: string, projectId?: string) =>
     read<SearchPayload>(`/api/search${queryString({ q: query, project_id: projectId })}`),
@@ -1089,7 +1089,7 @@ export const api = {
   updateMeeting: (
     meetingId: string,
     metadata: { project_id?: string; tag_ids?: string[]; title?: string; requirement_ids?: string[] },
-  ) => write<MeetingDetail>(`/api/meetings/${meetingId}`, "PATCH", metadata),
+  ) => write<MeetingDetail>(`/api/meetings/${encodeURIComponent(meetingId)}`, "PATCH", metadata),
   // ---------------------------------------------------------------- 项目 → 需求 → 任务三层
   browseMaterials: (path?: string) =>
     read<MaterialBrowsePayload>(`/api/materials/browse${queryString({ path })}`),
@@ -1307,7 +1307,7 @@ export const api = {
     segments: Segment[],
     baseVersionId: string | null,
   ) =>
-    write<{ version_id: string }>(`/api/meetings/${meetingId}/transcript`, "PUT", {
+    write<{ version_id: string }>(`/api/meetings/${encodeURIComponent(meetingId)}/transcript`, "PUT", {
       base_version_id: baseVersionId,
       segments: segments.map(({ id, ordinal, start_ms, end_ms, speaker_label, speaker_name, text }) => ({
         id,
@@ -1320,34 +1320,34 @@ export const api = {
       })),
     }),
   renameSpeaker: (meetingId: string, label: string, displayName: string) =>
-    write<{ updated: number }>(`/api/meetings/${meetingId}/speakers/rename`, "POST", {
+    write<{ updated: number }>(`/api/meetings/${encodeURIComponent(meetingId)}/speakers/rename`, "POST", {
       label,
       display_name: displayName,
     }),
   splitSegment: (meetingId: string, segmentId: string, characterIndex: number) =>
-    write<{ segment_ids: string[] }>(`/api/meetings/${meetingId}/segments/split`, "POST", {
+    write<{ segment_ids: string[] }>(`/api/meetings/${encodeURIComponent(meetingId)}/segments/split`, "POST", {
       segment_id: segmentId,
       character_index: characterIndex,
     }),
   mergeSegments: (meetingId: string, firstSegmentId: string, secondSegmentId: string) =>
-    write<{ segment_id: string }>(`/api/meetings/${meetingId}/segments/merge`, "POST", {
+    write<{ segment_id: string }>(`/api/meetings/${encodeURIComponent(meetingId)}/segments/merge`, "POST", {
       first_segment_id: firstSegmentId,
       second_segment_id: secondSegmentId,
     }),
   saveMinutes: (meetingId: string, markdown: string, baseVersionId: string | null) =>
-    write<{ version_id: string; corrections?: GlossarySuggestion[] }>(`/api/meetings/${meetingId}/minutes`, "PUT", {
+    write<{ version_id: string; corrections?: GlossarySuggestion[] }>(`/api/meetings/${encodeURIComponent(meetingId)}/minutes`, "PUT", {
       base_version_id: baseVersionId,
       markdown,
     }),
   regenerateMinutes: (meetingId: string, backend?: MinutesBackend) =>
     write<{ status: string }>(
-      `/api/meetings/${meetingId}/minutes/regenerate`,
+      `/api/meetings/${encodeURIComponent(meetingId)}/minutes/regenerate`,
       "POST",
       backend ? { backend } : {},
     ),
   retranscribe: (meetingId: string, hotwords: string[] = []) =>
     write<{ status: string; job_id?: string }>(
-      `/api/meetings/${meetingId}/retranscribe`,
+      `/api/meetings/${encodeURIComponent(meetingId)}/retranscribe`,
       "POST",
       hotwords.length ? { hotwords } : {},
     ),
@@ -1357,34 +1357,34 @@ export const api = {
     action: ConflictResolutionAction,
   ) =>
     write<MeetingDetail>(
-      `/api/meetings/${meetingId}/conflicts/${encodeURIComponent(conflictId)}/resolve`,
+      `/api/meetings/${encodeURIComponent(meetingId)}/conflicts/${encodeURIComponent(conflictId)}/resolve`,
       "POST",
       { action },
     ),
   resolveLegacyConflict: (meetingId: string, action: ConflictResolutionAction) =>
-    write<MeetingDetail>(`/api/meetings/${meetingId}/conflict/resolve`, "POST", { action }),
+    write<MeetingDetail>(`/api/meetings/${encodeURIComponent(meetingId)}/conflict/resolve`, "POST", { action }),
   rollbackTranscript: (meetingId: string, versionId: string) =>
-    write<{ ok: boolean }>(`/api/meetings/${meetingId}/rollback/transcript`, "POST", {
+    write<{ ok: boolean }>(`/api/meetings/${encodeURIComponent(meetingId)}/rollback/transcript`, "POST", {
       version_id: versionId,
     }),
   rollbackMinutes: (meetingId: string, versionId: string) =>
-    write<{ ok: boolean }>(`/api/meetings/${meetingId}/rollback/minutes`, "POST", {
+    write<{ ok: boolean }>(`/api/meetings/${encodeURIComponent(meetingId)}/rollback/minutes`, "POST", {
       version_id: versionId,
     }),
   publish: (meetingId: string) =>
-    write<Record<string, unknown>>(`/api/meetings/${meetingId}/publish`, "POST", {}),
+    write<Record<string, unknown>>(`/api/meetings/${encodeURIComponent(meetingId)}/publish`, "POST", {}),
   retryJob: (jobId: string, stage: string, hotwords: string[] = []) =>
     write<Record<string, unknown>>(
-      `/api/jobs/${jobId}/retry`,
+      `/api/jobs/${encodeURIComponent(jobId)}/retry`,
       "POST",
       hotwords.length ? { stage, hotwords } : { stage },
     ),
-  cancelJob: (jobId: string) => write<Record<string, unknown>>(`/api/jobs/${jobId}/cancel`, "POST", {}),
+  cancelJob: (jobId: string) => write<Record<string, unknown>>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, "POST", {}),
   stopAfterStage: (jobId: string) =>
-    write<Record<string, unknown>>(`/api/jobs/${jobId}/stop-after-stage`, "POST", {}),
+    write<Record<string, unknown>>(`/api/jobs/${encodeURIComponent(jobId)}/stop-after-stage`, "POST", {}),
   retryJobSubstate: (jobId: string, name: JobSubstateName) =>
     write<Record<string, unknown>>(
-      `/api/jobs/${jobId}/substates/${name}/retry`,
+      `/api/jobs/${encodeURIComponent(jobId)}/substates/${encodeURIComponent(name)}/retry`,
       "POST",
       {},
     ),

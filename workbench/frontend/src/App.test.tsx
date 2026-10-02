@@ -555,6 +555,40 @@ describe("浏览历史与返回", () => {
   });
 });
 
+describe("内容区出错不白屏", () => {
+  it("一场会的详情形状不对、渲染时抛错：侧栏和检索框还在，内容区给［重新载入］，换视图后恢复", async () => {
+    window.history.replaceState(null, "", "/#meetings/vm-page-1");
+    // 打到别的接口拿回来的形状（没有 segments 等字段），会议页渲染时抛错
+    const meeting = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "synced", reason: null })
+      .mockResolvedValueOnce({ state: "synced", reason: null })
+      .mockResolvedValue(detail);
+    const silence = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render(<App apiClient={client({ meeting } as Partial<ApiClient>)} />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("这一页出错了");
+    expect(screen.getByRole("button", { name: "录音档案" })).toBeInTheDocument();
+    expect(screen.getByLabelText("全局检索")).toBeInTheDocument();
+
+    // ［重新载入］重取这场会；还是坏的就仍然停在错误态
+    await userEvent.click(within(alert).getByRole("button", { name: "重新载入" }));
+    await waitFor(() => expect(meeting).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("alert")).toHaveTextContent("这一页出错了");
+
+    // 换视图：错误态撤掉，正常显示
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
+    expect(await screen.findByText("会议录音档案")).toBeInTheDocument();
+    expect(screen.queryByText("这一页出错了")).not.toBeInTheDocument();
+
+    // 再打开这场会（接口这回正常）：会议页正常出来
+    await userEvent.click(await screen.findByRole("button", { name: /第一页会议/ }));
+    expect(await screen.findByRole("heading", { name: "可编辑会议" })).toBeInTheDocument();
+    silence.mockRestore();
+  });
+});
+
 describe("列表页检索条件", () => {
   it("待办查过的条件，去别的页面再回来还在", async () => {
     const todo = vi.fn().mockResolvedValue({
