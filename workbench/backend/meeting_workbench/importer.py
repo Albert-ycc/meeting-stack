@@ -112,7 +112,9 @@ class ScanReport:
     # 隔离≠错误：目录身份对不上时只是这一个目录不参与导入，索引本身仍然可信。
     # 混进 errors 会让「往归档目录里多放一个文件」阻断全库的失效记录清理。
     quarantined: int = 0
+    # 给健康页展示的只留前 50 条；清理时的豁免要用下面的全量目录表，不能拿展示表顶。
     quarantine_details: list[dict[str, str]] = field(default_factory=list)
+    quarantined_directories: list[str] = field(default_factory=list)
     # 说话人补标是降级安全的旁路：没补上不算导入失败，这里只统计不进 errors。
     speaker_backfill_applied: int = 0
     speaker_backfill_skipped: int = 0
@@ -128,6 +130,7 @@ class ScanReport:
 
     def quarantine(self, directory: Path, reason: str) -> None:
         self.quarantined += 1
+        self.quarantined_directories.append(str(directory))
         if len(self.quarantine_details) < 50:
             self.quarantine_details.append({"directory": str(directory), "reason": reason})
 
@@ -467,7 +470,7 @@ class ArchiveImporter:
             return
         # 隔离目录、没走进去的符号链接本次没被遍历进 discovered，但文件仍在磁盘上。
         # 若不豁免，清理会把这些会议的 artifact 记录一并删掉，界面上音频直接断链。
-        exempt = [Path(item["directory"]) for item in report.quarantine_details]
+        exempt = [Path(value) for value in report.quarantined_directories]
         exempt.extend(Path(value) for value in report.unwalked)
         rows = self.db.query_all(
             "SELECT id, path, source_root FROM artifacts WHERE source_root IN (%s)"
@@ -621,6 +624,9 @@ class ArchiveImporter:
         self, root: Path, *, report: ScanReport | None = None
     ) -> list[SourceBundle]:
         try:
+            if root.is_symlink():
+                _skip_unwalked(report, root)
+                return []
             if not root.is_dir():
                 return []
         except RECOVERABLE_SOURCE_ERRORS:

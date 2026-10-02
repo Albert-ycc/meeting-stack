@@ -2700,3 +2700,92 @@ def test_stale_cleanup_skip_warns_once_until_the_side_recovers(tmp_path, caplog)
         assert importer.scan().stale_cleanup_skipped == 1
         assert importer.scan().stale_cleanup_skipped == 1
     assert len(skip_warnings()) == 2
+
+
+def test_quarantined_directories_past_the_display_cap_keep_their_records(tmp_path):
+    archive = tmp_path / "archive"
+    _write_plain_meeting(archive, "正式会议", "vm-20260101-120000", "正式稿")
+    directories = []
+    for index in range(53):
+        meeting_id = f"vm-20260904-0900{index:02d}-aa1122{index:02d}"
+        directories.append(
+            (
+                meeting_id,
+                write_managed_unreviewed_bundle(
+                    archive / f"受管 {index:02d}", meeting_id, f"job-cap-{index:02d}"
+                ),
+            )
+        )
+    relay_db = tmp_path / "relay.sqlite3"
+    with sqlite3.connect(relay_db) as connection:
+        connection.execute(
+            "CREATE TABLE jobs(job_id TEXT PRIMARY KEY, status TEXT, current_attempt INTEGER, archive_dir TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO jobs VALUES (?, 'completed_unreviewed', 1, ?)",
+            [(f"job-cap-{index:02d}", str(path)) for index, (_, path) in enumerate(directories)],
+        )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "db.sqlite3",
+        relay_jobs_db=relay_db,
+        semantic_enabled=False,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    importer = ArchiveImporter(db, settings)
+    assert importer.scan().quarantined == 0
+    before = {path: _paths_under(db, path) for _, path in directories}
+    assert all(before.values())
+
+    for meeting_id, directory in directories:
+        (directory / f"{meeting_id}.m4a").write_bytes(b"tampered-audio-bytes")
+    report = importer.scan()
+
+    # 健康页只展示前 50 条，但 53 个隔离目录的记录都得留着。
+    assert report.errors == 0
+    assert report.quarantined == 53
+    assert len(report.quarantine_details) == 50
+    assert {path: _paths_under(db, path) for _, path in directories} == before
+
+
+def test_symlinked_workbench_drafts_is_not_walked_and_keeps_its_records(tmp_path):
+    archive = tmp_path / "archive"
+    _write_plain_meeting(archive, "正式会议", "vm-20260101-120000", "正式稿")
+    meeting_id = "vm-20260712-181605-0b445e57"
+    job_id = "job-linked-drafts"
+    drafts = archive / ".workbench-drafts"
+    attempt = write_managed_unreviewed_bundle(drafts / job_id / "attempt-1", meeting_id, job_id)
+    relay_db = tmp_path / "relay.sqlite3"
+    with sqlite3.connect(relay_db) as connection:
+        connection.execute(
+            "CREATE TABLE jobs(job_id TEXT PRIMARY KEY, status TEXT, current_attempt INTEGER, archive_dir TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES (?, 'completed_unreviewed', 1, ?)", (job_id, str(attempt))
+        )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "db.sqlite3",
+        relay_jobs_db=relay_db,
+        semantic_enabled=False,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    importer = ArchiveImporter(db, settings)
+    assert importer.scan().errors == 0
+    before = _paths_under(db, drafts)
+    assert before
+
+    # 和别的符号链接口径一致：整个草稿目录换成链接后不走进去，记录也不能被当成「本轮没发现」清掉。
+    _relink(drafts, tmp_path / "moved" / ".workbench-drafts")
+    (attempt / "我的笔记.md").write_text("链接后才放进去的笔记", encoding="utf-8")
+    report = importer.scan()
+
+    assert report.errors == 0
+    assert str(drafts) in report.unwalked
+    assert _paths_under(db, drafts) == before
