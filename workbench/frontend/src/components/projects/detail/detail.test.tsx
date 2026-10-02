@@ -398,6 +398,25 @@ describe("需求与任务：海报和任务面板", () => {
     expect(api.updateTask).toHaveBeenLastCalledWith("t-hop-1", { requirement_id: "requirement-hop" });
   });
 
+  it("撤销改挂被服务端拒绝（409）：提示条里是后端给的原因，不是点了没反应", async () => {
+    const rejection = "需求「赠药横跳拦截」已搁置，只能挂到进行中的需求";
+    const updateTask = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new ApiError(rejection, 409, { detail: rejection }));
+    setup({ api: { updateTask } });
+    const panel = await screen.findByRole("region", { name: "「赠药横跳拦截」的任务" });
+    await userEvent.click(within(panel).getByRole("button", { name: "更多操作：把跨政策横跳卡控作为需求立项并修复" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "改挂需求" }));
+    const picker = await screen.findByRole("dialog", { name: "挂到需求" });
+    await userEvent.click(await within(picker).findByRole("option", { name: /京东科研仓对接/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "撤销" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveClass("app-toast--error");
+    expect(alert).toHaveTextContent(rejection);
+  });
+
   it("面板里新建任务：弹窗固定挂在这条需求下、归本项目", async () => {
     const { api } = setup();
     const panel = await screen.findByRole("region", { name: "「赠药横跳拦截」的任务" });

@@ -583,6 +583,24 @@ describe("待办：挂到需求", () => {
     expect(apiClient.updateTask).toHaveBeenLastCalledWith("t-huayi", { candidate_id: "cand-old", project_id: null });
   });
 
+  it("撤销挂接被服务端拒绝（409）：提示条里是后端给的原因，不是点了没反应", async () => {
+    const rejection = "需求「旧需求」已搁置，只能挂到进行中的需求";
+    const updateTask = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new ApiError(rejection, 409, { detail: rejection }));
+    renderPage(makeClient(seedTasks(), { updateTask } as Partial<ApiClient>));
+
+    const picker = await openPicker("安排与华谊的会");
+    await userEvent.click(await within(picker).findByRole("option", { name: /EDC 对接/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "撤销" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveClass("app-toast--error");
+    expect(alert).toHaveTextContent(rejection);
+    expect(updateTask).toHaveBeenCalledTimes(2);
+  });
+
   it("整页同一时刻只开一个选择器", async () => {
     renderPage(makeClient());
     await openPicker("安排与华谊的会");

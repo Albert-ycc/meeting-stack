@@ -26,6 +26,8 @@ interface ToastState {
  * 可撤销的动作传 `onUndo`：条的右边多一个［撤销］，停 10 秒（和提示条 NoticeBanner 的撤销同一个时长）。
  * 点［撤销］先收起这条提示、再调 onUndo，撤销成没成由调用方在 onUndo 里另行提示——所以收起必须在前，
  * 免得晚到的「收起」把调用方刚弹出的「已撤销」也抹掉。
+ * onUndo 抛错（撤销也会被服务端拒绝，比如把挂接写回已搁置的需求）由这里接住，原因弹成一条失败提示，
+ * 各页面不用各写一遍。
  *
  * 操作失败传 `tone: "error"`（项目页与待办改版加的，只做加法）：叹号换掉勾，停 10 秒。
  */
@@ -63,12 +65,16 @@ export function useToast(durationMs = 2400): {
     setToast(null);
   }, [clearTimer]);
 
-  const undo = () => {
+  const undo = async () => {
     const onUndo = toast?.onUndo;
     if (!onUndo) return;
     clearTimer();
     setToast(null);
-    void onUndo();
+    try {
+      await onUndo();
+    } catch (failure) {
+      showToast(failure instanceof Error ? failure.message : "撤销失败，请稍后重试", { tone: "error" });
+    }
   };
 
   const error = toast?.tone === "error";
@@ -103,7 +109,7 @@ export function useToast(durationMs = 2400): {
       )}
       <span className="app-toast__text">{toast.message}</span>
       {toast.onUndo && (
-        <button className="app-toast__undo" onClick={undo} type="button">
+        <button className="app-toast__undo" onClick={() => void undo()} type="button">
           撤销
         </button>
       )}

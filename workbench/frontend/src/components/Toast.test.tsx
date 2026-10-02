@@ -169,4 +169,70 @@ describe("useToast", () => {
     advance(200);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+
+  describe("撤销没成", () => {
+    // 服务端对撤销也会拒绝（比如把挂接写回已搁置的需求回 409）：原因要摆出来，不是点了没反应
+    it("onUndo 抛出来的原因由提示条自己接住：原来那条收起，换一条红色叹号的失败提示（没人接的拒绝 vitest 也会判整轮失败）", async () => {
+      const onUndo = vi.fn().mockRejectedValue(new Error("需求「京东科研仓对接」已搁置，只能挂到进行中的需求"));
+      render(<Page message="已挂到「EDC 对接」" options={{ onUndo }} />);
+      fireEvent.click(screen.getByRole("button", { name: "弹提示" }));
+
+      await act(async () => {
+        fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+      });
+
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveClass("app-toast--error");
+      expect(alert).toHaveTextContent("需求「京东科研仓对接」已搁置，只能挂到进行中的需求");
+      expect(alert).not.toHaveTextContent("已挂到");
+      expect(within(alert).queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
+    });
+
+    it("失败提示和别的失败一样停 10 秒", async () => {
+      render(<Page options={{ onUndo: vi.fn().mockRejectedValue(new Error("没撤成")) }} />);
+      fireEvent.click(screen.getByRole("button", { name: "弹提示" }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+      });
+
+      advance(9_900);
+      expect(screen.getByRole("alert")).toBeInTheDocument();
+      advance(200);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("抛出来的不是 Error，或者是同步抛的：也接住，用兜底文案", async () => {
+      const { unmount } = render(<Page options={{ onUndo: vi.fn().mockRejectedValue("x") }} />);
+      fireEvent.click(screen.getByRole("button", { name: "弹提示" }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent("撤销失败，请稍后重试");
+      unmount();
+
+      const sync = vi.fn(() => {
+        throw new Error("同步就失败了");
+      });
+      render(<Page options={{ onUndo: sync }} />);
+      fireEvent.click(screen.getByRole("button", { name: "弹提示" }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent("同步就失败了");
+    });
+
+    it("撤销成了就不多说：onUndo 自己弹的结果提示留着，不被覆盖", async () => {
+      let show: ReturnType<typeof useToast>["showToast"] = () => undefined;
+      const onUndo = vi.fn(async () => show("已撤销合并"));
+      render(<Page message="已合并" onReady={(fn) => (show = fn)} options={{ onUndo }} />);
+      fireEvent.click(screen.getByRole("button", { name: "弹提示" }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+      });
+
+      expect(screen.getByRole("status")).toHaveTextContent("已撤销合并");
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+  });
 });
