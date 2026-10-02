@@ -1732,12 +1732,15 @@ class Database:
                             now,
                         ),
                     )
-            connection.execute(
-                """UPDATE meetings
-                   SET conflict = EXISTS(
+            # 只改标记真不对的行：meetings 上每更新一行（哪怕值没变）graph_rev 就加一，
+            # 不带条件地全表更新会让每次启动、每条命令行命令都白白让关系图缓存失效。
+            open_conflict = """EXISTS(
                        SELECT 1 FROM meeting_conflicts mc
                         WHERE mc.meeting_id=meetings.id AND mc.status='open'
                    )"""
+            connection.execute(
+                f"""UPDATE meetings SET conflict = {open_conflict}
+                     WHERE conflict IS NOT {open_conflict}"""
             )
             connection.execute("UPDATE segments SET end_ms = start_ms WHERE end_ms < start_ms")
             if current_version < 9:
