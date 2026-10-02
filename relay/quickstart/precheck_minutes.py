@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""纪要归档本地预检：跑的是 complete-minutes 用的同一套 _minutes_evidence_errors。
+"""纪要归档本地预检：调用 complete-minutes 用的同一个入口 RelayControl.validate_archive，
+参数也取自同一处（任务库里这次 attempt 的来源哈希、协议版本等）。
 
 用法：
-    python3 precheck_minutes.py "<归档目录>"
+    python3 precheck_minutes.py "<归档目录>" --job-id <job_id> --attempt <n>
 
-退出码 0 = 校验通过（打印 NONE），1 = 有错（逐行打印错误码）。
+不给 --job-id/--attempt 时从归档目录的 workbench-manifest.json 读。需要和 relayctl 一样
+带 MEETING_RELAY_JOBS_DB / MEETING_RELAY_ARCHIVE_ROOT 环境变量。
 
-存在的意义：派单 agent（Claude 或 DeepSeek）写完 evidence 后必须先本地过一遍，
+退出码 0 = 校验通过（打印 NONE），1 = 有错（逐行打印错误码），2 = 用法或参数错。
+
+存在的意义：派单 agent（Claude 或 DeepSeek）写完归档后必须先本地过一遍，
 别拿 complete-minutes 当试跑——那是闸门，不是校验器，失败要整个 attempt 重来。
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -20,57 +25,50 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import relay_control as rc  # noqa: E402
 
 
+def _manifest_identity(root: Path) -> tuple[str | None, int | None]:
+    try:
+        manifest = json.loads((root / "workbench-manifest.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(manifest, dict):
+        return None, None
+    job_id = manifest.get("job_id")
+    attempt = manifest.get("attempt")
+    return (
+        job_id if isinstance(job_id, str) else None,
+        attempt if type(attempt) is int else None,
+    )
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("用法：python3 precheck_minutes.py \"<归档目录>\"", file=sys.stderr)
+    parser = argparse.ArgumentParser(prog="precheck_minutes.py")
+    parser.add_argument("archive_dir")
+    parser.add_argument("--job-id")
+    parser.add_argument("--attempt", type=int)
+    try:
+        args = parser.parse_args(argv[1:])
+    except SystemExit:
         return 2
 
-    root = Path(argv[1])
+    root = Path(args.archive_dir)
     if not root.is_dir():
         print(f"归档目录不存在：{root}", file=sys.stderr)
         return 2
 
-    evidence = root / "minutes-evidence.json"
-    if not evidence.is_file():
-        print("minutes-evidence.json 缺失", file=sys.stderr)
+    manifest_job, manifest_attempt = _manifest_identity(root)
+    job_id = args.job_id or manifest_job
+    attempt_no = args.attempt if args.attempt is not None else manifest_attempt
+    if not job_id or attempt_no is None:
+        print("workbench_manifest_identity")
         return 1
 
-    # AppleDouble `._*` 在 exFAT 外置盘上遍地都是，别把它当纪要正文
-    candidates = sorted(
-        p for p in root.glob("*.md") if not p.name.startswith("._")
+    report = rc.RelayControl().precheck_archive(
+        root, job_id=job_id, attempt_no=attempt_no
     )
-    if not candidates:
-        print("纪要 .md 缺失", file=sys.stderr)
-        return 1
-    if len(candidates) > 1:
-        print(f"归档目录有多份 .md，取第一份校验：{[p.name for p in candidates]}",
-              file=sys.stderr)
-    minutes = candidates[0]
-
-    try:
-        protocol = int(json.loads(evidence.read_text(encoding="utf-8"))
-                       .get("minutes_protocol_version", 2))
-    except (json.JSONDecodeError, OSError, TypeError, ValueError):
-        print("minutes_evidence_unreadable")
-        return 1
-
-    plan = root / "minutes-plan.json"
-    ledger = root / "minutes-ledger"
-    srt = root / "input-transcript.srt"
-
-    errors = rc._minutes_evidence_errors(
-        evidence,
-        minutes,
-        protocol_version=protocol,
-        plan_path=plan if protocol >= 3 and plan.is_file() else None,
-        ledger_root=ledger if ledger.is_dir() else None,
-        source_srt_path=srt if srt.is_file() else None,
-    )
-
-    if not errors:
+    if report.valid:
         print("NONE")
         return 0
-    for err in errors:
+    for err in report.missing:
         print(err)
     return 1
 

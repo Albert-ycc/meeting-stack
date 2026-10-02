@@ -3116,6 +3116,54 @@ class RelayControlTests(unittest.TestCase):
             str(pending.resolve()), control.status(job_id)["archive_dir"]
         )
 
+    def _run_precheck(self, archive: Path, *args: str) -> tuple[int, list[str]]:
+        spec = importlib.util.spec_from_file_location(
+            "precheck_minutes_under_test", REPO_ROOT / "quickstart" / "precheck_minutes.py"
+        )
+        precheck = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(precheck)
+        output = io.StringIO()
+        with patch.dict(os.environ, {
+            "MEETING_RELAY_JOBS_DB": str(self.db_path),
+            "MEETING_RELAY_ARCHIVE_ROOT": str(self.root),
+        }), redirect_stdout(output):
+            code = precheck.main(["precheck_minutes.py", str(archive), *args])
+        return code, output.getvalue().split()
+
+    def test_precheck_reports_exactly_what_complete_minutes_rejects(self):
+        job_id = self._advance_to_minutes(self.control, self.audio)
+        archive = create_complete_archive(self.root, job_id)
+        # Agent 按术语表改了归档 SRT（manifest 也跟着更新）：plan 绑定的来源哈希对不上
+        srt = archive / "vm-20260710-120000-ABC.srt"
+        srt.write_text(srt.read_text(encoding="utf-8") + "（已纠错）", encoding="utf-8")
+        manifest_path = archive / "workbench-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for entry in manifest["artifacts"]:
+            if entry["path"] == srt.name:
+                entry["bytes"] = srt.stat().st_size
+                entry["sha256"] = hashlib.sha256(srt.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+        code, printed = self._run_precheck(archive, "--job-id", job_id, "--attempt", "1")
+        with self.assertRaises(self.module.ArtifactValidationError) as caught:
+            self.control.complete_minutes(job_id, archive)
+
+        self.assertEqual(1, code)
+        self.assertIn("minutes_plan_source_mismatch", printed)
+        self.assertEqual(list(caught.exception.report.missing), printed)
+
+    def test_precheck_passes_when_complete_minutes_would_accept(self):
+        job_id = self._advance_to_minutes(self.control, self.audio)
+        archive = create_complete_archive(self.root, job_id)
+
+        # 不给 --job-id/--attempt 时从 manifest 读
+        code, printed = self._run_precheck(archive)
+        completed = self.control.complete_minutes(job_id, archive)
+
+        self.assertEqual((0, ["NONE"]), (code, printed))
+        self.assertEqual("completed_unreviewed", completed["status"])
+
     def test_complete_minutes_rejects_main_artifact_changed_after_validation(self):
         job_id = self.control.enqueue(self.audio)
         self.control.record_stage(job_id, "transcribing")

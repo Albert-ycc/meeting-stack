@@ -4848,6 +4848,48 @@ class RelayControl:
             )
         return True
 
+    @staticmethod
+    def _attempt_validation_kwargs(attempt_row: sqlite3.Row) -> dict[str, Any]:
+        """complete-minutes 和本地预检共用的 attempt 级校验参数，两边口径只能从这里取。"""
+        return {
+            "requested_stage": attempt_row["requested_stage"],
+            "input_transcript_sha256": attempt_row["input_transcript_sha256"],
+            "source_srt_sha256": attempt_row["source_srt_sha256"],
+            "minutes_plan_sha256": attempt_row["minutes_plan_sha256"],
+            "minutes_protocol_version": int(attempt_row["minutes_protocol_version"]),
+        }
+
+    def precheck_archive(
+        self,
+        archive_dir: str | Path,
+        *,
+        job_id: str,
+        attempt_no: int,
+    ) -> ArchiveValidationReport:
+        """complete-minutes 前的本地预检：同一个 validate_archive、同一组参数，只读不改状态。"""
+        with self._connect() as connection:
+            attempt_row = connection.execute(
+                """
+                SELECT requested_stage, input_transcript_sha256,
+                       source_srt_sha256, minutes_plan_sha256,
+                       minutes_protocol_version
+                FROM attempts WHERE job_id = ? AND attempt_no = ?
+                """,
+                (job_id, attempt_no),
+            ).fetchone()
+        if attempt_row is None:
+            return ArchiveValidationReport(
+                Path(os.path.abspath(str(Path(archive_dir).expanduser()))),
+                ["attempt_not_found"],
+                [],
+            )
+        return self.validate_archive(
+            archive_dir,
+            job_id=job_id,
+            attempt_no=attempt_no,
+            **self._attempt_validation_kwargs(attempt_row),
+        )
+
     def validate_archive(
         self,
         archive_dir: str | Path,
@@ -6373,15 +6415,7 @@ class RelayControl:
             archive_dir,
             job_id=job_id,
             attempt_no=callback_attempt,
-            requested_stage=current_attempt_row["requested_stage"],
-            input_transcript_sha256=current_attempt_row[
-                "input_transcript_sha256"
-            ],
-            source_srt_sha256=current_attempt_row["source_srt_sha256"],
-            minutes_plan_sha256=current_attempt_row["minutes_plan_sha256"],
-            minutes_protocol_version=int(
-                current_attempt_row["minutes_protocol_version"]
-            ),
+            **self._attempt_validation_kwargs(current_attempt_row),
         )
         if not report.valid:
             self.fail(
