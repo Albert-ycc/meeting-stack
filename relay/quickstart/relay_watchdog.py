@@ -1495,6 +1495,11 @@ _STATUS_MESSAGES: dict[str, tuple[str, str]] = {
         "{clip}转写时找不到 FunASR 环境，只回落出了 Whisper 稿，出不了能发布的纪要。\n"
         "原音频还在本机。装好 FunASR（或检查 transcribe.sh 里的路径）后在声档里点重试。",
     ),
+    "too_little_speech": (
+        "录音里几乎没有可用内容",
+        "{clip}转写下来只有零星几句话，凑不出纪要。重试结果也一样，不用点重试；\n"
+        "要是这段本该有会议内容，看看是不是录错了或没录上声音。",
+    ),
     "deduplicated": (
         "这段录音跟已有的重复了",
         "库里已经有同一场录音，这次不重复转写，也不重复占额度。",
@@ -2144,14 +2149,21 @@ def process_controlled_claim(claim: dict) -> bool:
             except Exception as exc:
                 if _is_db_lock_error(exc):
                     raise
+                too_little_speech = str(exc) == "minutes_plan_too_little_speech"
                 _control_fail(
                     job_id,
                     current_stage,
-                    "minutes_plan_invalid",
+                    "minutes_plan_too_little_speech"
+                    if too_little_speech
+                    else "minutes_plan_invalid",
                     expected_attempt=attempt_no,
                     expected_worker=worker_id,
                 )
-                notify_workbench_status(job_id, "failed", duration_min)
+                notify_workbench_status(
+                    job_id,
+                    "too_little_speech" if too_little_speech else "failed",
+                    duration_min,
+                )
                 return False
 
         if attempt_dir is None:

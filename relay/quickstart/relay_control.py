@@ -318,8 +318,13 @@ def create_minutes_plan(
         minimum = max(1, int((duration + 719) // 720))
         maximum = max(minimum, int(duration // 480))
         window_count = min(maximum, max(minimum, int(duration / 600 + 0.5)))
+    wanted_window_count = window_count
     window_count = min(window_count, len(cues))
     if duration >= 480 and duration / window_count > 720:
+        # 窗口数被句数卡住：长录音里只有零星几句话（口袋误录、说两句就没声了），
+        # 重试结果也一样，给单独的错误码让通知别叫人重试
+        if window_count < wanted_window_count:
+            raise RelayControlError("minutes_plan_too_little_speech")
         raise RelayControlError("minutes_plan_window_duration")
     minimum_window_duration = _minimum_minutes_window_duration(
         duration, window_count

@@ -1970,6 +1970,29 @@ class ControlDbLockTests(unittest.TestCase):
         self.assertIsInstance(caught.exception, module.MainTranscriptBundleError)
 
 
+    def test_sparse_recording_fails_with_no_retry_notice(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        claim = self.module._control_claim_next()
+        self.transcript.with_suffix(".srt").write_text(
+            "1\n00:00:00,000 --> 00:00:05,000\n喂，开始了吗\n\n"
+            "2\n00:23:20,000 --> 00:23:25,000\n好，那就先这样\n",
+            encoding="utf-8",
+        )
+
+        result = self._process(
+            claim,
+            get_audio_duration_sec=patch.object(
+                self.module, "get_audio_duration_sec", return_value=3600
+            ),
+        )
+
+        self.assertFalse(result)
+        status = self.control.status(job_id)
+        self.assertEqual("failed", status["status"])
+        self.assertEqual("minutes_plan_too_little_speech", status["last_error"])
+        self.assertEqual(["录音里几乎没有可用内容"], self.notifications)
+
+
 class InboxRescanTests(unittest.TestCase):
     """监听只靠实时事件会漏：停机期间落地的、移进来的录音要靠补扫和 on_moved 兜住。"""
 

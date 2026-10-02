@@ -399,7 +399,8 @@ class MinutesProtocolV3Tests(unittest.TestCase):
                     srt, root / "minutes-plan.json", total_duration_sec=3600
                 )
 
-        self.assertEqual("minutes_plan_window_duration", str(caught.exception))
+        # 一小时一句话：句数不够切合法窗口，按「几乎没有可用内容」确定性失败
+        self.assertEqual("minutes_plan_too_little_speech", str(caught.exception))
 
     def test_plan_clamps_overlapping_diarization_cues_instead_of_failing(self):
         # 260721/260715 线上事故：FunASR 说话人分句输出重叠时间戳（抢话、
@@ -519,6 +520,23 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             self.assertGreaterEqual(cue["source_start_sec"], previous_end)
             self.assertGreater(cue["source_end_sec"], cue["source_start_sec"])
             previous_end = cue["source_end_sec"]
+
+    def test_plan_reports_too_little_speech_for_long_sparse_recording(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            srt = root / "pocket.srt"
+            srt.write_text(
+                "1\n00:00:00,000 --> 00:00:05,000\n喂，开始了吗\n\n"
+                "2\n00:23:20,000 --> 00:23:25,000\n好，那就先这样\n",
+                encoding="utf-8",
+            )
+            for total in (1500, 3600):
+                with self.subTest(total=total):
+                    with self.assertRaises(self.module.RelayControlError) as caught:
+                        self.module.create_minutes_plan(
+                            srt, root / "minutes-plan.json", total_duration_sec=total
+                        )
+                    self.assertEqual("minutes_plan_too_little_speech", str(caught.exception))
 
     def test_plan_still_rejects_negative_duration_cue(self):
         with tempfile.TemporaryDirectory() as tmpdir:
