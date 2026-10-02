@@ -198,7 +198,12 @@ def _control_claim_next() -> dict | None:
 
 
 def _control_recover_orphaned_claims() -> int:
-    return _relay_control_module().recover_orphaned_claims()
+    # 只在 control worker 两次领取之间调用：此刻本进程手上没有在跑的 claim，
+    # 名下还挂着的活跃 claim 都是上一单没收口的（如回写撞上库写锁），一并回收。
+    relay_control = _relay_control_module()
+    return relay_control.recover_orphaned_claims(
+        idle_worker_id=relay_control.make_worker_id("watchdog")
+    )
 
 
 def _control_reconcile_codex_handoffs() -> int:

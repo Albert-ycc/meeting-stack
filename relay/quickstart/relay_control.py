@@ -4089,8 +4089,13 @@ class RelayControl:
         finally:
             connection.close()
 
-    def recover_orphaned_claims(self) -> int:
-        """watchdog 重启时把上个进程领取但未收口的 attempt 标为 interrupted。"""
+    def recover_orphaned_claims(self, *, idle_worker_id: str | None = None) -> int:
+        """watchdog 重启时把上个进程领取但未收口的 attempt 标为 interrupted。
+
+        ``idle_worker_id`` 由 worker 在两次领取之间传入自己的 id，表示「我此刻手上没有在跑的
+        attempt」：属于它的活跃 claim 即使属主进程还活着，也已经没人在执行（例如上一单的回写
+        撞上库写锁没写进去），同样回收。只有 worker 自己能替自己作这个保证，别人的 claim 照旧看进程存活。
+        """
         active_claimed_states = {
             "stabilizing",
             "transcribing",
@@ -4116,7 +4121,8 @@ class RelayControl:
                 # 避免 watchdog 重启瞬间把仍在执行的 Agent 错判为 orphan。
                 if row["status"] == "minutes_generating" and row["codex_dispatched_at"]:
                     continue
-                if _worker_process_is_alive(row["worker_id"]):
+                owner_idle = bool(idle_worker_id) and row["worker_id"] == idle_worker_id
+                if not owner_idle and _worker_process_is_alive(row["worker_id"]):
                     continue
                 now = _now()
                 updated = connection.execute(
@@ -4154,7 +4160,10 @@ class RelayControl:
                     row["status"],
                     "interrupted",
                     stage=row["status"],
-                    payload={"previous_worker_id": row["worker_id"]},
+                    payload={
+                        "previous_worker_id": row["worker_id"],
+                        "owner_idle": owner_idle,
+                    },
                 )
                 recovered += 1
         return recovered
@@ -6632,8 +6641,10 @@ def prepare_attempt_draft(
     )
 
 
-def recover_orphaned_claims(db_path: str | Path | None = None) -> int:
-    return _service(db_path).recover_orphaned_claims()
+def recover_orphaned_claims(
+    db_path: str | Path | None = None, *, idle_worker_id: str | None = None
+) -> int:
+    return _service(db_path).recover_orphaned_claims(idle_worker_id=idle_worker_id)
 
 
 def record_codex_dispatched(

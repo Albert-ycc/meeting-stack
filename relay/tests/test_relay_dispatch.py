@@ -1498,6 +1498,35 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         self.assertFalse(finish.call_args.kwargs["success"])
         self.assertEqual("whisper_process_failed", finish.call_args.kwargs["error"])
 
+    def test_worker_once_reclaims_its_own_stranded_claim_and_moves_queue_on(self):
+        module = load_watchdog_module()
+        control = module._relay_control_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            first = root / "vm-20261001-090000-AAA.m4a"
+            second = root / "vm-20261001-100000-BBB.m4a"
+            first.write_bytes(b"meeting-1")
+            second.write_bytes(b"meeting-2")
+            (root / "archive").mkdir()
+            with patch.dict(os.environ, {
+                "MEETING_RELAY_JOBS_DB": str(root / "jobs.sqlite3"),
+                "MEETING_RELAY_ARCHIVE_ROOT": str(root / "archive"),
+            }):
+                stranded = control.enqueue(first, compute_hash=False)
+                waiting = control.enqueue(second, compute_hash=False)
+                # 上一单领走后回写没写进去：任务挂在本进程名下，但本进程已经空着手
+                self.assertEqual(stranded, module._control_claim_next()["job_id"])
+                with patch.object(module, "_agent_pane_available", return_value=True), \
+                        patch.object(module, "_control_reconcile_pending_archives", return_value={}), \
+                        patch.object(module, "_control_reconcile_codex_handoffs", return_value=0), \
+                        patch.object(module, "process_controlled_claim", return_value=True) as process:
+                    worked = module.run_control_worker_once()
+                stranded_status = control.status(stranded)["status"]
+
+        self.assertTrue(worked)
+        self.assertEqual("interrupted", stranded_status)
+        self.assertEqual(waiting, process.call_args.args[0]["job_id"])
+
     def test_worker_leaves_queue_unclaimed_while_codex_pane_is_busy(self):
         module = load_watchdog_module()
         with patch.object(module, "_agent_pane_available", return_value=False), \

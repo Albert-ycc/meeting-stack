@@ -1221,6 +1221,52 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual(0, recovered)
         self.assertEqual("transcribing", self.control.status(job_id)["status"])
 
+    def test_idle_worker_recovers_its_own_stranded_claim_but_not_others(self):
+        own_worker = f"watchdog-{os.getpid()}"
+        stranded = self.control.enqueue(self.audio)
+        self.control.claim_next(worker_id=own_worker)
+
+        # 属主进程还活着：不带 idle_worker_id 时仍按原规则不回收
+        self.assertEqual(0, self.control.recover_orphaned_claims())
+        self.assertEqual("transcribing", self.control.status(stranded)["status"])
+        # 别的活着的 worker 的 claim 不受「我空闲」的影响
+        self.assertEqual(
+            0,
+            self.control.recover_orphaned_claims(
+                idle_worker_id=f"relayctl-{os.getpid()}"
+            ),
+        )
+        self.assertEqual("transcribing", self.control.status(stranded)["status"])
+
+        recovered = self.control.recover_orphaned_claims(idle_worker_id=own_worker)
+
+        self.assertEqual(1, recovered)
+        current = self.control.status(stranded)
+        self.assertEqual("interrupted", current["status"])
+        self.assertIsNone(current["worker_id"])
+        with self.control._connect() as connection:
+            payload = connection.execute(
+                """
+                SELECT payload_json FROM events
+                WHERE job_id = ? AND event_type = 'orphaned_claim_recovered'
+                """,
+                (stranded,),
+            ).fetchone()[0]
+        self.assertTrue(json.loads(payload)["owner_idle"])
+
+    def test_idle_worker_keeps_its_dispatched_minutes_handoff(self):
+        own_worker = f"watchdog-{os.getpid()}"
+        job_id = self.control.enqueue(self.audio)
+        self.control.claim_next(worker_id=own_worker)
+        self.control.record_stage(job_id, "transcript_ready")
+        self.control.record_stage(job_id, "minutes_generating")
+        self.control.record_codex_dispatched(job_id)
+
+        recovered = self.control.recover_orphaned_claims(idle_worker_id=own_worker)
+
+        self.assertEqual(0, recovered)
+        self.assertEqual("minutes_generating", self.control.status(job_id)["status"])
+
     def test_restart_recovery_rejects_reused_pid_with_different_start_token(self):
         job_id = self.control.enqueue(self.audio)
         self.control.claim_next(
