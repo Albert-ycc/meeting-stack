@@ -2276,7 +2276,7 @@ describe("MeetingDetailPage 同一场会静默刷新不冲掉没保存的编辑"
 });
 
 describe("MeetingDetailPage 纪要历史版本只给元数据", () => {
-  // 会议详情里只有当前版本带正文；历史版本在下拉里选到哪一版才去取
+  // 会议详情里只有当前版本带正文；版本下拉只用来选回滚的目标，页面从不显示历史版本的正文
   const history = { meeting_id: "vm-1", kind: "generated", published: 0 };
   const v1 = { ...history, id: "mv-1", version_no: 1, created_at: "2026-07-14T00:00:00Z" };
   const v2 = { ...history, id: "mv-2", version_no: 2, kind: "draft", created_at: "2026-07-14T00:01:00Z" };
@@ -2295,22 +2295,6 @@ describe("MeetingDetailPage 纪要历史版本只给元数据", () => {
     minutes_versions: [v3, v2, v1],
     ...extra,
   });
-  const body = (versionNo: number, markdown: string) => ({
-    ...history,
-    id: `mv-${versionNo}`,
-    version_no: versionNo,
-    markdown,
-    created_at: "2026-07-14T00:00:00Z",
-  });
-  const deferred = <T,>() => {
-    let resolve!: (value: T) => void;
-    let reject!: (error: unknown) => void;
-    const promise = new Promise<T>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
-    return { promise, resolve, reject };
-  };
 
   function setup(apiClient: Partial<ApiClient>, meetingDetail = detail()) {
     const props = {
@@ -2329,11 +2313,9 @@ describe("MeetingDetailPage 纪要历史版本只给元数据", () => {
     await userEvent.click(screen.getByRole("tab", { name: /会议纪要/ }));
     return within(document.querySelector("aside.minutes-actions") as HTMLElement);
   }
-  const preview = () => screen.queryByRole("region", { name: "所选纪要版本的内容" });
 
-  it("当前版本照常显示，下拉列全部版本；没选历史版本时没有预览，也不去取", async () => {
-    const minutesVersion = vi.fn();
-    setup({ minutesVersion } as unknown as Partial<ApiClient>);
+  it("当前版本照常显示，下拉列全部版本，没选历史版本时回滚按钮置灰", async () => {
+    setup({});
 
     const aside = await openMinutes();
 
@@ -2344,107 +2326,44 @@ describe("MeetingDetailPage 纪要历史版本只给元数据", () => {
       "v2 · 人工修改",
       "v1 · AI 生成",
     ]);
-    expect(preview()).not.toBeInTheDocument();
     expect(aside.getByRole("button", { name: "回滚纪要版本" })).toBeDisabled();
-    expect(minutesVersion).not.toHaveBeenCalled();
   });
 
-  it("选到历史版本才去取：写明在读，读完显示这一版的正文；当前版本和主文档不动，回滚对着所选版本", async () => {
-    const request = deferred<ReturnType<typeof body>>();
-    const minutesVersion = vi.fn().mockReturnValue(request.promise);
+  it("选一个历史版本回滚：带的是所选版本的 id，主文档在回滚完成前仍是当前版本的正文", async () => {
     const rollbackMinutes = vi.fn().mockResolvedValue({ version_id: "mv-4" });
-    const { props } = setup({ minutesVersion, rollbackMinutes } as unknown as Partial<ApiClient>);
+    const { props } = setup({ rollbackMinutes } as unknown as Partial<ApiClient>);
     const aside = await openMinutes();
 
     await userEvent.selectOptions(aside.getByRole("combobox"), "mv-2");
 
-    expect(minutesVersion).toHaveBeenCalledTimes(1);
-    expect(minutesVersion).toHaveBeenCalledWith("vm-1", "mv-2", { signal: expect.any(AbortSignal) });
-    expect(within(preview()!).getByRole("status")).toHaveTextContent("正在读取这一版的内容");
-    await act(async () => request.resolve(body(2, "## 第二版的决议\n\n- 老办法")));
-    expect(within(preview()!).getByRole("heading", { name: "第二版的决议" })).toBeInTheDocument();
-    // 主文档还是当前版本
     expect(screen.getByText("当前版本的正文")).toBeInTheDocument();
     expect(aside.getByRole("button", { name: "回滚纪要版本" })).toBeEnabled();
-
     await userEvent.click(aside.getByRole("button", { name: "回滚纪要版本" }));
 
     expect(rollbackMinutes).toHaveBeenCalledWith("vm-1", "mv-2");
     await waitFor(() => expect(props.onReload).toHaveBeenCalled());
   });
 
-  it("连着切几个版本：只显示最后选的那一版，先发的请求被中止", async () => {
-    const requests = new Map<string, ReturnType<typeof deferred<ReturnType<typeof body>>>>();
-    const signals = new Map<string, AbortSignal>();
-    const minutesVersion = vi.fn((_meetingId: string, versionId: string, options: { signal: AbortSignal }) => {
-      requests.set(versionId, deferred());
-      signals.set(versionId, options.signal);
-      return requests.get(versionId)!.promise;
-    });
-    setup({ minutesVersion } as unknown as Partial<ApiClient>);
+  it("选回当前版本或「选择历史版本」：回滚按钮置灰", async () => {
+    setup({});
     const aside = await openMinutes();
-
-    await userEvent.selectOptions(aside.getByRole("combobox"), "mv-2");
     await userEvent.selectOptions(aside.getByRole("combobox"), "mv-1");
-
-    expect(signals.get("mv-2")?.aborted).toBe(true);
-    expect(signals.get("mv-1")?.aborted).toBe(false);
-    // 后选的先回，先选的迟到
-    await act(async () => requests.get("mv-1")!.resolve(body(1, "第一版的正文")));
-    await act(async () => requests.get("mv-2")!.resolve(body(2, "第二版的正文")));
-
-    expect(within(preview()!).getByText("第一版的正文")).toBeInTheDocument();
-    expect(screen.queryByText("第二版的正文")).not.toBeInTheDocument();
-    expect(within(preview()!).getByText("v1 · AI 生成")).toBeInTheDocument();
-  });
-
-  it("选回当前版本或「选择历史版本」：预览收起，回滚按钮置灰", async () => {
-    const minutesVersion = vi.fn().mockResolvedValue(body(2, "第二版的正文"));
-    setup({ minutesVersion } as unknown as Partial<ApiClient>);
-    const aside = await openMinutes();
-    await userEvent.selectOptions(aside.getByRole("combobox"), "mv-2");
-    expect(await screen.findByText("第二版的正文")).toBeInTheDocument();
+    expect(aside.getByRole("button", { name: "回滚纪要版本" })).toBeEnabled();
 
     await userEvent.selectOptions(aside.getByRole("combobox"), "mv-3");
-    expect(preview()).not.toBeInTheDocument();
     expect(aside.getByRole("button", { name: "回滚纪要版本" })).toBeDisabled();
 
     await userEvent.selectOptions(aside.getByRole("combobox"), "mv-2");
-    expect(await screen.findByText("第二版的正文")).toBeInTheDocument();
     await userEvent.selectOptions(aside.getByRole("combobox"), "");
-    expect(preview()).not.toBeInTheDocument();
     expect(aside.getByRole("button", { name: "回滚纪要版本" })).toBeDisabled();
-    // 取过的不重取
-    expect(minutesVersion).toHaveBeenCalledTimes(1);
   });
 
-  it("取失败：就地写原因，回滚不受影响；重试读到正文", async () => {
-    const minutesVersion = vi
-      .fn()
-      .mockRejectedValueOnce(new ApiError("服务没有响应，稍后重试", 0))
-      .mockResolvedValueOnce(body(2, "重试之后的正文"));
-    setup({ minutesVersion } as unknown as Partial<ApiClient>);
-    const aside = await openMinutes();
-
-    await userEvent.selectOptions(aside.getByRole("combobox"), "mv-2");
-
-    expect(await within(preview()!).findByRole("alert")).toHaveTextContent("读取失败：服务没有响应，稍后重试");
-    expect(aside.getByRole("button", { name: "回滚纪要版本" })).toBeEnabled();
-    expect(screen.getByText("当前版本的正文")).toBeInTheDocument();
-
-    await userEvent.click(within(preview()!).getByRole("button", { name: "重试" }));
-
-    expect(await screen.findByText("重试之后的正文")).toBeInTheDocument();
-  });
-
-  it("回滚后刷新：下拉回到新的当前版本，预览收起，主文档换成新版本的正文", async () => {
-    const minutesVersion = vi.fn().mockResolvedValue(body(2, "第二版的正文"));
-    const { rerender, props } = setup({ minutesVersion } as unknown as Partial<ApiClient>);
+  it("回滚后刷新：下拉回到新的当前版本，主文档换成新版本的正文，原来的当前版本退成只有元数据", async () => {
+    const { rerender, props } = setup({});
     const aside = await openMinutes();
     await userEvent.selectOptions(aside.getByRole("combobox"), "mv-2");
-    expect(await screen.findByText("第二版的正文")).toBeInTheDocument();
 
-    const v4 = { ...v3, id: "mv-4", version_no: 4, based_on_id: "mv-2", markdown: "第二版的正文", html: null };
+    const v4 = { ...v3, id: "mv-4", version_no: 4, based_on_id: "mv-2", markdown: "回滚到第二版的正文", html: null };
     // 回滚建了新版本 v4：它是当前版本带正文，v3 退成只有元数据
     const { markdown: _markdown, html: _html, ...v3Meta } = v3;
     rerender(
@@ -2454,10 +2373,10 @@ describe("MeetingDetailPage 纪要历史版本只给元数据", () => {
       />,
     );
 
-    await waitFor(() => expect(preview()).not.toBeInTheDocument());
-    expect(screen.getByRole("combobox")).toHaveValue("mv-4");
-    expect(screen.getByText("第二版的正文")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("combobox")).toHaveValue("mv-4"));
+    expect(screen.getByText("回滚到第二版的正文")).toBeInTheDocument();
     expect(screen.queryByText("当前版本的正文")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "回滚纪要版本" })).toBeDisabled();
   });
 
   it("历史版本没带正文也不影响编辑保存：编辑器里是当前版本的正文，保存仍按当前版本去比", async () => {
@@ -2481,6 +2400,5 @@ describe("MeetingDetailPage 纪要历史版本只给元数据", () => {
     await openMinutes();
 
     expect(screen.getByText("最新一版的正文")).toBeInTheDocument();
-    expect(preview()).not.toBeInTheDocument();
   });
 });

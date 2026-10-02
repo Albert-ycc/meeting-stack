@@ -1,10 +1,9 @@
-"""会议详情只带当前纪要版本的正文，历史版本只给元数据；要看历史版本走按版本取正文的接口。
+"""会议详情只带当前纪要版本的正文，历史版本只给元数据。
 原来详情每次都带回全部历史版本的 markdown 和 html：20 个版本、每版 30KB 的会，一次详情 1.2MB，
-保存后的静默刷新、轮询 Qwen 状态都要再拉一遍，而页面上从来没有用到过历史版本的正文。"""
+保存后的静默刷新、轮询 Qwen 状态都要再拉一遍，而页面上从来没有用到过历史版本的正文
+（版本下拉只用来选回滚的目标）。"""
 
 import hashlib
-
-import pytest
 
 from meeting_workbench.db import Database, utc_now
 
@@ -139,60 +138,8 @@ def test_detail_size_does_not_grow_with_the_history(tmp_path):
     assert "第1版正文" not in many.text and "第19版正文" not in many.text
 
 
-def test_body_endpoint_returns_the_full_version(tmp_path):
-    client, db = make_client(tmp_path)
-    ids = add_meeting(db, "vm-a", versions=3, size=50)
-
-    response = client.get(f"/api/meetings/vm-a/minutes-versions/{ids[0]}")
-
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["id"] == ids[0] and body["version_no"] == 1 and body["meeting_id"] == "vm-a"
-    assert body["markdown"] == "# vm-a 第 1 版\n\n" + "第1版正文。" * 50
-    assert body["html"] == "<h1>vm-a 第 1 版</h1>"
-    assert body["kind"] == "draft" and body["published"] == 1
-
-
-def test_body_endpoint_also_serves_the_current_version(tmp_path):
-    client, db = make_client(tmp_path)
-    ids = add_meeting(db, "vm-a", versions=2, size=10)
-
-    body = client.get(f"/api/meetings/vm-a/minutes-versions/{ids[1]}").json()
-
-    assert body["markdown"] == detail(client, "vm-a")["minutes_versions"][0]["markdown"]
-
-
-def test_a_version_of_another_meeting_is_404(tmp_path):
-    client, db = make_client(tmp_path)
-    add_meeting(db, "vm-a", versions=2, size=10)
-    other = add_meeting(db, "vm-b", versions=2, size=10)
-
-    cross = client.get(f"/api/meetings/vm-a/minutes-versions/{other[0]}")
-
-    assert cross.status_code == 404
-    assert cross.json() == {"detail": "纪要版本不存在"}
-    assert "第1版正文" not in cross.text  # 404 的响应里不带别的会的正文
-    assert client.get(f"/api/meetings/vm-b/minutes-versions/{other[0]}").status_code == 200
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/api/meetings/vm-a/minutes-versions/mv-nope",
-        "/api/meetings/vm-nope/minutes-versions/mv-vm-a-1",
-        "/api/meetings/vm-a/minutes-versions/",
-    ],
-    ids=["版本不存在", "会议不存在", "没带版本号"],
-)
-def test_unknown_version_or_meeting_is_404(tmp_path, path):
-    client, db = make_client(tmp_path)
-    add_meeting(db, "vm-a", versions=1, size=10)
-
-    assert client.get(path).status_code == 404
-
-
 def test_rolling_back_still_shows_the_rolled_back_text_as_current(tmp_path):
-    """回滚会建一个新版本、设成当前：详情里它带正文，被回滚的老版本只剩元数据，要看正文走新接口。"""
+    """回滚会建一个新版本、设成当前：详情里它带正文，被回滚的老版本和其余历史版本只剩元数据。"""
     client, db = make_client(tmp_path)
     ids = add_meeting(db, "vm-a", versions=3, size=20)
 
@@ -209,5 +156,4 @@ def test_rolling_back_still_shows_the_rolled_back_text_as_current(tmp_path):
     assert versions[0]["id"] == after["current_minutes_version_id"]
     assert versions[0]["markdown"] == "# vm-a 第 1 版\n\n" + "第1版正文。" * 20
     assert all(BODY_FIELDS.isdisjoint(item) for item in versions[1:])
-    old = client.get(f"/api/meetings/vm-a/minutes-versions/{ids[2]}").json()
-    assert old["markdown"].startswith("# vm-a 第 3 版")
+    assert versions[0]["based_on_id"] == ids[0]

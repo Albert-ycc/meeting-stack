@@ -764,8 +764,8 @@ def _minutes_versions_for_detail(
 ) -> list[dict[str, Any]]:
     """会议详情里的纪要版本：只有当前版本带正文（markdown、html），历史版本只给元数据。
 
-    纪要正文入库后不会原地改写，页面也只显示当前版本；历史版本带着正文，20 个版本、每版 30KB 的会
-    一次详情就是 1.2MB，保存后的静默刷新还要再拉一遍。要看历史版本走 /minutes-versions/{id}。
+    页面只显示当前版本，版本下拉只用来选回滚的目标，从不显示历史版本的正文；历史版本带着正文，
+    20 个版本、每版 30KB 的会一次详情就是 1.2MB，保存后的静默刷新还要再拉一遍。
     当前版本按 current_minutes_version_id 找；指针空着或指到不在这场会里的版本时，取最新的一版，
     和页面显示的口径一致。
     """
@@ -2181,17 +2181,6 @@ def create_app(
             raise HTTPException(404, "会议不存在")
         prioritize_related(meeting_id)
         return detail
-
-    @app.get("/api/meetings/{meeting_id}/minutes-versions/{version_id}")
-    def minutes_version(meeting_id: str, version_id: str):
-        """某一版纪要的完整内容：会议详情里只有当前版本带正文，要看历史版本来这里取。"""
-        version = db.query_one(
-            "SELECT * FROM minutes_versions WHERE id = ? AND meeting_id = ?",
-            (version_id, meeting_id),
-        )
-        if not version:
-            raise HTTPException(404, "纪要版本不存在")
-        return version
 
     # 4d：会议页右侧的「相关材料」栏；GET 不写库，到期时顺手在内存里 prioritize
     @app.get("/api/meetings/{meeting_id}/related-materials")
