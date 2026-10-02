@@ -1098,11 +1098,13 @@ def _file_is_regulation(conn: Any, content_key: str) -> bool:
     return total >= LAW_CLAUSE_FILE_MIN and length > 0 and total / length >= LAW_CLAUSE_FILE_DENSITY
 
 
-def _law_ratio(conn: Any, term: str) -> float:
+def _law_ratio(conn: Any, term: str, file_is_regulation: dict[str, bool]) -> float:
     """这个词命中的片段（最多抽 LAW_CLAUSE_SAMPLE 个）里，带「第……条」条款编号的、或所在整份材料是
     法规页面的（_file_is_regulation），占多少——法规原文摘出来的词（法律、条例、办法逐条罗列时反复
     出现的短语，以及网站页眉页脚这类边角文字）几乎全落在这两类里；真业务词就算在同一批材料里，也
-    几乎不会。没命中任何片段时当 0（不该走到这里：调用方只在 df 够、已经确认有命中的词上查）。"""
+    几乎不会。没命中任何片段时当 0（不该走到这里：调用方只在 df 够、已经确认有命中的词上查）。
+    file_is_regulation 是这一轮的判定缓存（content_key → 是不是法规页面），调用方一轮传同一份进来，
+    多个词命中同一份材料时只读一次。"""
     rows = conn.execute(
         """SELECT c.content_key, c.text FROM material_chunks_fts
              JOIN material_chunks c ON c.id = material_chunks_fts.rowid
@@ -1111,7 +1113,6 @@ def _law_ratio(conn: Any, term: str) -> float:
     ).fetchall()
     if not rows:
         return 0.0
-    file_is_regulation: dict[str, bool] = {}
     hits = 0
     for row in rows:
         if _LAW_CLAUSE.search(row["text"] or ""):
@@ -1340,9 +1341,10 @@ def _compute(
         if not (item.spoken or item.df >= MIN_DF_UNSPOKEN):
             found.pop(term)
     checkpoint()
+    file_is_regulation: dict[str, bool] = {}
     for term in [term for term, item in found.items() if not item.spoken]:
         q["law_ratio"] += 1
-        if _law_ratio(conn, term) >= LAW_CLAUSE_RATIO:
+        if _law_ratio(conn, term, file_is_regulation) >= LAW_CLAUSE_RATIO:
             found.pop(term)
     # 9. 听错的写法
     checkpoint()
