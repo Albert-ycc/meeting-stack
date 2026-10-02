@@ -27,7 +27,7 @@ from meeting_workbench.material_vectors import MaterialVectors
 from meeting_workbench.materials import ROOT_ONLINE
 from meeting_workbench.semantic import SemanticUnavailable
 
-from .test_graph import add_meeting
+from .test_graph import add_meeting, stop_clock
 from .test_links_loop import Clock, app_settings
 from .test_material_search import add_file
 
@@ -1365,7 +1365,9 @@ def test_panel_state_sentences(tmp_path):
         )
 
 
-def test_graph_related_edges_etag_and_per_node_cap(tmp_path):
+def test_graph_related_edges_etag_and_per_node_cap(tmp_path, monkeypatch):
+    # 「近 28 天」按路由取的今天算：今天停在此刻，会按同一天往回数
+    today = stop_clock(monkeypatch)
     config = app_settings(tmp_path)
     app = create_app(config)
     db = Database(config.database_path)
@@ -1386,8 +1388,8 @@ def test_graph_related_edges_etag_and_per_node_cap(tmp_path):
             vectors=False,
         )
         files.append((key, add_file(db, root, f"f{index}.docx", key=key)))
-    add_meeting(db, "m", ago=1, project_id="p")
-    add_meeting(db, "old", ago=60, project_id="p")
+    add_meeting(db, "m", ago=1, project_id="p", today=today)
+    add_meeting(db, "old", ago=60, project_id="p", today=today)
     rows = []
     for meeting_id in ("m", "old"):
         for key, file_id in files:
