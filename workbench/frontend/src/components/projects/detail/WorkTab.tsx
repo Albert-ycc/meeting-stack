@@ -17,6 +17,7 @@ import { copiedMessage, copyFailureReason, copyRequirementBackground } from "../
 import { PriorityBadge } from "../../RequirementBadges";
 import { TaskEditModal } from "../../TaskEditModal";
 import type { ToastOptions } from "../../Toast";
+import { useMutex } from "../../useMutex";
 import { TaskPanel } from "./TaskPanel";
 import { TaskRow, type RowPopover } from "./TaskRow";
 import { linkBody, originalLink, requirementOption } from "./workModel";
@@ -70,8 +71,7 @@ export function WorkTab({
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   // 写成功之后的重取没取回来：旧数据留着，横条说一声；不去顶掉带［撤销］的提示
   const [stale, setStale] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
+  const { busy, run, runAfterCurrent } = useMutex((message) => showToast(message, { tone: "error" }));
   const requestRef = useRef(0);
   const [popover, setPopover] = useState<Popover>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -114,37 +114,15 @@ export function WorkTab({
     void load();
   }, [load, reloadKey]);
 
-  // 写操作互斥：ref 级，双击同帧不会连发两个写请求。runningRef 记着手头这次，撤销要等它做完
-  const runningRef = useRef<Promise<void> | null>(null);
-  const run = async (action: () => Promise<void>) => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
-    const running = (async () => {
-      try {
-        await action();
-      } catch (error) {
-        showToast(error instanceof Error ? error.message : "操作失败，请稍后重试", { tone: "error" });
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
-    })();
-    runningRef.current = running;
-    await running;
-  };
-
   // 提示条上的［撤销］：提示在写成功后、重取还没回来时就弹出，这时点撤销不能被互斥吞掉，
-  // 而是等手头那次做完再撤
+  // 而是排在手头那次后面；撤销被服务端拒绝时，原因由 useMutex 的错误出口弹成失败提示
   const withUndo = (message: string, undo: () => Promise<void>) =>
     showToast(message, {
-      onUndo: async () => {
-        while (busyRef.current && runningRef.current) await runningRef.current;
-        await run(async () => {
+      onUndo: () =>
+        runAfterCurrent(async () => {
           await undo();
           await refreshAfterWrite();
-        });
-      },
+        }),
     });
 
   const completeTask = (task: Task) =>

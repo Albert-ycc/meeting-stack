@@ -11,7 +11,16 @@ import type {
   ReviewCardTask,
   ReviewCardsPayload,
 } from "../../types";
-import { ReviewCardsPanel, type ReviewCardsPanelProps } from "./ReviewCardsPanel";
+import { useMutex, type Mutex } from "../useMutex";
+import { ReviewCardsPanel as BarePanel, type ReviewCardsPanelProps } from "./ReviewCardsPanel";
+
+/** 互斥归页面（TasksPage）持有，面板拿来用：用例里用一个壳代替页面，失败原因照样走 onNotify */
+let pageMutex: Mutex;
+function ReviewCardsPanel(props: Omit<ReviewCardsPanelProps, "mutex">) {
+  const mutex = useMutex((message) => props.onNotify(message, undefined, "error"));
+  pageMutex = mutex;
+  return <BarePanel {...props} mutex={mutex} />;
+}
 
 const MEETING_ID = "vm-20260929-192637-f3947874";
 const PROJECT_ID = "project-592ef4b19a60442a";
@@ -172,7 +181,7 @@ function withTask(card: ReviewCard, taskId: string, patch: Partial<ReviewCardTas
 
 function setup(
   overrides: Partial<Record<string, unknown>> = {},
-  props: Partial<ReviewCardsPanelProps> = {},
+  props: Partial<Omit<ReviewCardsPanelProps, "mutex">> = {},
   initial: ReviewCardsPayload = cards(OPEN_CARD),
 ) {
   const apiClient = {
@@ -764,6 +773,58 @@ describe("ReviewCardsPanel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("互斥是页面给的：页面那边有写操作（比如提示条上的［撤销］）在跑，卡上的按钮置灰，也进不去", async () => {
+    const { apiClient } = setup();
+    await screen.findByRole("region", { name: /260929/ });
+    let finish: () => void = () => undefined;
+    act(() => {
+      void pageMutex.run(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+    });
+
+    const confirm = within(row("话术修改稿")).getByRole("button", { name: /^确认「/ });
+    expect(confirm).toBeDisabled();
+    expect(screen.getByRole("button", { name: "全部确认" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^丢掉「/ })).toBeDisabled();
+    await userEvent.click(confirm);
+    expect(apiClient.confirmTask).not.toHaveBeenCalled();
+
+    await act(async () => finish());
+    await waitFor(() => expect(within(row("话术修改稿")).getByRole("button", { name: /^确认「/ })).toBeEnabled());
+  });
+
+  it("卡上的写操作在跑，页面的互斥也被占着：提示条上的［撤销］排在它后面", async () => {
+    let release: () => void = () => undefined;
+    const confirmTask = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    setup({ confirmTask });
+    await screen.findByRole("region", { name: /260929/ });
+    await userEvent.click(within(row("话术修改稿")).getByRole("button", { name: /^确认「/ }));
+    await waitFor(() => expect(confirmTask).toHaveBeenCalledTimes(1));
+    expect(pageMutex.busy).toBe(true);
+
+    const undo = vi.fn(async () => undefined);
+    let queued: Promise<void> = Promise.resolve();
+    act(() => {
+      queued = pageMutex.runAfterCurrent(undo);
+    });
+    expect(undo).not.toHaveBeenCalled();
+
+    release();
+    await act(async () => {
+      await queued;
+    });
+    expect(undo).toHaveBeenCalledTimes(1);
   });
 
   it("写操作失败时用提示条报原因，不动列表", async () => {

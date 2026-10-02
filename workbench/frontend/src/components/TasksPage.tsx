@@ -12,6 +12,7 @@ import { TaskEditModal } from "./TaskEditModal";
 import { ReviewCardsPanel } from "./todo/ReviewCardsPanel";
 import { RowMenu, type RowMenuItem } from "./todo/RowMenu";
 import { TodoGroups } from "./todo/TodoGroups";
+import { useMutex } from "./useMutex";
 import { ApiError, type ApiClient } from "../api";
 import type {
   LinkOption,
@@ -138,7 +139,9 @@ export function TasksPage({
   });
   const [page, setPage] = usePersistentState("tasks.page", 0);
   const [projectIds, setProjectIds] = usePersistentState<string[]>("tasks.projectIds", [], { valid: isStringList });
-  const [busy, setBusy] = useState(false);
+  // 页面上所有写操作（审核卡上的也算）和提示条上的［撤销］排同一个队：一个在跑，别的进不去，撤销排在它后面
+  const mutex = useMutex((message) => showToast(message, { tone: "error" }));
+  const { busy } = mutex;
   const [reloadKey, setReloadKey] = useState(0);
   const [drawerTaskId, setDrawerTaskId] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -150,9 +153,6 @@ export function TasksPage({
   const [loadErrorStatus, setLoadErrorStatus] = useState(0);
   const [queryError, setQueryError] = useState("");
   const [creating, setCreating] = useState(false);
-  const busyRef = useRef(false);
-  // 正在跑的那次写操作（含它之后的重新取数）：提示条上的［撤销］要等它做完再跑，不能被互斥直接丢掉
-  const runningRef = useRef<Promise<void> | null>(null);
   const loadSeqRef = useRef(0);
   // 页面上正显示的数据是按哪组条件取的
   const loadedKeyRef = useRef<string | null>(null);
@@ -352,24 +352,12 @@ export function TasksPage({
   }));
   const noneCount = sumCounts(todo?.project_counts[NONE_PROJECT] ?? {}, tabStatuses);
 
-  const run = async (action: () => Promise<void>) => {
-    if (busyRef.current) return; // ref 级互斥：双击同帧不会连发两个写请求
-    busyRef.current = true;
-    setBusy(true);
-    const running = (async () => {
-      try {
-        await action();
-        onTasksChanged?.();
-      } catch (error) {
-        showToast(error instanceof Error ? error.message : "操作失败，请稍后重试", { tone: "error" });
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
-    })();
-    runningRef.current = running;
-    await running;
+  // 写操作成功后告诉 App 任务变了，侧栏「待办」角标跟着重取
+  const thenTellApp = (action: () => Promise<void>) => async () => {
+    await action();
+    onTasksChanged?.();
   };
+  const run = (action: () => Promise<void>) => mutex.run(thenTellApp(action));
 
   // 页面别处有写操作后：重取本页数据，并让待确认的审核卡也重取
   const refresh = async () => {
@@ -383,15 +371,16 @@ export function TasksPage({
   const notify = (message: string, undo?: () => Promise<void>, tone: NoticeTone = "success") => {
     showToast(message, {
       tone: tone === "success" ? undefined : "error",
+      // 提示是在这次操作的重新取数之前弹出的：刚弹出就点［撤销］时排在那次后面，不被互斥吞掉；
+      // 撤销被服务端拒绝时，原因由 mutex 的错误出口弹成失败提示
       onUndo: undo
-        ? async () => {
-            // 提示是在这次操作的重新取数之前弹出的：刚弹出就点［撤销］时等那次做完，不被互斥吞掉
-            await runningRef.current;
-            await run(async () => {
-              await undo();
-              await refresh();
-            });
-          }
+        ? () =>
+            mutex.runAfterCurrent(
+              thenTellApp(async () => {
+                await undo();
+                await refresh();
+              }),
+            )
         : undefined,
     });
   };
@@ -871,6 +860,7 @@ export function TasksPage({
               apiClient={apiClient}
               canWrite={canWrite}
               filters={panelFilters}
+              mutex={mutex}
               onChanged={() => {
                 onTasksChanged?.();
                 void load();

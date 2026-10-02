@@ -16,6 +16,7 @@ import { PUBLIC_GLOSSARY_KEY } from "./ProjectGlossary";
 import { LegacyGroupsNote } from "./LegacyGroupsNote";
 import { useLinksFlags } from "./links/LinksFlagsContext";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice } from "./Notice";
+import { useMutex } from "./useMutex";
 import {
   ALL_KEY,
   chipIdentity,
@@ -85,8 +86,7 @@ export function GlossaryPage({
   const flags = useLinksFlags();
   const { notice, setNotice, dismissNotice } = useNotice();
   const [confirm, confirmDialog] = useConfirm();
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
+  const { busy, run, runAfterCurrent } = useMutex((message) => setNotice(message, "error"));
 
   // —— 页面状态：刷新和离开再回来都保留（不写进地址栏，地址只管视图） ——
   const [activeTab, setActiveTab] = usePersistentState<TabKey>("glossary.activeTab", "terms");
@@ -330,26 +330,6 @@ export function GlossaryPage({
     [confirm],
   );
 
-  // 手头那次写操作：提示条上的［撤销］比它的重载先出来，点了要等它做完再撤，不能被互斥吞掉
-  const runningRef = useRef<Promise<void> | null>(null);
-  const run = async (action: () => Promise<void>) => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
-    const running = (async () => {
-      try {
-        await action();
-      } catch (error) {
-        setNotice(error instanceof Error ? error.message : "操作失败，请稍后重试", "error");
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
-    })();
-    runningRef.current = running;
-    await running;
-  };
-
   // —— 导航动作 ——
   const goScope = (key: string) =>
     guardLeave(() => {
@@ -495,15 +475,13 @@ export function GlossaryPage({
     onPendingChange?.();
   };
 
+  // 提示条上的［撤销］比这次记入的重新取数先出来：排在手头那次后面，不被互斥吞掉
   const undoSuggestion = (suggestion: GlossarySuggestion) =>
-    void (async () => {
-      await runningRef.current;
-      await run(async () => {
-        await apiClient.undoGlossarySuggestion(suggestion.id);
-        setNotice(`已撤销，「${suggestion.wrong} → ${suggestion.correct}」回到待确认`);
-        await afterSuggestionChange();
-      });
-    })();
+    void runAfterCurrent(async () => {
+      await apiClient.undoGlossarySuggestion(suggestion.id);
+      setNotice(`已撤销，「${suggestion.wrong} → ${suggestion.correct}」回到待确认`);
+      await afterSuggestionChange();
+    });
 
   const confirmSuggestion = (suggestion: GlossarySuggestion, target: GlossaryTarget) =>
     void run(async () => {

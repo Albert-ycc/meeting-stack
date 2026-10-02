@@ -1105,6 +1105,71 @@ describe("待确认页签", () => {
     expect(undo).toHaveBeenCalledTimes(1);
   });
 
+  it("审核卡和页面共用同一个互斥：卡上的写操作还在跑，提示条上的［撤销］排在它后面，不和它抢着写", async () => {
+    await openPending(makeClient());
+    const order: string[] = [];
+    const undo = vi.fn(async () => {
+      order.push("撤销");
+    });
+    act(() => panelProps().onNotify("已确认 1 项", undo));
+    // 卡上点了另一条的［确认］，请求还在路上
+    let finish: () => void = () => undefined;
+    act(() => {
+      void panelProps().mutex.run(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = () => {
+              order.push("卡上的操作做完");
+              resolve();
+            };
+          }),
+      );
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(undo).not.toHaveBeenCalled();
+
+    await act(async () => finish());
+    await waitFor(() => expect(undo).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(["卡上的操作做完", "撤销"]);
+  });
+
+  it("提示条上的［撤销］在做的时候，卡上的写操作进不去：卡和页面看到的是同一个忙闲", async () => {
+    await openPending(makeClient());
+    let finish: () => void = () => undefined;
+    const undo = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    act(() => panelProps().onNotify("已确认 1 项", undo));
+    await userEvent.click(screen.getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(undo).toHaveBeenCalledTimes(1));
+    expect(panelProps().mutex.busy).toBe(true);
+
+    const cardAction = vi.fn(async () => undefined);
+    await act(async () => panelProps().mutex.run(cardAction));
+    expect(cardAction).not.toHaveBeenCalled();
+
+    await act(async () => finish());
+    await waitFor(() => expect(panelProps().mutex.busy).toBe(false));
+    await act(async () => panelProps().mutex.run(cardAction));
+    expect(cardAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("卡上的写操作失败：原因进页面的提示条（红色叹号），和页面自己的写操作一个样", async () => {
+    await openPending(makeClient());
+
+    await act(async () =>
+      panelProps().mutex.run(async () => {
+        throw new Error("任务已经是「已完成」，不能改成「已确认」");
+      }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("任务已经是「已完成」，不能改成「已确认」");
+  });
+
   it("面板里有写操作后刷新页签计数", async () => {
     const apiClient = makeClient();
     await openPending(apiClient);

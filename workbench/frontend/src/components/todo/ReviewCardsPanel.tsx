@@ -11,6 +11,7 @@ import type {
   Task,
 } from "../../types";
 import { MergeCandidateDialog } from "../pool/MergeCandidateDialog";
+import type { Mutex } from "../useMutex";
 import { LinkPicker } from "./LinkPicker";
 import "./ReviewCardsPanel.css";
 
@@ -18,6 +19,8 @@ import "./ReviewCardsPanel.css";
 export interface ReviewCardsPanelProps {
   apiClient: ApiClient;
   canWrite: boolean;
+  /** 页面的写操作互斥：卡上的按钮和页面提示条上的［撤销］排同一个队，不会同时在写；它忙着时卡上的按钮置灰 */
+  mutex: Mutex;
   /** 会议这一层的筛选，跟着页面的筛选走：所属项目（逗号分隔多选，none 是未归项目）、会议日期 */
   filters: { project_id?: string; meeting_date_from?: string; meeting_date_to?: string };
   /** 页面别处有写操作（比如在修改弹窗里存了）时递增，面板重新取数 */
@@ -103,6 +106,7 @@ function metaLine(card: ReviewCard): string {
 export function ReviewCardsPanel({
   apiClient,
   canWrite,
+  mutex,
   filters,
   reloadKey,
   onOpenMeeting,
@@ -113,9 +117,7 @@ export function ReviewCardsPanel({
 }: ReviewCardsPanelProps) {
   const [payload, setPayload] = useState<ReviewCardsPayload | null>(null);
   const [failed, setFailed] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-  // 同一帧里连点两下，state 还没刷新，只有 ref 拦得住
-  const busyRef = useRef<string | null>(null);
+  const { busy } = mutex;
   // 任务 id → 用户改选的挂接对象（null＝不挂）；没改选的按推荐
   const [picks, setPicks] = useState<PickMap>({});
   const [pickerTaskId, setPickerTaskId] = useState<string | null>(null);
@@ -161,22 +163,17 @@ export function ReviewCardsPanel({
       return next;
     });
 
-  const run = async (key: string, meetingId: string, failure: string, action: () => Promise<void>) => {
-    if (busyRef.current) return;
-    busyRef.current = key;
-    setBusy(key);
-    expand(meetingId);
-    try {
-      await action();
-    } catch (err) {
-      onNotify(`${failure}：${errorText(err)}`, undefined, "error");
-      // 失败多半是行状态已被别处改了，立刻按最新的重画
-      void load();
-    } finally {
-      busyRef.current = null;
-      setBusy(null);
-    }
-  };
+  const run = (meetingId: string, failure: string, action: () => Promise<void>) =>
+    mutex.run(async () => {
+      expand(meetingId);
+      try {
+        await action();
+      } catch (err) {
+        onNotify(`${failure}：${errorText(err)}`, undefined, "error");
+        // 失败多半是行状态已被别处改了，立刻按最新的重画
+        void load();
+      }
+    });
 
   /** 撤销：成功给「已撤销」；没撤成（过了窗口、状态变了）按错误报。都按最新状态重画 */
   const undoReview = (ids: string[], done: string) => async () => {
@@ -195,7 +192,7 @@ export function ReviewCardsPanel({
   };
 
   const confirmTask = (card: ReviewCard, task: ReviewCardTask) =>
-    run(`confirm:${task.id}`, card.meeting.id, "确认失败", async () => {
+    run(card.meeting.id, "确认失败", async () => {
       const option = pickedOption(task, picks);
       await apiClient.confirmTask(task.id, confirmBody(option));
       await refreshed();
@@ -206,16 +203,16 @@ export function ReviewCardsPanel({
     });
 
   const rejectTask = (card: ReviewCard, task: ReviewCardTask) =>
-    run(`reject:${task.id}`, card.meeting.id, "驳回失败", async () => {
+    run(card.meeting.id, "驳回失败", async () => {
       await apiClient.rejectTask(task.id);
       await refreshed();
     });
 
   const undoRow = (card: ReviewCard, task: ReviewCardTask, done: string) =>
-    run(`undo:${task.id}`, card.meeting.id, "撤销失败", undoReview([task.id], done));
+    run(card.meeting.id, "撤销失败", undoReview([task.id], done));
 
   const confirmAll = (card: ReviewCard) =>
-    run(`all:${card.meeting.id}`, card.meeting.id, "全部确认失败", async () => {
+    run(card.meeting.id, "全部确认失败", async () => {
       const pending = card.tasks.filter((task) => task.status === "pending_confirm");
       // 用户在某行改选过挂接（和推荐不同）的，先按他选的逐条确认，别被「各自按推荐」盖掉
       const manual = pending.filter(
@@ -266,7 +263,7 @@ export function ReviewCardsPanel({
     });
 
   const dropCandidate = (card: ReviewCard, candidate: ReviewCardCandidate) =>
-    run(`drop:${candidate.id}`, card.meeting.id, "丢掉失败", async () => {
+    run(card.meeting.id, "丢掉失败", async () => {
       await apiClient.dropCandidate(candidate.id);
       await refreshed();
       onNotify(`已丢掉「${candidate.title}」`, async () => {
@@ -310,7 +307,7 @@ export function ReviewCardsPanel({
               <button
                 aria-label={`丢掉「${candidate.title}」`}
                 className="review-text-button"
-                disabled={busy !== null}
+                disabled={busy}
                 onClick={() => void dropCandidate(card, candidate)}
                 type="button"
               >
@@ -320,7 +317,7 @@ export function ReviewCardsPanel({
                 <button
                   aria-label={`合并「${candidate.title}」`}
                   className="review-button"
-                  disabled={busy !== null}
+                  disabled={busy}
                   onClick={() => setMergeCandidate(candidate)}
                   type="button"
                 >
@@ -330,7 +327,7 @@ export function ReviewCardsPanel({
               <button
                 aria-label={`认领「${candidate.title}」`}
                 className="review-button review-button--dark"
-                disabled={busy !== null}
+                disabled={busy}
                 onClick={() => onClaimCandidate(candidate.id)}
                 type="button"
               >
@@ -431,7 +428,7 @@ export function ReviewCardsPanel({
                 <button
                   aria-label={`确认「${task.title}」`}
                   className="review-button"
-                  disabled={busy !== null}
+                  disabled={busy}
                   onClick={() => void confirmTask(card, task)}
                   type="button"
                 >
@@ -440,7 +437,7 @@ export function ReviewCardsPanel({
                 <button
                   aria-label={`驳回「${task.title}」`}
                   className="review-text-button"
-                  disabled={busy !== null}
+                  disabled={busy}
                   onClick={() => void rejectTask(card, task)}
                   type="button"
                 >
@@ -463,7 +460,7 @@ export function ReviewCardsPanel({
                 <button
                   aria-label={`撤销驳回「${task.title}」`}
                   className="review-text-button review-text-button--signal"
-                  disabled={busy !== null}
+                  disabled={busy}
                   onClick={() => void undoRow(card, task, "已撤销驳回")}
                   type="button"
                 >
@@ -478,7 +475,7 @@ export function ReviewCardsPanel({
                 <button
                   aria-label={`撤销确认「${task.title}」`}
                   className="review-text-button review-text-button--signal"
-                  disabled={busy !== null}
+                  disabled={busy}
                   onClick={() => void undoRow(card, task, "已撤销确认")}
                   type="button"
                 >
@@ -565,7 +562,7 @@ export function ReviewCardsPanel({
             <span>剩下的待确认任务按推荐一并确认，10 分钟内可撤销</span>
             <button
               className="review-button review-button--signal"
-              disabled={busy !== null || card.pending_task_count === 0}
+              disabled={busy || card.pending_task_count === 0}
               onClick={() => void confirmAll(card)}
               type="button"
             >
