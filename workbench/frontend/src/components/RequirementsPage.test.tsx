@@ -130,4 +130,42 @@ describe("RequirementsPage", () => {
     expect(await screen.findByText("还没有需求")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "＋ 新建需求" }).length).toBeGreaterThan(0);
   });
+
+  it("连着切页签：先点的页签响应慢、后回来，不盖掉后点那个页签的内容", async () => {
+    let releaseDone: () => void = () => undefined;
+    const doneReady = new Promise<void>((resolve) => {
+      releaseDone = resolve;
+    });
+    const doneItem = { ...summary, id: "req-done", title: "已经做完的需求", status: "done" as const };
+    const allItem = { ...summary, id: "req-all", title: "全部里的需求" };
+    const requirements = vi.fn().mockImplementation(async ({ status }: { status?: string }) => {
+      if (status === "done") {
+        await doneReady;
+        return payload({ items: [doneItem] });
+      }
+      if (status === undefined) return payload({ items: [allItem] });
+      return payload();
+    });
+    render(
+      <RequirementsPage
+        apiClient={{ requirements } as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        onOpenProject={vi.fn()}
+        onOpenRequirement={vi.fn()}
+        projects={[]}
+      />,
+    );
+    await screen.findByText("北辰仓快递配送");
+
+    await userEvent.click(screen.getByRole("tab", { name: /已完成/ }));
+    await userEvent.click(screen.getByRole("tab", { name: /全部/ }));
+    expect(await screen.findByText("全部里的需求")).toBeInTheDocument();
+
+    releaseDone();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByRole("tab", { name: /全部/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("已经做完的需求")).toBeNull();
+    expect(screen.getByText("全部里的需求")).toBeInTheDocument();
+  });
 });

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../api";
 import { formatMonthDay } from "../format";
-import type { Project, RequirementCounts, RequirementPriority, RequirementSummary } from "../types";
+import type { Project, RequirementCounts, RequirementSummary } from "../types";
 import { Pagination } from "./Pagination";
 import { PriorityBadge, REQUIREMENT_PRIORITIES, RequirementStatusBadge } from "./RequirementBadges";
 import { RequirementModal } from "./RequirementModal";
@@ -60,8 +60,10 @@ export function RequirementsPage({
   const [state, setState] = useState<LoadState>("loading");
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<RequirementSummary | null>(null);
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setState("loading");
     try {
       const payload = await apiClient.requirements({
@@ -72,6 +74,8 @@ export function RequirementsPage({
         limit: PAGE_SIZE,
         offset,
       });
+      // 连着切页签、翻页时只认最后一次的结果，慢回来的旧响应不能盖掉新页签
+      if (seq !== loadSeqRef.current) return;
       // 当前页空了（本页最后一条改了状态被筛掉）就退到最后一个有内容的页。
       if (payload.items.length === 0 && offset > 0 && payload.total > 0) {
         setOffset(Math.max(0, Math.ceil(payload.total / PAGE_SIZE) - 1) * PAGE_SIZE);
@@ -82,7 +86,7 @@ export function RequirementsPage({
       setCounts(payload.counts);
       setState(payload.items.length ? "ready" : "empty");
     } catch {
-      setState("error");
+      if (seq === loadSeqRef.current) setState("error");
     }
   }, [apiClient, activeTab, appliedFilters, offset]);
 
