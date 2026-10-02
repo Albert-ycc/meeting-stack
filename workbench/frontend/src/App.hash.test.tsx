@@ -431,7 +431,7 @@ describe("地址栏锚点直达", () => {
   it("冷加载带 #projects/<id>/graph?sel=m:<id> 打开关系图并选中那场会；换选中只改地址栏不压历史", async () => {
     forgetGraphCache();
     window.history.replaceState(null, "", "/#projects/p/graph?sel=m:a");
-    const graph = vi.fn().mockResolvedValue(payload());
+    const graph = vi.fn().mockResolvedValue({ graph: payload(), etag: null });
     const meetingBrief = vi.fn().mockRejectedValue(new Error("简报读不到"));
     render(
       <App
@@ -446,7 +446,7 @@ describe("地址栏锚点直达", () => {
     );
 
     expect(await screen.findByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
-    expect(graph).toHaveBeenCalledWith("p", undefined, "m:a");
+    expect(graph).toHaveBeenCalledWith("p", undefined, "m:a", null);
     // 面板先渲染、取简报的 effect 后跑：机器忙时要等一下
     await waitFor(() => expect(meetingBrief).toHaveBeenCalledWith("a"));
     expect(window.location.hash).toBe("#projects/p/graph?sel=m:a");
@@ -503,7 +503,7 @@ describe("地址栏锚点直达", () => {
       <App
         apiClient={client({
           projects: vi.fn().mockResolvedValue([{ id: "p", name: "云图AI", color: "#2c8d83" }]),
-          graph: vi.fn().mockResolvedValue(payload()),
+          graph: vi.fn().mockResolvedValue({ graph: payload(), etag: null }),
           graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
           meetingBrief,
           projectBoard: vi.fn().mockResolvedValue({ id: "p", name: "云图AI", color: "#2c8d83", meeting_count: 0, material_roots: [], meetings: [] }),
@@ -529,7 +529,7 @@ describe("地址栏锚点直达", () => {
     const graphMeetingFocus = vi.fn().mockResolvedValue(focusPayload());
     const apiClient = client({
       projects: vi.fn().mockResolvedValue([{ id: "p", name: "云图AI", color: "#2c8d83" }]),
-      graph: vi.fn().mockResolvedValue(payload()),
+      graph: vi.fn().mockResolvedValue({ graph: payload(), etag: null }),
       graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
       meetingBrief: vi.fn().mockRejectedValue(new Error("简报读不到")),
       graphMeetingFocus,
@@ -579,11 +579,12 @@ describe("局部图和来龙去脉的地址（4f）", () => {
         pending_confirm_count: 0,
       }),
       projects: vi.fn().mockResolvedValue([{ id: "p", name: "云图AI", color: "#2c8d83" }]),
-      graph: vi.fn().mockResolvedValue(
-        payload({
+      graph: vi.fn().mockResolvedValue({
+        graph: payload({
           files: [{ id: "file:7", kind: "file", file_id: 7, name: "文件7.xlsx", ext: "xlsx", rel_path: "文件7.xlsx", root_id: 1, folder: "root:1" }],
         }),
-      ),
+        etag: null,
+      }),
       graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
       meetingBrief: vi.fn().mockRejectedValue(new Error("简报读不到")),
       getGraphFile: vi.fn().mockRejectedValue(new Error("读不到")),
@@ -1323,7 +1324,7 @@ describe("从项目列表进项目详情", () => {
         unassigned_count: 0,
         dropped_count: 0,
       }),
-      graph: vi.fn().mockResolvedValue(payload()),
+      graph: vi.fn().mockResolvedValue({ graph: payload(), etag: null }),
       graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
     } as unknown as Partial<ApiClient>);
   }

@@ -29,6 +29,9 @@ const PROJECTS: Project[] = [
 
 const ROOTS: GraphRootsPayload = { roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false };
 
+/** graph() 的返回：200 带整张图和 etag；etag 没变时 graph 是 null（304） */
+const fetched = (graph: GraphPayload | null, etag: string | null = null) => ({ graph, etag });
+
 function brief(meetingId: string): MeetingBrief {
   return {
     meeting: {
@@ -107,7 +110,7 @@ function expandPayload(rootId: number, dir: string): ExpandPayload {
 function makeClient(graph: GraphPayload = payload(), overrides: Record<string, unknown> = {}) {
   const undoUntil = new Date(Date.now() + 10 * 60_000).toISOString();
   return {
-    graph: vi.fn(async () => graph),
+    graph: vi.fn(async () => fetched(graph)),
     graphRoots: vi.fn(async () => ROOTS),
     meetingBrief: vi.fn(async (meetingId: string) => brief(meetingId)),
     updateMeeting: vi.fn(async () => ({ effects: { tasks_moved: 1, tasks_left: [], undo_until: undoUntil } })),
@@ -208,9 +211,9 @@ describe("ProjectGraph", () => {
     let releaseStale: (value: GraphPayload) => void = () => undefined;
     const graph = vi
       .fn()
-      .mockResolvedValueOnce(withDoorstep())
-      .mockImplementationOnce(() => new Promise<GraphPayload>((resolve) => (releaseStale = resolve)))
-      .mockResolvedValue(payload());
+      .mockResolvedValueOnce(fetched(withDoorstep()))
+      .mockImplementationOnce(() => new Promise<ReturnType<typeof fetched>>((resolve) => (releaseStale = (value) => resolve(fetched(value)))))
+      .mockResolvedValue(fetched(payload()));
     const view = render(<Harness apiClient={makeClient(payload(), { graph })} />);
     await screen.findByRole("button", { name: "可能是这个项目的会：门口的会" });
     act(() => vi.advanceTimersByTime(30_000));
@@ -229,7 +232,7 @@ describe("ProjectGraph", () => {
   });
 
   it("聚焦过的门口的会作答后从图上消失，会议这一侧的 Tab 停靠点退回到剩下的第一个", async () => {
-    const graph = vi.fn().mockResolvedValueOnce(withDoorstep()).mockResolvedValue(payload());
+    const graph = vi.fn().mockResolvedValueOnce(fetched(withDoorstep())).mockResolvedValue(fetched(payload()));
     render(<Harness apiClient={makeClient(payload(), { graph })} />);
     const door = await screen.findByRole("button", { name: "可能是这个项目的会：门口的会" });
     act(() => door.focus());
@@ -298,9 +301,9 @@ describe("ProjectGraph", () => {
     const apiClient = makeClient();
     render(<Harness apiClient={apiClient} />);
     await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ });
-    expect(apiClient.graph).toHaveBeenCalledWith("p", undefined, undefined);
+    expect(apiClient.graph).toHaveBeenCalledWith("p", undefined, undefined, null);
     await userEvent.click(screen.getByRole("button", { name: "7 天" }));
-    await waitFor(() => expect(apiClient.graph).toHaveBeenLastCalledWith("p", "7d", undefined));
+    await waitFor(() => expect(apiClient.graph).toHaveBeenLastCalledWith("p", "7d", undefined, null));
     expect(window.localStorage.getItem("meeting-workbench:graph:window.p")).toBe("7d");
   });
 
@@ -311,7 +314,7 @@ describe("ProjectGraph", () => {
     const apiClient = makeClient(graph);
     render(<Harness apiClient={apiClient} initial="r:gone" />);
     expect(await screen.findByText("自动放宽到 90 天：28 天内只有 1 场会")).toBeInTheDocument();
-    expect(apiClient.graph).toHaveBeenCalledWith("p", undefined, "r:gone");
+    expect(apiClient.graph).toHaveBeenCalledWith("p", undefined, "r:gone", null);
     expect(await screen.findByText("这个需求不在进行中，关系图只画进行中的需求")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(""));
     expect(screen.getByRole("button", { name: "90 天" })).toHaveAttribute("aria-pressed", "true");
@@ -355,12 +358,14 @@ describe("ProjectGraph", () => {
 
   it("选着折叠组时换时间窗，按新时间窗重取这一组", async () => {
     const graph = vi.fn(async (_project: string, window?: GraphWindow) =>
-      payload({
-        window: { requested: window ?? null, effective: window ?? "28d", days: window === "90d" ? 90 : 28, widened_reason: null },
-        collapsed: [
-          { id: "c:older", kind: "older", label: "更早 2 场", count: 2, from: "2026-05-01", to: "2026-07-20", meeting_ids: ["old1", "old2"], ring: "outer" },
-        ],
-      }),
+      fetched(
+        payload({
+          window: { requested: window ?? null, effective: window ?? "28d", days: window === "90d" ? 90 : 28, widened_reason: null },
+          collapsed: [
+            { id: "c:older", kind: "older", label: "更早 2 场", count: 2, from: "2026-05-01", to: "2026-07-20", meeting_ids: ["old1", "old2"], ring: "outer" },
+          ],
+        }),
+      ),
     );
     const graphCollapsed = vi.fn(async (_project: string, _group: string, window?: string) => ({
       id: "c:older",
@@ -375,7 +380,7 @@ describe("ProjectGraph", () => {
   });
 
   it("关系图读不出来时给出原因和重试", async () => {
-    const graph = vi.fn().mockRejectedValueOnce(new Error("项目不存在")).mockResolvedValue(payload());
+    const graph = vi.fn().mockRejectedValueOnce(new Error("项目不存在")).mockResolvedValue(fetched(payload()));
     const apiClient = makeClient(payload(), { graph });
     render(<Harness apiClient={apiClient} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("项目不存在");
@@ -2415,7 +2420,7 @@ describe("ProjectGraph 第四期的线和局部图", () => {
   it("点产出线：面板标题「连线 · 产出」，这条线的问题排第一；［是］以后选中挪到新的交付物线", async () => {
     let current = amberGraph();
     const apiClient = lineClient(undefined, {
-      graph: vi.fn(async () => current),
+      graph: vi.fn(async () => fetched(current)),
       answerRelation: vi.fn(async () => {
         current = amberGraph({
           files: [{ ...amberGraph().files[0], stale: true, asks_deliverable: undefined }],
@@ -2760,8 +2765,10 @@ describe("ProjectGraph 第四期的线和局部图", () => {
       },
     }));
     const apiClient = lineClient(undefined, {
-      // 每次重取都是新的一份（和真的接口一样），相关线跟着重取
-      graph: vi.fn(async () => amberGraph()),
+      // 标「不相关」只动相关自己的版本号、不动图的：后端对着带 etag 的重取回 304，图对象不换，相关线要靠刷新自己再对一次
+      graph: vi.fn(async (_project: string, _window?: GraphWindow, _focus?: string, etag?: string | null) =>
+        etag === 'W/"g-amber"' ? fetched(null, etag) : fetched(amberGraph(), 'W/"g-amber"'),
+      ),
       graphRelated,
       getGraphFile: vi.fn(async () => fileDetail({ deliverables: [], file: { ...fileDetail().file, id: 9, name: "接口文档.docx", rel_path: "接口文档.docx" } })),
       answerRelation: vi.fn(async () => {
@@ -2795,7 +2802,7 @@ describe("ProjectGraph 第四期的线和局部图", () => {
     const pending: Array<() => void> = [];
     const apiClient = lineClient(undefined, {
       graph: vi.fn(() =>
-        hold ? new Promise<GraphPayload>((resolve) => pending.push(() => resolve(current))) : Promise.resolve(current),
+        hold ? new Promise((resolve) => pending.push(() => resolve(fetched(current)))) : Promise.resolve(fetched(current)),
       ),
       answerRelation: vi.fn(async () => {
         current = amberGraph({

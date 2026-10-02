@@ -236,8 +236,8 @@ function contextMeetingOf(selection: string | null, trail: string[]): string | n
   return null;
 }
 
-// 按（项目，时间窗，深链目标）缓存一份：切回画布先画旧数据，再到后台对一次
-const graphCache = new Map<string, GraphPayload>();
+// 按（项目，时间窗，深链目标）缓存一份，连同这一份对应的 etag：切回画布先画旧数据，再带 If-None-Match 到后台对一次
+const graphCache = new Map<string, { graph: GraphPayload; etag: string | null }>();
 const rootsCache = new Map<string, GraphRootsPayload>();
 // 4f：相关线按（项目，时间窗）缓存一份，带 ETag
 const relatedCache = new Map<string, { etag: string | null; related: RelatedEdges }>();
@@ -248,7 +248,8 @@ function cacheKey(projectId: string, window: GraphWindow | null, focus: string |
 
 /** 从对象页返回时地址栏带着 ?sel=，深链目标换了缓存键也先画同一时间窗的旧图 */
 function cachedGraph(projectId: string, window: GraphWindow | null, focus: string | null) {
-  return graphCache.get(cacheKey(projectId, window, focus)) ?? graphCache.get(cacheKey(projectId, window, null)) ?? null;
+  const entry = graphCache.get(cacheKey(projectId, window, focus)) ?? graphCache.get(cacheKey(projectId, window, null));
+  return entry?.graph ?? null;
 }
 
 /** 测试之间清空模块级缓存 */
@@ -490,12 +491,21 @@ export function ProjectGraph({
 
   const load = useCallback(async () => {
     const token = ++requestRef.current;
-    setLoading(true);
+    const id = cacheKey(projectId, windowChoice, focus);
+    // 「正在换时间窗…」只在这个键还没有缓存时才显示；30 秒一次的后台对数据不翻 loading，免得每次白重画两遍
+    if (!graphCache.has(id)) setLoading(true);
     try {
-      const payload = await apiClient.graph(projectId, windowChoice ?? undefined, focus ?? undefined);
-      // 先对序号再进缓存：晚回来的旧响应（比如写之前发出的定时重取）不能把缓存盖回写之前
+      // etag 只认这个键自己的那一份：深链换了键时先画的是同一时间窗的旧图，它的 etag 对不上这次的请求
+      const cached = graphCache.get(id);
+      let result = await apiClient.graph(projectId, windowChoice ?? undefined, focus ?? undefined, cached?.etag ?? null);
+      // 304 却没有手上的那份：不带 etag 再取一次
+      if (!result.graph && !cached) result = await apiClient.graph(projectId, windowChoice ?? undefined, focus ?? undefined, null);
+      const payload = result.graph ?? cached?.graph;
+      if (!payload) throw new Error("关系图读取失败");
+      // 先对序号再进缓存：晚回来的旧响应（比如写之前发出的定时重取）不能把缓存盖回写之前；图和它的 etag 一起写
       if (token !== requestRef.current) return;
-      graphCache.set(cacheKey(projectId, windowChoice, focus), payload);
+      graphCache.set(id, { graph: payload, etag: result.etag });
+      // 304 时 payload 就是缓存里那个对象，引用不变：liveGraph、布局、整张画布、相关线都不跟着动
       setGraph(payload);
       setLoadError("");
       const moveTo = afterAnswerRef.current;
@@ -551,7 +561,8 @@ export function ProjectGraph({
         const payload = await apiClient.graphRoots(projectId);
         rootsCache.set(projectId, payload);
         if (!active) return;
-        setRoots(payload);
+        // 30 秒一次的重取多半没变：内容一样就留着原来的对象，不然按它补出来的图每次都是新的，布局白算一遍
+        setRoots((current) => (current && JSON.stringify(current) === JSON.stringify(payload) ? current : payload));
         if (payload.checking && tries < 10) {
           tries += 1;
           timer = window.setTimeout(() => void run(), 1500);
@@ -626,7 +637,7 @@ export function ProjectGraph({
     return () => {
       active = false;
     };
-    // graph 每 30 秒刷新一次：跟着对一次相关线（没变时 304）
+    // 图换了（时间窗、数据真变了）、写操作以后（relatedTick）重对一次，没变时 304
   }, [apiClient, graph, projectId, relatedKey, relatedOn, relatedTick]);
   const relatedData = relatedOn && related?.key === relatedKey ? related.data : null;
 
@@ -953,6 +964,8 @@ export function ProjectGraph({
     setVersion((current) => current + 1);
     await load();
     setRootsTick((tick) => tick + 1);
+    // 相关线有自己的版本号：写操作可能只动它（标了「不相关」），这时图是 304、对象没换，要自己再对一次
+    setRelatedTick((tick) => tick + 1);
   }, [load]);
 
   const changed = useCallback(async () => {

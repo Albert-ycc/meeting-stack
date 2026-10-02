@@ -777,11 +777,31 @@ export const api = {
   search: (query: string, projectId?: string, options?: ReadOptions) =>
     read<SearchPayload>(`/api/search${queryString({ q: query, project_id: projectId })}`, options),
   // ---------------------------------------------------------------- 关系图（1g）
-  /** window 不传：默认 28 天，会少时自动放宽；focus：深链目标，如 "m:<会议 id>" */
-  graph: (projectId: string, window?: GraphWindow, focus?: string) =>
-    read<GraphPayload>(
-      `/api/graph/projects/${encodeURIComponent(projectId)}${queryString({ window, focus })}`,
-    ),
+  /**
+   * window 不传：默认 28 天，会少时自动放宽；focus：深链目标，如 "m:<会议 id>"。
+   * 带上次的 etag 时发 If-None-Match：没变是 304，返回 graph: null，照旧用手上的那份。
+   * 要自己发这个头：交给浏览器自己的 HTTP 缓存去验证的话，它遇到 304 会把缓存的正文当 200 交给页面，
+   * 页面每次拿到的都是新解析出来的对象，数据没变也一样。
+   */
+  graph: async (
+    projectId: string,
+    window?: GraphWindow,
+    focus?: string,
+    etag?: string | null,
+  ): Promise<{ graph: GraphPayload | null; etag: string | null }> =>
+    withDeadline(readDeadline(), async (signal) => {
+      const response = await fetch(
+        `/api/graph/projects/${encodeURIComponent(projectId)}${queryString({ window, focus })}`,
+        {
+          credentials: "same-origin",
+          headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
+          signal,
+        },
+      );
+      if (response.status === 304) return { graph: null, etag: response.headers.get("etag") ?? etag ?? null };
+      const graph = await parseResponse<GraphPayload>(response);
+      return { graph, etag: response.headers.get("etag") };
+    }),
   /**
    * 4f：关系图的相关线（4d 的接口）。带上次的 etag 时发 If-None-Match：没变是 304，返回 related: null，
    * 照旧用手上的那份。只在［相关］开着时取。
