@@ -2,6 +2,8 @@
 语句数、相关只在打开时给；来龙去脉时间单调、每边最多 3 步、级别、包含关系不算步、不走相关和在问的建议；
 错误码、只有 GET、会议和决议节点的 audio_url。"""
 
+from datetime import date
+
 from meeting_workbench import graph, graph_local
 from meeting_workbench.db import Database, utc_now
 
@@ -109,6 +111,24 @@ def test_copies_count_on_the_center_and_gone_files_still_draw(tmp_path):
     body = file_map(db, lonely)
     assert body["center"]["gone"] is True and body["center"]["file_id"] == lonely
     assert [edge["id"] for edge in body["edges"]] == [f"e:file:{lonely}:m"]
+
+
+def test_meeting_captions_follow_the_today_passed_in(tmp_path):
+    """会议节点的说明和决议、任务一样按传进来的 today 决定带不带年份。"""
+    db, root_id = setup(tmp_path)
+    quote = add_file(db, root_id, "报价单.xlsx")
+    keyed(db, quote, "k")
+    db.execute("UPDATE meetings SET recording_date = '2026-09-20', title = '周会' WHERE id = 'm'")
+    literal(db, "m", "报价单", quote)
+
+    captions = [
+        next(node for node in file_map(db, quote, today=today)["nodes"] if node["id"] == "m:m")[
+            "caption"
+        ]
+        for today in (date(2026, 9, 26), date(2027, 1, 2))
+    ]
+
+    assert captions == ["9/20 周会", "2026/9/20 周会"]
 
 
 def test_asks_come_first_twelve_are_drawn_and_the_rest_hidden(tmp_path):

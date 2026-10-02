@@ -378,7 +378,7 @@ def file_map(
         )
     meeting_ids.update(filter(None, (row["meeting_id"] for row in deliverable_rows)))
     meeting_ids.update(filter(None, (row["meeting_id"] for row in related_rows)))
-    meetings = _meetings(connection, sorted(meeting_ids))
+    meetings = _meetings(connection, sorted(meeting_ids), today)
 
     neighbours: list[_Neighbour] = []
     nodes: dict[str, dict[str, Any]] = {}
@@ -758,10 +758,9 @@ def _node_label(node: dict[str, Any]) -> str:
     return node.get("name") or ""
 
 
-def _meetings(connection: Any, meeting_ids: list[str]) -> dict[str, dict[str, Any]]:
+def _meetings(connection: Any, meeting_ids: list[str], today: date) -> dict[str, dict[str, Any]]:
     if not meeting_ids:
         return {}
-    today = datetime.now().astimezone().date()
     rows = connection.execute(
         f"""SELECT m.id, m.title, m.recording_date, m.created_at, m.project_id,
                    {AUDIO_ID_SQL.format(meeting="m.id")} AS audio_id
