@@ -1515,3 +1515,18 @@ def test_cli_links_related_three_ways(tmp_path, monkeypatch, capsys):
         == dirty + 1
     )
     assert passages(w.db)  # 不当场算，也不删
+
+
+def test_parse_file_ids_accepts_ascii_digits_within_sqlite_range():
+    assert related_read.parse_file_ids("") == []
+    assert related_read.parse_file_ids(" 1, 22 ,,333") == [1, 22, 333]
+    assert related_read.parse_file_ids("999999999999") == [999999999999]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["²", "1,²", "١٢", "-1", "+1", "1.5", "x", "9999999999999", "99999999999999999999"],
+)
+def test_parse_file_ids_rejects_non_ascii_negative_and_huge_ids(raw):
+    with pytest.raises(ValueError, match="^文件 id 要是整数$"):
+        related_read.parse_file_ids(raw)

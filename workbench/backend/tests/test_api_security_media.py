@@ -131,6 +131,105 @@ def test_chunked_write_body_is_limited_by_received_bytes_without_content_length(
     assert receive_calls == 2
 
 
+BIG = "99999999999999999999"  # 超出 SQLite 的 64 位整数
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"/api/media/{BIG}",
+        f"/api/media/{BIG}/peaks",
+        f"/api/graph/expand?root={BIG}",
+        f"/api/graph/files/{BIG}",
+        f"/api/graph/files/{BIG}/map",
+        f"/api/materials/files/{BIG}/preview",
+        f"/api/materials/files/{BIG}/thumb",
+        f"/api/materials/files/{BIG}/media",
+        f"/api/materials/files/1/preview?passage_ordinal={BIG}",
+        f"/api/materials/unreadable?project_id=p&root_id={BIG}",
+        f"/api/meetings?min_duration_ms={BIG}",
+        f"/api/meetings?max_duration_ms={BIG}",
+        f"/api/meetings?offset={BIG}",
+        f"/api/meetings/m/quotes?at={BIG}",
+        f"/api/tasks?extraction_id={BIG}",
+        f"/api/tasks?offset={BIG}",
+        f"/api/requirements?offset={BIG}",
+        f"/api/requirement-pool?offset={BIG}",
+        f"/api/requirements/r/folders/{BIG}/files",
+        f"/api/requirements/r/folders/1/files?offset={BIG}",
+        f"/api/projects/p/material-roots/{BIG}/rename-candidates",
+        f"/api/materials/mentioned-counts?file_ids={BIG}",
+    ],
+)
+def test_out_of_range_integer_query_and_path_params_are_rejected(tmp_path, url):
+    client, _ = make_client(tmp_path)
+    client = TestClient(client.app, raise_server_exceptions=False)
+
+    assert client.get(url).status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "body"),
+    [
+        ("POST", f"/api/relations/{BIG}/answer", {"answer": "yes"}),
+        ("POST", f"/api/relations/{BIG}/undo", {}),
+        ("POST", f"/api/materials/files/{BIG}/open", {}),
+        ("DELETE", f"/api/tasks/t/deliverables/{BIG}", None),
+        ("DELETE", f"/api/projects/p/material-roots/{BIG}", None),
+        ("DELETE", f"/api/requirements/r/folders/{BIG}", None),
+        ("POST", f"/api/projects/p/material-roots/{BIG}/replace", {"path": "/tmp"}),
+        ("POST", f"/api/projects/p/material-roots/{BIG}/rename-decline", {"path": "/tmp"}),
+        ("POST", "/api/name-decisions/undo", {"event_id": int(BIG)}),
+        ("POST", "/api/tasks/t/deliverables", {"file_id": int(BIG)}),
+        ("POST", "/api/meetings/m/file-mentions/k/pick", {"file_id": int(BIG)}),
+        (
+            "POST",
+            "/api/meetings/m/related-materials/reject",
+            {"content_key": "sha:" + "0" * 16, "file_id": int(BIG)},
+        ),
+        (
+            "PUT",
+            "/api/meetings/m/transcript",
+            {
+                "base_version_id": None,
+                "segments": [{"start_ms": 0, "end_ms": int(BIG), "text": "超长"}],
+            },
+        ),
+        (
+            "PUT",
+            "/api/meetings/m/transcript",
+            {
+                "base_version_id": None,
+                "segments": [{"start_ms": int(BIG), "end_ms": 0, "text": "超长"}],
+            },
+        ),
+    ],
+)
+def test_out_of_range_integers_in_writes_are_rejected(tmp_path, method, url, body):
+    client, _ = make_client(tmp_path)
+    headers = write_headers(client)
+    client = TestClient(client.app, raise_server_exceptions=False, cookies=client.cookies)
+    kwargs = {"headers": {**headers, "Content-Type": "application/json"}}
+    if body is not None:
+        kwargs["json"] = body
+
+    assert client.request(method, url, **kwargs).status_code == 422
+
+
+def test_unexpected_integer_overflow_is_a_validation_error_not_a_crash(tmp_path):
+    client, _ = make_client(tmp_path)
+
+    @client.app.get("/api/test-overflow")
+    def overflow():
+        raise OverflowError("Python int too large to convert to SQLite INTEGER")
+
+    client = TestClient(client.app, raise_server_exceptions=False)
+    response = client.get("/api/test-overflow")
+
+    assert response.status_code == 422
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
 def test_media_endpoint_supports_byte_ranges(tmp_path):
     client, settings = make_client(tmp_path)
     audio = settings.archive_root / "meeting" / "audio.m4a"

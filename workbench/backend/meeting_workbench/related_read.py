@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -639,7 +640,9 @@ def parse_file_ids(raw: str | None) -> list[int]:
         raise ValueError("一次最多 200 个文件")
     ids = []
     for part in parts:
-        if not part.isdigit():
+        # 只认 ASCII 数字、最多 12 位（和关系图节点 file:<id> 一样）：isdigit() 会放过「²」这类字符，
+        # 太长的数绑定参数时超出 SQLite 的 64 位整数
+        if not re.fullmatch(r"[0-9]{1,12}", part):
             raise ValueError("文件 id 要是整数")
         ids.append(int(part))
     return ids

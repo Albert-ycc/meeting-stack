@@ -13,7 +13,7 @@ import time
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -204,6 +204,13 @@ def _evidence_message(error: Exception) -> str:
     return text
 
 
+# SQLite 的 INTEGER 是 64 位有符号整数，超出范围的值绑定参数时抛 OverflowError（回 500）。
+# 要拿去查库、进库的整数入参（路径、查询参数、请求体字段）都用它卡住范围，超了回 422。
+SQLITE_INT_MIN = -(2**63)
+SQLITE_INT_MAX = 2**63 - 1
+SqlInt = Annotated[int, Field(ge=SQLITE_INT_MIN, le=SQLITE_INT_MAX)]
+
+
 class HotwordsModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -217,9 +224,9 @@ class HotwordsModel(BaseModel):
 
 class SegmentInput(BaseModel):
     id: str | None = None
-    ordinal: int | None = None
-    start_ms: int = Field(ge=0)
-    end_ms: int = Field(ge=0)
+    ordinal: SqlInt | None = None
+    start_ms: int = Field(ge=0, le=SQLITE_INT_MAX)
+    end_ms: int = Field(ge=0, le=SQLITE_INT_MAX)
     speaker_label: str | None = None
     speaker_name: str | None = None
     text: str
@@ -376,7 +383,7 @@ class ProjectNameInput(BaseModel):
 class EventUndoInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    event_id: int
+    event_id: SqlInt
 
 
 class MaterialRootInput(BaseModel):
@@ -549,7 +556,7 @@ class RevealInput(BaseModel):
 class FileMentionPickInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    file_id: int = Field(ge=1)
+    file_id: int = Field(ge=1, le=SQLITE_INT_MAX)
 
 
 # 4d：相关材料栏的［不相关］：身份是（会，文件内容）
@@ -560,7 +567,7 @@ class RelatedRejectInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content_key: str = Field(pattern=CONTENT_KEY_PATTERN, max_length=80)
-    file_id: int = Field(ge=1)
+    file_id: int = Field(ge=1, le=SQLITE_INT_MAX)
 
 
 class EmptyInput(BaseModel):
@@ -608,7 +615,7 @@ class RelationAnswerInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     answer: str = Field(max_length=16)
-    file_id: int | None = Field(default=None, ge=1)
+    file_id: int | None = Field(default=None, ge=1, le=SQLITE_INT_MAX)
 
 
 class DecisionPlacementInput(BaseModel):
@@ -645,7 +652,7 @@ class DeliverableInput(BaseModel):
 
     kind: str | None = Field(default=None, max_length=16)
     url: str | None = Field(default=None, min_length=1, max_length=2000)
-    file_id: int | None = Field(default=None, ge=1)
+    file_id: int | None = Field(default=None, ge=1, le=SQLITE_INT_MAX)
     title: str = Field(default="", max_length=200)
     note: str = Field(default="", max_length=2000)
     mark_done: bool = False
@@ -1619,8 +1626,6 @@ def create_app(
         return path
 
     def checked_audio_artifact(artifact_id: int) -> tuple[dict[str, Any], Path]:
-        if not -(2**63) <= artifact_id <= 2**63 - 1:
-            raise HTTPException(404, "音频不存在")
         artifact = db.query_one("SELECT * FROM artifacts WHERE id = ?", (artifact_id,))
         if not artifact or artifact["kind"] != "audio":
             raise HTTPException(404, "音频不存在")
@@ -1708,6 +1713,11 @@ def create_app(
         else:
             status = 400
         return JSONResponse({"detail": str(error)}, status_code=status)
+
+    @app.exception_handler(OverflowError)
+    async def integer_overflow(_request: Request, _error: OverflowError):
+        # 兜底：入参类型漏卡范围时，超出 64 位的整数在 SQLite 绑定参数这一步才炸
+        return JSONResponse({"detail": "整数超出范围"}, status_code=422)
 
     @app.get("/api/bootstrap")
     def bootstrap(request: Request):
@@ -1998,10 +2008,10 @@ def create_app(
         date_from: str | None = None,
         date_to: str | None = None,
         participant: str | None = None,
-        min_duration_ms: int | None = None,
-        max_duration_ms: int | None = None,
+        min_duration_ms: SqlInt | None = None,
+        max_duration_ms: SqlInt | None = None,
         limit: int = Query(100, ge=1, le=500),
-        offset: int = Query(0, ge=0),
+        offset: int = Query(0, ge=0, le=SQLITE_INT_MAX),
     ):
         joins = ["LEFT JOIN projects p ON p.id = m.project_id", LATEST_LINK_JOIN]
         clauses = ["1=1"]
@@ -2632,7 +2642,7 @@ def create_app(
         return similar, material_similar, None
 
     @app.get("/api/media/{artifact_id}")
-    def media(artifact_id: int):
+    def media(artifact_id: SqlInt):
         _artifact, path = checked_audio_artifact(artifact_id)
         return FileResponse(
             path,
@@ -2642,7 +2652,7 @@ def create_app(
         )
 
     @app.get("/api/media/{artifact_id}/peaks")
-    def media_peaks(artifact_id: int):
+    def media_peaks(artifact_id: SqlInt):
         artifact, path = checked_audio_artifact(artifact_id)
         try:
             return waveforms.get(path, artifact.get("sha256"))
@@ -4079,7 +4089,7 @@ def create_app(
                 raise HTTPException(404, str(error)) from error
 
     @app.get("/api/graph/expand")
-    def graph_expand(root: int, dir: str = Query(default="", max_length=1000)):
+    def graph_expand(root: SqlInt, dir: str = Query(default="", max_length=1000)):
         with db.autocommit() as connection:
             try:
                 row = graph_module.material_root(connection, root)
@@ -4216,7 +4226,7 @@ def create_app(
             return brief
 
     @app.get("/api/graph/files/{file_id}")
-    def graph_file_detail(file_id: int):
+    def graph_file_detail(file_id: SqlInt):
         with db.autocommit() as connection:
             try:
                 result = file_mentions.file_detail(
@@ -4251,7 +4261,7 @@ def create_app(
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/graph/files/{file_id}/map")
-    def graph_file_map(file_id: int, related: int = Query(default=0, ge=0, le=1)):
+    def graph_file_map(file_id: SqlInt, related: int = Query(default=0, ge=0, le=1)):
         return _local_call(
             lambda connection: graph_local.file_map(connection, file_id, related_on=bool(related))
         )
@@ -4290,7 +4300,7 @@ def create_app(
 
     # v16 / 4a：回答一条关联和 600 秒内撤销；关联行的状态和交付物在同一个事务里，要么都写上、要么都不写
     @app.post("/api/relations/{relation_id}/answer")
-    def answer_relation(relation_id: int, body: RelationAnswerInput):
+    def answer_relation(relation_id: SqlInt, body: RelationAnswerInput):
         try:
             with db.transaction() as connection:
                 return relations_module.answer(
@@ -4300,7 +4310,7 @@ def create_app(
             raise HTTPException(error.status, str(error)) from error
 
     @app.post("/api/relations/{relation_id}/undo")
-    def undo_relation(relation_id: int):
+    def undo_relation(relation_id: SqlInt):
         try:
             with db.transaction() as connection:
                 return relations_module.undo(connection, relation_id, utc_now())
@@ -4324,10 +4334,10 @@ def create_app(
     @app.get("/api/materials/unreadable")
     def material_unreadable(
         project_id: str = Query(max_length=200),
-        root_id: int | None = None,
+        root_id: SqlInt | None = None,
         reason: Literal["password", "corrupt", "unsupported", "timeout", "permission"]
         | None = None,
-        offset: int = Query(0, ge=0),
+        offset: int = Query(0, ge=0, le=SQLITE_INT_MAX),
     ):
         with db.autocommit() as connection:
             return material_status.unreadable_files(
@@ -4336,12 +4346,12 @@ def create_app(
 
     @app.get("/api/materials/files/{file_id}/preview")
     def material_file_preview(
-        file_id: int,
+        file_id: SqlInt,
         request: Request,
         parts: Literal["preview"] | None = None,
         # 4d：定位到那一段（相关材料、搜索、问答的出处）
         passage_key: str | None = Query(default=None, pattern=CONTENT_KEY_PATTERN, max_length=80),
-        passage_ordinal: int | None = Query(default=None, ge=0),
+        passage_ordinal: int | None = Query(default=None, ge=0, le=SQLITE_INT_MAX),
     ):
         with db.autocommit() as connection:
             result = material_status.file_preview(
@@ -4373,7 +4383,7 @@ def create_app(
 
     # 4d：［用本机应用打开］只在这台电脑上；扩展名白名单；传给打开程序的是 realpath
     @app.post("/api/materials/files/{file_id}/open")
-    def open_material_file(file_id: int, body: EmptyInput, request: Request):
+    def open_material_file(file_id: SqlInt, body: EmptyInput, request: Request):
         try:
             with db.autocommit() as connection:
                 related_read.open_material(connection, file_id, local=local_request(request))
@@ -4417,15 +4427,15 @@ def create_app(
         )
 
     @app.get("/api/materials/files/{file_id}/thumb")
-    def material_thumb(file_id: int):
+    def material_thumb(file_id: SqlInt):
         return material_picture(file_id, "image")
 
     @app.get("/api/materials/files/{file_id}/page1")
-    def material_page1(file_id: int):
+    def material_page1(file_id: SqlInt):
         return material_picture(file_id, "pdf")
 
     @app.get("/api/materials/files/{file_id}/media")
-    def material_media_file(file_id: int):
+    def material_media_file(file_id: SqlInt):
         row = checked_material_file(file_id)
         media_type = PLAYABLE_TYPES.get(str(row["ext"]))
         if media_type is None:
@@ -4438,7 +4448,7 @@ def create_app(
     @app.get("/api/meetings/{meeting_id}/quotes")
     def meeting_quotes_endpoint(
         meeting_id: str,
-        at: list[int] = Query(default=[]),
+        at: list[SqlInt] = Query(default=[]),
         span: Literal["short", "wide"] = "short",
     ):
         with db.autocommit() as connection:
@@ -4502,20 +4512,20 @@ def create_app(
         }
 
     @app.post("/api/projects/{project_id}/material-roots/{root_id}/replace")
-    def replace_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+    def replace_project_material_root(project_id: str, root_id: SqlInt, body: MaterialRootInput):
         return repoint_root(project_id, root_id, body.path)
 
     @app.post("/api/projects/{project_id}/material-roots/{root_id}/repoint")
-    def repoint_project_material_root(project_id: str, root_id: int, body: MaterialRootInput):
+    def repoint_project_material_root(project_id: str, root_id: SqlInt, body: MaterialRootInput):
         return repoint_root(project_id, root_id, body.path)
 
     @app.get("/api/projects/{project_id}/material-roots/{root_id}/rename-candidates")
-    def project_root_rename_candidates(project_id: str, root_id: int):
+    def project_root_rename_candidates(project_id: str, root_id: SqlInt):
         with db.autocommit() as connection:
             return project_folders.rename_candidates(connection, roots_cache, project_id, root_id)
 
     @app.post("/api/projects/{project_id}/material-roots/{root_id}/rename-decline")
-    def project_root_rename_decline(project_id: str, root_id: int, body: MaterialRootInput):
+    def project_root_rename_decline(project_id: str, root_id: SqlInt, body: MaterialRootInput):
         if (
             db.query_one(
                 "SELECT 1 FROM project_material_roots WHERE id=? AND project_id=?",
@@ -4596,7 +4606,7 @@ def create_app(
         return {"ok": True}
 
     @app.delete("/api/projects/{project_id}/material-roots/{root_id}")
-    def remove_project_material_root(project_id: str, root_id: int):
+    def remove_project_material_root(project_id: str, root_id: SqlInt):
         materials.remove_material_root(db, project_id, root_id)
         return {"ok": True}
 
@@ -4628,7 +4638,7 @@ def create_app(
         priority: str | None = None,
         q: str | None = None,
         limit: int = Query(default=10, ge=1, le=200),
-        offset: int = Query(default=0, ge=0),
+        offset: int = Query(default=0, ge=0, le=SQLITE_INT_MAX),
     ):
         try:
             return requirements.list_requirements(
@@ -4703,7 +4713,7 @@ def create_app(
         priority: str | None = None,
         q: str | None = None,
         limit: int = Query(default=200, ge=1, le=500),
-        offset: int = Query(default=0, ge=0),
+        offset: int = Query(default=0, ge=0, le=SQLITE_INT_MAX),
     ):
         try:
             return requirement_pool.list_pool(
@@ -4780,14 +4790,14 @@ def create_app(
     @app.get("/api/requirements/{requirement_id}/folders/{folder_id}/files")
     def requirement_folder_files(
         requirement_id: str,
-        folder_id: int,
+        folder_id: SqlInt,
         limit: int = Query(default=2000, ge=1, le=2000),
-        offset: int = Query(default=0, ge=0),
+        offset: int = Query(default=0, ge=0, le=SQLITE_INT_MAX),
     ):
         return requirements.folder_files(db, requirement_id, folder_id, limit=limit, offset=offset)
 
     @app.delete("/api/requirements/{requirement_id}/folders/{folder_id}")
-    def remove_requirement_folder(requirement_id: str, folder_id: int):
+    def remove_requirement_folder(requirement_id: str, folder_id: SqlInt):
         return requirements.remove_folder(task_service, requirement_id, folder_id)
 
     @app.put("/api/requirements/{requirement_id}/meetings")
@@ -4816,14 +4826,14 @@ def create_app(
         status: str | None = None,
         project_id: str | None = None,
         meeting_id: str | None = None,
-        extraction_id: int | None = None,
+        extraction_id: SqlInt | None = None,
         requirement_id: str | None = None,
         assignee: str | None = None,
         meeting_date_from: str | None = None,
         meeting_date_to: str | None = None,
         q: str | None = None,
         limit: int = Query(default=200, ge=1, le=1000),
-        offset: int = Query(default=0, ge=0),
+        offset: int = Query(default=0, ge=0, le=SQLITE_INT_MAX),
     ):
         try:
             return task_service.list_tasks(
@@ -4996,7 +5006,7 @@ def create_app(
             raise HTTPException(400, str(error)) from error
 
     @app.delete("/api/tasks/{task_id}/deliverables/{deliverable_id}")
-    def remove_task_deliverable(task_id: str, deliverable_id: int):
+    def remove_task_deliverable(task_id: str, deliverable_id: SqlInt):
         return task_service.remove_deliverable(task_id, deliverable_id)
 
     @app.post("/api/meetings/{meeting_id}/tasks/re-extract")
@@ -5046,7 +5056,7 @@ def create_app(
         return asdict(session)
 
     @app.put("/api/uploads/{upload_id}/chunks/{index}")
-    def upload_chunk(upload_id: str, index: int, body: UploadChunkInput):
+    def upload_chunk(upload_id: str, index: SqlInt, body: UploadChunkInput):
         try:
             result = uploads.write_chunk(upload_id, index, body.content_base64)
         except UploadError as error:
