@@ -197,4 +197,53 @@ describe("JobsPage non-blocking substates", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("任务台账暂时不可用");
     expect(screen.queryByText(/当前没有任务/)).not.toBeInTheDocument();
   });
+
+  // 失败阶段是诊断码，不全是能重跑的阶段：照 relay 的恢复语义换成重跑起点，拿不准的不出这个按钮
+  it.each([
+    ["stabilizing", "stabilizing"],
+    ["transcribing", "transcribing"],
+    ["transcript_ready", "transcript_ready"],
+    ["minutes_generating", "minutes_generating"],
+    ["codex_callback", "minutes_generating"],
+    ["archive_validation", "minutes_generating"],
+  ])("从失败阶段重试：失败在 %s 的从 %s 重跑", async (failureStage, stage) => {
+    const onRetry = vi.fn().mockResolvedValue(undefined);
+    render(
+      <JobsPage
+        available
+        jobs={[{ ...job, state: "failed", failure_stage: failureStage }]}
+        onCancel={vi.fn()}
+        onRetry={onRetry}
+        onRetrySubstate={vi.fn()}
+        onStopAfterStage={vi.fn()}
+        onUpload={vi.fn()}
+        state="ready"
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "从失败阶段重试" }));
+    expect(onRetry).toHaveBeenCalledWith("job-1", stage, []);
+  });
+
+  it.each(["source_audio_validation", "publish_post_commit_validation", "something_new", null])(
+    "失败在 %s 的不出「从失败阶段重试」，只留重新转写、重新生成纪要",
+    (failureStage) => {
+      render(
+        <JobsPage
+          available
+          jobs={[{ ...job, state: "failed", failure_stage: failureStage }]}
+          onCancel={vi.fn()}
+          onRetry={vi.fn()}
+          onRetrySubstate={vi.fn()}
+          onStopAfterStage={vi.fn()}
+          onUpload={vi.fn()}
+          state="ready"
+        />,
+      );
+
+      expect(screen.queryByRole("button", { name: "从失败阶段重试" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "重新转写" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "重新生成纪要" })).toBeInTheDocument();
+    },
+  );
 });

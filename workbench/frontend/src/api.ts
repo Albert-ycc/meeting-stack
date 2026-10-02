@@ -496,6 +496,7 @@ function formatValidationLocation(location: unknown): string {
     hotwords: "热词",
     filename: "文件名",
     size_bytes: "文件大小",
+    stage: "阶段",
     title: "名称",
   };
   return location
@@ -524,6 +525,13 @@ function translateValidationMessage(message: string): string {
   const gt = message.match(/^Input should be greater than (-?\d+(?:\.\d+)?)$/);
   if (gt) return `要大于 ${gt[1]}`;
   if (message === "Field required") return "不能为空";
+  // 枚举（Literal / Enum）：Input should be 'a', 'b' or 'c'
+  const choices = message.match(/^Input should be ('[^']*'(?:, '[^']*')*(?: or '[^']*')?)$/);
+  if (choices) {
+    const options = [...choices[1].matchAll(/'([^']*)'/g)].map((match) => match[1]);
+    const last = options.pop();
+    return `只能是 ${options.length ? `${options.join("、")} 或 ${last}` : last}`;
+  }
   return message;
 }
 

@@ -685,3 +685,29 @@ describe("CSRF 令牌过期后自愈（后端重启、启动时没取到令牌�
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("重试阶段的枚举报错翻成中文", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setCsrfToken("");
+  });
+
+  it("Input should be 'a', 'b' or 'c' 不把英文原文糊给用户", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        detail: [{
+          loc: ["body", "stage"],
+          msg: "Input should be 'stabilizing', 'transcribing', 'transcript_ready' or 'minutes_generating'",
+          type: "literal_error",
+        }],
+      }), { status: 422, headers: { "Content-Type": "application/json" } }),
+    ));
+    setCsrfToken("t");
+
+    const error = await api.retryJob("job-1", "codex_callback").catch((reason: unknown) => reason);
+    expect((error as Error).message).not.toContain("Input should be");
+    expect((error as Error).message).toBe(
+      "阶段只能是 stabilizing、transcribing、transcript_ready 或 minutes_generating",
+    );
+  });
+});

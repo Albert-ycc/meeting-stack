@@ -34,6 +34,20 @@ const pipeline = [
   "done",
 ];
 
+// 「失败在哪一步」（relay 的 failure_stage，诊断码）→「从哪一步重跑」（retry --stage 只认四个阶段）。
+// 口径照 relay/quickstart/relay_control.py：纪要 Agent 没回执（codex_callback）、纪要产物没过校验
+// （archive_validation）都是纪要这一步的事，从纪要重跑；源音频哈希变了（source_audio_validation）重试时
+// 哈希不清，从哪步重跑都会再撞上；发布后校验失败（publish_post_commit_validation）不是流水线阶段。
+// 这些和不认识的都不出「从失败阶段重试」，只留重新转写、重新生成纪要
+const retryStageForFailure: Record<string, string> = {
+  stabilizing: "stabilizing",
+  transcribing: "transcribing",
+  transcript_ready: "transcript_ready",
+  minutes_generating: "minutes_generating",
+  codex_callback: "minutes_generating",
+  archive_validation: "minutes_generating",
+};
+
 const substateLabels: Record<JobSubstateStatus, string> = {
   pending: "待处理",
   queued: "已排队",
@@ -178,6 +192,7 @@ export function JobsPage({
             const currentIndex = pipeline.indexOf(statusTone(job.state));
             const canCancel = ["discovered", "stabilizing", "queued"].includes(job.state);
             const canRetry = ["failed", "cancelled", "interrupted", "completed_unreviewed"].includes(job.state);
+            const failedRetryStage = job.failure_stage ? retryStageForFailure[job.failure_stage] : undefined;
             const terminal = [
               "completed_unreviewed",
               "draft_modified",
@@ -290,8 +305,8 @@ export function JobsPage({
                       )}
                     </label>
                   )}
-                  {job.state === "failed" && (
-                    <button disabled={busy || Boolean(validateHotwordsInput(retryHotwordText[job.id] ?? ""))} onClick={() => void execute(() => onRetry(job.id, job.failure_stage || "transcribing", parseHotwordsInput(retryHotwordText[job.id] ?? "")))} type="button">
+                  {job.state === "failed" && failedRetryStage && (
+                    <button disabled={busy || Boolean(validateHotwordsInput(retryHotwordText[job.id] ?? ""))} onClick={() => void execute(() => onRetry(job.id, failedRetryStage, parseHotwordsInput(retryHotwordText[job.id] ?? "")))} type="button">
                       从失败阶段重试
                     </button>
                   )}
