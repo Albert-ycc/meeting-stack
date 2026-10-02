@@ -539,8 +539,9 @@ def test_re_extract_keeps_drafts_people_touched(tmp_path, monkeypatch):
     assert re_extract(client, headers)["status"] == "done"
 
     second = drafts(db)
-    # 改过名的认不出是同一件事：AI 又抽到「做看板」会另出一条，改过名的那条原样留着
-    assert set(second) == {"做运营看板", "做看板", "写周报", "约评审"}
+    # 改过名的认得出是同一件事（事件里记着 AI 当初给的名字，见 test_extraction_renamed_drafts）：
+    # AI 又抽到「做看板」不另出一条，改过名的那条原样留着
+    assert set(second) == {"做运营看板", "写周报", "约评审"}
     assert second["做运营看板"]["id"] == first["做看板"]["id"]
     assert (second["写周报"]["id"], second["写周报"]["assignee"]) == (first["写周报"]["id"], "me")
     assert "对口径" not in second

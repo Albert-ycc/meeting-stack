@@ -187,6 +187,26 @@ def _stall_info(
     }
 
 
+# AI 抽出草稿（created）、重抽原地更新草稿（regenerated）时，事件正文末尾记下 AI 当时给的名字：
+# 「AI 从会后纪要生成本条任务草稿：「做看板」」。用户改过名的草稿，重抽时靠它认出 AI 又抽到的原名是同一件事
+# （_existing_drafts）。没有加列，事件正文本来就当记录用（撤销完成也读它）。
+CREATED_EVENT = "AI 从会后纪要生成本条任务草稿"
+REGENERATED_EVENT = "AI 重新抽取，草稿按这次的结果更新"
+
+
+def _ai_title_body(event: str, title: str) -> str:
+    return f"{event}：「{title}」"
+
+
+def _recorded_ai_title(body: str) -> str | None:
+    """created、regenerated 事件正文里记的 AI 名字；没记的（升级前抽出的草稿）是 None。"""
+    for event in (CREATED_EVENT, REGENERATED_EVENT):
+        head = f"{event}：「"
+        if body.startswith(head) and body.endswith("」"):
+            return body[len(head) : -1]
+    return None
+
+
 def _comment_events(connection: Any, task_ids: Iterable[str]) -> dict[str, list[dict[str, Any]]]:
     """这些任务的评论，按任务分组。_stall_info 只看评论的时间，别的事件不取；一条 IN 查询，不逐条查。"""
     ids = list(dict.fromkeys(task_ids))
@@ -2425,7 +2445,7 @@ class TaskService:
                         connection.execute(
                             """INSERT INTO task_events(task_id, kind, body, created_at)
                                VALUES (?, 'regenerated', ?, ?)""",
-                            (task_id, "AI 重新抽取，草稿按这次的结果更新", now),
+                            (task_id, _ai_title_body(REGENERATED_EVENT, title), now),
                         )
                         refreshed.add(task_id)
                         created_tasks.append(
@@ -2467,7 +2487,7 @@ class TaskService:
                     )
                     connection.execute(
                         "INSERT INTO task_events(task_id, kind, body, created_at) VALUES (?, 'created', ?, ?)",
-                        (task_id, "AI 从会后纪要生成本条任务草稿", now),
+                        (task_id, _ai_title_body(CREATED_EVENT, title), now),
                     )
                     created_tasks.append(
                         {
@@ -2522,9 +2542,12 @@ class TaskService:
         - 有人动过的：返回轻键集合，重抽时不删不改，AI 又抽到同名的也不另出一条。
 
         「动过」看两样：挂了需求，或者有 AI 抽出、过期、重抽以外的事件——改标题、执行方、截止、
-        项目、挂候选（edited / requirement_changed）、评论、交付物，确认或驳回后又撤销的也算。"""
+        项目、挂候选（edited / requirement_changed）、评论、交付物，确认或驳回后又撤销的也算。
+        动过的草稿，AI 抽出它时记在事件里的名字（_recorded_ai_title）也算它的名字：用户改过名，AI 又抽到
+        原名，认得出是同一件事。升级前抽出的草稿事件里没记名字，认不出。"""
         replaceable: dict[str, str] = {}
         touched: set[str] = set()
+        touched_ids: list[str] = []
         for row in connection.execute(
             """SELECT t.id, t.title,
                       t.requirement_id IS NOT NULL OR EXISTS (
@@ -2541,8 +2564,19 @@ class TaskService:
             key = light_key(row["title"]) or row["title"]
             if row["touched"]:
                 touched.add(key)
+                touched_ids.append(row["id"])
             else:
                 replaceable.setdefault(key, row["id"])
+        if touched_ids:
+            for event in connection.execute(
+                f"""SELECT body FROM task_events
+                     WHERE kind IN ('created', 'regenerated')
+                       AND task_id IN ({", ".join("?" for _ in touched_ids)})""",
+                touched_ids,
+            ):
+                title = _recorded_ai_title(event["body"])
+                if title:
+                    touched.add(light_key(title) or title)
         return replaceable, touched
 
     @staticmethod
