@@ -414,6 +414,138 @@ def test_re_extract_creates_pending_tasks(tmp_path, monkeypatch):
     assert client.get("/api/tasks").json()["total"] == 1
 
 
+MEETING = "vm-20260102-101500"
+
+
+def ai_tasks(*titles, assignee="ai"):
+    items = ",".join(
+        f'{{"title":"{title}","anchor_quote":"","assignee_suggestion":"{assignee}"}}'
+        for title in titles
+    )
+    return f'{{"tasks":[{items}]}}'
+
+
+def drafts(db):
+    return {
+        row["title"]: dict(row)
+        for row in db.query_all(
+            """SELECT id, title, assignee, status FROM tasks
+                WHERE meeting_id=? AND status IN ('pending_confirm', 'expired')""",
+            (MEETING,),
+        )
+    }
+
+
+def re_extract(client, headers, supplement=""):
+    return client.post(
+        f"/api/meetings/{MEETING}/tasks/re-extract",
+        json={"supplement": supplement},
+        headers=headers,
+    ).json()
+
+
+def test_re_extract_failure_keeps_existing_drafts(tmp_path, monkeypatch):
+    """［重新抽取］AI 超时、回的不是 JSON、没配 key：这场会原来的草稿一条不少（新结果落库成功才替换）。"""
+    from meeting_workbench.tasks import LLMUnavailable
+
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(settings.database_path)
+    seed_editable_meeting(db, settings.archive_root)
+    seed_minutes(client, settings)
+    monkeypatch.setattr(TaskService, "_call_llm", lambda self, prompt: ai_tasks("做看板"))
+    assert re_extract(client, headers)["status"] == "done"
+    before = drafts(db)
+
+    def timed_out(self, prompt):
+        raise RuntimeError("LLM 调用失败：timed out")
+
+    def no_key(self, prompt):
+        raise LLMUnavailable("缺少 LLM API key")
+
+    for fake, status in (
+        (timed_out, "failed"),
+        (lambda self, prompt: "抱歉，我没看懂", "failed"),
+        (no_key, "unavailable"),
+    ):
+        monkeypatch.setattr(TaskService, "_call_llm", fake)
+        assert re_extract(client, headers, "再来")["status"] == status
+        assert drafts(db) == before
+
+
+def test_regenerated_minutes_reconciles_drafts_of_that_meeting(tmp_path, monkeypatch):
+    """纪要重新生成后扫描再抽：上一版的草稿按标题对账——又抽到的原地更新（id 不变），这次没抽到的撤下，
+    同一件事不出两条。规矩和［重新抽取］一样。"""
+    client, settings = make_client(tmp_path)
+    db = Database(settings.database_path)
+    seed_editable_meeting(db, settings.archive_root)
+    seed_minutes(client, settings)
+    service = TaskService(db, settings)
+    db.execute(
+        """INSERT INTO task_extractions(meeting_id, minutes_version_id, supplement, created_at)
+           VALUES (?, 'mv-1', '', ?)""",
+        (MEETING, utc_now()),
+    )
+    monkeypatch.setattr(TaskService, "_call_llm", lambda self, prompt: ai_tasks("做看板", "写周报"))
+    assert service.extract_pending()["succeeded"] == 1
+    first = drafts(db)
+    db.execute(
+        """INSERT INTO minutes_versions (id, meeting_id, version_no, markdown, html, kind,
+                                         published, created_at)
+           VALUES ('mv-regen', ?, 2, '# 摘要\n重新生成。', '<p></p>', 'stale_generated', 1, ?)""",
+        (MEETING, utc_now()),
+    )
+    db.execute("UPDATE meetings SET current_minutes_version_id='mv-regen' WHERE id=?", (MEETING,))
+    monkeypatch.setattr(
+        TaskService, "_call_llm", lambda self, prompt: ai_tasks("做看板 ", "排期表", assignee="me")
+    )
+
+    assert service.extract_pending()["succeeded"] == 1
+
+    second = drafts(db)
+    assert set(second) == {"做看板", "排期表"}
+    assert second["做看板"]["id"] == first["做看板"]["id"]
+    assert second["做看板"]["assignee"] == "me"
+    kinds = [
+        row["kind"]
+        for row in db.query_all(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id", (first["做看板"]["id"],)
+        )
+    ]
+    assert kinds == ["created", "regenerated"]
+
+
+def test_re_extract_keeps_drafts_people_touched(tmp_path, monkeypatch):
+    """用户改过（标题、执行方、截止）、挂过需求的草稿，重抽时不删、不覆盖；AI 又抽到同名的也不另出一条。
+    没人动过的照旧按这次结果更新或撤下。"""
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(settings.database_path)
+    seed_editable_meeting(db, settings.archive_root)
+    seed_minutes(client, settings)
+    monkeypatch.setattr(
+        TaskService, "_call_llm", lambda self, prompt: ai_tasks("做看板", "写周报", "对口径")
+    )
+    re_extract(client, headers)
+    first = drafts(db)
+    client.patch(
+        f"/api/tasks/{first['做看板']['id']}", json={"title": "做运营看板"}, headers=headers
+    )
+    client.patch(f"/api/tasks/{first['写周报']['id']}", json={"assignee": "me"}, headers=headers)
+    monkeypatch.setattr(
+        TaskService, "_call_llm", lambda self, prompt: ai_tasks("写周报", "约评审", "做看板")
+    )
+
+    assert re_extract(client, headers)["status"] == "done"
+
+    second = drafts(db)
+    # 改过名的认不出是同一件事：AI 又抽到「做看板」会另出一条，改过名的那条原样留着
+    assert set(second) == {"做运营看板", "做看板", "写周报", "约评审"}
+    assert second["做运营看板"]["id"] == first["做看板"]["id"]
+    assert (second["写周报"]["id"], second["写周报"]["assignee"]) == (first["写周报"]["id"], "me")
+    assert "对口径" not in second
+
+
 def test_re_extract_after_scan_seed_does_not_hit_unique_index(tmp_path, monkeypatch):
     """回归：scan 已给空 supplement 预 seed 后，用户再点「重新抽取」（空 supplement）不得撞唯一索引报 500。"""
     client, settings = make_client(tmp_path)

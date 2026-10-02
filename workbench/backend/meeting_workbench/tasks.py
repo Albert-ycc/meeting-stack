@@ -42,7 +42,7 @@ from .project_names import (
     similar_project_message,
 )
 from .project_folders import pending_folders, queue_pending_folder
-from .project_profile import norm_key
+from .project_profile import light_key, norm_key
 from .project_cards import card_stats, empty_stats
 from .project_seats import project_latest_meetings, seat_ranks
 from .semantic import SemanticIndex
@@ -2045,11 +2045,7 @@ class TaskService:
         logger.info("re_extract 开始 meeting=%s supplement=%r", meeting_id, supplement[:40])
         now = utc_now()
         with self.db.transaction() as connection:
-            # 旧草稿（待确认或已过期）整批替换；已确认的不动。
-            connection.execute(
-                "DELETE FROM tasks WHERE meeting_id=? AND status IN ('pending_confirm', 'expired')",
-                (meeting_id,),
-            )
+            # 旧草稿不在这里删：AI 回来、新结果落库的同一个事务里才对账（_extract_one），失败时原样留着。
             # 清掉该会议当前版本的旧抽取行（含 scan 预 seed 的占位），避免撞唯一索引，
             # 也顺带避免旧版本/旧 supplement 的 pending 批次残留。
             connection.execute(
@@ -2241,10 +2237,21 @@ class TaskService:
                 "SELECT project_id FROM meetings WHERE id=?", (meeting_id,)
             ).fetchone()
             project_id = meeting_row["project_id"] if meeting_row else None
+            replaceable, touched = self._existing_drafts(connection, meeting_id)
+            refreshed: set[str] = set()
+            seen: set[str] = set()
             for index, task in enumerate(tasks):
                 try:
                     title = str(task.get("title") or "").strip()
                     if not title:
+                        continue
+                    key = light_key(title) or title
+                    if key in seen:
+                        skipped.append(f"「{title}」和这次抽出的另一条同名")
+                        continue
+                    seen.add(key)
+                    if key in touched:
+                        skipped.append(f"「{title}」这场会已有人动过的同名草稿，留着那条")
                         continue
                     anchor_ms = self._locate_anchor(
                         connection, meeting_id, str(task.get("anchor_quote") or "")
@@ -2255,8 +2262,53 @@ class TaskService:
                         else "ai"
                     )
                     due_date, due_phrase = task_due.extracted_due(task, base)
-                    task_id = f"task-{uuid.uuid4().hex}"
+                    candidate_id = by_no.get(
+                        requirement_candidates.item_no(task.get("requirement_no")) or 0
+                    )
                     now = utc_now()
+                    if key in replaceable:
+                        task_id = replaceable[key]
+                        connection.execute(
+                            """UPDATE tasks
+                                  SET title=?, detail=?, status='pending_confirm', assignee=?,
+                                      project_id=?, extraction_id=?, anchor_ms=?, anchor_quote=?,
+                                      candidate_id=?, due_date=?, due_phrase=?,
+                                      status_changed_at=?, updated_at=?
+                                WHERE id=?""",
+                            (
+                                title,
+                                str(task.get("detail") or "").strip(),
+                                assignee,
+                                project_id,
+                                extraction["id"],
+                                anchor_ms,
+                                str(task.get("anchor_quote") or "").strip(),
+                                candidate_id,
+                                due_date,
+                                due_phrase,
+                                now,
+                                now,
+                                task_id,
+                            ),
+                        )
+                        connection.execute(
+                            """INSERT INTO task_events(task_id, kind, body, created_at)
+                               VALUES (?, 'regenerated', ?, ?)""",
+                            (task_id, "AI 重新抽取，草稿按这次的结果更新", now),
+                        )
+                        refreshed.add(task_id)
+                        created_tasks.append(
+                            {
+                                "id": task_id,
+                                "title": title,
+                                "assignee": assignee,
+                                "anchor_ms": anchor_ms,
+                                "anchor_quote": str(task.get("anchor_quote") or "").strip(),
+                                "extraction_id": extraction["id"],
+                            }
+                        )
+                        continue
+                    task_id = f"task-{uuid.uuid4().hex}"
                     connection.execute(
                         """INSERT INTO tasks
                            (id, title, detail, status, origin, assignee, meeting_id,
@@ -2274,9 +2326,7 @@ class TaskService:
                             extraction["id"],
                             anchor_ms,
                             str(task.get("anchor_quote") or "").strip(),
-                            by_no.get(
-                                requirement_candidates.item_no(task.get("requirement_no")) or 0
-                            ),
+                            candidate_id,
                             due_date,
                             due_phrase,
                             now,
@@ -2302,6 +2352,13 @@ class TaskService:
                     # 一条任务解析/入库失败不牵连其余任务；诊断信息记进本批次的 error 字段。
                     skipped.append(f"第 {index + 1} 条：{error}")
                     continue
+            stale = set(replaceable.values()) - refreshed
+            if stale and payload["tasks_ok"]:
+                # 这次没再抽到、也没人动过的草稿撤下；AI 回的 tasks 不是列表时不算「一条都没有」，原样留着
+                connection.execute(
+                    f"DELETE FROM tasks WHERE id IN ({', '.join('?' for _ in stale)})",
+                    tuple(stale),
+                )
             connection.execute(
                 """UPDATE task_extractions
                    SET status='done', attempts=attempts+1, raw_response=?, error=?,
@@ -2325,6 +2382,37 @@ class TaskService:
             except Exception:
                 # 通知失败不影响抽取结果（任务已入库）；下轮按台账缺失自然补发。
                 pass
+
+    @staticmethod
+    def _existing_drafts(connection: Any, meeting_id: str) -> tuple[dict[str, str], set[str]]:
+        """这场会还没处理的 AI 草稿（待确认、已过期），按标题轻键分两拨：
+
+        - 没人动过的：返回 {轻键: 任务 id}，重抽时同名的原地更新、没再抽到的撤下；
+        - 有人动过的：返回轻键集合，重抽时不删不改，AI 又抽到同名的也不另出一条。
+
+        「动过」看两样：挂了需求，或者有 AI 抽出、过期、重抽以外的事件——改标题、执行方、截止、
+        项目、挂候选（edited / requirement_changed）、评论、交付物，确认或驳回后又撤销的也算。"""
+        replaceable: dict[str, str] = {}
+        touched: set[str] = set()
+        for row in connection.execute(
+            """SELECT t.id, t.title,
+                      t.requirement_id IS NOT NULL OR EXISTS (
+                          SELECT 1 FROM task_events e
+                           WHERE e.task_id = t.id
+                             AND e.kind NOT IN ('created', 'expired', 'regenerated')
+                      ) AS touched
+                 FROM tasks t
+                WHERE t.meeting_id = ? AND t.origin = 'ai'
+                  AND t.status IN ('pending_confirm', 'expired')
+                ORDER BY t.created_at, t.id""",
+            (meeting_id,),
+        ).fetchall():
+            key = light_key(row["title"]) or row["title"]
+            if row["touched"]:
+                touched.add(key)
+            else:
+                replaceable.setdefault(key, row["id"])
+        return replaceable, touched
 
     @staticmethod
     def _locate_anchor(connection: Any, meeting_id: str, quote: str) -> int | None:
@@ -2484,7 +2572,9 @@ class TaskService:
         if not isinstance(payload, dict):
             raise RuntimeError("任务抽取返回不是 JSON 对象")
         payload = _scrub_surrogates(payload)
-        # requirements 缺了或不是列表：和「AI 说一条都没有」（空列表）分开，调用方据此不动原来的候选
+        # tasks / requirements 缺了或不是列表：和「AI 说一条都没有」（空列表）分开，调用方据此不动原来的
+        # 草稿和候选
+        payload["tasks_ok"] = isinstance(payload.get("tasks"), list)
         payload["requirements_ok"] = isinstance(payload.get("requirements"), list)
         for key in ("tasks", "requirements"):
             items = payload.get(key)
