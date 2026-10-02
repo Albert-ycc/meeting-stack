@@ -244,7 +244,7 @@ describe("地址栏锚点直达", () => {
     render(<App apiClient={client({ meeting, transcriptVersionSegments: vi.fn() } as Partial<ApiClient>)} />);
 
     expect(await screen.findByRole("heading", { name: "初审规则沟通" })).toBeInTheDocument();
-    expect(meeting).toHaveBeenCalledWith("vm-1");
+    expect(meeting).toHaveBeenCalledWith("vm-1", { signal: expect.any(AbortSignal) });
     expect(window.location.hash).toBe("#meetings/vm-1");
   });
 
@@ -266,7 +266,7 @@ describe("地址栏锚点直达", () => {
     render(<App apiClient={client({ meeting, transcriptVersionSegments: vi.fn() } as Partial<ApiClient>)} />);
 
     expect(await screen.findByRole("heading", { name: "初审规则沟通" })).toBeInTheDocument();
-    expect(meeting).toHaveBeenCalledWith("vm-1");
+    expect(meeting).toHaveBeenCalledWith("vm-1", { signal: expect.any(AbortSignal) });
     expect(window.location.hash).toBe("#meetings/vm-1");
   });
 
@@ -283,7 +283,7 @@ describe("地址栏锚点直达", () => {
     });
 
     expect(await screen.findByText("会议不存在")).toBeInTheDocument();
-    expect(meeting).toHaveBeenCalledWith("%E4");
+    expect(meeting).toHaveBeenCalledWith("%E4", { signal: expect.any(AbortSignal) });
     await userEvent.click(screen.getByRole("button", { name: "← 返回录音档案" }));
     expect(await screen.findByRole("heading", { name: "会议录音档案" })).toBeInTheDocument();
   });

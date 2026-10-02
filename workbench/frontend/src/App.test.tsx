@@ -436,6 +436,116 @@ describe("App refresh and navigation safety", () => {
     expect(screen.queryByRole("heading", { name: "可编辑会议" })).not.toBeInTheDocument();
   });
 
+  describe("会被新请求取代的读：新的发出去或页面卸载时中止旧的", () => {
+    /** 后端还没回：像真的 fetch 一样，信号一中止就以 AbortError 拒绝 */
+    const hangUntilAborted = (options?: { signal?: AbortSignal }) =>
+      new Promise<never>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new DOMException("请求已取消", "AbortError")));
+      });
+    const emptySearch = { mode: "exact", items: [], similar: [], expanded: [], expand_hints: [] };
+
+    it("连着打开两场会：还没回来的上一场的详情请求被中止，也不显示读取失败", async () => {
+      window.history.replaceState(null, "", "/#meetings/vm-slow");
+      const signals: Record<string, AbortSignal | undefined> = {};
+      const meeting = vi.fn((id: string, options?: { signal?: AbortSignal }) => {
+        signals[id] = options?.signal;
+        return id === "vm-slow" ? hangUntilAborted(options) : Promise.resolve({ ...detail, id, title: "第二场会" });
+      });
+      render(<App apiClient={client({ meeting } as unknown as Partial<ApiClient>)} />);
+      await waitFor(() => expect(meeting).toHaveBeenCalledWith("vm-slow", expect.anything()));
+      expect(signals["vm-slow"]?.aborted).toBe(false);
+
+      act(() => {
+        window.history.pushState(null, "", "/#meetings/vm-fast");
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      });
+
+      expect(await screen.findByRole("heading", { name: "第二场会" })).toBeInTheDocument();
+      expect(signals["vm-slow"]?.aborted).toBe(true);
+      expect(signals["vm-fast"]?.aborted).toBe(false);
+      expect(screen.queryByText("会议档案读取失败")).not.toBeInTheDocument();
+      expect(screen.queryByText("请求已取消")).not.toBeInTheDocument();
+    });
+
+    it("再搜一次：上一次还没回来的检索被中止，不显示「检索失败」", async () => {
+      const signals: AbortSignal[] = [];
+      const search = vi.fn((query: string, _scope?: string, options?: { signal?: AbortSignal }) => {
+        if (options?.signal) signals.push(options.signal);
+        return query === "慢的词" ? hangUntilAborted(options) : Promise.resolve(emptySearch);
+      });
+      render(<App apiClient={client({ search } as unknown as Partial<ApiClient>)} />);
+      await screen.findByText("服务正常");
+      const box = screen.getByLabelText("全局检索");
+      await userEvent.type(box, "慢的词");
+      await userEvent.click(screen.getByRole("button", { name: "检索" }));
+      await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+      expect(signals[0].aborted).toBe(false);
+
+      await userEvent.clear(box);
+      await userEvent.type(box, "快的词");
+      await userEvent.click(screen.getByRole("button", { name: "检索" }));
+
+      await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+      expect(signals[0].aborted).toBe(true);
+      expect(signals[1].aborted).toBe(false);
+      expect(screen.queryByText("检索失败")).not.toBeInTheDocument();
+      expect(screen.queryByText("请求已取消")).not.toBeInTheDocument();
+    });
+
+    it("在读会议详情时发起检索：详情请求被中止", async () => {
+      window.history.replaceState(null, "", "/#meetings/vm-slow");
+      let detailSignal: AbortSignal | undefined;
+      const meeting = vi.fn((_id: string, options?: { signal?: AbortSignal }) => {
+        detailSignal = options?.signal;
+        return hangUntilAborted(options);
+      });
+      const search = vi.fn().mockResolvedValue(emptySearch);
+      render(<App apiClient={client({ meeting, search } as unknown as Partial<ApiClient>)} />);
+      await waitFor(() => expect(meeting).toHaveBeenCalled());
+
+      await userEvent.type(screen.getByLabelText("全局检索"), "数理协会");
+      await userEvent.click(screen.getByRole("button", { name: "检索" }));
+
+      await waitFor(() => expect(search).toHaveBeenCalled());
+      expect(detailSignal?.aborted).toBe(true);
+      expect(screen.queryByText("会议档案读取失败")).not.toBeInTheDocument();
+    });
+
+    it("页面卸载：还在等的详情请求中止", async () => {
+      window.history.replaceState(null, "", "/#meetings/vm-slow");
+      let detailSignal: AbortSignal | undefined;
+      const meeting = vi.fn((_id: string, options?: { signal?: AbortSignal }) => {
+        detailSignal = options?.signal;
+        return hangUntilAborted(options);
+      });
+      const view = render(<App apiClient={client({ meeting } as unknown as Partial<ApiClient>)} />);
+      await waitFor(() => expect(meeting).toHaveBeenCalled());
+      expect(detailSignal?.aborted).toBe(false);
+
+      view.unmount();
+
+      expect(detailSignal?.aborted).toBe(true);
+    });
+
+    it("页面卸载：还在等的检索中止", async () => {
+      let searchSignal: AbortSignal | undefined;
+      const search = vi.fn((_query: string, _scope?: string, options?: { signal?: AbortSignal }) => {
+        searchSignal = options?.signal;
+        return hangUntilAborted(options);
+      });
+      const view = render(<App apiClient={client({ search } as unknown as Partial<ApiClient>)} />);
+      await screen.findByText("服务正常");
+      await userEvent.type(screen.getByLabelText("全局检索"), "数理协会");
+      await userEvent.click(screen.getByRole("button", { name: "检索" }));
+      await waitFor(() => expect(search).toHaveBeenCalled());
+      expect(searchSignal?.aborted).toBe(false);
+
+      view.unmount();
+
+      expect(searchSignal?.aborted).toBe(true);
+    });
+  });
+
   it("searches all projects by default, narrows the scope on the results page and opens minutes hits on the minutes tab", async () => {
     const search = vi.fn().mockResolvedValue({
       mode: "hybrid",
@@ -467,11 +577,13 @@ describe("App refresh and navigation safety", () => {
 
     await userEvent.type(screen.getByLabelText("全局检索"), "数理协会");
     await userEvent.click(screen.getByRole("button", { name: "检索" }));
-    expect(search).toHaveBeenLastCalledWith("数理协会", undefined);
+    expect(search).toHaveBeenLastCalledWith("数理协会", undefined, { signal: expect.any(AbortSignal) });
     expect(screen.queryByRole("button", { name: "原句" })).toBeNull();
 
     fireEvent.change(await screen.findByLabelText("搜索范围"), { target: { value: "project-b" } });
-    await waitFor(() => expect(search).toHaveBeenLastCalledWith("数理协会", "project-b"));
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith("数理协会", "project-b", { signal: expect.any(AbortSignal) }),
+    );
 
     await userEvent.click(await screen.findByRole("button", { name: "打开纪要" }));
     expect(await screen.findByRole("heading", { name: "可编辑会议" })).toBeInTheDocument();
@@ -674,7 +786,7 @@ describe("浏览历史与返回", () => {
     render(<App apiClient={client({ meeting } as Partial<ApiClient>)} />);
 
     await screen.findByRole("heading", { name: "可编辑会议" });
-    expect(meeting).toHaveBeenCalledWith("vm-page-1");
+    expect(meeting).toHaveBeenCalledWith("vm-page-1", { signal: expect.any(AbortSignal) });
     // 冷加载直达没有上一条可退，返回按钮就地关掉详情，回到默认的工作台。
     await userEvent.click(screen.getByRole("button", { name: "← 返回工作台" }));
     await waitFor(() => expect(screen.queryByRole("heading", { name: "可编辑会议" })).not.toBeInTheDocument());

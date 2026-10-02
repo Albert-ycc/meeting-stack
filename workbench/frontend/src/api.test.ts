@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, api, isOldBackend, setCsrfToken } from "./api";
+import { ApiError, ApiTimeoutError, api, isAbortError, isOldBackend, setCsrfToken } from "./api";
 
 describe("API write protection", () => {
   afterEach(() => {
@@ -858,5 +858,227 @@ describe("错误响应的文案", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("ok", { status: 200, headers: { "Content-Type": "text/plain" } })));
 
     await expect(api.read<string>("/api/ping")).resolves.toBe("ok");
+  });
+});
+
+describe("请求超时和取消", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    setCsrfToken("");
+  });
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  /** 后端卡住：不回应；跟真的 fetch 一样，信号一中止就按信号的原因拒绝 */
+  function hangingFetch() {
+    return vi.fn(
+      (_path: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        }),
+    );
+  }
+
+  /** 后端在处理：自己决定什么时候回应；信号不管用（长任务不带信号） */
+  function slowFetch() {
+    let finish: (body: unknown) => void = () => {};
+    const fetchMock = vi.fn(
+      (_path: string, _init?: RequestInit) =>
+        new Promise<Response>((resolve) => {
+          finish = (body) => resolve(json(body));
+        }),
+    );
+    return { fetchMock, finish: (body: unknown) => finish(body) };
+  }
+
+  /** 把一个 promise 的结果收成「还在等 / 成功 / 失败」，方便在假计时器下一步步断言 */
+  function track<T>(promise: Promise<T>) {
+    const state: { status: "pending" | "resolved" | "rejected"; value?: T; error?: unknown } = { status: "pending" };
+    promise.then(
+      (value) => Object.assign(state, { status: "resolved", value }),
+      (error: unknown) => Object.assign(state, { status: "rejected", error }),
+    );
+    return state;
+  }
+
+  it("读请求 30 秒没有响应：抛 ApiTimeoutError，29 秒时还在等", async () => {
+    vi.stubGlobal("fetch", hangingFetch());
+
+    const result = track(api.meetings());
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(result.status).toBe("pending");
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(result.status).toBe("rejected");
+    expect(result.error).toBeInstanceOf(ApiTimeoutError);
+    expect(result.error).toBeInstanceOf(ApiError);
+    expect(result.error).toMatchObject({ status: 0, message: "服务没有响应，稍后重试" });
+    expect(isAbortError(result.error)).toBe(false);
+  });
+
+  it("读请求在时限内回来：计时器清掉，不会过了 30 秒才把已成功的请求报超时", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(json({ items: [], total: 0 }))));
+
+    await expect(api.meetings()).resolves.toMatchObject({ total: 0 });
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("调用方中途取消读请求：抛 AbortError（不是超时），请求真被中止，计时器清掉", async () => {
+    const fetchMock = hangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    const result = track(api.meeting("vm-1", { signal: controller.signal }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(result.status).toBe("rejected");
+    expect(isAbortError(result.error)).toBe(true);
+    expect(result.error).not.toBeInstanceOf(ApiError);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("检索也一样：被新检索取代时取消旧的，旧的不报超时也不报错", async () => {
+    vi.stubGlobal("fetch", hangingFetch());
+    const controller = new AbortController();
+
+    const result = track(api.search("数理协会", undefined, { signal: controller.signal }));
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(isAbortError(result.error)).toBe(true);
+  });
+
+  it("信号已经取消：不发请求", async () => {
+    const fetchMock = hangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    controller.abort();
+
+    const error = await api.meeting("vm-1", { signal: controller.signal }).catch((reason: unknown) => reason);
+
+    expect(isAbortError(error)).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("响应体读到一半卡住也算：读请求照样 30 秒超时", async () => {
+    const stalledBody = new Response(new ReadableStream({ start() {} }), { headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stalledBody));
+
+    const result = track(api.meetings());
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(result.error).toBeInstanceOf(ApiTimeoutError);
+  });
+
+  it("写请求 120 秒之前不会被中途取消；到点才放弃，提示说「可能仍在处理」，不说失败", async () => {
+    const fetchMock = hangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("t");
+
+    const result = track(api.publish("vm-1"));
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(result.status).toBe("pending");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(result.status).toBe("rejected");
+    expect(result.error).toBeInstanceOf(ApiTimeoutError);
+    expect((result.error as Error).message).toBe("服务没有响应，可能仍在处理，稍后刷新确认");
+    expect((result.error as Error).message).not.toContain("失败");
+    // 服务端可能已经在处理：不自动重发
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("CSRF 过期后的重放也有上限：从重放发出去那一刻算起", async () => {
+    let writes = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((path: string, init?: RequestInit) => {
+        if (path === "/api/bootstrap") return Promise.resolve(json({ csrf_token: "fresh" }));
+        writes += 1;
+        if (writes === 1) return Promise.resolve(json({ detail: "CSRF 校验失败" }, 403));
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        });
+      }),
+    );
+    setCsrfToken("stale");
+
+    const result = track(api.publish("vm-1"));
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(result.status).toBe("pending");
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(result.error).toBeInstanceOf(ApiTimeoutError);
+    expect(writes).toBe(2);
+  });
+
+  // 服务端本来就可能跑几分钟的写请求：同步等 AI 回话、整批搬归档里的文件、传大录音。前端单方面放弃只会让界面和服务端的状态对不上
+  const longWrites: Array<[string, () => Promise<unknown>]> = [
+    ["重新抽取任务", () => api.reExtractTasks("vm-1", "补充")],
+    ["补抽需求候选", () => api.extractRequirementCandidates("vm-1")],
+    ["上传一块录音", () => api.uploadChunk("upload-1", 0, "YXVkaQ==")],
+    ["完成上传", () => api.completeUpload("upload-1")],
+    ["认领一批文件夹", () => api.claimFolders([{ path: "/Volumes/资料盘/项目/蓝鲸云", action: "create" }])],
+    ["关掉全部会议卡片", () => api.retireAllCards()],
+    ["撤下补写的卡片", () => api.retireBackfilledCards()],
+    ["恢复项目写卡片", () => api.resumeProjectCards("project-1")],
+  ];
+  it.each(longWrites)("%s：没有时限，等多久都不报超时，回来了照常拿到结果", async (_name, call) => {
+    const { fetchMock, finish } = slowFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("t");
+
+    const result = track(call());
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(result.status).toBe("pending");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBeUndefined();
+    finish({ ok: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(result.status).toBe("resolved");
+    expect(result.value).toEqual({ ok: true });
+  });
+
+  it("上传的开始和取消只是几行库记录，照常有 120 秒上限", async () => {
+    vi.stubGlobal("fetch", hangingFetch());
+    setCsrfToken("t");
+
+    const start = track(api.startUpload("meeting.m4a", 8));
+    const cancel = track(api.cancelUpload("upload-1"));
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(start.error).toBeInstanceOf(ApiTimeoutError);
+    expect(cancel.error).toBeInstanceOf(ApiTimeoutError);
+  });
+
+  it("重新转写只是入队（后面的长活在 relay 里），照常有上限", async () => {
+    vi.stubGlobal("fetch", hangingFetch());
+    setCsrfToken("t");
+
+    const result = track(api.retranscribe("vm-1"));
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(result.error).toBeInstanceOf(ApiTimeoutError);
+  });
+
+  it("关系图的两个直接 fetch 的读（相关线、全部项目概览）也有 30 秒上限", async () => {
+    vi.stubGlobal("fetch", hangingFetch());
+
+    const related = track(api.graphRelated("project-1", "28d"));
+    const overview = track(api.getGraphOverview("28d"));
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(related.error).toBeInstanceOf(ApiTimeoutError);
+    expect(overview.error).toBeInstanceOf(ApiTimeoutError);
   });
 });

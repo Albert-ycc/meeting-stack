@@ -159,6 +159,22 @@ export class ApiError extends Error {
 }
 
 /**
+ * 请求超时：等了这么久没有响应。没有 HTTP 状态（status 为 0）。服务端可能已经收到、还在处理，
+ * 所以写请求的提示里不说「失败」；按 ApiError 处理的地方照样能显示 message。
+ */
+export class ApiTimeoutError extends ApiError {
+  constructor(message: string) {
+    super(message, 0);
+    this.name = "ApiTimeoutError";
+  }
+}
+
+/** 调用方自己取消的请求（被新请求取代、页面卸载）：不是故障，catch 里直接丢掉、不提示 */
+export function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+/**
  * 第四期的新接口在旧后台上不存在：FastAPI 的 404 "Not Found" 或 405。
  * 404 的 detail 是中文（「这条关联已经不在了」）时是正式回答，不算旧后台。
  */
@@ -575,12 +591,78 @@ async function parseResponse<T>(response: Response): Promise<T> {
   throw new ApiError(formatErrorDetail(data, response.status), response.status, data);
 }
 
-async function read<T>(path: string): Promise<T> {
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    headers: { Accept: "application/json" },
+/** 读请求等多久：后端卡住时别让页面一直转圈 */
+const READ_TIMEOUT_MS = 30_000;
+/** 写请求的上限：只是不让按钮永远停在「处理中…」，到点放弃等待、不自动重发 */
+const WRITE_TIMEOUT_MS = 120_000;
+const READ_TIMEOUT_MESSAGE = "服务没有响应，稍后重试";
+// 写请求到点时服务端多半已经收到、可能还在处理：别说「失败」，让用户去看一眼结果
+const WRITE_TIMEOUT_MESSAGE = "服务没有响应，可能仍在处理，稍后刷新确认";
+
+export interface ReadOptions {
+  /** 会被新请求取代的读（会议详情、检索）：新请求发出或页面卸载时 abort，被取消的读抛 AbortError（isAbortError） */
+  signal?: AbortSignal;
+}
+
+interface WriteOptions {
+  /** 毫秒；null 是没有上限 */
+  timeoutMs?: number | null;
+}
+
+/**
+ * 服务端本来就可能跑几分钟的写请求：同步等 AI 回话、整批搬归档里的文件、传大录音。
+ * 前端单方面放弃，只会让界面和服务端的状态对不上，所以不设上限。
+ */
+const NO_TIME_LIMIT: WriteOptions = { timeoutMs: null };
+
+/**
+ * 给一次请求（从发出到响应体读完）加上时限和调用方的取消。
+ * 到点或被取消时先中止底层 fetch，再让这一次直接拒绝：响应体读到一半卡住、或者 fetch 被替身顶掉时也一样生效。
+ */
+async function withDeadline<T>(
+  { signal: outer, timeoutMs, timeoutMessage }: { signal?: AbortSignal; timeoutMs: number | null; timeoutMessage: string },
+  run: (signal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  if (outer?.aborted) throw new DOMException("请求已取消", "AbortError");
+  if (timeoutMs === null && !outer) return run(undefined);
+  const controller = new AbortController();
+  let stopped: Error | null = null;
+  let stop: (reason: Error) => void = () => {};
+  const stoppedFirst = new Promise<never>((_resolve, reject) => {
+    stop = (reason) => {
+      stopped = reason;
+      reject(reason);
+      controller.abort();
+    };
   });
-  return parseResponse<T>(response);
+  stoppedFirst.catch(() => {}); // 赛跑没轮到它时，别记成没人接的拒绝
+  const onOuterAbort = () => stop(new DOMException("请求已取消", "AbortError"));
+  outer?.addEventListener("abort", onOuterAbort, { once: true });
+  const timer = timeoutMs === null ? undefined : setTimeout(() => stop(new ApiTimeoutError(timeoutMessage)), timeoutMs);
+  try {
+    return await Promise.race([run(controller.signal), stoppedFirst]);
+  } catch (error) {
+    // 中止之后 fetch 自己也会抛 AbortError：对外统一成触发中止的那个原因
+    throw stopped ?? error;
+  } finally {
+    clearTimeout(timer);
+    outer?.removeEventListener("abort", onOuterAbort);
+  }
+}
+
+function readDeadline(signal?: AbortSignal) {
+  return { signal, timeoutMs: READ_TIMEOUT_MS, timeoutMessage: READ_TIMEOUT_MESSAGE };
+}
+
+async function read<T>(path: string, options: ReadOptions = {}): Promise<T> {
+  return withDeadline(readDeadline(options.signal), async (signal) => {
+    const response = await fetch(path, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+    return parseResponse<T>(response);
+  });
 }
 
 // 后端的 CSRF 令牌跟进程同寿命：重启过（或页面启动时没取到）以后，手上的令牌全部作废。
@@ -608,28 +690,39 @@ async function isCsrfRejection(response: Response): Promise<boolean> {
   }
 }
 
+const csrfRejected = Symbol("csrf-rejected");
+
 async function write<T>(
   path: string,
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   body: Record<string, unknown>,
+  { timeoutMs = WRITE_TIMEOUT_MS }: WriteOptions = {},
 ): Promise<T> {
-  const send = (token: string) =>
-    fetch(path, {
-      method,
-      credentials: "same-origin",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "X-CSRF-Token": token,
-      },
-      body: JSON.stringify(body),
-    });
+  // 时限按每一次发出去的请求算：令牌过期后的重放从它发出那一刻重新计
+  const send = <R>(token: string, handle: (response: Response) => Promise<R>) =>
+    withDeadline({ timeoutMs, timeoutMessage: WRITE_TIMEOUT_MESSAGE }, async (signal) =>
+      handle(
+        await fetch(path, {
+          method,
+          credentials: "same-origin",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": token,
+          },
+          body: JSON.stringify(body),
+          signal,
+        }),
+      ),
+    );
   const sentToken = csrfToken;
-  const response = await send(sentToken);
-  if (!(await isCsrfRejection(response))) return parseResponse<T>(response);
+  const first = await send(sentToken, async (response) =>
+    (await isCsrfRejection(response)) ? csrfRejected : parseResponse<T>(response),
+  );
+  if (first !== csrfRejected) return first;
   // 别的请求已经换过令牌了就不用再取；只重放这一次，重放还失败照常报错
   if (csrfToken === sentToken) await refreshCsrfToken();
-  return parseResponse<T>(await send(csrfToken));
+  return send(csrfToken, parseResponse<T>);
 }
 
 export const api = {
@@ -652,7 +745,8 @@ export const api = {
     read<MeetingsPayload>(
       `/api/meetings${queryString(filters)}`,
     ),
-  meeting: (meetingId: string) => read<MeetingDetail>(`/api/meetings/${encodeURIComponent(meetingId)}`),
+  meeting: (meetingId: string, options?: ReadOptions) =>
+    read<MeetingDetail>(`/api/meetings/${encodeURIComponent(meetingId)}`, options),
   transcriptVersionSegments: (meetingId: string, versionId: string) =>
     read<{ version: TranscriptVersion; items: Segment[] }>(
       `/api/meetings/${encodeURIComponent(meetingId)}/transcript-versions/${encodeURIComponent(versionId)}/segments`,
@@ -678,8 +772,8 @@ export const api = {
   minutesEvidence: (meetingId: string) =>
     read<MinutesEvidence>(`/api/meetings/${encodeURIComponent(meetingId)}/minutes-evidence`),
   /** projectId：不传搜全部；"none" 只搜没归项目的会 */
-  search: (query: string, projectId?: string) =>
-    read<SearchPayload>(`/api/search${queryString({ q: query, project_id: projectId })}`),
+  search: (query: string, projectId?: string, options?: ReadOptions) =>
+    read<SearchPayload>(`/api/search${queryString({ q: query, project_id: projectId })}`, options),
   // ---------------------------------------------------------------- 关系图（1g）
   /** window 不传：默认 28 天，会少时自动放宽；focus：深链目标，如 "m:<会议 id>" */
   graph: (projectId: string, window?: GraphWindow, focus?: string) =>
@@ -694,18 +788,20 @@ export const api = {
     projectId: string,
     window: GraphWindow,
     etag?: string | null,
-  ): Promise<{ related: RelatedEdges | null; etag: string | null }> => {
-    const response = await fetch(
-      `/api/graph/projects/${encodeURIComponent(projectId)}/related${queryString({ window })}`,
-      {
-        credentials: "same-origin",
-        headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
-      },
-    );
-    if (response.status === 304) return { related: null, etag: response.headers.get("etag") ?? etag ?? null };
-    const related = await parseResponse<RelatedEdges>(response);
-    return { related, etag: response.headers.get("etag") };
-  },
+  ): Promise<{ related: RelatedEdges | null; etag: string | null }> =>
+    withDeadline(readDeadline(), async (signal) => {
+      const response = await fetch(
+        `/api/graph/projects/${encodeURIComponent(projectId)}/related${queryString({ window })}`,
+        {
+          credentials: "same-origin",
+          headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
+          signal,
+        },
+      );
+      if (response.status === 304) return { related: null, etag: response.headers.get("etag") ?? etag ?? null };
+      const related = await parseResponse<RelatedEdges>(response);
+      return { related, etag: response.headers.get("etag") };
+    }),
   /** 4f：以一份文件为中心的局部图（只查库，不缓存）；related 只在关系图的［相关］开着时为 true */
   graphFileMap: (fileId: number, options?: { related?: boolean }) =>
     read<LocalGraph>(`/api/graph/files/${fileId}/map${queryString({ related: options?.related ? 1 : 0 })}`),
@@ -735,15 +831,17 @@ export const api = {
   /**
    * 全部项目概览。带上次的 etag 时发 If-None-Match：没变是 304，返回 overview: null，照旧用手上的那份。
    */
-  getGraphOverview: async (window: GraphWindow, etag?: string | null): Promise<GraphOverviewFetch> => {
-    const response = await fetch(`/api/graph/overview${queryString({ window })}`, {
-      credentials: "same-origin",
-      headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
-    });
-    if (response.status === 304) return { overview: null, etag: response.headers.get("etag") ?? etag ?? null };
-    const overview = await parseResponse<GraphOverview>(response);
-    return { overview, etag: response.headers.get("etag") };
-  },
+  getGraphOverview: (window: GraphWindow, etag?: string | null): Promise<GraphOverviewFetch> =>
+    withDeadline(readDeadline(), async (signal) => {
+      const response = await fetch(`/api/graph/overview${queryString({ window })}`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
+        signal,
+      });
+      if (response.status === 304) return { overview: null, etag: response.headers.get("etag") ?? etag ?? null };
+      const overview = await parseResponse<GraphOverview>(response);
+      return { overview, etag: response.headers.get("etag") };
+    }),
   /** 项目总文件夹下还没挂的文件夹（读缓存）；state 是 checking 时 2 秒后再取 */
   getOverviewFolders: () => read<OverviewFolders>("/api/graph/overview/folders"),
   // ---------------------------------------------------------------- 关系图（1h）
@@ -951,6 +1049,7 @@ export const api = {
       "/api/cards/retire-all",
       "POST",
       {},
+      NO_TIME_LIMIT,
     ),
   /** 撤下补写的历史卡片：卡片照常开着，以后不再补写 */
   retireBackfilledCards: () =>
@@ -963,6 +1062,7 @@ export const api = {
       "/api/cards/retire-backfilled",
       "POST",
       {},
+      NO_TIME_LIMIT,
     ),
   enableCards: () => write<{ ok: boolean }>("/api/cards/enable", "POST", {}),
   pauseProjectCards: (projectId: string) =>
@@ -972,6 +1072,7 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/cards/resume`,
       "POST",
       {},
+      NO_TIME_LIMIT,
     ),
   confirmMeetingProject: (meetingId: string) =>
     write<MeetingAttribution>(
@@ -1091,6 +1192,7 @@ export const api = {
       `/api/meetings/${encodeURIComponent(meetingId)}/tasks/re-extract`,
       "POST",
       { supplement },
+      NO_TIME_LIMIT,
     ),
   /** 只带改过的字段。project_id："" 表示不归项目，"__ai__" 表示交还 AI 判断。 */
   updateMeeting: (
@@ -1148,7 +1250,7 @@ export const api = {
     write<ProjectParentStatus>("/api/settings/project-parent", "PUT", { path }),
   /** 认领：一次发整批，逐项返回结果 */
   claimFolders: (items: ClaimItem[]) =>
-    write<ClaimResult>("/api/settings/project-parent/claim", "POST", { items }),
+    write<ClaimResult>("/api/settings/project-parent/claim", "POST", { items }, NO_TIME_LIMIT),
   /** 「不是项目」 */
   declineFolder: (path: string) =>
     write<{ ok: boolean }>("/api/settings/project-parent/decline", "POST", { path }),
@@ -1232,6 +1334,7 @@ export const api = {
       `/api/meetings/${encodeURIComponent(meetingId)}/requirement-candidates/extract`,
       "POST",
       {},
+      NO_TIME_LIMIT,
     ),
   dropCandidate: (candidateId: string) =>
     write<CandidateDetail>(`/api/requirement-candidates/${encodeURIComponent(candidateId)}/drop`, "POST", {}),
@@ -1475,12 +1578,14 @@ export const api = {
       `/api/uploads/${encodeURIComponent(uploadId)}/chunks/${index}`,
       "PUT",
       { content_base64: contentBase64 },
+      NO_TIME_LIMIT,
     ),
   completeUpload: (uploadId: string) =>
     write<UploadReceipt>(
       `/api/uploads/${encodeURIComponent(uploadId)}/complete`,
       "POST",
       {},
+      NO_TIME_LIMIT,
     ),
   /** 放弃没传完的上传：删掉服务端的会话，放掉未完成上传的配额 */
   cancelUpload: (uploadId: string) =>

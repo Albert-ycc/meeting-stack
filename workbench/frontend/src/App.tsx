@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { api, ApiError, type ApiClient } from "./api";
+import { api, ApiError, isAbortError, type ApiClient } from "./api";
 import type {
   AttentionPayload,
   AttributionSummary,
@@ -313,6 +313,17 @@ export default function App({ apiClient = api }: AppProps) {
   const jobsRequestSequence = useRef(0);
   const detailRequestSequence = useRef(0);
   const searchRequestSequence = useRef(0);
+  // 会被新请求取代的读（会议详情、检索）：新的发出去、或页面卸载时，把还没回来的旧请求一并中止，别再占着连接；
+  // 被中止的旧请求不当成错误（旧结果本来就会被上面的序号丢掉）
+  const detailAbort = useRef<AbortController | null>(null);
+  const searchAbort = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      detailAbort.current?.abort();
+      searchAbort.current?.abort();
+    },
+    [],
+  );
 
   const loadJobs = useCallback(async (silent = false) => {
     const requestSequence = ++jobsRequestSequence.current;
@@ -736,20 +747,23 @@ export default function App({ apiClient = api }: AppProps) {
   // 这样标签页、滚动位置、播放进度和「已保存」提示都还在。
   const loadDetail = useCallback(async (meetingId: string, { silent = false } = {}) => {
     const requestSequence = ++detailRequestSequence.current;
+    detailAbort.current?.abort();
+    const controller = new AbortController();
+    detailAbort.current = controller;
     if (!silent) {
       setDetailNavigationLocked(false);
       setDetailState("loading");
       setDetailError("");
     }
     try {
-      const payload = await apiClient.meeting(meetingId);
+      const payload = await apiClient.meeting(meetingId, { signal: controller.signal });
       if (requestSequence !== detailRequestSequence.current) return;
       setDetail(payload);
       // 静默刷新时另一侧没保存的编辑还留在会议页里，有没有未保存修改由会议页换了详情后重新报上来
       if (!silent) setDetailDirty(false);
       setDetailState("ready");
     } catch (error) {
-      if (requestSequence !== detailRequestSequence.current) return;
+      if (requestSequence !== detailRequestSequence.current || isAbortError(error)) return;
       // 静默刷新失败时留着手上的版本，页面上的操作提示已经说明了结果。
       if (silent) return;
       setDetail(null);
@@ -799,6 +813,7 @@ export default function App({ apiClient = api }: AppProps) {
 
   const resetDetailState = () => {
     detailRequestSequence.current += 1;
+    detailAbort.current?.abort();
     setMeetingFormPrefill(null);
     meetingScrollRef.current = null;
     setDetail(null);
@@ -1252,6 +1267,9 @@ export default function App({ apiClient = api }: AppProps) {
       return;
     }
     const requestSequence = ++searchRequestSequence.current;
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
     historySyncRef.current = false;
     searchedDuringBootRef.current = true;
     cancelScrollRestore();
@@ -1263,12 +1281,12 @@ export default function App({ apiClient = api }: AppProps) {
     setSearchState("loading");
     setSearchError("");
     try {
-      const payload = await apiClient.search(normalized, scope || undefined);
+      const payload = await apiClient.search(normalized, scope || undefined, { signal: controller.signal });
       if (requestSequence !== searchRequestSequence.current) return;
       setSearchResult(payload);
       setSearchState("ready");
     } catch (error) {
-      if (requestSequence !== searchRequestSequence.current) return;
+      if (requestSequence !== searchRequestSequence.current || isAbortError(error)) return;
       setSearchResult(null);
       setSearchState("error");
       setSearchError(error instanceof Error ? error.message : "检索失败");
