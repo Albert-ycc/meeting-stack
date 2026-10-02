@@ -811,6 +811,49 @@ class PendingReconcileIndexTests(unittest.TestCase):
         self.assertEqual(["job-0", "job-1", "job-2"], failed)
 
 
+class SchemaMigrationRaceTests(unittest.TestCase):
+    def test_concurrent_first_start_missing_only_llm_backend_does_not_duplicate_column(self):
+        module = load_control_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            database = root / "jobs.sqlite3"
+            module.RelayControl(database, archive_root=root)
+            with sqlite3.connect(database) as connection:
+                connection.execute("ALTER TABLE attempts DROP COLUMN llm_backend")
+
+            # 另一个进程先拿到写锁、正在升级；这边在它提交前读到「缺列」
+            other = sqlite3.connect(database, timeout=5, isolation_level=None)
+            other.execute("BEGIN IMMEDIATE")
+            errors: list[BaseException] = []
+
+            def first_start():
+                try:
+                    module.RelayControl(database, archive_root=root)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            starter = threading.Thread(target=first_start)
+            original_connect = module.RelayControl._connect
+            pragma_read = threading.Event()
+
+            def connect_and_signal(control):
+                connection = original_connect(control)
+                connection.set_trace_callback(
+                    lambda sql: pragma_read.set() if "table_info(attempts)" in sql else None
+                )
+                return connection
+
+            with patch.object(module.RelayControl, "_connect", connect_and_signal):
+                starter.start()
+                self.assertTrue(pragma_read.wait(timeout=5))
+                other.execute("ALTER TABLE attempts ADD COLUMN llm_backend TEXT")
+                other.execute("COMMIT")
+                starter.join(timeout=10)
+            other.close()
+
+        self.assertEqual([], errors)
+
+
 class RelayControlTests(unittest.TestCase):
     def setUp(self):
         self.module = load_control_module()

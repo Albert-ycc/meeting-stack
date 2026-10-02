@@ -2622,6 +2622,7 @@ class RelayControl:
                 "source_srt_sha256",
                 "minutes_plan_sha256",
                 "minutes_protocol_version",
+                "llm_backend",
             }
             if (
                 migration_columns - job_columns
