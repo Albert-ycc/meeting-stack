@@ -151,6 +151,45 @@ describe("地址栏锚点直达", () => {
     expect(currentNav()).toHaveTextContent("录音档案");
   });
 
+  it("启动接口还没回时地址栏被改了（前进后退、手改 hash），视图已经先到了目标：启动完成后地址栏照样写回规范的锚点", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ ...desktopMatchMedia(), matches: true })));
+    window.history.replaceState(null, "", "/#tasks");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const base = client({
+      requirements: vi.fn().mockResolvedValue({
+        items: [],
+        total: 0,
+        limit: 10,
+        offset: 0,
+        counts: { active: 0, done: 0, shelved: 0, all: 0 },
+      }),
+    });
+    const bootstrap = vi.fn(async () => {
+      await gate;
+      return (base.bootstrap as () => Promise<unknown>)();
+    });
+    render(<App apiClient={{ ...base, bootstrap } as unknown as ApiClient} />);
+
+    // 启动期间地址换成手机上没有的认领页：视图先退到需求池，那时还不许写地址栏
+    act(() => {
+      window.history.replaceState(null, "", "/#requirements/claim/candidate-1");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByRole("heading", { name: "需求" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#requirements/claim/candidate-1");
+
+    await act(async () => {
+      release();
+      await gate;
+    });
+
+    await waitFor(() => expect(window.location.hash).toBe("#requirements"));
+  });
+
   it("冷加载带 #glossary 停在词典页", async () => {
     window.history.replaceState(null, "", "/#glossary");
 
@@ -336,7 +375,9 @@ describe("地址栏锚点直达", () => {
     expect(await screen.findByRole("heading", { name: "需求" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "认领候选" })).not.toBeInTheDocument();
     expect(requirementCandidate).not.toHaveBeenCalled();
-    expect(window.location.hash).toBe("#requirements");
+    // 地址栏是在「需求」标题那次提交的 passive effect 里写回的，比标题出现晚一拍：findBy 收尾的 setTimeout(0)
+    // 在事件循环这一轮拖过 1ms（高负载）时会抢在它前面，直接断言就偶发红
+    await waitFor(() => expect(window.location.hash).toBe("#requirements"));
   });
 
   it("认领后新海报会被本机记着的筛选挡住：回需求池时清空筛选，提示里说一声", async () => {

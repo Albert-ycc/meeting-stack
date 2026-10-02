@@ -203,7 +203,7 @@ export default function App({ apiClient = api }: AppProps) {
   // 否则首帧 view=overview 会先把 hash 清空，applyHash 再也读不到（冷加载 #tasks 被拉回工作台）。
   const hashReadyRef = useRef(false);
   // 启动接口回来之前用户已经点过侧栏、打开过会、搜过：启动完成后不再按地址栏里的旧锚点拉回去，
-  // 反过来把用户所在的视图写回地址栏（bootSettled 变一次，让下面「视图 → 地址栏」再跑一遍）
+  // 反过来把用户所在的视图写回地址栏。bootSettled 在启动完成时变一次，让下面「视图 → 地址栏」再跑一遍
   const navigatedDuringBootRef = useRef(false);
   // 启动期间只是提交了检索（没换视图）：检索结果盖在视图上，底下的视图仍按地址栏里的锚点来
   const searchedDuringBootRef = useRef(false);
@@ -629,8 +629,10 @@ export default function App({ apiClient = api }: AppProps) {
         setLibraryState("error");
         setDetailError(error instanceof Error ? error.message : "无法连接本地工作台");
       }
-      if (active && (navigatedDuringBootRef.current || searchedDuringBootRef.current)) {
-        // 用户在启动期间去过的地方替换掉地址栏里的旧锚点，不压历史
+      if (active) {
+        // 启动完成后「视图 → 地址栏」必须再对一次（替换，不压历史）：用户启动期间去过别处、检索过，
+        // 或者启动期间地址栏已经被前进后退、手改带到了同一个视图——这时上面那次 applyHash 什么都没变，
+        // 不重新渲染，地址栏就一直停在没规范化的旧锚点上（手机上的 #requirements/claim/… 不变成 #requirements）
         historySyncRef.current = true;
         setBootSettled(true);
       }
