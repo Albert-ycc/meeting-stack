@@ -9,6 +9,7 @@
 - AI 的 key 文件指到不存在的路径，要 key 的测试自己写临时 key 文件传进去；AI 地址指到
   127.0.0.1:9，万一漏进一个真 key 也连不到任何地方；
 - 飞书全部清空，测试里不再读 .env；
+- Host 白名单放行 TestClient 的默认主机名 testserver（生产默认值里没有它）；
 - 自动生效的 _no_real_llm 拦下发给真 AI 的请求，teardown 时记下过就让测试失败。测本机假 AI 服务
   的测试标 allow_local_llm（只放行本机地址）；断言拦下了的测试自己把 fixture 的列表清空。
 """
@@ -30,6 +31,7 @@ os.environ["MEETING_WORKBENCH_LARK_CHAT_ID"] = ""
 os.environ["MEETING_WORKBENCH_LARK_APP_ID"] = ""
 os.environ["MEETING_WORKBENCH_LARK_APP_SECRET_FILE"] = "/nonexistent/meeting-workbench-lark-secret"
 os.environ["MEETING_WORKBENCH_LARK_CLI_BIN"] = "/nonexistent/meeting-workbench-test-lark-cli"
+os.environ["MEETING_WORKBENCH_ALLOWED_HOSTS"] = "testserver"
 
 from meeting_workbench.config import Settings  # noqa: E402
 

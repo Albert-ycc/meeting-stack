@@ -1600,6 +1600,7 @@ def create_app(
         cookie_name=settings.csrf_cookie_name,
         token=csrf_token,
         max_request_bytes=settings.max_json_request_bytes,
+        allowed_hosts=settings.trusted_hostnames(),
     )
 
     def checked_manual_audio_path(raw: str) -> Path:

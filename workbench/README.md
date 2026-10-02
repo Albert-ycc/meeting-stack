@@ -341,7 +341,8 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 | `LARK_CHAT_ID` | 空 | 应用机器人发到的群；非空时优先于 webhook |
 | `LARK_APP_ID` | 空 | 自建应用直连通道的 app_id；与下面的 secret 文件同时配上才生效 |
 | `LARK_APP_SECRET_FILE` | 空 | 自建应用 secret 的本机文件路径（`chmod 600`）。配上后直接调开放平台发卡片，不经 lark-cli、不依赖 GUI 会话的 keychain；多实例部署时各实例各走各的应用 |
-| `PUBLIC_BASE_URL` | `http://127.0.0.1:8765` | 本机地址（纪要卡不再放跳转链接，此项只留给其他通知） |
+| `PUBLIC_BASE_URL` | `http://127.0.0.1:8765` | 本机地址（纪要卡不再放跳转链接，此项只留给其他通知）；它的主机名同时进 Host 白名单，远程访问要配成 `https://<本机>.ts.net` |
+| `ALLOWED_HOSTS` | 空 | Host 白名单里额外放行的主机名，逗号分隔、精确匹配；回环地址和 `PUBLIC_BASE_URL` 的主机名不用写 |
 | `TASK_STALL_AFTER_DAYS` | `3` | 停滞督办阈值（天） |
 | `MATERIAL_BROWSE_ROOT` | `~`（用户主目录） | 项目材料目录可浏览/挂靠的范围（260915 新增），见下一节 |
 

@@ -366,6 +366,41 @@ def test_untrusted_host_and_scheme_mismatch_are_rejected(tmp_path):
     assert mismatch.status_code == 403
 
 
+def test_host_allowlist_is_exact_loopback_plus_public_base_url(tmp_path):
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        relay_jobs_db=tmp_path / "relay.sqlite3",
+        semantic_enabled=False,
+        public_base_url="https://mac.example.ts.net",
+        allowed_hosts=[],
+    )
+    client = TestClient(create_app(settings), base_url="https://mac.example.ts.net")
+
+    token = client.get("/api/bootstrap").json()["csrf_token"]
+    assert client.get("/api/meetings").status_code == 200
+    written = client.post(
+        "/api/tags",
+        json={"name": "远程"},
+        headers={"Origin": "https://mac.example.ts.net", "X-CSRF-Token": token},
+    )
+    assert written.status_code == 200
+    assert client.get("/api/health", headers={"Host": "MAC.example.TS.net"}).status_code == 200
+    assert client.get("/api/health", headers={"Host": "127.0.0.1:8765"}).status_code == 200
+
+    for host in ["testserver", "rebind-attacker.ts.net:8765", "evil.mac.example.ts.net"]:
+        assert client.get("/api/bootstrap", headers={"Host": host}).status_code == 400, host
+    # Origin 只认和 Host 一致的那一个，别的 ts.net 名字写不进来
+    foreign = client.post(
+        "/api/tags",
+        json={"name": "外来"},
+        headers={"Origin": "https://other.ts.net", "X-CSRF-Token": token},
+    )
+    assert foreign.status_code == 403
+
+
 def test_segments_can_be_loaded_for_a_specific_transcript_version(tmp_path):
     client, settings = make_client(tmp_path)
     db = Database(settings.database_path)

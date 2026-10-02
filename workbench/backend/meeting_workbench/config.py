@@ -1,9 +1,11 @@
 import math
 import os
 from pathlib import Path
+from typing import Annotated
+from urllib.parse import urlsplit
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 SCANNER_STALE_AFTER_SECONDS = 180.0
@@ -77,8 +79,11 @@ class Settings(BaseSettings):
     # 声档服务跑在 ssh→tmux（keychain 锁定）里，lark-cli 调用必须经 GUI 会话的
     # tmux run-shell 转发；默认指向 GUI 会话里 tmux 的 cc 套接字。
     lark_tmux_socket: str = "~/.tmux-socket/cc"
-    # 通知卡片跳转用的本机地址；Tailnet 域名可配
+    # 通知卡片跳转用的本机地址；Tailnet 域名可配。它的主机名也会进 Host 白名单，
+    # 配成 tailscale serve 的 https://<本机>.ts.net 后远程访问不用再配别的。
     public_base_url: str = "http://127.0.0.1:8765"
+    # Host 白名单里额外放行的主机名（逗号分隔，精确匹配），回环地址和 public_base_url 的主机名不用写。
+    allowed_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
     # 停滞督办阈值（天）；同一任务督办冷却（天）
     task_stall_after_days: float = 3.0
     # 待确认草稿放多少天没处理就自动归入「已过期」；<=0 关闭。
@@ -117,6 +122,21 @@ class Settings(BaseSettings):
     related_margin: float = 0.05
     # 从材料里挖词
     glossary_mining_enabled: bool = True
+
+    @field_validator("allowed_hosts", mode="before")
+    @classmethod
+    def _split_allowed_hosts(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [part for part in (item.strip() for item in value.split(",")) if part]
+        return value
+
+    def trusted_hostnames(self) -> frozenset[str]:
+        names = {"127.0.0.1", "localhost", "::1"}
+        public_host = urlsplit(self.public_base_url).hostname
+        if public_host:
+            names.add(public_host.lower())
+        names.update(host.strip().lower() for host in self.allowed_hosts if host.strip())
+        return frozenset(names)
 
     def model_post_init(self, __context: object) -> None:
         positive_values = {

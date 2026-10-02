@@ -64,3 +64,25 @@ def test_phase_four_settings_defaults_and_edges():
     assert edge.links_backfill_days == edge.links_llm_daily_calls == edge.qa_daily_questions == 0
     top = Settings(semantic_enabled=False, related_floor=0.95, related_margin=0.3)
     assert (top.related_floor, top.related_margin) == (0.95, 0.3)
+
+
+def test_allowed_hosts_reads_comma_separated_env(monkeypatch):
+    monkeypatch.setenv("MEETING_WORKBENCH_ALLOWED_HOSTS", " A.example, b.example ,,")
+    monkeypatch.setenv("MEETING_WORKBENCH_PUBLIC_BASE_URL", "https://Mac.Example.ts.net")
+    settings = Settings(semantic_enabled=False)
+
+    assert settings.trusted_hostnames() == {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+        "mac.example.ts.net",
+        "a.example",
+        "b.example",
+    }
+
+
+def test_default_trusted_hostnames_are_loopback_only(monkeypatch):
+    monkeypatch.delenv("MEETING_WORKBENCH_ALLOWED_HOSTS", raising=False)
+    monkeypatch.delenv("MEETING_WORKBENCH_PUBLIC_BASE_URL", raising=False)
+
+    assert Settings(semantic_enabled=False).trusted_hostnames() == {"127.0.0.1", "localhost", "::1"}

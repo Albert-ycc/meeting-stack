@@ -12,24 +12,30 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 class WriteProtectionMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, *, cookie_name: str, token: str, max_request_bytes: int):
+    def __init__(
+        self,
+        app,
+        *,
+        cookie_name: str,
+        token: str,
+        max_request_bytes: int,
+        allowed_hosts: frozenset[str],
+    ):
         super().__init__(app)
+        self.allowed_hosts = allowed_hosts
         self.cookie_name = cookie_name
         self.token = token
         self.max_request_bytes = max_request_bytes
 
-    @staticmethod
-    def _allowed_host(host: str | None) -> bool:
+    def _allowed_host(self, host: str | None) -> bool:
+        # 只认精确的名字：后缀匹配（比如任意 *.ts.net）会让 DNS 重绑定的页面拿到同源身份
         if not host:
             return False
-        hostname = urlsplit(f"//{host}").hostname
-        return bool(
-            hostname
-            and (
-                hostname.lower() in {"127.0.0.1", "localhost", "::1", "testserver"}
-                or hostname.lower().endswith(".ts.net")
-            )
-        )
+        try:
+            hostname = urlsplit(f"//{host}").hostname
+        except ValueError:
+            return False
+        return bool(hostname) and hostname.lower() in self.allowed_hosts
 
     async def dispatch(self, request: Request, call_next):
         host = request.headers.get("host")

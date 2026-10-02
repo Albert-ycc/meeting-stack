@@ -135,6 +135,8 @@ Homebrew 装的 ffmpeg / ffprobe 全都不在里面。
 把工作台暴露到自己的 Tailscale 网络，手机等设备可访问（移动端界面只读）。
 
 设备身份边界完全由 Tailscale ACL 控制，应用层不另建账号体系。普通局域网端口始终不开放。
+远程访问的域名要写进 `.env` 的 `MEETING_WORKBENCH_PUBLIC_BASE_URL`（如 `https://<本机>.ts.net`），
+服务只放行本机回环地址和这个域名；别的名字要放行时写进 `MEETING_WORKBENCH_ALLOWED_HOSTS`（逗号分隔，精确匹配）。
 不需要远程访问就别跑这个脚本。
 
 ---
