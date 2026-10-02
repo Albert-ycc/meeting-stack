@@ -1464,24 +1464,16 @@ class RelayControl:
         os.replace(source, candidate)
         return candidate
 
-    def _visible_pending_for_job(
+    def _visible_archive_index(
         self,
-        job_id: str,
-        *,
-        attempt_no: int | None = None,
-    ) -> list[Path]:
+    ) -> list[tuple[Path, str, int, str | None]]:
+        """扫一遍归档根（含旧「待校对」层）的一级目录，读出每个目录 manifest 的身份。
+
+        返回 (规范路径, job_id, attempt, status)，按路径排序；没有合法 manifest 的目录跳过。
+        """
         pending_root = self.archive_root / "待校对"
         if pending_root.is_symlink():
             raise RelayControlError("待校对目录不能是符号链接")
-        published_archive: Path | None = None
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT published_archive_dir FROM jobs WHERE job_id = ?",
-                (job_id,),
-            ).fetchone()
-        if row is not None and row["published_archive_dir"]:
-            published_archive = Path(row["published_archive_dir"]).expanduser().resolve()
-        matches: list[Path] = []
         candidates = [
             path
             for path in self.archive_root.iterdir()
@@ -1489,6 +1481,7 @@ class RelayControl:
         ]
         if pending_root.is_dir():
             candidates.extend(pending_root.iterdir())
+        index: list[tuple[Path, str, int, str | None]] = []
         for candidate in sorted(candidates, key=lambda path: str(path)):
             if candidate.is_symlink() or not candidate.is_dir():
                 continue
@@ -1498,7 +1491,36 @@ class RelayControl:
                 )
             except RelayControlError:
                 continue
-            canonical_candidate = candidate.resolve()
+            index.append(
+                (candidate.resolve(), manifest_job, manifest_attempt, manifest_status)
+            )
+        return index
+
+    def _visible_pending_for_job(
+        self,
+        job_id: str,
+        *,
+        attempt_no: int | None = None,
+        archive_index: list[tuple[Path, str, int, str | None]] | None = None,
+    ) -> list[Path]:
+        """``archive_index`` 由批量对账预先扫好传入，避免每个任务都把归档根再扫一遍。"""
+        if archive_index is None:
+            archive_index = self._visible_archive_index()
+        published_archive: Path | None = None
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT published_archive_dir FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is not None and row["published_archive_dir"]:
+            published_archive = Path(row["published_archive_dir"]).expanduser().resolve()
+        matches: list[Path] = []
+        for (
+            canonical_candidate,
+            manifest_job,
+            manifest_attempt,
+            manifest_status,
+        ) in archive_index:
             if (
                 manifest_status != "published"
                 and canonical_candidate != published_archive
@@ -2391,11 +2413,19 @@ class RelayControl:
                 ORDER BY updated_at, job_id
                 """
             ).fetchall()
+        # 每轮只扫一遍归档根建索引，再按任务查表；扫描本身出错时退回逐个任务扫描，
+        # 让错误照原样记在每个任务名下。
+        archive_index = None
+        if published_rows:
+            try:
+                archive_index = self._visible_archive_index()
+            except Exception:
+                archive_index = None
         for row in published_rows:
             job_id = str(row["job_id"])
             try:
                 recovered = self._recover_published_pending_sources(
-                    job_id, int(row["current_attempt"])
+                    job_id, int(row["current_attempt"]), archive_index
                 )
                 if recovered:
                     summary["published_pending_recovered"].append(job_id)
@@ -6032,9 +6062,10 @@ class RelayControl:
         self,
         job_id: str,
         attempt_no: int,
+        archive_index: list[tuple[Path, str, int, str | None]] | None = None,
     ) -> list[str]:
         sources = self._visible_pending_for_job(
-            job_id, attempt_no=attempt_no
+            job_id, attempt_no=attempt_no, archive_index=archive_index
         )
         if not sources:
             return []

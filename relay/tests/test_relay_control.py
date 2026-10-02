@@ -690,6 +690,127 @@ class ArchiveLockIsolationTests(unittest.TestCase):
         self.assertEqual(control.archive_lock_path, explicit)
 
 
+class PendingReconcileIndexTests(unittest.TestCase):
+    """待校对对账每轮只扫一遍归档根：结果必须和逐个任务各扫一遍完全一致。"""
+
+    def _fixture(self, root: Path, count: int):
+        module = load_control_module()
+        archive = root / "archive"
+        archive.mkdir()
+        control = module.RelayControl(
+            root / "jobs.sqlite3",
+            archive_root=archive,
+            archive_lock_path=root / "archive.lock",
+            auto_pending_archive=False,
+        )
+        control.products_root = root / "products"
+        now = module._now()
+        with sqlite3.connect(root / "jobs.sqlite3") as connection:
+            for index in range(count):
+                published = archive / f"2607{index:02d} 会议{index}"
+                published.mkdir()
+                (published / "workbench-manifest.json").write_text(
+                    json.dumps({"schema_version": 1, "job_id": f"job-{index}",
+                                "attempt": 1, "status": "published"}),
+                    encoding="utf-8",
+                )
+                connection.execute(
+                    """INSERT INTO jobs(job_id, source_key, audio_path, status,
+                       current_attempt, archive_dir, published_archive_dir,
+                       created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (f"job-{index}", f"k{index}", f"/x/{index}.m4a", "published", 1,
+                     str(published), str(published), now, now),
+                )
+                connection.execute(
+                    """INSERT INTO attempts(job_id, attempt_no, requested_stage,
+                       status, started_at) VALUES (?,?,?,?,?)""",
+                    (f"job-{index}", 1, "discovered", "published", now),
+                )
+                if index % 3 == 0:
+                    # 发布后残留的待校对副本：同 job、同 attempt、未发布
+                    leftover = archive / f"2607{index:02d} 会议{index}（待校对）"
+                    leftover.mkdir()
+                    (leftover / "workbench-manifest.json").write_text(
+                        json.dumps({"schema_version": 1, "job_id": f"job-{index}",
+                                    "attempt": 1, "status": "completed_unreviewed"}),
+                        encoding="utf-8",
+                    )
+                if index % 4 == 0:
+                    # 别的 attempt 的副本不算
+                    other = archive / f"2607{index:02d} 会议{index}（旧 attempt）"
+                    other.mkdir()
+                    (other / "workbench-manifest.json").write_text(
+                        json.dumps({"schema_version": 1, "job_id": f"job-{index}",
+                                    "attempt": 0, "status": "completed_unreviewed"}),
+                        encoding="utf-8",
+                    )
+        (archive / "没有 manifest 的目录").mkdir()
+        return module, control
+
+    def _reconcile(self, *, per_job_scan: bool):
+        with tempfile.TemporaryDirectory() as tempdir:
+            module, control = self._fixture(Path(tempdir), 12)
+            reads = 0
+            original = module.RelayControl._manifest_metadata
+
+            def counting(archive_dir):
+                nonlocal reads
+                reads += 1
+                return original(archive_dir)
+
+            recover = control._recover_published_pending_sources
+            patches = [patch.object(module.RelayControl, "_manifest_metadata",
+                                    staticmethod(counting))]
+            if per_job_scan:
+                # 原来的做法：每个任务各自把归档根扫一遍
+                patches.append(patch.object(
+                    control, "_recover_published_pending_sources",
+                    side_effect=lambda job_id, attempt_no, archive_index=None:
+                        recover(job_id, attempt_no),
+                ))
+            for patcher in patches:
+                patcher.start()
+            try:
+                summary = control.reconcile_pending_archives()
+            finally:
+                for patcher in patches:
+                    patcher.stop()
+            visible = {
+                f"job-{index}": [
+                    path.name
+                    for path in control._visible_pending_for_job(f"job-{index}", attempt_no=1)
+                ]
+                for index in range(12)
+            }
+        return summary, visible, reads
+
+    def test_indexed_reconcile_matches_per_job_scan_and_reads_each_manifest_once(self):
+        indexed, indexed_visible, indexed_reads = self._reconcile(per_job_scan=False)
+        legacy, legacy_visible, legacy_reads = self._reconcile(per_job_scan=True)
+
+        self.assertEqual(legacy, indexed)
+        self.assertEqual(legacy_visible, indexed_visible)
+        self.assertTrue(any(error["stage"] == "published_pending_cleanup"
+                            for error in indexed["errors"]))
+        # 12 个已发布 + 4 个残留 + 3 个旧 attempt 副本 = 19 个带 manifest 的目录各读一次，
+        # 另外 4 个有残留的任务在清理校验里各自再读自己的 manifest
+        self.assertLessEqual(indexed_reads, 19 + 4)
+        self.assertGreater(legacy_reads, 12 * 19 - 1)
+
+    def test_index_scan_failure_still_reports_error_per_job(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            _module, control = self._fixture(root, 3)
+            (root / "outside").mkdir()
+            (control.archive_root / "待校对").symlink_to(root / "outside")
+
+            summary = control.reconcile_pending_archives()
+
+        failed = sorted(error["job_id"] for error in summary["errors"]
+                        if error["stage"] == "published_pending_cleanup")
+        self.assertEqual(["job-0", "job-1", "job-2"], failed)
+
+
 class RelayControlTests(unittest.TestCase):
     def setUp(self):
         self.module = load_control_module()
