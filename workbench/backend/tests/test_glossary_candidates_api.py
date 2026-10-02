@@ -266,6 +266,28 @@ def test_accept_when_the_term_is_already_there(api):
     )
 
 
+def test_accept_after_the_term_was_added_meanwhile_still_records_the_heard_wrong(api):
+    """挖完以后、点［记入］以前，词在词典页被手动加上了（没写错写）：卡片上的「会上听成 司美格鲁太」
+    照样记成那条词条的错写；撤销时把这次加的错写拿掉，行回到待认。"""
+    _client, _settings, db, _headers = api
+    now = utc_now()
+    db.execute(
+        """INSERT INTO glossary_terms(id, term, aliases, scope, category, source, confirmed, created_at, updated_at)
+           VALUES ('gt-2', '司美格鲁肽', '[]', '通用', '药品', 'manual', 1, ?, ?)""",
+        (now, now),
+    )
+    result = gm.accept(db, "p", "司美格鲁肽", [], now=NOW)
+    assert result["already"] is False and result["added_aliases"] == ["司美格鲁太"]
+    assert result["text"] == "已把『司美格鲁太』记成『司美格鲁肽』的错写"
+    aliases = db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-2'")["aliases"]
+    assert json.loads(aliases) == ["司美格鲁太"]
+    gm.undo(db, "p", "司美格鲁肽", now=NOW + timedelta(seconds=5))
+    aliases = db.query_one("SELECT aliases FROM glossary_terms WHERE id = 'gt-2'")["aliases"]
+    assert json.loads(aliases) == []
+    statuses = {row["wrong"]: row["status"] for row in rows(db) if row["term_key"] == "司美格鲁肽"}
+    assert statuses == {"": "pending", "司美格鲁太": "pending"}
+
+
 def test_accept_skips_a_wrong_used_elsewhere(api):
     client, _settings, db, headers = api
     now = utc_now()

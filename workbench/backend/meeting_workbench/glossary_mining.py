@@ -2216,7 +2216,7 @@ def accept(
         already = False
         added: list[str] = []
         skipped: list[str] = []
-        if existing is not None and base is not None:
+        if existing is not None and base is not None and not wrongs:
             already = True
             term_id = existing["id"]
         else:
@@ -2236,13 +2236,15 @@ def accept(
                 else:
                     usable.append(wrong)
             if existing is not None:
-                if not usable:
+                if not usable and base is None:
                     # 写法全都已经用在别的词条上：如实说，行留着（可以点［不是］）
                     raise CandidateError(
                         409, NOTHING_ADDED_TEXT.format(skipped="』『".join(skipped))
                     )
                 term_id = existing["id"]
                 added = glossary._append_aliases(connection, term_id, usable, now=stamp)
+                # 词是挖完以后才进词典的：听错的写法照样记成错写，一个都没加上时才算「已经在词典里了」
+                already = base is not None and not added
             else:
                 term_id = glossary._insert_term(
                     connection,
@@ -2283,6 +2285,8 @@ def accept(
         glossary.rewrite_snapshot(db, snapshot_path)
     if already:
         text = ALREADY_TEXT.format(term=term_text)
+        if skipped:
+            text += SKIPPED_TAIL.format(skipped="』『".join(skipped))
     elif not created:
         text = APPENDED_TEXT.format(wrongs="』『".join(added), term=term_text)
         if skipped:
