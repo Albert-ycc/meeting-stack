@@ -16,7 +16,9 @@ const RECORD_DELAY_MS = 150;
 // 用户自己动了就不再替他放回去
 const USER_EVENTS = ["wheel", "touchstart", "keydown", "mousedown"] as const;
 
+// 模块级状态只有这三样，App 卸载（以及用例之间）由 startScrollRecorder 的清理函数一并清掉
 let recordTimer: number | undefined;
+let handBackTimer: number | undefined;
 let cancelRestore: (() => void) | null = null;
 
 function writeScroll(y: number) {
@@ -46,6 +48,9 @@ export function startScrollRecorder(): () => void {
     window.clearTimeout(recordTimer);
     window.removeEventListener("scroll", onScroll);
     window.removeEventListener("popstate", onPopState, true);
+    cancelScrollRestore();
+    window.clearTimeout(handBackTimer);
+    history.scrollRestoration = "auto";
   };
 }
 
@@ -60,7 +65,8 @@ export function restoreScrollFromHistory() {
   const target = (history.state as HistoryWithScroll)?.scroll;
   if (typeof target !== "number" || target <= 0) return;
   history.scrollRestoration = "manual";
-  window.setTimeout(() => {
+  window.clearTimeout(handBackTimer);
+  handBackTimer = window.setTimeout(() => {
     history.scrollRestoration = "auto";
   }, 0);
 

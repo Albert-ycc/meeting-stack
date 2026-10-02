@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { recordScrollNow, restoreScrollFromHistory } from "./scrollRestore";
+import { recordScrollNow, restoreScrollFromHistory, startScrollRecorder } from "./scrollRestore";
 
 // jsdom 不排版：scrollTop 记值，scrollHeight 由用例控制（模拟数据分批到、页面变高）
 let scrollTop = 0;
@@ -68,6 +68,22 @@ describe("浏览器前进后退的整页滚动恢复", () => {
     restoreScrollFromHistory();
     window.dispatchEvent(new WheelEvent("wheel"));
     scrollHeight = 2000;
+    frames(200);
+    expect(scrollTop).toBe(0);
+  });
+
+  it("清理函数把没跑完的恢复、没记上的那次、交还 auto 的定时器都清掉（App 卸载、用例之间不串）", () => {
+    const stopRecorder = startScrollRecorder();
+    window.history.replaceState({ scroll: 400 }, "");
+    restoreScrollFromHistory();
+    scrollHeight = 2000;
+    window.dispatchEvent(new Event("scroll"));
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    stopRecorder();
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(window.history.scrollRestoration).toBe("auto");
     frames(200);
     expect(scrollTop).toBe(0);
   });
