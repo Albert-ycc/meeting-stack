@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
+import { ApiError, ApiTimeoutError } from "../api";
 import { useConfirm } from "./ConfirmDialog";
 import { useDialogEscape, useDialogFocus } from "./useDialog";
 
@@ -128,6 +129,86 @@ describe("ConfirmDialog", () => {
       await userEvent.keyboard("{Enter}");
 
       await waitFor(() => expect(onResult).toHaveBeenCalledWith(true));
+    });
+  });
+
+  describe("带 action 的确认框：写请求超时以后不再给「再执行一次」", () => {
+    const TIMEOUT_TEXT = "服务没有响应，可能仍在处理，稍后刷新确认";
+
+    function ActionHarness({ action, onResult }: { action: () => Promise<unknown>; onResult: (confirmed: boolean) => void }) {
+      const [confirm, dialog] = useConfirm();
+      return (
+        <div>
+          <button
+            onClick={async () => onResult(await confirm({ title: "移除根目录？", confirmLabel: "移除", tone: "danger", action }))}
+            type="button"
+          >
+            打开确认
+          </button>
+          {dialog}
+        </div>
+      );
+    }
+
+    it("超时：写出超时提示，确认键换成「关闭」、焦点落在上面，不能再执行；action 只跑过一次，点「关闭」按没确认处理", async () => {
+      const action = vi.fn().mockRejectedValue(new ApiTimeoutError(TIMEOUT_TEXT));
+      const onResult = vi.fn();
+      render(<ActionHarness action={action} onResult={onResult} />);
+      await userEvent.click(screen.getByRole("button", { name: "打开确认" }));
+      await userEvent.click(await screen.findByRole("button", { name: "移除" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(TIMEOUT_TEXT);
+      const dialog = screen.getByRole("alertdialog");
+      expect(within(dialog).queryByRole("button", { name: "移除" })).not.toBeInTheDocument();
+      expect(within(dialog).queryByRole("button", { name: "取消" })).not.toBeInTheDocument();
+      // 右上角的 ✕ 也叫「关闭」：脚注里的那个按钮文字是「关闭」
+      const close = within(dialog).getAllByRole("button", { name: "关闭" }).find((button) => button.textContent === "关闭")!;
+      expect(close).toBeInTheDocument();
+      await waitFor(() => expect(close).toHaveFocus());
+      expect(action).toHaveBeenCalledTimes(1);
+
+      await userEvent.keyboard("{Enter}");
+
+      await waitFor(() => expect(onResult).toHaveBeenCalledWith(false));
+      expect(onResult).toHaveBeenCalledTimes(1);
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+
+    it("超时以后 Esc 和右上角的 ✕ 照常能关", async () => {
+      const onResult = vi.fn();
+      render(<ActionHarness action={() => Promise.reject(new ApiTimeoutError(TIMEOUT_TEXT))} onResult={onResult} />);
+      await userEvent.click(screen.getByRole("button", { name: "打开确认" }));
+      await userEvent.click(await screen.findByRole("button", { name: "移除" }));
+      await screen.findByRole("alert");
+
+      fireEvent.keyDown(window, { key: "Escape" });
+
+      await waitFor(() => expect(onResult).toHaveBeenCalledWith(false));
+    });
+
+    it("别的错误照旧：确认键还在、能再点一次重试，成功了才关并返回 true", async () => {
+      const action = vi
+        .fn()
+        .mockRejectedValueOnce(new ApiError("这个目录正在被占用", 409))
+        .mockRejectedValueOnce(new Error("断网了"))
+        .mockResolvedValue({});
+      const onResult = vi.fn();
+      render(<ActionHarness action={action} onResult={onResult} />);
+      await userEvent.click(screen.getByRole("button", { name: "打开确认" }));
+
+      await userEvent.click(await screen.findByRole("button", { name: "移除" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("这个目录正在被占用");
+      expect(screen.getByRole("button", { name: "移除" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "取消" })).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "移除" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("断网了"));
+      expect(screen.getByRole("button", { name: "移除" })).toBeEnabled();
+
+      await userEvent.click(screen.getByRole("button", { name: "移除" }));
+      await waitFor(() => expect(onResult).toHaveBeenCalledWith(true));
+      expect(action).toHaveBeenCalledTimes(3);
     });
   });
 

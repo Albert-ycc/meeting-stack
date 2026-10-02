@@ -1,5 +1,6 @@
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
+import { ApiTimeoutError } from "../api";
 import "./ConfirmDialog.css";
 import { useBackdropDismiss, useDialogEscape, useDialogFocus } from "./useDialog";
 
@@ -11,8 +12,10 @@ export interface ConfirmOptions {
   /** danger：删除、丢弃这类收不回来的操作，确认按钮用红色。 */
   tone?: "danger" | "default";
   /**
-   * 给了 action 就在弹窗里执行：执行中按钮禁用，失败把原因写在弹窗里、不关闭，
+   * 给了 action 就在弹窗里执行：执行中按钮禁用，失败把原因写在弹窗里、不关闭（可以再点一次重试），
    * 成功才关闭并返回 true。没给就只问一句，确认即返回 true。
+   * 请求超时（ApiTimeoutError）是个例外：服务端多半已经收到、可能还在处理，再执行一次会重复，
+   * 这时不再给确认键，换成「关闭」（返回 false，提示里已经写了「稍后刷新确认」）。
    */
   action?: () => Promise<unknown>;
 }
@@ -31,7 +34,13 @@ function ConfirmDialog({ options, onDone }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [timedOut, setTimedOut] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
   useDialogFocus(dialogRef);
+  // 确认键换成「关闭」以后，焦点要跟过去：原来的确认键执行中是禁用的，焦点早已不在它身上
+  useEffect(() => {
+    if (timedOut) closeRef.current?.focus();
+  }, [timedOut]);
   const cancel = () => {
     if (!busy) onDone(false);
   };
@@ -49,6 +58,7 @@ function ConfirmDialog({ options, onDone }: ConfirmDialogProps) {
       await action();
       onDone(true);
     } catch (reason) {
+      if (reason instanceof ApiTimeoutError) setTimedOut(true);
       setError(reason instanceof Error ? reason.message : "操作失败，请稍后重试");
       setBusy(false);
     }
@@ -81,19 +91,27 @@ function ConfirmDialog({ options, onDone }: ConfirmDialogProps) {
           </div>
         )}
         <footer className="confirm-modal__footer">
-          {/* 删除、丢弃这类收不回来的操作默认落在「取消」上：弹出后手一滑按回车不会就丢了；Tab 到确认键再回车照常能用 */}
-          <button data-autofocus={tone === "danger" ? true : undefined} disabled={busy} onClick={cancel} type="button">
-            {cancelLabel}
-          </button>
-          <button
-            className={tone === "danger" ? "confirm-modal__danger" : "confirm-modal__primary"}
-            data-autofocus={tone === "danger" ? undefined : true}
-            disabled={busy}
-            onClick={() => void confirm()}
-            type="button"
-          >
-            {busy ? "处理中…" : confirmLabel}
-          </button>
+          {timedOut ? (
+            <button onClick={cancel} ref={closeRef} type="button">
+              关闭
+            </button>
+          ) : (
+            <>
+              {/* 删除、丢弃这类收不回来的操作默认落在「取消」上：弹出后手一滑按回车不会就丢了；Tab 到确认键再回车照常能用 */}
+              <button data-autofocus={tone === "danger" ? true : undefined} disabled={busy} onClick={cancel} type="button">
+                {cancelLabel}
+              </button>
+              <button
+                className={tone === "danger" ? "confirm-modal__danger" : "confirm-modal__primary"}
+                data-autofocus={tone === "danger" ? undefined : true}
+                disabled={busy}
+                onClick={() => void confirm()}
+                type="button"
+              >
+                {busy ? "处理中…" : confirmLabel}
+              </button>
+            </>
+          )}
         </footer>
       </div>
     </div>
