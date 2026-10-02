@@ -1,0 +1,76 @@
+/* 纪要页右栏：选了历史版本时，在下拉下面预览那一版的内容 */
+.minutes-version-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.minutes-version-preview > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 8px;
+}
+
+.minutes-version-preview > header strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.minutes-version-preview > header small {
+  color: var(--ink-soft);
+  font-size: 9px;
+}
+
+.minutes-version-preview .minutes-version-preview__body {
+  max-height: 320px;
+  overflow: auto;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.7;
+}
+
+.minutes-version-preview .minutes-version-preview__body h1,
+.minutes-version-preview .minutes-version-preview__body h2,
+.minutes-version-preview .minutes-version-preview__body h3 {
+  margin: 0.9em 0 0.35em;
+  font-size: 13px;
+}
+
+.minutes-version-preview .minutes-version-preview__body h1:first-child {
+  margin-top: 0;
+}
+
+.minutes-version-preview .minutes-version-preview__body p {
+  margin: 0.5em 0;
+  color: var(--ink);
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.minutes-version-preview .minutes-version-preview__note,
+.minutes-version-preview .minutes-version-preview__failure {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.minutes-version-preview .minutes-version-preview__failure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--danger);
+}
+
+.minutes-actions .minutes-version-preview__retry {
+  width: auto;
+  flex: none;
+  padding: 4px 10px;
+  font-size: 11px;
+}

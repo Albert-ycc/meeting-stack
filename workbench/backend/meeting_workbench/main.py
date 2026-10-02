@@ -751,6 +751,38 @@ def _serialize_shadow_run(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# minutes_versions 除 markdown、html 两个正文列以外的全部列。表里新增列时这里要跟着加
+# （test_minutes_versions_api 会对着 PRAGMA table_info 查）。
+_MINUTES_META_COLUMNS = (
+    "id, meeting_id, version_no, based_on_id, kind, published, content_sha256, source_job_id, "
+    "source_attempt, requested_stage, input_transcript_sha256, created_at"
+)
+
+
+def _minutes_versions_for_detail(
+    db: Database, meeting_id: str, current_id: str | None
+) -> list[dict[str, Any]]:
+    """会议详情里的纪要版本：只有当前版本带正文（markdown、html），历史版本只给元数据。
+
+    纪要正文入库后不会原地改写，页面也只显示当前版本；历史版本带着正文，20 个版本、每版 30KB 的会
+    一次详情就是 1.2MB，保存后的静默刷新还要再拉一遍。要看历史版本走 /minutes-versions/{id}。
+    当前版本按 current_minutes_version_id 找；指针空着或指到不在这场会里的版本时，取最新的一版，
+    和页面显示的口径一致。
+    """
+    versions = db.query_all(
+        f"SELECT {_MINUTES_META_COLUMNS} FROM minutes_versions "
+        "WHERE meeting_id = ? ORDER BY version_no DESC",
+        (meeting_id,),
+    )
+    if versions:
+        shown = next((row for row in versions if row["id"] == current_id), versions[0])
+        shown.update(
+            db.query_one("SELECT markdown, html FROM minutes_versions WHERE id = ?", (shown["id"],))
+            or {}
+        )
+    return versions
+
+
 def _meeting_detail(
     db: Database,
     meeting_id: str,
@@ -787,9 +819,8 @@ def _meeting_detail(
              GROUP BY tv.id ORDER BY tv.version_no DESC""",
         (meeting_id,),
     )
-    meeting["minutes_versions"] = db.query_all(
-        "SELECT * FROM minutes_versions WHERE meeting_id = ? ORDER BY version_no DESC",
-        (meeting_id,),
+    meeting["minutes_versions"] = _minutes_versions_for_detail(
+        db, meeting_id, meeting["current_minutes_version_id"]
     )
     meeting["tags"] = db.query_all(
         """SELECT t.* FROM tags t JOIN meeting_tags mt ON mt.tag_id = t.id
@@ -2150,6 +2181,17 @@ def create_app(
             raise HTTPException(404, "会议不存在")
         prioritize_related(meeting_id)
         return detail
+
+    @app.get("/api/meetings/{meeting_id}/minutes-versions/{version_id}")
+    def minutes_version(meeting_id: str, version_id: str):
+        """某一版纪要的完整内容：会议详情里只有当前版本带正文，要看历史版本来这里取。"""
+        version = db.query_one(
+            "SELECT * FROM minutes_versions WHERE id = ? AND meeting_id = ?",
+            (version_id, meeting_id),
+        )
+        if not version:
+            raise HTTPException(404, "纪要版本不存在")
+        return version
 
     # 4d：会议页右侧的「相关材料」栏；GET 不写库，到期时顺手在内存里 prioritize
     @app.get("/api/meetings/{meeting_id}/related-materials")

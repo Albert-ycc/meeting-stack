@@ -748,6 +748,7 @@ describe("拼进路径的 id 一律编码", () => {
     await api.asrGoldSamples(id);
     await api.requestQwenShadow(id);
     await api.minutesEvidence(id);
+    await api.minutesVersion(id, "mv/2");
     await api.updateMeeting(id, { title: "x" });
     await api.publish(id);
     await api.retryJob("job/1", "transcribing");
@@ -763,6 +764,7 @@ describe("拼进路径的 id 一律编码", () => {
       "/api/meetings/vm-1%2Fcard/asr-gold-samples",
       "/api/meetings/vm-1%2Fcard/asr-shadow/qwen",
       "/api/meetings/vm-1%2Fcard/minutes-evidence",
+      "/api/meetings/vm-1%2Fcard/minutes-versions/mv%2F2",
       "/api/meetings/vm-1%2Fcard",
       "/api/meetings/vm-1%2Fcard/publish",
       "/api/jobs/job%2F1/retry",
@@ -955,6 +957,20 @@ describe("请求超时和取消", () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(isAbortError(result.error)).toBe(true);
+  });
+
+  it("按版本取纪要正文也能取消：连着切版本时先发的那个被中止", async () => {
+    const fetchMock = hangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    const result = track(api.minutesVersion("vm-1", "mv-2", { signal: controller.signal }));
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/meetings/vm-1/minutes-versions/mv-2");
+    expect(isAbortError(result.error)).toBe(true);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
   });
 
   it("信号已经取消：不发请求", async () => {

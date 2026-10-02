@@ -55,6 +55,7 @@ import type {
   TasksPayload,
   TranscriptComparisonPayload,
   MinutesEvidence,
+  MinutesVersionBody,
   TranscriptVersion,
   SimilarProjectSuggestion,
   ColdStartFoldersPayload,
@@ -773,6 +774,12 @@ export const api = {
     ),
   minutesEvidence: (meetingId: string) =>
     read<MinutesEvidence>(`/api/meetings/${encodeURIComponent(meetingId)}/minutes-evidence`),
+  /** 某一版纪要的完整内容：会议详情里只有当前版本带正文，选到历史版本时才来取 */
+  minutesVersion: (meetingId: string, versionId: string, options?: ReadOptions) =>
+    read<MinutesVersionBody>(
+      `/api/meetings/${encodeURIComponent(meetingId)}/minutes-versions/${encodeURIComponent(versionId)}`,
+      options,
+    ),
   /** projectId：不传搜全部；"none" 只搜没归项目的会 */
   search: (query: string, projectId?: string, options?: ReadOptions) =>
     read<SearchPayload>(`/api/search${queryString({ q: query, project_id: projectId })}`, options),

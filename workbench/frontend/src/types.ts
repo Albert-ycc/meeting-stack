@@ -338,7 +338,8 @@ export interface MinutesVersion {
   id: string;
   meeting_id: string;
   version_no: number;
-  markdown: string;
+  /** 会议详情里只有当前版本带正文（markdown、html），历史版本只有元数据；要看历史版本的正文走 api.minutesVersion */
+  markdown?: string;
   html?: string | null;
   kind: string;
   based_on_id?: string | null;
@@ -346,6 +347,9 @@ export interface MinutesVersion {
   published: number;
   created_at: string;
 }
+
+/** 按版本取回来的完整纪要版本 */
+export type MinutesVersionBody = MinutesVersion & { markdown: string };
 
 export type MeetingConflictKind =
   | "external_source_change"

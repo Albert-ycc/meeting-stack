@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 import { ApiError, type ApiClient, type ConflictResolutionAction } from "../api";
 import { reassignNote } from "../cardCopy";
@@ -35,8 +33,10 @@ import { MeetingGlossaryPanel } from "./MeetingGlossaryPanel";
 import { MeetingRequirementPicker } from "./MeetingRequirementPicker";
 import { MeetingTasksPanel } from "./MeetingTasksPanel";
 import { MinutesCorrectionsBar } from "./MinutesCorrectionsBar";
+import { MinutesVersionPreview } from "./MinutesVersionPreview";
 import { MinutesEvidencePanel, TranscriptComparisonPanel } from "./QualityReviewPanels";
 import type { RequirementPrefill } from "./pool/RequirementFormPage";
+import { SafeMarkdown } from "./SafeMarkdown";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeAction, type NoticeTone } from "./Notice";
 import { useLinksFlags } from "./links/LinksFlagsContext";
@@ -238,37 +238,6 @@ const conflictCopy: Record<MeetingConflict["kind"], { title: string; body: strin
   },
 };
 
-function SafeMarkdown({ children }: { children: string }) {
-  return (
-    <ReactMarkdown
-      components={{
-        a: ({ href, children: linkChildren, ...props }) => {
-          let safe = false;
-          if (href) {
-            try {
-              safe = ["http:", "https:"].includes(new URL(href).protocol);
-            } catch {
-              safe = false;
-            }
-          }
-          return safe ? (
-            <a {...props} href={href} rel="noreferrer noopener" target="_blank">
-              {linkChildren}
-            </a>
-          ) : (
-            <span>{linkChildren}</span>
-          );
-        },
-        img: ({ alt }) => <span>{alt ?? "图片已隐藏"}</span>,
-      }}
-      remarkPlugins={[remarkGfm]}
-      skipHtml
-    >
-      {children}
-    </ReactMarkdown>
-  );
-}
-
 export function MeetingDetailPage({
   apiClient,
   initialSeekMs,
@@ -376,6 +345,14 @@ export function MeetingDetailPage({
     [meeting],
   );
   const currentMinutesVersionId = meeting.current_minutes_version_id ?? currentMinutes?.id ?? null;
+  // 下拉里选中的历史版本：列表里它没有正文，在下拉下面预览时才去取；选的是当前版本或没选时没有
+  const historyVersion = useMemo(
+    () =>
+      minutesVersion && minutesVersion !== currentMinutes?.id
+        ? (meeting.minutes_versions.find((version) => version.id === minutesVersion) ?? null)
+        : null,
+    [currentMinutes, meeting.minutes_versions, minutesVersion],
+  );
   const [minutes, setMinutes] = useState(currentMinutes?.markdown ?? "");
   const [baselineMinutes, setBaselineMinutes] = useState(currentMinutes?.markdown ?? "");
   const revisions = useRef({ transcript: 0, minutes: 0, classification: 0 });
@@ -1681,6 +1658,7 @@ export function MeetingDetailPage({
                 <option value="">选择历史版本</option>
                 {meeting.minutes_versions.map((version) => <option key={version.id} value={version.id}>v{version.version_no} · {versionKindLabel(version.kind)}{version.published ? " · 已写回" : ""}</option>)}
               </select>
+              <MinutesVersionPreview apiClient={apiClient} meetingId={meeting.id} version={historyVersion} />
               <button disabled={!minutesVersion || minutesVersion === meeting.current_minutes_version_id || destructiveBlocked} onClick={() => void run(() => apiClient.rollbackMinutes(meeting.id, minutesVersion), "已回滚纪要工作版本")} type="button">回滚纪要版本</button>
               <div className="publish-rule" />
               <button className="publish-button" disabled={destructiveBlocked} onClick={() => void confirmThen(
