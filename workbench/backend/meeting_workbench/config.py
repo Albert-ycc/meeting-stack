@@ -13,12 +13,14 @@ MAX_SCAN_INTERVAL_SECONDS = SCANNER_STALE_AFTER_SECONDS / 2
 
 # 仓库根目录：config.py 位于 <repo>/workbench/backend/meeting_workbench/
 REPO_ROOT = Path(__file__).resolve().parents[3]
+# .env 按仓库位置找，跟从哪个目录启动无关：仓库根一份、workbench/ 下一份，两份都有时 workbench/ 的优先
+ENV_FILES = (REPO_ROOT / ".env", REPO_ROOT / "workbench" / ".env")
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MEETING_WORKBENCH_",
-        env_file=".env",
+        env_file=ENV_FILES,
         extra="ignore",
     )
 

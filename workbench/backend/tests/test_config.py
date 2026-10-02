@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -86,3 +88,40 @@ def test_default_trusted_hostnames_are_loopback_only(monkeypatch):
     monkeypatch.delenv("MEETING_WORKBENCH_PUBLIC_BASE_URL", raising=False)
 
     assert Settings(semantic_enabled=False).trusted_hostnames() == {"127.0.0.1", "localhost", "::1"}
+
+
+def test_env_files_are_located_from_the_repo_not_the_working_directory():
+    from meeting_workbench import config
+
+    repo = Path(config.__file__).resolve().parents[3]
+    assert config.ENV_FILES == (repo / ".env", repo / "workbench" / ".env")
+    # 测试里不许读任何 .env（conftest 置空了，借生产 venv 跑时也一样）
+    assert Settings.model_config["env_file"] is None
+
+
+def _env_settings(env_files):
+    return Settings(_env_file=env_files, semantic_enabled=False)
+
+
+def test_workbench_env_wins_over_repo_root_env_from_any_working_directory(tmp_path, monkeypatch):
+    for name in ("PORT", "HOST", "PUBLIC_BASE_URL"):
+        monkeypatch.delenv(f"MEETING_WORKBENCH_{name}", raising=False)
+    repo = tmp_path / "repo"
+    (repo / "workbench").mkdir(parents=True)
+    root_env = repo / ".env"
+    workbench_env = repo / "workbench" / ".env"
+    env_files = (root_env, workbench_env)
+
+    # 生产现在的样子：只有 workbench/.env
+    workbench_env.write_text("MEETING_WORKBENCH_PORT=2222\n", encoding="utf-8")
+    assert _env_settings(env_files).port == 2222
+
+    root_env.write_text(
+        "MEETING_WORKBENCH_PORT=1111\nMEETING_WORKBENCH_PUBLIC_BASE_URL=https://mac.example.ts.net\n",
+        encoding="utf-8",
+    )
+    for cwd in (tmp_path, repo / "workbench"):
+        monkeypatch.chdir(cwd)
+        settings = _env_settings(env_files)
+        assert settings.port == 2222
+        assert settings.public_base_url == "https://mac.example.ts.net"
