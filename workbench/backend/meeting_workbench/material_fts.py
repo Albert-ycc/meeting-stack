@@ -47,14 +47,15 @@ def rebuild_mark(connection: Any) -> dict[str, Any] | None:
 
 
 def rebuild_pending(db: Database) -> bool:
-    """全文表还没补完：材料循环不动片段，搜索写「材料的全文索引在重建」。"""
+    """全文表还没补完：材料循环不动片段，搜索写「材料的全文索引在重建」。读库出错时当作还在补：材料循环
+    宁可停一轮，也不能在补表期间删、写片段（会报 malformed、重复索引）。"""
     try:
         return (
             db.query_one("SELECT 1 AS pending FROM app_state WHERE key = ?", (REBUILD_KEY,))
             is not None
         )
     except sqlite3.OperationalError:
-        return False
+        return True
 
 
 def mark_for_rebuild(connection: sqlite3.Connection) -> None:

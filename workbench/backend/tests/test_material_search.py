@@ -658,6 +658,21 @@ def restored(tmp_path, result):
     return db
 
 
+def test_rebuild_check_that_errors_counts_as_rebuilding(tmp_path):
+    """读补表标记时库报错：内容循环的本意是出错就当冻结（宁可停一轮），不能当成「没在补」接着删写
+    片段——补表期间删、写 material_chunks 正是会报 malformed、重复索引的那种情况。"""
+
+    class Broken:
+        def query_one(self, *args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+    assert rebuild_pending(Broken()) is True
+    content = MaterialContent(
+        Broken(), SimpleNamespace(), fts_rebuilding=lambda: rebuild_pending(Broken())
+    )
+    assert content.chunks_frozen() is True
+
+
 def test_restore_rebuilds_in_batches_resumes_after_restart_and_checks_integrity(tmp_path):
     settings, db = backup_world(tmp_path, chunks=12)
     db = restored(tmp_path, BackupManager(db, settings).create())
