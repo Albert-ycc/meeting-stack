@@ -140,4 +140,27 @@ describe("MeetingRequirementPicker", () => {
       ]),
     );
   });
+
+  it("需求读取失败时说读取失败、能重试，不假装没有匹配的需求", async () => {
+    const requirements = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("后端忙，稍后再试"))
+      .mockResolvedValueOnce(requirementsPayload());
+    render(
+      <MeetingRequirementPicker
+        apiClient={{ requirements } as unknown as ApiClient}
+        onChange={vi.fn()}
+        projectId="project-a"
+        projects={projects}
+        selected={[]}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "＋ 关联需求" }));
+
+    expect(await screen.findByText("需求读取失败：后端忙，稍后再试")).toBeInTheDocument();
+    expect(screen.queryByText("没有匹配的需求")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("北辰仓快递配送")).toBeInTheDocument();
+    expect(requirements).toHaveBeenCalledTimes(2);
+  });
 });

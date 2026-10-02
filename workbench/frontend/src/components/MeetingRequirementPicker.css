@@ -120,6 +120,14 @@
   text-align: center;
 }
 
+.requirement-picker__error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--ink-soft);
+}
+
 .requirement-picker__row {
   display: flex;
   align-items: center;

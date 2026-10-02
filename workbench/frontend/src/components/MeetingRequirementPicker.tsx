@@ -37,6 +37,9 @@ export function MeetingRequirementPicker({
   const [search, setSearch] = useState("");
   const [options, setOptions] = useState<RequirementRef[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  // ［重试］只重读列表，不动已勾的草稿
+  const [attempt, setAttempt] = useState(0);
   const [draft, setDraft] = useState<RequirementRef[]>(selected);
   const [creating, setCreating] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -45,8 +48,14 @@ export function MeetingRequirementPicker({
     if (!open) return;
     setDraft(selected);
     setSearch("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, projectId]);
+
+  useEffect(() => {
+    if (!open) return;
     let active = true;
     setLoading(true);
+    setLoadError("");
     void apiClient
       .requirements({ project_id: projectId || undefined, status: "active", limit: 200 })
       .then((payload) => {
@@ -61,14 +70,18 @@ export function MeetingRequirementPicker({
           })),
         );
       })
+      .catch((error) => {
+        if (!active) return;
+        setOptions([]);
+        setLoadError(error instanceof Error ? error.message : "请稍后再试");
+      })
       .finally(() => {
         if (active) setLoading(false);
       });
     return () => {
       active = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiClient, open, projectId]);
+  }, [apiClient, attempt, open, projectId]);
 
   useEffect(() => {
     if (!open) return;
@@ -167,6 +180,13 @@ export function MeetingRequirementPicker({
             <div className="requirement-picker__list">
               {loading ? (
                 <div className="requirement-picker__empty">加载中…</div>
+              ) : loadError ? (
+                <div className="requirement-picker__empty requirement-picker__error" role="alert">
+                  <span>需求读取失败：{loadError}</span>
+                  <button className="text-button" onClick={() => setAttempt((value) => value + 1)} type="button">
+                    重试
+                  </button>
+                </div>
               ) : rows.length === 0 ? (
                 <div className="requirement-picker__empty">没有匹配的需求</div>
               ) : (
