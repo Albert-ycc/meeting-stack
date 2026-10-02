@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from .material_index import MATCH_ZONES
@@ -707,13 +707,11 @@ def _short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _month_day(recording_date: str | None, created_at: str | None) -> str:
-    from .graph import local_day  # graph 引用本模块，这里晚一点再引
+def _month_day(recording_date: str | None, created_at: str | None, today: date | None) -> str:
+    from .graph import local_day, month_day  # graph 引用本模块，这里晚一点再引
 
-    day = local_day(recording_date, created_at)
-    if day.year == datetime.now().astimezone().year:
-        return f"{day.month}/{day.day}"
-    return f"{day.year}/{day.month}/{day.day}"
+    today = today or datetime.now().astimezone().date()
+    return month_day(local_day(recording_date, created_at), today)
 
 
 def _passage(text: str | None, terms: list[str]) -> str:
@@ -746,7 +744,9 @@ def produced_evidence_text(evidence: dict[str, Any]) -> str:
     return f"{prefix}新增，文件名里也有『{words[0]}』" if words else f"{prefix}新增"
 
 
-def _question(row: Any, *, for_requirement: bool = False) -> dict[str, Any]:
+def _question(
+    row: Any, *, for_requirement: bool = False, today: date | None = None
+) -> dict[str, Any]:
     from .relations import ANSWERS  # relations 引用本模块
 
     evidence = public_evidence(row["evidence_json"])
@@ -772,7 +772,7 @@ def _question(row: Any, *, for_requirement: bool = False) -> dict[str, Any]:
         item["words"] = [str(word) for word in evidence.get("words") or []]
         return item
     decision_text = row["decision_text"] or row["quote"] or ""
-    day = _month_day(row["decision_recording_date"], row["decision_created_at"])
+    day = _month_day(row["decision_recording_date"], row["decision_created_at"], today)
     if for_requirement:
         stem = str(row["file_name"] or "").rpartition(".")[0] or str(row["file_name"] or "")
         item["text"] = f"『{stem}』之后没改过，可能过时"
@@ -797,7 +797,9 @@ def _question(row: Any, *, for_requirement: bool = False) -> dict[str, Any]:
     return item
 
 
-def file_questions(connection: Any, file_id: int) -> list[dict[str, Any]]:
+def file_questions(
+    connection: Any, file_id: int, today: date | None = None
+) -> list[dict[str, Any]]:
     """文件面板、预览抽屉：这份文件上在问的影响和产出（影响在前），一条语句。"""
     rows = connection.execute(
         _QUESTION_SQL.format(
@@ -806,7 +808,7 @@ def file_questions(connection: Any, file_id: int) -> list[dict[str, Any]]:
         ),
         (file_id, file_id),
     ).fetchall()
-    return [_question(row) for row in rows]
+    return [_question(row, today=today) for row in rows]
 
 
 def task_questions(connection: Any, task_id: str) -> list[dict[str, Any]]:

@@ -5,14 +5,23 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
-from meeting_workbench import affects, decisions, materials, material_status, produced
+from meeting_workbench import (
+    affects,
+    decisions,
+    graph,
+    materials,
+    material_status,
+    produced,
+    relation_read,
+)
 from meeting_workbench.db import Database, utc_now
 
 from .helpers import count_reads
 from .test_file_events import swept
+from .test_graph import stop_clock
 from .test_tasks_api import make_client, write_headers
 
 HIDDEN = {"score", "prev_json", "root_id", "evidence_json"}
@@ -130,17 +139,19 @@ def rev(db) -> int:
     return int(db.query_one("SELECT value FROM app_state WHERE key = 'graph_rev'")["value"])
 
 
-def test_question_shapes_and_whitelist(tmp_path):
+def test_question_shapes_and_whitelist(tmp_path, monkeypatch):
+    today = stop_clock(monkeypatch)
     w = world(tmp_path)
     affects_body = w.client.get(f"/api/graph/files/{w.quote_id}").json()
     (question,) = affects_body["questions"]
     decision = w.db.query_one("SELECT id FROM decisions")
-    day = datetime.now(UTC) - timedelta(days=3)
-    local = day.astimezone().date()
+    local = date.fromisoformat(
+        w.db.query_one("SELECT recording_date FROM meetings")["recording_date"]
+    )
     assert question == {
         "relation_id": question["relation_id"],
         "kind": "affects",
-        "text": f"可能过时：{local.month}/{local.day} 决议『总价下调 5%』",
+        "text": f"可能过时：{graph.month_day(local, today)} 决议『总价下调 5%』",
         "decision": {
             "id": decision["id"],
             "text": "总价下调 5%",
@@ -176,6 +187,21 @@ def test_question_shapes_and_whitelist(tmp_path):
     # 材料文字只在 passage 里现读，不进表
     row = w.db.query_one("SELECT quote, evidence_json FROM relations WHERE kind = 'affects'")
     assert "含税" not in row["quote"] + row["evidence_json"]
+
+
+def test_question_date_carries_the_year_only_across_years(tmp_path):
+    """「今天」可注入：去年底的决议在 1 月初问起时带年份，同一年里只写月/日。"""
+    w = world(tmp_path)
+    w.db.execute("UPDATE meetings SET recording_date = '2026-12-30' WHERE id = 'm'")
+    with w.db.autocommit() as connection:
+        texts = [
+            relation_read.file_questions(connection, w.quote_id, today=today)[0]["text"]
+            for today in (date(2026, 12, 31), date(2027, 1, 2))
+        ]
+    assert texts == [
+        "可能过时：12/30 决议『总价下调 5%』",
+        "可能过时：2026/12/30 决议『总价下调 5%』",
+    ]
 
 
 def test_preview_has_questions_after_deliverables_but_not_with_parts_preview(tmp_path):
