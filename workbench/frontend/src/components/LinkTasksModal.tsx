@@ -51,6 +51,7 @@ export function LinkTasksModal({ apiClient, requirementId, projectId, onCancel, 
   useEffect(() => {
     let active = true;
     setTasks(null);
+    setLoadError(false);
     void apiClient
       .tasks({
         project_id: projectId,

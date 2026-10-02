@@ -111,4 +111,25 @@ describe("LinkTasksModal", () => {
     expect(onSaved).not.toHaveBeenCalled();
     expect(screen.getByRole("checkbox", { name: /自行接管EDC接入并推动上线/ })).toBeChecked();
   });
+  it("一次读取失败后换了搜索词：新请求在途时显示「加载中…」，不是还挂着上次的「任务读取失败」", async () => {
+    const tasks = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError("网络抖了一下", 0, null))
+      .mockReturnValue(new Promise(() => undefined));
+    render(
+      <LinkTasksModal
+        apiClient={{ tasks, attachRequirementTasks: vi.fn() } as unknown as ApiClient}
+        onCancel={vi.fn()}
+        onSaved={vi.fn()}
+        projectId="project-a"
+        requirementId="req-1"
+      />,
+    );
+    expect(await screen.findByText("任务读取失败")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("搜索任务"), "E");
+
+    expect(screen.getByText("加载中…")).toBeInTheDocument();
+    expect(screen.queryByText("任务读取失败")).toBeNull();
+  });
 });
