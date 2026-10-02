@@ -16,7 +16,7 @@ import pytest
 
 from meeting_workbench import cli, material_previews, ocr_engines, ocr_trial
 from meeting_workbench.config import Settings
-from meeting_workbench.material_helpers import HelperTimeout
+from meeting_workbench.material_helpers import HelperCrashed, HelperTimeout
 from meeting_workbench.ocr_engines import (
     ImageExtractor,
     OcrEngines,
@@ -602,6 +602,33 @@ def test_pdf_timeout_at_the_start_retries_later(tmp_path):
     content.run_round()
     assert vision.requests[-2][1] == 120.0  # 再试时用 120 秒
     assert next(iter(contents(db).values()))["state"] == "done"
+
+
+def test_helper_crashing_on_a_file_is_corrupt_not_timeout(tmp_path):
+    """认字程序在一份坏文件上崩了（进程退出）：第一次照超时给一次重试，再崩记 corrupt（文件损坏），
+    不记「处理超时」。"""
+
+    def crash(payload):
+        raise HelperCrashed("vision 退出了（退出码 -11）")
+
+    db, settings, content, engines, vision, now = pdf_setup(
+        tmp_path, pages=[LONG], on_request=crash
+    )
+    content.run_round()
+    row = next(iter(contents(db).values()))
+    assert (row["state"], row["reason"]) == ("pending", "timeout")
+    now.value += timedelta(hours=2)
+    content.run_round()
+    row = next(iter(contents(db).values()))
+    assert (row["state"], row["reason"]) == ("unreadable", "corrupt")
+
+    image = tmp_path / "坏图.png"
+    image.write_bytes(png(2000, 2000))
+    engines.set_engine("vision")
+    extractor = ImageExtractor(engines)
+    first = extractor(image, "image", {"content_key": "q2:ab", "reason": None, "attempts": 0})
+    again = extractor(image, "image", {"content_key": "q2:ab", "reason": "timeout", "attempts": 1})
+    assert (first.status, again.status) == ("timeout", "corrupt")
 
 
 def test_pdf_password_corrupt_and_not_really_a_pdf(tmp_path):

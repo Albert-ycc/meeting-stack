@@ -570,6 +570,12 @@ def _timeout_for(row: dict[str, Any]) -> float:
     return RETRY_TIMEOUT if row.get("reason") == "timeout" else FIRST_TIMEOUT
 
 
+def _crashed_status(row: dict[str, Any]) -> str:
+    """认字程序在这份文件上崩了：第一次可能是偶发，照超时给一次重试；重试时再崩就是文件坏了，记 corrupt，
+    不记「处理超时」（用户会以为是机器慢）。"""
+    return "corrupt" if int(row.get("attempts") or 0) else "timeout"
+
+
 class ImageExtractor:
     """图片文字：MaterialContent 的 extractors["image"]。"""
 
@@ -604,9 +610,14 @@ class ImageExtractor:
                 result = self._vision(path, row)
             else:
                 result = self._tesseract(path, row)
-        except (HelperTimeout, HelperCrashed) as error:
+        except HelperTimeout as error:
             logger.info("认字超时：%s（%s）", path, error)
             return ExtractResult(status="timeout", extractor=engine, extractor_version=self.version)
+        except HelperCrashed as error:
+            logger.info("认字程序崩了：%s（%s）", path, error)
+            return ExtractResult(
+                status=_crashed_status(row), extractor=engine, extractor_version=self.version
+            )
         except extract_formats.Unreadable as error:
             return ExtractResult(
                 status=error.reason, extractor=engine, extractor_version=self.version
@@ -696,9 +707,13 @@ class PdfExtractor:
         started = self.clock()
         try:
             opened = helper.request({"cmd": "pdf_open", "path": str(path)}, timeout=timeout)
-        except (HelperTimeout, HelperCrashed):
+        except HelperTimeout:
             return ExtractResult(
                 status="timeout", extractor=extractor, extractor_version=self.version
+            )
+        except HelperCrashed:
+            return ExtractResult(
+                status=_crashed_status(row), extractor=extractor, extractor_version=self.version
             )
         if opened.get("status") in {"password", "corrupt"}:
             return ExtractResult(
@@ -720,10 +735,11 @@ class PdfExtractor:
                 break
             try:
                 text = self._page(helper, path, row, index, mode, timeout)
-            except (HelperTimeout, HelperCrashed):
+            except (HelperTimeout, HelperCrashed) as error:
                 if not blocks:
+                    status = _crashed_status(row) if isinstance(error, HelperCrashed) else "timeout"
                     return ExtractResult(
-                        status="timeout", extractor=extractor, extractor_version=self.version
+                        status=status, extractor=extractor, extractor_version=self.version
                     )
                 truncated = True  # 只读了前 N 页
                 break
