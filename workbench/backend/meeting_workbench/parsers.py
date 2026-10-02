@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +15,12 @@ TIMECODE_RE = re.compile(r"(?P<h>\d{1,2}):(?P<m>\d{2}):(?P<s>\d{2})[,.](?P<ms>\d
 TIMING_LINE_RE = re.compile(r"^\s*[\d:,.]*\s*-->")
 MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_JSON_DEPTH = 128
+# 嵌套深度校验是纯 Python 逐字符扫描，一份 20MB 的转写 JSON 要 0.3～0.5 秒，而同一份文件
+# 导入时会被加载好几次。校验通过的文件按路径记下（大小、修改时间），没变就不再扫；
+# 只记通过的，文件一变（大小或修改时间不同）重扫，最多记 _DEPTH_CHECKED_LIMIT 份，挤掉最久没用的。
+_DEPTH_CHECKED_LIMIT = 512
+_depth_checked: OrderedDict[str, tuple[int, int]] = OrderedDict()
+_depth_checked_lock = threading.Lock()
 # 时间戳上限取 SRT 时间码能写出来的最大值 99:59:59,999：逐字稿要能按 SRT
 # 导出、再导回来（rendering 写两位小时，上面的 TIMECODE_RE 也只认两位），
 # 超过它的值不可能来自一场真实录音，只会是写坏或被改过的文件。
@@ -125,15 +134,37 @@ def _validate_json_depth(content: str) -> None:
             depth = max(0, depth - 1)
 
 
+def _depth_already_checked(key: str, signature: tuple[int, int]) -> bool:
+    with _depth_checked_lock:
+        if _depth_checked.get(key) != signature:
+            return False
+        _depth_checked.move_to_end(key)
+        return True
+
+
+def _remember_depth_checked(key: str, signature: tuple[int, int]) -> None:
+    with _depth_checked_lock:
+        _depth_checked[key] = signature
+        _depth_checked.move_to_end(key)
+        while len(_depth_checked) > _DEPTH_CHECKED_LIMIT:
+            _depth_checked.popitem(last=False)
+
+
 def load_json_file(path: Path) -> Any:
-    if path.stat().st_size > MAX_JSON_BYTES:
-        raise ValueError("JSON file exceeds 64 MiB")
     with path.open("rb") as handle:
+        # 大小和修改时间取自打开的这个文件本身，和下面读到的内容是同一份
+        status = os.fstat(handle.fileno())
+        if status.st_size > MAX_JSON_BYTES:
+            raise ValueError("JSON file exceeds 64 MiB")
         content_bytes = handle.read(MAX_JSON_BYTES + 1)
     if len(content_bytes) > MAX_JSON_BYTES:
         raise ValueError("JSON file exceeds 64 MiB")
     content = content_bytes.decode("utf-8-sig", errors="replace")
-    _validate_json_depth(content)
+    key = os.path.abspath(path)
+    signature = (status.st_size, status.st_mtime_ns)
+    if not _depth_already_checked(key, signature):
+        _validate_json_depth(content)
+        _remember_depth_checked(key, signature)
     return json.loads(content)
 
 
