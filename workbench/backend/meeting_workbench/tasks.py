@@ -1115,8 +1115,13 @@ class TaskService:
                 # 事务内再判一次：并发批量确认同一批时，只有真正完成流转的那一次算数。
                 if self._confirm(task_id):
                     confirmed.append(task_id)
-            except (ConflictError, ValueError) as error:
+            except (ConflictError, NotFoundError, ValueError) as error:
                 failed.append({"task_id": task_id, "error": str(error)})
+            except Exception:
+                # 没想到的错也只算这一条（同 todo.confirm_all）：每条各自一个事务，前面的已经确认了，
+                # 整个接口报错前端就不知道哪些确认上了
+                logger.exception("批量确认时这条没确认上 task=%s", task_id)
+                failed.append({"task_id": task_id, "error": "这条没确认上，稍后单独确认"})
         return {"confirmed": confirmed, "failed": failed}
 
     def batch_reject(self, task_ids: list[str]) -> dict[str, Any]:
@@ -1132,8 +1137,11 @@ class TaskService:
             try:
                 if self._reject(task_id):
                     rejected.append(task_id)
-            except (ConflictError, ValueError) as error:
+            except (ConflictError, NotFoundError, ValueError) as error:
                 failed.append({"task_id": task_id, "error": str(error)})
+            except Exception:
+                logger.exception("批量驳回时这条没驳回 task=%s", task_id)
+                failed.append({"task_id": task_id, "error": "这条没驳回，稍后单独驳回"})
         return {"rejected": rejected, "failed": failed}
 
     def undo_review(self, task_ids: list[str]) -> dict[str, Any]:

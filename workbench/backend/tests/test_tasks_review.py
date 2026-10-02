@@ -238,6 +238,46 @@ def test_batch_reject_only_touches_drafts(tmp_path):
     assert task_status(db, "c1") == "confirmed"
 
 
+def test_batch_review_counts_an_unexpected_error_against_that_task_only(tmp_path, monkeypatch):
+    """批量确认、批量驳回：查完状态后这条被删了（重抽撤下草稿）、库锁超时，只算这一条失败，
+    前后几条照常，接口不 500（每条各自一个事务，整个报错前端就不知道哪些已经确认上了）。"""
+    import sqlite3
+
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(settings.database_path)
+    for task_id in ("a1", "gone1", "locked1", "a2", "gone2", "locked2"):
+        insert_task(db, task_id, "pending_confirm")
+    confirm, reject = TaskService._confirm, TaskService._reject
+
+    def flaky(original):
+        def run(self, task_id, *args, **kwargs):
+            if task_id.startswith("gone"):
+                db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+            if task_id.startswith("locked"):
+                raise sqlite3.OperationalError("database is locked")
+            return original(self, task_id, *args, **kwargs)
+
+        return run
+
+    monkeypatch.setattr(TaskService, "_confirm", flaky(confirm))
+    monkeypatch.setattr(TaskService, "_reject", flaky(reject))
+
+    confirmed = client.post(
+        "/api/tasks/batch-confirm", json={"task_ids": ["gone1", "locked1", "a1"]}, headers=headers
+    )
+    rejected = client.post(
+        "/api/tasks/batch-reject", json={"task_ids": ["gone2", "locked2", "a2"]}, headers=headers
+    )
+
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["confirmed"] == ["a1"]
+    assert [item["task_id"] for item in confirmed.json()["failed"]] == ["gone1", "locked1"]
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["rejected"] == ["a2"]
+    assert [item["task_id"] for item in rejected.json()["failed"]] == ["gone2", "locked2"]
+
+
 def test_undo_restores_recent_confirm_and_reject(tmp_path):
     client, settings = make_client(tmp_path)
     headers = write_headers(client)
