@@ -23,11 +23,14 @@ export function linkBody(option: LinkOption | null) {
   return option.kind === "requirement" ? { requirement_id: option.id } : { candidate_id: option.id };
 }
 
-/** 撤销挂接：把任务原来挂着的写回去 */
-export function originalLink(task: Task) {
+/** 撤销挂接：把任务原来挂着的写回去。linked 是挂完后端回的任务：挂上别的项目的需求时后端会把项目一并改掉，
+ *  这时项目也要退回去（显式写 null 才会清项目）；挂回原需求时项目跟着需求走，不用另给 */
+export function originalLink(task: Task, linked: Pick<Task, "project_id">) {
+  const before = task.project_id ?? null;
+  const project = linked.project_id !== undefined && linked.project_id !== before ? { project_id: before } : {};
   if (task.requirement_id) return { requirement_id: task.requirement_id };
-  if (task.candidate_id) return { candidate_id: task.candidate_id };
-  return { requirement_id: null, candidate_id: null };
+  if (task.candidate_id) return { candidate_id: task.candidate_id, ...project };
+  return { requirement_id: null, candidate_id: null, ...project };
 }
 
 /** 拖到某条需求上，等同于在选择器里选了它 */

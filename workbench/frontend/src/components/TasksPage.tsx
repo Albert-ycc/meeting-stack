@@ -5,6 +5,7 @@ import type { NoticeTone } from "./Notice";
 import { useToast } from "./Toast";
 import { Pagination } from "./Pagination";
 import { DirectionBar } from "./pool/DirectionBar";
+import { linkBody, originalLink } from "./projects/detail/workModel";
 import { PriorityBadge } from "./RequirementBadges";
 import { TaskDrawer } from "./TaskDrawer";
 import { TaskEditModal } from "./TaskEditModal";
@@ -414,18 +415,7 @@ export function TasksPage({
   // 挂到需求：选需求写 requirement_id，选候选写 candidate_id，「不挂」两个都清；撤销把原来的挂接写回去。
   const linkOne = (task: Task, option: LinkOption | null) =>
     run(async () => {
-      const body =
-        option === null
-          ? { requirement_id: null, candidate_id: null }
-          : option.kind === "requirement"
-            ? { requirement_id: option.id }
-            : { candidate_id: option.id };
-      const original = task.requirement_id
-        ? { requirement_id: task.requirement_id }
-        : task.candidate_id
-          ? { candidate_id: task.candidate_id }
-          : { requirement_id: null, candidate_id: null };
-      await apiClient.updateTask(task.id, body);
+      const original = originalLink(task, await apiClient.updateTask(task.id, linkBody(option)));
       notify(option ? `已挂到「${option.title}」` : "已设为不挂需求", async () => {
         await apiClient.updateTask(task.id, original);
         notify("已撤销，挂接回到原来的样子");

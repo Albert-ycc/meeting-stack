@@ -513,6 +513,45 @@ describe("待办：挂到需求", () => {
     expect(apiClient.updateTask).toHaveBeenLastCalledWith("t-staff", { candidate_id: "cand-scan" });
   });
 
+  it("没归项目的任务挂上别的项目的需求、项目被连带改掉：撤销把项目一起退回「未归项目」", async () => {
+    const items = seedTasks();
+    Object.assign(items.find((task) => task.id === "t-huayi")!, { project_id: null, project_name: null });
+    const apiClient = makeClient(items, {
+      updateTask: vi.fn().mockResolvedValue({ project_id: "p-cvm" }),
+    } as Partial<ApiClient>);
+    renderPage(apiClient);
+
+    const picker = await openPicker("安排与华谊的会");
+    await userEvent.click(await within(picker).findByRole("option", { name: /EDC 对接/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "撤销" }));
+
+    expect(apiClient.updateTask).toHaveBeenLastCalledWith("t-huayi", {
+      requirement_id: null,
+      candidate_id: null,
+      project_id: null,
+    });
+  });
+
+  it("原来挂着候选（按同场会挂的）、改挂别的项目的需求：撤销在同一次请求里把候选和项目一起写回", async () => {
+    const items = seedTasks();
+    Object.assign(items.find((task) => task.id === "t-huayi")!, {
+      project_id: null,
+      project_name: null,
+      candidate_id: "cand-old",
+      candidate_title: "旧候选",
+    });
+    const apiClient = makeClient(items, {
+      updateTask: vi.fn().mockResolvedValue({ project_id: "p-cvm" }),
+    } as Partial<ApiClient>);
+    renderPage(apiClient);
+
+    const picker = await openPicker("安排与华谊的会");
+    await userEvent.click(await within(picker).findByRole("option", { name: /EDC 对接/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "撤销" }));
+
+    expect(apiClient.updateTask).toHaveBeenLastCalledWith("t-huayi", { candidate_id: "cand-old", project_id: null });
+  });
+
   it("整页同一时刻只开一个选择器", async () => {
     renderPage(makeClient());
     await openPicker("安排与华谊的会");

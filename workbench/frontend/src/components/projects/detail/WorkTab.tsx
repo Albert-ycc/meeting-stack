@@ -170,8 +170,7 @@ export function WorkTab({
 
   const linkTask = (task: Task, option: LinkOption | null) =>
     run(async () => {
-      const original = originalLink(task);
-      await apiClient.updateTask(task.id, linkBody(option));
+      const original = originalLink(task, await apiClient.updateTask(task.id, linkBody(option)));
       withUndo(option ? `已挂到「${option.title}」` : "已设为不挂需求", async () => {
         await apiClient.updateTask(task.id, original);
         showToast("已撤销，挂接回到原来的样子");
