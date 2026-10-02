@@ -16,7 +16,10 @@ from meeting_workbench import extract_worker
 from meeting_workbench.extract_worker import fit_answer, handle
 
 from .material_fixtures import (
+    CT,
+    ODF_NS,
     OLE_MAGIC,
+    W,
     _bof,
     _ppt_record,
     _short,
@@ -291,6 +294,101 @@ def test_broken_packages_are_corrupt_only_on_parse_failure(tmp_path):
     assert (
         read(write_zip(tmp_path / "其实是压缩包.txt", {"a.bin": b"x"}))["status"] == "unsupported"
     )
+
+
+def _docx_with_body(path: Path, body: bytes) -> Path:
+    document = f'<w:document xmlns:w="{W}"><w:body>'.encode() + body + b"</w:body></w:document>"
+    return write_zip(path, {"[Content_Types].xml": CT, "word/document.xml": document})
+
+
+def test_xml_part_memory_does_not_grow_with_element_count(tmp_path):
+    """24MB 的空元素压成几十 KB：曾整棵挂在根上，峰值约是部件大小的 20 倍（48MB 的上 GB）。"""
+    path = _docx_with_body(
+        tmp_path / "空元素.docx",
+        b"<x/>" * 6_000_000 + "<w:p><w:r><w:t>末段</w:t></w:r></w:p>".encode(),
+    )
+    answer = read_in_child(path, timeout=60)
+    assert answer["status"] == "ok" and answer["chars"] == 2
+    assert answer["peak_mb"] < 300
+
+
+def test_iterparse_drops_finished_elements_from_the_tree(tmp_path):
+    """读完的元素从父元素上摘掉：解析完根上不剩子元素，留着的只有正在读的段落。"""
+    body = b"<x/>" * 10_000 + b"<w:p><w:r><w:t>a</w:t></w:r><w:r><w:t>b</w:t></w:r></w:p>"
+    package = formats.Package(_docx_with_body(tmp_path / "a.docx", body), formats.Collector())
+    try:
+        seen = []
+        for _event, element in package.iterparse(
+            "word/document.xml", keep=lambda tag: formats._local(tag) == "p"
+        ):
+            if formats._local(element.tag) == "p":
+                seen.append("".join(element.itertext()))
+        root = element
+    finally:
+        package.close()
+    assert seen == ["ab"] and len(root) == 0
+
+
+def test_xml_huge_paragraph_or_deep_nesting_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(formats, "XML_HELD_LIMIT", 1_000)
+    body = b"<w:p><w:r><w:t>\xe5\x89\x8d</w:t></w:r></w:p><w:p>" + b"<x/>" * 2_000 + b"</w:p>"
+    answer = read(_docx_with_body(tmp_path / "大段.docx", body))
+    assert answer["status"] == "ok" and texts(answer) == ["前"] and answer["truncated"] is True
+    deep = b"<w:p>" + b"<w:r>" * 1_000 + b"<w:t>x</w:t>" + b"</w:r>" * 1_000 + b"</w:p>"
+    assert read(_docx_with_body(tmp_path / "深.docx", deep))["status"] == "corrupt"
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        {"[Content_Types].xml": CT, "xl/workbook.xml": "<workbook>{}</workbook>"},
+        {
+            "[Content_Types].xml": CT,
+            "ppt/presentation.xml": "<presentation/>",
+            "ppt/_rels/presentation.xml.rels": "<Relationships>{}</Relationships>",
+        },
+        {
+            "mimetype": "application/epub+zip",
+            "META-INF/container.xml": '<container><rootfile full-path="a.opf"/></container>',
+            "a.opf": "<package>{}</package>",
+        },
+    ],
+    ids=["workbook", "rels", "opf"],
+)
+def test_oversized_catalog_part_is_corrupt(tmp_path, members):
+    """关系表、workbook、opf 这类目录部件正常只有几 KB：超过上限算坏文件，不整棵读进内存。"""
+    filler = "<a/>" * (formats.CATALOG_LIMIT // 4 + 1)
+    members = {name: text.replace("{}", filler) for name, text in members.items()}
+    ext = "epub" if "a.opf" in members else "xlsx" if "xl/workbook.xml" in members else "pptx"
+    assert read(write_zip(tmp_path / f"大目录.{ext}", members))["status"] == "corrupt"
+
+
+def test_many_sheet_workbook_reads_corrupt_fast(tmp_path):
+    """审核样本：workbook.xml 是 48MB 的空元素，曾整棵建树吃到 1GB。"""
+    path = write_zip(
+        tmp_path / "大目录.xlsx",
+        {
+            "[Content_Types].xml": CT,
+            "xl/workbook.xml": b"<workbook>" + b"<a/>" * 12_000_000 + b"</workbook>",
+        },
+    )
+    answer = read_in_child(path, timeout=60)
+    assert answer["status"] == "corrupt" and answer["peak_mb"] < 300
+
+
+def test_odf_huge_space_count_is_capped(tmp_path):
+    """text:s 自报 10 亿个空格：曾真拼出 1GB 的字符串。"""
+    content = (
+        f"<office:document-content {ODF_NS}><office:body><office:text>"
+        '<text:p>前<text:s text:c="1000000000"/>后</text:p>'
+        "</office:text></office:body></office:document-content>"
+    )
+    path = write_zip(
+        tmp_path / "空格.odt",
+        {"mimetype": "application/vnd.oasis.opendocument.text", "content.xml": content},
+    )
+    answer = read_in_child(path)
+    assert answer["status"] == "ok" and answer["peak_mb"] < 300
 
 
 def test_unsupported_compression_method_is_unsupported_not_corrupt(tmp_path):

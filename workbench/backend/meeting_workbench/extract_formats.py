@@ -3,7 +3,8 @@
 每个读取函数往 Collector 里一块一块加文字（loc 是「第 3 页」「表『预算』」这类位置）。
 读不了抛 Unreadable(原因)；PermissionError、其余 OSError 原样抛出，由读取进程分成 permission、
 io_error。上限都在这里执行：读到 20 万字就停；压缩包成员声明超过 64MB 的不读、实际最多读 50MB；
-表格每格 200 字、每行 200 列、每个表 2 万行。
+关系表、workbook 这类目录部件超过 8MB 算坏文件；XML 读完一个元素丢一个，一段（一行）最多留
+20 万个元素、最多 256 层；表格每格 200 字、每行 200 列、每个表 2 万行。
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ MAX_CHARS = 200_000
 PLAIN_MAX_BYTES = 8 * 1024 * 1024
 MEMBER_DECLARED_LIMIT = 64 * 1024 * 1024
 MEMBER_READ_LIMIT = 50 * 1024 * 1024
+CATALOG_LIMIT = 8 * 1024 * 1024
+XML_HELD_LIMIT = 200_000
+XML_DEPTH_LIMIT = 256
 CELL_CHARS = 200
 ROW_COLUMNS = 200
 SHEET_ROWS = 20_000
@@ -456,19 +460,61 @@ class Package:
             return data
 
     def iterparse(
-        self, name: str, events: tuple[str, ...] = ("end",)
+        self,
+        name: str,
+        events: tuple[str, ...] = ("end",),
+        *,
+        keep: Callable[[str], bool] = lambda tag: False,
+        limit: int | None = None,
     ) -> Iterator[tuple[str, ET.Element]]:
+        """一个元素一个元素地读 XML 部件。元素读完、交给调用方之后就从父元素上摘掉，内存不随
+        部件里的元素个数涨；keep 按 tag 认的元素（段落、行）连同子树留到它自己读完，最多留
+        XML_HELD_LIMIT 个元素，超了当读完。limit 是目录部件的上限，超了算坏文件。"""
         info = self.names.get(name)
         if info is None:
             return
+        if limit is not None and info.file_size > limit:
+            raise Unreadable(CORRUPT, f"{name} 太大")
         if info.file_size > MEMBER_DECLARED_LIMIT:
             self.out.truncated = True
             return
         with self.archive.open(info) as handle:
             reader = _LimitedReader(handle, MEMBER_READ_LIMIT)
             stream = io.BufferedReader(reader)
+            path: list[ET.Element] = []  # 根到当前元素
+            marks: dict[str, bool] = {}  # tag → keep 认不认，同一个 tag 只问一次
+            held = 0  # path 上有几个 keep 认的元素
+            kept = 0  # 正留着的子树里有几个元素
+            want_start, want_end = "start" in events, "end" in events
             try:
-                yield from ET.iterparse(stream, events=events)
+                for event, element in ET.iterparse(stream, events=("start", "end")):
+                    mark = marks.get(element.tag)
+                    if mark is None:
+                        mark = keep(element.tag)
+                        if len(marks) < 1024:
+                            marks[element.tag] = mark
+                    if event == "start":
+                        if len(path) >= XML_DEPTH_LIMIT:
+                            raise Unreadable(CORRUPT, f"{name} 层数太多")
+                        path.append(element)
+                        held += mark
+                        if held:
+                            kept += 1
+                            if kept > XML_HELD_LIMIT:
+                                self.out.truncated = True
+                                return
+                        if want_start:
+                            yield event, element
+                        continue
+                    path.pop()
+                    if want_end:
+                        yield event, element
+                    held -= mark
+                    if not held:
+                        kept = 0
+                        if path:
+                            # 没留着的元素读完时，前面的兄弟都已摘掉，它就是父元素的最后一个子元素
+                            del path[-1][-1]
             except ET.ParseError:
                 if reader.hit:
                     self.out.truncated = True
@@ -480,15 +526,28 @@ def _local(tag: str) -> str:
     return tag.rpartition("}")[2]
 
 
+def _catalog(package: Package, name: str) -> Iterator[ET.Element]:
+    """目录部件（关系表、workbook、presentation、container、opf……）的元素，按读完的先后给出。
+    这类部件正常只有几 KB，超过 CATALOG_LIMIT 算坏文件。"""
+    for _event, element in package.iterparse(name, limit=CATALOG_LIMIT):
+        yield element
+
+
+def _blank(package: Package, name: str) -> bool:
+    info = package.names.get(name)
+    return info is None or info.file_size == 0
+
+
 def _rels(package: Package, part: str) -> dict[str, str]:
     """part 的关系：rId → 包里的路径。"""
     folder, _, name = part.rpartition("/")
     rels_name = f"{folder}/_rels/{name}.rels" if folder else f"_rels/{name}.rels"
-    data = package.read(rels_name)
-    if not data:
+    if _blank(package, rels_name):
         return {}
     result: dict[str, str] = {}
-    for element in ET.fromstring(data):
+    for element in _catalog(package, rels_name):
+        if _local(element.tag) != "Relationship":
+            continue
         target = element.get("Target") or ""
         if element.get("TargetMode") == "External":
             continue
@@ -503,7 +562,7 @@ def _rels(package: Package, part: str) -> dict[str, str]:
 
 def _word_paragraphs(package: Package, part: str) -> Iterator[str]:
     """docx 的一个部件里一段一段的文字：w:t 是字，w:tab 是制表符，w:br、w:cr 是换行。"""
-    for _event, element in package.iterparse(part):
+    for _event, element in package.iterparse(part, keep=lambda tag: _local(tag) == "p"):
         if _local(element.tag) != "p":
             continue
         pieces: list[str] = []
@@ -607,7 +666,9 @@ def read_xlsx(package: Package, out: Collector) -> None:
         raise Unreadable(CORRUPT, "缺主文件")
     shared: list[str] = []
     shared_chars = 0
-    for _event, element in package.iterparse("xl/sharedStrings.xml"):
+    for _event, element in package.iterparse(
+        "xl/sharedStrings.xml", keep=lambda tag: _local(tag) == "si"
+    ):
         if _local(element.tag) != "si":
             continue
         text = "".join(node.text or "" for node in element.iter() if _local(node.tag) == "t")
@@ -619,8 +680,7 @@ def read_xlsx(package: Package, out: Collector) -> None:
         element.clear()
     sheets: list[tuple[str, str]] = []
     rels = _rels(package, "xl/workbook.xml")
-    workbook = package.read("xl/workbook.xml") or b""
-    for element in ET.fromstring(workbook).iter():
+    for element in _catalog(package, "xl/workbook.xml"):
         if _local(element.tag) == "sheet":
             rid = next((value for key, value in element.attrib.items() if _local(key) == "id"), "")
             target = rels.get(rid)
@@ -629,7 +689,7 @@ def read_xlsx(package: Package, out: Collector) -> None:
     for name, target in sheets:
         sheet = SheetWriter(out, name)
         stop = False
-        for _event, element in package.iterparse(target):
+        for _event, element in package.iterparse(target, keep=lambda tag: _local(tag) == "row"):
             if stop:
                 element.clear()
                 continue
@@ -679,7 +739,8 @@ def read_pptx(package: Package, out: Collector) -> None:
         raise Unreadable(CORRUPT, "缺主文件")
     rels = _rels(package, "ppt/presentation.xml")
     order: list[str] = []
-    for element in ET.fromstring(package.read("ppt/presentation.xml") or b"<x/>").iter():
+    blank = _blank(package, "ppt/presentation.xml")
+    for element in () if blank else _catalog(package, "ppt/presentation.xml"):
         if _local(element.tag) == "sldId":
             rid = next(
                 (
@@ -711,11 +772,13 @@ def read_pptx(package: Package, out: Collector) -> None:
             out.add("\n".join(note_lines), f"{loc} 备注")
 
 
+def _is_drawing_paragraph(tag: str) -> bool:
+    return _local(tag) == "p" and tag.startswith("{http://schemas.openxmlformats.org/drawingml")
+
+
 def _drawing_paragraphs(package: Package, part: str) -> Iterator[str]:
-    for _event, element in package.iterparse(part):
-        if _local(element.tag) != "p" or not element.tag.startswith(
-            "{http://schemas.openxmlformats.org/drawingml"
-        ):
+    for _event, element in package.iterparse(part, keep=_is_drawing_paragraph):
+        if not _is_drawing_paragraph(element.tag):
             continue
         pieces = []
         for node in element.iter():
@@ -748,7 +811,8 @@ def _odf_text(element: ET.Element) -> str:
             elif name == "line-break":
                 pieces.append("\n")
             elif name == "s":
-                pieces.append(" " * int(child.get(f"{{{ODF_TEXT}}}c") or 1))
+                # 连续空格的个数是文件自报的，最多按 200 个算
+                pieces.append(" " * min(int(child.get(f"{{{ODF_TEXT}}}c") or 1), CELL_CHARS))
             walk(child)
             if child.tail:
                 pieces.append(child.tail)
@@ -766,7 +830,10 @@ def read_odf(package: Package, out: Collector) -> None:
     page = 0
     sheet: SheetWriter | None = None
     depth_table = 0
-    for event, element in package.iterparse("content.xml", events=("start", "end")):
+    held = {f"{{{ODF_TABLE}}}table-row", f"{{{ODF_TEXT}}}p", f"{{{ODF_TEXT}}}h"}
+    for event, element in package.iterparse(
+        "content.xml", events=("start", "end"), keep=lambda tag: tag in held
+    ):
         tag = element.tag
         if event == "start":
             if tag == f"{{{ODF_TABLE}}}table":
@@ -802,18 +869,14 @@ def read_odf(package: Package, out: Collector) -> None:
 
 
 def read_epub(package: Package, out: Collector) -> None:
-    encryption = package.read("META-INF/encryption.xml")
-    if encryption:
-        protected = [
-            element.get("URI") or ""
-            for element in ET.fromstring(encryption).iter()
-            if _local(element.tag) == "CipherReference"
-        ]
-        algorithms = [
-            element.get("Algorithm") or ""
-            for element in ET.fromstring(encryption).iter()
-            if _local(element.tag) == "EncryptionMethod"
-        ]
+    if not _blank(package, "META-INF/encryption.xml"):
+        protected: list[str] = []
+        algorithms: list[str] = []
+        for element in _catalog(package, "META-INF/encryption.xml"):
+            if _local(element.tag) == "CipherReference":
+                protected.append(element.get("URI") or "")
+            elif _local(element.tag) == "EncryptionMethod":
+                algorithms.append(element.get("Algorithm") or "")
         font_only = all(
             "embedding" in algorithm or "font" in algorithm.lower() for algorithm in algorithms
         )
@@ -822,28 +885,24 @@ def read_epub(package: Package, out: Collector) -> None:
             and not font_only
         ):
             raise Unreadable(PASSWORD, "EPUB 加密")
-    container = package.read("META-INF/container.xml")
-    if not container:
+    if _blank(package, "META-INF/container.xml"):
         raise Unreadable(CORRUPT, "缺主文件")
-    rootfile = next(
-        (
-            element.get("full-path")
-            for element in ET.fromstring(container).iter()
-            if _local(element.tag) == "rootfile"
-        ),
-        None,
-    )
-    opf = package.read(rootfile or "") if rootfile else None
-    if not opf:
+    rootfiles = [
+        element.get("full-path")
+        for element in _catalog(package, "META-INF/container.xml")
+        if _local(element.tag) == "rootfile"
+    ]
+    rootfile = rootfiles[0] if rootfiles else None
+    if not rootfile or _blank(package, rootfile):
         raise Unreadable(CORRUPT, "缺主文件")
-    folder = posixpath.dirname(rootfile or "")
-    tree = ET.fromstring(opf)
-    manifest = {
-        element.get("id"): element.get("href")
-        for element in tree.iter()
-        if _local(element.tag) == "item"
-    }
-    spine = [element.get("idref") for element in tree.iter() if _local(element.tag) == "itemref"]
+    folder = posixpath.dirname(rootfile)
+    manifest: dict[str | None, str | None] = {}
+    spine: list[str | None] = []
+    for element in _catalog(package, rootfile):
+        if _local(element.tag) == "item":
+            manifest[element.get("id")] = element.get("href")
+        elif _local(element.tag) == "itemref":
+            spine.append(element.get("idref"))
     for idref in spine:
         href = manifest.get(idref)
         if not href:
