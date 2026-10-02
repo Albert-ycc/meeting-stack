@@ -12,7 +12,7 @@ import { TaskEditModal } from "./TaskEditModal";
 import { ReviewCardsPanel } from "./todo/ReviewCardsPanel";
 import { RowMenu, type RowMenuItem } from "./todo/RowMenu";
 import { TodoGroups } from "./todo/TodoGroups";
-import type { ApiClient } from "../api";
+import { ApiError, type ApiClient } from "../api";
 import type {
   LinkOption,
   PoolProject,
@@ -142,12 +142,17 @@ export function TasksPage({
   // 从审核卡打开的修改弹窗只保存、不确认：确认留给卡上的［确认］，卡上选的需求不能被弹窗冲掉
   const [editFromCard, setEditFromCard] = useState(false);
   const [loadError, setLoadError] = useState("");
+  // 轮询、写操作后的重取失败：页面上已经是这组条件的数据，留着并提示，不整页换成报错
+  const [stale, setStale] = useState(false);
+  const [loadErrorStatus, setLoadErrorStatus] = useState(0);
   const [queryError, setQueryError] = useState("");
   const [creating, setCreating] = useState(false);
   const busyRef = useRef(false);
   // 正在跑的那次写操作（含它之后的重新取数）：提示条上的［撤销］要等它做完再跑，不能被互斥直接丢掉
   const runningRef = useRef<Promise<void> | null>(null);
   const loadSeqRef = useRef(0);
+  // 页面上正显示的数据是按哪组条件取的
+  const loadedKeyRef = useRef<string | null>(null);
 
   // 查询区：草稿态（输入中）与已应用态（点「查询」才生效）分开，和需求池同一套模式。
   // 所属项目不在这里：它是「我的方向」条上的点选，点一下立刻生效。
@@ -170,6 +175,16 @@ export function TasksPage({
   const load = useCallback(async () => {
     // 请求序号守卫：轮询与写操作尾随的 load 可能并发，慢的旧响应不许覆盖新响应。
     const seq = ++loadSeqRef.current;
+    const key = [
+      activeTab,
+      projectKey,
+      appliedRequirementId,
+      appliedAssignee,
+      appliedDateFrom,
+      appliedDateTo,
+      appliedName,
+      page,
+    ].join("\n");
     try {
       const filters: TodoFilters = {
         ...(projectKey ? { project_id: projectKey } : {}),
@@ -205,6 +220,8 @@ export function TasksPage({
       setListFresh(true);
       setState("ready");
       setLoadError("");
+      setStale(false);
+      loadedKeyRef.current = key;
       // 记着的项目已经删掉或合并掉：条上看不到它被选着，列表却被它筛了，去掉（「未归项目」不在条上，保留）
       const known = new Set(todoPayload.projects.map((project) => project.id));
       if (projectIds.some((id) => id !== NONE_PROJECT && !known.has(id))) {
@@ -212,8 +229,14 @@ export function TasksPage({
       }
     } catch (error) {
       if (seq !== loadSeqRef.current) return;
-      // 条件存在本机，刷新后还会失败：把后端给的原因带出来（比如日期格式不对的 400），并给［重置筛选］
+      if (loadedKeyRef.current === key) {
+        setStale(true);
+        return;
+      }
+      // 换了条件取不回来：把后端给的原因带出来（比如日期格式不对的 400）
       setLoadError(error instanceof Error ? error.message : "");
+      setLoadErrorStatus(error instanceof ApiError ? error.status : 0);
+      setStale(false);
       setState("error");
     }
     // projectIds 只用来剪枝，换条件由 projectKey 触发重取
@@ -753,21 +776,37 @@ export function TasksPage({
       {/* 固定在视口底部的浮层，不占文档流：出现、消失时列表不会跳，连点也不会点错行 */}
       {toastNode}
 
+      {stale && state === "ready" && (
+        <div className="tasks-stale" role="status">
+          <span>没能重新读取，下面显示的可能不是最新的</span>
+          <button onClick={() => void load()} type="button">
+            重新读取
+          </button>
+        </div>
+      )}
+
       <div className={`tasks-table-card ${isListTab(activeTab) ? "" : "tasks-table-card--floating"}`}>
         {state === "error" && (
           <>
             <AsyncState message={loadError ? `任务读取失败：${loadError}` : "任务读取失败"} state="error" />
             <p className="tasks-error-actions">
-              <button
-                className="text-button text-button--accent"
-                onClick={() => {
-                  resetQuery();
-                  void load();
-                }}
-                type="button"
-              >
-                重置筛选
-              </button>
+              {/* 400 多半是本机存着的条件坏了，刷新也还会失败，给［重置筛选］；别的错（网络、服务）重试就好，不动筛选 */}
+              {loadErrorStatus === 400 ? (
+                <button
+                  className="text-button text-button--accent"
+                  onClick={() => {
+                    resetQuery();
+                    void load();
+                  }}
+                  type="button"
+                >
+                  重置筛选
+                </button>
+              ) : (
+                <button className="text-button text-button--accent" onClick={() => void load()} type="button">
+                  重新读取
+                </button>
+              )}
             </p>
           </>
         )}

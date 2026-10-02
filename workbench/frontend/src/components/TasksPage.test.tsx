@@ -866,6 +866,55 @@ describe("审查补丁", () => {
     expect(screen.queryByText(/任务读取失败/)).not.toBeInTheDocument();
   });
 
+  it("轮询那次没取回来：已显示的待办留着，给一条「没能重新读取」带［重新读取］，不动筛选", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const items = seedTasks();
+      const ok = serverTodo(items);
+      let down = false;
+      const todo = vi.fn().mockImplementation(async (filters: TodoFilters) => {
+        if (down) throw new ApiError("网络抖了一下", 0, null);
+        return ok(filters);
+      });
+      renderPage(makeClient(items, { todo } as Partial<ApiClient>));
+      await screen.findByText("安排与华谊的会");
+
+      down = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_500);
+      });
+
+      expect(await screen.findByText("没能重新读取，下面显示的可能不是最新的")).toBeInTheDocument();
+      expect(screen.getByText("安排与华谊的会")).toBeInTheDocument();
+      expect(screen.queryByText(/任务读取失败/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "重置筛选" })).not.toBeInTheDocument();
+
+      down = false;
+      fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+      await waitFor(() => expect(screen.queryByText(/没能重新读取/)).not.toBeInTheDocument());
+      expect(screen.getByText("安排与华谊的会")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("头一次就没取回来、又不是条件的问题：只给［重新读取］，不给［重置筛选］", async () => {
+    const items = seedTasks();
+    const ok = serverTodo(items);
+    let down = true;
+    const todo = vi.fn().mockImplementation(async (filters: TodoFilters) => {
+      if (down) throw new ApiError("网络抖了一下", 0, null);
+      return ok(filters);
+    });
+    renderPage(makeClient(items, { todo } as Partial<ApiClient>));
+
+    expect(await screen.findByText("任务读取失败：网络抖了一下")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重置筛选" })).not.toBeInTheDocument();
+    down = false;
+    await userEvent.click(screen.getByRole("button", { name: "重新读取" }));
+    expect(await screen.findByText("安排与华谊的会")).toBeInTheDocument();
+  });
+
   it("未定截止展开后，切页签再回来仍是展开的", async () => {
     const items = seedTasks().filter((task) => groupOf(task.due_date) !== "undated");
     for (let index = 1; index <= 10; index += 1) items.push(makeTask(`u${index}`, "confirmed", `未定截止任务 ${index}`, { ...YIMI }));

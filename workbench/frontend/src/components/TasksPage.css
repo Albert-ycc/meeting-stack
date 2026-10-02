@@ -290,6 +290,29 @@
   font-size: 13px;
 }
 
+.tasks-stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  color: var(--ink-2);
+  font-size: 13px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r-stage);
+}
+
+.tasks-stale button {
+  flex: none;
+  padding: 0;
+  color: var(--signal-dark);
+  font: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
 .tasks-error-actions {
   margin: 0;
   padding: 0 0 20px;
@@ -594,5 +617,9 @@
   .tasks-tabs button {
     flex: none;
     white-space: nowrap;
+  }
+
+  .tasks-stale button {
+    min-height: 32px;
   }
 }
