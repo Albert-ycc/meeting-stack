@@ -441,16 +441,23 @@ def walk_materials(
     seen: set[str] = set()
     for root in roots:
         path = str(root["path"])
-        entry = {
-            "path": path,
-            "project_id": root.get("project_id"),
-            "project_name": root.get("project_name"),
-            "state": state_of(path),
-            "files": 0,
-            "bytes": 0,
-        }
-        walker.roots.append(entry)
-        real = os.path.realpath(path)
+        walker.roots.append(
+            {
+                "path": path,
+                "project_id": root.get("project_id"),
+                "project_name": root.get("project_name"),
+                "state": state_of(path),
+                "files": 0,
+                "bytes": 0,
+            }
+        )
+    # 外层先走：嵌套判断只看「我在不在已走过的根目录里」，内层排在前面时同一批文件会算两遍
+    by_depth = sorted(
+        ((os.path.realpath(entry["path"]), entry) for entry in walker.roots),
+        key=lambda item: len(item[0]),
+    )
+    for real, entry in by_depth:
+        path = entry["path"]
         # 嵌套挂载（A 挂了 /x，B 挂了 /x/y）只走外层一次，内层标出来
         nested_in = next(
             (other for other in seen if real == other or real.startswith(other + os.sep)), None

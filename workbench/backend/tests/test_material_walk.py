@@ -157,6 +157,19 @@ def test_offline_and_nested_roots_are_listed_but_not_walked(tmp_path):
     assert "已经一起算了" in text
 
 
+def test_inner_root_listed_first_is_not_counted_twice(tmp_path):
+    """跨项目嵌套时内层完全可能排在前面（按项目名排序）：外层照样只走一次，内层标 nested。"""
+    root = tmp_path / "云图AI"
+    write(root / "合同" / "报价.pdf", b"%PDF-1.4 /Font")
+    write(root / "说明.txt", "x")
+
+    report = walk_materials([{"path": str(root / "合同")}, {"path": str(root)}], probe_media=False)
+
+    assert report["files"] == 2
+    assert [item["state"] for item in report["roots"]] == ["nested", "online"]
+    assert report["roots"][0]["nested_in"] == os.path.realpath(root)
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root 不受文件权限限制")
 def test_files_without_permission_are_counted(tmp_path):
     root = tmp_path / "材料"
