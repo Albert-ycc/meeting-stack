@@ -2,7 +2,9 @@
 """无需安装即可使用的 relayctl 入口。"""
 
 from relay_control import main
+from relay_env import load_env_files
 
 
 if __name__ == "__main__":
+    load_env_files()
     raise SystemExit(main())

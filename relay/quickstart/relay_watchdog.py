@@ -51,6 +51,17 @@ for _p in ("/opt/homebrew/bin", "/usr/local/bin"):
 # 仓库根：本文件位于 <repo>/relay/quickstart/
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# 作为守护起来时才读工作台那套 .env（用例等 import 本模块的不读），并且要赶在下面按环境变量取值的
+# 配置之前；已在环境变量里的值优先。补进来的键名等日志配好后再打。
+_DOTENV_APPLIED: list[str] = []
+if __name__ == "__main__":
+    try:
+        from quickstart.relay_env import load_env_files
+    except ImportError:
+        from relay_env import load_env_files
+
+    _DOTENV_APPLIED = load_env_files()
+
 
 def _env_path(name: str, default: Path) -> Path:
     """读环境变量里的路径，支持 ~ 展开；未设置则用默认值。"""
@@ -2520,6 +2531,8 @@ if __name__ == "__main__":
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     log.info("Relay watchdog v2（FunASR + Whisper 双跑 · 归档规范固化 · 同场会合并） 启动")
+    if _DOTENV_APPLIED:
+        log.info("已从 .env 载入 %d 个配置（只列键名）：%s", len(_DOTENV_APPLIED), "、".join(_DOTENV_APPLIED))
     configured_agent = os.getenv("MEETING_RELAY_AGENT", DEFAULT_AGENT).strip().lower()
     if configured_agent not in {"claude", "codex"}:
         log.warning(

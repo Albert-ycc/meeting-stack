@@ -41,12 +41,22 @@ python3 -m venv ~/.venvs/relay            # Homebrew 的 Python 不让 pip 装�
 ```
 
 没装时 `relay_watchdog.py` 启动即停在 `ModuleNotFoundError: No module named 'watchdog'`。
-下面「运行」里的 `python3` 都指装了 watchdog 的那个 Python。
+下面「运行」里启动 watchdog 的命令用的是上面这个 venv，换了别的 Python 就改成那个。
 
 ## 配置
 
-全部通过环境变量，**不读 `.env`**（`.env` 只有工作台自己读）。用仓库根的 `.env` 时，启动前先把它导成
-环境变量，写法见下面的「运行」；常驻部署就写进 launchd / ssh 的启动命令里。
+配置走环境变量。`relay_watchdog.py` 和 `relayctl` 作为命令启动时，还会读工作台那套 `.env`（仓库根一份、
+`workbench/` 下一份，两份都有时 `workbench/` 的优先，找法和工作台一致，与从哪个目录启动无关），把里面
+relay 自己用的键（`MEETING_RELAY_*`、`RELAY_*`、`TRANSCRIBE_ENGINE`）补进环境变量。
+
+- **已经在环境变量里的值优先，`.env` 不覆盖**：launchd / ssh 启动命令里显式写的值、工作台起 `relayctl`
+  时传的值都照旧生效。
+- `.env` 里工作台的键（`MEETING_WORKBENCH_*`）和别的变量 relay 不读；`MEETING_RELAY_PROJECT_HINT` 是工作台
+  按场次传的，不会从 `.env` 取。
+- 写法只认 `KEY=VALUE`、`#` 注释、`export` 前缀、单双引号；不加引号且以 `~` 开头的值会展开成家目录；
+  不展开 `$变量`；值留空等于没写。
+- 只在作为命令启动时读；被别的程序 import 时不读。转写脚本由 watchdog 拉起，继承到的环境里已经带着
+  `.env` 的值；手工单独跑 `transcribe.sh` 不读 `.env`。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
@@ -135,20 +145,20 @@ quickstart/relayctl retry <job_id> --stage minutes_generating --project-hint <�
 
 ## 运行
 
-在仓库根执行（relay 不读 `.env`，先导成环境变量；`.env` 里的值有空格要加引号）：
+`.env` 由 relay 自己读（值里有空格要加引号），不用再 `source`：
 
 ```bash
 # 监听守护（前台）；.env 里要有 MEETING_RELAY_CONTROL_ENABLED=1
-(set -a; source ./.env; set +a; exec ~/.venvs/relay/bin/python relay/quickstart/relay_watchdog.py)
+~/.venvs/relay/bin/python relay/quickstart/relay_watchdog.py
 
-# 不用 .env 时直接在命令前写环境变量
+# 不用 .env 时直接在命令前写环境变量，同名的值以命令前写的为准
 MEETING_RELAY_CONTROL_ENABLED=1 MEETING_RELAY_ARCHIVE_ROOT=~/MeetingArchive \
   ~/.venvs/relay/bin/python relay/quickstart/relay_watchdog.py
 
 # 可选：Voice Memos 桥接（macOS + iPhone）
 python3 relay/quickstart/voicememos_bridge.py
 
-# 手动入队（relayctl 也只认环境变量，任务库等位置要和 watchdog 一致）
+# 手动入队（relayctl 同样读 .env，任务库等位置自然和 watchdog 一致）
 relay/quickstart/relayctl enqueue "/绝对路径/会议.m4a" --json
 
 # 查看健康状态（退出码 0/1/2 = 健康/降级/不可用）

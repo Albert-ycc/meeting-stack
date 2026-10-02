@@ -7523,4 +7523,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    try:
+        from quickstart.relay_env import load_env_files
+    except ImportError:
+        from relay_env import load_env_files
+
+    load_env_files()
     raise SystemExit(main())

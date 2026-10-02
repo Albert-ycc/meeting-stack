@@ -66,10 +66,12 @@ cp .env.example .env
 
 - **工作台**自己读。仓库根的 `.env` 和 `workbench/.env` 都会读，两处都写了的项以 `workbench/.env` 为准，
   与从哪个目录启动无关。
-- **relay**（`relay_watchdog.py`、`relayctl`）、转写脚本、卡片监听**不读** `.env`，只认进程的环境变量。
-  要在启动命令里注入（见下一节），或写进 launchd / ssh 启动命令里。
+- **relay**（`relay_watchdog.py`、`relayctl`）作为命令启动时也读，找法一样，并且只取 relay 自己用的键
+  （`MEETING_RELAY_*`、`RELAY_*`、`TRANSCRIBE_ENGINE`）。**已经在环境变量里的值优先**，`.env` 不覆盖，
+  所以 launchd / ssh 启动命令里显式写的值照旧生效。转写脚本由 watchdog 拉起，拿到的环境里已经带着这些值。
+- 卡片监听**不读** `.env`，只认进程的环境变量，写进它自己的启动命令里。
 
-`.env.example` 里的 `MEETING_RELAY_CONTROL_ENABLED=1` 必须保留并注入给 relay。不设时 watchdog 走旧同步路径：
+`.env.example` 里的 `MEETING_RELAY_CONTROL_ENABLED=1` 必须保留，relay 启动时会读到它。不设时 watchdog 走旧同步路径：
 工作台入队的任务没人领；监听目录里短于 10 分钟的音频会被当成口述指令，转写后直接派给 Agent 执行。
 所以监听目录（`MEETING_RELAY_WATCH_DIR`，默认 `~/Downloads`）别用会落进不可信文件的目录，
 专门建一个只放录音的目录最稳妥。
@@ -95,8 +97,7 @@ python3 -m venv ~/.venvs/relay
 监听目录里的新录音不会入队。已经常驻在跑的守护用的是哪个 Python，看
 `ps -axo command | grep relay_watchdog` 的第一段，拿它再跑一遍上面的验证命令。
 
-下面和 relay 文档里的 `python3` 都指这个装了 watchdog 的 Python；用上面的 venv 就写
-`~/.venvs/relay/bin/python`。
+下面启动 watchdog 的命令用的是上面这个 venv，换了别的 Python 就改成那个。
 
 ### 启动
 
@@ -104,8 +105,8 @@ python3 -m venv ~/.venvs/relay
 # 工作台（三个 tmux session：Web、每日备份、每周完整性核验）
 ./workbench/scripts/remote-bootstrap.sh
 
-# 录音监听：relay 不读 .env，先把它导成环境变量再起（在仓库根执行；.env 里的值有空格要加引号）
-(set -a; source ./.env; set +a; exec ~/.venvs/relay/bin/python relay/quickstart/relay_watchdog.py)
+# 录音监听：relay 自己读 .env（值里有空格要加引号），不用再 source
+~/.venvs/relay/bin/python relay/quickstart/relay_watchdog.py
 
 # 可选：Voice Memos 桥接（仅 macOS + iPhone，只用标准库，不用装包）
 python3 relay/quickstart/voicememos_bridge.py
