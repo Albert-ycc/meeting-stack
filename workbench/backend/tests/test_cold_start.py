@@ -121,6 +121,32 @@ def test_llm_failure_leaves_the_meeting_for_the_next_round(tmp_path, monkeypatch
     assert stats["done"] is False
 
 
+def test_meetings_that_always_fail_do_not_starve_the_rest(tmp_path, monkeypatch):
+    db, settings = make_db(tmp_path)
+    project_id = make_project(db, "云图科研用药")
+    broken = {f"vm-{index}" for index in range(cold_start.REEVAL_PER_ROUND)}
+    for index in range(cold_start.REEVAL_PER_ROUND + 1):
+        seed_meeting(db, f"vm-{index}", "云图科研用药周会")
+        _weak(db, f"vm-{index}", project_id)
+    llm_answers(monkeypatch, HIGH.format(name="云图科研用药"))
+    linker = ProjectLinker(db, settings)
+    classify = linker._classify
+
+    def fails_for_broken(**kwargs):
+        # 排在最前面的一整轮都固定抛错：以前它们永远占着每轮的名额，后面的轮不到。
+        if kwargs["meeting_id"] in broken:
+            raise RuntimeError("坏数据")
+        return classify(**kwargs)
+
+    monkeypatch.setattr(linker, "_classify", fails_for_broken)
+
+    for _ in range(2):
+        cold_start.run(db, settings, linker)
+
+    last = _link(db, f"vm-{cold_start.REEVAL_PER_ROUND}")
+    assert last["method"] == "llm_high"
+
+
 def test_trusted_and_manual_attributions_are_not_reevaluated(tmp_path, monkeypatch):
     db, settings = make_db(tmp_path)
     project_id = make_project(db, "云图科研用药")

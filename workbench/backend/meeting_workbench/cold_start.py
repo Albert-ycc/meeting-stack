@@ -84,11 +84,12 @@ _WEAK_SQL = """FROM meetings m
 
 
 def reevaluate_weak(db: Database, linker: ProjectLinker, *, limit: int) -> dict[str, int]:
+    # 先做试得少的：失败一次 attempts 就加 1、排到后面去，固定抛错的几场不能永远占着每轮的名额。
     rows = db.query_all(
         f"""SELECT m.id AS meeting_id, m.title, m.project_id, m.current_minutes_version_id,
                    pl.id AS link_id, pl.method, pl.attempts
               {_WEAK_SQL}
-             ORDER BY pl.id LIMIT ?""",
+             ORDER BY COALESCE(pl.attempts, 0), pl.id LIMIT ?""",
         (limit,),
     )
     processed = 0
