@@ -36,6 +36,8 @@ MAX_HOTWORD_TERMS = 20
 CURRENT_MINUTES_PROTOCOL_VERSION = 3
 # 派纪要 Agent 时 pane 被占用、放回队列等待的次数上限；超过就按失败收口，不无声地等下去
 MAX_DISPATCH_DEFERRALS = 10
+# 源音频迟迟不稳定（慢速拷贝、iCloud 拉大文件）时放回队尾再等的次数上限；每次等 15 分钟
+MAX_STABILIZE_DEFERRALS = 4
 _MINUTES_STRATEGIES = {"single_pass", "topic_hierarchical", "multi_stage"}
 _MINUTES_ITEM_KINDS = {
     "fact",
@@ -4065,7 +4067,7 @@ class RelayControl:
                 """
                 SELECT * FROM jobs
                 WHERE status = 'queued' AND stop_after_stage = 0
-                ORDER BY created_at, job_id
+                ORDER BY (retry_stage IS 'stabilizing'), created_at, job_id
                 LIMIT 1
                 """
             ).fetchone()
@@ -4167,6 +4169,45 @@ class RelayControl:
         返回 ``{"outcome": "deferred" | "interrupted" | "exhausted", "deferrals": n}``；
         exhausted 时不改状态，由调用方按失败收口。
         """
+        return self._requeue_claim(
+            job_id,
+            expected_attempt=expected_attempt,
+            expected_worker=expected_worker,
+            allowed_statuses={"transcript_ready", "minutes_generating"},
+            retry_stage=None,
+            event_type="dispatch_deferred",
+            limit=MAX_DISPATCH_DEFERRALS,
+        )
+
+    def defer_unstable_source(
+        self,
+        job_id: str,
+        *,
+        expected_attempt: int,
+        expected_worker: str,
+    ) -> dict[str, Any]:
+        """源音频还在增长：同一 attempt 放回队列（排到别的任务后面），下次领到再等它稳定。"""
+        return self._requeue_claim(
+            job_id,
+            expected_attempt=expected_attempt,
+            expected_worker=expected_worker,
+            allowed_statuses={"stabilizing", "transcribing"},
+            retry_stage="stabilizing",
+            event_type="source_unstable_deferred",
+            limit=MAX_STABILIZE_DEFERRALS,
+        )
+
+    def _requeue_claim(
+        self,
+        job_id: str,
+        *,
+        expected_attempt: int,
+        expected_worker: str,
+        allowed_statuses: set[str],
+        retry_stage: str | None,
+        event_type: str,
+        limit: int,
+    ) -> dict[str, Any]:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._job_row(connection, job_id)
@@ -4177,22 +4218,19 @@ class RelayControl:
                 action="等待派单",
             )
             old_status = row["status"]
-            if (
-                old_status not in {"transcript_ready", "minutes_generating"}
-                or row["codex_dispatched_at"]
-            ):
+            if old_status not in allowed_statuses or row["codex_dispatched_at"]:
                 raise InvalidTransitionError(
-                    f"只有未派出的 transcript_ready/minutes_generating 可以等待派单，当前为 {old_status}"
+                    f"{old_status} 不能放回队列等待（{event_type}）"
                 )
             previous = connection.execute(
                 """
                 SELECT COUNT(*) FROM events
-                WHERE job_id = ? AND attempt_no = ? AND event_type = 'dispatch_deferred'
+                WHERE job_id = ? AND attempt_no = ? AND event_type = ?
                 """,
-                (job_id, row["current_attempt"]),
+                (job_id, row["current_attempt"], event_type),
             ).fetchone()[0]
             deferrals = int(previous) + 1
-            if deferrals > MAX_DISPATCH_DEFERRALS:
+            if deferrals > limit:
                 return {"outcome": "exhausted", "deferrals": int(previous)}
             # 放回队列后 claim_next 不领 stop_after_stage 的任务；用户已要求停就直接收成 interrupted
             target = "interrupted" if row["stop_after_stage"] else "queued"
@@ -4207,7 +4245,7 @@ class RelayControl:
                 """,
                 (
                     target,
-                    old_status,
+                    retry_stage or old_status,
                     now,
                     job_id,
                     row["current_attempt"],
@@ -4216,7 +4254,7 @@ class RelayControl:
                 ),
             )
             if updated.rowcount != 1:
-                raise InvalidTransitionError("等待派单 CAS 失败")
+                raise InvalidTransitionError("放回队列 CAS 失败")
             attempt_updated = connection.execute(
                 """
                 UPDATE attempts SET status = ?
@@ -4225,12 +4263,12 @@ class RelayControl:
                 (target, job_id, row["current_attempt"], old_status),
             )
             if attempt_updated.rowcount != 1:
-                raise InvalidTransitionError("等待派单 attempt CAS 失败")
+                raise InvalidTransitionError("放回队列 attempt CAS 失败")
             self._append_event(
                 connection,
                 job_id,
                 row["current_attempt"],
-                "dispatch_deferred" if target == "queued" else "stopped_after_stage",
+                event_type if target == "queued" else "stopped_after_stage",
                 old_status,
                 target,
                 stage=old_status,
@@ -6919,6 +6957,20 @@ def defer_dispatch(
     expected_worker: str,
 ) -> dict[str, Any]:
     return _service(db_path).defer_dispatch(
+        job_id,
+        expected_attempt=expected_attempt,
+        expected_worker=expected_worker,
+    )
+
+
+def defer_unstable_source(
+    job_id: str,
+    db_path: str | Path | None = None,
+    *,
+    expected_attempt: int,
+    expected_worker: str,
+) -> dict[str, Any]:
+    return _service(db_path).defer_unstable_source(
         job_id,
         expected_attempt=expected_attempt,
         expected_worker=expected_worker,

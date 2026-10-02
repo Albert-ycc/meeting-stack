@@ -517,6 +517,21 @@ def _control_defer_dispatch(
     )
 
 
+def _control_defer_unstable_source(
+    job_id: str,
+    *,
+    expected_attempt: int,
+    expected_worker: str,
+) -> dict:
+    return _retry_on_db_lock(
+        lambda: _relay_control_module().defer_unstable_source(
+            job_id,
+            expected_attempt=expected_attempt,
+            expected_worker=expected_worker,
+        )
+    )
+
+
 def _control_finish_whisper_retry(
     job_id: str,
     *,
@@ -1929,6 +1944,23 @@ def process_controlled_claim(claim: dict) -> bool:
 
         if needs_transcription:
             if not run_blocking(lambda: wait_stable(runtime_audio), stage=current_stage):
+                # 文件还在增长（慢速拷贝、AirDrop、iCloud 拉大文件）不是失败：放回队尾，
+                # 先让别的会议跑，下次领到再等；等满上限才按失败收口
+                deferred = _control_defer_unstable_source(
+                    job_id,
+                    expected_attempt=attempt_no,
+                    expected_worker=worker_id,
+                )
+                if deferred["outcome"] == "interrupted":
+                    notify_workbench_status(job_id, "interrupted")
+                    return True
+                if deferred["outcome"] == "deferred":
+                    log.warning(
+                        "任务 %s：源音频 15 分钟内仍在增长，放回队列稍后再等（第 %d 次）",
+                        job_id,
+                        deferred["deferrals"],
+                    )
+                    return True
                 _control_fail(
                     job_id,
                     "stabilizing",

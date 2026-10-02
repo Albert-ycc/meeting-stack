@@ -777,7 +777,13 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         module = load_watchdog_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             audio, _ = self._make_audio_and_transcript(Path(tmpdir))
+            # 放回队列的次数已用满：这一次按失败收口
             with patch.object(module, "wait_stable", return_value=False), \
+                    patch.object(
+                        module,
+                        "_control_defer_unstable_source",
+                        return_value={"outcome": "exhausted", "deferrals": 4},
+                    ), \
                     patch.object(module, "_control_fail") as fail, \
                     patch.object(module, "notify_lark"), \
                     patch.object(module, "mark_processed"):
@@ -2005,6 +2011,43 @@ class ControlDbLockTests(unittest.TestCase):
         self.assertEqual("failed", status["status"])
         self.assertEqual("minutes_plan_too_little_speech", status["last_error"])
         self.assertEqual(["录音里几乎没有可用内容"], self.notifications)
+
+
+    def test_still_growing_source_goes_to_back_of_queue_instead_of_failing(self):
+        growing = self.control.enqueue(self.audio, compute_hash=False)
+        claim = self.module._control_claim_next()
+        self.assertEqual(growing, claim["job_id"])
+        later = self.control.enqueue(self.second, compute_hash=False)
+
+        result = self._process(
+            claim,
+            wait_stable=patch.object(self.module, "wait_stable", return_value=False),
+        )
+
+        self.assertTrue(result)
+        status = self.control.status(growing)
+        self.assertEqual("queued", status["status"])
+        self.assertEqual(1, status["current_attempt"])
+        self.assertEqual([], self.notifications)
+        # 先让后来的会议跑，增长中的那单排到后面
+        self.assertEqual(later, self.module._control_claim_next()["job_id"])
+
+    def test_source_unstable_too_long_fails_after_limit(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        unstable = patch.object(self.module, "wait_stable", return_value=False)
+        with patch.object(self.control, "MAX_STABILIZE_DEFERRALS", 1):
+            self._process(self.module._control_claim_next(), wait_stable=unstable)
+            again = self.module._control_claim_next()
+            self.assertEqual("stabilizing", again["start_stage"])
+            result = self._process(
+                again,
+                wait_stable=patch.object(self.module, "wait_stable", return_value=False),
+            )
+
+        self.assertFalse(result)
+        status = self.control.status(job_id)
+        self.assertEqual("failed", status["status"])
+        self.assertEqual("audio did not stabilize", status["last_error"])
 
 
 class InboxRescanTests(unittest.TestCase):
