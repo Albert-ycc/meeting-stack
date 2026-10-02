@@ -493,6 +493,40 @@ def test_chunk_deleted_while_encoding_gets_no_vector(world):
     assert stored == [second]
 
 
+def test_vectors_fill_in_chunk_id_order_even_when_a_batch_fails(world):
+    # 相关的增量和内存矩阵都只往后读（id 大于标记）：有向量的片段必须始终是按 id 的前缀，
+    # 失败的那批下一轮先补，不会被后面的片段越过去
+    db = world.db
+    add_content(db, "k-a", [f"第 {index} 段" for index in range(130)])
+    ids = chunk_ids(db, "k-a")
+    fail = {"left": 1}
+    encoder = FakeEncoder()
+    real_encode = encoder.encode_texts
+
+    def flaky(texts, *, background=False):
+        if len(encoder.calls) == 1 and fail["left"]:
+            fail["left"] = 0
+            encoder.calls.append(len(texts))
+            raise RuntimeError("编码失败")
+        return real_encode(texts, background=background)
+
+    encoder.encode_texts = flaky
+    vectors = MaterialVectors(db, vector_settings(), encoder)
+
+    def stored():
+        return [
+            row["chunk_id"]
+            for row in db.query_all("SELECT chunk_id FROM material_chunk_vectors ORDER BY chunk_id")
+        ]
+
+    with pytest.raises(RuntimeError):
+        vectors.embed_round()
+    assert stored() == ids[:64]
+    add_content(db, "k-b", ["后来的一段"])
+    assert vectors.embed_round() == {"embedded": 67, "ended": "done"}
+    assert stored() == ids + chunk_ids(db, "k-b")
+
+
 # ---------------------------------------------------------------------- 内存矩阵
 
 
