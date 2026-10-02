@@ -263,6 +263,20 @@ describe("GlossaryTermEditor", () => {
     expect(screen.getByText("已经有这一条了")).toBeTruthy();
   });
 
+  it("编辑时没改动，名称框里回车不再保存一遍", async () => {
+    const apiClient = client();
+    renderEditor(apiClient, { term: projectTerm });
+    fireEvent.keyDown(screen.getByLabelText("正确写法"), { key: "Enter" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(apiClient.updateGlossaryTerm).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("正确写法"), { target: { value: "生长激素片" } });
+    fireEvent.keyDown(screen.getByLabelText("正确写法"), { key: "Enter" });
+    await waitFor(() =>
+      expect(apiClient.updateGlossaryTerm).toHaveBeenCalledWith("term-1", expect.objectContaining({ term: "生长激素片" })),
+    );
+  });
+
   it("Esc 放弃修改：编辑时恢复原样，新增时通知页面取消；保存中不响应", async () => {
     let resolveSave: (value: unknown) => void = () => undefined;
     const apiClient = client({

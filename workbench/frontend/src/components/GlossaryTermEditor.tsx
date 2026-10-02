@@ -348,7 +348,8 @@ function TermEditorForm({
   };
 
   const handleSubmit = () => {
-    if (!canSave || conflict) return;
+    // 名称框里的回车也走这里：和保存按钮同一个条件，没改动时不原样再写一遍
+    if (!canSave || conflict || (isEdit && !dirty)) return;
     void withSaving(async () => {
       let saved: GlossaryTerm;
       try {
