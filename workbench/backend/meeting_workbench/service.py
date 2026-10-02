@@ -84,6 +84,24 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _stat_fingerprint(path: Path) -> tuple[int, int, int, int]:
+    # 写事务里只比廉价指纹：换文件会换 inode，任何写入或改 mtime 都会动 ctime（relay 发布回执同一套）
+    status = path.lstat()
+    return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+
+
+@dataclass(frozen=True, slots=True)
+class PublishFingerprints:
+    """发布时事务外完整校验那一刻的廉价指纹，供写事务里比对（事务内不再读文件正文）。
+
+    tree：要装上去的目录里每个文件（相对路径）的指纹，目录换位置后同一个文件指纹不变。
+    source_audio：来源原音频的指纹；它在要被换掉的目录之外（草稿升格）才有，在目录里面的
+    那份就是 tree 里的音频。"""
+
+    tree: dict[str, tuple[int, int, int, int]]
+    source_audio: tuple[int, int, int, int] | None
+
+
 def format_srt_time(milliseconds: int) -> str:
     milliseconds = max(0, milliseconds)
     hours, remainder = divmod(milliseconds, 3_600_000)
@@ -756,6 +774,11 @@ class MeetingService:
             ),
         )
         audio_path = Path(audio_row["path"]) if audio_row else None
+        source_audio_fingerprint = (
+            _stat_fingerprint(audio_path)
+            if audio_path and not audio_path.resolve().is_relative_to(archive_dir.resolve())
+            else None
+        )
         before_hash = sha256_file(audio_path) if audio_path else None
         if expected_hash and before_hash is not None and before_hash != expected_hash:
             raise ConflictError("原音频哈希已变化，禁止发布")
@@ -838,6 +861,15 @@ class MeetingService:
                 }
             else:
                 original_audio = None
+            # 完整哈希（带原音频的目录要读一遍）放在写事务外；前后各取一次廉价指纹，
+            # 事务里只比对这份指纹，不再读文件正文
+            fingerprints_before = self._tree_fingerprints(work_dir)
+            prepared_artifacts = self._manifest_artifacts(work_dir)
+            if self._tree_fingerprints(work_dir) != fingerprints_before:
+                raise ConflictError("发布准备期间文件发生变化，请重新发布")
+            prepared_fingerprints = PublishFingerprints(
+                tree=fingerprints_before, source_audio=source_audio_fingerprint
+            )
             manifest = {
                 "schema_version": 1,
                 "meeting_id": meeting_id,
@@ -849,7 +881,7 @@ class MeetingService:
                 "transcript_version_id": version_id,
                 "minutes_version_id": minutes_id,
                 "original_audio": original_audio,
-                "artifacts": self._manifest_artifacts(work_dir),
+                "artifacts": prepared_artifacts,
             }
             if minutes_only_metadata:
                 manifest.update(minutes_only_metadata)
@@ -859,7 +891,9 @@ class MeetingService:
                 work_manifest, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
             )
             prepared_manifest_sha256 = sha256_file(work_manifest)
-            prepared_artifacts = manifest["artifacts"]
+            # 登记 artifacts 时直接用已校验的哈希，不在事务里再读一遍
+            known_hashes = {entry["path"]: entry["sha256"] for entry in prepared_artifacts}
+            known_hashes[work_manifest.name] = prepared_manifest_sha256
             journal_path = self._write_publish_journal(
                 publish_token=publish_token,
                 meeting_id=meeting_id,
@@ -891,7 +925,7 @@ class MeetingService:
                     minutes_snapshot,
                     segments_snapshot,
                 )
-                if self._manifest_artifacts(work_dir) != prepared_artifacts:
+                if self._tree_fingerprints(work_dir) != prepared_fingerprints.tree:
                     raise ConflictError("发布准备期间文件发生变化，请重新发布")
                 if installing_new_directory:
                     os.replace(work_dir, archive_dir)
@@ -924,6 +958,7 @@ class MeetingService:
                     manifest_path,
                     archive_dir,
                     include_all=copying_managed_sources or bool(attempt_provenance),
+                    known_hashes=known_hashes,
                 )
                 self._assert_published_files_current(
                     archive_dir,
@@ -931,6 +966,7 @@ class MeetingService:
                     prepared_manifest_sha256,
                     audio_path,
                     before_hash,
+                    fingerprints=prepared_fingerprints,
                 )
                 connection.execute(
                     """INSERT INTO events
@@ -986,6 +1022,7 @@ class MeetingService:
                     prepared_manifest_sha256,
                     audio_path,
                     before_hash,
+                    fingerprints=prepared_fingerprints,
                 )
         except Exception:
             if swapped:
@@ -1660,7 +1697,13 @@ class MeetingService:
         expected_manifest_sha256: str,
         source_audio: Path | None,
         expected_audio_sha256: str | None,
+        *,
+        fingerprints: PublishFingerprints | None = None,
     ) -> None:
+        """目录切换之后核对发布出去的文件还是校验过的那一份。
+
+        给了 fingerprints 就只比廉价指纹（写事务里用，不读音频等大文件的正文）；不给就逐个重算
+        哈希（事务提交后、启动恢复时用）。manifest 很小，两种都重算哈希。"""
         manifest = archive_dir / "workbench-manifest.json"
         if (
             manifest.is_symlink()
@@ -1671,6 +1714,20 @@ class MeetingService:
         for path in archive_dir.rglob("*"):
             if path.is_symlink():
                 raise ConflictError("发布目录在目录切换后出现符号链接")
+        if fingerprints is not None:
+            if MeetingService._tree_fingerprints(archive_dir) != fingerprints.tree:
+                raise ConflictError("发布产物在目录切换后发生变化")
+            if (
+                source_audio
+                and fingerprints.source_audio is not None
+                and (
+                    source_audio.is_symlink()
+                    or not source_audio.is_file()
+                    or _stat_fingerprint(source_audio) != fingerprints.source_audio
+                )
+            ):
+                raise ConflictError("发布过程中原音频发生变化")
+            return
         if MeetingService._manifest_artifacts(archive_dir) != expected_artifacts:
             raise ConflictError("发布产物在目录切换后发生变化")
         if source_audio and expected_audio_sha256:
@@ -1852,8 +1909,10 @@ class MeetingService:
             atomic_copy_verified(source, destination / target_name, expected_sha256)
 
     @staticmethod
-    def _manifest_artifacts(root: Path) -> list[dict[str, Any]]:
-        entries = []
+    def _manifest_files(root: Path) -> list[Path]:
+        """清单里要列的文件：普通文件，不含符号链接、manifest 自己、.workbench-history、
+        AppleDouble 和 .DS_Store。哈希清单和指纹用同一份，两边对的是同一批文件。"""
+        files = []
         for path in sorted(root.rglob("*")):
             if not path.is_file() or path.is_symlink() or path.name == "workbench-manifest.json":
                 continue
@@ -1863,14 +1922,26 @@ class MeetingService:
                 or path.name == ".DS_Store"
             ):
                 continue
-            entries.append(
-                {
-                    "path": str(path.relative_to(root)),
-                    "bytes": path.stat().st_size,
-                    "sha256": sha256_file(path),
-                }
-            )
-        return entries
+            files.append(path)
+        return files
+
+    @staticmethod
+    def _manifest_artifacts(root: Path) -> list[dict[str, Any]]:
+        return [
+            {
+                "path": str(path.relative_to(root)),
+                "bytes": path.stat().st_size,
+                "sha256": sha256_file(path),
+            }
+            for path in MeetingService._manifest_files(root)
+        ]
+
+    @staticmethod
+    def _tree_fingerprints(root: Path) -> dict[str, tuple[int, int, int, int]]:
+        return {
+            str(path.relative_to(root)): _stat_fingerprint(path)
+            for path in MeetingService._manifest_files(root)
+        }
 
     def _meeting(self, meeting_id: str) -> dict[str, Any]:
         meeting = self.db.query_one("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
@@ -2389,6 +2460,7 @@ class MeetingService:
         archive_dir: Path,
         *,
         include_all: bool,
+        known_hashes: dict[str, str] | None = None,
     ) -> str:
         if include_all:
             all_paths = [
@@ -2418,7 +2490,8 @@ class MeetingService:
                     kind,
                     role,
                     str(path),
-                    sha256_file(path),
+                    (known_hashes or {}).get(str(path.relative_to(archive_dir)))
+                    or sha256_file(path),
                     stat.st_size,
                     stat.st_mtime_ns,
                     utc_now(),
