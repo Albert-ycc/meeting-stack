@@ -279,6 +279,11 @@ function errorText(reason: unknown, fallback: string) {
   return reason instanceof Error && reason.message ? reason.message : fallback;
 }
 
+/** 服务端明确回绝的请求（过了撤销期、已经撤销过、对象不在了）：再发一遍也是一样的回答。408、429 是让稍后再来，不算 */
+function refusedByServer(reason: unknown) {
+  return reason instanceof ApiError && reason.status >= 400 && reason.status < 500 && reason.status !== 408 && reason.status !== 429;
+}
+
 /** 深链目标可能不在图上原样出现：没归项目的会在门口、太旧的会折进了「更早 N 场」 */
 function resolveSelection(graph: GraphPayload, layout: StarLayout, id: string): string | null {
   if (layout.byId.has(id) || graph.edges.some((edge) => edge.id === id)) return id;
@@ -476,6 +481,8 @@ export function ProjectGraph({
   const recentAnswers = useContext(RecentAnswersContext);
   const player = useMiniPlayer();
   const requestRef = useRef(0);
+  // 撤销请求在途：⌘Z 连按、提示条上的［撤销］再点，同一步不再发第二次。busy 是 state，同一帧里读到的还是旧值
+  const undoingRef = useRef(false);
   const missingRef = useRef<string | null>(null);
   // 4f：线上回答以后，新数据到了再把选中挪到新的交付物线（没有就挪到那份文件）
   const afterAnswerRef = useRef<{ edgeId: string | null; fileId: number; from: string | null } | null>(null);
@@ -1022,57 +1029,68 @@ export function ProjectGraph({
 
   /** 撤销一步。改归属走服务器的撤销；关联需求就解除；搬任务就按原样搬回来（连需求一起） */
   const runUndo = async (entry: GraphNoticeUndo) => {
-    if (busy) return;
+    if (busy || undoingRef.current) return;
+    undoingRef.current = true;
     setBusy(true);
     rememberPositions();
-    setUndoStack((current) => current.filter((item) => item !== entry && !sameUndo(item, entry)));
+    // 这一步留在栈里，服务端答应了（done）或明确回绝了才出栈：网络断了、超时、5xx 的这一步还在，⌘Z 或［撤销］可以再来
+    const forget = () => setUndoStack((current) => current.filter((item) => item !== entry && !sameUndo(item, entry)));
+    const done = (message: string) => {
+      forget();
+      showNotice(message);
+    };
     try {
       if (entry.kind === "project") {
         const detail = await apiClient.undoMeetingProject(entry.meetingId);
-        showNotice(detail.effects?.card?.action === "moved" ? "已撤销刚才的改动，会议卡片也搬回去了" : "已撤销刚才的改动");
+        done(detail.effects?.card?.action === "moved" ? "已撤销刚才的改动，会议卡片也搬回去了" : "已撤销刚才的改动");
       } else if (entry.kind === "link") {
         await apiClient.removeRequirementMeeting(entry.requirementId, entry.meetingId);
         clearBriefCache();
-        showNotice(`已撤销：这场会不再关联「${entry.title}」`);
+        done(`已撤销：这场会不再关联「${entry.title}」`);
       } else if (entry.kind === "unlink") {
         await apiClient.addRequirementMeeting(entry.requirementId, entry.meetingId);
         clearBriefCache();
-        showNotice(`已撤销：重新关联了「${entry.title}」`);
+        done(`已撤销：重新关联了「${entry.title}」`);
       } else if (entry.kind === "mention") {
         await apiClient.restoreFileMention(entry.meetingId, entry.stemKey);
         clearBriefCache();
-        showNotice(`已撤销：这场会又连回「${entry.name}」`);
+        done(`已撤销：这场会又连回「${entry.name}」`);
       } else if (entry.kind === "deliverable") {
         await apiClient.removeDeliverable(entry.taskId, entry.deliverableId);
-        showNotice(`已撤销：「${entry.name}」不再是「${entry.taskTitle}」的交付物`);
+        done(`已撤销：「${entry.name}」不再是「${entry.taskTitle}」的交付物`);
         // 展开的会马上重读，交付物小签跟着消失
         setFocusTick((tick) => tick + 1);
       } else if (entry.kind === "relation") {
         await apiClient.undoRelation(entry.relationId);
         recentAnswers?.drop(entry.relationId);
-        showNotice("已撤销");
+        done("已撤销");
       } else if (entry.kind === "relations") {
         // 一批换成这份：逐条撤，某条撤不了也接着撤后面的，最后说第一条出错的那句
         let failure: unknown = null;
+        const retry: number[] = [];
         for (const relationId of entry.relationIds) {
           try {
             await apiClient.undoRelation(relationId);
             recentAnswers?.drop(relationId);
           } catch (reason) {
             if (reason instanceof ApiError && reason.status === 409) recentAnswers?.drop(relationId);
+            if (!refusedByServer(reason)) retry.push(relationId);
             failure ??= reason;
           }
         }
         if (failure) {
-          // 撤了一部分：先重取，再说出错那一句
+          // 撤了一部分：这一步只留下没撤成、又还能再试的几条（剩下的全被回绝了就整步出栈）
+          if (retry.length) setUndoStack((current) => current.map((item) => (item === entry ? { ...entry, relationIds: retry } : item)));
+          else forget();
+          // 先重取，再说出错那一句
           await changed().catch(() => undefined);
           throw failure;
         }
-        showNotice("已撤销");
+        done("已撤销");
       } else if (entry.kind === "task") {
         await apiClient.updateTask(entry.taskId, entry.before);
         clearBriefCache();
-        showNotice(
+        done(
           entry.what === "edit"
             ? `已撤销：任务改回「${entry.before.title ?? entry.title}」`
             : `已撤销：任务「${entry.title}」搬回去了`,
@@ -1082,6 +1100,8 @@ export function ProjectGraph({
       // 局部图、来龙去脉不走 ETag：撤销以后舞台整张重取
       if (local) setLocalTick((tick) => tick + 1);
     } catch (reason) {
+      // 服务端明确回绝的这一步再发也不会成，出栈，免得它一直挡在最上面（一批的上面已经按条处理过了）
+      if (entry.kind !== "relations" && refusedByServer(reason)) forget();
       // 关联的撤销过期、已撤销过：原样显示服务端那句，用 warning（role="status"）
       const status = reason instanceof ApiError ? reason.status : 0;
       const told = (entry.kind === "relation" || entry.kind === "relations") && (status === 409 || status === 422);
@@ -1089,6 +1109,7 @@ export function ProjectGraph({
       if (entry.kind === "relation" && status === 409) recentAnswers?.drop(entry.relationId);
       showNotice(errorText(reason, "撤销失败"), undefined, told ? "warning" : "error");
     } finally {
+      undoingRef.current = false;
       setBusy(false);
     }
   };

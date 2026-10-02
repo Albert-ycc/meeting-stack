@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, type ApiClient, type LinksState, type RelationQuestion } from "../../api";
+import { ApiError, ApiTimeoutError, type ApiClient, type LinksState, type RelationQuestion } from "../../api";
 import { LinksFlagsContext } from "../links/LinksFlagsContext";
 import type { Project } from "../../types";
 import type { MaterialFilePreview, Task } from "../../types";
@@ -559,6 +559,123 @@ describe("ProjectGraph 拖放、残影、⌘Z、N", () => {
     const center = await screen.findByRole("button", { name: "云图AI，3 场会" });
     fireEvent.keyDown(center, { key: "N" });
     expect(await screen.findByText("这张图上没有要你处理的了")).toBeInTheDocument();
+  });
+});
+
+describe("ProjectGraph 撤销失败和在途", () => {
+  const UNDONE = { effects: { tasks_restored: 1 } };
+
+  /** 门口的会［归这里］之后提示条上有［撤销］；返回提示条 */
+  async function answerDoorstepAndGetNotice() {
+    const doorstep = await screen.findByRole("group", { name: /可能是这个项目的会：门口的会/ });
+    await userEvent.click(within(doorstep).getByRole("button", { name: "归这里" }));
+    return screen.findByRole("status");
+  }
+  const undoKey = () => fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+
+  it.each([
+    ["网络断了", () => new TypeError("Failed to fetch"), "Failed to fetch"],
+    ["写请求超时", () => new ApiTimeoutError("服务没有响应，可能仍在处理，稍后刷新确认"), "服务没有响应，可能仍在处理，稍后刷新确认"],
+    ["服务端 500", () => new ApiError("服务出错了，稍后再试", 500, { detail: "服务出错了，稍后再试" }), "服务出错了，稍后再试"],
+    ["429 让稍后再来", () => new ApiError("请求太频繁，稍后再试", 429, { detail: "请求太频繁，稍后再试" }), "请求太频繁，稍后再试"],
+  ])("撤销请求失败（%s）：提示写原因，这一步还留在栈里，⌘Z 再撤一次就成", async (_name, makeError, message) => {
+    const undoMeetingProject = vi.fn().mockRejectedValueOnce(makeError()).mockResolvedValue(UNDONE);
+    const apiClient = makeClient(withDoorstep(), { undoMeetingProject });
+    render(<Harness apiClient={apiClient} />);
+    const notice = await answerDoorstepAndGetNotice();
+
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(undoMeetingProject).toHaveBeenCalledTimes(1);
+
+    undoKey();
+    expect(await screen.findByText("已撤销刚才的改动")).toBeInTheDocument();
+    expect(undoMeetingProject).toHaveBeenCalledTimes(2);
+    expect(undoMeetingProject).toHaveBeenLastCalledWith("door0");
+
+    // 撤成了就出栈：再按 ⌘Z 没有这一步了
+    undoKey();
+    expect(await screen.findByText("没有能撤销的操作了（只保留 10 分钟内的）")).toBeInTheDocument();
+    expect(undoMeetingProject).toHaveBeenCalledTimes(2);
+  });
+
+  it("服务端明确回绝（过了撤销期、已经撤销过）：原样显示那一句，这一步出栈，不再一直挡着", async () => {
+    const undoMeetingProject = vi.fn().mockRejectedValue(new ApiError("撤销期已过，改不回去了", 409, { detail: "撤销期已过，改不回去了" }));
+    const apiClient = makeClient(withDoorstep(), { undoMeetingProject });
+    render(<Harness apiClient={apiClient} />);
+    const notice = await answerDoorstepAndGetNotice();
+
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("撤销期已过，改不回去了");
+
+    undoKey();
+    expect(await screen.findByText("没有能撤销的操作了（只保留 10 分钟内的）")).toBeInTheDocument();
+    expect(undoMeetingProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("撤销在途时连按 ⌘Z、再点［撤销］：同一步只发一次", async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    const undoMeetingProject = vi.fn(() => new Promise((resolve) => (finish = resolve)));
+    const apiClient = makeClient(withDoorstep(), { undoMeetingProject });
+    render(<Harness apiClient={apiClient} />);
+    const notice = await answerDoorstepAndGetNotice();
+
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(undoMeetingProject).toHaveBeenCalledTimes(1));
+    undoKey();
+    undoKey();
+    // 在途时提示条上的［撤销］还在，但按不了
+    expect(within(screen.getByRole("status")).getByRole("button", { name: "撤销" })).toBeDisabled();
+    await userEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+    expect(undoMeetingProject).toHaveBeenCalledTimes(1);
+
+    await act(async () => finish(UNDONE));
+    expect(await screen.findByText("已撤销刚才的改动")).toBeInTheDocument();
+    expect(undoMeetingProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("同一帧里连按两次 ⌘Z（还没重画，读到的 busy 还是旧的）：也只发一次", async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    const undoMeetingProject = vi.fn(() => new Promise((resolve) => (finish = resolve)));
+    const apiClient = makeClient(withDoorstep(), { undoMeetingProject });
+    render(<Harness apiClient={apiClient} />);
+    await answerDoorstepAndGetNotice();
+
+    act(() => {
+      undoKey();
+      undoKey();
+    });
+    expect(undoMeetingProject).toHaveBeenCalledTimes(1);
+
+    await act(async () => finish(UNDONE));
+    expect(await screen.findByText("已撤销刚才的改动")).toBeInTheDocument();
+    expect(undoMeetingProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("失败那次以后，别的操作的撤销照样排在它后面：先撤最新的，失败的那步还在更早的位置", async () => {
+    // 先归这场会（第一步），再有第二步（拖到需求上关联）；第二步的撤销断网，第一步不受影响
+    const undoUntil = new Date(Date.now() + 10 * 60_000).toISOString();
+    const graph = withDoorstep();
+    const removeRequirementMeeting = vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue({});
+    const apiClient = makeClient(graph, {
+      removeRequirementMeeting,
+      updateMeeting: vi.fn(async () => ({ effects: { tasks_moved: 0, tasks_left: [], undo_until: undoUntil } })),
+    });
+    render(<Harness apiClient={apiClient} />);
+    await answerDoorstepAndGetNotice();
+    // 第二步：把会 a 拖到需求 r1 上关联
+    dragMeeting(/^会议：初审规则沟通 a/, screen.getByRole("button", { name: /^需求：需求 r1/ }));
+    expect(await screen.findByText("已关联到「需求 r1」")).toBeInTheDocument();
+
+    undoKey();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to fetch");
+    undoKey();
+    expect(await screen.findByText("已撤销：这场会不再关联「需求 r1」")).toBeInTheDocument();
+    expect(removeRequirementMeeting).toHaveBeenCalledTimes(2);
+    // 第二步撤完才轮到第一步
+    undoKey();
+    expect(await screen.findByText("已撤销刚才的改动")).toBeInTheDocument();
+    expect(apiClient.undoMeetingProject).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -2192,6 +2309,33 @@ describe("ProjectGraph 放宽的提到（4b）", () => {
     fireEvent.keyDown(document.body, { key: "z", metaKey: true });
     expect(await screen.findByText("没有能撤销的操作了（只保留 10 分钟内的）")).toBeInTheDocument();
     expect(apiClient.undoRelation).toHaveBeenCalledTimes(1);
+  });
+
+  it("文件面板：一批［换成这份］撤销到一半断网：这一步只留没撤成的那几条，再撤只发那几条", async () => {
+    const detail = () => {
+      const base = twoLooseDetail();
+      return { ...base, meetings: [...base.meetings, { ...base.meetings[0], meeting_id: "c", relation_id: 13 }] };
+    };
+    const undoRelation = vi.fn(async (relationId: number) => {
+      // 第一次撤：11 成功，12 断网，13 成功
+      if (relationId === 12 && undoRelation.mock.calls.filter(([id]) => id === 12).length === 1) throw new TypeError("Failed to fetch");
+      return { relation: {}, removed_deliverable_id: null };
+    });
+    const apiClient = looseClient({ getGraphFile: vi.fn(async () => detail()), undoRelation });
+    render(<Harness apiClient={apiClient} />);
+    await userEvent.click(await screen.findByRole("button", { name: "文件：报价单v2.xlsx" }));
+    const panel = screen.getByRole("complementary", { name: "详情面板" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "换成这份" }));
+    const notice = (await screen.findByText("已把 3 场会换成「报价单v1.xlsx」")).closest("[role='status']") as HTMLElement;
+
+    await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to fetch");
+    expect(undoRelation.mock.calls.map(([id]) => id)).toEqual([11, 12, 13]);
+
+    fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    expect(await screen.findByText("已撤销")).toBeInTheDocument();
+    // 再撤只发没撤成的那一条，不重发已经撤过的
+    expect(undoRelation.mock.calls.map(([id]) => id)).toEqual([11, 12, 13, 12]);
   });
 
   it("旧后台回答放宽行时写「后台还是旧版本，重启声档后再试」", async () => {
