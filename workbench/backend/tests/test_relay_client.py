@@ -297,3 +297,93 @@ def test_project_hint_travels_as_environment_not_as_argument(tmp_path, monkeypat
     assert calls[0][1]["MEETING_RELAY_PROJECT_HINT"] == "project-46fd3e04e3db"
     assert calls[1][1]["MEETING_RELAY_PROJECT_HINT"] == "p-yt"
     assert "MEETING_RELAY_PROJECT_HINT" not in calls[2][1]
+
+
+def _spy_client(tmp_path, monkeypatch, *, stdout="{}"):
+    """relayctl 摆个空壳文件，subprocess.run 换成记账的假货；返回 (client, calls)。"""
+    relay_repo = tmp_path / "meeting-relay"
+    executable = relay_repo / "quickstart" / "relayctl"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        relay_repo=relay_repo,
+        relay_jobs_db=tmp_path / "jobs.sqlite3",
+        semantic_enabled=False,
+    )
+    calls = []
+
+    def fake_run(arguments, **_kwargs):
+        calls.append(arguments[1:])
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("meeting_workbench.relay_client.subprocess.run", fake_run)
+    return RelayClient(settings), calls
+
+
+BAD_JOB_IDS = [
+    "--transcript=/etc/passwd",
+    "--help",
+    "-h",
+    "",
+    "job-",
+    "job-abc def",
+    "job-abc\n",
+    "job-../../etc/passwd",
+    "job-abc;rm",
+    "JOB-ABC",
+    "job-" + "a" * 65,
+]
+
+
+@pytest.mark.parametrize("bad", BAD_JOB_IDS)
+def test_every_job_id_method_rejects_a_malformed_id_before_spawning_relayctl(
+    tmp_path, monkeypatch, bad
+):
+    """任务号会原样进 relayctl 的 argv，格式不对的一律在 RelayClient 里挡掉，连子进程都不起。"""
+    client, calls = _spy_client(tmp_path, monkeypatch)
+    manifest = tmp_path / "manifest.json"
+    attempts = [
+        lambda: client.status(bad),
+        lambda: client.retry(bad, "minutes_generating"),
+        lambda: client.mark_draft_modified(bad),
+        lambda: client.stop_after_stage(bad),
+        lambda: client.cancel(bad),
+        lambda: client.mark_published(bad, manifest, "vm-1"),
+        lambda: client.set_substate(bad, "index", "ready", attempt=1),
+        lambda: client.set_substate(bad, "index", "ready"),
+        lambda: client.retry_substate(bad, "index"),
+    ]
+
+    for attempt in attempts:
+        with pytest.raises(RelayUnavailable, match="任务号格式不对"):
+            attempt()
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "good",
+    ["job-0123456789abcdef", "job-created", "job-a_b-C9", "job-" + "a" * 64],
+)
+def test_job_id_shapes_relay_really_issues_still_pass(tmp_path, monkeypatch, good):
+    """relay 入队时生成 job- 加 16 位小写十六进制（生产 169 个任务号全是这个形状），不能被挡。"""
+    client, calls = _spy_client(tmp_path, monkeypatch, stdout='{"job_id": "x"}')
+
+    client.status(good)
+    client.cancel(good)
+
+    assert calls == [["status", good, "--json"], ["cancel", good]]
+
+
+@pytest.mark.parametrize("bad", ["--help", "job-abc def", "", "/etc/passwd", "vm-20260101"])
+def test_enqueue_rejects_a_malformed_job_id_coming_back_from_relayctl(tmp_path, monkeypatch, bad):
+    """入队返回的任务号之后还会再传给 relayctl，来路上就要按同一规则把关。"""
+    client, _calls = _spy_client(tmp_path, monkeypatch, stdout=bad)
+    audio = tmp_path / "meeting.m4a"
+    audio.write_bytes(b"audio")
+
+    with pytest.raises(RelayUnavailable, match="relayctl 未返回有效 job_id"):
+        client.enqueue(audio)

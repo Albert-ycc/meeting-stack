@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -18,9 +19,19 @@ logger = logging.getLogger("meeting_workbench.relay_client")
 # 不认识的环境变量则会被忽略，工作台和 relay 谁先升级都不影响出纪要。
 PROJECT_HINT_ENV = "MEETING_RELAY_PROJECT_HINT"
 
+# relay 入队时生成 "job-" 加 16 位小写十六进制（生产的任务号全是这个形状）。这里放宽到字母数字、
+# 下划线、连字符，只为保证任务号进 relayctl 的 argv 后不会被当成选项、路径或带空白的串。
+_JOB_ID_RE = re.compile(r"job-[0-9A-Za-z_-]{1,64}")
+
 
 class RelayUnavailable(RuntimeError):
     pass
+
+
+def check_job_id(job_id: str) -> str:
+    if not isinstance(job_id, str) or not _JOB_ID_RE.fullmatch(job_id):
+        raise RelayUnavailable("任务号格式不对")
+    return job_id
 
 
 class RelayClient:
@@ -137,7 +148,7 @@ class RelayClient:
             if hotword_path:
                 arguments.extend(["--hotwords", str(hotword_path)])
             job_id = self._run(arguments, extra_env=self._hint_env(project_hint)).strip()
-        if not job_id.startswith("job-"):
+        if not _JOB_ID_RE.fullmatch(job_id):
             raise RelayUnavailable("relayctl 未返回有效 job_id")
         return job_id
 
@@ -153,7 +164,7 @@ class RelayClient:
         return payload
 
     def status(self, job_id: str) -> dict[str, Any]:
-        payload = self._json(self._run(["status", job_id, "--json"]))
+        payload = self._json(self._run(["status", check_job_id(job_id), "--json"]))
         if not isinstance(payload, dict):
             raise RelayUnavailable("relayctl status 返回格式错误")
         return payload
@@ -168,7 +179,7 @@ class RelayClient:
         backend: str | None = None,
         project_hint: str | None = None,
     ) -> dict[str, Any]:
-        arguments = ["retry", job_id, "--stage", stage]
+        arguments = ["retry", check_job_id(job_id), "--stage", stage]
         if transcript_path:
             arguments.extend(["--transcript", str(Path(transcript_path).expanduser())])
         if backend:
@@ -182,19 +193,19 @@ class RelayClient:
         return payload
 
     def mark_draft_modified(self, job_id: str) -> dict[str, Any]:
-        payload = self._json(self._run(["mark-draft-modified", job_id]))
+        payload = self._json(self._run(["mark-draft-modified", check_job_id(job_id)]))
         if not isinstance(payload, dict):
             raise RelayUnavailable("relayctl 草稿状态回执格式错误")
         return payload
 
     def stop_after_stage(self, job_id: str) -> dict[str, Any]:
-        payload = self._json(self._run(["stop-after-stage", job_id]))
+        payload = self._json(self._run(["stop-after-stage", check_job_id(job_id)]))
         if not isinstance(payload, dict):
             raise RelayUnavailable("relayctl stop 返回格式错误")
         return payload
 
     def cancel(self, job_id: str) -> dict[str, Any]:
-        payload = self._json(self._run(["cancel", job_id]))
+        payload = self._json(self._run(["cancel", check_job_id(job_id)]))
         if not isinstance(payload, dict):
             raise RelayUnavailable("relayctl cancel 返回格式错误")
         return payload
@@ -206,7 +217,7 @@ class RelayClient:
             self._run(
                 [
                     "mark-published",
-                    job_id,
+                    check_job_id(job_id),
                     "--manifest",
                     str(Path(manifest_path)),
                     "--meeting-id",
@@ -233,6 +244,7 @@ class RelayClient:
         *,
         attempt: int | None = None,
     ) -> dict[str, Any]:
+        check_job_id(job_id)
         if attempt is None:
             current = self.status(job_id).get("current_attempt")
             if isinstance(current, bool) or not isinstance(current, int):
@@ -248,7 +260,7 @@ class RelayClient:
         return payload
 
     def retry_substate(self, job_id: str, name: str) -> dict[str, Any]:
-        payload = self._json(self._run(["retry-substate", job_id, "--name", name]))
+        payload = self._json(self._run(["retry-substate", check_job_id(job_id), "--name", name]))
         if not isinstance(payload, dict):
             raise RelayUnavailable("relayctl 子状态重试格式错误")
         return payload
