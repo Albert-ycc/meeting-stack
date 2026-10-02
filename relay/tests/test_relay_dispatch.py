@@ -1802,6 +1802,23 @@ class InboxRescanTests(unittest.TestCase):
         self.assertEqual("failed", self.control.status(job_id)["status"])
         self.assertIsNone(self.control.claim_next(worker_id="worker-new"))
 
+    def test_same_name_new_recording_is_not_dropped_by_processed_log(self):
+        old = self.inbox / "新录音.m4a"
+        old.write_bytes(b"first meeting")
+        self.module.mark_processed(old)
+        old.unlink()
+        new = self.inbox / "新录音.m4a"
+        new.write_bytes(b"a different, longer second meeting")
+        self.module.PROCESSED_LOG.open("a", encoding="utf-8").write("旧格式只记名字.m4a\n")
+
+        with patch.dict(os.environ, {"MEETING_RELAY_CONTROL_ENABLED": "0"}):
+            legacy = self.module.AudioHandler()
+            self.assertTrue(legacy._should_process(new))
+            self.module.mark_processed(new)
+            self.assertFalse(self.module.AudioHandler()._should_process(new))
+        # 控制模式完全不看文件名清单，去重交给入队
+        self.assertTrue(self.module.AudioHandler()._should_process(new))
+
     def test_audio_moved_into_inbox_is_enqueued(self):
         from watchdog.events import FileMovedEvent
 

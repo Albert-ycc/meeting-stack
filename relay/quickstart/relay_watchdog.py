@@ -547,10 +547,22 @@ def load_processed() -> set:
     return set()
 
 
-def mark_processed(name: str):
+def _processed_key(path: Path) -> str | None:
+    """旧同步路径的去重键：文件名 + 大小 + mtime。只按文件名记，同名的新录音会被当成处理过。"""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return f"{path.name}\t{stat.st_size}\t{stat.st_mtime_ns}"
+
+
+def mark_processed(audio: Path):
+    key = _processed_key(audio)
+    if key is None:
+        return
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with PROCESSED_LOG.open("a", encoding="utf-8") as f:
-        f.write(name + "\n")
+        f.write(key + "\n")
 
 
 def load_last_meeting() -> dict | None:
@@ -1429,7 +1441,7 @@ def handle_audio(audio: Path):
 
     try:
         if audio.stat().st_mtime < STARTUP_EPOCH:
-            mark_processed(audio.name)
+            mark_processed(audio)
             return
     except FileNotFoundError:
         return
@@ -1461,7 +1473,7 @@ def handle_audio(audio: Path):
         txt_path = None
     if not txt_path:
         notify_relay_status("failed", duration_min)
-        mark_processed(audio.name)
+        mark_processed(audio)
         return
 
     transcript = Path(txt_path).read_text(encoding="utf-8").strip()
@@ -1484,7 +1496,7 @@ def handle_audio(audio: Path):
             return False
         notify_relay_status("dispatched", duration_min)
 
-    mark_processed(audio.name)
+    mark_processed(audio)
     log.info("处理完成：%s", audio.name)
     return True
 
@@ -1809,11 +1821,11 @@ def process_controlled_claim(claim: dict) -> bool:
                 and source_status.get("deduplicated_to")
             ):
                 notify_workbench_status(job_id, "deduplicated")
-                mark_processed(audio.name)
+                mark_processed(audio)
                 return True
             if isinstance(source_status, dict) and source_status.get("status") == "failed":
                 notify_workbench_status(job_id, "failed")
-                mark_processed(audio.name)
+                mark_processed(audio)
                 return False
             if start_stage == "stabilizing":
                 if _control_interrupt_if_requested(
@@ -1897,7 +1909,7 @@ def process_controlled_claim(claim: dict) -> bool:
                     expected_worker=worker_id,
                 )
                 notify_workbench_status(job_id, "failed", duration_min)
-                mark_processed(audio.name)
+                mark_processed(audio)
                 return False
             products_subdir = PRODUCTS_DIR / audio.stem / audio.stem
             _control_update_whisper_progress(
@@ -1923,7 +1935,7 @@ def process_controlled_claim(claim: dict) -> bool:
                 expected_worker=worker_id,
             ):
                 notify_workbench_status(job_id, "interrupted", duration_min)
-                mark_processed(audio.name)
+                mark_processed(audio)
                 return True
         else:
             if start_stage == "minutes_generating":
@@ -2070,7 +2082,7 @@ def process_controlled_claim(claim: dict) -> bool:
                 expected_worker=worker_id,
             )
             notify_workbench_status(job_id, "failed", duration_min)
-            mark_processed(audio.name)
+            mark_processed(audio)
             return False
 
         try:
@@ -2091,7 +2103,7 @@ def process_controlled_claim(claim: dict) -> bool:
             )
         save_last_meeting(audio.name)
         notify_workbench_status(job_id, "minutes_generating", duration_min)
-        mark_processed(audio.name)
+        mark_processed(audio)
         log.info("工作台任务已派 Claude Code，等待完成回执：%s", job_id)
         return True
     except Exception as exc:
@@ -2206,7 +2218,8 @@ class AudioHandler(FileSystemEventHandler):
             return False
         if "meeting-relay-products" in str(path):
             return False
-        if path.name in self._processed_log:
+        # 控制模式的去重交给 enqueue（vm 号 / 路径）和 record_source_audio（PCM 指纹）
+        if not control_enabled() and _processed_key(path) in self._processed_log:
             return False
         if str(path) in self._processing:
             return False
@@ -2222,8 +2235,9 @@ class AudioHandler(FileSystemEventHandler):
                 handled = True
             else:
                 handled = handle_audio(path)
-            if handled is not False:
-                self._processed_log.add(path.name)
+            processed_key = _processed_key(path)
+            if handled is not False and processed_key is not None:
+                self._processed_log.add(processed_key)
         except Exception:
             log.exception("处理出错：%s", path.name)
         finally:
