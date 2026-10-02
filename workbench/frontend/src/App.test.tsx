@@ -1,6 +1,6 @@
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import App, { MEETING_PAGE_SIZE, MOBILE_READ_ONLY_QUERY, useMobileBreakpoint } from "./App";
 import { ApiError, type ApiClient } from "./api";
@@ -604,6 +604,34 @@ describe("浏览历史与返回", () => {
 
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(screen.getByText("会议录音档案")).toBeInTheDocument();
+  });
+
+  it("点侧栏换视图从顶上看起；浏览器后退不动滚动位置（交给浏览器恢复）", async () => {
+    // jsdom 不排版，scrollTop 换成能记值的属性
+    let scrollTop = 0;
+    Object.defineProperty(document.documentElement, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+    onTestFinished(() => {
+      delete (document.documentElement as { scrollTop?: number }).scrollTop;
+    });
+    render(<App apiClient={client()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "录音档案" }));
+    await screen.findByText("会议录音档案");
+    scrollTop = 900;
+
+    fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
+    await screen.findByRole("heading", { name: "项目" });
+    expect(scrollTop).toBe(0);
+
+    scrollTop = 400;
+    act(() => window.history.back());
+    await screen.findByText("会议录音档案");
+    expect(scrollTop).toBe(400);
   });
 
   it("冷加载带 #meetings/<id> 直接打开那场会", async () => {

@@ -230,6 +230,9 @@ export default function App({ apiClient = api }: AppProps) {
   // 退回来时取出来放这里，等详情的数据到了（onReady）再滚回去。录音档案、检索结果的数据在 App 手里，
   // 回来时列表一下就画全了，浏览器自己恢复就是对的，不用管
   const listScrollRef = useRef<number | null>(null);
+  // 侧栏、代码里换视图：新视图从顶上看起（浏览器前进后退不归零，由浏览器恢复）。要等新的一条历史压进去以后再滚，
+  // 先滚的话浏览器给旧的那一条记下的位置就成了 0，后退回去回不到原处
+  const scrollResetRef = useRef(false);
   // 认领、合并后回到需求池时提示一句；建完、改完需求进详情页时也提示一句
   const [poolFlash, setPoolFlash] = useState<PoolFlash | null>(null);
   const [requirementFlash, setRequirementFlash] = useState<string | null>(null);
@@ -828,6 +831,7 @@ export default function App({ apiClient = api }: AppProps) {
     historySyncRef.current = false;
     navigatedDuringBootRef.current = true;
     listScrollRef.current = null;
+    scrollResetRef.current = true;
     resetDetailState();
     setView(nextView);
     // 从侧栏回到全部项目概览时不带上次的选中
@@ -1188,6 +1192,13 @@ export default function App({ apiClient = api }: AppProps) {
     requirementForm,
     view,
   ]);
+
+  // 紧跟在上面「视图 → 地址栏」之后：新的一条历史已经压进去了
+  useEffect(() => {
+    if (!scrollResetRef.current) return;
+    scrollResetRef.current = false;
+    document.documentElement.scrollTop = 0;
+  });
 
   // 浏览器前进/后退或手动改地址栏 hash 时反向同步视图。
   // 浏览器在 hash 变了的前进、后退（以及手改地址栏）里会先后发 popstate、hashchange，同一次导航只能认一次：
