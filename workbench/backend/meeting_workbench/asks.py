@@ -36,6 +36,7 @@ from .ask_retrieval import (
     retrieve,
 )
 from .materials import volume_state
+from .safe_log import describe_error
 
 __all__ = ["QA_SYSTEM", "AskError", "AskRegistry", "AskService", "STOP_TEXTS"]
 
@@ -440,7 +441,7 @@ class AskService:
         try:
             self.registry.spawn(lambda: self._run(job))
         except Exception as error:  # noqa: BLE001  线程起不来：退回这一次、结束任务、放开项目锁和名额
-            logger.warning("问答没起来：项目 %s，%s", job.project_id, type(error).__name__)
+            logger.warning("问答没起来：项目 %s，%s", job.project_id, describe_error(error))
             self._refund()
             self.registry.finish(job, "stopped", {"reason": "error"})
             raise AskError(503, STOP_TEXTS["error"][0]) from None
@@ -496,10 +497,10 @@ class AskService:
                 payload["retry"] = False
             if not error.sent:
                 self._refund()
-        except Exception as error:  # noqa: BLE001  任何意外都停下，只记类型名
+        except Exception as error:  # noqa: BLE001  任何意外都停下，只记类型名和位置
             code = "error"
             payload = {"reason": "error"}
-            logger.warning("问答出错：项目 %s，%s", job.project_id, type(error).__name__)
+            logger.warning("问答出错：项目 %s，%s", job.project_id, describe_error(error))
         kept = self.registry.finish(job, state, payload)
         logger.info(
             "问答回来：项目 %s，会议 %d 段、材料 %d 段，用时 %.1f 秒，结果 %s%s",
@@ -515,7 +516,7 @@ class AskService:
         try:
             self.worker.refund("qa")
         except Exception as error:  # noqa: BLE001
-            logger.warning("问答退回用量没成：%s", type(error).__name__)
+            logger.warning("问答退回用量没成：%s", describe_error(error))
 
     # ------------------------------------------------------------------ 轮询
 

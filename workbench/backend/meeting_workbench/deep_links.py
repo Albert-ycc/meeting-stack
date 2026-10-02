@@ -33,6 +33,7 @@ from .db import Database
 from .material_fts import REBUILD_KEY
 from .relation_read import live_file
 from .relations import FILE_KINDS
+from .safe_log import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -319,14 +320,15 @@ class LinksWorker:
         except sqlite3.OperationalError as error:
             if _locked(error):
                 raise RoundLocked(name) from error
-            logger.exception("关联整理的 %s 一步出错，这一轮跳过它", name)
+            logger.error("关联整理的 %s 一步出错，这一轮跳过它：%s", name, describe_error(error))
             return "error"
         except RoundLocked:
             raise
-        except Exception:
+        except Exception as error:
             # 一步出错（比如某条数据触发的问题）只记日志、记成 error，后面的步骤和计数照跑，
-            # 不然同一条坏数据每轮都复现，后面的活就永远不做了
-            logger.exception("关联整理的 %s 一步出错，这一轮跳过它", name)
+            # 不然同一条坏数据每轮都复现，后面的活就永远不做了。日志只记类型名和位置（safe_log）：
+            # 这一步在读会议和材料的原文，异常消息里可能带着它们
+            logger.error("关联整理的 %s 一步出错，这一轮跳过它：%s", name, describe_error(error))
             return "error"
 
     def _fts_rebuilding(self) -> bool:
@@ -654,8 +656,8 @@ async def links_loop(
             stats = await asyncio.to_thread(worker.run_round)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
-            logger.exception("关联整理这一轮失败")
+        except Exception as error:  # noqa: BLE001
+            logger.error("关联整理这一轮失败：%s", describe_error(error))
         await _wait(worker, stop, next_delay(stats), sleep)
 
 

@@ -35,6 +35,7 @@ from typing import Any
 
 from .db import Database
 from .file_mentions import _meeting_ns
+from .safe_log import describe_error
 from .tasks import UNDO_WINDOW_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -323,13 +324,13 @@ def parse_decisions(markdown: str) -> Parsed:
 
 
 def parse_safely(markdown: str | None) -> Parsed:
-    """纪要没写好记 no_minutes；解析出错按「决议段是空的」记，不停这一轮（日志只记错误类型）。"""
+    """纪要没写好记 no_minutes；解析出错按「决议段是空的」记，不停这一轮（日志只记错误类型和位置）。"""
     if not markdown:
         return Parsed([], NO_MINUTES, None)
     try:
         return parse_decisions(markdown)
     except Exception as error:  # noqa: BLE001  一场会的纪要出错不影响别的会
-        logger.warning("决议段解析出错：%s", type(error).__name__)
+        logger.warning("决议段解析出错：%s", describe_error(error))
         return Parsed([], EMPTY, None)
 
 
@@ -661,9 +662,10 @@ def ingest_pending(
             counts[ingest_meeting(db, row, now=moment, cutoff=cutoff)] += 1
         except sqlite3.OperationalError:
             raise
-        except Exception:  # noqa: BLE001
-            # 某场会一直出同一个意料之外的错时，不能让它每轮都结束整轮、把 L2 和清理一起卡住
-            logger.exception("决议入库跳过一场会：%s", row.get("id"))
+        except Exception as error:  # noqa: BLE001
+            # 某场会一直出同一个意料之外的错时，不能让它每轮都结束整轮、把 L2 和清理一起卡住。
+            # 日志只记类型名和位置（safe_log）：异常消息里可能带着纪要原文
+            logger.error("决议入库跳过一场会：%s：%s", row.get("id"), describe_error(error))
             counts["skipped"] += 1
     return counts
 

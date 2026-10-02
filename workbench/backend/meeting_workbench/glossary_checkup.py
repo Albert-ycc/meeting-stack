@@ -26,6 +26,7 @@ from typing import Any
 
 from .db import Database, utc_now
 from .glossary import TERMS_REMOVED_KEY
+from .safe_log import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -526,8 +527,9 @@ def run_pending(
             stats["auto_applied"] += 1
             if on_minutes_changed is not None:
                 on_minutes_changed(meeting_id)
-        except Exception:
-            logger.exception("纪要体检失败 meeting_id=%s", meeting_id)
+        except Exception as error:
+            # 日志只记类型名和位置（safe_log）：体检读的是纪要原文，异常消息里可能带着它
+            logger.error("纪要体检失败 meeting_id=%s：%s", meeting_id, describe_error(error))
     return stats
 
 

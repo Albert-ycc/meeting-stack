@@ -21,6 +21,7 @@ from .project_linking import ProjectLinker, name_columns
 from .project_folders import unmounted_project_folders
 from .project_names import also_entries
 from .project_profile import norm_key
+from .safe_log import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +105,11 @@ def reevaluate_weak(db: Database, linker: ProjectLinker, *, limit: int) -> dict[
             try:
                 if _reevaluate_one(db, linker, row, cue_table=cue_table, names=names):
                     processed += 1
-            except Exception:
-                logger.exception("弱归属复评失败 meeting_id=%s", row["meeting_id"])
+            except Exception as error:
+                # 日志只记类型名和位置（safe_log）：复评把纪要交给 AI，异常消息里可能带着它
+                logger.error(
+                    "弱归属复评失败 meeting_id=%s：%s", row["meeting_id"], describe_error(error)
+                )
                 # 抛满 REEVAL_MAX_ERRORS 次：保持原样，不再算进待复评（和没有纪要时同一种状态）
                 db.execute(
                     """UPDATE project_links
