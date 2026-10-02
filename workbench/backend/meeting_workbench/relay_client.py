@@ -48,7 +48,9 @@ class RelayClient:
     ) -> str:
         executable = self.settings.relayctl_path
         if not executable.is_file():
-            raise RelayUnavailable(f"relayctl 不存在：{executable}")
+            # 绝对路径只进日志：错误文案会原样回给浏览器，经 Tailscale 远程访问时不该露出本机目录
+            logger.error("relayctl 不存在：%s", executable)
+            raise RelayUnavailable("中转程序找不到，详见服务日志")
         environment = os.environ.copy()
         environment["MEETING_RELAY_JOBS_DB"] = str(self.settings.relay_jobs_db)
         environment["MEETING_RELAY_ARCHIVE_ROOT"] = str(self.settings.archive_root)

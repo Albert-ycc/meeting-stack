@@ -387,3 +387,25 @@ def test_enqueue_rejects_a_malformed_job_id_coming_back_from_relayctl(tmp_path, 
 
     with pytest.raises(RelayUnavailable, match="relayctl 未返回有效 job_id"):
         client.enqueue(audio)
+
+
+def test_missing_relayctl_error_names_no_path_but_the_log_does(tmp_path, caplog):
+    """HTTP 响应里只给人话；relayctl 的绝对路径只进服务日志（Tailscale 远程访问会暴露本机目录结构）。"""
+    relay_repo = tmp_path / "meeting-relay-仓库"
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        relay_repo=relay_repo,
+        relay_jobs_db=tmp_path / "jobs.sqlite3",
+        semantic_enabled=False,
+    )
+
+    with caplog.at_level("ERROR", logger="meeting_workbench.relay_client"):
+        with pytest.raises(RelayUnavailable) as excinfo:
+            RelayClient(settings).status("job-0123456789abcdef")
+
+    assert str(excinfo.value) == "中转程序找不到，详见服务日志"
+    assert str(tmp_path) not in str(excinfo.value)
+    assert "relayctl" not in str(excinfo.value)
+    assert str(settings.relayctl_path) in caplog.text
