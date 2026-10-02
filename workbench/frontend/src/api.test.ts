@@ -604,3 +604,84 @@ describe("项目内问答的三个接口（4g）", () => {
     expect(jobInit.method ?? "GET").toBe("GET");
   });
 });
+
+describe("CSRF 令牌过期后自愈（后端重启、启动时没取到令牌）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setCsrfToken("");
+  });
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  /** 假后端：只认 current 这一个令牌；/api/bootstrap 发当前令牌 */
+  function fakeBackend(current: { token: string }) {
+    return vi.fn((path: string, init?: RequestInit) => {
+      if (path === "/api/bootstrap") return Promise.resolve(json({ csrf_token: current.token }));
+      const sent = (init?.headers as Record<string, string> | undefined)?.["X-CSRF-Token"];
+      if (!sent) return Promise.resolve(json({ detail: "缺少 CSRF 校验" }, 403));
+      if (sent !== current.token) return Promise.resolve(json({ detail: "CSRF 校验失败" }, 403));
+      return Promise.resolve(json({ ok: true, path }));
+    });
+  }
+
+  it("写请求撞上「CSRF 校验失败」：重取一次启动接口换上新令牌，把原请求重放一次", async () => {
+    const backend = { token: "after-restart" };
+    const fetchMock = fakeBackend(backend);
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("before-restart");
+
+    await expect(api.publish("vm-1")).resolves.toEqual({ ok: true, path: "/api/meetings/vm-1/publish" });
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/meetings/vm-1/publish",
+      "/api/bootstrap",
+      "/api/meetings/vm-1/publish",
+    ]);
+    const replay = fetchMock.mock.calls[2][1] as RequestInit;
+    expect((replay.headers as Record<string, string>)["X-CSRF-Token"]).toBe("after-restart");
+    expect(replay.body).toBe("{}");
+  });
+
+  it("启动时没取到令牌（「缺少 CSRF 校验」）也能自愈", async () => {
+    vi.stubGlobal("fetch", fakeBackend({ token: "fresh" }));
+
+    await expect(api.cancelJob("job-1")).resolves.toMatchObject({ ok: true });
+  });
+
+  it("并发的几个写请求同时撞 403：只取一次启动接口，各自重放一次", async () => {
+    const backend = { token: "after-restart" };
+    const fetchMock = fakeBackend(backend);
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("before-restart");
+
+    await Promise.all([api.publish("vm-1"), api.cancelJob("job-1"), api.stopAfterStage("job-2")]);
+
+    const paths = fetchMock.mock.calls.map(([path]) => path);
+    expect(paths.filter((path) => path === "/api/bootstrap")).toHaveLength(1);
+    expect(paths.filter((path) => path === "/api/meetings/vm-1/publish")).toHaveLength(2);
+    expect(paths.filter((path) => path === "/api/jobs/job-1/cancel")).toHaveLength(2);
+  });
+
+  it("只重放一次：重放还是 CSRF 失败就照常报错，不再循环", async () => {
+    const fetchMock = vi.fn((path: string) =>
+      Promise.resolve(path === "/api/bootstrap" ? json({ csrf_token: "still-wrong" }) : json({ detail: "CSRF 校验失败" }, 403)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("old");
+
+    const error = await api.publish("vm-1").catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 403, message: "CSRF 校验失败" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("别的 403（跨源写入已拒绝）不重取令牌、不重放", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ detail: "跨源写入已拒绝" }, 403));
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("t");
+
+    await expect(api.publish("vm-1")).rejects.toMatchObject({ status: 403, message: "跨源写入已拒绝" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

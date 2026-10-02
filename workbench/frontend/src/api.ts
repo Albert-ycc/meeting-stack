@@ -42,7 +42,6 @@ import type {
   MeetingDetail,
   MeetingFilters,
   MinutesBackend,
-  MeetingSummary,
   MeetingsPayload,
   Project,
   ProjectBoard,
@@ -569,22 +568,53 @@ async function read<T>(path: string): Promise<T> {
   return parseResponse<T>(response);
 }
 
+// 后端的 CSRF 令牌跟进程同寿命：重启过（或页面启动时没取到）以后，手上的令牌全部作废。
+// 文案照 backend/meeting_workbench/security.py 的两句 403
+const CSRF_REJECTIONS = new Set(["CSRF 校验失败", "缺少 CSRF 校验"]);
+let csrfRefresh: Promise<void> | null = null;
+
+/** 重取启动接口换上新令牌（它顺带重设 cookie）；同一时刻撞 403 的几个写请求共用这一次 */
+function refreshCsrfToken(): Promise<void> {
+  csrfRefresh ??= read<BootstrapPayload>("/api/bootstrap")
+    .then((payload) => setCsrfToken(payload.csrf_token))
+    .finally(() => {
+      csrfRefresh = null;
+    });
+  return csrfRefresh;
+}
+
+async function isCsrfRejection(response: Response): Promise<boolean> {
+  if (response.status !== 403) return false;
+  try {
+    const data = (await response.clone().json()) as { detail?: unknown };
+    return typeof data.detail === "string" && CSRF_REJECTIONS.has(data.detail);
+  } catch {
+    return false;
+  }
+}
+
 async function write<T>(
   path: string,
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   body: Record<string, unknown>,
 ): Promise<T> {
-  const response = await fetch(path, {
-    method,
-    credentials: "same-origin",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "X-CSRF-Token": csrfToken,
-    },
-    body: JSON.stringify(body),
-  });
-  return parseResponse<T>(response);
+  const send = (token: string) =>
+    fetch(path, {
+      method,
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": token,
+      },
+      body: JSON.stringify(body),
+    });
+  const sentToken = csrfToken;
+  const response = await send(sentToken);
+  if (!(await isCsrfRejection(response))) return parseResponse<T>(response);
+  // 别的请求已经换过令牌了就不用再取；只重放这一次，重放还失败照常报错
+  if (csrfToken === sentToken) await refreshCsrfToken();
+  return parseResponse<T>(await send(csrfToken));
 }
 
 export const api = {
