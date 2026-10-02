@@ -1633,9 +1633,6 @@ def create_app(
         allowed_hosts=settings.trusted_hostnames(),
     )
 
-    def in_audio_roots(path: Path) -> bool:
-        return any(path.is_relative_to(root.resolve()) for root in settings.audio_roots)
-
     def checked_manual_audio_path(raw: str) -> Path:
         """手动入队走用户直接填的路径，未经上传/归档流程钉过盘，必须先按同一套受管根校验，
         否则 `/etc/passwd`、`--help` 这类值会原样交给 relayctl 当 argv。"""
@@ -1646,7 +1643,7 @@ def create_app(
         except (OSError, ValueError) as error:
             # 带 NUL 的路径 resolve 时抛 ValueError
             raise HTTPException(400, "音频路径不在允许范围") from error
-        if not in_audio_roots(path):
+        if not settings.in_audio_roots(path):
             raise HTTPException(400, "音频路径不在允许范围")
         return path
 
@@ -1655,7 +1652,7 @@ def create_app(
         if not artifact or artifact["kind"] != "audio":
             raise HTTPException(404, "音频不存在")
         path = Path(artifact["path"]).expanduser().resolve()
-        if not in_audio_roots(path) or not path.is_file():
+        if not settings.in_audio_roots(path) or not path.is_file():
             raise HTTPException(404, "音频不可访问")
         return artifact, path
 

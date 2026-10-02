@@ -68,13 +68,7 @@ class QwenShadowService:
         path = Path(artifact["path"])
         if path.is_symlink() or not path.is_file():
             raise QwenShadowError("audio_unsafe")
-        resolved = path.resolve()
-        allowed = (
-            self.settings.archive_root.resolve(),
-            self.settings.staging_root.resolve(),
-            self.settings.data_dir.resolve(),
-        )
-        if not any(resolved.is_relative_to(root) for root in allowed):
+        if not self.settings.in_audio_roots(path.resolve()):
             raise QwenShadowError("audio_outside_allowed_roots")
         return path
 

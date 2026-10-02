@@ -258,9 +258,13 @@ class Settings(BaseSettings):
 
     @property
     def audio_roots(self) -> tuple[Path, ...]:
-        """服务肯播放、肯交给 relay 入队的音频只能在这几个目录里。数据目录整个不放行：
+        """服务肯播放、肯交给 relay 入队、肯交给影子转写的音频只能在这几个目录里。数据目录整个不放行：
         里面还有数据库、备份和各种缓存，只放行上传落盘的 uploads。"""
         return (self.archive_root, self.staging_root, self.uploads_dir)
+
+    def in_audio_roots(self, path: Path) -> bool:
+        """path 要先 resolve 过（符号链接展开之后才比）。三处用音频文件的地方都按这一条判断。"""
+        return any(path.is_relative_to(root.resolve()) for root in self.audio_roots)
 
     @property
     def relayctl_path(self) -> Path:
