@@ -390,6 +390,12 @@ export default function App({ apiClient = api }: AppProps) {
     }
   }, [apiClient]);
 
+  // 关系图面板里确认、不要任务也会改待确认数：面板改完东西通知刷新项目时，侧栏「待办」角标一起重取
+  const refreshAfterGraphChange = useCallback(async () => {
+    void loadPendingCount(true);
+    await refreshProjects();
+  }, [loadPendingCount, refreshProjects]);
+
   // 词典待确认建议数只影响侧栏角标；接口不可用（旧后端）时静默为 0，不打断主链。
   const loadGlossaryPending = useCallback(async () => {
     try {
@@ -1627,7 +1633,7 @@ export default function App({ apiClient = api }: AppProps) {
               onOpenPreviewTarget={setPreviewTarget}
               onOpenProject={openProjectDetail}
               onOpenRequirement={openRequirementFromGraph}
-              onProjectsChanged={refreshProjects}
+              onProjectsChanged={refreshAfterGraphChange}
               onSelectionChange={setGraphSelection}
               projectId={openProjectId}
               projects={projects}
@@ -1678,7 +1684,7 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenProject={openProjectList}
         onOpenProjectGraph={(projectId) => openProjectGraph(projectId)}
         onOpenRequirement={openRequirementDetail}
-        onProjectsChanged={refreshProjects}
+        onProjectsChanged={refreshAfterGraphChange}
         onSelectionChange={setOverviewSelection}
         projects={projects}
         selection={overviewSelection}

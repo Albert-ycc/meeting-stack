@@ -459,6 +459,70 @@ describe("地址栏锚点直达", () => {
     expect(window.history.length).toBe(depth);
   });
 
+  it("关系图会议面板里确认一条任务：侧栏「待办」角标跟着重取，不等 15 秒轮询", async () => {
+    forgetGraphCache();
+    window.history.replaceState(null, "", "/#projects/p/graph?sel=m:a");
+    const tasks = vi.fn().mockResolvedValue({ items: [], total: 3, limit: 1, offset: 0 });
+    const confirmTask = vi.fn().mockResolvedValue({});
+    const meetingBrief = vi.fn().mockResolvedValue({
+      meeting: {
+        id: "a",
+        title: "初审规则沟通 a",
+        date: "2026-09-26",
+        duration_ms: 1_800_000,
+        project_id: "p",
+        project_name: "云图AI",
+        project_color: "#2c8d83",
+        has_minutes: true,
+        audio_url: "/api/meetings/a/audio",
+      },
+      attribution: {
+        state: "auto",
+        project_id: "p",
+        origin: "ai",
+        method: "literal",
+        evidence: [],
+        candidates: [],
+        reason: "",
+        new_project_name: null,
+        reassigned_from: null,
+        ai_configured: true,
+      },
+      evidence_quotes: [],
+      summary: "",
+      decisions: [],
+      decisions_note: null,
+      tasks: [{ id: "t1", title: "补接口清单", status: "pending_confirm", anchor_ms: null }],
+      tasks_more: 0,
+      requirements: [],
+      card: null,
+      files: [],
+      files_state: "done",
+    });
+    render(
+      <App
+        apiClient={client({
+          projects: vi.fn().mockResolvedValue([{ id: "p", name: "云图AI", color: "#2c8d83" }]),
+          graph: vi.fn().mockResolvedValue(payload()),
+          graphRoots: vi.fn().mockResolvedValue({ roots: [], folders: [], loose: { count: 0, recent: [] }, checking: false }),
+          meetingBrief,
+          projectBoard: vi.fn().mockResolvedValue({ id: "p", name: "云图AI", color: "#2c8d83", meeting_count: 0, material_roots: [], meetings: [] }),
+          tasks,
+          confirmTask,
+        } as unknown as Partial<ApiClient>)}
+      />,
+    );
+
+    const panel = await screen.findByRole("complementary", { name: "详情面板" });
+    const confirm = await within(panel).findByRole("button", { name: "确认" });
+    const pendingPolls = () =>
+      tasks.mock.calls.filter(([params]) => (params as { status?: string } | undefined)?.status === "pending_confirm").length;
+    const before = pendingPolls();
+    await userEvent.click(confirm);
+    expect(confirmTask).toHaveBeenCalledWith("t1");
+    await waitFor(() => expect(pendingPolls()).toBeGreaterThan(before));
+  });
+
   it("展开一场会压一条历史、地址栏带 expand=；回到关系图就是后退，冷加载带 expand= 直接展开", async () => {
     forgetGraphCache();
     window.history.replaceState(null, "", "/#projects/p/graph?sel=m:a");
