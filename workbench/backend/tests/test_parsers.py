@@ -171,3 +171,68 @@ def test_json_source_deeper_than_128_levels_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="128"):
         parse_funasr_json(path)
+
+
+BAD_TIMESTAMPS = [
+    "1e400",
+    "-1e400",
+    "Infinity",
+    "NaN",
+    "100000000000000000000000",
+    pytest.param("1" + "0" * 400, id="10**400"),
+]
+
+
+@pytest.mark.parametrize("value", BAD_TIMESTAMPS)
+def test_whisper_json_rejects_non_finite_or_out_of_range_timestamps(tmp_path, value):
+    path = tmp_path / "whisper.json"
+    path.write_text('{"segments":[{"start": %s, "end": 1, "text": "x"}]}' % value, "utf-8")
+
+    with pytest.raises(ValueError, match="invalid timestamp"):
+        parse_whisper_json(path)
+
+
+@pytest.mark.parametrize("value", BAD_TIMESTAMPS)
+def test_funasr_json_rejects_non_finite_or_out_of_range_timestamps(tmp_path, value):
+    path = tmp_path / "meeting.funasr.json"
+    path.write_text('{"sentence_info":[{"start": 0, "end": %s, "text": "x"}]}' % value, "utf-8")
+
+    with pytest.raises(ValueError, match="invalid timestamp"):
+        parse_funasr_json(path)
+
+
+def test_funasr_chunk_offset_that_pushes_past_the_limit_is_rejected(tmp_path):
+    path = tmp_path / "meeting.funasr.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"chunk": 0, "offset_sec": 0, "result": {"sentence_info": []}},
+                {
+                    "chunk": 1,
+                    "offset_sec": 100 * 3600 - 1,
+                    "result": {"sentence_info": [{"start": 5000, "end": 6000, "text": "x"}]},
+                },
+            ]
+        ),
+        "utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid timestamp"):
+        parse_funasr_json(path)
+
+
+def test_timestamps_up_to_the_srt_limit_still_parse(tmp_path):
+    whisper = tmp_path / "whisper.json"
+    whisper.write_text(
+        json.dumps({"segments": [{"start": 359_999.0, "end": 359_999.999, "text": "最后一句"}]}),
+        "utf-8",
+    )
+    funasr = tmp_path / "meeting.funasr.json"
+    funasr.write_text(
+        json.dumps({"sentence_info": [{"start": -10, "end": 359_999_999, "text": "末尾"}]}),
+        "utf-8",
+    )
+
+    assert parse_whisper_json(whisper)[0]["end_ms"] == 359_999_999
+    # 负数照旧放行（入库时会被夹到 0），只拒绝越界和非有限值。
+    assert [(s["start_ms"], s["end_ms"]) for s in parse_funasr_json(funasr)] == [(-10, 359_999_999)]

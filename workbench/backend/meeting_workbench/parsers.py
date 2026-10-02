@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,10 @@ from typing import Any
 TIMECODE_RE = re.compile(r"(?P<h>\d{1,2}):(?P<m>\d{2}):(?P<s>\d{2})[,.](?P<ms>\d{3})")
 MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_JSON_DEPTH = 128
+# 时间戳上限取 SRT 时间码能写出来的最大值 99:59:59,999：逐字稿要能按 SRT
+# 导出、再导回来（rendering 写两位小时，上面的 TIMECODE_RE 也只认两位），
+# 超过它的值不可能来自一场真实录音，只会是写坏或被改过的文件。
+MAX_TIMESTAMP_MS = 100 * 3600 * 1000 - 1
 SPEAKER_RE = re.compile(
     r"^\s*(?:\[?(?P<label>(?:SPEAKER|SPK|说话人)[ _-]?\d+)\]?\s*[:：-]?\s*)(?P<text>.*)$",
     re.IGNORECASE,
@@ -21,6 +26,17 @@ def _timecode_to_ms(value: str) -> int:
         raise ValueError(f"invalid SRT timecode: {value}")
     parts = {key: int(number) for key, number in match.groupdict().items()}
     return ((parts["h"] * 60 + parts["m"]) * 60 + parts["s"]) * 1000 + parts["ms"]
+
+
+def _checked_ms(value: Any, scale: int = 1) -> float:
+    """转写 JSON 里的时间换成毫秒：无穷大、NaN、越界的一律按坏文件处理。"""
+    try:
+        number = float(value) * scale
+    except OverflowError as error:
+        raise ValueError(f"invalid timestamp: {value!r}") from error
+    if not math.isfinite(number) or abs(number) > MAX_TIMESTAMP_MS:
+        raise ValueError(f"invalid timestamp: {value!r}")
+    return number
 
 
 def _speaker_and_text(text: str) -> tuple[str | None, str]:
@@ -133,8 +149,8 @@ def parse_whisper_json(path: Path) -> list[dict[str, Any]]:
         segments.append(
             {
                 "ordinal": len(segments),
-                "start_ms": round(float(item.get("start", 0)) * 1000),
-                "end_ms": round(float(item.get("end", item.get("start", 0))) * 1000),
+                "start_ms": round(_checked_ms(item.get("start", 0), 1000)),
+                "end_ms": round(_checked_ms(item.get("end", item.get("start", 0)), 1000)),
                 "speaker_label": None,
                 "speaker_name": None,
                 "text": text,
@@ -158,7 +174,9 @@ def parse_funasr_json(path: Path) -> list[dict[str, Any]]:
             return collected
         if not isinstance(payload, dict):
             return []
-        offset_ms = inherited_offset_ms + round(float(payload.get("offset_sec", 0) or 0) * 1000)
+        offset_ms = inherited_offset_ms + round(
+            _checked_ms(payload.get("offset_sec", 0) or 0, 1000)
+        )
         for key in ("sentence_info", "sentences", "stamp_sents", "segments"):
             value = payload.get(key)
             if isinstance(value, list):
@@ -199,11 +217,13 @@ def parse_funasr_json(path: Path) -> list[dict[str, Any]]:
                 label = f"C{chunk_index}_{label}"
         start = item.get("start", item.get("start_time", item.get("begin", 0)))
         end = item.get("end", item.get("end_time", item.get("finish", start)))
+        start_ms = int(_checked_ms(offset_ms + int(_checked_ms(start or 0))))
+        end_ms = int(_checked_ms(offset_ms + int(_checked_ms(end or start or 0))))
         segments.append(
             {
                 "ordinal": len(segments),
-                "start_ms": offset_ms + int(float(start or 0)),
-                "end_ms": offset_ms + int(float(end or start or 0)),
+                "start_ms": start_ms,
+                "end_ms": end_ms,
                 "speaker_label": label,
                 "speaker_name": None,
                 "text": text,

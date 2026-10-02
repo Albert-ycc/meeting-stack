@@ -96,6 +96,8 @@ RECOVERABLE_SOURCE_ERRORS = (
     UnicodeError,
     subprocess.SubprocessError,
     RecursionError,
+    # 解析器已拒绝越界时间戳；这里是第二道防线，别让一份坏文件冲出整轮扫描。
+    OverflowError,
 )
 
 
@@ -2096,7 +2098,7 @@ class ArchiveImporter:
                     report.speaker_backfill_applied += 1
                 else:
                     report.speaker_backfill_skipped += 1
-            except (OSError, ValueError, UnicodeError, sqlite3.Error):
+            except (OSError, ValueError, UnicodeError, OverflowError, sqlite3.Error):
                 report.speaker_backfill_skipped += 1
         if created:
             report.versions_imported += 1

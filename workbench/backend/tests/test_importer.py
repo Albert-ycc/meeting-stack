@@ -2497,3 +2497,35 @@ def test_unreadable_subdirectory_counts_as_error_and_keeps_its_records(tmp_path)
 
     assert report.errors > 0
     assert db.query_one("SELECT 1 FROM artifacts WHERE path=?", (str(reference),))
+
+
+@pytest.mark.parametrize("value", ["1e400", "Infinity", "100000000000000000000000"])
+def test_one_transcript_json_with_a_huge_timestamp_only_fails_its_own_meeting(tmp_path, value):
+    archive = tmp_path / "archive"
+    # 坏目录按名字排在正常会议前面：之前它会冲出 scan()，后面的会一场都进不来。
+    bad = archive / "A 坏数据会议"
+    bad.mkdir(parents=True)
+    (bad / "vm-20260202-120000.m4a").write_bytes(b"fake-audio-2")
+    (bad / "vm-20260202-120000.srt").write_text(
+        "1\n00:00:02,000 --> 00:00:04,000\n坏数据会议正文\n", encoding="utf-8"
+    )
+    whisper = bad / "whisper-ref"
+    whisper.mkdir()
+    (whisper / "vm-20260202-120000.json").write_text(
+        '{"segments":[{"start": %s, "end": 1, "text": "x"}]}' % value, encoding="utf-8"
+    )
+    write_meeting(archive, "B 正常会议", official=True, transcript_text="正常内容")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        semantic_enabled=False,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+
+    report = ArchiveImporter(db, settings).scan()
+
+    assert report.errors == 1
+    assert db.query_one("SELECT 1 FROM meetings WHERE id='vm-20260101-120000'")
