@@ -205,6 +205,24 @@ describe("地址栏锚点直达", () => {
     expect(window.location.hash).toBe("#meetings/vm-1");
   });
 
+  it("页面开着时地址栏改成畸形百分号编码：不抛错，当成不存在的会议，给返回入口", async () => {
+    const meeting = vi.fn().mockRejectedValue(new ApiError("会议不存在", 404));
+    render(<App apiClient={client({ meeting } as Partial<ApiClient>)} />);
+    fireEvent.click(await screen.findByRole("button", { name: "录音档案" }));
+    await screen.findByRole("heading", { name: "会议录音档案" });
+
+    act(() => {
+      window.history.pushState(null, "", "/#meetings/%E4");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+
+    expect(await screen.findByText("会议不存在")).toBeInTheDocument();
+    expect(meeting).toHaveBeenCalledWith("%E4");
+    await userEvent.click(screen.getByRole("button", { name: "← 返回录音档案" }));
+    expect(await screen.findByRole("heading", { name: "会议录音档案" })).toBeInTheDocument();
+  });
+
   it("需求不存在（接口 404）：写「需求不存在或已删除」，只给返回，不给没用的［重试］", async () => {
     window.history.replaceState(null, "", "/#requirements/req-nope");
     const requirement = vi.fn().mockRejectedValue(new ApiError("需求不存在：req-nope", 404));

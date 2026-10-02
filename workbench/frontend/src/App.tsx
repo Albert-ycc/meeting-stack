@@ -166,6 +166,15 @@ function localFromQuery(params: URLSearchParams): GraphLocal | null {
   return null;
 }
 
+/** 地址栏里的 id 解码。手改出来的畸形百分号编码（#meetings/%E4）解不开就原样当 id，落到「不存在」，不抛出去 */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function localParam(hash: string): string | null {
   const local = localFromQuery(new URLSearchParams(hash.split("?")[1] ?? ""));
   return local ? (local.kind === "file" ? `file:${local.fileId}` : `trace:${local.node}`) : null;
@@ -423,7 +432,7 @@ export default function App({ apiClient = api }: AppProps) {
     const exitingLocal = localExitRef.current;
     localExitRef.current = false;
     if (hash.startsWith("#meetings/")) {
-      const target = decodeURIComponent(hash.slice("#meetings/".length));
+      const target = safeDecode(hash.slice("#meetings/".length));
       // 会议卡片里的时间点链接 #meetings/<id>@<秒>：打开这场会并从那一秒开始播放；秒数不是数字就当没带
       const match = /^(.+?)(?:@([^@]*))?$/.exec(target);
       const meetingId = match?.[1] ?? "";
@@ -507,7 +516,7 @@ export default function App({ apiClient = api }: AppProps) {
       // #projects/<id> 是清单，#projects/<id>/graph?sel=m:<id> 是关系图并选中一个节点
       const [pathPart, queryPart = ""] = hash.slice("#projects/".length).split("?");
       const [rawId, sub] = pathPart.split("/");
-      const projectId = decodeURIComponent(rawId ?? "");
+      const projectId = safeDecode(rawId ?? "");
       if (projectId) {
         const graphMode = sub === "graph";
         const params = new URLSearchParams(queryPart);
@@ -544,7 +553,7 @@ export default function App({ apiClient = api }: AppProps) {
     } else if (hash === "#requirements/new" || hash.startsWith("#requirements/claim/")) {
       // 新增、认领需求的二级页只在电脑上有（手机端只读）：照 #graph 的规矩退回需求池
       const candidateId = hash.startsWith("#requirements/claim/")
-        ? decodeURIComponent(hash.slice("#requirements/claim/".length))
+        ? safeDecode(hash.slice("#requirements/claim/".length))
         : null;
       if (isMobileRef.current) {
         setView("requirements");
@@ -557,7 +566,7 @@ export default function App({ apiClient = api }: AppProps) {
       }
     } else if (/^#requirements\/[^/]+\/edit$/.test(hash)) {
       // 修改需求的二级页（S11）只在电脑上有：手机上退回需求详情
-      const requirementId = decodeURIComponent(hash.slice("#requirements/".length, -"/edit".length));
+      const requirementId = safeDecode(hash.slice("#requirements/".length, -"/edit".length));
       if (isMobileRef.current) {
         setOpenRequirementId(requirementId);
         setView("requirementDetail");
@@ -566,13 +575,13 @@ export default function App({ apiClient = api }: AppProps) {
         setView("requirementForm");
       }
     } else if (hash.startsWith("#requirements/")) {
-      const requirementId = decodeURIComponent(hash.slice("#requirements/".length));
+      const requirementId = safeDecode(hash.slice("#requirements/".length));
       if (requirementId) {
         setOpenRequirementId(requirementId);
         setView("requirementDetail");
       }
     } else if (hash.startsWith("#glossary/project/")) {
-      const projectId = decodeURIComponent(hash.slice("#glossary/project/".length));
+      const projectId = safeDecode(hash.slice("#glossary/project/".length));
       if (projectId) {
         setGlossaryProjectId(projectId);
         setView("glossary");
