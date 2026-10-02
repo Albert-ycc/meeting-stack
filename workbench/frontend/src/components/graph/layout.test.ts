@@ -192,6 +192,21 @@ describe("layoutStarMap", () => {
     }
   });
 
+  it("圈满时残影让位：真会全画出来，没槽的残影不画（由「刚移走的会」那一行兜着）", () => {
+    // 后端改走一场会后会补满这一圈，残影再按天数落同一圈，就多出一个
+    const meetings = Array.from({ length: 8 }, (_, index) => meeting(`k${index}`, index < 4 ? 1 : 3));
+    const layout = layoutStarMap(
+      payload({
+        meetings,
+        moved_out: [
+          { meeting_id: "zz-ghost", title: "刚改走的会", date: day(0), age_days: 0, to_project_id: "q", to_project_name: "数据中台", undo_until: "2099-01-01T00:00:00Z" },
+        ],
+      }),
+    );
+    for (const item of meetings) expect(layout.byId.has(item.id)).toBe(true);
+    expect(layout.byId.has("g:zz-ghost")).toBe(false);
+  });
+
   it("N 的顺序：门口、待复核或待确认或卡片停了的会、有待确认任务的需求", () => {
     const graph = payload({
       meetings: [

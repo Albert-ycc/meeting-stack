@@ -306,9 +306,15 @@ export function layoutStarMap(graph: GraphPayload): StarLayout {
     ring: item.ring === "inner" ? ("inner" as const) : ("middle" as const),
     order,
   }));
+  // 后端改走一场会后会把这一圈补满，残影只能用真会剩下的空槽，不然会挤掉一场真会；
+  // 没槽的残影不画，ProjectGraph 顶上「刚移走的会」那一行会列出它
+  const spare = { inner: INNER_SLOTS, middle: MIDDLE_SLOTS };
+  for (const entry of slotted) spare[entry.ring] -= 1;
   (graph.moved_out ?? []).forEach((item, index) => {
     const ring = ghostRing(item, graph.window.days);
-    if (ring) slotted.push({ kind: "ghost", item, ring, order: graph.meetings.length + index });
+    if (!ring || spare[ring] <= 0) return;
+    spare[ring] -= 1;
+    slotted.push({ kind: "ghost", item, ring, order: graph.meetings.length + index });
   });
   // 同一天的按会议 id 倒排（id 里带录音时间，越晚越靠上）：残影不知道自己原来排第几，靠 id 找回同一个槽
   slotted.sort(
