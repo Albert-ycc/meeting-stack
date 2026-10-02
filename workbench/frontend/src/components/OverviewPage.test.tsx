@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../api";
 import type { Job, MeetingSummary, Task } from "../types";
-import { OverviewPage, materialTagText } from "./OverviewPage";
+import { OverviewPage, chartDayLabels, materialTagText } from "./OverviewPage";
 
 const pendingTask: Task = {
   id: "task-1",
@@ -134,6 +134,25 @@ describe("OverviewPage mobile safety", () => {
     expect(screen.getByText("本地服务全部正常")).toBeInTheDocument();
     expect(screen.getByText("协会MDT需求评审")).toBeInTheDocument();
     expect(screen.getAllByText("标题待生成").length).toBeGreaterThan(0);
+  });
+});
+
+describe("OverviewPage 图表日期", () => {
+  it("跨过夏令时切换的那几周，悬停日期和星期不差一天", () => {
+    // 本机在太平洋时区；2026-03-08 切夏令时，那天只有 23 小时
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    try {
+      const days = chartDayLabels(new Date(2026, 2, 20));
+      expect(days.points[0]).toBe("2/19 周四");
+      expect(days.points.slice(16, 18)).toEqual(["3/7 周六", "3/8 周日"]);
+      expect(days.points[29]).toBe("3/20 周五");
+      expect(days.cells[0]).toBe("12/1 周一");
+      expect(days.cells[96]).toBe("3/7 周六");
+      expect(days.cells[111]).toBe("3/22 周日");
+      expect(days.axis).toEqual(["2/19", "2/28", "3/10", "3/20"]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

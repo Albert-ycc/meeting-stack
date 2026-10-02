@@ -111,6 +111,27 @@ export function materialTagText(health: HealthPayload | null | undefined): strin
   return text;
 }
 
+/**
+ * 图表上每一天叫什么：面积图 30 个点、热力图 16 周的格子、横轴四个刻度。按日历往前推，不用毫秒相减——
+ * 夏令时切换那天只有 23 小时，本地午夜减整 24 小时会落到前一天 23 点，悬停的日期和星期就早一天。
+ */
+export function chartDayLabels(today: Date) {
+  const day = (offset: number) => new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset);
+  const stamp = (d: Date) => `${d.getMonth() + 1}/${d.getDate()} 周${"日一二三四五六"[d.getDay()]}`;
+  // 热力图按 GitHub 那种排法：一列一周，行是周一到周日，第一格是 15 周前的周一
+  const calStartOffset = -((today.getDay() + 6) % 7) - (CHART_WEEKS - 1) * 7;
+  return {
+    calStart: day(calStartOffset),
+    cells: Array.from({ length: CHART_WEEKS * 7 }, (_, index) => stamp(day(calStartOffset + index))),
+    // 索引 0 是 30 天前
+    points: Array.from({ length: CHART_DAYS }, (_, index) => stamp(day(index - (CHART_DAYS - 1)))),
+    axis: [CHART_DAYS - 1, 20, 10, 0].map((back) => {
+      const d = day(-back);
+      return `${d.getMonth() + 1}/${d.getDate()}`;
+    }),
+  };
+}
+
 function startOfWeek(reference: Date): Date {
   const start = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate());
   const weekdayFromMonday = (start.getDay() + 6) % 7;
@@ -199,10 +220,8 @@ export function OverviewPage({
     const minutes = new Array<number>(CHART_DAYS).fill(0);
     let activeDays = 0;
 
-    // 热力图按 GitHub 那种排法：一列一周，行是周一到周日
-    const weekdayFromMonday = (today.getDay() + 6) % 7;
-    const thisMonday = todayMs - weekdayFromMonday * DAY_MS;
-    const calStart = thisMonday - (CHART_WEEKS - 1) * 7 * DAY_MS;
+    const days = chartDayLabels(today);
+    const calStart = days.calStart.getTime();
     const counts = new Array<number>(CHART_WEEKS * 7).fill(0);
 
     for (const item of chartSource) {
@@ -224,33 +243,20 @@ export function OverviewPage({
     }
     for (const v of minutes) if (v > 0) activeDays += 1;
 
-    const stamp = (ms: number) => {
-      const d = new Date(ms);
-      return `${d.getMonth() + 1}/${d.getDate()} 周${"日一二三四五六"[d.getDay()]}`;
-    };
-    const shortStamp = (back: number) => {
-      const d = new Date(todayMs - back * DAY_MS);
-      return `${d.getMonth() + 1}/${d.getDate()}`;
-    };
-
     const peak = Math.max(...counts, 1);
-    const cells: CalendarCell[] = counts.map((count, index) => {
-      const col = Math.floor(index / 7);
-      const dayMs = calStart + (col * 7 + (index % 7)) * DAY_MS;
-      return {
-        intensity: count === 0 ? 0 : 0.25 + 0.75 * (count / peak),
-        label: stamp(dayMs),
-        count,
-      };
-    });
+    const cells: CalendarCell[] = counts.map((count, index) => ({
+      intensity: count === 0 ? 0 : 0.25 + 0.75 * (count / peak),
+      label: days.cells[index],
+      count,
+    }));
 
     return {
       minutes,
       cells,
       ticks: niceTicks(Math.max(...minutes)),
-      labels: [shortStamp(CHART_DAYS - 1), shortStamp(20), shortStamp(10), shortStamp(0)],
-      // 面积图 hover 时要能说出是哪一天，索引 0 是 30 天前
-      pointLabels: Array.from({ length: CHART_DAYS }, (_, i) => stamp(todayMs - (CHART_DAYS - 1 - i) * DAY_MS)),
+      labels: days.axis,
+      // 面积图 hover 时要能说出是哪一天
+      pointLabels: days.points,
       totalHours: minutes.reduce((a, b) => a + b, 0) / 60,
       activeDays,
     };
