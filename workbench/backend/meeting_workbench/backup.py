@@ -74,8 +74,7 @@ class BackupManager:
             derived_tables = self._online_backup(local_path)
             derived_stripped = bool(derived_tables)
             local_sha256 = self._sha256(local_path)
-            self._verify_database(local_path)
-            self._rotate(self.settings.backup_dir)
+            self._rotate(self.settings.backup_dir, fresh=local_path)
 
             mirror_path: Path | None = None
             mirror_sha256: str | None = None
@@ -98,7 +97,7 @@ class BackupManager:
                 installed_mirror = mirror_path
                 self._fsync_file(mirror_path)
                 self._fsync_directory(mirror_dir)
-                self._rotate(mirror_dir)
+                self._rotate(mirror_dir, fresh=mirror_path)
             except (OSError, sqlite3.DatabaseError) as error:
                 mirror_error = type(error).__name__
                 for failed_path in (mirror_candidate, installed_mirror):
@@ -286,37 +285,61 @@ class BackupManager:
         finally:
             os.close(descriptor)
 
-    def _rotate(self, directory: Path) -> None:
-        verified: list[Path] = []
+    def _rotate(self, directory: Path, *, fresh: Path) -> None:
+        """只留最近 retention 份。fresh 是刚生成、已经校验过的新副本，一定占一个名额，
+        其余按文件名（里面是 UTC 时间）从新到旧补满。
+
+        旧副本不再逐个跑 integrity_check：每次备份对本地和镜像两个目录的每一份都验一遍，
+        库越大越慢（实测一次备份 33 次），而每份副本在生成时已经验过。"""
+        copies: list[Path] = []
         removed = False
         for path in sorted(directory.glob("workbench-*.sqlite3"), reverse=True):
             if path.is_symlink() or not path.is_file():
                 path.unlink(missing_ok=True)
                 removed = True
                 continue
-            try:
-                self._verify_database(path)
-            except sqlite3.DatabaseError as error:
-                # 只有明确判定损坏（完整性检查不是 ok、不是数据库、页面损坏）才删；
-                # 被锁、磁盘 I/O 这类瞬时错误判定不了，留着下一次再验，也不计入保留份数。
-                code = getattr(error, "sqlite_errorcode", None)
-                if code is None:
-                    # _verify_database 自己下的结论（integrity_check 不是 ok）
-                    corrupt = not isinstance(error, sqlite3.OperationalError)
-                else:
-                    corrupt = code & 0xFF in {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}
-                if not corrupt:
-                    logger.warning("备份 %s 这次校验不了，先保留：%s", path, error)
-                    continue
-                path.unlink(missing_ok=True)
-                removed = True
-                continue
-            except OSError as error:
-                logger.warning("备份 %s 这次校验不了，先保留：%s", path, error)
-                continue
-            verified.append(path)
-        for path in verified[self.retention :]:
-            path.unlink()
+            copies.append(path)
+        for path in sorted(copies, key=lambda copy: copy != fresh)[self.retention :]:
+            self._remove_copy(path)
+            removed = True
+        if self._remove_orphan_sidecars(directory):
             removed = True
         if removed:
             self._fsync_directory(directory)
+
+    @staticmethod
+    def _remove_copy(path: Path) -> None:
+        path.unlink()
+        for suffix in ("-wal", "-shm"):
+            BackupManager._remove_leftover(path.with_name(path.name + suffix))
+
+    @staticmethod
+    def _remove_leftover(path: Path) -> bool:
+        """清掉备份旁边的残留文件（旁路文件）。清不掉只记一条日志：新副本已经装好，
+        不能让一个 0 字节的残留文件把整次备份（连回执）拖垮。"""
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            logger.warning("备份旁边的残留文件 %s 清不掉：%s", path, error)
+            return False
+        return True
+
+    @staticmethod
+    def _remove_orphan_sidecars(directory: Path) -> bool:
+        """清掉主文件已经不在的 -wal / -shm。只读打开副本校验会在旁边留下它们，以前轮转删掉主文件时
+        没带走。只认备份自己的命名（workbench-… 和生成时的 .workbench-… 临时名），有主文件的不动。"""
+        removed = False
+        for sidecar in list(directory.iterdir()):
+            for suffix in ("-wal", "-shm"):
+                if not sidecar.name.endswith(suffix):
+                    continue
+                main = sidecar.with_name(sidecar.name[: -len(suffix)])
+                if (
+                    main.name.lstrip(".").startswith("workbench-")
+                    and not main.exists()
+                    and sidecar.is_file()
+                    and not sidecar.is_symlink()
+                    and BackupManager._remove_leftover(sidecar)
+                ):
+                    removed = True
+        return removed
