@@ -1,6 +1,6 @@
 # relay — 录音发现、转写调度与派单
 
-relay 是整条链路的自动化中枢：发现新录音 → 调用本地转写 → 按时长分流 → 把结果交给 AI Agent →
+relay 是整条链路的自动化中枢：发现新录音 → 入任务队列 → 调用本地转写 → 把结果交给 AI Agent →
 归档到资料库。工作台（`../workbench`）负责之后的检索、播放与编辑。
 
 ## 链路
@@ -11,9 +11,8 @@ relay 是整条链路的自动化中枢：发现新录音 → 调用本地转写
   │                          新录音统一改名 vm-<时间戳>-<UUID>.m4a 移到监听目录
   └─ 任何方式放入监听目录的音频（手动拷贝、录音笔导入、其他脚本）
         ↓
-relay_watchdog.py   监听目录，用 ffprobe 探测时长后分流：
-    < 10 分钟   即时指令：转写文本直接派给 AI Agent 执行
-    ≥ 10 分钟   会议纪要：转写后派 Agent 生成纪要，归档为 <YYMMDD 主题>/
+relay_watchdog.py   监听目录，新音频入工作台任务队列（受控模式，MEETING_RELAY_CONTROL_ENABLED=1），
+                    逐个领取：转写后派 Agent 生成纪要，归档为 <YYMMDD 主题>/
         ↓
 ../transcribe/transcribe.sh   本地转写（FunASR 主稿 + Whisper 对照稿）
         ↓
@@ -23,14 +22,22 @@ relay_watchdog.py   监听目录，用 ffprobe 探测时长后分流：
 ```
 
 监听目录默认是 `~/Downloads`，用 `MEETING_RELAY_WATCH_DIR` 覆盖。**不需要 iPhone**——
-Voice Memos 桥接只是众多入口之一，任何来源的音频文件落进监听目录都会被处理。
+Voice Memos 桥接只是众多入口之一，任何来源的音频文件落进监听目录都会被处理，不校验来源，
+所以别用会落进不可信文件的目录（比如网页能自动下载到的目录），专门建一个只放录音的目录最稳妥。
+
+**必须设 `MEETING_RELAY_CONTROL_ENABLED=1`。** 不设时 watchdog 走旧同步路径：不领工作台入队的任务，
+而是用 ffprobe 探测时长后分流——短于 10 分钟的当成口述指令，转写文本直接派给 AI Agent 执行；
+10 分钟以上的转写后派 Agent 写纪要。旧路径只是留着回滚用的。
 
 ## 配置
 
-全部通过环境变量，无配置文件：
+全部通过环境变量，**不读 `.env`**（`.env` 只有工作台自己读）。用仓库根的 `.env` 时，启动前先把它导成
+环境变量，写法见下面的「运行」；常驻部署就写进 launchd / ssh 的启动命令里。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
+| `MEETING_RELAY_CONTROL_ENABLED` | 空 | 必须设成 `1`：走工作台任务队列（受控模式）；不设走旧同步路径（见上） |
+| `MEETING_RELAY_WATCH_DIR` | `~/Downloads` | 监听目录 |
 | `MEETING_RELAY_ARCHIVE_ROOT` | `~/MeetingArchive` | 正式归档根 |
 | `MEETING_RELAY_PRODUCTS_ROOT` | `~/Movies/meeting-relay-products` | 转写产物工作目录 |
 | `MEETING_RELAY_JOBS_DB` | `~/.meeting-relay/workbench-jobs.sqlite3` | 任务队列库 |
@@ -114,18 +121,24 @@ quickstart/relayctl retry <job_id> --stage minutes_generating --project-hint <�
 
 ## 运行
 
+在仓库根执行（relay 不读 `.env`，先导成环境变量；`.env` 里的值有空格要加引号）：
+
 ```bash
-# 监听守护（前台）
-python3 quickstart/relay_watchdog.py
+# 监听守护（前台）；.env 里要有 MEETING_RELAY_CONTROL_ENABLED=1
+(set -a; source ./.env; set +a; exec python3 relay/quickstart/relay_watchdog.py)
+
+# 不用 .env 时直接在命令前写环境变量
+MEETING_RELAY_CONTROL_ENABLED=1 MEETING_RELAY_ARCHIVE_ROOT=~/MeetingArchive \
+  python3 relay/quickstart/relay_watchdog.py
 
 # 可选：Voice Memos 桥接（macOS + iPhone）
-python3 quickstart/voicememos_bridge.py
+python3 relay/quickstart/voicememos_bridge.py
 
-# 手动入队
-quickstart/relayctl enqueue "/绝对路径/会议.m4a" --json
+# 手动入队（relayctl 也只认环境变量，任务库等位置要和 watchdog 一致）
+relay/quickstart/relayctl enqueue "/绝对路径/会议.m4a" --json
 
 # 查看健康状态（退出码 0/1/2 = 健康/降级/不可用）
-quickstart/relayctl health --json
+relay/quickstart/relayctl health --json
 ```
 
 macOS 上以守护方式常驻时的 TCC 权限问题见 [../docs/install.md](../docs/install.md)。

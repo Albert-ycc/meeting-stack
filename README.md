@@ -288,18 +288,23 @@ python3 -m venv ~/.venvs/whisper
 ~/.venvs/whisper/bin/pip install openai-whisper
 
 # 3. 配置
-cp .env.example .env    # 至少改 MEETING_ARCHIVE_ROOT
+cp .env.example .env    # 至少改 MEETING_WORKBENCH_ARCHIVE_ROOT 和 MEETING_RELAY_ARCHIVE_ROOT（指向同一个目录）
 ```
 
-启动：
+启动（在仓库根执行）：
 
 ```bash
-./workbench/scripts/remote-bootstrap.sh          # 工作台
-python3 relay/quickstart/relay_watchdog.py       # 录音监听
+./workbench/scripts/remote-bootstrap.sh          # 工作台（自己读 .env）
+# 录音监听：relay 不读 .env，先把 .env 导成环境变量再起
+(set -a; source ./.env; set +a; exec python3 relay/quickstart/relay_watchdog.py)
 python3 task-notify/card_listener.py             # 任务确认卡片回调监听（可选）
 ```
 
-打开 http://127.0.0.1:8765 ，把一个音频文件丢进 `~/Downloads` 就会自动进入流程。
+relay 的环境里必须有 `MEETING_RELAY_CONTROL_ENABLED=1`（`.env.example` 里已写好，上面的写法会带进去）。
+不设时 watchdog 走旧同步路径：工作台入队的任务没人领，监听目录里短于 10 分钟的音频会被当成口述指令，
+转写后直接派给 Agent 执行。所以监听目录别用会落进不可信文件的目录。
+
+打开 http://127.0.0.1:8765 ，把一个音频文件丢进监听目录（默认 `~/Downloads`）就会自动进入流程。
 任务推送与确认闭环的开启方式见 [docs/task-notification-push.md](docs/task-notification-push.md)。
 
 完整安装说明与 macOS 权限问题见 [docs/install.md](docs/install.md)。
@@ -308,13 +313,16 @@ python3 task-notify/card_listener.py             # 任务确认卡片回调监�
 
 ## 配置
 
-所有配置走环境变量，工作台读 `.env`。常用的几个：
+所有配置走环境变量。工作台自己读 `.env`（仓库根和 `workbench/` 下的都读，两处都写了的项以 `workbench/.env`
+为准，与从哪个目录启动无关）；relay、转写脚本、卡片监听不读 `.env`，要以环境变量注入，写法见上面的启动命令。
+常用的几个：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `MEETING_WORKBENCH_ARCHIVE_ROOT` | `~/MeetingArchive` | 归档根，指向哪都行（外置盘、NAS 挂载点） |
 | `MEETING_WORKBENCH_PORT` | `8765` | Web 端口 |
-| `MEETING_RELAY_WATCH_DIR` | `~/Downloads` | 监听目录 |
+| `MEETING_RELAY_WATCH_DIR` | `~/Downloads` | 监听目录，不校验来源，别用会落进不可信文件的目录 |
+| `MEETING_RELAY_CONTROL_ENABLED` | 空 | 必须设成 `1`，relay 才走工作台任务队列；不设走旧同步路径（见上） |
 | `MEETING_RELAY_AGENT` | `claude` | 派单目标，`claude` 或 `codex` |
 | `TRANSCRIBE_ENGINE` | `observe` | `observe`=双跑；relay 自动处理录音只支持它，`funasr` / `whisper` 单引擎仅供手工跑 `transcribe.sh` |
 | `MEETING_WORKBENCH_LARK_CHAT_ID` | 空 | 飞书任务确认卡发送到的群；留空则确认闭环在网页内完成 |

@@ -61,14 +61,26 @@ cp .env.example .env
 （两者要指向同一个目录）。该目录应专用于会议资料，不要和普通文档混放——
 扫描逻辑会把里面的目录当会议处理。
 
+谁读这份 `.env`：
+
+- **工作台**自己读。仓库根的 `.env` 和 `workbench/.env` 都会读，两处都写了的项以 `workbench/.env` 为准，
+  与从哪个目录启动无关。
+- **relay**（`relay_watchdog.py`、`relayctl`）、转写脚本、卡片监听**不读** `.env`，只认进程的环境变量。
+  要在启动命令里注入（见下一节），或写进 launchd / ssh 启动命令里。
+
+`.env.example` 里的 `MEETING_RELAY_CONTROL_ENABLED=1` 必须保留并注入给 relay。不设时 watchdog 走旧同步路径：
+工作台入队的任务没人领；监听目录里短于 10 分钟的音频会被当成口述指令，转写后直接派给 Agent 执行。
+所以监听目录（`MEETING_RELAY_WATCH_DIR`，默认 `~/Downloads`）别用会落进不可信文件的目录，
+专门建一个只放录音的目录最稳妥。
+
 ## 四、运行
 
 ```bash
 # 工作台（三个 tmux session：Web、每日备份、每周完整性核验）
 ./workbench/scripts/remote-bootstrap.sh
 
-# 录音监听
-python3 relay/quickstart/relay_watchdog.py
+# 录音监听：relay 不读 .env，先把它导成环境变量再起（在仓库根执行；.env 里的值有空格要加引号）
+(set -a; source ./.env; set +a; exec python3 relay/quickstart/relay_watchdog.py)
 
 # 可选：Voice Memos 桥接（仅 macOS + iPhone）
 python3 relay/quickstart/voicememos_bridge.py
