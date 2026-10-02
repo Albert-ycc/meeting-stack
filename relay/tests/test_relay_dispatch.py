@@ -4,17 +4,24 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+# tests/ 没有 __init__，按文件路径跑单个文件时同目录的公共模块不在 sys.path 上
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isolated_env import isolate_environment  # noqa: E402
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WATCHDOG_PATH = REPO_ROOT / "quickstart" / "relay_watchdog.py"
 _RUNTIME_DB_ENV = "MEETING_RELAY_JOBS_DB"
 _ARCHIVE_LOCK_ENV = "MEETING_RELAY_ARCHIVE_LOCK"
+# 模块加载时的真实 HOME（setUpModule 还没把它指到临时目录），只拿来做字符串比较，不碰文件系统
+_REAL_HOME = os.path.expanduser("~")
 _original_runtime_db = None
 _original_archive_lock = None
 _runtime_db_tempdir = None
@@ -22,9 +29,10 @@ _runtime_db_tempdir = None
 
 def setUpModule():
     global _original_runtime_db, _original_archive_lock, _runtime_db_tempdir
+    _runtime_db_tempdir = tempfile.TemporaryDirectory()
+    isolate_environment(Path(_runtime_db_tempdir.name) / "home")
     _original_runtime_db = os.environ.get(_RUNTIME_DB_ENV)
     _original_archive_lock = os.environ.get(_ARCHIVE_LOCK_ENV)
-    _runtime_db_tempdir = tempfile.TemporaryDirectory()
     os.environ[_RUNTIME_DB_ENV] = str(Path(_runtime_db_tempdir.name) / "jobs.sqlite3")
     # 默认归档锁是生产工作台正在用的 ~/.meeting-workbench/archive.lock，用例不能去抢
     os.environ[_ARCHIVE_LOCK_ENV] = str(Path(_runtime_db_tempdir.name) / "archive.lock")
@@ -68,6 +76,27 @@ def write_main_transcript_bundle(transcript: Path, text: str = "主稿已完成"
     transcript.with_name("funasr.log").write_text(
         "ok", encoding="utf-8"
     )
+
+
+class IsolatedEnvironmentTests(unittest.TestCase):
+    def test_default_paths_follow_the_isolated_home_not_the_real_one(self):
+        """setUpModule 里的隔离要在 watchdog 模块加载前生效：processed.txt、词典快照、状态目录、
+        监听目录这些按 HOME 算的默认路径都在临时 HOME 下，调用方 shell 里的 MEETING_RELAY_* 也不继承。"""
+        home = Path(os.environ["HOME"])
+        self.assertNotEqual(str(home), _REAL_HOME)
+        module = load_watchdog_module()
+
+        for path in (
+            module.STATE_DIR,
+            module.PROCESSED_LOG,
+            module.LAST_MEETING_FILE,
+            module.DEFAULT_PROMPT_FILE,
+            module.GLOSSARY_SNAPSHOT,
+            module.ARCHIVE_ROOT,
+            module.PRODUCTS_DIR,
+            module.INBOX,
+        ):
+            self.assertTrue(path.is_relative_to(home), path)
 
 
 class RelayDispatchTests(unittest.TestCase):

@@ -3,11 +3,16 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
+
+# tests/ 没有 __init__，按文件路径跑单个文件时同目录的公共模块不在 sys.path 上
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isolated_env import isolate_environment  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,9 +27,10 @@ _runtime_db_tempdir = None
 
 def setUpModule():
     global _original_runtime_db, _original_archive_lock, _runtime_db_tempdir
+    _runtime_db_tempdir = tempfile.TemporaryDirectory()
+    isolate_environment(Path(_runtime_db_tempdir.name) / "home")
     _original_runtime_db = os.environ.get(_RUNTIME_DB_ENV)
     _original_archive_lock = os.environ.get(_ARCHIVE_LOCK_ENV)
-    _runtime_db_tempdir = tempfile.TemporaryDirectory()
     os.environ[_RUNTIME_DB_ENV] = str(Path(_runtime_db_tempdir.name) / "jobs.sqlite3")
     # 默认归档锁是生产工作台正在用的 ~/.meeting-workbench/archive.lock，用例不能去抢
     os.environ[_ARCHIVE_LOCK_ENV] = str(Path(_runtime_db_tempdir.name) / "archive.lock")

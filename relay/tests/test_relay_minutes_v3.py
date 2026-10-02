@@ -2,9 +2,14 @@ import hashlib
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+# tests/ 没有 __init__，按文件路径跑单个文件时同目录的公共模块不在 sys.path 上
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isolated_env import isolate_environment  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,8 +21,9 @@ _lock_tempdir = None
 
 def setUpModule():
     global _original_archive_lock, _lock_tempdir
-    _original_archive_lock = os.environ.get(_ARCHIVE_LOCK_ENV)
     _lock_tempdir = tempfile.TemporaryDirectory()
+    isolate_environment(Path(_lock_tempdir.name) / "home")
+    _original_archive_lock = os.environ.get(_ARCHIVE_LOCK_ENV)
     # 默认归档锁是生产工作台正在用的 ~/.meeting-workbench/archive.lock，用例不能去抢
     os.environ[_ARCHIVE_LOCK_ENV] = str(Path(_lock_tempdir.name) / "archive.lock")
 
