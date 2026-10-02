@@ -75,7 +75,8 @@ def test_stats_are_still_computed_while_the_digest_has_not_gone_out(
 
 
 def test_stall_and_digest_stats_match_the_per_task_implementation(tmp_path, frozen_clock):
-    """期望值是逐条 task_summary 的旧实现在这份数据上的输出（时钟钉死、本机时区北京时间）。"""
+    """期望值是逐条 task_summary 的旧实现在这份数据上的输出（时钟钉死、本机时区北京时间）；只有「完成」一项
+    换了口径（今天完成改成北京日历的昨天完成，见 test_digest_calendar），别的逐项相同。"""
     service, _notifier, _posts = make_service(tmp_path, notifying=False)
     build_world(service.db, meetings=8, tasks_per_meeting=3)
 
@@ -95,7 +96,7 @@ def test_stall_and_digest_stats_match_the_per_task_implementation(tmp_path, froz
     ]
     assert service._digest_stats() == {
         "auto_assigned_yesterday": 0,
-        "done_today": ["任务 00013 入库"],
+        "done_yesterday": ["任务 00004 权限"],
         "in_progress": 9,
         "needs_review": 0,
         "pending": 8,

@@ -2739,16 +2739,17 @@ class TaskService:
             done_rows = connection.execute(
                 "SELECT title, status_changed_at FROM tasks WHERE status='done' ORDER BY created_at DESC"
             ).fetchall()
-        # 「今天完成」按本地日算，和下面「昨天自动归属」同一口径
-        today = datetime.now().astimezone().date()
-        done_today = []
+        # 晨报的读者在北京的早上：「昨天」按北京日历算（不随跑声档的那台 Mac 的太平洋时区），完成和归属两行同一口径。
+        # 完成的说「昨天」不说「今天」：09:00 发晨报时北京的今天才刚开始，今天完成的几乎恒为 0。
+        beijing_now = datetime.now(task_due.BEIJING_TZ)
+        yesterday = beijing_now.date() - timedelta(days=1)
+        done_yesterday = []
         for row in done_rows:
             done_at = _parse_dt(row["status_changed_at"])
-            if done_at and done_at.astimezone().date() == today:
-                done_today.append(row["title"])
-        # 归属一行：昨天（本地日）自动归属了几场，现在还有几场等你选项目。
-        local_now = datetime.now().astimezone()
-        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            if done_at and done_at.astimezone(task_due.BEIJING_TZ).date() == yesterday:
+                done_yesterday.append(row["title"])
+        # 归属一行：昨天（北京日历）自动归属了几场，现在还有几场等你选项目。
+        today_start = beijing_now.replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday_start = today_start - timedelta(days=1)
         auto_row = self.db.query_one(
             """SELECT COUNT(DISTINCT meeting_id) AS count FROM events
@@ -2766,12 +2767,12 @@ class TaskService:
         return {
             "auto_assigned_yesterday": int(auto_row["count"] if auto_row else 0),
             "needs_review": needs_review,
-            "total": pending_count + len(in_progress) + len(done_today),
+            "total": pending_count + len(in_progress) + len(done_yesterday),
             "pending": pending_count,
             "pending_sources": pending_sources,
             "in_progress": len(in_progress),
             "stalled": len(stalled),
             "stalled_titles": [task["title"] for task in stalled],
             "stalled_days": [round(task["stall_days"]) for task in stalled],
-            "done_today": done_today,
+            "done_yesterday": done_yesterday,
         }

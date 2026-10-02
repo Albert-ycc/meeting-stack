@@ -1005,9 +1005,9 @@ class LarkNotifier:
                 f"· 停滞点名：{_escape_markdown(stats['stalled_titles'][0])}"
                 f"（{stats['stalled_days'][0]} 天没动了）。"
             )
-        if stats["done_today"]:
+        if stats["done_yesterday"]:
             parts.append(
-                f"· 今天完成 {len(stats['done_today'])} 条：{_escape_markdown(stats['done_today'][0])}。"
+                f"· 昨天完成 {len(stats['done_yesterday'])} 条：{_escape_markdown(stats['done_yesterday'][0])}。"
             )
         if auto or review:
             line = f"· 昨天自动归属 {auto} 场" if auto else "· 昨天没有自动归属的会"

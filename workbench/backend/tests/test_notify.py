@@ -19,7 +19,7 @@ from meeting_workbench.notify import (
     outline_minutes,
 )
 from meeting_workbench.config import Settings
-from meeting_workbench.task_due import beijing_today
+from meeting_workbench.task_due import BEIJING_TZ, beijing_today
 from meeting_workbench.tasks import TaskService
 
 # 老六段式纪要：决议在「## 三、核心决议」下，逐条是三级标题。
@@ -278,7 +278,7 @@ def test_daily_digest_follows_the_beijing_calendar(tmp_path, monkeypatch, local_
         "stalled": 0,
         "stalled_titles": [],
         "stalled_days": [],
-        "done_today": [],
+        "done_yesterday": [],
         "auto_assigned_yesterday": 0,
         "needs_review": 0,
     }
@@ -334,7 +334,7 @@ def test_webhook_cards_escape_titles_from_meetings(tmp_path, monkeypatch):
             "stalled": 1,
             "stalled_titles": [evil],
             "stalled_days": [3],
-            "done_today": [evil],
+            "done_yesterday": [evil],
             "auto_assigned_yesterday": 0,
             "needs_review": 0,
         }
@@ -856,7 +856,7 @@ def test_daily_digest_has_attribution_line(tmp_path, monkeypatch):
         "stalled": 0,
         "stalled_titles": [],
         "stalled_days": [],
-        "done_today": [],
+        "done_yesterday": [],
         "auto_assigned_yesterday": 5,
         "needs_review": 2,
     }
@@ -865,15 +865,19 @@ def test_daily_digest_has_attribution_line(tmp_path, monkeypatch):
     assert not notifier.daily_digest({**stats, "auto_assigned_yesterday": 0, "needs_review": 0})
 
 
-def test_digest_stats_count_yesterdays_auto_assignments(tmp_path):
-    """昨天（本地日）自动归属的会按会议去重计数；今天的不算；待你选按当前状态数。"""
+def test_digest_stats_count_yesterdays_auto_assignments(tmp_path, monkeypatch):
+    """昨天（北京日历）自动归属的会按会议去重计数；今天的不算；待你选按当前状态数。时钟钉死，不取真实当前时间。"""
     from datetime import timedelta
 
+    from meeting_workbench import tasks as tasks_module
+
+    from .task_views_world import NOW, FrozenClock
     from .test_project_linking import seed_meeting
 
+    monkeypatch.setattr(tasks_module, "datetime", FrozenClock)
     db, settings = make_db(tmp_path)
-    local_now = datetime.now().astimezone()
-    today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    beijing_now = NOW.astimezone(BEIJING_TZ)
+    today_start = beijing_now.replace(hour=0, minute=0, second=0, microsecond=0)
     yesterday_noon = today_start - timedelta(hours=12)
     for meeting_id in ("m1", "m2", "m3", "m4"):
         seed_meeting(db, meeting_id, f"会 {meeting_id}")
@@ -888,7 +892,7 @@ def test_digest_stats_count_yesterdays_auto_assignments(tmp_path):
     auto_event("m1", yesterday_noon)
     auto_event("m1", yesterday_noon + timedelta(minutes=5))  # 同一场会只算一次
     auto_event("m2", yesterday_noon)
-    auto_event("m3", local_now)  # 今天的不算
+    auto_event("m3", beijing_now)  # 今天的不算
     db.execute(
         """INSERT INTO project_links(meeting_id, minutes_version_id, status, candidates_json, created_at)
            VALUES ('m4', 'mv-m4', 'needs_review', '[]', ?)""",
