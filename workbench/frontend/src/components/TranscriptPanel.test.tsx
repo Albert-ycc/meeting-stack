@@ -1,6 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
+import type { Segment } from "../types";
 import { rowAtLine, TranscriptPanel } from "./TranscriptPanel";
 
 const segments = [
@@ -123,6 +126,25 @@ describe("TranscriptPanel", () => {
     } finally {
       Element.prototype.scrollIntoView = original;
     }
+  });
+
+  it("开着查找改字，把这句改得不再含查找词：这一行不消失，光标还在；换查找词才重新筛", async () => {
+    function Host() {
+      const [value, setValue] = useState<Segment[]>(segments);
+      return <TranscriptPanel currentTimeMs={0} editable onChange={setValue} onSeek={vi.fn()} segments={value} />;
+    }
+    render(<Host />);
+    fireEvent.change(screen.getByLabelText("在本次逐字稿中搜索"), { target: { value: "确认" } });
+    const row = screen.getByLabelText("00:00 逐字稿");
+    await userEvent.clear(row);
+    await userEvent.type(row, "先看范围");
+
+    expect(screen.getByLabelText("00:00 逐字稿")).toHaveValue("先看范围");
+    expect(screen.getByLabelText("00:00 逐字稿")).toHaveFocus();
+
+    fireEvent.change(screen.getByLabelText("在本次逐字稿中搜索"), { target: { value: "已经确认" } });
+    expect(screen.queryByLabelText("00:00 逐字稿")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("00:05 逐字稿")).toBeInTheDocument();
   });
 
   it("rowAtLine：上沿不超过阅读线的最后一行", () => {

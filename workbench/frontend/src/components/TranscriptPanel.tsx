@@ -178,15 +178,25 @@ export function TranscriptPanel({
   // 渲染时按 id 找原来的下标（以前每行 findIndex 一遍）
   const indexById = useMemo(() => new Map(segments.map((segment, index) => [segment.id, index])), [segments]);
 
+  // 编辑时开着查找：改着改着这句不再含查找词，也不能从列表里消失（textarea 一卸载光标就丢了）。
+  // 同一个查找词下出现过的行、拆分合并新冒出来的行都留着，换查找词或进出编辑才重新筛
+  const shownRef = useRef<{ key: string; known: Set<string>; shown: Set<string> } | null>(null);
   const visible = useMemo(() => {
     const normalized = term.trim().toLocaleLowerCase();
+    if (!normalized || !editable) shownRef.current = null;
     if (!normalized) return segments;
-    return segments.filter(
-      (segment) =>
-        segment.text.toLocaleLowerCase().includes(normalized) ||
-        (segment.speaker_name ?? segment.speaker_label ?? "").toLocaleLowerCase().includes(normalized),
-    );
-  }, [segments, term]);
+    const matches = (segment: Segment) =>
+      segment.text.toLocaleLowerCase().includes(normalized) ||
+      (segment.speaker_name ?? segment.speaker_label ?? "").toLocaleLowerCase().includes(normalized);
+    if (!editable) return segments.filter(matches);
+    if (shownRef.current?.key !== normalized) {
+      shownRef.current = { key: normalized, known: new Set(segments.map((segment) => segment.id)), shown: new Set() };
+    }
+    const { known, shown } = shownRef.current;
+    const kept = segments.filter((segment) => matches(segment) || shown.has(segment.id) || !known.has(segment.id));
+    kept.forEach((segment) => shown.add(segment.id));
+    return kept;
+  }, [editable, segments, term]);
 
   // 改字、换稿以后原来的选区作废
   useEffect(() => {
