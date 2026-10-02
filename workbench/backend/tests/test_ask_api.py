@@ -595,3 +595,18 @@ def test_cli_links_ask_loads_the_model_before_the_budget_starts(tmp_path, monkey
 
     assert cli.main(["links", "ask", "--project", "p"]) == 0
     assert order[:2] == ["warm", "retrieve"]
+
+
+def test_malformed_key_file_refunds_and_says_the_key_is_wrong(tmp_path, caplog):
+    """key 文件多了一行：请求没发出去，退回这一次；停了的原因是 key 不对；日志里没有 key。"""
+    secret = "sk-FAKE-0123456789abcdef"
+    client, app, headers, _ = make(tmp_path)
+    app.state.settings.llm_api_key_file.write_text(f"{secret}\nold-key-xyz\n", encoding="utf-8")
+    app.state.asks.chat = None
+    caplog.set_level(logging.DEBUG)
+    plan = prepare(client, headers).json()
+    job_id = ask(client, headers, plan["plan_id"]).json()["job_id"]
+    body = client.get(f"/api/ask/{job_id}").json()
+    assert body["reason"] == "auth" and body["retry"] is False
+    assert usage(app) == 0
+    assert secret not in caplog.text

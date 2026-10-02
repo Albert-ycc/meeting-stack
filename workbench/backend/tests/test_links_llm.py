@@ -449,3 +449,28 @@ def test_order_recent_then_pairs_then_backfill_and_one_shared_cap(tmp_path):
     pairs.jobs.append("d2")
     assert worker.tick()["state"] == "capped" and pairs.ran == ["d1"]
     assert usage(db)["background"] == 3
+
+
+def test_malformed_key_file_pauses_as_auth_without_charging_or_logging_the_key(tmp_path, caplog):
+    """key 文件多了一行：请求没发出去，不扣用量；循环按 key 不对停下（不是退避）；日志里没有 key。"""
+    from meeting_workbench import llm
+
+    secret = "sk-FAKE-0123456789abcdef"
+
+    class ChatTask(FakeTask):
+        def run(self, job):
+            self.ran.append(job)
+            llm.chat(self.settings, system="s", user="u", json_mode=True, max_tokens=10, retries=0)
+            return True
+
+    task = ChatTask(jobs=["m1"])
+    w = worker(tmp_path, [task])
+    task.settings = w.settings
+    w.settings.llm_api_key_file.write_text(f"{secret}\nold-key-xyz\n", encoding="utf-8")
+    caplog.set_level("DEBUG")
+    for _ in range(3):
+        w.tick()
+    assert task.ran == ["m1"] and task.released == ["m1"]
+    assert usage(w.db)["background"] == 0
+    assert w.status() == "auth"
+    assert secret not in caplog.text

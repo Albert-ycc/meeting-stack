@@ -318,3 +318,68 @@ def test_any_attempt_that_reached_the_server_keeps_the_charge(tmp_path, monkeypa
         ask(settings, retries=1)
     # 第一次超时时请求已经到了服务器（可能已计费），第二次连接被拒也不能退回用量
     assert caught.value.code == "network" and caught.value.sent
+
+
+FAKE_KEY = "sk-FAKE-0123456789abcdef"
+
+
+def _texts_of(error: BaseException) -> str:
+    """异常本身和它的整条链（__cause__、__context__）的文字。"""
+    texts = []
+    seen = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        texts.append(f"{current!s} {current!r} {getattr(current, 'object', '')!r}")
+        current = current.__cause__ or current.__context__
+    return "\n".join(texts)
+
+
+@pytest.mark.allow_local_llm
+@pytest.mark.parametrize(
+    "key_text",
+    [
+        f"{FAKE_KEY}\nold-key-xyz\n",
+        f"{FAKE_KEY}\n# 主账号备注\n",
+        f"{FAKE_KEY[:8]} {FAKE_KEY[8:]}",
+        f"{FAKE_KEY}密钥",
+    ],
+    ids=["two_lines", "two_lines_chinese", "space_inside", "non_ascii"],
+)
+def test_malformed_key_file_is_auth_not_sent_and_never_logged(tmp_path, fake_ai, caplog, key_text):
+    """key 文件多一行、中间有空格、带非 ASCII：请求不发出，算 key 不对（auth），日志和异常里都没有 key。"""
+    caplog.set_level(logging.DEBUG)
+    settings = settings_for(tmp_path, fake_ai.base, key=key_text)
+    with pytest.raises(LLMError) as caught:
+        ask(settings, retries=1)
+    assert caught.value.code == "auth" and caught.value.sent is False
+    assert fake_ai.requests == []
+    for part in (FAKE_KEY, FAKE_KEY[:8], FAKE_KEY[8:]):
+        assert part not in caplog.text
+        assert part not in _texts_of(caught.value)
+
+
+@pytest.mark.allow_local_llm
+def test_key_file_with_a_bom_still_works(tmp_path, fake_ai, caplog):
+    """记事本、TextEdit 存出来的 UTF-8 BOM 去掉照用。"""
+    caplog.set_level(logging.DEBUG)
+    settings = settings_for(tmp_path, fake_ai.base, key=f"﻿{FAKE_KEY}\n")
+    assert ask(settings).text == "好"
+    assert fake_ai.requests[0]["auth"] == f"Bearer {FAKE_KEY}"
+    assert FAKE_KEY not in caplog.text
+
+
+def test_header_rejected_while_sending_is_auth_without_the_header(tmp_path, monkeypatch):
+    """万一 http.client 拼头时拒收（异常文字里是整个 Authorization 头），也只抛 auth，链上不带原异常。"""
+    import meeting_workbench.llm as llm_module
+
+    settings = settings_for(tmp_path, "http://127.0.0.1:9/v1", key=FAKE_KEY)
+
+    def refuse(_request, timeout):
+        raise ValueError(f"Invalid header value b'Bearer {FAKE_KEY}'")
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", refuse)
+    with pytest.raises(LLMError) as caught:
+        ask(settings, retries=0)
+    assert caught.value.code == "auth" and caught.value.sent is False
+    assert FAKE_KEY not in _texts_of(caught.value)

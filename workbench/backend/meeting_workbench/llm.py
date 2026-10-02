@@ -65,11 +65,17 @@ class Destination:
 
 
 def read_key(settings: Settings) -> str:
-    """每次调用都读 key 文件；没有、读不了或为空时回空串。"""
+    """每次调用都读 key 文件；没有、读不了或为空时回空串。记事本、TextEdit 存出来的开头 BOM 去掉。"""
     try:
-        return settings.llm_api_key_file.expanduser().read_text(encoding="utf-8").strip()
+        text = settings.llm_api_key_file.expanduser().read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+    return text.strip().removeprefix("\ufeff").strip()
+
+
+def _key_fits_header(key: str) -> bool:
+    """key 只能是一段可见 ASCII：多一行、中间有空格、带中文时 http.client 拼头会抛错，错误文字里就是 key。"""
+    return all("!" <= char <= "~" for char in key)
 
 
 def llm_ready(settings: Settings) -> bool:
@@ -171,6 +177,7 @@ def _parse(body: bytes) -> ChatReply:
 
 def _once(request: urllib.request.Request, timeout: float, clock: Callable[[], float]) -> ChatReply:
     deadline = clock() + timeout
+    header_refused = False
     try:
         response = urllib.request.urlopen(request, timeout=max(0.05, timeout))
     except urllib.error.HTTPError as error:
@@ -184,6 +191,12 @@ def _once(request: urllib.request.Request, timeout: float, clock: Callable[[], f
     except http.client.HTTPException:
         # 服务器回了不像 HTTP 的东西（BadStatusLine、LineTooLong 等）：请求已经到了
         raise LLMError("network") from None
+    except ValueError:
+        # http.client 拼头时拒收（头里有换行、非 ASCII）：请求没发出。原异常的文字里是整个
+        # Authorization 头，在 except 外面再抛，__context__ 里才不挂着它
+        header_refused = True
+    if header_refused:
+        raise LLMError("auth", sent=False)
     try:
         body = _read_all(response, deadline, clock)
     finally:
@@ -216,6 +229,9 @@ def chat(
     if not key:
         logger.warning("AI 调用没发出：no_key")
         raise LLMError("no_key", sent=False)
+    if not _key_fits_header(key):
+        logger.warning("AI 调用没发出：auth（key 文件里有换行、空格或非 ASCII 字符）")
+        raise LLMError("auth", sent=False)
     payload: dict[str, Any] = {
         "model": settings.llm_model,
         "messages": [
