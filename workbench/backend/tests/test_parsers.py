@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from meeting_workbench.parsers import parse_funasr_json, parse_srt, parse_whisper_json
+from meeting_workbench.parsers import parse_funasr_json, parse_srt, parse_txt, parse_whisper_json
 
 
 def test_parse_srt_keeps_speaker_and_millisecond_anchor(tmp_path):
@@ -236,3 +236,81 @@ def test_timestamps_up_to_the_srt_limit_still_parse(tmp_path):
     assert parse_whisper_json(whisper)[0]["end_ms"] == 359_999_999
     # 负数照旧放行（入库时会被夹到 0），只拒绝越界和非有限值。
     assert [(s["start_ms"], s["end_ms"]) for s in parse_funasr_json(funasr)] == [(-10, 359_999_999)]
+
+
+def _srt(tmp_path, data: bytes):
+    path = tmp_path / "meeting.srt"
+    path.write_bytes(data)
+    return [(s["start_ms"], s["end_ms"], s["text"]) for s in parse_srt(path)]
+
+
+def test_srt_cues_without_a_blank_line_between_them_stay_separate(tmp_path):
+    data = "1\n00:00:01,000 --> 00:00:02,000\n第一句\n2\n00:00:03,000 --> 00:00:04,000\n第二句\n"
+    assert _srt(tmp_path, data.encode()) == [(1000, 2000, "第一句"), (3000, 4000, "第二句")]
+
+
+def test_srt_text_that_merely_contains_an_arrow_is_still_text(tmp_path):
+    data = "1\n00:00:01,000 --> 00:00:02,000\n方案 A --> 方案 B\n100\n\n2\n00:00:03,000 --> 00:00:04,000\n好\n"
+    assert _srt(tmp_path, data.encode()) == [
+        (1000, 2000, "方案 A --> 方案 B 100"),
+        (3000, 4000, "好"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "timing",
+    ["00:00:02,000 -->", "00:00:02,000 -->   ", " --> 00:00:04,000", "00:00:0 --> 00:00:04,000"],
+)
+def test_srt_truncated_timing_line_is_a_value_error(tmp_path, timing):
+    # 写到一半被截断的 SRT：统一按不合规时间码报 ValueError，不能漏出 IndexError。
+    with pytest.raises(ValueError):
+        _srt(tmp_path, f"1\n{timing}\n正文\n".encode())
+
+
+def test_gbk_transcripts_are_decoded_instead_of_turning_into_replacement_characters(tmp_path):
+    data = "1\n00:00:01,000 --> 00:00:02,000\n中文内容\n".encode("gbk")
+    assert _srt(tmp_path, data) == [(1000, 2000, "中文内容")]
+    txt = tmp_path / "meeting.txt"
+    txt.write_bytes("历史逐字稿".encode("gbk"))
+    assert parse_txt(txt)[0]["text"] == "历史逐字稿"
+
+
+def test_utf8_with_a_truncated_tail_is_still_read_as_utf8(tmp_path):
+    data = "1\n00:00:01,000 --> 00:00:02,000\n这一句是完整的中文内容\n".encode() + "半".encode()[:2]
+    assert _srt(tmp_path, data) == [(1000, 2000, "这一句是完整的中文内容 \ufffd")]
+
+
+def test_undecodable_transcript_is_a_value_error(tmp_path):
+    with pytest.raises(ValueError):
+        _srt(tmp_path, b"1\n00:00:01,000 --> 00:00:02,000\n" + b"\xff\x80" * 50 + b"\n")
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        pytest.param(
+            "\ufeff1\r\n00:00:01,000 --> 00:00:02,000\r\n你好\r\n\r\n"
+            "2\r\n00:00:03,000 --> 00:00:04,000\r\n再见\r\n".encode(),
+            [(1000, 2000, "你好"), (3000, 4000, "再见")],
+            id="bom-crlf",
+        ),
+        pytest.param(
+            "1\r00:00:01,000 --> 00:00:02,000\r甲\r\r2\r00:00:03,000 --> 00:00:04,000\r乙\r".encode(),
+            [(1000, 2000, "甲"), (3000, 4000, "乙")],
+            id="cr-only",
+        ),
+        pytest.param(b"", [], id="empty"),
+        pytest.param(
+            "1\n00:00:05,000 --> 00:00:01,000\n倒着\n\n2\n00:00:00,500 --> 00:00:09,000\n重叠\n".encode(),
+            [(5000, 1000, "倒着"), (500, 9000, "重叠")],
+            id="reversed-and-overlapping",
+        ),
+        pytest.param(
+            ("1\n00:00:01,000 --> 00:00:02,000\n" + "长" * 200_000 + "\n").encode(),
+            [(1000, 2000, "长" * 200_000)],
+            id="very-long-line",
+        ),
+    ],
+)
+def test_srt_inputs_that_already_parsed_correctly_keep_their_result(tmp_path, data, expected):
+    assert _srt(tmp_path, data) == expected

@@ -8,6 +8,8 @@ from typing import Any
 
 
 TIMECODE_RE = re.compile(r"(?P<h>\d{1,2}):(?P<m>\d{2}):(?P<s>\d{2})[,.](?P<ms>\d{3})")
+# 箭头左边只有数字和时间码标点才算时间行；正文里写的「A --> B」不能被当成新的一条。
+TIMING_LINE_RE = re.compile(r"^\s*[\d:,.]*\s*-->")
 MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_JSON_DEPTH = 128
 # 时间戳上限取 SRT 时间码能写出来的最大值 99:59:59,999：逐字稿要能按 SRT
@@ -51,23 +53,47 @@ def _speaker_and_text(text: str) -> tuple[str | None, str]:
     return raw, match.group("text").strip()
 
 
+def _read_transcript_text(path: Path) -> str:
+    """读逐字稿文本：UTF-8 优先，整份读不通再试 GB18030，都不行就按坏文件报错。
+
+    只坏了零星几个字节的 UTF-8（比如写到一半被截断）仍按 UTF-8 读、坏处换成 �，
+    不能因为一个字节就整份改用 GB18030 读成乱码。
+    """
+    raw = path.read_bytes()
+    try:
+        content = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        content = raw.decode("utf-8-sig", errors="replace")
+        if content.count("\ufffd") > max(3, len(content) // 100):
+            try:
+                content = raw.decode("gb18030")
+            except UnicodeDecodeError as error:
+                raise ValueError(f"transcript is neither UTF-8 nor GB18030: {path.name}") from error
+    return content.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def parse_srt(path: Path) -> list[dict[str, Any]]:
-    content = path.read_text(encoding="utf-8-sig", errors="replace").replace("\r\n", "\n")
+    lines = _read_transcript_text(path).split("\n")
+    timing_rows = [index for index, line in enumerate(lines) if TIMING_LINE_RE.match(line)]
     segments: list[dict[str, Any]] = []
-    for block in re.split(r"\n\s*\n", content.strip()):
-        lines = [line for line in block.splitlines() if line.strip()]
-        timing_index = next((i for i, line in enumerate(lines) if "-->" in line), None)
-        if timing_index is None:
-            continue
-        start, end = (part.strip() for part in lines[timing_index].split("-->", 1))
-        label, text = _speaker_and_text("\n".join(lines[timing_index + 1 :]))
+    # 按时间行切，不按空行切：两条字幕之间少一个空行时，下一条的序号和时间码
+    # 不能被并进上一条的正文。时间行紧挨着的上一行是纯数字，就是它的序号。
+    for position, row in enumerate(timing_rows):
+        stop = timing_rows[position + 1] if position + 1 < len(timing_rows) else len(lines)
+        if stop < len(lines) and stop - 1 > row and lines[stop - 1].strip().isdigit():
+            stop -= 1
+        start, end = (part.strip() for part in lines[row].split("-->", 1))
+        end_parts = end.split()
+        if not end_parts:
+            raise ValueError(f"invalid SRT timing line: {lines[row].strip()}")
+        label, text = _speaker_and_text("\n".join(lines[row + 1 : stop]))
         if not text:
             continue
         segments.append(
             {
                 "ordinal": len(segments),
                 "start_ms": _timecode_to_ms(start),
-                "end_ms": _timecode_to_ms(end.split()[0]),
+                "end_ms": _timecode_to_ms(end_parts[0]),
                 "speaker_label": label,
                 "speaker_name": None,
                 "text": text,
@@ -233,7 +259,7 @@ def parse_funasr_json(path: Path) -> list[dict[str, Any]]:
 
 
 def parse_txt(path: Path) -> list[dict[str, Any]]:
-    text = path.read_text(encoding="utf-8-sig", errors="replace").strip()
+    text = _read_transcript_text(path).strip()
     if not text:
         return []
     return [
