@@ -392,6 +392,15 @@ function renderWithLog(api: Record<string, unknown>, onOpenPreview?: (fileId: nu
 }
 
 describe("RequirementDetailPage 的「决议」卡（4c）", () => {
+  // 会的日子不是今年时标题带年份：夹具的会在 2026 年，钉住「今天」，明年跑结果也一样
+  const TODAY = new Date("2026-09-30T10:00:00+08:00");
+  beforeEach(() => {
+    vi.useFakeTimers({ now: TODAY, toFake: ["Date"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("在「关联会议」和「材料文件夹」之间，按会分组，新的会在前", async () => {
     const requirementDecisions = vi.fn().mockResolvedValue(decisionLog());
     const { onOpenMeeting } = renderWithLog({ requirementDecisions });
@@ -434,7 +443,7 @@ describe("RequirementDetailPage 的「决议」卡（4c）", () => {
   });
 
   it("提示 10 秒以后收起；「你标过…不是一回事」那一行的［撤销］发 restore", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: TODAY });
     try {
       const dismissedLog = decisionLog();
       const first = dismissedLog.meetings[1].decisions[0];
