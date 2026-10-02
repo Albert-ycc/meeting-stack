@@ -9,6 +9,7 @@ import type {
   RequirementStatus,
   RequirementSummary,
 } from "../types";
+import { isComposingKeydown } from "../keyboard";
 import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATUS_LABELS } from "./RequirementBadges";
 import { MaterialFolderPickerModal } from "./MaterialFolderPickerModal";
 import { useDialogFocus } from "./useDialog";
@@ -190,7 +191,7 @@ export function RequirementModal({
               onChange={(event) => setTitle(event.target.value)}
               onKeyDown={(event) => {
                 // 名称框里回车直接提交；输入法选词的回车不算。
-                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                if (event.key === "Enter" && !isComposingKeydown(event)) {
                   event.preventDefault();
                   void handleSubmit();
                 }

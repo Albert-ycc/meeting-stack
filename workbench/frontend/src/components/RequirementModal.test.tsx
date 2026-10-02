@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -225,5 +225,31 @@ describe("RequirementModal", () => {
     );
 
     expect(screen.getByPlaceholderText("例如：北辰仓快递配送")).toHaveAttribute("maxLength", "200");
+  });
+
+  it("名称框里输入法选词那下回车（Safari：isComposing=false、keyCode=229）不提交，真回车才提交", async () => {
+    const createRequirement = vi.fn().mockResolvedValue(detail());
+    render(
+      <RequirementModal
+        apiClient={{ createRequirement } as unknown as ApiClient}
+        canPickFolders={false}
+        defaultProjectId="project-a"
+        mode="create"
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        projects={projects}
+      />,
+    );
+    const input = screen.getByPlaceholderText("例如：北辰仓快递配送");
+    fireEvent.change(input, { target: { value: "beichen" } });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(createRequirement).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: "北辰仓快递配送" } });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+    await waitFor(() =>
+      expect(createRequirement).toHaveBeenCalledWith(expect.objectContaining({ title: "北辰仓快递配送" })),
+    );
   });
 });
