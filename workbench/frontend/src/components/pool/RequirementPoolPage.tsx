@@ -115,18 +115,24 @@ export function RequirementPoolPage({
   const [pendingHighlight, setPendingHighlight] = useState<string | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
 
+  // 墙上挂的是按哪组页签、筛选取来的：取数失败时用它判断旧墙还能不能留着
+  const payloadKeyRef = useRef<string | null>(null);
+
   const load = useCallback(async () => {
     const request = ++requestRef.current;
+    const params = {
+      status: tab,
+      project_id: projectIds.join(",") || undefined,
+      priority: priorities.join(",") || undefined,
+      q: query.trim() || undefined,
+      limit: WALL_LIMIT,
+    };
+    const key = JSON.stringify(params);
     try {
-      const next = await apiClient.requirementPool({
-        status: tab,
-        project_id: projectIds.join(",") || undefined,
-        priority: priorities.join(",") || undefined,
-        q: query.trim() || undefined,
-        limit: WALL_LIMIT,
-      });
+      const next = await apiClient.requirementPool(params);
       // 筛选连着点的时候只认最后一次的结果
       if (request !== requestRef.current) return;
+      payloadKeyRef.current = key;
       setPayload(next);
       setFailed(false);
       // 记着的项目已经删掉、合并掉，或者是条上没有的「未归项目」：条上看不到它被选着，墙却被它筛了，去掉
@@ -135,7 +141,13 @@ export function RequirementPoolPage({
         setProjectIds((current) => current.filter((id) => known.has(id)));
       }
     } catch {
-      if (request === requestRef.current) setFailed(true);
+      if (request !== requestRef.current) return;
+      setFailed(true);
+      // 换了页签或筛选才失败：旧墙是别的条件下的，留着会被当成这一页的内容，撤掉
+      if (payloadKeyRef.current !== key) {
+        payloadKeyRef.current = null;
+        setPayload(null);
+      }
     }
   }, [apiClient, priorities, projectIds, query, tab]);
 
@@ -367,6 +379,14 @@ export function RequirementPoolPage({
       {failed && !payload && (
         <div className="pool-state pool-state--error" role="alert">
           需求池读取失败
+          <button onClick={() => void load()} type="button">
+            重试
+          </button>
+        </div>
+      )}
+      {failed && payload && (
+        <div className="pool-stale" role="alert">
+          需求池没刷新成功，墙上还是上一次读到的
           <button onClick={() => void load()} type="button">
             重试
           </button>

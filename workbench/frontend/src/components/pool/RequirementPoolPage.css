@@ -267,7 +267,21 @@
   color: var(--danger);
 }
 
-.pool-state button {
+/* 墙还留着、只是这次没刷新成功：一条窄横条，不把墙挤下去太多 */
+.pool-stale {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 8px 14px;
+  border: 1px solid var(--danger);
+  border-radius: var(--r-stage);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.pool-state button,
+.pool-stale button {
   padding: 5px 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-pill);

@@ -268,6 +268,40 @@ describe("RequirementPoolPage", () => {
     expect(screen.getByRole("status")).not.toHaveTextContent("project-a44ff42eac0740c6");
     await waitFor(() => expect(requirementPool).toHaveBeenCalledTimes(2));
   });
+
+  it("换页签那次没取到：不把上一个页签的海报留在新页签下，报错并能重试", async () => {
+    const requirementPool = vi
+      .fn()
+      .mockResolvedValueOnce(poolPayload())
+      .mockRejectedValueOnce(new ApiError("网络抖了一下", 0, null))
+      .mockResolvedValue(poolPayload({ status: "done", items: [] }));
+    renderPage({ requirementPool });
+    await screen.findByRole("article", { name: "需求：京东科研仓对接" });
+
+    await userEvent.click(screen.getByRole("tab", { name: /已完成/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("需求池读取失败");
+    expect(screen.getByRole("tab", { name: /已完成/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("article", { name: "需求：京东科研仓对接" })).toBeNull();
+
+    await userEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("还没有已完成的需求")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("同一页签里重新取没取到（比如丢掉以后）：墙留着，但要说一声没刷新成功", async () => {
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.tab", JSON.stringify("pending"));
+    const requirementPool = vi
+      .fn()
+      .mockResolvedValueOnce(poolPayload({ status: "pending", items: [candidateItem()] }))
+      .mockRejectedValue(new ApiError("网络抖了一下", 0, null));
+    const dropCandidate = vi.fn().mockResolvedValue({});
+    renderPage({ requirementPool, dropCandidate });
+
+    const poster = await screen.findByRole("article", { name: "候选：京东仓签收凭证" });
+    await userEvent.click(within(poster).getByRole("button", { name: "丢掉" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("没刷新成功");
+    expect(screen.getByRole("article", { name: "候选：京东仓签收凭证" })).toBeInTheDocument();
+  });
 });
 
 // ---------------------------------------------------------------- 需求池改版收尾（261001 版 PRD）
