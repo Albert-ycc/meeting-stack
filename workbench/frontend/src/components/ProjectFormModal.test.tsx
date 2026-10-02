@@ -335,6 +335,27 @@ describe("ProjectFormModal 新建：项目文件夹", () => {
     expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: "p9" }));
     expect(onClose).toHaveBeenCalled();
   });
+
+  it.each([
+    ["点 ✕", () => userEvent.click(screen.getByRole("button", { name: "关闭" }))],
+    ["按 Esc", () => userEvent.keyboard("{Escape}")],
+  ])("盘没插、项目已建好：%s关掉和点「知道了」一样，项目列表照样刷新", async (_how, close) => {
+    const createProjectWith = vi.fn().mockResolvedValue({
+      id: "p9",
+      name: "云图看板",
+      color: "#3f51b5",
+      folder_pending: { path: "/Volumes/资料盘/项目/云图看板", reason: "资料盘未连接，插上后再建文件夹" },
+    });
+    const { onSaved, onClose } = renderCreate(folderClient({ createProjectWith } as Partial<ApiClient>));
+
+    await userEvent.type(screen.getByPlaceholderText("例如：互联网医院"), "云图看板");
+    await userEvent.click(await screen.findByRole("button", { name: "创建" }));
+    await screen.findByRole("status");
+    await close();
+
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: "p9" }));
+    expect(onClose).toHaveBeenCalled();
+  });
 });
 
 describe("ProjectFormModal 新建：新文件夹放哪（2a）", () => {

@@ -107,15 +107,23 @@ export function ProjectFormModal({
   }, [pickerOpen]);
   const savingRef = useRef(false);
 
+  // 盘没插时项目已经建好：不管点［知道了］、✕ 还是 Esc 关，都要让外面刷新列表、进详情
+  const close = () => {
+    if (created) onSaved(created);
+    onClose();
+  };
+  const closeRef = useRef(close);
+  closeRef.current = close;
+
   // Esc 关闭；子级取径器开着时不关（那一层自己处理）。表单弹窗点背景不关，免得丢掉填了一半的内容。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.isComposing || pickerOpenRef.current) return;
-      if (!savingRef.current) onClose();
+      if (!savingRef.current) closeRef.current();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, []);
 
   const trimmedName = name.trim();
 
@@ -374,7 +382,7 @@ export function ProjectFormModal({
             aria-label="关闭"
             className="project-form-modal__close"
             disabled={saving}
-            onClick={onClose}
+            onClick={close}
             type="button"
           >
             ✕
@@ -641,14 +649,7 @@ export function ProjectFormModal({
 
         <footer className="project-form-modal__footer">
           {created ? (
-            <button
-              className="project-form-modal__submit"
-              onClick={() => {
-                onSaved(created);
-                onClose();
-              }}
-              type="button"
-            >
+            <button className="project-form-modal__submit" onClick={close} type="button">
               知道了
             </button>
           ) : (
