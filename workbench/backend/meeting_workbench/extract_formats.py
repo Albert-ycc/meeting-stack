@@ -319,7 +319,9 @@ class _HTMLText(HTMLParser):
             self.parts.append(data)
 
     def text(self) -> str:
-        return re.sub(r"[ \t\r\f\v]+\n", "\n", "".join(self.parts))
+        # 去掉换行前的空白。不用正则 [ \t\r\f\v]+\n：一长串不带换行的空白会让它平方级回溯
+        lines = "".join(self.parts).split("\n")
+        return "\n".join([line.rstrip(" \t\r\f\v") for line in lines[:-1]] + lines[-1:])
 
 
 _META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?([A-Za-z0-9_\-]+)""", re.IGNORECASE)

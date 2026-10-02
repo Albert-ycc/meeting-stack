@@ -161,6 +161,19 @@ def test_html_skips_script_and_uses_meta_charset(tmp_path):
     assert texts(answer) == ["报价", "第一段", "第二段"]
 
 
+def test_html_long_blank_run_is_linear(tmp_path):
+    """30 万个连续空格、中间没有换行：清理行尾空白的正则曾平方级回溯，卡到超时。"""
+    path = write_bytes(
+        tmp_path / "空格.html", b"<html><body><p>a" + b" " * 300_000 + b"b</p></body></html>"
+    )
+    answer = read_in_child(path)
+    assert answer["status"] == "ok" and answer["seconds"] < 5
+
+
+def test_html_trailing_blanks_before_newline_are_dropped():
+    assert formats.html_to_text("<p>a \t\f\v\r\n  b  \n</p>c  ") == "\n\na\n  b\n\n\nc  "
+
+
 def test_html_saved_as_doc_is_read_as_html(tmp_path):
     answer = read(
         write_bytes(
