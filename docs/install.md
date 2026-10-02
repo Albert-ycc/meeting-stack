@@ -4,6 +4,7 @@
 
 - macOS（Apple Silicon 上验证过；relay 的守护管理与权限处理是 macOS 专属）
 - Python 3.12 以上
+- Python 包 `watchdog`：只有录音监听 `relay_watchdog.py` 要，装法见「四、运行」
 - Node 20 以上
 - ffmpeg / ffprobe（`brew install ffmpeg`）
 - pandoc，可选，用于纪要转 HTML（`brew install pandoc`）
@@ -75,14 +76,38 @@ cp .env.example .env
 
 ## 四、运行
 
+### 录音监听要先装 watchdog 包
+
+`relay_watchdog.py` 靠第三方包 `watchdog` 收监听目录的文件事件，这是 relay 里唯一要 pip 装的包
+（`relayctl`、`voicememos_bridge.py` 和工作台后端都用不到它）。包要装进**启动 `relay_watchdog.py` 的那个
+Python**。Homebrew 装的 Python 不让往系统环境里 `pip install`（报 `externally-managed-environment`），
+建一个专用 venv 最省事，和上面转写引擎的做法一样：
+
+```bash
+python3 -m venv ~/.venvs/relay
+~/.venvs/relay/bin/pip install watchdog
+
+# 验证：用要跑 watchdog 的那个 Python 导入一次，打出版本号才算装好
+~/.venvs/relay/bin/python -c "import watchdog.version as v; print(v.VERSION_STRING)"
+```
+
+没装时 `relay_watchdog.py` 一启动就停在 `ModuleNotFoundError: No module named 'watchdog'`，任务不会被领、
+监听目录里的新录音不会入队。已经常驻在跑的守护用的是哪个 Python，看
+`ps -axo command | grep relay_watchdog` 的第一段，拿它再跑一遍上面的验证命令。
+
+下面和 relay 文档里的 `python3` 都指这个装了 watchdog 的 Python；用上面的 venv 就写
+`~/.venvs/relay/bin/python`。
+
+### 启动
+
 ```bash
 # 工作台（三个 tmux session：Web、每日备份、每周完整性核验）
 ./workbench/scripts/remote-bootstrap.sh
 
 # 录音监听：relay 不读 .env，先把它导成环境变量再起（在仓库根执行；.env 里的值有空格要加引号）
-(set -a; source ./.env; set +a; exec python3 relay/quickstart/relay_watchdog.py)
+(set -a; source ./.env; set +a; exec ~/.venvs/relay/bin/python relay/quickstart/relay_watchdog.py)
 
-# 可选：Voice Memos 桥接（仅 macOS + iPhone）
+# 可选：Voice Memos 桥接（仅 macOS + iPhone，只用标准库，不用装包）
 python3 relay/quickstart/voicememos_bridge.py
 ```
 

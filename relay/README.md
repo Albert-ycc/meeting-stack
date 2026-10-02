@@ -29,6 +29,20 @@ Voice Memos 桥接只是众多入口之一，任何来源的音频文件落进�
 而是用 ffprobe 探测时长后分流——短于 10 分钟的当成口述指令，转写文本直接派给 AI Agent 执行；
 10 分钟以上的转写后派 Agent 写纪要。旧路径只是留着回滚用的。
 
+## Python 依赖
+
+relay 里只有 `relay_watchdog.py` 要装第三方包：`watchdog`（收监听目录的文件事件）。`relayctl`、
+`voicememos_bridge.py` 只用标准库。包要装进**启动 `relay_watchdog.py` 的那个 Python**：
+
+```bash
+python3 -m venv ~/.venvs/relay            # Homebrew 的 Python 不让 pip 装进系统环境，用 venv
+~/.venvs/relay/bin/pip install watchdog
+~/.venvs/relay/bin/python -c "import watchdog.version as v; print(v.VERSION_STRING)"   # 打出版本号就装好了
+```
+
+没装时 `relay_watchdog.py` 启动即停在 `ModuleNotFoundError: No module named 'watchdog'`。
+下面「运行」里的 `python3` 都指装了 watchdog 的那个 Python。
+
 ## 配置
 
 全部通过环境变量，**不读 `.env`**（`.env` 只有工作台自己读）。用仓库根的 `.env` 时，启动前先把它导成
@@ -125,11 +139,11 @@ quickstart/relayctl retry <job_id> --stage minutes_generating --project-hint <�
 
 ```bash
 # 监听守护（前台）；.env 里要有 MEETING_RELAY_CONTROL_ENABLED=1
-(set -a; source ./.env; set +a; exec python3 relay/quickstart/relay_watchdog.py)
+(set -a; source ./.env; set +a; exec ~/.venvs/relay/bin/python relay/quickstart/relay_watchdog.py)
 
 # 不用 .env 时直接在命令前写环境变量
 MEETING_RELAY_CONTROL_ENABLED=1 MEETING_RELAY_ARCHIVE_ROOT=~/MeetingArchive \
-  python3 relay/quickstart/relay_watchdog.py
+  ~/.venvs/relay/bin/python relay/quickstart/relay_watchdog.py
 
 # 可选：Voice Memos 桥接（macOS + iPhone）
 python3 relay/quickstart/voicememos_bridge.py
