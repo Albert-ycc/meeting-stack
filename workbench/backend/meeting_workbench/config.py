@@ -220,5 +220,15 @@ class Settings(BaseSettings):
         return self.data_dir / "waveform-peaks"
 
     @property
+    def uploads_dir(self) -> Path:
+        return self.data_dir / "uploads"
+
+    @property
+    def audio_roots(self) -> tuple[Path, ...]:
+        """服务肯播放、肯交给 relay 入队的音频只能在这几个目录里。数据目录整个不放行：
+        里面还有数据库、备份和各种缓存，只放行上传落盘的 uploads。"""
+        return (self.archive_root, self.staging_root, self.uploads_dir)
+
+    @property
     def relayctl_path(self) -> Path:
         return self.relay_repo / "quickstart/relayctl"

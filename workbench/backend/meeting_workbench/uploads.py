@@ -43,8 +43,8 @@ class UploadSession:
 class UploadManager:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.sessions_root = settings.data_dir / "uploads" / ".sessions"
-        self.destination_root = settings.data_dir / "uploads"
+        self.sessions_root = settings.uploads_dir / ".sessions"
+        self.destination_root = settings.uploads_dir
 
     def start(
         self, filename: str, size_bytes: int, *, hotwords: list[str] | None = None
