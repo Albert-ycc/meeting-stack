@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -153,6 +153,27 @@ describe("ProjectFormModal 新建", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("已有同名项目");
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByPlaceholderText("例如：互联网医院")).toHaveValue("ACME");
+  });
+
+  it("输入法确认候选那一下回车（Safari：isComposing=false、keyCode=229）不算提交", async () => {
+    const createProjectWith = vi.fn().mockResolvedValue({ id: "p", name: "hulian", color: "#3f51b5" });
+    render(
+      <ProjectFormModal
+        apiClient={makeClient({ createProjectWith } as Partial<ApiClient>)}
+        canPickFolders={false}
+        mode="create"
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+    const input = screen.getByPlaceholderText("例如：互联网医院");
+    fireEvent.change(input, { target: { value: "hulian" } });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    await act(async () => {});
+
+    expect(createProjectWith).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+    await waitFor(() => expect(createProjectWith).toHaveBeenCalledTimes(1));
   });
 
   it("点取消关闭弹窗", async () => {

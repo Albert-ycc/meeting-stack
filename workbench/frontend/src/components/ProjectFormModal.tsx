@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { similarProjectFrom } from "../api";
 import type { ApiClient } from "../api";
 import type { FolderMatch, FolderMatchesPayload, Project, SimilarProjectSuggestion } from "../types";
+import { isComposingKeydown } from "../keyboard";
 import { pollWhileChecking } from "./checkingPoll";
 import { FolderIcon } from "./FolderIcon";
 import { useDialogFocus } from "./useDialog";
@@ -408,7 +409,7 @@ export function ProjectFormModal({
                 }}
                 onKeyDown={(event) => {
                   // 名称框里回车直接提交；输入法选词的回车不算。
-                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                  if (event.key === "Enter" && !isComposingKeydown(event)) {
                     event.preventDefault();
                     void submit();
                   }
