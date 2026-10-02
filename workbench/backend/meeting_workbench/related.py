@@ -708,6 +708,12 @@ def _merge_top(
     all_ids = np.concatenate([best_ids, np.broadcast_to(ids, scores.shape)], axis=1)
     keep = min(TOP_SCORED, all_scores.shape[1])
     top = np.argpartition(-all_scores, keep - 1, axis=1)[:, :keep]
+    # 第 6 名边上并列（同一份文档的 docx 和 pdf）时 argpartition 留哪个看输入顺序；这几个窗改按
+    # （得分从高到低，片段 id 从小到大）取，块的先后变了结果也一样
+    edge = np.take_along_axis(all_scores, top, axis=1).min(axis=1)
+    for row in np.flatnonzero((all_scores >= edge[:, None]).sum(axis=1) > keep):
+        tied = np.flatnonzero(all_scores[row] >= edge[row])
+        top[row] = tied[np.lexsort((all_ids[row, tied], -all_scores[row, tied]))[:keep]]
     return np.take_along_axis(all_ids, top, axis=1), np.take_along_axis(all_scores, top, axis=1)
 
 
@@ -915,7 +921,8 @@ def judge(
     kept: list[Passage] = []
     verdicts: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for chunk_id, score in sorted(candidates, key=lambda item: -item[1]):
+    # 并列时按片段 id 定先后，不看候选的输入顺序
+    for chunk_id, score in sorted(candidates, key=lambda item: (-item[1], item[0])):
         chunk = chunks.get(int(chunk_id))
         verdict: dict[str, Any] = {
             "chunk_id": int(chunk_id),
@@ -1392,7 +1399,9 @@ class RelatedPass:
                 top = next(
                     (
                         (chunk_rows[chunk_id]["content_key"], score)
-                        for chunk_id, score in sorted(candidates, key=lambda item: -item[1])
+                        for chunk_id, score in sorted(
+                            candidates, key=lambda item: (-item[1], item[0])
+                        )
                         if chunk_id in chunk_rows and good_passage(chunk_rows[chunk_id]["text"])
                     ),
                     None,

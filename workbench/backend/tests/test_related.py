@@ -691,6 +691,51 @@ def test_a_rejected_link_frees_its_slot_for_the_sixth(tmp_path):
     assert rejected["status"] == "rejected"
 
 
+def test_tied_scores_keep_the_same_passages_whatever_the_input_order():
+    """同一份文档的 docx 和 pdf 片段一模一样、得分并列：留哪几个按片段 id 定，不看候选的先后。"""
+    window = related.Window(
+        0, related.WINDOW_MS, "驻场服务" * 20, 80, [(0, 80, 0, "驻场服务" * 20)]
+    )
+    scope = related.Scope("p", "云图AI", [], [1], {}, {})
+    chunks = {}
+    for chunk_id in (11, 12, 13, 14):
+        key = f"k{chunk_id}"
+        scope.files[key] = {"id": chunk_id, "root_id": 1, "rel_path": f"{key}.docx"}
+        chunks[chunk_id] = {
+            "content_key": key,
+            "ordinal": 0,
+            "text": "驻场服务的排班和响应时限都要写进合同附件里" * 2,
+            "loc": None,
+        }
+    found = [related.Found("驻场服务", related.KIND_TERM, 0)]
+    words = SimpleNamespace(in_window=lambda _window: {}, shared=lambda *_args: found)
+    candidates = [(chunk_id, 0.8) for chunk_id in (14, 12, 13, 11)]
+
+    kept = [
+        [item.chunk_id for item in related.judge(window, order, chunks, 0.6, scope, words)[0]]
+        for order in (candidates, candidates[::-1])
+    ]
+
+    assert kept == [[11, 12, 13], [11, 12, 13]]
+
+
+def test_merge_top_breaks_ties_at_the_edge_by_chunk_id():
+    """第 6 名边上并列时，按片段 id 小的留，换了块的先后结果也一样。"""
+    empty_ids = np.full((1, related.TOP_SCORED), -1, dtype=np.int64)
+    empty_scores = np.full((1, related.TOP_SCORED), -np.inf, dtype=np.float32)
+    ids = np.arange(1, 11, dtype=np.int64)
+    scores = np.array([[0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.5, 0.5]], dtype=np.float32)
+    results = []
+    for order in (np.arange(10), np.arange(10)[::-1], np.array([9, 3, 7, 0, 5, 1, 8, 2, 6, 4])):
+        best_ids, best_scores = empty_ids, empty_scores
+        for part in (order[:4], order[4:]):
+            best_ids, best_scores = related._merge_top(
+                best_ids, best_scores, ids[part], scores[:, part]
+            )
+        results.append(sorted(best_ids[0].tolist()))
+    assert results == [[1, 2, 3, 4, 5, 6]] * 3
+
+
 def test_dead_content_is_cleared(tmp_path):
     w = build(tmp_path)
     worker_for(w).run_round()
