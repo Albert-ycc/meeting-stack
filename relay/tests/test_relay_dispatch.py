@@ -102,6 +102,35 @@ class RelayDispatchTests(unittest.TestCase):
 
         self.assertTrue(result and result.endswith(f"{audio.stem}.txt"))
 
+    def test_transcribe_replaces_half_copied_work_audio_before_transcribing(self):
+        module = load_watchdog_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            module.PRODUCTS_DIR = root / "products"
+            module.DEFAULT_PROMPT_FILE = root / "missing-prompt.txt"
+            audio = root / "vm-20260710-120000-ABC.m4a"
+            audio.write_bytes(b"A" * 1_000_000)
+            work = module.PRODUCTS_DIR / audio.stem / audio.name
+            work.parent.mkdir(parents=True)
+            work.write_bytes(b"A" * 300_000)  # 上次复制到一半被杀
+            script = root / "transcribe.sh"
+            script.write_text("#!/bin/bash\n", encoding="utf-8")
+            seen = {}
+
+            def fake_run(command, **kwargs):
+                seen["bytes"] = Path(command[-1]).stat().st_size
+                write_main_transcript_bundle(
+                    module.PRODUCTS_DIR / audio.stem / audio.stem / f"{audio.stem}.txt"
+                )
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(module.subprocess, "run", side_effect=fake_run):
+                module.transcribe(audio, script=script)
+            leftovers = list(work.parent.glob(".audio-*"))
+
+        self.assertEqual(1_000_000, seen["bytes"])
+        self.assertEqual([], leftovers)
+
     def test_transcribe_uses_explicit_job_hotwords_instead_of_global_default(self):
         module = load_watchdog_module()
         with tempfile.TemporaryDirectory() as tmpdir:

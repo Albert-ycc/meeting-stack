@@ -679,8 +679,20 @@ def transcribe(
     products_subdir.mkdir(parents=True, exist_ok=True)
 
     work_audio = products_subdir / audio.name
-    if not work_audio.exists():
-        shutil.copyfile(audio, work_audio)
+    # 上次复制到一半被杀会留下半截工作副本：大小对不上就重拷；拷贝先写临时名再原子换入
+    if work_audio.resolve() != audio.resolve() and (
+        not work_audio.is_file() or work_audio.stat().st_size != audio.stat().st_size
+    ):
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".audio-", suffix=".tmp", dir=products_subdir
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            shutil.copyfile(audio, temporary)
+            os.replace(temporary, work_audio)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     # 词典：显式任务快照优先；没有时才沿用可选的全局模板。
     # transcribe.sh 会读取音频同级 prompt.txt。
