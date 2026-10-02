@@ -272,7 +272,15 @@ class RelayDispatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             module.PROMPTS_DIR = Path(tmpdir)
             module._tmux = fake_tmux
-            with patch.dict(os.environ, {"MEETING_RELAY_AGENT": "codex"}):
+            codex = Path(tmpdir) / "codex"
+            codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            codex.chmod(0o755)
+            module.CODEX_BIN = ""
+            module.CODEX_FALLBACKS = (str(codex),)
+            with patch.dict(os.environ, {
+                "MEETING_RELAY_AGENT": "codex",
+                "MEETING_RELAY_CODEX_BIN": "",
+            }), patch.object(module.shutil, "which", return_value=None):
                 self.assertTrue(module.dispatch_to_cc1("整理这段录音", kind="测试"))
 
         send_key_calls = [args for args in calls if args and args[0] == "send-keys"]
@@ -327,7 +335,15 @@ class RelayDispatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             module.PROMPTS_DIR = Path(tmpdir)
             module._tmux = fake_tmux
-            with patch.dict(os.environ, {"MEETING_RELAY_AGENT": "claude"}):
+            claude = Path(tmpdir) / "claude"
+            claude.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            claude.chmod(0o755)
+            module.CLAUDE_BIN = ""
+            module.CLAUDE_FALLBACKS = (str(claude),)
+            with patch.dict(os.environ, {
+                "MEETING_RELAY_AGENT": "claude",
+                "MEETING_RELAY_CLAUDE_BIN": "",
+            }), patch.object(module.shutil, "which", return_value=None):
                 dispatched = module.dispatch_to_cc1("整理这段录音", kind="测试")
 
         self.assertFalse(dispatched)

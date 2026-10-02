@@ -47,6 +47,12 @@ def tearDownModule():
         _runtime_db_tempdir.cleanup()
 
 
+def _wave_pcm_fingerprint(audio: Path) -> str:
+    # 用例不依赖本机装没装 ffmpeg：按 wav 帧数据算指纹，和 ffmpeg 解码时忽略容器尾巴的效果一致
+    with wave.open(str(audio), "rb") as wav:
+        return hashlib.sha256(wav.readframes(wav.getnframes())).hexdigest()
+
+
 def load_control_module():
     spec = importlib.util.spec_from_file_location("relay_control_under_test", CONTROL_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -1305,10 +1311,27 @@ class RelayControlTests(unittest.TestCase):
         second = self.root / "renamed-copy.wav"
         second.write_bytes(first.read_bytes() + b"container metadata ignored by decoder")
 
-        first_job = self.control.enqueue(first)
-        second_job = self.control.enqueue(second)
+        with patch.object(self.module, "_pcm_fingerprint", _wave_pcm_fingerprint):
+            first_job = self.control.enqueue(first)
+            second_job = self.control.enqueue(second)
 
         self.assertEqual(first_job, second_job)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "本机没有 ffmpeg")
+    def test_pcm_fingerprint_ignores_container_tail_with_real_ffmpeg(self):
+        first = self.root / "meeting-a.wav"
+        with wave.open(str(first), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes((b"\x00\x00\x01\x00\xff\xff") * 800)
+        second = self.root / "renamed-copy.wav"
+        second.write_bytes(first.read_bytes() + b"container metadata ignored by decoder")
+
+        fingerprint = self.module._pcm_fingerprint(first)
+
+        self.assertIsNotNone(fingerprint)
+        self.assertEqual(fingerprint, self.module._pcm_fingerprint(second))
 
     def test_provisional_non_vm_jobs_merge_after_worker_pcm_fingerprint(self):
         first = self.root / "event-a.wav"
@@ -1323,8 +1346,9 @@ class RelayControlTests(unittest.TestCase):
         second_job = self.control.enqueue(second, compute_hash=False)
         self.assertNotEqual(first_job, second_job)
 
-        self.control.record_source_audio(first_job, first)
-        duplicate = self.control.record_source_audio(second_job, second)
+        with patch.object(self.module, "_pcm_fingerprint", _wave_pcm_fingerprint):
+            self.control.record_source_audio(first_job, first)
+            duplicate = self.control.record_source_audio(second_job, second)
 
         self.assertEqual("cancelled", duplicate["status"])
         self.assertEqual(first_job, duplicate["deduplicated_to"])
