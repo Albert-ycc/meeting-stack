@@ -32,5 +32,5 @@ fi
 
 if ! tmux has-session -t '=meeting-workbench-integrity' 2>/dev/null; then
   tmux new-session -d -s meeting-workbench-integrity \
-    "cd $Q_ROOT && while true; do PYTHONDONTWRITEBYTECODE=1 .venv/bin/meeting-workbench verify-audio >> $Q_INTEGRITY_LOG 2>&1; exit_code=\$?; if (( exit_code == 2 )); then exit 2; fi; sleep 604800; done"
+    "cd $Q_ROOT && while true; do PYTHONDONTWRITEBYTECODE=1 .venv/bin/meeting-workbench verify-audio >> $Q_INTEGRITY_LOG 2>&1; exit_code=\$?; if (( exit_code == 2 )); then sleep 3600; continue; fi; sleep 604800; done"
 fi

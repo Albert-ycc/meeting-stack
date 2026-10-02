@@ -1078,16 +1078,24 @@ def main(argv: list[str] | None = None) -> int:
         except (AudioIntegrityError, OSError, sqlite3.Error) as error:
             if db is not None:
                 try:
-                    db.add_event(
-                        "audio_integrity_failed",
-                        actor="system",
-                        payload={
-                            "status": "failed",
-                            "error_type": type(error).__name__,
-                            "detail": str(error),
-                            "completed_at": utc_now(),
-                        },
-                    )
+                    # 外置盘没插时巡检每 5 分钟被拉起一次：上一条已经是同一原因的失败就不再记，
+                    # 成功执行过一次、或原因变了才再记。
+                    last = last_audio_integrity_result(db) or {}
+                    if (
+                        last.get("status") != "failed"
+                        or last.get("error_type") != type(error).__name__
+                        or last.get("detail") != str(error)
+                    ):
+                        db.add_event(
+                            "audio_integrity_failed",
+                            actor="system",
+                            payload={
+                                "status": "failed",
+                                "error_type": type(error).__name__,
+                                "detail": str(error),
+                                "completed_at": utc_now(),
+                            },
+                        )
                 except (OSError, sqlite3.Error):
                     pass
             print(str(error), file=sys.stderr)

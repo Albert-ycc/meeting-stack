@@ -192,6 +192,44 @@ def test_verify_audio_cli_returns_zero_one_and_two(tmp_path, monkeypatch, capsys
     assert last_audio_integrity_result(Database(settings.database_path))["status"] == "failed"
 
 
+def test_verify_audio_records_a_repeated_failure_reason_once(tmp_path, monkeypatch, capsys):
+    """外置盘没插时巡检每 5 分钟被拉起一次：同一个没能执行的原因连续出现只记第一条事件，
+    成功执行过、或原因变了才再记；退出码照旧是 2。"""
+    _verifier, _db, settings, _meeting_dir, _audio = make_verifier(tmp_path)
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    db = Database(settings.database_path)
+
+    def failures():
+        return db.query_all(
+            "SELECT payload_json FROM events WHERE event_type='audio_integrity_failed' ORDER BY id"
+        )
+
+    offline = tmp_path / "archive-offline"
+    settings.archive_root.rename(offline)
+    assert [cli.main(["verify-audio"]) for _ in range(3)] == [2, 2, 2]
+    assert len(failures()) == 1
+
+    real_verify = AudioIntegrityVerifier.verify
+
+    def locked(self):
+        raise cli.sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(AudioIntegrityVerifier, "verify", locked)
+    assert cli.main(["verify-audio"]) == 2  # 原因变了，再记一条
+    assert len(failures()) == 2
+    monkeypatch.setattr(AudioIntegrityVerifier, "verify", real_verify)
+
+    assert cli.main(["verify-audio"]) == 2  # 又换回盘不在：和上一条原因不同，记
+    assert len(failures()) == 3
+    offline.rename(settings.archive_root)
+    assert cli.main(["verify-audio"]) == 0
+    settings.archive_root.rename(offline)
+    assert cli.main(["verify-audio"]) == 2  # 中间成功过一次，再出现要再记
+    assert len(failures()) == 4
+    assert last_audio_integrity_result(db)["status"] == "failed"
+    capsys.readouterr()
+
+
 def test_verify_audio_cli_rejects_missing_database_without_creating_empty_one(
     tmp_path, monkeypatch, capsys
 ):
