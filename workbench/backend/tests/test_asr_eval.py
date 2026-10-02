@@ -465,6 +465,26 @@ def test_evaluate_asr_accepts_single_sample_at_character_limit(tmp_path):
     assert report["engines"]["funasr"]["cer"] == 0
 
 
+def test_overlong_hypothesis_is_truncated_and_counted_instead_of_aborting(tmp_path):
+    """候选稿幻觉循环超过上限：截到上限照算，记成幻觉、重复，整次评估照常出结果。"""
+    gold = tmp_path / "gold.jsonl"
+    write_gold(gold)
+    engine = tmp_path / "whisper"
+    engine.mkdir()
+    (engine / "sample-1.txt").write_text("谢谢观看" * 1200, encoding="utf-8")
+    (engine / "sample-2.txt").write_text("ACME 需求下周确认", encoding="utf-8")
+
+    report = evaluate_asr(gold, {"whisper": engine})
+
+    looping = report["samples"][0]["engines"]["whisper"]
+    assert looping["truncated"] is True
+    assert looping["hallucination"] is True and looping["repetition"] is True
+    assert looping["edit_distance"] <= asr_eval.MAX_SAMPLE_CHARACTERS
+    assert report["samples"][1]["engines"]["whisper"]["truncated"] is False
+    summary = report["engines"]["whisper"]
+    assert summary["hallucination_samples"] == 1 and summary["repetition_samples"] == 1
+
+
 def test_edit_distance_at_character_cap_finishes_within_loose_budget():
     started = time.monotonic()
 

@@ -276,9 +276,13 @@ def evaluate_asr(
             reference = _normalize(str(sample["reference"]))
             hypothesis_text = _read_hypothesis(directory, sample_id)
             hypothesis = _normalize(hypothesis_text or "")
-            number_hypothesis = _normalize_number(hypothesis_text or "")
-            if len(reference) > MAX_SAMPLE_CHARACTERS or len(hypothesis) > MAX_SAMPLE_CHARACTERS:
+            number_hypothesis = _normalize_number(hypothesis_text or "")[:MAX_SAMPLE_CHARACTERS]
+            if len(reference) > MAX_SAMPLE_CHARACTERS:
                 raise AsrEvaluationError(f"单样本超过 {MAX_SAMPLE_CHARACTERS} 字符上限")
+            # 候选稿超长多半是幻觉循环，正是要统计的东西：截到上限照算（上限只为控住编辑距离的耗时），
+            # 不让一个样本拖垮整次评估
+            truncated = len(hypothesis) > MAX_SAMPLE_CHARACTERS
+            hypothesis = hypothesis[:MAX_SAMPLE_CHARACTERS]
             distance = _edit_distance(reference, hypothesis)
             entities = [_normalize(str(value)) for value in sample["entities"]]
             numbers = [_normalize_number(str(value)) for value in sample["numbers"]]
@@ -294,6 +298,7 @@ def evaluate_asr(
             detail: dict[str, object] = {
                 "hypothesis": hypothesis_text,
                 "missing": hypothesis_text is None,
+                "truncated": truncated,
                 "reference_chars": len(reference),
                 "edit_distance": distance,
                 "cer": round(distance / len(reference), 6),
