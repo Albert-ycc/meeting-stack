@@ -10,6 +10,7 @@ import type {
   ProjectWorkRequirement,
   Task,
 } from "../../../types";
+import { clearPersistentViewState } from "../../../viewState";
 import { ProjectDetailPage } from "../../ProjectDetailPage";
 import { YIMI, requirementItem } from "../../pool/poolFixtures";
 
@@ -157,7 +158,7 @@ function setup(options: { work?: ProjectWorkPayload; api?: Partial<ApiClient>; p
     onOpenTask: vi.fn(),
     ...options.props,
   };
-  render(
+  const page = (extra: Partial<Parameters<typeof ProjectDetailPage>[0]> = {}) => (
     <ProjectDetailPage
       apiClient={api}
       canPickFolders
@@ -165,9 +166,13 @@ function setup(options: { work?: ProjectWorkPayload; api?: Partial<ApiClient>; p
       projectId={YIMI}
       projects={[]}
       {...props}
-    />,
+      {...extra}
+    />
   );
-  return { api, props, state };
+  const view = render(page());
+  // rerender：模拟外面（地址栏）换了 viewMode 之类的 props
+  const rerender = (extra: Partial<Parameters<typeof ProjectDetailPage>[0]>) => view.rerender(page(extra));
+  return { api, props, state, rerender, unmount: view.unmount };
 }
 
 const pair = (id: string) => document.querySelector<HTMLElement>(`[data-requirement-id="${id}"]`)!;
@@ -209,6 +214,107 @@ describe("项目详情的四个标签页", () => {
     setup({ props: { graphTab: <div>项目关系图画布</div>, viewMode: "graph" } });
     expect(await screen.findByText("项目关系图画布")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "关系图" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  describe("顶部页签：离开再回来、刷新后保持，按项目各记各的", () => {
+    const KEY = `meeting-workbench:view:project.${YIMI}.tab`;
+    const graphTab = <div>项目关系图画布</div>;
+    const isSelected = (name: string | RegExp) => screen.getByRole("tab", { name }).getAttribute("aria-selected") === "true";
+
+    it("切到录音再离开：重新进同一个项目还停在录音；切到材料同理", async () => {
+      const first = setup();
+      await userEvent.click(await screen.findByRole("tab", { name: /录音/ }));
+      first.unmount();
+
+      const second = setup();
+      await screen.findByRole("tab", { name: /录音/ });
+      expect(isSelected(/录音/)).toBe(true);
+      expect(isSelected("需求与任务")).toBe(false);
+      await userEvent.click(screen.getByRole("tab", { name: "材料" }));
+      second.unmount();
+
+      setup();
+      await screen.findByRole("tab", { name: "材料" });
+      expect(isSelected("材料")).toBe(true);
+    });
+
+    it("切回「需求与任务」也记：下次进来是它，不是上一次的录音", async () => {
+      const first = setup();
+      await userEvent.click(await screen.findByRole("tab", { name: /录音/ }));
+      await userEvent.click(screen.getByRole("tab", { name: "需求与任务" }));
+      first.unmount();
+
+      setup();
+      await screen.findByRole("tab", { name: "需求与任务" });
+      expect(isSelected("需求与任务")).toBe(true);
+    });
+
+    it("按项目记：这个项目停在录音，另一个项目照样先看「需求与任务」", async () => {
+      const first = setup();
+      await userEvent.click(await screen.findByRole("tab", { name: /录音/ }));
+      first.unmount();
+
+      setup({ props: { projectId: "project-other" } });
+      await screen.findByRole("tab", { name: "需求与任务" });
+      expect(isSelected("需求与任务")).toBe(true);
+    });
+
+    it("刷新（内存没了，只剩存在 sessionStorage 里的）也在", async () => {
+      window.sessionStorage.setItem(KEY, JSON.stringify("materials"));
+
+      setup();
+
+      await screen.findByRole("tab", { name: "材料" });
+      expect(isSelected("材料")).toBe(true);
+    });
+
+    it("存着的值不是三个页签之一（被手改、旧版本写坏、存了 graph）：当没存，回到「需求与任务」，页面不崩", async () => {
+      for (const stored of ["bogus", "graph", 3, null, { tab: "work" }]) {
+        window.sessionStorage.setItem(KEY, JSON.stringify(stored));
+        const view = setup();
+        await screen.findByRole("tab", { name: "需求与任务" });
+        expect(isSelected("需求与任务")).toBe(true);
+        view.unmount();
+        clearPersistentViewState();
+      }
+    });
+
+    it("关系图不进记忆：在关系图标签页时记着的仍是上一个清单页签，地址栏退回清单后回到它，不是固定的第一个", async () => {
+      const onViewModeChange = vi.fn();
+      const { rerender } = setup({ props: { graphTab, viewMode: "list", onViewModeChange } });
+      await userEvent.click(await screen.findByRole("tab", { name: /录音/ }));
+      await userEvent.click(screen.getByRole("tab", { name: "关系图" }));
+      expect(onViewModeChange).toHaveBeenLastCalledWith("graph");
+      rerender({ viewMode: "graph" }); // 外面把地址改成 #projects/<id>/graph
+      expect(isSelected("关系图")).toBe(true);
+      expect(JSON.parse(window.sessionStorage.getItem(KEY) ?? "null")).toBe("recordings");
+
+      rerender({ viewMode: "list" }); // 浏览器后退，地址回到清单
+      expect(isSelected(/录音/)).toBe(true);
+      expect(screen.queryByText("项目关系图画布")).toBeNull();
+    });
+
+    it("刷新后地址栏就是关系图：直接停在关系图，不被记着的清单页签顶掉；退回清单才用记着的", async () => {
+      window.sessionStorage.setItem(KEY, JSON.stringify("materials"));
+
+      const { rerender } = setup({ props: { graphTab, viewMode: "graph" } });
+
+      expect(await screen.findByText("项目关系图画布")).toBeInTheDocument();
+      expect(isSelected("关系图")).toBe(true);
+      rerender({ viewMode: "list" });
+      expect(isSelected("材料")).toBe(true);
+    });
+
+    it("从关系图直接点材料：记成材料，下次进来先看材料", async () => {
+      const first = setup({ props: { graphTab, viewMode: "graph" } });
+      await screen.findByText("项目关系图画布");
+      await userEvent.click(screen.getByRole("tab", { name: "材料" }));
+      first.unmount();
+
+      setup({ props: { graphTab, viewMode: "list" } });
+      await screen.findByRole("tab", { name: "材料" });
+      expect(isSelected("材料")).toBe(true);
+    });
   });
 
   it("接口读取失败（旧后端 404）：显示读取失败和重试，不白屏", async () => {

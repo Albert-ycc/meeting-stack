@@ -62,10 +62,11 @@ meeting-stack 的三个组件之一，负责资料库、检索、播放与编辑
   原生 `window.confirm`：浏览器后退时要在 `popstate` 里当场决定留下还是放行，只能用同步的原生框，
   其余入口跟它保持一致。原生框不跟主题，也没有 ConfirmDialog 的焦点约定。
 - 复制路径在 `http://<局域网 IP>` 这类非安全上下文里退回 `execCommand("copy")`（`src/clipboard.ts`）。
-- 待办的页签、查询条件和页码，项目管理的查询条件和「我的方向」点选，词典的页签和分类，以及项目详情
-  「需求与任务」里已完成 / 已取消那一栏的展开收起，离开页面再回来原样保留，刷新也不丢，关掉标签页才清空
-  （`src/viewState.ts` 的 `usePersistentState`，存在内存和 `sessionStorage`）。项目详情顶部的页签
-  （需求与任务 / 录音 / 材料）不记，进项目一律先看「需求与任务」。需求池的页签和筛选传 `{ local: true }` 记在 `localStorage`，
+- 待办的页签、查询条件和页码，项目管理的查询条件和「我的方向」点选，词典的页签和分类，项目详情顶部的页签
+  （需求与任务 / 录音 / 材料，按项目各记各的），以及「需求与任务」里已完成 / 已取消那一栏的展开收起，
+  离开页面再回来原样保留，刷新也不丢，关掉标签页才清空（`src/viewState.ts` 的 `usePersistentState`，
+  存在内存和 `sessionStorage`）。关系图标签页不进记忆：在不在关系图由地址栏（`#projects/<id>/graph`）说了算，
+  从关系图退回清单时回到记着的那个页签。需求池的页签和筛选传 `{ local: true }` 记在 `localStorage`，
   关掉浏览器再开也还在。录音档案的筛选一直由 App 持有，本来就保留。
 - 操作结果提示有两种：需求池、待办、项目详情用 `components/Toast.tsx` 的底部深色条——可撤销的动作带［撤销］
   停 10 秒，失败传 `tone: "error"`（红色叹号、`role="alert"`、停 10 秒）；其余页面仍用 `components/Notice.tsx`：

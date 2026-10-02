@@ -30,6 +30,7 @@ import { useToast } from "./Toast";
 import "./ProjectDetailPage.css";
 import { useConfirm } from "./ConfirmDialog";
 import { copyText } from "../clipboard";
+import { usePersistentState } from "../viewState";
 import { NoticeBanner, useNotice } from "./Notice";
 import { ProjectGlossary } from "./ProjectGlossary";
 import { ProjectTimeline } from "./decisions/ProjectTimeline";
@@ -76,6 +77,10 @@ interface ProjectDetailPageProps {
 type LoadState = "loading" | "ready" | "error";
 type BoardState = LoadState | "missing";
 type DetailTab = "work" | "recordings" | "graph" | "materials";
+/** 按项目记着的只有这三个：关系图在不在由地址栏（viewMode）说了算，不进记忆 */
+type ListTab = Exclude<DetailTab, "graph">;
+const LIST_TABS: ListTab[] = ["work", "recordings", "materials"];
+const isListTab = (value: unknown) => LIST_TABS.includes(value as ListTab);
 
 /** 文件名还在认（pending / walking）、内容还在读时隔一会儿再问一次进度 */
 export const INDEX_POLL_MS = 15_000;
@@ -288,7 +293,10 @@ export function ProjectDetailPage({
   // 哪些根目录的［看看］展开着
   const [unreadableOpen, setUnreadableOpen] = useState<Set<number>>(() => new Set());
 
-  const [tab, setTab] = useState<DetailTab>(viewMode === "graph" && graphTab ? "graph" : "work");
+  // 顶部页签离开再回来、刷新后都停在原来那个，按项目各记各的；记着的值被写坏时当没存，先看「需求与任务」
+  const [listTab, setListTab] = usePersistentState<ListTab>(`project.${projectId}.tab`, "work", { valid: isListTab });
+  const [graphOpen, setGraphOpen] = useState(viewMode === "graph" && Boolean(graphTab));
+  const tab: DetailTab = graphOpen ? "graph" : listTab;
   // 新建需求后「需求与任务」要重取
   const [workKey, setWorkKey] = useState(0);
 
@@ -339,11 +347,11 @@ export function ProjectDetailPage({
     void loadSubfolders();
   }, [loadBoard, loadSubfolders, reloadKey]);
 
-  // 地址栏（前进、后退、深链）改了视图：标签页跟着走
+  // 地址栏（前进、后退、深链）改了视图：标签页跟着走；退出关系图回到记着的那个清单页签
   const hasGraph = Boolean(graphTab);
   useEffect(() => {
-    if (viewMode === "graph" && hasGraph) setTab("graph");
-    else if (viewMode === "list") setTab((current) => (current === "graph" ? "work" : current));
+    if (viewMode === "graph" && hasGraph) setGraphOpen(true);
+    else if (viewMode === "list") setGraphOpen(false);
   }, [viewMode, hasGraph]);
 
   // 文件名索引和内容的进度：挂的根目录变了就重问；同一个定时器每 15 秒两样一起问，
@@ -387,7 +395,8 @@ export function ProjectDetailPage({
 
   const selectTab = (next: DetailTab) => {
     if (next === tab) return;
-    setTab(next);
+    setGraphOpen(next === "graph");
+    if (next !== "graph") setListTab(next);
     if (next === "graph" || tab === "graph") onViewModeChange?.(next === "graph" ? "graph" : "list");
   };
 
