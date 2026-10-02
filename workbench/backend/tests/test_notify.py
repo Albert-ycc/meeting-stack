@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -343,6 +344,47 @@ def test_webhook_cards_escape_titles_from_meetings(tmp_path, monkeypatch):
     for content in contents:
         assert evil not in content
         assert "\\[点我\\]" in content
+
+
+@pytest.mark.parametrize(
+    "pattern, old",
+    [
+        ("_SUBHEADING", (r"^###\s+(.+?)\s*$", re.MULTILINE)),
+        ("_LIST_ITEM", (r"^\s*(?:\d+[.、)]|[-*+])\s+(.+?)\s*$", re.MULTILINE)),
+        ("_ANCHOR", (r"\s*`?\[\d{2}:\d{2}(?::\d{2})?[^\]]*\]`?", 0)),
+    ],
+)
+def test_rewritten_outline_patterns_parse_like_the_old_ones(pattern, old):
+    """纪要摘要的几条正则改成不回溯的写法后，对仓库全部用例文本取到的东西和原来逐条一致。"""
+    from meeting_workbench import notify
+
+    lazy, greedy = re.compile(*old), getattr(notify, pattern)
+    samples = [
+        "### 决议 1 · 手机号修改 `[00:00:36 — 00:05:19]`  \t",
+        "- a   b  \n1. 第一条\r\n2、 第二条　\n-   \n",
+        "结论 `[00:01:02 — 00:03:04]`   [12:30 张三] 后半句",
+    ]
+    texts = [
+        path.read_text(encoding="utf-8") for path in sorted(Path(__file__).parent.glob("*.py"))
+    ]
+    for text in texts + samples:
+        if pattern == "_ANCHOR":
+            assert lazy.sub("", text) == greedy.sub("", text)
+        else:
+            assert lazy.findall(text) == greedy.findall(text)
+
+
+def test_outline_minutes_is_not_quadratic_on_a_long_run_of_spaces():
+    """决议段里一行夹 2 万个空格：原来 outline_minutes 要好几秒，现在一眨眼。上界给得很宽，不卡机器速度。"""
+    spaces = " " * 20000
+    markdown = f"# 会\n\n## 一分钟摘要\n\n摘要{spaces}结尾\n\n## 决议\n\n- a{spaces}b\n"
+
+    started = time.perf_counter()
+    outline = outline_minutes(markdown)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.5
+    assert outline["items"][0].startswith("a")
 
 
 def _log_path_for(kind, ref_key):

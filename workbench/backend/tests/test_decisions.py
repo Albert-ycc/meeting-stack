@@ -1,8 +1,11 @@
 """第四期 4a：决议入库。选段、拆条、时间点；id 跨纪要版本不变；L1 的快路径、对比排队、换项目；
 简报和聚焦视图的 id 与当场解析；放到需求下和撤销。"""
 
+import re
+import time
 from datetime import UTC, datetime, timedelta
 from itertools import count
+from pathlib import Path
 
 import pytest
 
@@ -615,3 +618,74 @@ def test_one_broken_meeting_does_not_stall_the_round(tmp_path, monkeypatch):
     # 出错的那场会跳过、记日志；同一轮里别的会照样入库，不让整轮（连带 L2 和清理）一直卡住
     assert counts["skipped"] >= 1 and counts["tried"] == 2
     assert [text for _id, text in live(db, "good")][:1] == ["司美格鲁太的对照组先按 0.8 执行"]
+
+
+# ---------------------------------------------------------------- 行尾空白正则不回溯
+
+
+# 改写前的写法：(.+?) 懒惰取正文、后面跟行尾空白，一行里夹一长串空白时平方级回溯
+_LAZY = {
+    "_H2": (r"^##[ \t]+(.+?)[ \t#]*$", re.MULTILINE),
+    "_H3": (r"^###[ \t]+(.+?)[ \t]*$", re.MULTILINE),
+    "_ITEM": (
+        r"^(?P<indent>[ \t]*)(?:(?:\d+[.)）]|[-*+•])[ \t]+|\d+、[ \t]*)(?P<body>\S.*?)[ \t]*$",
+        0,
+    ),
+    # 时间点前面的空白一起去掉：原来 \s* 打头，长空白里每个位置都试一遍
+    "_ANCHOR_ANY": (r"\s*`?\[\s*\d{1,2}:\d{2}(?::\d{2})?[^\]\n]*\]`?", 0),
+}
+_SAMPLES = [
+    "## 决议 ##",
+    "## 三、核心决议  \t",
+    "##  #",
+    "### 决议 1 · 患者端支持手机号修改 `[00:00:36 — 00:05:19]`  ",
+    "###  \t",
+    "- a   b  ",
+    "1、 第一条\r",
+    "  2) 缩进的子项\t\t",
+    "• 圆点项",
+    "- 　全角空格开头　",
+    "-  ",
+    "10. 末尾带换行\n",
+    "结论 `[00:01:02 — 00:03:04]`   [12:30 张三] 后半句 \t [1:02]",
+    "[00:01]开头  \n  [00:02]`",
+]
+
+
+def _corpus() -> list[str]:
+    """仓库用例里出现过的全部文本（纪要样本都在这些文件里），加上几条边界写法。"""
+    texts = [
+        path.read_text(encoding="utf-8") for path in sorted(Path(__file__).parent.glob("*.py"))
+    ]
+    return texts + _SAMPLES + ["\n".join(_SAMPLES)]
+
+
+@pytest.mark.parametrize("name", sorted(_LAZY))
+def test_rewritten_trailing_space_patterns_parse_like_the_lazy_ones(name):
+    """改写后的正则和原来的写法逐条取到一样的东西（拿仓库全部用例文本做对照）。"""
+    lazy = re.compile(*_LAZY[name])
+    greedy = getattr(decisions, name)
+    for text in _corpus():
+        if name == "_ANCHOR_ANY":
+            assert lazy.sub("", text) == greedy.sub("", text)
+        elif name == "_ITEM":
+            for line in text.splitlines() + _SAMPLES:
+                old, new = lazy.match(line), greedy.match(line)
+                assert (old and old.groupdict()) == (new and new.groupdict()), line
+        else:
+            assert [m.groups() for m in lazy.finditer(text)] == [
+                m.groups() for m in greedy.finditer(text)
+            ]
+
+
+@pytest.mark.parametrize("line", ["- a{}b", "### a{}b"], ids=["list", "heading"])
+def test_parse_decisions_is_not_quadratic_on_a_long_run_of_spaces(line):
+    """决议段里一行夹 2 万个空格：原来要好几秒（平方级），现在一眨眼。上界给得很宽，不卡机器速度。"""
+    markdown = f"# 会\n\n## 决议\n\n{line.format(' ' * 20000)}\n正文\n"
+
+    started = time.perf_counter()
+    parsed = decisions.parse_decisions(markdown)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.5
+    assert parsed.items[0].text.startswith("a") and parsed.items[0].text.endswith("b")

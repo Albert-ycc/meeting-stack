@@ -83,9 +83,11 @@ _SECTION_START = re.compile(r"^##\s+", re.MULTILINE)
 # 新模板叫「一分钟摘要」，老六段式没有摘要、用「会议背景」承担同一角色。
 _SUMMARY_SECTION = re.compile(r"^##\s+.*(摘要|背景).*$", re.MULTILINE)
 _DECISION_SECTION = re.compile(r"^##\s+.*(决议|结论|共识).*$", re.MULTILINE)
-_SUBHEADING = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
-_LIST_ITEM = re.compile(r"^\s*(?:\d+[.、)]|[-*+])\s+(.+?)\s*$", re.MULTILINE)
-_ANCHOR = re.compile(r"\s*`?\[\d{2}:\d{2}(?::\d{2})?[^\]]*\]`?")
+# 正文贪心取到最后一个非空白字符（同 decisions._H3）：懒惰的 (.+?)\s*$ 遇上一行很长的空白是平方级回溯
+_SUBHEADING = re.compile(r"^###\s+(.*\S|.+?)\s*$", re.MULTILINE)
+_LIST_ITEM = re.compile(r"^\s*(?:\d+[.、)]|[-*+])\s+(.*\S|.+?)\s*$", re.MULTILINE)
+# (?<!\s) 同 decisions._ANCHOR_ANY：只从一段空白的开头起试，免得长空白平方级回溯
+_ANCHOR = re.compile(r"(?<!\s)\s*`?\[\d{2}:\d{2}(?::\d{2})?[^\]]*\]`?")
 _ITEM_PREFIX = re.compile(
     r"^(决议|结论|共识|议题|话题)\s*[一二三四五六七八九十百\d]*\s*[·:：、\-]?\s*"
 )
