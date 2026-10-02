@@ -17,12 +17,18 @@ mkdir -p "$LOGS"
 # tmux 把命令交给 shell 解析，路径按单引号转义（路径里的 ' 也能对付）
 Q_ROOT="${(qq)ROOT}"
 Q_WEB_LOG="${(qq):-$LOGS/web.log}"
+Q_WEB_STDIO_LOG="${(qq):-$LOGS/web.stdio.log}"
 Q_BACKUP_LOG="${(qq):-$LOGS/backup.log}"
 Q_INTEGRITY_LOG="${(qq):-$LOGS/integrity.log}"
 
+# Web 服务的日志由服务自己写进 web.log 并按大小轮转（MEETING_WORKBENCH_LOG_MAX_BYTES、
+# MEETING_WORKBENCH_LOG_BACKUP_COUNT 调大小和份数）。shell 这边的标准输出、标准错误另接一个文件：
+# 服务起不来时的异常、进度条这类不走日志的输出落在这里，平时几乎是空的；不能和 web.log 指向同一个文件。
+# env -u：tmux 服务进程的环境里要是留着调试内存时设的 MallocStackLogging，每个子进程都会往 stderr 打一行，
+# 几周写出几百 MB（260924 前的 web.log 就是这样），起服务前先摘掉。
 if ! tmux has-session -t '=meeting-workbench' 2>/dev/null; then
   tmux new-session -d -s meeting-workbench \
-    "cd $Q_ROOT && exec env PYTHONDONTWRITEBYTECODE=1 MEETING_RELAY_CONTROL_ENABLED=1 .venv/bin/meeting-workbench serve >> $Q_WEB_LOG 2>&1"
+    "cd $Q_ROOT && exec env -u MallocStackLogging -u MallocStackLoggingNoCompact -u MallocStackLoggingDirectory PYTHONDONTWRITEBYTECODE=1 MEETING_RELAY_CONTROL_ENABLED=1 MEETING_WORKBENCH_LOG_FILE=$Q_WEB_LOG .venv/bin/meeting-workbench serve >> $Q_WEB_STDIO_LOG 2>&1"
 fi
 
 if ! tmux has-session -t '=meeting-workbench-backup' 2>/dev/null; then

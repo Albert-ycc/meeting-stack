@@ -94,6 +94,25 @@ Google Fonts CDN**，否则断网时字体掉回系统默认。
 
 普通局域网不开放端口。启用远程访问时，Tailscale ACL 是设备身份边界，应用不另建账号。
 
+### 服务日志
+
+`serve` 默认把日志写到标准输出（访问日志）和标准错误（其余），和以前一样。要让它写进自己管理的文件，
+设 `MEETING_WORKBENCH_LOG_FILE=<路径>`（`.env` 里写也行；`scripts/remote-bootstrap.sh` 已经带上，指向
+`~/.meeting-workbench/logs/web.log`）：
+
+- uvicorn 的访问日志、错误日志和应用自己的日志都进这个文件，每行带时间；写进文件后标准输出和标准错误里就没有日志了。
+- 按大小轮转：单个文件超过 `MEETING_WORKBENCH_LOG_MAX_BYTES`（默认 20 MiB）就换新的，旧的依次改名
+  `web.log.1`、`web.log.2` …，只留 `MEETING_WORKBENCH_LOG_BACKUP_COUNT` 份（默认 5，至少 1），最多占
+  （份数 + 1）× 单个文件上限。日志目录不存在会自己建。
+- 启动脚本里不要再把标准输出、标准错误重定向到同一个文件：`remote-bootstrap.sh` 把它们接到 `web.stdio.log`，
+  里面只有起不来时的异常、进度条这类不走日志的输出，平时几乎是空的；它在长，说明有东西在往标准错误写，先看内容。
+- 接手一份已经很大的旧 `web.log` 时，第一行日志写进来就会把它整个换成 `web.log.1`，它会留到被后面的轮转挤掉为止，
+  要腾地方就先把旧文件挪走。
+
+不管有没有配文件，访问日志都不带查询串（检索词、文件路径之类不进日志），页面轮询的几个接口
+（`/api/health`、`/api/attention`、`/api/jobs`、`/api/tasks`、`/api/glossary/suggestions`，名单是
+`serve_logging.py` 的 `QUIET_POLL_PATHS`）成功（2xx 或 304）时不记，状态码是别的就照记。
+
 ## 前端开发
 
 `cd frontend && npm run dev` 起 127.0.0.1:5173 的开发服务器，把 `/api` 代理给一份后端。代理目标读
@@ -320,6 +339,13 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 - 和会议录音一样，Tailnet 里的设备（比如手机）能搜到材料、能预览、能播放材料里的录音，也能看相关材料栏和预览；
   ［用本机应用打开］［在访达中显示］［打开文件夹］只在声档所在的这台电脑上出现，远程的设备改成复制路径
 - 所有写接口要求同源、双提交 CSRF 与 `application/json`
+- 别的网站的页面用 `<img>`、`fetch`、`<iframe>` 之类发来的读请求（浏览器带 `Sec-Fetch-Site: cross-site` 或
+  `same-site`，且不是整页导航）一律 403：页面读不到结果，但 `/api/media/N/peaks` 这类接口会真的起 ffmpeg，
+  不能让任意网页盲打这台电脑的资源。整页导航（飞书卡片、书签）、本站页面、地址栏、不带 `Sec-Fetch-*` 的
+  客户端（curl、老浏览器）照常。跨站的 iframe 也算在内（它的模式同样是 navigate，但页面看不到结果）
+- 播放和手填路径入队（`/api/media`、`/api/jobs/enqueue`）只放行归档根、中转产物根和上传落盘的
+  `~/.meeting-workbench/uploads`，数据目录里的数据库、备份、缓存不在其内（`Settings.audio_roots`）
+- 项目和标签的颜色只收 `#rrggbb`（创建、修改都校验）
 - 移动端界面只读，用于资料库、检索、播放和阅读；接口权限仍由 Tailnet ACL 控制，不把 UA 或屏幕尺寸当成鉴权凭据
 - 大录音通过 4 MiB JSON 分块上传，仅接受 `m4a/mp3/wav`，不会在浏览器或服务端一次性展开整段 Base64
 - 数据库使用 schema v18；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层、项目材料的文件名索引、材料内容、第四期的深度关联和需求池（需求候选、需求来源、项目座次）都保存在 SQLite。

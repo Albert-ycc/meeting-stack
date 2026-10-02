@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     public_base_url: str = "http://127.0.0.1:8765"
     # Host 白名单里额外放行的主机名（逗号分隔，精确匹配），回环地址和 public_base_url 的主机名不用写。
     allowed_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # serve 的日志文件；留空 = 照旧写标准输出和标准错误。配了以后 uvicorn 的访问、错误日志和应用自己的日志
+    # 都进这个文件，单个文件超过 log_max_bytes 就换新的，留 log_backup_count 份旧的（web.log.1 … web.log.N）。
+    log_file: Path | None = None
+    log_max_bytes: int = 20 * 1024 * 1024
+    log_backup_count: int = 5
     # 停滞督办阈值（天）；同一任务督办冷却（天）
     task_stall_after_days: float = 3.0
     # 待确认草稿放多少天没处理就自动归入「已过期」；<=0 关闭。
@@ -132,6 +137,12 @@ class Settings(BaseSettings):
             return [part for part in (item.strip() for item in value.split(",")) if part]
         return value
 
+    @field_validator("log_file", mode="before")
+    @classmethod
+    def _blank_log_file_is_unset(cls, value: object) -> object:
+        # .env 里写成 MEETING_WORKBENCH_LOG_FILE= 的意思是没配，不能当成当前目录
+        return None if isinstance(value, str) and not value.strip() else value
+
     def trusted_hostnames(self) -> frozenset[str]:
         names = {"127.0.0.1", "localhost", "::1"}
         public_host = urlsplit(self.public_base_url).hostname
@@ -152,10 +163,14 @@ class Settings(BaseSettings):
             "qwen_timeout_seconds": self.qwen_timeout_seconds,
             "qwen_heartbeat_seconds": self.qwen_heartbeat_seconds,
             "qwen_lease_seconds": self.qwen_lease_seconds,
+            "log_max_bytes": self.log_max_bytes,
         }
         for name, value in positive_values.items():
             if value <= 0:
                 raise ValueError(f"{name} 必须大于 0")
+        if self.log_backup_count < 1:
+            # 备份数为 0 时 RotatingFileHandler 永远不轮转，等于没限制
+            raise ValueError("log_backup_count 至少为 1")
         if (
             not math.isfinite(self.scan_interval_seconds)
             or self.scan_interval_seconds > MAX_SCAN_INTERVAL_SECONDS
@@ -178,6 +193,8 @@ class Settings(BaseSettings):
         self.qwen_binary = self.qwen_binary.expanduser()
         if self.lark_app_secret_file is not None:
             self.lark_app_secret_file = self.lark_app_secret_file.expanduser()
+        if self.log_file is not None:
+            self.log_file = self.log_file.expanduser()
         if self.qwen_model != "Qwen/Qwen3-ASR-0.6B":
             raise ValueError("qwen_model 固定为 Qwen/Qwen3-ASR-0.6B")
         if self.qwen_heartbeat_seconds >= self.qwen_lease_seconds:

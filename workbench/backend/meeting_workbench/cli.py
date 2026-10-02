@@ -998,12 +998,10 @@ def main(argv: list[str] | None = None) -> int:
         if settings.host not in {"127.0.0.1", "::1", "localhost"}:
             print("拒绝启动：工作台只允许监听 loopback", file=sys.stderr)
             return 2
-        import logging
+        from .serve_logging import configure_serve_logging
 
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        )
+        # 要在建应用之前配好：建应用时打的日志也得进去
+        configure_serve_logging(settings)
         import uvicorn
 
         uvicorn.run(
@@ -1011,6 +1009,8 @@ def main(argv: list[str] | None = None) -> int:
             host="127.0.0.1",
             port=settings.port,
             access_log=True,
+            # 日志上面已经配好，不让 uvicorn 再套一份它自带的
+            log_config=None,
             proxy_headers=True,
             forwarded_allow_ips="127.0.0.1",
         )
