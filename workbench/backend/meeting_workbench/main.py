@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import (
     BaseModel,
@@ -1727,6 +1727,14 @@ def create_app(
         else:
             status = 400
         return JSONResponse({"detail": str(error)}, status_code=status)
+
+    @app.exception_handler(Exception)
+    async def unhandled_error(_request: Request, _error: Exception):
+        # 未处理的异常由最外层的 ServerErrorMiddleware 回 500，不经过 WriteProtectionMiddleware，
+        # 安全头要在这里补上；它发完响应后照旧把异常抛给服务器记日志
+        return WriteProtectionMiddleware._secure(
+            PlainTextResponse("Internal Server Error", status_code=500)
+        )
 
     @app.exception_handler(OverflowError)
     async def integer_overflow(_request: Request, _error: OverflowError):

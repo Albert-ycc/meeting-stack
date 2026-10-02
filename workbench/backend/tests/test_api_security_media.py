@@ -917,3 +917,18 @@ def test_concurrent_same_name_tags_create_one_and_reject_the_rest(tmp_path):
 
     assert statuses == [200] + [400] * 7
     assert [tag["name"] for tag in client.get("/api/tags").json()] == ["同名"]
+
+
+def test_unhandled_error_response_still_carries_security_headers(tmp_path):
+    client, _ = make_client(tmp_path)
+
+    @client.app.get("/api/test-crash")
+    def crash():
+        raise RuntimeError("boom")
+
+    client = TestClient(client.app, raise_server_exceptions=False)
+    response = client.get("/api/test-crash")
+
+    assert response.status_code == 500
+    assert response.headers.get("X-Content-Type-Options") == "nosniff"
+    assert "frame-ancestors 'none'" in response.headers.get("Content-Security-Policy", "")
