@@ -792,6 +792,59 @@ def test_a_single_unreadable_entry_with_the_disk_gone_stops_the_round(tmp_path, 
     )
 
 
+def _reading(calls):
+    def extract(path, layer, row):
+        calls.append(str(path))
+        return ExtractResult(status="ok", blocks=[{"loc": None, "text": path.read_text()}])
+
+    return extract
+
+
+def _chunk_texts(db):
+    return [row["text"] for row in db.query_all("SELECT text FROM material_chunks")]
+
+
+def test_file_swapped_for_a_symlink_to_outside_the_root_is_not_read(tmp_path):
+    """新文件还在 2 分钟等待里时被换成指到根目录外的符号链接，并保留链接自己的旧时间（rsync -a、
+    同步盘、git 切分支）。文件名索引下一次重读这个目录之前，内容循环不能顺着链接把根目录外的文件读进库。"""
+    calls = []
+    db, settings, root, root_id, content, indexer, now, _state = setup(
+        tmp_path, extractors={"text": _reading(calls)}
+    )
+    secret = put(tmp_path / "根目录外" / "私密.txt", "SECRET-OUTSIDE-ROOT")
+    note = put(root / "笔记.txt", "刚拷进来的正文", when=time.time())
+    index(indexer)
+    content.run_round()
+    note.unlink()
+    os.symlink(secret, note)
+    os.utime(note, (OLD, OLD), follow_symlinks=False)
+    for _ in range(3):
+        content.run_round()
+    assert calls == [] and _chunk_texts(db) == []
+    assert keys(db)["笔记.txt"] is None
+    file_id = db.query_one("SELECT id FROM material_files")["id"]
+    assert material_content.key_file_now(db, file_id, state_of=lambda path: ROOT_ONLINE) is None
+
+
+def test_folder_swapped_for_a_symlink_to_outside_the_root_is_not_read(tmp_path):
+    """中间一层目录被换成指到根目录外的链接，外面恰好有同名、同大小、同修改时间的文件：lstat 看不出来，
+    要按 realpath 核对。"""
+    calls = []
+    db, settings, root, root_id, content, indexer, now, _state = setup(
+        tmp_path, extractors={"text": _reading(calls)}
+    )
+    put(root / "子目录" / "笔记.txt", "AAAA")
+    index(indexer)
+    outside = tmp_path / "根目录外"
+    put(outside / "笔记.txt", "BBBB")
+    (root / "子目录").rename(tmp_path / "挪走了")
+    os.symlink(outside, root / "子目录")
+    for _ in range(3):
+        content.run_round()
+    assert calls == [] and _chunk_texts(db) == []
+    assert keys(db)["子目录/笔记.txt"] is None
+
+
 @pytest.mark.parametrize("missing", ["gone", "deleted"])
 def test_key_file_now_skips_missing_rows(tmp_path, missing):
     db, settings, root, root_id, content, indexer, now, _state = setup(tmp_path)

@@ -34,6 +34,7 @@ from .material_rules import (
     unreadable_text,
 )
 from . import relation_read
+from .material_content import real_path_inside
 from .materials import ROOT_ONLINE, volume_state
 
 UNREADABLE_PAGE = 100
@@ -655,9 +656,10 @@ def resolve_file(
         return "missing", None
     if state_of(str(row["root_path"])) != ROOT_ONLINE:
         return "offline", row
-    root_real = os.path.realpath(str(row["root_path"]))
-    target = os.path.realpath(os.path.join(str(row["root_path"]), *str(row["rel_path"]).split("/")))
-    if os.path.commonpath([root_real, target]) != root_real:
+    target = real_path_inside(
+        str(row["root_path"]), os.path.join(str(row["root_path"]), *str(row["rel_path"]).split("/"))
+    )
+    if target is None:
         return "outside", row
     # 4d：key、pages、numbers 可能是目录形式的包
     if not (

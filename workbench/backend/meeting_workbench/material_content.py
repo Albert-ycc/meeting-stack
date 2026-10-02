@@ -138,9 +138,24 @@ def compute_content_key(path: Path, *, check: Callable[[], None] | None = None) 
     return KEY_PREFIX + digest.hexdigest()[:32], size
 
 
-def stat_signature(path: Path) -> tuple[int | None, int]:
-    """(大小, 修改时间)：和文件名索引写行时一样，包的大小为空。"""
+def real_path_inside(root_path: str, path: str | Path) -> str | None:
+    """path 的 realpath，还在根目录里才返回；文件本身或中间哪一层目录是指到根目录外的符号链接就是 None。"""
+    root_real = os.path.realpath(root_path)
+    target = os.path.realpath(path)
+    return target if os.path.commonpath([root_real, target]) == root_real else None
+
+
+def stat_signature(path: Path, *, root: str | None = None) -> tuple[int | None, int]:
+    """(大小, 修改时间)：和文件名索引写行时一样，包的大小为空。
+
+    文件名索引不收符号链接和特殊文件：入了索引之后被换成符号链接的（rsync -a、同步盘、git 切分支），
+    这里当它不见了（下一轮索引会标），不然读的时候会顺着链接把根目录外的文件读进库。给了 root 时
+    realpath 出了根目录也当不见了（中间某一层目录被换成链接，lstat 看不出来）。"""
     info = os.stat(path, follow_symlinks=False)
+    if not (stat_module.S_ISREG(info.st_mode) or stat_module.S_ISDIR(info.st_mode)):
+        raise FileNotFoundError(f"不是普通文件：{path}")
+    if root is not None and real_path_inside(root, path) is None:
+        raise FileNotFoundError(f"指到根目录外：{path}")
     if stat_module.S_ISDIR(info.st_mode):
         return None, info.st_mtime_ns
     return info.st_size, info.st_mtime_ns
@@ -503,7 +518,7 @@ class MaterialContent:
                 row, root_path, ERROR_UNSUPPORTED, signature=(row["size"], row["mtime_ns"])
             )
         try:
-            size, mtime_ns = stat_signature(path)
+            size, mtime_ns = stat_signature(path, root=root_path)
         except FileNotFoundError:
             return False  # 文件名索引下一轮会标不见
         except OSError as error:
@@ -519,7 +534,7 @@ class MaterialContent:
             return False
         try:
             key, _read_size = compute_content_key(path)
-            after = stat_signature(path)
+            after = stat_signature(path, root=root_path)
         except FileNotFoundError:
             return False
         except OSError as error:
@@ -749,7 +764,7 @@ class MaterialContent:
         path = Path(root_path).joinpath(*str(row["rel_path"]).split("/"))
         expected = (row["content_size"], row["content_mtime_ns"])
         try:
-            before = stat_signature(path)
+            before = stat_signature(path, root=root_path)
         except FileNotFoundError:
             return False
         except OSError as error:
@@ -780,7 +795,7 @@ class MaterialContent:
             self._on_os_error(row, root_path, PermissionError("permission"), keep_key=True)
             return False
         try:
-            after = stat_signature(path)
+            after = stat_signature(path, root=root_path)
         except FileNotFoundError:
             return False
         except OSError as error:
@@ -1183,11 +1198,11 @@ def key_file_now(
         return None
     path = Path(row["root_path"]).joinpath(*str(row["rel_path"]).split("/"))
     try:
-        size, mtime_ns = stat_signature(path)
+        size, mtime_ns = stat_signature(path, root=row["root_path"])
         if size != row["size"] or mtime_ns != row["mtime_ns"]:
             return None
         key, _read = compute_content_key(path)
-        if stat_signature(path) != (size, mtime_ns):
+        if stat_signature(path, root=row["root_path"]) != (size, mtime_ns):
             return None
     except OSError:
         return None
