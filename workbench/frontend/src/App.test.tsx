@@ -589,6 +589,50 @@ describe("内容区出错不白屏", () => {
   });
 });
 
+describe("手工导入录音", () => {
+  it("上传中切到别的页面，刷新、关标签页照样先问一句；传完就不再拦", async () => {
+    let releaseChunk!: () => void;
+    const chunkGate = new Promise<void>((resolve) => {
+      releaseChunk = resolve;
+    });
+    const apiClient = client({
+      startUpload: vi.fn().mockResolvedValue({ upload_id: "upload-1", chunk_bytes: 8, chunk_count: 1 }),
+      uploadChunk: vi.fn(async () => {
+        await chunkGate;
+        return {};
+      }),
+      completeUpload: vi.fn().mockResolvedValue({ path: "/tmp/a.m4a", size_bytes: 5, status: "queued", job_id: "job-9" }),
+    } as unknown as Partial<ApiClient>);
+    const unloadPrevented = () => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    render(<App apiClient={apiClient} />);
+    fireEvent.click(await screen.findByRole("button", { name: "转写录音" }));
+    await userEvent.upload(
+      await screen.findByLabelText("选择录音文件"),
+      new File(["audio"], "a.m4a", { type: "audio/mp4" }),
+    );
+    await waitFor(() => expect(apiClient.uploadChunk).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
+    await screen.findByText("会议录音档案");
+    expect(unloadPrevented()).toBe(true);
+
+    // 回到转写录音页：还看得到在传，不能再开一个
+    fireEvent.click(screen.getByRole("button", { name: "转写录音" }));
+    expect(await screen.findByRole("button", { name: /上传中/ })).toBeDisabled();
+
+    await act(async () => {
+      releaseChunk();
+      await chunkGate;
+    });
+    await waitFor(() => expect(apiClient.completeUpload).toHaveBeenCalledWith("upload-1"));
+    await waitFor(() => expect(unloadPrevented()).toBe(false));
+  });
+});
+
 describe("列表页检索条件", () => {
   it("待办查过的条件，去别的页面再回来还在", async () => {
     const todo = vi.fn().mockResolvedValue({

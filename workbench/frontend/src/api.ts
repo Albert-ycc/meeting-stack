@@ -1475,6 +1475,13 @@ export const api = {
       "POST",
       {},
     ),
+  /** 放弃没传完的上传：删掉服务端的会话，放掉未完成上传的配额 */
+  cancelUpload: (uploadId: string) =>
+    write<{ ok: boolean; upload_id: string }>(
+      `/api/uploads/${encodeURIComponent(uploadId)}/cancel`,
+      "POST",
+      {},
+    ),
   /** 4h：需求页［复制给 Claude Code］的背景；和需求详情一起取 */
   requirementContext: (requirementId: string) =>
     read<RequirementContext>(`/api/requirements/${encodeURIComponent(requirementId)}/context`),

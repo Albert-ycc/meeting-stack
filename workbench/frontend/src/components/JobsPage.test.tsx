@@ -32,6 +32,7 @@ describe("JobsPage non-blocking substates", () => {
         onRetrySubstate={onRetrySubstate}
         onStopAfterStage={vi.fn()}
         onUpload={vi.fn()}
+        uploadPercent={null}
         state="ready"
       />,
     );
@@ -62,6 +63,7 @@ describe("JobsPage non-blocking substates", () => {
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
         onUpload={onUpload}
+        uploadPercent={null}
         state="ready"
       />,
     );
@@ -71,13 +73,13 @@ describe("JobsPage non-blocking substates", () => {
       screen.getByLabelText("选择录音文件"),
       new File(["audio"], "meeting.m4a", { type: "audio/mp4" }),
     );
-    expect(onUpload).toHaveBeenCalledWith(expect.any(File), ["ACME", "云图"], expect.any(Function));
+    expect(onUpload).toHaveBeenCalledWith(expect.any(File), ["ACME", "云图"]);
     expect(screen.getByLabelText("手工导入本场热词")).toHaveValue("");
     await userEvent.upload(
       screen.getByLabelText("选择录音文件"),
       new File(["second"], "second.m4a", { type: "audio/mp4" }),
     );
-    expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), [], expect.any(Function));
+    expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), []);
 
     await userEvent.type(screen.getByLabelText("job-1 重试热词"), "MDT，mdt\n术语");
     await userEvent.click(screen.getByRole("button", { name: "重新转写" }));
@@ -86,7 +88,7 @@ describe("JobsPage non-blocking substates", () => {
 
   it("retains upload hotwords after failure and clears them only after a successful retry", async () => {
     const onUpload = vi.fn().mockRejectedValueOnce(new Error("上传失败")).mockResolvedValueOnce("已入队");
-    render(<JobsPage available jobs={[]} onCancel={vi.fn()} onRetry={vi.fn()} onRetrySubstate={vi.fn()} onStopAfterStage={vi.fn()} onUpload={onUpload} state="empty" />);
+    render(<JobsPage available jobs={[]} onCancel={vi.fn()} onRetry={vi.fn()} onRetrySubstate={vi.fn()} onStopAfterStage={vi.fn()} onUpload={onUpload} state="empty" uploadPercent={null} />);
     const hotwords = screen.getByLabelText("手工导入本场热词");
     const picker = screen.getByLabelText("选择录音文件");
     await userEvent.type(hotwords, "ACME，云图");
@@ -94,7 +96,7 @@ describe("JobsPage non-blocking substates", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("上传失败");
     expect(hotwords).toHaveValue("ACME，云图");
     await userEvent.upload(picker, new File(["retry"], "retry.m4a", { type: "audio/mp4" }));
-    expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), ["ACME", "云图"], expect.any(Function));
+    expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), ["ACME", "云图"]);
     expect(hotwords).toHaveValue("");
   });
 
@@ -109,6 +111,7 @@ describe("JobsPage non-blocking substates", () => {
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
         onUpload={onUpload}
+        uploadPercent={null}
         state="empty"
       />,
     );
@@ -130,6 +133,7 @@ describe("JobsPage non-blocking substates", () => {
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
         onUpload={vi.fn()}
+        uploadPercent={null}
         state="empty"
       />,
     );
@@ -150,6 +154,7 @@ describe("JobsPage non-blocking substates", () => {
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
         onUpload={vi.fn()}
+        uploadPercent={null}
         state="ready"
       />,
     );
@@ -170,6 +175,7 @@ describe("JobsPage non-blocking substates", () => {
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
         onUpload={vi.fn()}
+        uploadPercent={null}
         stale
         state="error"
       />,
@@ -190,6 +196,7 @@ describe("JobsPage non-blocking substates", () => {
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
         onUpload={vi.fn()}
+        uploadPercent={null}
         state="error"
       />,
     );
@@ -217,6 +224,7 @@ describe("JobsPage non-blocking substates", () => {
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
         onUpload={vi.fn()}
+        uploadPercent={null}
         state="ready"
       />,
     );
@@ -237,6 +245,7 @@ describe("JobsPage non-blocking substates", () => {
           onRetrySubstate={vi.fn()}
           onStopAfterStage={vi.fn()}
           onUpload={vi.fn()}
+          uploadPercent={null}
           state="ready"
         />,
       );

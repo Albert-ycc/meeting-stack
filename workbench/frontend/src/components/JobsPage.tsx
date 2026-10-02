@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import type { Job, JobSubstateName, JobSubstateStatus, LoadState } from "../types";
 import { formatDate, statusLabel, statusTone, failureStageLabel } from "../format";
@@ -14,13 +14,11 @@ interface JobsPageProps {
   onRetry: (jobId: string, stage: string, hotwords?: string[]) => Promise<void>;
   onRetrySubstate: (jobId: string, name: JobSubstateName) => Promise<void>;
   onStopAfterStage: (jobId: string) => Promise<void>;
-  onUpload: (
-    file: File,
-    hotwords?: string[],
-    onProgress?: (sentBytes: number, totalBytes: number) => void,
-  ) => Promise<string>;
+  onUpload: (file: File, hotwords?: string[]) => Promise<string>;
   stale?: boolean;
   state: LoadState;
+  /** 上传进度（百分比），没在传是 null。上传跟着 App 走，切到别的页面再回来还在传 */
+  uploadPercent: number | null;
 }
 
 // 校对与发布不再作为流水线阶段：纪要生成完就是终点。
@@ -69,6 +67,7 @@ export function JobsPage({
   onUpload,
   stale = false,
   state,
+  uploadPercent,
 }: JobsPageProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const { notice: actionNotice, setNotice: setActionMessage, dismissNotice: dismissActionNotice } = useNotice();
@@ -76,20 +75,6 @@ export function JobsPage({
   const [uploadHotwordText, setUploadHotwordText] = useState("");
   const [retryHotwordText, setRetryHotwordText] = useState<Record<string, string>>({});
   const uploadHotwordError = validateHotwordsInput(uploadHotwordText);
-
-  // 上传中显示进度；此时关页面或刷新会中断分块上传，先让浏览器问一句。
-  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
-  useEffect(() => {
-    if (uploadPercent === null) return;
-    const guard = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", guard);
-    return () => window.removeEventListener("beforeunload", guard);
-    // 只在「开始上传 / 结束上传」时挂拆，进度数字变化不用重挂。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uploadPercent === null]);
 
   const execute = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -108,18 +93,14 @@ export function JobsPage({
     const requestHotwordText = uploadHotwordText;
     setBusy(true);
     setActionMessage("");
-    setUploadPercent(0);
     try {
-      const result = await onUpload(file, parseHotwordsInput(requestHotwordText), (sent, total) =>
-        setUploadPercent(total > 0 ? Math.floor((sent / total) * 100) : 0),
-      );
+      const result = await onUpload(file, parseHotwordsInput(requestHotwordText));
       setUploadHotwordText((current) => current === requestHotwordText ? "" : current);
       setActionMessage(result);
     } catch (error) {
       setActionMessage(error instanceof Error ? error.message : "上传失败", "error");
     } finally {
       setBusy(false);
-      setUploadPercent(null);
       if (fileRef.current) fileRef.current.value = "";
     }
   };
@@ -157,7 +138,7 @@ export function JobsPage({
             ref={fileRef}
             type="file"
           />
-          <button className="primary-button" disabled={busy || Boolean(uploadHotwordError)} onClick={() => fileRef.current?.click()} type="button">
+          <button className="primary-button" disabled={busy || uploadPercent !== null || Boolean(uploadHotwordError)} onClick={() => fileRef.current?.click()} type="button">
             {uploadPercent === null ? "＋ 手工导入录音" : `上传中 ${uploadPercent}%`}
           </button>
           {uploadPercent !== null && (

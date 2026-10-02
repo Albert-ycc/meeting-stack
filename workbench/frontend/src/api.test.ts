@@ -138,6 +138,12 @@ describe("API write protection", () => {
           JSON.stringify({ path: "/tmp/meeting.m4a", size_bytes: 4, status: "queued", job_id: "job-1" }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, upload_id: "upload-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
       );
     vi.stubGlobal("fetch", fetchMock);
     setCsrfToken("upload-token");
@@ -145,6 +151,7 @@ describe("API write protection", () => {
     await api.startUpload("meeting.m4a", 8);
     await api.uploadChunk("upload-1", 0, "YXVkaQ==");
     await api.completeUpload("upload-1");
+    await api.cancelUpload("upload-1");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -167,6 +174,15 @@ describe("API write protection", () => {
       3,
       "/api/uploads/upload-1/complete",
       expect.objectContaining({ method: "POST", body: "{}" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/uploads/upload-1/cancel",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-CSRF-Token": "upload-token" }),
+        body: "{}",
+      }),
     );
   });
 
