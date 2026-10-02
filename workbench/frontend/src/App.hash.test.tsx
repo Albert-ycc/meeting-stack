@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import App, { MOBILE_READ_ONLY_QUERY } from "./App";
-import type { ApiClient } from "./api";
+import { ApiError, type ApiClient } from "./api";
 import { forgetOverviewCache } from "./components/graph/OverviewGraph";
 import { foldersPayload, overviewPayload } from "./components/graph/overviewFixtures";
 import { forgetGraphCache } from "./components/graph/ProjectGraph";
@@ -181,6 +181,39 @@ describe("地址栏锚点直达", () => {
     expect(await screen.findByRole("heading", { name: "初审规则沟通" })).toBeInTheDocument();
     expect(meeting).toHaveBeenCalledWith("vm-1");
     expect(window.location.hash).toBe("#meetings/vm-1");
+  });
+
+  it("#meetings/<id>@<秒> 的秒数不是数字：忽略秒数照样打开这场会", async () => {
+    window.history.replaceState(null, "", "/#meetings/vm-1@abc");
+    const meeting = vi.fn().mockResolvedValue({
+      id: "vm-1",
+      title: "初审规则沟通",
+      status: "completed_unreviewed",
+      tags: [],
+      artifacts: [],
+      segments: [],
+      speakers: [],
+      events: [],
+      transcript_versions: [],
+      minutes_versions: [],
+    });
+
+    render(<App apiClient={client({ meeting, transcriptVersionSegments: vi.fn() } as Partial<ApiClient>)} />);
+
+    expect(await screen.findByRole("heading", { name: "初审规则沟通" })).toBeInTheDocument();
+    expect(meeting).toHaveBeenCalledWith("vm-1");
+    expect(window.location.hash).toBe("#meetings/vm-1");
+  });
+
+  it("需求不存在（接口 404）：写「需求不存在或已删除」，只给返回，不给没用的［重试］", async () => {
+    window.history.replaceState(null, "", "/#requirements/req-nope");
+    const requirement = vi.fn().mockRejectedValue(new ApiError("需求不存在：req-nope", 404));
+
+    render(<App apiClient={client({ requirement })} />);
+
+    expect(await screen.findByText("需求不存在或已删除")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "返回需求池" })).toBeInTheDocument();
   });
 
   it("冷加载带 #requirements 停在需求池海报墙", async () => {

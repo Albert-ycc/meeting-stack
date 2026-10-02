@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { isOldBackend, type ApiClient } from "../api";
+import { ApiError, isOldBackend, type ApiClient } from "../api";
 import { formatBytes, formatDurationText, formatMonthDay, formatMonthDayClock } from "../format";
 import type {
   MaterialFolderStat,
@@ -58,7 +58,8 @@ interface RequirementDetailPageProps {
   onReady?: () => void;
 }
 
-type LoadState = "loading" | "ready" | "error";
+// missing：接口回 404，重试也没用，只给返回
+type LoadState = "loading" | "ready" | "error" | "missing";
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
   pending_confirm: "待确认",
@@ -217,7 +218,7 @@ export function RequirementDetailPage({
     } catch (error) {
       if (seq !== loadSeqRef.current) return;
       if (silent) setNotice(error instanceof Error ? `刷新失败：${error.message}` : "刷新失败，请稍后重试", "error");
-      else setState("error");
+      else setState(error instanceof ApiError && error.status === 404 ? "missing" : "error");
     }
     // showToast 每次渲染都是新函数，放进依赖会让 load 反复变化、页面循环刷新。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -355,7 +356,14 @@ export function RequirementDetailPage({
   if (state === "loading" || !detail) {
     return (
       <section className="page-content requirement-detail">
-        {state === "error" ? (
+        {state === "missing" ? (
+          <div className="requirement-detail__state requirement-detail__state--error" role="alert">
+            需求不存在或已删除
+            <div className="requirement-detail__state-actions">
+              <button onClick={onBack} type="button">返回{backLabel}</button>
+            </div>
+          </div>
+        ) : state === "error" ? (
           <div className="requirement-detail__state requirement-detail__state--error" role="alert">
             需求详情读取失败
             <div className="requirement-detail__state-actions">

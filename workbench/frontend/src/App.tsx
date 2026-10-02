@@ -424,11 +424,12 @@ export default function App({ apiClient = api }: AppProps) {
     localExitRef.current = false;
     if (hash.startsWith("#meetings/")) {
       const target = decodeURIComponent(hash.slice("#meetings/".length));
-      // 会议卡片里的时间点链接 #meetings/<id>@<秒>：打开这场会并从那一秒开始播放
-      const match = /^(.+?)(?:@(\d+(?:\.\d+)?))?$/.exec(target);
+      // 会议卡片里的时间点链接 #meetings/<id>@<秒>：打开这场会并从那一秒开始播放；秒数不是数字就当没带
+      const match = /^(.+?)(?:@([^@]*))?$/.exec(target);
       const meetingId = match?.[1] ?? "";
-      const seekMs = match?.[2] ? Math.round(Number(match[2]) * 1000) : 0;
-      if (match?.[2]) {
+      const seconds = match?.[2] !== undefined && /^\d+(?:\.\d+)?$/.test(match[2]) ? Number(match[2]) : 0;
+      const seekMs = Math.round(seconds * 1000);
+      if (match?.[2] !== undefined) {
         // 秒数用过就从地址栏去掉，同一个时间点的链接再点一次还能触发跳转
         history.replaceState(
           window.history.state,
@@ -1310,7 +1311,15 @@ export default function App({ apiClient = api }: AppProps) {
   if (detailState === "loading") {
     content = <AsyncState state="loading" />;
   } else if (detailState === "error") {
-    content = <AsyncState message={detailError} state="error" />;
+    // 会议不存在、读不出来：和项目、需求不存在一样给一个回去的入口
+    content = (
+      <div className="detail-error" role="alert">
+        <span>{detailError || "会议档案读取失败"}</span>
+        <button onClick={closeMeeting} type="button">
+          ← 返回{searchActive ? "检索结果" : VIEW_LABELS[view]}
+        </button>
+      </div>
+    );
   } else if (detail) {
     const meetingPage = (
       <MeetingDetailPage
