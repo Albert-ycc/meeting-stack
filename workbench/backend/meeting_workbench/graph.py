@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -91,6 +91,9 @@ FILE_MIN = 3
 VISIBLE_BUDGET = 40
 # 4f：琥珀色文件（在问的影响、产出）最多占几个文件节点；交付物线最多几条
 AMBER_FILE_CAP = 8
+# 文件节点占的预算最多这么多：琥珀色文件加上提到的文件收缩到 FILE_MIN 个、再加一个「更多文件」。
+# 不算文件时预算的余量比它还大，文件再多也挤不动中圈的名额，折叠哪些会就不用查文件（collapsed_meetings）
+FILE_NODES_MAX = AMBER_FILE_CAP + FILE_MIN + 1
 DELIVERABLE_EDGE_CAP = 20
 WEEKS = 12
 
@@ -348,6 +351,14 @@ def _cue_id(source: str, text: str) -> str:
     return f"cue:{_short_hash(source, text.casefold())}"
 
 
+def _graph_args(
+    window: str | None, today: date | None, now: datetime | None
+) -> tuple[str | None, date, datetime]:
+    if window is not None and window not in WINDOWS:
+        raise ValueError("时间窗只能是 7d、28d、90d 或 all")
+    return window, today or datetime.now().astimezone().date(), now or datetime.now(UTC)
+
+
 def project_graph(
     connection: Any,
     project_id: str,
@@ -358,11 +369,18 @@ def project_graph(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """一次取回整张项目图。window=None 表示用默认时间窗且允许自动放宽。"""
-    if window is not None and window not in WINDOWS:
-        raise ValueError("时间窗只能是 7d、28d、90d 或 all")
-    today = today or datetime.now().astimezone().date()
-    now = now or datetime.now(UTC)
+    window, today, now = _graph_args(window, today, now)
+    inputs = _graph_inputs(connection, project_id, now)
+    # ⑫ 会上提到的文件（不按窗口过滤：通用词干要按本项目全部的会算）。v16：字面和放宽的提到一条
+    # WITH … UNION ALL 语句（relation_read.project_edges），仍算 1 条
+    mention_rows = relation_read.project_edges(connection, project_id)
+    return _assemble(
+        **inputs, mention_rows=mention_rows, window=window, focus=focus, today=today, now=now
+    )
 
+
+def _graph_inputs(connection: Any, project_id: str, now: datetime) -> dict[str, Any]:
+    """整张图要读的库，①到⑪（⑫ 会上提到的文件最贵，单独取）：返回 _assemble 的同名参数。"""
     # ① 全部项目（候选、信标要项目名和颜色；也叫给「像是新需求」的判断用）
     projects = {
         row["id"]: dict(row)
@@ -554,15 +572,11 @@ def project_graph(
         ).fetchall()
     }
 
-    # ⑫ 会上提到的文件（不按窗口过滤：通用词干要按本项目全部的会算）。v16：字面和放宽的提到一条
-    # WITH … UNION ALL 语句（relation_read.project_edges），仍算 1 条
-    mention_rows = relation_read.project_edges(connection, project_id)
-
-    return _assemble(
-        project=project,
-        projects=projects,
-        requirement_titles=[row["title"] for row in all_requirement_rows],
-        pending_folder=(
+    return {
+        "project": project,
+        "projects": projects,
+        "requirement_titles": [row["title"] for row in all_requirement_rows],
+        "pending_folder": (
             {
                 "path": pending_path(pending_row["parent"], pending_row["name"], project["name"]),
                 "parent": pending_row["parent"],
@@ -572,22 +586,17 @@ def project_graph(
             if pending_row
             else None
         ),
-        cards_on=cards_on and bool(root_rows),
-        meeting_rows=meeting_rows,
-        unattributed=unattributed,
-        requirement_rows=requirement_rows,
-        link_rows=link_rows,
-        folder_rows=folder_rows,
-        root_rows=root_rows,
-        cross_task_rows=cross_task_rows,
-        moved_rows=moved_rows,
-        terms=terms,
-        mention_rows=mention_rows,
-        window=window,
-        focus=focus,
-        today=today,
-        now=now,
-    )
+        "cards_on": cards_on and bool(root_rows),
+        "meeting_rows": meeting_rows,
+        "unattributed": unattributed,
+        "requirement_rows": requirement_rows,
+        "link_rows": link_rows,
+        "folder_rows": folder_rows,
+        "root_rows": root_rows,
+        "cross_task_rows": cross_task_rows,
+        "moved_rows": moved_rows,
+        "terms": terms,
+    }
 
 
 def _clock_hms(ms: int | None) -> str:
@@ -624,16 +633,16 @@ def _assemble(
     cross_task_rows: list[dict[str, Any]],
     moved_rows: list[dict[str, Any]],
     terms: dict[str, dict[str, Any]],
-    mention_rows: list[dict[str, Any]] | None = None,
+    mention_rows: list[dict[str, Any]] | Callable[[], list[dict[str, Any]]] | None = None,
     window: str | None,
     focus: str | None,
     today: date,
     now: datetime,
+    layout_only: bool = False,
 ) -> dict[str, Any]:
+    """layout_only 只算到哪些会折起来为止（给 collapsed_meetings 用），返回 {"collapsed": 折叠组}，不建
+    节点和连线。mention_rows 是 ⑫ 的行；给函数时到节点预算那一步才看要不要取。"""
     project_id = project["id"]
-    # ⑫ 的行：提到（字面和放宽的）和 4f 的在问的产出、影响、交付物
-    ask_rows = [row for row in mention_rows or [] if row.get("kind", "mention") != "mention"]
-    mention_rows = [row for row in mention_rows or [] if row.get("kind", "mention") == "mention"]
 
     # ---- 会议：本地日期、年龄
     for row in meeting_rows:
@@ -848,6 +857,46 @@ def _assemble(
     # ---- 信标
     beacons = _beacons(project_id, projects, link_rows, cross_task_rows)
 
+    # ---- 可见节点预算：先收会上提到的文件，再收中圈的会、线索词、需求、文件夹（琥珀色文件是固定的一项，
+    # 只挤提到的文件）
+    requirement_cap = REQUIREMENT_CAP
+    folder_cap = FOLDER_CAP
+    file_cap = FILE_CAP
+
+    def base_count() -> int:
+        """文件节点（提到的、琥珀色的）以外占的预算。"""
+        shown_middle = min(len(middle), middle_cap)
+        hidden_meetings = len(middle) - shown_middle + len(older_in_window) + len(out_window)
+        collapsed_nodes = _collapsed_node_count(
+            hidden_meetings, older_in_window, middle[middle_cap:], out_window, window_key
+        )
+        return (
+            1
+            + len(inner)
+            + shown_middle
+            + collapsed_nodes
+            + len(doorstep)
+            + (1 if doorstep_more else 0)
+            + min(len(requirements), requirement_cap)
+            + (1 if len(requirements) > requirement_cap else 0)
+            + min(len(folders), folder_cap)
+            + (1 if len(folders) > folder_cap else 0)
+            + (1 if loose else 0)
+            + min(len(cues_all), cue_cap)
+            + len(beacons)
+            + len(suggested_requirements)
+        )
+
+    # ⑫ 的行：提到（字面和放宽的）和 4f 的在问的产出、影响、交付物。只要折叠组（collapsed_meetings）时给的是
+    # 函数，能不取就不取（⑫ 占整张图七成的时间）：不算文件，预算的余量也大到文件怎么挤都挤不动中圈的名额，
+    # 折叠哪些会就和算上文件一样
+    if callable(mention_rows):
+        fetch_mentions, mention_rows = mention_rows, []
+        if not layout_only or VISIBLE_BUDGET - base_count() < FILE_NODES_MAX:
+            mention_rows = fetch_mentions()
+    ask_rows = [row for row in mention_rows or [] if row.get("kind", "mention") != "mention"]
+    mention_rows = [row for row in mention_rows or [] if row.get("kind", "mention") == "mention"]
+
     # ---- 会上提到的文件：每场会按次数取前 3 个（通用词干不占名额），再按被几场可见的会提到排
     stem_meetings: dict[str, set[str]] = {}
     for row in mention_rows:
@@ -920,36 +969,8 @@ def _assemble(
     stale_set = set(stale_order)
     ask_set = set(ask_order)
 
-    # ---- 可见节点预算：先收会上提到的文件，再收中圈的会、线索词、需求、文件夹（琥珀色文件是固定的一项，
-    # 只挤提到的文件）
-    requirement_cap = REQUIREMENT_CAP
-    folder_cap = FOLDER_CAP
-    file_cap = FILE_CAP
-
     def visible_count() -> int:
-        shown_middle = min(len(middle), middle_cap)
-        hidden_meetings = len(middle) - shown_middle + len(older_in_window) + len(out_window)
-        collapsed_nodes = _collapsed_node_count(
-            hidden_meetings, older_in_window, middle[middle_cap:], out_window, window_key
-        )
-        return (
-            1
-            + len(inner)
-            + shown_middle
-            + collapsed_nodes
-            + len(doorstep)
-            + (1 if doorstep_more else 0)
-            + min(len(requirements), requirement_cap)
-            + (1 if len(requirements) > requirement_cap else 0)
-            + min(len(folders), folder_cap)
-            + (1 if len(folders) > folder_cap else 0)
-            + (1 if loose else 0)
-            + min(len(cues_all), cue_cap)
-            + len(beacons)
-            + len(suggested_requirements)
-            + len(amber_ids)
-            + file_nodes(middle_cap)
-        )
+        return base_count() + len(amber_ids) + file_nodes(middle_cap)
 
     def file_nodes(cap: int) -> int:
         shown = [
@@ -973,6 +994,8 @@ def _assemble(
     shown_middle = middle[:middle_cap]
     overflow = middle[middle_cap:]
     collapsed = _collapse(overflow, older_in_window, out_window, window_key)
+    if layout_only:
+        return {"collapsed": collapsed}
     visible_meetings = inner + shown_middle
     for row in inner:
         row["ring"] = "inner"
@@ -1846,6 +1869,24 @@ def _status_sentence(
     }
 
 
+def _collapsed_groups(
+    connection: Any, project_id: str, window: str | None, today: date | None
+) -> list[dict[str, Any]]:
+    """project_graph 算出来的折叠组，只算到折叠为止，不建节点和连线。折叠哪些会由节点预算定，文件节点占
+    预算，所以整张图是读了 ⑫（会上提到的文件）才算得出来；这里把 ⑫ 交给 _assemble 按需取，预算的余量大
+    到文件怎么挤都挤不动中圈的名额时不取。"""
+    window, today, now = _graph_args(window, today, None)
+    return _assemble(
+        **_graph_inputs(connection, project_id, now),
+        mention_rows=lambda: relation_read.project_edges(connection, project_id),
+        window=window,
+        focus=None,
+        today=today,
+        now=now,
+        layout_only=True,
+    )["collapsed"]
+
+
 def collapsed_meetings(
     connection: Any,
     project_id: str,
@@ -1855,8 +1896,8 @@ def collapsed_meetings(
     today: date | None = None,
 ) -> dict[str, Any]:
     """折叠节点里的会，按月列出。"""
-    graph = project_graph(connection, project_id, window=window, today=today)
-    group = next((item for item in graph["collapsed"] if item["id"] == group_id), None)
+    groups = _collapsed_groups(connection, project_id, window, today)
+    group = next((item for item in groups if item["id"] == group_id), None)
     if group is None:
         raise GraphNotFound("折叠节点不存在")
     ids = group["meeting_ids"]
