@@ -845,6 +845,26 @@ def test_folder_swapped_for_a_symlink_to_outside_the_root_is_not_read(tmp_path):
     assert keys(db)["子目录/笔记.txt"] is None
 
 
+def test_package_whose_main_file_links_outside_the_root_is_not_read(tmp_path):
+    """包（.rtfd）里的主文件是指到根目录外的链接：包目录本身在根目录里，算标识时不能顺着链接读外面的文件。"""
+    db, settings, root, root_id, content, indexer, now, _state = setup(tmp_path)
+    secret = put(tmp_path / "根目录外" / "私密.rtf", r"{\rtf1 SECRET-OUTSIDE-ROOT}")
+    package = root / "说明.rtfd"
+    package.mkdir()
+    os.symlink(secret, package / "TXT.rtf")
+    put(package / "图片.png", b"\x89PNG")
+    aged(package)
+    index(indexer)
+    for _ in range(3):
+        content.run_round()
+    assert keys(db)["说明.rtfd"] is None
+    assert contents(db) == {}
+    with pytest.raises(FileNotFoundError):
+        compute_content_key(package)
+    file_id = db.query_one("SELECT id FROM material_files")["id"]
+    assert material_content.key_file_now(db, file_id, state_of=lambda path: ROOT_ONLINE) is None
+
+
 @pytest.mark.parametrize("missing", ["gone", "deleted"])
 def test_key_file_now_skips_missing_rows(tmp_path, missing):
     db, settings, root, root_id, content, indexer, now, _state = setup(tmp_path)

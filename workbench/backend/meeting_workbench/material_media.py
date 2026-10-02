@@ -392,7 +392,7 @@ class MaterialMedia:
         path = Path(root_path).joinpath(*str(row["rel_path"]).split("/"))
         expected = (row["content_size"], row["content_mtime_ns"])
         try:
-            if stat_signature(path) != expected:
+            if stat_signature(path, root=root_path) != expected:
                 return False  # 下一轮先重算标识
         except FileNotFoundError:
             return False
@@ -401,7 +401,7 @@ class MaterialMedia:
             return False
         self.progress.update({"content_key": key, "done_ms": 0, "total_ms": None})
         try:
-            result = self._transcribe_file(row, path, expected, tools)
+            result = self._transcribe_file(row, root_path, path, expected, tools)
         except _Failed as failed:
             result = self._result(failed.status)
         except FileNotFoundError:
@@ -419,7 +419,12 @@ class MaterialMedia:
         )
 
     def _transcribe_file(
-        self, row: dict[str, Any], path: Path, expected: tuple[int | None, int | None], tools: Tools
+        self,
+        row: dict[str, Any],
+        root_path: str,
+        path: Path,
+        expected: tuple[int | None, int | None],
+        tools: Tools,
     ) -> ExtractResult | None:
         key = str(row["content_key"])
         job = self._job(key)
@@ -446,11 +451,12 @@ class MaterialMedia:
             if not has_audio:
                 return self._result("ok", spans=[], note="no_speech", duration_ms=total_ms)
             job = self._start_job(key, total_ms)
-        return self._segments(row, path, expected, tools, job)
+        return self._segments(row, root_path, path, expected, tools, job)
 
     def _segments(
         self,
         row: dict[str, Any],
+        root_path: str,
         path: Path,
         expected: tuple[int | None, int | None],
         tools: Tools,
@@ -479,7 +485,7 @@ class MaterialMedia:
                 finally:
                     wav.unlink(missing_ok=True)
                 fresh = drop_overlap(_clean(sentences), parts, done_ms, rule)
-                if stat_signature(path) != expected:
+                if stat_signature(path, root=root_path) != expected:
                     return None  # 转的途中文件被改了：下一轮先重算标识
                 next_ms = done_ms + SEGMENT_MS
                 if not self._save_progress(key, done_ms, next_ms, parts + fresh):

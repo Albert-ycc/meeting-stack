@@ -96,12 +96,16 @@ class _RootOffline(Exception):
 
 
 def package_main_file(path: Path) -> Path | None:
-    """目录形式的包（.rtfd）用里面的主文件算标识。"""
+    """目录形式的包（.rtfd）用里面的主文件算标识。主文件是符号链接的不算（可能指到根目录外），当包里没有主文件。"""
     main = path / "TXT.rtf"
-    if main.is_file():
+    if main.is_file() and not main.is_symlink():
         return main
     try:
-        candidates = sorted(child for child in path.iterdir() if child.suffix.lower() == ".rtf")
+        candidates = sorted(
+            child
+            for child in path.iterdir()
+            if child.suffix.lower() == ".rtf" and not child.is_symlink()
+        )
     except OSError:
         raise
     return candidates[0] if candidates else None

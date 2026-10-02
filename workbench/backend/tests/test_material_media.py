@@ -4,10 +4,13 @@
 import hashlib
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from meeting_workbench import material_media
 from meeting_workbench.config import REPO_ROOT
@@ -652,3 +655,32 @@ def test_transcriber_script_answers_only_on_stdout(tmp_path):
         "('sentence_timestamp', True)" in result.stderr and "('batch_size_s', 60)" in result.stderr
     )
     assert "THREADS 4 OMP 4" in result.stderr
+
+
+@pytest.mark.parametrize("when", ["before", "during"])
+def test_folder_swapped_for_a_symlink_to_outside_the_root_is_not_transcribed(tmp_path, when):
+    """录音所在的那层目录被挪到根目录外、原位换成链接：录音本身一字没变，lstat 也看不出来，要按 realpath 核对。"""
+    holder = {}
+
+    def swap():
+        folder = holder["root"] / "录音"
+        outside = tmp_path / "根目录外" / "录音"
+        outside.parent.mkdir(exist_ok=True)
+        shutil.move(str(folder), str(outside))
+        os.symlink(outside, folder)
+
+    def during(count):
+        if when == "during" and count == 1:
+            swap()
+
+    transcriber = FakeTranscriber(during=during)
+    db, _settings, root, media, _run, _t, _state = media_setup(
+        tmp_path, {"访谈.m4a": {"seconds": 1500}}, transcriber=transcriber
+    )
+    holder["root"] = root
+    if when == "before":
+        swap()
+    media.run_once()
+    assert len(transcriber.requests) == (0 if when == "before" else 1)
+    assert chunks(db) == []
+    assert only(db)["state"] == "pending"
