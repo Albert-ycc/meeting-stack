@@ -2,6 +2,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -1535,6 +1536,186 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
 
         self.assertFalse(worked)
         claim_next.assert_not_called()
+
+
+
+class ControlDbLockTests(unittest.TestCase):
+    """工作台发布大会议时会长时间占住任务库写锁，worker 的回写要扛得住。"""
+
+    def setUp(self):
+        self.module = load_watchdog_module()
+        self.module.CONTROL_DB_LOCK_RETRY_DELAYS_SEC = (0.0, 0.0, 0.0)
+        getattr(self.module, "_pending_claim_settlements", {}).clear()
+        self.control = self.module._relay_control_module()
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        (self.root / "archive").mkdir()
+        self.module.ARCHIVE_ROOT = self.root / "archive"
+        self.env = patch.dict(os.environ, {
+            "MEETING_RELAY_JOBS_DB": str(self.root / "jobs.sqlite3"),
+            "MEETING_RELAY_ARCHIVE_ROOT": str(self.root / "archive"),
+        })
+        self.env.start()
+        self.audio = self.root / "vm-20261001-090000-AAA.m4a"
+        self.audio.write_bytes(b"meeting-1")
+        self.second = self.root / "vm-20261001-100000-BBB.m4a"
+        self.second.write_bytes(b"meeting-2")
+        self.transcript = self.root / "meeting.txt"
+        self.transcript.write_text("主稿", encoding="utf-8")
+        self.transcript.with_suffix(".srt").write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\n主稿\n", encoding="utf-8"
+        )
+        self.notifications = []
+
+    def tearDown(self):
+        self.env.stop()
+        self.tempdir.cleanup()
+        getattr(self.module, "_pending_claim_settlements", {}).clear()
+
+    @staticmethod
+    def _locked_for(calls_to_fail: int, original, match=lambda *a, **k: True):
+        state = {"left": calls_to_fail}
+
+        def flaky(*args, **kwargs):
+            if match(*args, **kwargs) and state["left"] != 0:
+                state["left"] -= 1
+                raise sqlite3.OperationalError("database is locked")
+            return original(*args, **kwargs)
+
+        return flaky
+
+    def _process(self, claim, **patches):
+        module = self.module
+        defaults = {
+            "_job_audio_path": patch.object(module, "_job_audio_path", return_value=self.audio),
+            "wait_stable": patch.object(module, "wait_stable", return_value=True),
+            "_control_record_source_audio": patch.object(module, "_control_record_source_audio"),
+            "get_audio_duration_sec": patch.object(module, "get_audio_duration_sec", return_value=601),
+            "transcribe": patch.object(module, "transcribe", return_value=str(self.transcript)),
+            "_control_update_whisper_progress": patch.object(module, "_control_update_whisper_progress"),
+            "prepare_glossary_injection": patch.object(module, "prepare_glossary_injection", return_value=("", False)),
+            "dispatch_to_cc1": patch.object(module, "dispatch_to_cc1", return_value=True),
+            "notify_lark": patch.object(
+                module, "notify_lark",
+                side_effect=lambda title, body: self.notifications.append(title),
+            ),
+            "save_last_meeting": patch.object(module, "save_last_meeting"),
+            "mark_processed": patch.object(module, "mark_processed"),
+        }
+        defaults.update(patches)
+        for patcher in defaults.values():
+            patcher.start()
+        try:
+            return module.process_controlled_claim(claim)
+        finally:
+            for patcher in defaults.values():
+                patcher.stop()
+
+    def _worker_round(self):
+        with patch.object(self.module, "_agent_pane_available", return_value=True), \
+                patch.object(self.module, "_control_reconcile_pending_archives", return_value={}), \
+                patch.object(self.module, "_control_reconcile_codex_handoffs", return_value=0), \
+                patch.object(self.module, "process_controlled_claim", return_value=True) as process:
+            worked = self.module.run_control_worker_once()
+        return worked, process
+
+    def test_transient_lock_on_stage_write_is_retried_not_failed(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        claim = self.module._control_claim_next()
+        flaky = self._locked_for(
+            2,
+            self.control.record_stage,
+            match=lambda job, stage, **kwargs: stage == "transcript_ready",
+        )
+        with patch.object(self.control, "record_stage", side_effect=flaky):
+            result = self._process(claim)
+
+        self.assertTrue(result)
+        status = self.control.status(job_id)
+        self.assertEqual("minutes_generating", status["status"])
+        self.assertIsNotNone(status["codex_dispatched_at"])
+        self.assertNotIn("这段录音没能处理完", self.notifications)
+
+    def test_exhausted_lock_does_not_fail_job_and_next_round_frees_queue(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        waiting = self.control.enqueue(self.second, compute_hash=False)
+        claim = self.module._control_claim_next()
+        self.assertEqual(job_id, claim["job_id"])
+        with patch.object(
+            self.control,
+            "record_stage",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ), patch.object(self.control, "fail", side_effect=AssertionError("不该判失败")):
+            result = self._process(claim)
+
+        self.assertFalse(result)
+        self.assertEqual("transcribing", self.control.status(job_id)["status"])
+        self.assertEqual([], self.notifications)
+
+        worked, process = self._worker_round()
+
+        self.assertTrue(worked)
+        stranded = self.control.status(job_id)
+        self.assertEqual("interrupted", stranded["status"])
+        self.assertIsNone(stranded["last_error"])
+        self.assertEqual(waiting, process.call_args.args[0]["job_id"])
+
+    def test_dispatch_record_blocked_by_lock_is_written_next_round_not_reclaimed(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        self.control.enqueue(self.second, compute_hash=False)
+        claim = self.module._control_claim_next()
+        original = self.control.record_codex_dispatched
+        with patch.object(
+            self.control,
+            "record_codex_dispatched",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ):
+            result = self._process(claim)
+            self.assertTrue(result)
+            self.assertIsNone(self.control.status(job_id)["codex_dispatched_at"])
+            # 锁还没放：这一单不能被当成空闲 claim 回收，也不领下一单
+            worked, process = self._worker_round()
+            self.assertFalse(worked)
+            process.assert_not_called()
+            self.assertEqual("minutes_generating", self.control.status(job_id)["status"])
+
+        with patch.object(self.control, "record_codex_dispatched", side_effect=original):
+            self._worker_round()
+
+        status = self.control.status(job_id)
+        self.assertEqual("minutes_generating", status["status"])
+        self.assertIsNotNone(status["codex_dispatched_at"])
+        self.assertEqual({}, self.module._pending_claim_settlements)
+
+    def test_failure_write_blocked_by_lock_is_written_next_round(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        claim = self.module._control_claim_next()
+        original_fail = self.control.fail
+        with patch.object(
+            self.control,
+            "fail",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ):
+            result = self._process(
+                claim,
+                transcribe=patch.object(
+                    self.module, "transcribe", side_effect=RuntimeError("boom")
+                ),
+            )
+        self.assertFalse(result)
+        self.assertEqual("transcribing", self.control.status(job_id)["status"])
+
+        with patch.object(self.control, "fail", side_effect=original_fail), \
+                patch.object(
+                    self.module, "notify_lark",
+                    side_effect=lambda title, body: self.notifications.append(title),
+                ):
+            self._worker_round()
+
+        status = self.control.status(job_id)
+        self.assertEqual("failed", status["status"])
+        self.assertEqual("worker exception: RuntimeError", status["last_error"])
+        self.assertIn("这段录音没能处理完", self.notifications)
 
 
 if __name__ == "__main__":

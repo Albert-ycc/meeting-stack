@@ -28,6 +28,7 @@ import logging
 import os
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -139,6 +140,8 @@ PENDING_RECONCILE_INTERVAL_SEC = _positive_interval_from_env(
 CODEX_CALLBACK_GRACE_SEC = float(os.getenv("MEETING_RELAY_CODEX_CALLBACK_GRACE", "30"))
 RUNTIME_HEARTBEAT_INTERVAL_SEC = 10.0
 CONTROL_ERROR_BACKOFF_MAX_SEC = 30.0
+# 任务库写锁被别的进程占着时（工作台发布大会议）回写的退避间隔；每次尝试本身还会等 busy_timeout 5 秒
+CONTROL_DB_LOCK_RETRY_DELAYS_SEC = (1.0, 2.0, 4.0, 8.0, 15.0)
 MAX_INPUT_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 CURRENT_MINUTES_PROTOCOL_VERSION = 3
 WHISPER_BIN = os.getenv("MEETING_RELAY_WHISPER_BIN", "")
@@ -185,6 +188,45 @@ def _relay_control_module():
     except ImportError:
         import relay_control
     return relay_control
+
+
+def _is_db_lock_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
+def _retry_on_db_lock(operation):
+    """任务库写锁冲突是瞬时的，退避重试；重试用尽仍抛原异常，由调用方决定怎么收口。"""
+    for delay in (*CONTROL_DB_LOCK_RETRY_DELAYS_SEC, None):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if delay is None or not _is_db_lock_error(exc):
+                raise
+            log.warning("任务库写锁被占用，%.0f 秒后重试回写", delay)
+            time.sleep(delay)
+
+
+# 撞上库写锁、重试用尽也没写进去的收口动作（任务号 → 补写函数），下一轮领任务前先补写。
+_pending_claim_settlements: dict = {}
+
+
+def _settle_pending_claims() -> bool:
+    """补写上一轮没写进去的收口；返回是否全部写完。"""
+    for job_id, settle in list(_pending_claim_settlements.items()):
+        try:
+            settle()
+        except Exception as exc:
+            if _is_db_lock_error(exc):
+                log.warning("任务 %s 的收口仍被库写锁挡住，下一轮再补", job_id)
+                continue
+            log.exception("任务 %s 的收口补写失败，放弃补写", job_id)
+        else:
+            log.info("任务 %s 的收口已补写", job_id)
+        _pending_claim_settlements.pop(job_id, None)
+    return not _pending_claim_settlements
 
 
 def _control_enqueue(audio: Path) -> str:
@@ -311,11 +353,13 @@ def _control_record_stage(
     expected_attempt: int,
     expected_worker: str,
 ):
-    return _relay_control_module().record_stage(
-        job_id,
-        stage,
-        expected_attempt=expected_attempt,
-        expected_worker=expected_worker,
+    return _retry_on_db_lock(
+        lambda: _relay_control_module().record_stage(
+            job_id,
+            stage,
+            expected_attempt=expected_attempt,
+            expected_worker=expected_worker,
+        )
     )
 
 
@@ -370,11 +414,13 @@ def _control_record_source_audio(
     expected_attempt: int,
     expected_worker: str,
 ):
-    return _relay_control_module().record_source_audio(
-        job_id,
-        audio,
-        expected_attempt=expected_attempt,
-        expected_worker=expected_worker,
+    return _retry_on_db_lock(
+        lambda: _relay_control_module().record_source_audio(
+            job_id,
+            audio,
+            expected_attempt=expected_attempt,
+            expected_worker=expected_worker,
+        )
     )
 
 
@@ -386,12 +432,14 @@ def _control_record_minutes_plan_source(
     minutes_plan_sha256: str,
     expected_worker: str | None = None,
 ) -> dict:
-    return _relay_control_module().record_minutes_plan_source(
-        job_id,
-        attempt_no=attempt_no,
-        source_srt_sha256=source_srt_sha256,
-        minutes_plan_sha256=minutes_plan_sha256,
-        expected_worker=expected_worker,
+    return _retry_on_db_lock(
+        lambda: _relay_control_module().record_minutes_plan_source(
+            job_id,
+            attempt_no=attempt_no,
+            source_srt_sha256=source_srt_sha256,
+            minutes_plan_sha256=minutes_plan_sha256,
+            expected_worker=expected_worker,
+        )
     )
 
 
@@ -402,10 +450,12 @@ def _control_prepare_attempt_dir(
     expected_worker: str,
 ) -> Path:
     return Path(
-        _relay_control_module().prepare_attempt_draft(
-            job_id,
-            attempt_no=attempt_no,
-            expected_worker=expected_worker,
+        _retry_on_db_lock(
+            lambda: _relay_control_module().prepare_attempt_draft(
+                job_id,
+                attempt_no=attempt_no,
+                expected_worker=expected_worker,
+            )
         )
     )
 
@@ -416,10 +466,12 @@ def _control_record_codex_dispatched(
     expected_attempt: int,
     expected_worker: str,
 ):
-    return _relay_control_module().record_codex_dispatched(
-        job_id,
-        expected_attempt=expected_attempt,
-        expected_worker=expected_worker,
+    return _retry_on_db_lock(
+        lambda: _relay_control_module().record_codex_dispatched(
+            job_id,
+            expected_attempt=expected_attempt,
+            expected_worker=expected_worker,
+        )
     )
 
 
@@ -431,12 +483,14 @@ def _control_fail(
     expected_attempt: int,
     expected_worker: str,
 ):
-    return _relay_control_module().fail(
-        job_id,
-        stage,
-        error,
-        expected_attempt=expected_attempt,
-        expected_worker=expected_worker,
+    return _retry_on_db_lock(
+        lambda: _relay_control_module().fail(
+            job_id,
+            stage,
+            error,
+            expected_attempt=expected_attempt,
+            expected_worker=expected_worker,
+        )
     )
 
 
@@ -468,11 +522,13 @@ def _control_interrupt_if_requested(
     expected_attempt: int,
     expected_worker: str,
 ) -> bool:
-    return _relay_control_module().interrupt_if_stop_requested(
-        job_id,
-        completed_stage,
-        expected_attempt=expected_attempt,
-        expected_worker=expected_worker,
+    return _retry_on_db_lock(
+        lambda: _relay_control_module().interrupt_if_stop_requested(
+            job_id,
+            completed_stage,
+            expected_attempt=expected_attempt,
+            expected_worker=expected_worker,
+        )
     )
 
 
@@ -1936,7 +1992,9 @@ def process_controlled_claim(claim: dict) -> bool:
                     ).hexdigest(),
                     expected_worker=worker_id,
                 )
-            except Exception:
+            except Exception as exc:
+                if _is_db_lock_error(exc):
+                    raise
                 _control_fail(
                     job_id,
                     current_stage,
@@ -2008,32 +2066,54 @@ def process_controlled_claim(claim: dict) -> bool:
             mark_processed(audio.name)
             return False
 
-        _control_record_codex_dispatched(
-            job_id,
-            expected_attempt=attempt_no,
-            expected_worker=worker_id,
-        )
+        try:
+            _control_record_codex_dispatched(
+                job_id,
+                expected_attempt=attempt_no,
+                expected_worker=worker_id,
+            )
+        except Exception as exc:
+            if not _is_db_lock_error(exc):
+                raise
+            # Agent 已经在 pane 里跑了，这一单不能再收成失败或 interrupted；派发记录下一轮补写。
+            log.error("任务 %s 已派 Agent，但派发记录撞上库写锁没写进去，下一轮补写", job_id)
+            _pending_claim_settlements[job_id] = lambda: _control_record_codex_dispatched(
+                job_id,
+                expected_attempt=attempt_no,
+                expected_worker=worker_id,
+            )
         save_last_meeting(audio.name)
         notify_workbench_status(job_id, "minutes_generating", duration_min)
         mark_processed(audio.name)
         log.info("工作台任务已派 Claude Code，等待完成回执：%s", job_id)
         return True
     except Exception as exc:
+        if _is_db_lock_error(exc):
+            # 库写锁冲突不是这一单本身的问题，不判失败；claim 留在本 worker 名下，
+            # 下一轮领任务前由 _control_recover_orphaned_claims 回收为 interrupted。
+            log.error("工作台任务 %s 回写时任务库写锁一直被占用，本轮放手，下一轮回收", job_id)
+            return False
         log.exception("工作台任务执行异常：%s", job_id)
-        failed_written = False
-        try:
+        failure_error = f"worker exception: {type(exc).__name__}"
+
+        def write_failure():
             _control_fail(
                 job_id,
                 current_stage,
-                f"worker exception: {type(exc).__name__}",
+                failure_error,
                 expected_attempt=attempt_no,
                 expected_worker=worker_id,
             )
-            failed_written = True
-        except Exception:
-            log.exception("工作台任务失败状态回写异常：%s", job_id)
-        if failed_written:
             notify_workbench_status(job_id, "failed", duration_min)
+
+        try:
+            write_failure()
+        except Exception as fail_exc:
+            if _is_db_lock_error(fail_exc):
+                log.error("工作台任务 %s 的失败状态撞上库写锁没写进去，下一轮补写", job_id)
+                _pending_claim_settlements[job_id] = write_failure
+            else:
+                log.exception("工作台任务失败状态回写异常：%s", job_id)
         return False
 
 
@@ -2052,6 +2132,9 @@ def run_control_worker_once() -> bool:
         except Exception:
             # 对账是修复旁路，不得因单轮异常阻断主 worker 领取任务。
             log.exception("待校对对账异常，本轮继续")
+    if not _settle_pending_claims():
+        # 没补写完的那单还挂在本 worker 名下：不能把它当空闲 claim 回收，也领不了新任务。
+        return False
     if not _agent_pane_available():
         return False
     reconciled = _control_reconcile_codex_handoffs()
