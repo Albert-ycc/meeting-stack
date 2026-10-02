@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -35,15 +34,25 @@ EVENTS_DIR = Path.home() / ".meeting-stack" / "card-events"
 PROCESSED_DIR = EVENTS_DIR / "processed"
 SEEN_FILE = Path.home() / ".meeting-stack" / "card-events-seen.json"
 LOG_FILE = Path.home() / ".meeting-stack" / "logs" / "card-listener.log"
+SUBSCRIBE_LOG = LOG_FILE.parent / "card-subscribe.log"
 LARK_CLI = "lark-cli"  # 飞书 CLI，凭证走 keychain
 SUPPORTED_ACTIONS = {"confirm", "reject"}
+# 匹配订阅子进程的命令行，不锁参数顺序（加了 --as bot，写死顺序会漏判）
+SUBSCRIBER_PATTERN = r"event \+subscribe.*card\.action\.trigger"
+SUBSCRIBER_CHECK_SECONDS = 60
 
+# 新机器上日志目录还不存在，basicConfig 打不开日志文件会让进程一启动就崩
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
 log = logging.getLogger("card_listener")
+
+
+class WorkbenchError(Exception):
+    """工作台 API 返回了错误响应（HTTP 4xx/5xx）。"""
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
@@ -150,7 +159,11 @@ class WorkbenchClient:
                 self.cookiejar.clear()
                 self._bootstrap()
                 return self._request(method, path, body, retried=True)
-            return payload
+            # 失败必须抛异常，不能和成功体一样当 dict 返回：成功返回的任务对象自带业务字段
+            # detail（任务详情），和 FastAPI 报错体的 detail 同名，靠它判失败会把确认成功判成失败。
+            raise WorkbenchError(
+                str(payload.get("detail") or payload.get("error") or f"HTTP {error.code}")
+            )
 
     def list_tasks(self, extraction_id: int) -> list[dict]:
         data = self._request("GET", f"/api/tasks?extraction_id={extraction_id}&limit=200")
@@ -194,17 +207,14 @@ def handle_event(client: WorkbenchClient, event: dict) -> None:
     extraction_id = action.get("extraction_id")
     if not task_id:
         return
+    # 写失败时必须让用户看见。此前失败也照常重绘卡片，卡片长得跟点之前一模一样，
+    # 用户只能得出「按钮坏了」，连排查线索都没有。
     try:
         result = client.confirm(task_id) if act == "confirm" else client.reject(task_id)
     except Exception as error:  # noqa: BLE001
-        result = {"error": str(error)}
-    # 写失败时必须让用户看见。此前失败也照常重绘卡片，卡片长得跟点之前一模一样，
-    # 用户只能得出「按钮坏了」，连排查线索都没有。
-    failure = result.get("detail") or result.get("error")
-    if failure:
-        log.error("%s %s 失败：%s", act, task_id, failure)
+        log.error("%s %s 失败：%s", act, task_id, error)
         label = "确认" if act == "confirm" else "驳回"
-        _send_text(f"⚠️ 任务{label}失败：{failure}\n（任务 {task_id}，卡片状态未变更）")
+        _send_text(f"⚠️ 任务{label}失败：{error}\n（任务 {task_id}，卡片状态未变更）")
         return
     status = result.get("status") or result
     log.info("%s %s → %s", act, task_id, status)
@@ -252,39 +262,52 @@ def _start_subscriber() -> subprocess.Popen:
     # --output-dir 只接受相对路径：cd 到 events 目录再用 "."
     EVENTS_DIR.mkdir(parents=True, exist_ok=True)
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    SUBSCRIBE_LOG.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["LARK_CLI_NO_PROXY"] = "1"
     env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-    return subprocess.Popen(
-        [
-            LARK_CLI,
-            "event", "+subscribe",
-            "--event-types", "card.action.trigger",
-            "--output-dir", ".",
-            "--quiet",
-        ],
-        cwd=str(EVENTS_DIR),
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    # 子进程输出必须留痕：丢进 DEVNULL 时订阅一起就退，报错一个字都留不下。
+    # with 打开：子进程已继承 fd，父进程这侧要关掉，否则反复重启会攒 fd。
+    with open(SUBSCRIBE_LOG, "a", buffering=1) as log_handle:
+        return subprocess.Popen(
+            [
+                LARK_CLI,
+                "event", "+subscribe",
+                # 这条命令只认 bot 身份；不显式指定就走 auto-detect，配了 users 的 app
+                # 会被判成 user 身份，以退出码 2 立即退出。
+                "--as", "bot",
+                "--event-types", "card.action.trigger",
+                "--output-dir", ".",
+            ],
+            cwd=str(EVENTS_DIR),
+            env=env,
+            stdout=log_handle,
+            stderr=log_handle,
+            start_new_session=True,
+        )
 
 
-def _ensure_subscriber() -> subprocess.Popen | None:
+def _subscriber_alive() -> bool:
     try:
-        out = subprocess.check_output(
-            ["pgrep", "-f", "event \\+subscribe --event-types card.action.trigger"],
-            text=True,
-        ).strip()
-        if out:
-            log.info("已有订阅进程 pid=%s", out)
-            return None
+        return bool(
+            subprocess.check_output(
+                ["pgrep", "-f", SUBSCRIBER_PATTERN], text=True
+            ).strip()
+        )
     except subprocess.CalledProcessError:
-        pass
+        return False
+
+
+def _ensure_subscriber() -> None:
+    """没有存活的订阅进程就补一个。
+
+    订阅子进程才是长连接本体，它一死飞书侧就是「回调目标服务当前未在线」，
+    本进程却照常活着。所以主循环要周期性复查，不能只在启动时拉一次。
+    """
+    if _subscriber_alive():
+        return
     proc = _start_subscriber()
-    log.info("已拉起订阅进程 pid=%s", proc.pid)
-    return proc
+    log.warning("订阅进程不在，已拉起 pid=%s（日志 %s）", proc.pid, SUBSCRIBE_LOG)
 
 
 def main() -> None:
@@ -292,13 +315,13 @@ def main() -> None:
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     seen = _load_seen()
     client = WorkbenchClient()
-    try:
-        _ensure_subscriber()
-    except Exception as error:  # noqa: BLE001
-        log.error("拉起订阅失败：%s", error)
     log.info("card_listener 启动，事件目录 %s", EVENTS_DIR)
+    last_check = time.monotonic() - SUBSCRIBER_CHECK_SECONDS  # 首轮立即检查
     while True:
         try:
+            if time.monotonic() - last_check >= SUBSCRIBER_CHECK_SECONDS:
+                last_check = time.monotonic()
+                _ensure_subscriber()
             for path in sorted(EVENTS_DIR.glob("card.action.trigger_*.json")):
                 if process_file(client, path, seen):
                     dest = PROCESSED_DIR / path.name

@@ -47,6 +47,8 @@ SUPPORTED_ACTIONS = {"confirm", "reject"}
 SUBSCRIBER_PATTERN = r"event \+subscribe.*card\.action\.trigger"
 SUBSCRIBER_CHECK_SECONDS = 60
 
+# 新机器上日志目录还不存在，basicConfig 打不开日志文件会让进程一启动就崩
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
