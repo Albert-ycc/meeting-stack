@@ -829,13 +829,14 @@ class LarkNotifier:
         """会后任务确认卡。优先 应用机器人身份发卡片2.0（带回调按钮，可在飞书直接
         确认）；未配 应用机器人群时退回 群 webhook 机器人 的简单通知。"""
         if not self.chat_id:
+            # lark_md 一样会把标题里的「[文字](链接)」渲染成链接：会上来的内容都转义
             lines = [
-                f"从「{meeting_title or '这场会'}」里挑出 {len(tasks)} 件该跟进的事，"
+                f"从「{_escape_markdown(meeting_title or '这场会')}」里挑出 {len(tasks)} 件该跟进的事，"
                 "确认后我才开工。",
                 _project_line(project_name),
                 "",
             ]
-            lines.extend(f"{i}. {t['title']}" for i, t in enumerate(tasks, 1))
+            lines.extend(f"{i}. {_escape_markdown(t['title'])}" for i, t in enumerate(tasks, 1))
             return self._send(
                 "draft",
                 str(extraction_id),
@@ -951,12 +952,12 @@ class LarkNotifier:
 
     def stall_reminder(self, task: dict[str, Any]) -> bool:
         text = (
-            f"「{task['title']}」已停滞 {task['stall_days']:.0f} 天，"
+            f"「{_escape_markdown(task['title'])}」已停滞 {task['stall_days']:.0f} 天，"
             f"最近一次动态是 {task['stall_since'][:10]}。"
         )
         chips = []
         if task.get("project_name"):
-            chips.append(task["project_name"])
+            chips.append(_escape_markdown(task["project_name"]))
         chips.append("我来做" if task.get("assignee") == "me" else "交给 AI")
         if chips:
             text += f"（{' · '.join(chips)}）"
@@ -981,15 +982,22 @@ class LarkNotifier:
         if int(stats.get("total") or 0):
             parts.append(
                 f"· 待确认 {stats['pending']} 条"
-                + (f"，都来自「{stats['pending_sources'][0]}」" if stats["pending_sources"] else "")
+                + (
+                    f"，都来自「{_escape_markdown(stats['pending_sources'][0])}」"
+                    if stats["pending_sources"]
+                    else ""
+                )
                 + "，确认后 AI 才会开工。"
             )
         if stats["stalled"]:
             parts.append(
-                f"· 停滞点名：{stats['stalled_titles'][0]}（{stats['stalled_days'][0]} 天没动了）。"
+                f"· 停滞点名：{_escape_markdown(stats['stalled_titles'][0])}"
+                f"（{stats['stalled_days'][0]} 天没动了）。"
             )
         if stats["done_today"]:
-            parts.append(f"· 今天完成 {len(stats['done_today'])} 条：{stats['done_today'][0]}。")
+            parts.append(
+                f"· 今天完成 {len(stats['done_today'])} 条：{_escape_markdown(stats['done_today'][0])}。"
+            )
         if auto or review:
             line = f"· 昨天自动归属 {auto} 场" if auto else "· 昨天没有自动归属的会"
             line += f"，{review} 场等你选项目。" if review else "。"

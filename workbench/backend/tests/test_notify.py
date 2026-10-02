@@ -299,6 +299,52 @@ def test_daily_digest_follows_the_beijing_calendar(tmp_path, monkeypatch, local_
     assert titles == ["今日任务晨报 · 2026-10-01", "今日任务晨报 · 2026-10-02"]
 
 
+def test_webhook_cards_escape_titles_from_meetings(tmp_path, monkeypatch):
+    """webhook 通道（lark_md）的任务卡、停滞提醒、晨报：任务标题、会名、项目名来自会上内容，和应用机器人
+    卡片一样转义，「[点我](http://evil.example)」不能在卡片里变成可点的链接。"""
+    db, _settings = make_db(tmp_path)
+    notifier = LarkNotifier(db, webhook_url="https://hook/", public_base_url="http://x")
+    contents = []
+    monkeypatch.setattr(
+        notifier,
+        "_post",
+        lambda payload: contents.append(payload["card"]["elements"][0]["text"]["content"]) or True,
+    )
+    evil = "[点我](http://evil.example)"
+
+    notifier.task_draft(
+        1, meeting_title=evil, tasks=[{"id": "t", "title": evil}], project_name=evil
+    )
+    notifier.stall_reminder(
+        {
+            "id": "t",
+            "title": evil,
+            "stall_days": 3,
+            "stall_since": "2026-09-28T00:00:00+00:00",
+            "project_name": evil,
+            "assignee": "me",
+        }
+    )
+    notifier.daily_digest(
+        {
+            "total": 2,
+            "pending": 1,
+            "pending_sources": [evil],
+            "stalled": 1,
+            "stalled_titles": [evil],
+            "stalled_days": [3],
+            "done_today": [evil],
+            "auto_assigned_yesterday": 0,
+            "needs_review": 0,
+        }
+    )
+
+    assert len(contents) == 3
+    for content in contents:
+        assert evil not in content
+        assert "\\[点我\\]" in content
+
+
 def _log_path_for(kind, ref_key):
     return Path.home() / ".meeting-workbench" / "logs" / f"card-send-{kind}-{ref_key}.log"
 
