@@ -106,6 +106,40 @@ describe("RequirementDetailPage", () => {
     expect(screen.getByText("停滞 7 天")).toBeInTheDocument();
   });
 
+  it("从需求 A 换到需求 B：A 的请求晚回来，不把 B 的页面换成 A", async () => {
+    let releaseA: () => void = () => undefined;
+    const aReady = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    const requirement = vi.fn().mockImplementation(async (id: string) => {
+      if (id === "req-a") {
+        await aReady;
+        return baseDetail({ id: "req-a", title: "需求 A" });
+      }
+      return baseDetail({ id: "req-b", title: "需求 B" });
+    });
+    const props = {
+      apiClient: { requirement } as unknown as ApiClient,
+      canPickFolders: true,
+      canWrite: true,
+      onBack: vi.fn(),
+      onOpenMeeting: vi.fn(),
+      onOpenProject: vi.fn(),
+      onOpenTask: vi.fn(),
+      projects: [],
+    };
+    const { rerender } = render(<RequirementDetailPage {...props} requirementId="req-a" />);
+    rerender(<RequirementDetailPage {...props} requirementId="req-b" />);
+    expect(await screen.findByRole("heading", { name: "需求 B" })).toBeInTheDocument();
+
+    await act(async () => {
+      releaseA();
+      await aReady;
+    });
+    expect(screen.getByRole("heading", { name: "需求 B" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "需求 A" })).not.toBeInTheDocument();
+  });
+
   function renderCopyPage(apiClient: Record<string, unknown>) {
     render(
       <RequirementDetailPage

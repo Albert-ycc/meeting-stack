@@ -198,16 +198,21 @@ export function RequirementDetailPage({
 
   // 已经有这条需求的数据时静默刷新：留着页面只换数据，不整页闪成「正在读取」。
   const loadedIdRef = useRef<string | null>(null);
+  // 同一个页面实例会从需求 A 换到 B（App 里的任务抽屉点进别的需求）：只认最后一次的结果，A 晚回来不能盖掉 B
+  const loadSeqRef = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     const silent = loadedIdRef.current === requirementId;
     if (!silent) setState("loading");
     void loadContext(silent);
     try {
       const payload = await apiClient.requirement(requirementId);
+      if (seq !== loadSeqRef.current) return;
       loadedIdRef.current = requirementId;
       setDetail(payload);
       setState("ready");
     } catch (error) {
+      if (seq !== loadSeqRef.current) return;
       if (silent) setNotice(error instanceof Error ? `刷新失败：${error.message}` : "刷新失败，请稍后重试", "error");
       else setState("error");
     }
