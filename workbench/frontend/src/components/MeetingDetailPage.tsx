@@ -140,18 +140,27 @@ interface QualitySnapshot {
   transcriptVersions: TranscriptVersion[];
 }
 
-function segmentSnapshot(segments: Segment[]) {
-  return JSON.stringify(
-    segments.map(({ id, ordinal, start_ms, end_ms, speaker_label, speaker_name, text }) => ({
-      id,
-      ordinal,
-      start_ms,
-      end_ms,
-      speaker_label: speaker_label ?? null,
-      speaker_name: speaker_name ?? null,
-      text,
-    })),
-  );
+/**
+ * 两份逐字稿的内容一样不一样（只看 id、顺序、起止时间、说话人、文字）。编辑时每敲一个字都要比一次：
+ * 先比对象引用，没动过的行是同一个对象，一比就过；只有引用不同的行才逐项比。
+ * 原来对两份整稿各 JSON.stringify 一遍，几千段的会每敲一个字多花几毫秒到几十毫秒。
+ */
+export function sameSegments(left: Segment[], right: Segment[]) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((a, index) => {
+    const b = right[index];
+    return (
+      a === b ||
+      (a.id === b.id &&
+        a.ordinal === b.ordinal &&
+        a.start_ms === b.start_ms &&
+        a.end_ms === b.end_ms &&
+        (a.speaker_label ?? null) === (b.speaker_label ?? null) &&
+        (a.speaker_name ?? null) === (b.speaker_name ?? null) &&
+        a.text === b.text)
+    );
+  });
 }
 
 function sameIds(left: string[], right: string[]) {
@@ -387,7 +396,7 @@ export function MeetingDetailPage({
       : undefined;
   const hotwordError = validateHotwordsInput(hotwordText);
   const transcriptDirty = useMemo(
-    () => segmentSnapshot(segments) !== segmentSnapshot(baselineSegments),
+    () => !sameSegments(segments, baselineSegments),
     [baselineSegments, segments],
   );
   const minutesDirty = minutes !== baselineMinutes;
@@ -509,7 +518,7 @@ export function MeetingDetailPage({
     // 同一场会的静默刷新（保存了另一侧、词典改过来、改了说话人……）：没改过的一侧换成服务器的新内容；
     // 改过没保存的一侧原样留着，连同打开时的版本号——服务器那边要是真变了，保存时走版本冲突，不悄悄盖掉
     const now = local.current;
-    const transcriptKept = segmentSnapshot(now.segments) !== segmentSnapshot(now.baselineSegments);
+    const transcriptKept = !sameSegments(now.segments, now.baselineSegments);
     const minutesKept = now.minutes !== now.baselineMinutes;
     if (!transcriptKept) {
       setSegments(meeting.segments);

@@ -1,7 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type SyntheticEvent,
+} from "react";
 
 import { formatSpeakerLabel, formatTime } from "../format";
 import type { Segment } from "../types";
+import "./TranscriptPanel.css";
 
 /** 行的开始时间和它在滚动框里的上沿（像素，从滚动内容顶部算） */
 export interface RowTop {
@@ -71,6 +82,91 @@ function FlagIcon() {
   );
 }
 
+interface TranscriptRowProps {
+  segment: Segment;
+  /** 在整份逐字稿里的位置（查找过滤之后也不变）：选区跨句时靠它判断两句挨不挨着 */
+  sourceIndex: number;
+  /** 整份逐字稿里的上一段，「与上一段合并」用；第一段没有 */
+  previousId: string | null;
+  isActive: boolean;
+  editable: boolean;
+  disabled: boolean;
+  setActiveNode: (node: HTMLElement | null) => void;
+  onSeek: (milliseconds: number) => void;
+  onTextChange: (segmentId: string, value: string) => void;
+  onSplit: (segmentId: string, characterIndex: number) => void;
+  onMerge: (firstId: string, secondId: string) => void;
+}
+
+/**
+ * 一行逐字稿。几千段的会里，敲一个字、播放推进一句，只有真变了的那一两行需要重画，所以用 memo；
+ * 光标位置只有「从光标拆分」按钮用，记在行自己里，不牵动整个列表。
+ */
+const TranscriptRow = memo(function TranscriptRow({
+  segment,
+  sourceIndex,
+  previousId,
+  isActive,
+  editable,
+  disabled,
+  setActiveNode,
+  onSeek,
+  onTextChange,
+  onSplit,
+  onMerge,
+}: TranscriptRowProps) {
+  const [cursor, setCursor] = useState(0);
+  const trackCursor = (event: SyntheticEvent<HTMLTextAreaElement>) => setCursor(event.currentTarget.selectionStart);
+  return (
+    <article
+      aria-current={isActive ? "true" : undefined}
+      className={`transcript-row ${isActive ? "is-current" : ""}`}
+      data-index={sourceIndex}
+      data-start-ms={segment.start_ms}
+      data-testid={`segment-${segment.id}`}
+      ref={isActive ? setActiveNode : undefined}
+    >
+      <button className="segment-time" onClick={() => onSeek(segment.start_ms)} type="button">
+        {formatTime(segment.start_ms)}
+      </button>
+      <div className="segment-body">
+        <span className="segment-speaker">
+          {segment.speaker_name || formatSpeakerLabel(segment.speaker_label) || "说话人"}
+        </span>
+        {editable ? (
+          <textarea
+            aria-label={`${formatTime(segment.start_ms)} 逐字稿`}
+            disabled={disabled}
+            onChange={(event) => onTextChange(segment.id, event.target.value)}
+            onClick={trackCursor}
+            onKeyUp={trackCursor}
+            rows={Math.max(2, Math.ceil(segment.text.length / 32))}
+            value={segment.text}
+          />
+        ) : (
+          <p className="segment-text">{segment.text}</p>
+        )}
+        {editable && (
+          <div className="segment-actions desktop-only">
+            <button
+              disabled={disabled || cursor <= 0 || cursor >= segment.text.length}
+              onClick={() => onSplit(segment.id, cursor)}
+              type="button"
+            >
+              从光标拆分
+            </button>
+            {previousId !== null && (
+              <button disabled={disabled} onClick={() => onMerge(previousId, segment.id)} type="button">
+                与上一段合并
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+});
+
 // 翻页键、方向键也算用户自己滚
 const SCROLL_KEYS = new Set(["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "]);
 const MANUAL_SCROLL_MS = 4000;
@@ -110,8 +206,10 @@ export function TranscriptPanel({
   const [pick, setPick] = useState<(TranscriptPick & { top: number; left: number }) | null>(null);
   // 在滚动框里按下了鼠标、还没松开（可能在框外松开）
   const selectingRef = useRef(false);
-  const [cursorById, setCursorById] = useState<Record<string, number>>({});
   const activeRef = useRef<HTMLElement | null>(null);
+  const setActiveNode = useCallback((node: HTMLElement | null) => {
+    activeRef.current = node;
+  }, []);
   const panelRef = useRef<HTMLElement | null>(null);
   // 用户自己滚动过之后暂停跟随几秒，免得播放推进时把视线从正在看的地方拽走。
   const manualScrollAtRef = useRef(0);
@@ -119,6 +217,23 @@ export function TranscriptPanel({
   const frameRef = useRef<number | null>(null);
   const reportRef = useRef(onReadingTimeChange);
   reportRef.current = onReadingTimeChange;
+  // 行是 memo 的，传给行的回调要稳定：父组件每次渲染换一份回调，所有行就都得重画。
+  // 回调里用的是最新的 props，从这里读
+  const latest = useRef({ segments, onChange, onMerge, onSeek, onSplit });
+  latest.current = { segments, onChange, onMerge, onSeek, onSplit };
+  const seekTo = useCallback((milliseconds: number) => latest.current.onSeek(milliseconds), []);
+  const splitAt = useCallback(
+    (segmentId: string, characterIndex: number) => latest.current.onSplit?.(segmentId, characterIndex),
+    [],
+  );
+  const mergeWith = useCallback(
+    (firstId: string, secondId: string) => latest.current.onMerge?.(firstId, secondId),
+    [],
+  );
+  const changeText = useCallback((segmentId: string, value: string) => {
+    const { segments: current, onChange: change } = latest.current;
+    change?.(current.map((segment) => (segment.id === segmentId ? { ...segment, text: value } : segment)));
+  }, []);
   const activeId = useMemo(
     () => segments.find((segment) => currentTimeMs >= segment.start_ms && currentTimeMs < segment.end_ms)?.id,
     [currentTimeMs, segments],
@@ -175,9 +290,6 @@ export function TranscriptPanel({
     [],
   );
 
-  // 渲染时按 id 找原来的下标（以前每行 findIndex 一遍）
-  const indexById = useMemo(() => new Map(segments.map((segment, index) => [segment.id, index])), [segments]);
-
   // 编辑时开着查找：改着改着这句不再含查找词，也不能从列表里消失（textarea 一卸载光标就丢了）。
   // 同一个查找词下出现过的行、拆分合并新冒出来的行都留着，换查找词或进出编辑才重新筛
   const shownRef = useRef<{ key: string; known: Set<string>; shown: Set<string> } | null>(null);
@@ -198,9 +310,15 @@ export function TranscriptPanel({
     return kept;
   }, [editable, segments, term]);
 
-  // 改字、换稿以后原来的选区作废
+  // 过滤之后行在整份逐字稿里的位置，按 id 查表；没过滤时就是下标，每敲一个字不用重建一张几千项的表
+  const indexById = useMemo(
+    () => (visible === segments ? null : new Map(segments.map((segment, index) => [segment.id, index]))),
+    [segments, visible],
+  );
+
+  // 改字、换稿以后原来的选区作废。每敲一个字 segments 都是新数组，没有选区时不去白排一次重画
   useEffect(() => {
-    setPick(null);
+    if (pick) setPick(null);
   }, [editable, segments]);
 
   const readSelection = () => {
@@ -250,10 +368,6 @@ export function TranscriptPanel({
   const clearPick = (event: MouseEvent) => {
     selectingRef.current = true;
     if (!(event.target as HTMLElement).closest(".transcript-pick")) setPick(null);
-  };
-
-  const updateSegment = (id: string, value: string) => {
-    onChange?.(segments.map((segment) => (segment.id === id ? { ...segment, text: value } : segment)));
   };
 
   return (
@@ -318,74 +432,23 @@ export function TranscriptPanel({
             )}
           </div>
         )}
-        {visible.map((segment) => {
-          const sourceIndex = indexById.get(segment.id) ?? -1;
-          const isActive = segment.id === activeId;
-          const cursor = cursorById[segment.id] ?? 0;
+        {visible.map((segment, position) => {
+          const sourceIndex = indexById ? (indexById.get(segment.id) ?? -1) : position;
           return (
-            <article
-              aria-current={isActive ? "true" : undefined}
-              className={`transcript-row ${isActive ? "is-current" : ""}`}
-              data-index={sourceIndex}
-              data-start-ms={segment.start_ms}
-              data-testid={`segment-${segment.id}`}
+            <TranscriptRow
+              editable={editable}
+              disabled={disabled}
+              isActive={segment.id === activeId}
               key={segment.id}
-              ref={isActive ? (node) => { activeRef.current = node; } : undefined}
-            >
-              <button className="segment-time" onClick={() => onSeek(segment.start_ms)} type="button">
-                {formatTime(segment.start_ms)}
-              </button>
-              <div className="segment-body">
-                <span className="segment-speaker">
-                  {segment.speaker_name || formatSpeakerLabel(segment.speaker_label) || "说话人"}
-                </span>
-                {editable ? (
-                  <textarea
-                    aria-label={`${formatTime(segment.start_ms)} 逐字稿`}
-                    disabled={disabled}
-                    onChange={(event) => updateSegment(segment.id, event.target.value)}
-                    onClick={(event) => {
-                      const selectionStart = event.currentTarget.selectionStart;
-                      setCursorById((current) => ({
-                        ...current,
-                        [segment.id]: selectionStart,
-                      }));
-                    }}
-                    onKeyUp={(event) => {
-                      const selectionStart = event.currentTarget.selectionStart;
-                      setCursorById((current) => ({
-                        ...current,
-                        [segment.id]: selectionStart,
-                      }));
-                    }}
-                    rows={Math.max(2, Math.ceil(segment.text.length / 32))}
-                    value={segment.text}
-                  />
-                ) : (
-                  <p className="segment-text">{segment.text}</p>
-                )}
-                {editable && (
-                  <div className="segment-actions desktop-only">
-                    <button
-                      disabled={disabled || cursor <= 0 || cursor >= segment.text.length}
-                      onClick={() => onSplit?.(segment.id, cursor)}
-                      type="button"
-                    >
-                      从光标拆分
-                    </button>
-                    {sourceIndex > 0 && (
-                      <button
-                        disabled={disabled}
-                        onClick={() => onMerge?.(segments[sourceIndex - 1].id, segment.id)}
-                        type="button"
-                      >
-                        与上一段合并
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </article>
+              onMerge={mergeWith}
+              onSeek={seekTo}
+              onSplit={splitAt}
+              onTextChange={changeText}
+              previousId={sourceIndex > 0 ? segments[sourceIndex - 1].id : null}
+              segment={segment}
+              setActiveNode={setActiveNode}
+              sourceIndex={sourceIndex}
+            />
           );
         })}
       </div>

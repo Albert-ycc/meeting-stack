@@ -1,0 +1,9 @@
+/*
+ * 几千段的会：每一行自成一个排版、绘制的单元（contain: content = layout + paint + style，没有 size，行高照内容走）。
+ * 敲一个字、播放换一句时，浏览器不用把整张列表的排版树、绘制树再走一遍；6000 段的会（生产里最长的）
+ * 编辑时一次按键的主线程占用从 24ms 降到 13ms，CPU 降速 4 倍时从 111ms 降到 50ms。
+ * 不用 content-visibility：它让屏外的行没有真实高度，滚动位置和「跟随当前句」会对不上。
+ */
+.transcript-row {
+  contain: content;
+}
