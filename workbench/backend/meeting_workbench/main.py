@@ -2740,7 +2740,9 @@ def create_app(
     async def scan(_body: dict[str, Any]):
         report = await run_scan()
         payload = {name: getattr(report, name) for name in report.__dataclass_fields__}
-        db.add_event("archive_scan_requested", actor="user", payload=payload)
+        await asyncio.to_thread(
+            db.add_event, "archive_scan_requested", actor="user", payload=payload
+        )
         return payload
 
     @app.post("/api/admin/semantic/rebuild")
@@ -3324,14 +3326,22 @@ def create_app(
         conflict_id: str,
         action: Literal["keep_draft", "accept_external", "discard_draft"],
     ) -> dict[str, Any]:
-        meeting = db.query_one("SELECT * FROM meetings WHERE id=?", (meeting_id,))
+        # 只有扫描本身是协程；查库、拿 archive.lock 签名、写事务都放进线程，
+        # 不然扫描或发布正拿着锁时整个事件循环跟着等。
+        store = ConflictStore(db)
+
+        def find_conflict() -> dict[str, Any] | None:
+            return next(
+                (item for item in store.list(meeting_id) if item["id"] == conflict_id),
+                None,
+            )
+
+        meeting = await asyncio.to_thread(
+            db.query_one, "SELECT * FROM meetings WHERE id=?", (meeting_id,)
+        )
         if not meeting:
             raise HTTPException(404, "会议不存在")
-        store = ConflictStore(db)
-        conflict = next(
-            (item for item in store.list(meeting_id) if item["id"] == conflict_id),
-            None,
-        )
+        conflict = await asyncio.to_thread(find_conflict)
         if not conflict:
             raise HTTPException(409, "指定冲突已解决或不存在")
         if conflict["kind"] != "external_source_change":
@@ -3342,115 +3352,124 @@ def create_app(
             changed_before_resolution
         ):
             await run_scan()
-            conflict = next(
-                (item for item in store.list(meeting_id) if item["id"] == conflict_id),
-                None,
-            )
+            conflict = await asyncio.to_thread(find_conflict)
             if not conflict:
                 raise HTTPException(409, "重新扫描后冲突状态已变化，请刷新页面")
             payload = conflict.get("payload") if isinstance(conflict.get("payload"), dict) else {}
         if action == "keep_draft":
-            signature = importer.signature_for_meeting(meeting_id)
+            signature = await asyncio.to_thread(importer.signature_for_meeting, meeting_id)
             if not signature:
                 raise HTTPException(409, "外部来源已不可访问，暂不能确认保留草稿")
             expected_signature = conflict.get("source_signature") or payload.get("source_signature")
             if expected_signature and signature != expected_signature:
                 await run_scan()
                 raise HTTPException(409, "外部来源再次发生变化，请重新检查冲突")
-            with db.transaction() as connection:
-                connection.execute(
-                    "UPDATE meetings SET source_signature=?, updated_at=? WHERE id=?",
-                    (signature, utc_now(), meeting_id),
-                )
-                store.resolve(conflict_id, action, connection=connection)
+
+            def keep_draft() -> None:
+                with db.transaction() as connection:
+                    connection.execute(
+                        "UPDATE meetings SET source_signature=?, updated_at=? WHERE id=?",
+                        (signature, utc_now(), meeting_id),
+                    )
+                    store.resolve(conflict_id, action, connection=connection)
+
+            await asyncio.to_thread(keep_draft)
         else:
-            changed = payload.get("changed_resources")
-            changed_resources = set(changed) if isinstance(changed, list) else {"transcript"}
-            replacement_kind = (
-                "discarded_draft" if action == "discard_draft" else "superseded_draft"
+
+            def replace_draft() -> None:
+                changed = payload.get("changed_resources")
+                changed_resources = set(changed) if isinstance(changed, list) else {"transcript"}
+                replacement_kind = (
+                    "discarded_draft" if action == "discard_draft" else "superseded_draft"
+                )
+                with db.transaction() as connection:
+                    pointer_updates: dict[str, str | None] = {}
+                    if "transcript" in changed_resources:
+                        current = connection.execute(
+                            "SELECT * FROM transcript_versions WHERE id=?",
+                            (meeting.get("current_transcript_version_id"),),
+                        ).fetchone()
+                        target_id = payload.get("external_transcript_version_id")
+                        target = (
+                            connection.execute(
+                                "SELECT id FROM transcript_versions WHERE id=? AND meeting_id=?",
+                                (target_id, meeting_id),
+                            ).fetchone()
+                            if isinstance(target_id, str)
+                            else None
+                        )
+                        if target is None and current is not None:
+                            target_id = current["based_on_id"]
+                        if current is not None and current["kind"] == "draft":
+                            connection.execute(
+                                "UPDATE transcript_versions SET kind=? WHERE id=?",
+                                (replacement_kind, current["id"]),
+                            )
+                        pointer_updates["current_transcript_version_id"] = target_id
+                    if "minutes" in changed_resources:
+                        current_minutes = connection.execute(
+                            "SELECT * FROM minutes_versions WHERE id=?",
+                            (meeting.get("current_minutes_version_id"),),
+                        ).fetchone()
+                        target_minutes_id = payload.get("external_minutes_version_id")
+                        target_minutes = (
+                            connection.execute(
+                                "SELECT id FROM minutes_versions WHERE id=? AND meeting_id=?",
+                                (target_minutes_id, meeting_id),
+                            ).fetchone()
+                            if isinstance(target_minutes_id, str)
+                            else None
+                        )
+                        if target_minutes is None and current_minutes is not None:
+                            target_minutes_id = current_minutes["based_on_id"]
+                        if current_minutes is not None and current_minutes["kind"] == "draft":
+                            connection.execute(
+                                "UPDATE minutes_versions SET kind=? WHERE id=?",
+                                (replacement_kind, current_minutes["id"]),
+                            )
+                        pointer_updates["current_minutes_version_id"] = target_minutes_id
+                    assignments = [f"{name}=?" for name in pointer_updates]
+                    values = list(pointer_updates.values())
+                    assignments.extend(("source_signature=?", "updated_at=?"))
+                    values.extend(
+                        (
+                            conflict.get("source_signature") or payload.get("source_signature"),
+                            utc_now(),
+                            meeting_id,
+                        )
+                    )
+                    connection.execute(
+                        f"UPDATE meetings SET {', '.join(assignments)} WHERE id=?",
+                        values,
+                    )
+                    if "current_transcript_version_id" in pointer_updates:
+                        db.sync_transcript_metadata_with_connection(
+                            connection,
+                            meeting_id,
+                            pointer_updates["current_transcript_version_id"],
+                        )
+                    store.resolve(conflict_id, action, connection=connection)
+
+            await asyncio.to_thread(replace_draft)
+
+        def finish() -> dict[str, Any]:
+            db.add_event(
+                "external_conflict_resolved",
+                meeting_id=meeting_id,
+                actor="user",
+                payload={"action": action, "conflict_id": conflict_id},
             )
-            with db.transaction() as connection:
-                pointer_updates: dict[str, str | None] = {}
-                if "transcript" in changed_resources:
-                    current = connection.execute(
-                        "SELECT * FROM transcript_versions WHERE id=?",
-                        (meeting.get("current_transcript_version_id"),),
-                    ).fetchone()
-                    target_id = payload.get("external_transcript_version_id")
-                    target = (
-                        connection.execute(
-                            "SELECT id FROM transcript_versions WHERE id=? AND meeting_id=?",
-                            (target_id, meeting_id),
-                        ).fetchone()
-                        if isinstance(target_id, str)
-                        else None
-                    )
-                    if target is None and current is not None:
-                        target_id = current["based_on_id"]
-                    if current is not None and current["kind"] == "draft":
-                        connection.execute(
-                            "UPDATE transcript_versions SET kind=? WHERE id=?",
-                            (replacement_kind, current["id"]),
-                        )
-                    pointer_updates["current_transcript_version_id"] = target_id
-                if "minutes" in changed_resources:
-                    current_minutes = connection.execute(
-                        "SELECT * FROM minutes_versions WHERE id=?",
-                        (meeting.get("current_minutes_version_id"),),
-                    ).fetchone()
-                    target_minutes_id = payload.get("external_minutes_version_id")
-                    target_minutes = (
-                        connection.execute(
-                            "SELECT id FROM minutes_versions WHERE id=? AND meeting_id=?",
-                            (target_minutes_id, meeting_id),
-                        ).fetchone()
-                        if isinstance(target_minutes_id, str)
-                        else None
-                    )
-                    if target_minutes is None and current_minutes is not None:
-                        target_minutes_id = current_minutes["based_on_id"]
-                    if current_minutes is not None and current_minutes["kind"] == "draft":
-                        connection.execute(
-                            "UPDATE minutes_versions SET kind=? WHERE id=?",
-                            (replacement_kind, current_minutes["id"]),
-                        )
-                    pointer_updates["current_minutes_version_id"] = target_minutes_id
-                assignments = [f"{name}=?" for name in pointer_updates]
-                values = list(pointer_updates.values())
-                assignments.extend(("source_signature=?", "updated_at=?"))
-                values.extend(
-                    (
-                        conflict.get("source_signature") or payload.get("source_signature"),
-                        utc_now(),
-                        meeting_id,
-                    )
-                )
-                connection.execute(
-                    f"UPDATE meetings SET {', '.join(assignments)} WHERE id=?",
-                    values,
-                )
-                if "current_transcript_version_id" in pointer_updates:
-                    db.sync_transcript_metadata_with_connection(
-                        connection,
-                        meeting_id,
-                        pointer_updates["current_transcript_version_id"],
-                    )
-                store.resolve(conflict_id, action, connection=connection)
-        db.add_event(
-            "external_conflict_resolved",
-            meeting_id=meeting_id,
-            actor="user",
-            payload={"action": action, "conflict_id": conflict_id},
-        )
-        detail = _meeting_detail(
-            db,
-            meeting_id,
-            ai_configured=llm_ready(settings),
-            cards=card_writer,
-            material_pairs=mining_on(),
-        )
-        assert detail is not None
-        return detail
+            detail = _meeting_detail(
+                db,
+                meeting_id,
+                ai_configured=llm_ready(settings),
+                cards=card_writer,
+                material_pairs=mining_on(),
+            )
+            assert detail is not None
+            return detail
+
+        return await asyncio.to_thread(finish)
 
     @app.post("/api/meetings/{meeting_id}/conflicts/{conflict_id}/resolve")
     async def resolve_conflict_by_id(
@@ -3460,7 +3479,9 @@ def create_app(
 
     @app.post("/api/meetings/{meeting_id}/conflict/resolve")
     async def resolve_conflict(meeting_id: str, body: ConflictResolutionInput):
-        conflicts = ConflictStore(db).list(meeting_id, kind="external_source_change")
+        conflicts = await asyncio.to_thread(
+            ConflictStore(db).list, meeting_id, kind="external_source_change"
+        )
         if len(conflicts) != 1:
             raise HTTPException(409, "当前会议没有唯一的外部来源冲突")
         return await resolve_external_conflict(meeting_id, conflicts[0]["id"], body.action)

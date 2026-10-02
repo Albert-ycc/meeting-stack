@@ -553,6 +553,64 @@ def test_typed_external_conflict_is_exposed_and_resolved_by_id(tmp_path):
     assert response.json()["conflict"] == 0
 
 
+def _record_event_loop_io(app, monkeypatch) -> list[str]:
+    """把数据库连接和归档签名换成会记账的版本：在事件循环线程里调到的记下名字。"""
+    blocked: list[str] = []
+
+    def on_loop() -> bool:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return True
+
+    real_connect = app.state.db.connect
+
+    def connect():
+        if on_loop():
+            blocked.append("db.connect")
+        return real_connect()
+
+    def signature_for_meeting(_meeting_id):
+        if on_loop():
+            blocked.append("importer.signature_for_meeting")
+        return "sig"
+
+    monkeypatch.setattr(app.state.db, "connect", connect)
+    monkeypatch.setattr(app.state.importer, "signature_for_meeting", signature_for_meeting)
+    return blocked
+
+
+@pytest.mark.parametrize("action", ["keep_draft", "accept_external"])
+def test_conflict_resolution_keeps_blocking_io_off_the_event_loop(tmp_path, monkeypatch, action):
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(settings.database_path)
+    seed_editable_meeting(db, settings.archive_root)
+    conflict_id = ConflictStore(db).open(
+        "vm-20260102-101500", "external_source_change", source_signature="sig"
+    )
+    blocked = _record_event_loop_io(client.app, monkeypatch)
+
+    response = client.post(
+        f"/api/meetings/vm-20260102-101500/conflicts/{conflict_id}/resolve",
+        json={"action": action},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert blocked == []
+
+
+def test_manual_scan_writes_its_event_off_the_event_loop(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path)
+    headers = write_headers(client)
+    blocked = _record_event_loop_io(client.app, monkeypatch)
+
+    assert client.post("/api/admin/scan", json={}, headers=headers).status_code == 200
+    assert blocked == []
+
+
 def test_non_external_conflict_cannot_be_cleared_by_generic_resolution(tmp_path):
     client, settings = make_client(tmp_path)
     headers = write_headers(client)
