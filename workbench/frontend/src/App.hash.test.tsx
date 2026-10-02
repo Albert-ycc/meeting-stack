@@ -1107,7 +1107,7 @@ describe("需求二级页的来去（R04-1、R04-8）", () => {
 
   it("需求详情滚到半截打开会议，后退回来：等详情重新取回来再滚回原处，不落在顶上", async () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
-    // jsdom 不排版，scrollTop 换成能记值的属性
+    // jsdom 不排版：scrollTop 换成能记值的属性；页面高度按详情画没画出来给（没画出来时不够滚到 500）
     let scrollTop = 0;
     Object.defineProperty(document.documentElement, "scrollTop", {
       configurable: true,
@@ -1116,8 +1116,13 @@ describe("需求二级页的来去（R04-1、R04-8）", () => {
         scrollTop = value;
       },
     });
+    Object.defineProperty(document.documentElement, "scrollHeight", {
+      configurable: true,
+      get: () => (screen.queryByRole("heading", { name: "科室会预约后台导出" }) ? 2000 : 300),
+    });
     onTestFinished(() => {
       delete (document.documentElement as { scrollTop?: number }).scrollTop;
+      delete (document.documentElement as { scrollHeight?: number }).scrollHeight;
     });
     window.history.replaceState(null, "", "/#requirements/requirement-export");
     const detail = {
@@ -1156,11 +1161,12 @@ describe("需求二级页的来去（R04-1、R04-8）", () => {
 
     act(() => window.history.back());
     await screen.findByText("正在读取需求…");
-    // 详情还没取回来：先别滚
+    // 详情还没取回来、页面不够高：先别滚
+    await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
     expect(scrollTop).toBe(0);
     await act(async () => releaseSecond());
     await screen.findByRole("heading", { name: "科室会预约后台导出" });
-    expect(scrollTop).toBe(500);
+    await waitFor(() => expect(scrollTop).toBe(500));
   });
 
   it("新增页改了没存：点侧栏、浏览器后退都先问；选留下就还在新增页，选离开才走（审查 B1）", async () => {

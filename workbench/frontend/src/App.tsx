@@ -51,6 +51,7 @@ import {
   RequirementPoolPage,
   mergedMessage,
 } from "./components/pool/RequirementPoolPage";
+import { cancelScrollRestore, recordScrollNow, restoreScrollFromHistory, startScrollRecorder } from "./scrollRestore";
 import { readPersistentState, writePersistentState } from "./viewState";
 import { SearchPage } from "./components/SearchPage";
 import { setDraft as setAskDraft } from "./components/ask/askStore";
@@ -247,11 +248,6 @@ export default function App({ apiClient = api }: AppProps) {
   const [meetingFormPrefill, setMeetingFormPrefill] = useState<RequirementPrefill | null>(null);
   const meetingFormRef = useRef<RequirementPrefill | null>(null);
   const meetingScrollRef = useRef<{ page: number; transcript: number } | null>(null);
-  // 从需求详情打开会议，退回来时要回到原来的滚动位置。需求详情退回来是重新挂上、重新取数的，浏览器在 popstate
-  // 那一刻按它记下的位置恢复时页面还是空的，落到顶上。打开会议时把位置记进需求详情那一条历史（listScroll），
-  // 退回来时取出来放这里，等详情的数据到了（onReady）再滚回去。录音档案、检索结果的数据在 App 手里，
-  // 回来时列表一下就画全了，浏览器自己恢复就是对的，不用管
-  const listScrollRef = useRef<number | null>(null);
   // 侧栏、代码里换视图：新视图从顶上看起（浏览器前进后退不归零，由浏览器恢复）。要等新的一条历史压进去以后再滚，
   // 先滚的话浏览器给旧的那一条记下的位置就成了 0，后退回去回不到原处
   const scrollResetRef = useRef(false);
@@ -428,6 +424,7 @@ export default function App({ apiClient = api }: AppProps) {
   // 会议详情与离开会议要用到后面才定义的函数和最新状态，经 ref 读取，避免闭包过期。
   const applyHash = useCallback(() => {
     historySyncRef.current = true;
+    cancelScrollRestore();
     const hash = window.location.hash;
     // 表单页上有没保存的改动时按了浏览器后退、前进：先问；留下就把表单页的地址放回去（审查 B1）
     const formPath = formPathRef.current;
@@ -502,21 +499,13 @@ export default function App({ apiClient = api }: AppProps) {
         historySyncRef.current = false;
         return;
       }
-      const listScroll = (window.history.state as { listScroll?: number } | null)?.listScroll;
-      if (typeof listScroll === "number") {
-        listScrollRef.current = listScroll;
-        // 浏览器在 popstate 之后会按它记下的位置滚一次，这时详情还没取回来、页面不够高，会落到顶上。
-        // 这一条这次不让浏览器管，滚完再交还给它（之后从别处后退到这一条照常由浏览器恢复）
-        history.scrollRestoration = "manual";
-        window.setTimeout(() => {
-          history.scrollRestoration = "auto";
-        }, 0);
-      }
     } else {
       setSearchActive(false);
     }
     setTaskDrawerId(null);
     setPreviewTarget(null);
+    // 回到的这一页多半要现取数据：等它长够高再滚回这一条记下的位置（会议页、盖层上面已经各自处理过）
+    restoreScrollFromHistory();
     if (hash === "#graph" || hash.startsWith("#graph?")) {
       // 全部项目概览，#graph?sel=p:<id> 选中一个岛；要在 #projects/ 之前认。手机上没有关系图，退回项目列表
       if (isMobileRef.current) {
@@ -780,12 +769,9 @@ export default function App({ apiClient = api }: AppProps) {
     ) {
       return;
     }
-    listScrollRef.current = null;
-    if (!fromHistory && !openMeetingId && !searchActive && view === "requirementDetail") {
-      window.history.replaceState(
-        { ...((window.history.state as Record<string, unknown> | null) ?? {}), listScroll: document.documentElement.scrollTop },
-        "",
-      );
+    if (!fromHistory) {
+      cancelScrollRestore();
+      recordScrollNow();
     }
     setInitialSeekMs(seekMs);
     setInitialAutoplay(autoplay);
@@ -848,7 +834,8 @@ export default function App({ apiClient = api }: AppProps) {
   const performNavigate = (nextView: AppView) => {
     historySyncRef.current = false;
     navigatedDuringBootRef.current = true;
-    listScrollRef.current = null;
+    cancelScrollRestore();
+    recordScrollNow();
     scrollResetRef.current = true;
     resetDetailState();
     setView(nextView);
@@ -1022,13 +1009,6 @@ export default function App({ apiClient = api }: AppProps) {
     document.documentElement.scrollTop = saved.page;
   }, [meetingFormPrefill, openMeetingId]);
 
-  // 从会议退回需求详情、详情的数据到了：滚回打开会议之前的位置
-  const restoreListScroll = useCallback(() => {
-    const saved = listScrollRef.current;
-    if (saved === null) return;
-    listScrollRef.current = null;
-    document.documentElement.scrollTop = saved;
-  }, []);
 
   const openRequirementEdit = (requirementId: string) => {
     setRequirementForm({ mode: "edit", requirementId });
@@ -1218,6 +1198,8 @@ export default function App({ apiClient = api }: AppProps) {
     document.documentElement.scrollTop = 0;
   });
 
+  useEffect(() => startScrollRecorder(), []);
+
   // 浏览器前进/后退或手动改地址栏 hash 时反向同步视图。
   // 浏览器在 hash 变了的前进、后退（以及手改地址栏）里会先后发 popstate、hashchange，同一次导航只能认一次：
   // 第二遍时会议已经关了，会被当成「从别处切过来」清掉检索结果；没来得及渲染的话还会把「放弃修改吗」再问一遍。
@@ -1264,7 +1246,7 @@ export default function App({ apiClient = api }: AppProps) {
     const requestSequence = ++searchRequestSequence.current;
     historySyncRef.current = false;
     searchedDuringBootRef.current = true;
-    listScrollRef.current = null;
+    cancelScrollRestore();
     resetDetailState();
     if (overrides.word !== undefined) setQuery(normalized);
     setSearchScope(scope);
@@ -1583,7 +1565,6 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenProject={openProjectDetail}
         onOpenTask={setTaskDrawerId}
         onProjectsChanged={refreshProjects}
-        onReady={restoreListScroll}
         projects={projects}
         reloadKey={boardVersion}
         requirementId={openRequirementId}
