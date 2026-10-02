@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import shutil
 from datetime import datetime
@@ -2676,3 +2677,26 @@ def test_symlinked_part_of_a_walked_root_keeps_its_records(tmp_path, case):
 
     assert report.errors == 0
     assert _paths_under(db, target) == before
+
+
+def test_stale_cleanup_skip_warns_once_until_the_side_recovers(tmp_path, caplog):
+    db, settings, _real_archive, real_staging = _scanned_archive_and_staging(tmp_path)
+    importer = ArchiveImporter(db, settings)
+    staged = next(path for path in real_staging.iterdir() if path.is_dir())
+    moved = tmp_path / "staged-away"
+    shutil.move(str(staged), str(moved))  # relay 清完降级稿，暂存根空了
+
+    def skip_warnings():
+        return [r for r in caplog.records if "跳过失效记录清理" in r.getMessage()]
+
+    with caplog.at_level(logging.WARNING, logger="meeting_workbench.importer"):
+        reports = [importer.scan() for _ in range(3)]
+        assert [report.stale_cleanup_skipped for report in reports] == [1, 1, 1]
+        assert len(skip_warnings()) == 1
+
+        shutil.move(str(moved), str(staged))  # 恢复：这一侧又发现了文件
+        assert importer.scan().stale_cleanup_skipped == 0
+        shutil.move(str(staged), str(moved))  # 再次清空，重新开始跳过，再记一次
+        assert importer.scan().stale_cleanup_skipped == 1
+        assert importer.scan().stale_cleanup_skipped == 1
+    assert len(skip_warnings()) == 2

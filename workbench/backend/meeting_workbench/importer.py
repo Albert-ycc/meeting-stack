@@ -388,6 +388,9 @@ class ArchiveImporter:
         self.db = db
         self.settings = settings
         self.archive_lock = ArchiveLock(self.db.path.parent / "archive.lock")
+        # 正处在「0 发现、跳过清理」状态的根。后台每 15 秒扫一轮，暂存根被正常清空时
+        # 会一直跳过，warning 只在开始跳过时记一次，这一侧恢复后再出现才再记。
+        self._cleanup_skipping_roots: set[str] = set()
 
     def scan(self) -> ScanReport:
         with self.archive_lock:
@@ -450,12 +453,15 @@ class ArchiveImporter:
                 )["n"]
                 if remaining:
                     report.stale_cleanup_skipped += 1
-                    logger.warning(
-                        "扫描根 %s 本轮一个文件都没发现，库里还有 %d 条记录，跳过失效记录清理",
-                        root,
-                        remaining,
-                    )
+                    if root not in self._cleanup_skipping_roots:
+                        self._cleanup_skipping_roots.add(root)
+                        logger.warning(
+                            "扫描根 %s 本轮一个文件都没发现，库里还有 %d 条记录，跳过失效记录清理",
+                            root,
+                            remaining,
+                        )
                     continue
+            self._cleanup_skipping_roots.discard(root)
             available_roots.update(labels)
         if not available_roots:
             return
