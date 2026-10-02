@@ -61,6 +61,9 @@ STATUS_LABELS = {
 }
 # 未完成任务＝待确认＋已确认＋进行中；项目/需求卡片上的「未完成任务」数字统一按这个口径。
 OPEN_TASK_STATUSES = ("pending_confirm", "confirmed", "in_progress")
+# 待确认的任务（确认时挂）能挂候选；已确认的只挂进行中的需求，有项目时不挂候选（R07-14）。挂需求选择器
+# （todo.scope_options）列的选项和 update_task、确认时的校验用同一条。
+DRAFT_STATUSES = ("pending_confirm", "expired")
 
 logger = logging.getLogger("meeting_workbench.tasks")
 PROJECT_ORIGINS = ("manual", "ai")
@@ -380,6 +383,44 @@ def resolve_requirement_and_project(
     return current_requirement_id, resolved_project_id, None
 
 
+def can_link_candidates(status: str, project_id: str | None) -> bool:
+    """这个状态、这个项目的任务能不能挂候选：待确认的能；已确认的只有没归项目时能（同一场会的候选）。"""
+    return status in DRAFT_STATUSES or not project_id
+
+
+def _recently_relinked(connection: Any, task_id: str) -> bool:
+    """任务的挂接刚改过（撤销窗口内）：前端挂接后的［撤销］把原来的挂接写回去，原来的那条这期间可能已经不在
+    选择器的范围里（需求后来搁置了、确认时挂的候选），这样的请求放行。窗口外同样的请求照拦。"""
+    row = connection.execute(
+        "SELECT MAX(created_at) AS at FROM task_events WHERE task_id=? AND kind='requirement_changed'",
+        (task_id,),
+    ).fetchone()
+    at = _parse_dt(row["at"])
+    return at is not None and at >= datetime.now(UTC) - timedelta(seconds=UNDO_WINDOW_SECONDS)
+
+
+def assert_requirement_linkable(
+    connection: Any, task: dict[str, Any], requirement_id: str | None
+) -> None:
+    """新挂的需求必须是进行中的（挂需求选择器只列进行中的）：服务端同样拦，不只靠前端的选项。只管新挂，
+    任务现在挂着的（哪怕后来搁置了）原样保存不报错；需求不存在的由 resolve_requirement_and_project 报。"""
+    if not requirement_id or requirement_id == task.get("requirement_id"):
+        return
+    requirement = connection.execute(
+        "SELECT title, status FROM requirements WHERE id=?", (requirement_id,)
+    ).fetchone()
+    if (
+        requirement is None
+        or requirement["status"] == "active"
+        or _recently_relinked(connection, task["id"])
+    ):
+        return
+    state = {"done": "已完成", "shelved": "已搁置"}.get(
+        requirement["status"], requirement["status"]
+    )
+    raise ConflictError(f"需求「{requirement['title']}」{state}，只能挂到进行中的需求")
+
+
 def resolve_candidate(
     connection: Any,
     task: dict[str, Any],
@@ -426,6 +467,12 @@ def resolve_candidate(
                 if project_id
                 else "任务没归项目，只能挂到同一场会抽出的候选"
             )
+        if (
+            candidate_id != current
+            and not can_link_candidates(task["status"], project_id)
+            and not _recently_relinked(connection, task["id"])
+        ):
+            raise ConflictError("已确认的任务不能再挂候选，只能挂到进行中的需求")
         body = f"挂到候选「{candidate['title']}」" if candidate_id != current else None
         return candidate_id, body
     if not current:
@@ -880,6 +927,7 @@ class TaskService:
                     project_id=project_id,
                 )
             )
+            assert_requirement_linkable(connection, task, resolved_requirement_id)
             if resolved_requirement_id != task.get("requirement_id"):
                 changes.append("requirement_id=?")
                 values.append(resolved_requirement_id)
@@ -1053,6 +1101,7 @@ class TaskService:
                     project_id=project_id,
                 )
             )
+            assert_requirement_linkable(connection, task, resolved_requirement_id)
             if resolved_requirement_id != task.get("requirement_id"):
                 changes.append("requirement_id=?")
                 values.append(resolved_requirement_id)

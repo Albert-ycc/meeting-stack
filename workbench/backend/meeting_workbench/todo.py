@@ -22,7 +22,7 @@ from .requirement_pool import project_order
 from .requirements import REQUIREMENT_PRIORITIES
 from .service import ConflictError, NotFoundError
 from .task_due import beijing_today
-from .tasks import TaskService, _validate_date_only, recording_date_range
+from .tasks import TaskService, _validate_date_only, can_link_candidates, recording_date_range
 
 GROUPS = (
     ("overdue", "逾期"),
@@ -34,8 +34,6 @@ GROUPS = (
 TODO_STATUSES = ("confirmed", "in_progress")
 # 待办一次全取出来分组：未完成的任务是几十条的量级
 TODO_LIMIT = 1000
-# 待确认的任务（确认时挂需求）才能挂候选
-DRAFT_STATUSES = ("pending_confirm", "expired")
 # 处理完的审核卡留多久
 DONE_CARD_DAYS = 7
 _PRIORITY_RANK = {priority: rank for rank, priority in enumerate(REQUIREMENT_PRIORITIES)}
@@ -290,7 +288,7 @@ def scope_options(
     context = context or _LinkContext(connection, [task])
     project_id = task.get("project_id")
     meeting_id = task.get("meeting_id")
-    with_candidates = task["status"] in DRAFT_STATUSES or project_id is None
+    with_candidates = can_link_candidates(task["status"], project_id)
     if project_id:
         requirements_of, candidates_of = context.project_scope
         requirements = requirements_of.get(project_id, [])
@@ -372,7 +370,7 @@ def requirement_options(task_service: TaskService, task_id: str, q: str | None =
         recommended = recommend(connection, task, options)
     return {
         "task_id": task_id,
-        "can_link_candidates": task["status"] in DRAFT_STATUSES or not task.get("project_id"),
+        "can_link_candidates": can_link_candidates(task["status"], task.get("project_id")),
         "recommended": recommended,
         "default": recommended[0] if recommended else None,
         "options": [option for option in options if needle in option["title"].casefold()],

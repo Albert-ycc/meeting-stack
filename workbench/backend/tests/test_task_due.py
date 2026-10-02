@@ -589,8 +589,11 @@ def test_moving_a_meeting_leaves_tasks_hung_on_other_meetings_candidates(tmp_pat
         json={"title": "确认产研能否派一人对接 EDC", "project_id": project_id("yimi")},
         headers=headers,
     ).json()["id"]
-    db.execute("UPDATE tasks SET meeting_id=? WHERE id=?", (meeting_id("edc"), edc_task))
-    client.patch(f"/api/tasks/{edc_task}", json={"candidate_id": receipt}, headers=headers)
+    # 已确认、有项目的任务经接口挂不上候选（R07-14）；确认时挂上的状态直接写库
+    db.execute(
+        "UPDATE tasks SET meeting_id=?, candidate_id=? WHERE id=?",
+        (meeting_id("edc"), receipt, edc_task),
+    )
 
     moved = client.patch(
         f"/api/meetings/{meeting_id('edc')}",
@@ -623,9 +626,11 @@ def make_jd_world(tmp_path, monkeypatch):
         json={"title": "确认产研能否派一人对接 EDC", "project_id": project_id("yimi")},
         headers=headers,
     ).json()["id"]
-    db.execute("UPDATE tasks SET meeting_id=? WHERE id=?", (meeting_id("edc"), edc_task))
-    hung = client.patch(f"/api/tasks/{edc_task}", json={"candidate_id": receipt}, headers=headers)
-    assert hung.json()["candidate_id"] == receipt, hung.text
+    # 已确认、有项目的任务经接口挂不上候选（R07-14）；确认时挂上的状态直接写库
+    db.execute(
+        "UPDATE tasks SET meeting_id=?, candidate_id=? WHERE id=?",
+        (meeting_id("edc"), receipt, edc_task),
+    )
     return client, headers, db, settings, receipt, edc_task
 
 
