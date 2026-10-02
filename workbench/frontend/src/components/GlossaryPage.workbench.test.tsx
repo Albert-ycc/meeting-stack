@@ -107,6 +107,8 @@ const selectedRow = (list: HTMLElement) => list.querySelector('[role="option"][a
 const press = (key: string, init: KeyboardEventInit = {}) => fireEvent.keyDown(document.body, { key, ...init });
 async function ready() {
   await within(await screen.findByRole("listbox", { name: "词条" })).findByText("崔总");
+  // 右栏编辑区是选中第一条以后另一次渲染才出来的，机器一忙会比左栏晚一拍
+  await screen.findByLabelText("正确写法");
 }
 async function openInbox(firstWord = "审核人员") {
   fireEvent.click(await screen.findByRole("button", { name: /待认词/ }));
