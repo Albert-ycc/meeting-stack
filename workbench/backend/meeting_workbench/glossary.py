@@ -1042,34 +1042,37 @@ def update_term(
     also: list[str] | None = None,
     snapshot_path: Path | str | None = None,
 ) -> dict[str, Any] | None:
-    existing = db.query_one("SELECT * FROM glossary_terms WHERE id=?", (term_id,))
-    if not existing:
-        return None
-    now = utc_now()
-    fields = ["updated_at=?"]
-    params: list[Any] = [now]
-    final_term = existing["term"]
-    if term is not None:
-        term = validate_term_text(term, what="术语")
-        if term != existing["term"]:
-            with db.autocommit() as connection:
+    # 重名检查和 UPDATE 放在同一个 BEGIN IMMEDIATE 里。分开做时，检查通过以后别人抢先建了同名词条，
+    # UPDATE 撞 term UNIQUE 抛 IntegrityError（500），不是和普通重名一样的 DuplicateTermError（409）
+    with db.transaction() as connection:
+        existing = connection.execute(
+            "SELECT * FROM glossary_terms WHERE id=?", (term_id,)
+        ).fetchone()
+        if not existing:
+            return None
+        now = utc_now()
+        fields = ["updated_at=?"]
+        params: list[Any] = [now]
+        final_term = existing["term"]
+        if term is not None:
+            term = validate_term_text(term, what="术语")
+            if term != existing["term"]:
                 _raise_duplicate(connection, term)
-        fields.append("term=?")
-        params.append(term)
-        final_term = term
-    old_aliases = json.loads(existing["aliases"] or "[]")
-    final_aliases = old_aliases
-    if aliases is not None:
-        final_aliases = normalize_aliases(aliases)
-        fields.append("aliases=?")
-        params.append(json.dumps(final_aliases, ensure_ascii=False))
-    final_also = json.loads(existing["also"] or "[]")
-    if also is not None:
-        final_also = normalize_also(also, term=final_term)
-        fields.append("also=?")
-        params.append(json.dumps(final_also, ensure_ascii=False))
-    if term is not None or aliases is not None or also is not None:
-        with db.autocommit() as connection:
+            fields.append("term=?")
+            params.append(term)
+            final_term = term
+        old_aliases = json.loads(existing["aliases"] or "[]")
+        final_aliases = old_aliases
+        if aliases is not None:
+            final_aliases = normalize_aliases(aliases)
+            fields.append("aliases=?")
+            params.append(json.dumps(final_aliases, ensure_ascii=False))
+        final_also = json.loads(existing["also"] or "[]")
+        if also is not None:
+            final_also = normalize_also(also, term=final_term)
+            fields.append("also=?")
+            params.append(json.dumps(final_also, ensure_ascii=False))
+        if term is not None or aliases is not None or also is not None:
             _check_names(
                 connection,
                 term=final_term,
@@ -1080,26 +1083,26 @@ def update_term(
                 project_id=existing["project_id"] if project_id is _UNSET else project_id,
                 new_aliases=[alias for alias in final_aliases if alias not in old_aliases],
             )
-    if scope is not None:
-        scope = str(scope or "").strip() or "通用"
-        fields.append("scope=?")
-        params.append(scope)
-    if category is not None:
-        if category not in CATEGORIES:
-            raise GlossaryError(f"分类必须是 {CATEGORIES}")
-        fields.append("category=?")
-        params.append(category)
-    if confirmed is not None:
-        fields.append("confirmed=?")
-        params.append(int(bool(confirmed)))
-    if project_id is not _UNSET:
-        fields.append("project_id=?")
-        params.append(project_id)
-    if is_cue is not None:
-        fields.append("is_cue=?")
-        params.append(int(bool(is_cue)))
-    params.append(term_id)
-    db.execute(f"UPDATE glossary_terms SET {', '.join(fields)} WHERE id=?", params)
+        if scope is not None:
+            scope = str(scope or "").strip() or "通用"
+            fields.append("scope=?")
+            params.append(scope)
+        if category is not None:
+            if category not in CATEGORIES:
+                raise GlossaryError(f"分类必须是 {CATEGORIES}")
+            fields.append("category=?")
+            params.append(category)
+        if confirmed is not None:
+            fields.append("confirmed=?")
+            params.append(int(bool(confirmed)))
+        if project_id is not _UNSET:
+            fields.append("project_id=?")
+            params.append(project_id)
+        if is_cue is not None:
+            fields.append("is_cue=?")
+            params.append(int(bool(is_cue)))
+        params.append(term_id)
+        connection.execute(f"UPDATE glossary_terms SET {', '.join(fields)} WHERE id=?", params)
     if snapshot_path is not None:
         rewrite_snapshot(db, snapshot_path)
     return get_term(db, term_id)

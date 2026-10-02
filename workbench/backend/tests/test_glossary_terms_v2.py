@@ -1,6 +1,11 @@
 """1d-1b 词条：重名 409 与合并、也叫、分组排序、快照可选字段、项目页词条上限。"""
 
+import threading
+import time
+
 import pytest
+
+from meeting_workbench import glossary
 
 from meeting_workbench.db import Database, utc_now
 from meeting_workbench.glossary import (
@@ -236,6 +241,42 @@ def test_confirming_a_suggestion_whose_wrong_is_another_terms_spelling_is_refuse
         == "[]"
     )
     assert db.query_one("SELECT 1 AS x FROM glossary_terms WHERE term='章珊'") is None
+
+
+def test_rename_racing_another_writer_is_a_duplicate_not_an_integrity_error(tmp_path, monkeypatch):
+    """改名的重名检查通过以后、写库以前，别的请求抢先建了同名词条：应回和普通重名一样的
+    DuplicateTermError（接口 409），不是撞 term UNIQUE 的 IntegrityError（500）。"""
+    db = make_db(tmp_path)
+    term = create_term(db, term="甲方")
+    checked = threading.Event()
+    real = glossary._raise_duplicate
+
+    def slow_check(connection, text):
+        real(connection, text)
+        if threading.current_thread().name == "rename":
+            checked.set()
+            time.sleep(0.5)
+
+    monkeypatch.setattr(glossary, "_raise_duplicate", slow_check)
+    outcome = {}
+
+    def rename():
+        try:
+            outcome["rename"] = update_term(db, term["id"], term="乙方")["term"]
+        except Exception as error:  # noqa: BLE001
+            outcome["rename"] = type(error).__name__
+
+    thread = threading.Thread(target=rename, name="rename")
+    thread.start()
+    assert checked.wait(5)
+    try:
+        create_term(db, term="乙方")
+        outcome["create"] = "ok"
+    except Exception as error:  # noqa: BLE001
+        outcome["create"] = type(error).__name__
+    thread.join(10)
+    # 改名先拿到写锁，建词条等它提交以后才查重
+    assert outcome == {"rename": "乙方", "create": "DuplicateTermError"}
 
 
 # —— 分组 ——
