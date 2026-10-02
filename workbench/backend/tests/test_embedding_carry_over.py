@@ -12,10 +12,12 @@ import numpy as np
 
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database
+from meeting_workbench.importer import ArchiveImporter
 from meeting_workbench.semantic import SemanticIndex
 from meeting_workbench.service import MeetingService
 
 from .helpers import seed_editable_meeting
+from .test_importer import write_meeting
 
 MEETING = "vm-20260102-101500"
 MODEL = Settings().semantic_model  # 检索和语义索引用的模型名，「缺多少」的查询口径按它数
@@ -247,3 +249,53 @@ def test_reuse_never_borrows_from_another_meeting_or_overwrites_an_existing_vect
     assert db.query_one("SELECT vector FROM embeddings WHERE segment_id='new-1'")["vector"] == (
         _vector("这条已经有了")
     )
+
+
+def _srt(lines: list[str]) -> str:
+    return "\n".join(
+        f"{index}\n00:00:{index:02d},000 --> 00:00:{index:02d},900\n{line}\n"
+        for index, line in enumerate(lines, start=1)
+    )
+
+
+def test_importer_giving_a_meeting_a_new_current_version_reuses_the_vectors_of_unchanged_text(
+    tmp_path,
+):
+    """归档里的 SRT 取代导入时的版本（或被外部改写）：文字没变的段不用语义索引再编码一遍。
+    生产备份里 197 / 213 场会有不止一个 funasr 版本，抽样 80 场当前版本的文字 100% 能在别的版本里找到。"""
+    archive = tmp_path / "archive"
+    formal = write_meeting(archive, "正式会议", official=True, transcript_text="占位")
+    meeting_id = "vm-20260101-120000"
+    srt = formal / f"{meeting_id}.srt"
+    lines = [f"这是第 {number} 句的正文" for number in range(1, 51)]
+    srt.write_text(_srt(lines), encoding="utf-8")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        semantic_enabled=True,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    embedder = CountingEmbedder()
+    index = SemanticIndex(db, settings, embedder=embedder, busy_check=lambda: False)
+    importer = ArchiveImporter(db, settings)
+    importer.scan()
+    first_version = db.query_one(
+        "SELECT current_transcript_version_id AS v FROM meetings WHERE id=?", (meeting_id,)
+    )["v"]
+    assert index.rebuild() == 50
+    embedder.encoded.clear()
+
+    lines[9] = "这一句被外部改写了"
+    srt.write_text(_srt(lines), encoding="utf-8")
+    importer.scan()
+
+    second_version = db.query_one(
+        "SELECT current_transcript_version_id AS v FROM meetings WHERE id=?", (meeting_id,)
+    )["v"]
+    assert second_version != first_version
+    assert _missing(db, meeting_id) == (50, 1)
+    assert index.rebuild() == 1
+    assert embedder.encoded == ["这一句被外部改写了"]

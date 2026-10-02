@@ -2154,6 +2154,13 @@ class ArchiveImporter:
                 )
                 created = True
             if make_current:
+                # 这场会换上另一个版本当现行稿（归档里的 SRT 取代导入时的版本、或被外部改写）时，
+                # 文字没变的段沿用上一个现行版本的向量，语义索引不用把整场会重新编码一遍
+                previous = connection.execute(
+                    "SELECT current_transcript_version_id FROM meetings WHERE id = ?", (meeting_id,)
+                ).fetchone()
+                if previous and previous[0] and previous[0] != version_id:
+                    self.db.reuse_embeddings_with_connection(connection, version_id, [previous[0]])
                 connection.execute(
                     "UPDATE meetings SET current_transcript_version_id = ?, updated_at = ? WHERE id = ?",
                     (version_id, utc_now(), meeting_id),
