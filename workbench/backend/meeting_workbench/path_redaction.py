@@ -10,9 +10,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# 绝对路径的起点：/ 前面不能是英文字母、数字、下划线或 / . ~（网址 https://host/a、3/4、and/or、./a、../a
-# 都不算；中文紧贴着路径、冒号后面直接跟路径照样算）；~/ 开头的家目录路径也算；file:///… 网址整个换掉。
-_START = re.compile(r"(?:file://|(?<![A-Za-z0-9_/.~])~?)/(?=[^\s/'\"])")
+# 绝对路径的起点：/ 前面不能是文字（字母、数字、下划线、中文，\w 认 Unicode）或 / . ~。
+# 网址 https://host/a、3/4、and/or、确认/驳回、Retry/重试、./a、../a 的斜杠都不是起点；
+# 路径前面得是空白、引号、括号或标点（含全角冒号「：」和英文冒号 missing:/Volumes/…）。
+# ~/ 开头的家目录路径也算；file:///… 网址整个换掉。
+_START = re.compile(r"(?:file://|(?<![\w/.~])~?)/(?=[^\s/'\"])")
 _NEXT_WORD = re.compile(r" +([^ \t\r\n'\"<>|]+)")
 # 一个词里不会出现的字符：空白、引号、<>|
 _WORD_BREAK = " \t\r\n'\"<>|"

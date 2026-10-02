@@ -83,14 +83,38 @@ CASES = [
         id="冒号后面直接跟路径",
     ),
     pytest.param(
-        "归档失败/Volumes/外置中枢/会议纪要与录音/会议.m4a",
-        "归档失败会议.m4a",
-        id="中文紧贴着路径",
-    ),
-    pytest.param(
         "GET http://127.0.0.1:8765/api/jobs failed; see ./logs/web.log, ../a/b.m4a and transcribe/transcribe.sh",
         "GET http://127.0.0.1:8765/api/jobs failed; see ./logs/web.log, ../a/b.m4a and transcribe/transcribe.sh",
         id="带端口的网址、相对路径不动",
+    ),
+    pytest.param("确认/驳回 都不可用", "确认/驳回 都不可用", id="中文/中文（主线抽验出的误伤）"),
+    pytest.param(
+        "停止/取消后重试", "停止/取消后重试", id="中文/中文，后面紧跟文字（主线抽验出的误伤）"
+    ),
+    pytest.param("成功/失败 两种结果", "成功/失败 两种结果", id="中文/中文"),
+    pytest.param("Retry/重试 按钮不可用", "Retry/重试 按钮不可用", id="English/中文"),
+    pytest.param("确认/Reject 按钮不可用", "确认/Reject 按钮不可用", id="中文/English"),
+    pytest.param("确认/驳回/撤销 三选一", "确认/驳回/撤销 三选一", id="三个中文选项"),
+    pytest.param("已处理 3/5 个文件", "已处理 3/5 个文件", id="数字/数字"),
+    pytest.param(
+        "转写失败：/Volumes/外置中枢/会议纪要与录音/2026-10-01 周会.m4a 不存在",
+        "转写失败：2026-10-01 周会.m4a 不存在",
+        id="全角冒号后面的路径，文件名里有空格",
+    ),
+    pytest.param(
+        "路径 '/private/tmp/x y/z.wav'",
+        "路径 'z.wav'",
+        id="中文后面空格再跟带引号的路径",
+    ),
+    pytest.param(
+        "确认/驳回 失败：/Volumes/外置中枢/会议纪要与录音/会议.m4a 不存在",
+        "确认/驳回 失败：会议.m4a 不存在",
+        id="一句话里既有中文斜杠又有真路径：只换路径",
+    ),
+    pytest.param(
+        "（/Volumes/外置中枢/会议纪要与录音/会议.m4a）读不了",
+        "（会议.m4a）读不了",
+        id="全角括号后面的路径",
     ),
     pytest.param(
         "Permission denied: ~/Movies/iphone-relay-products/会议.m4a",
@@ -155,7 +179,7 @@ def test_no_directory_survives_and_no_absolute_path_start_is_left(text, expected
     for directory in ("外置中枢", "iphone-relay-products", "/Users/albert", "/Volumes"):
         assert directory not in redacted
     # 也不剩任何以 / 或 ~/ 开头的路径
-    assert not re.search(r"(?<![A-Za-z0-9_/.~])(?:~/|/)(?=[^\s/'\"])", redacted)
+    assert not re.search(r"(?<![\w/.~])(?:~/|/)(?=[^\s/'\"])", redacted)
 
 
 def test_job_errors_are_redacted_and_everything_else_is_left_alone():
