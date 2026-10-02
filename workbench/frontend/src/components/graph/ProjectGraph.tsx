@@ -9,6 +9,7 @@ import {
   type RelationQuestion,
 } from "../../api";
 import { reassignNote } from "../../cardCopy";
+import { dayStamp } from "../../format";
 import type { PreviewTarget, Project } from "../../types";
 import { ProjectAsk } from "../ask/ProjectAsk";
 import { hasDraft } from "../ask/askStore";
@@ -1296,7 +1297,7 @@ export function ProjectGraph({
           panelOpen={Boolean(focusSel && shownFocus)}
           player={player}
           selectedId={focusSel}
-          today={graph?.today ?? new Date().toISOString().slice(0, 10)}
+          today={graph?.today ?? dayStamp(new Date().toISOString()).key}
         />
         {focusSel && shownFocus && (
           <div

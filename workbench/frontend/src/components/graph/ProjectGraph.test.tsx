@@ -544,6 +544,30 @@ describe("ProjectGraph 展开一场会", () => {
     expect(screen.queryByRole("application", { name: /^展开的会/ })).not.toBeInTheDocument();
   });
 
+  it("深链展开、关系图还没到时，「今天」按本地日期算", async () => {
+    // 北京 9 月 26 日早上 7 点，UTC 还是 25 日
+    vi.useFakeTimers({ now: new Date("2026-09-26T07:00:00+08:00"), toFake: ["Date"] });
+    const apiClient = focusClient({ graph: vi.fn(() => new Promise(() => undefined)) });
+    render(
+      <ProjectGraph
+        apiClient={apiClient}
+        expanded="a"
+        onBack={() => {}}
+        onExpandChange={() => {}}
+        onOpenGlossary={() => {}}
+        onOpenMeeting={() => {}}
+        onOpenProject={() => {}}
+        onOpenRequirement={() => {}}
+        onSelectionChange={() => {}}
+        projectId="p"
+        projects={PROJECTS}
+        selection={null}
+      />,
+    );
+    await screen.findByRole("application", { name: "展开的会：初审规则沟通 a" });
+    expect(await screen.findByText(/^今天 · 10:00 · 定了/)).toBeInTheDocument();
+  });
+
   it("会议面板里［展开这场会］也能展开；点决议看全文和前后 20 秒的原话", async () => {
     const apiClient = focusClient();
     render(<Harness apiClient={apiClient} initial="m:a" />);
