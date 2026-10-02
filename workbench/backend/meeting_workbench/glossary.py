@@ -154,22 +154,39 @@ def _check_names(
     also: list[str],
     exclude_term_id: str | None,
     check_others: bool = True,
+    project_id: str | None = None,
+    new_aliases: list[str] | None = None,
 ) -> None:
-    """错写和叫法不能打架：同一个词不能既要改掉又不改；也不能是别的词条的写法、错写或叫法。"""
+    """错写和叫法不能打架：同一个词不能既要改掉又不改；叫法也不能是别的词条的写法、错写或叫法；
+    这次新加的错写（new_aliases，缺省是全部 aliases）不能是公共词或同一项目（project_id）词条的写法
+    或叫法——不然纪要体检把正确的名字当「可能漏纠」，自动替换还会改错。公共词的错写撞上某个项目的
+    词照旧允许（在那个项目里避让，见 glossary_checkup.dictionary_terms）。只查新加的：词典里可能已经
+    存着这种旧数据，改别的字段或删错写时不该因为它保存不了。check_others 为假时叫法不和别的词条比。"""
     both = set(aliases) & set(also)
     if both:
         raise GlossaryError(f"「{sorted(both)[0]}」不能既是错写又是叫法")
     if term in aliases:
         raise GlossaryError("错写不能和正确写法相同")
-    if not also or not check_others:
+    fresh = aliases if new_aliases is None else new_aliases
+    if not (also and check_others) and not fresh:
         return
-    for row in connection.execute("SELECT id, term, aliases, also FROM glossary_terms").fetchall():
+    rows = connection.execute(
+        "SELECT id, term, aliases, also, project_id FROM glossary_terms"
+    ).fetchall()
+    for row in rows:
         if row["id"] == exclude_term_id:
             continue
-        taken = {row["term"], *json.loads(row["aliases"] or "[]"), *json.loads(row["also"] or "[]")}
-        for name in also:
-            if name in taken:
-                raise GlossaryError(f"「{name}」已经用在词条「{row['term']}」上了")
+        names = {row["term"], *json.loads(row["also"] or "[]")}
+        if check_others:
+            taken = names | set(json.loads(row["aliases"] or "[]"))
+            for name in also:
+                if name in taken:
+                    raise GlossaryError(f"「{name}」已经用在词条「{row['term']}」上了")
+        if row["project_id"] is not None and row["project_id"] != project_id:
+            continue
+        for wrong in fresh:
+            if wrong in names:
+                raise GlossaryError(f"「{wrong}」已经是词条「{row['term']}」的写法，不能当错写")
 
 
 # —— diff 反写：疑似错字更正提取 ——
@@ -687,8 +704,23 @@ def confirm_suggestion(
             wrong, correct = row["alt_wrong"], row["alt_correct"]
         now = utc_now()
         existing = connection.execute(
-            "SELECT id, aliases FROM glossary_terms WHERE term=?", (correct,)
+            "SELECT id, aliases, project_id FROM glossary_terms WHERE term=?", (correct,)
         ).fetchone()
+        if existing:
+            project_id = existing["project_id"]
+        else:
+            project_id, scope = _resolve_target(connection, target, row["meeting_id"])
+        _check_names(
+            connection,
+            term=correct,
+            aliases=[wrong],
+            also=[],
+            exclude_term_id=existing["id"] if existing else None,
+            project_id=project_id,
+            new_aliases=[]
+            if existing and wrong in json.loads(existing["aliases"] or "[]")
+            else None,
+        )
         created = False
         recorded_wrong: str | None = None
         if existing:
@@ -696,7 +728,6 @@ def confirm_suggestion(
             if _append_aliases(connection, term_id, [wrong], now=now):
                 recorded_wrong = wrong
         else:
-            project_id, scope = _resolve_target(connection, target, row["meeting_id"])
             term_id = f"gt-{uuid.uuid4().hex}"
             created = True
             recorded_wrong = wrong
@@ -932,6 +963,7 @@ def create_term(
             aliases=normalized_aliases,
             also=normalized_also,
             exclude_term_id=None,
+            project_id=project_id,
         )
         term_id = _insert_term(
             connection,
@@ -1024,7 +1056,8 @@ def update_term(
         fields.append("term=?")
         params.append(term)
         final_term = term
-    final_aliases = json.loads(existing["aliases"] or "[]")
+    old_aliases = json.loads(existing["aliases"] or "[]")
+    final_aliases = old_aliases
     if aliases is not None:
         final_aliases = normalize_aliases(aliases)
         fields.append("aliases=?")
@@ -1043,6 +1076,8 @@ def update_term(
                 also=final_also,
                 exclude_term_id=term_id,
                 check_others=also is not None,
+                project_id=existing["project_id"] if project_id is _UNSET else project_id,
+                new_aliases=[alias for alias in final_aliases if alias not in old_aliases],
             )
     if scope is not None:
         scope = str(scope or "").strip() or "通用"

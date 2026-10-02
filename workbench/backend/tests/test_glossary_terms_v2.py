@@ -6,6 +6,7 @@ from meeting_workbench.db import Database, utc_now
 from meeting_workbench.glossary import (
     DuplicateTermError,
     GlossaryError,
+    confirm_suggestion,
     create_term,
     list_scopes,
     merge_into_term,
@@ -161,6 +162,80 @@ def test_term_also_validation(tmp_path):
     assert updated["also"] == ["CRF", "病例表"]
     with pytest.raises(GlossaryError):
         update_term(db, created["id"], aliases=["病例表"])
+
+
+def test_wrong_cannot_be_another_terms_spelling(tmp_path):
+    """错写不能是别的词条的正确写法或叫法：不然纪要体检把正确的名字当「可能漏纠」，还会被自动改错。"""
+    db = make_db(tmp_path)
+    create_term(db, term="张三", category="人名", also=["三哥"])
+    for bad in ("张三", "三哥"):
+        with pytest.raises(GlossaryError) as error:
+            create_term(db, term="张珊", aliases=[bad], category="人名")
+        assert f"「{bad}」已经是词条「张三」的写法，不能当错写" == str(error.value)
+    shan = create_term(db, term="张珊", aliases=["张山"], category="人名")
+    with pytest.raises(GlossaryError):
+        update_term(db, shan["id"], aliases=["张山", "张三"])
+    with pytest.raises(GlossaryError):
+        merge_into_term(db, shan["id"], aliases=["张三"])
+    assert (
+        db.query_one("SELECT aliases FROM glossary_terms WHERE id=?", (shan["id"],))["aliases"]
+        == '["张山"]'
+    )
+
+
+def test_wrong_may_match_a_term_of_another_scope(tmp_path):
+    """项目词只在自己项目的会里生效：公共词的错写撞上项目词照旧允许（在那个项目里避让），
+    别的项目的词也不拦；项目词的错写撞上公共词、本项目的词要拦。"""
+    db = make_db(tmp_path)
+    add_project(db, "p-yt", "云图AI")
+    add_project(db, "p-zt", "数据中台")
+    create_term(db, term="树立", project_id="p-yt", scope="云图AI")
+    assert create_term(db, term="数理", aliases=["树立"])["aliases"] == ["树立"]
+    assert create_term(db, term="竖立", aliases=["树立"], project_id="p-zt", scope="数据中台")
+    for project_id, scope, wrong in (("p-zt", "数据中台", "数理"), ("p-yt", "云图AI", "树立")):
+        with pytest.raises(GlossaryError):
+            create_term(db, term="述理", aliases=[wrong], project_id=project_id, scope=scope)
+
+
+def test_old_wrong_that_clashes_does_not_block_other_edits(tmp_path):
+    """词典里已经有撞名的旧错写（校验加上以前存的）：改别的字段、加别的错写、删错写都照样保存。"""
+    db = make_db(tmp_path)
+    create_term(db, term="张三", category="人名")
+    shan = create_term(db, term="张珊", aliases=["张山"], category="人名")
+    db.execute('UPDATE glossary_terms SET aliases=\'["张山", "张三"]\' WHERE id=?', (shan["id"],))
+    assert update_term(db, shan["id"], category="其他")["category"] == "其他"
+    assert update_term(db, shan["id"], also=["珊姐"])["also"] == ["珊姐"]
+    assert update_term(db, shan["id"], term="张珊珊")["term"] == "张珊珊"
+    assert update_term(db, shan["id"], aliases=["张山", "张三", "张杉"])["aliases"] == [
+        "张山",
+        "张三",
+        "张杉",
+    ]
+    assert update_term(db, shan["id"], aliases=["张三"])["aliases"] == ["张三"]
+    assert update_term(db, shan["id"], aliases=[])["aliases"] == []
+
+
+def test_confirming_a_suggestion_whose_wrong_is_another_terms_spelling_is_refused(tmp_path):
+    db = make_db(tmp_path)
+    create_term(db, term="张三", category="人名")
+    shan = create_term(db, term="张珊", category="人名")
+    for suggestion_id, correct in (("gs-1", "张珊"), ("gs-2", "章珊")):
+        db.execute(
+            """INSERT INTO glossary_suggestions (id, wrong, correct, scope, status, created_at, updated_at)
+               VALUES (?, '张三', ?, '通用', 'pending', ?, ?)""",
+            (suggestion_id, correct, utc_now(), utc_now()),
+        )
+        with pytest.raises(GlossaryError):
+            confirm_suggestion(db, suggestion_id)
+        status = db.query_one(
+            "SELECT status FROM glossary_suggestions WHERE id=?", (suggestion_id,)
+        )
+        assert status["status"] == "pending"
+    assert (
+        db.query_one("SELECT aliases FROM glossary_terms WHERE id=?", (shan["id"],))["aliases"]
+        == "[]"
+    )
+    assert db.query_one("SELECT 1 AS x FROM glossary_terms WHERE term='章珊'") is None
 
 
 # —— 分组 ——
