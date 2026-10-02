@@ -48,6 +48,8 @@ def load_watchdog_module():
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+    # 用例不准碰本机真实的 tmux 会话：没打桩的 tmux 调用一律落到不存在的 socket 上
+    module.TMUX_SOCKET = Path(tempfile.gettempdir()) / "relay-tests-no-such-tmux-socket"
     return module
 
 
@@ -477,6 +479,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "wait_stable", return_value=True), \
                     patch.object(module, "get_audio_duration_sec", return_value=30), \
                     patch.object(module, "transcribe", return_value=str(transcript)), \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1", return_value=True), \
                     patch.object(module, "notify_lark", side_effect=lambda title, body: notifications.append((title, body))), \
                     patch.object(module, "mark_processed"), \
@@ -599,6 +602,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "_control_update_whisper_progress") as whisper_progress, \
                     patch.object(module, "_control_record_stage", side_effect=fake_record), \
                     patch.object(module, "_control_interrupt_if_requested", return_value=False), \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1", side_effect=fake_dispatch), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "notify_lark", side_effect=lambda title, body: notifications.append((title, body))), \
@@ -655,6 +659,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "_control_update_whisper_progress"), \
                     patch.object(module, "_control_record_stage", side_effect=lambda _, status, **kwargs: recorded.append((status, kwargs))), \
                     patch.object(module, "_control_interrupt_if_requested", return_value=False), \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append((prompt, kind)) or True), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "notify_lark"), \
@@ -732,6 +737,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "_control_update_whisper_progress"), \
                     patch.object(module, "_control_record_stage"), \
                     patch.object(module, "_control_interrupt_if_requested", side_effect=fake_interrupt), \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1") as dispatch, \
                     patch.object(module, "notify_lark"), \
                     patch.object(module, "mark_processed"):
@@ -800,6 +806,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             with patch.object(module, "PRODUCTS_DIR", root), \
                     patch.object(module, "get_audio_duration_sec", return_value=601), \
                     patch.object(module, "transcribe", side_effect=AssertionError) as transcribe, \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "_control_fail") as fail, \
@@ -849,6 +856,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             with patch.object(module, "PRODUCTS_DIR", products), \
                     patch.object(module, "get_audio_duration_sec", return_value=601), \
                     patch.object(module, "transcribe", side_effect=AssertionError) as transcribe, \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "_control_fail") as fail, \
@@ -905,6 +913,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             with patch.object(module, "PRODUCTS_DIR", products), \
                     patch.object(module, "get_audio_duration_sec", return_value=601), \
                     patch.object(module, "transcribe", side_effect=AssertionError), \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "_control_fail") as fail, \
@@ -1102,6 +1111,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "_control_record_stage"), \
                     patch.object(module, "_control_record_minutes_plan_source"), \
                     patch.object(module, "_control_interrupt_if_requested", return_value=False), \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1", return_value=True), \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "notify_lark"), \
@@ -1257,6 +1267,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "_control_record_source_audio"), \
                     patch.object(module, "get_audio_duration_sec", return_value=None), \
                     patch.object(module, "transcribe") as transcribe, \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1") as dispatch, \
                     patch.object(module, "_control_fail") as fail, \
                     patch.object(module, "notify_lark"), \
@@ -1349,6 +1360,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "_control_record_source_audio"), \
                     patch.object(module, "get_audio_duration_sec", return_value=601), \
                     patch.object(module, "transcribe", side_effect=bundle_error), \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1") as dispatch, \
                     patch.object(module, "_control_fail") as fail, \
                     patch.object(module, "notify_lark"), \
@@ -1395,6 +1407,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "_control_record_stage"), \
                     patch.object(module, "_control_record_minutes_plan_source"), \
                     patch.object(module, "_control_interrupt_if_requested", return_value=False), \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1") as dispatch, \
                     patch.object(module, "_control_fail") as fail, \
                     patch.object(module, "notify_lark"), \
@@ -1455,6 +1468,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     patch.object(module, "_control_record_stage"), \
                     patch.object(module, "_control_record_minutes_plan_source"), \
                     patch.object(module, "_control_interrupt_if_requested", return_value=False), \
+                    patch.object(module, "_agent_pane_available", return_value=True), \
                     patch.object(module, "dispatch_to_cc1", return_value=True) as dispatch, \
                     patch.object(module, "_control_record_codex_dispatched"), \
                     patch.object(module, "notify_lark"), \
@@ -1596,6 +1610,7 @@ class ControlDbLockTests(unittest.TestCase):
             "_control_update_whisper_progress": patch.object(module, "_control_update_whisper_progress"),
             "prepare_glossary_injection": patch.object(module, "prepare_glossary_injection", return_value=("", False)),
             "dispatch_to_cc1": patch.object(module, "dispatch_to_cc1", return_value=True),
+            "_agent_pane_available": patch.object(module, "_agent_pane_available", return_value=True),
             "notify_lark": patch.object(
                 module, "notify_lark",
                 side_effect=lambda title, body: self.notifications.append(title),
@@ -1718,6 +1733,92 @@ class ControlDbLockTests(unittest.TestCase):
         self.assertEqual("worker exception: RuntimeError", status["last_error"])
         self.assertIn("这段录音没能处理完", self.notifications)
 
+
+
+    def test_busy_pane_after_transcription_requeues_without_failing(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        claim = self.module._control_claim_next()
+        dispatched = []
+        result = self._process(
+            claim,
+            _agent_pane_available=patch.object(
+                self.module, "_agent_pane_available", return_value=False
+            ),
+            dispatch_to_cc1=patch.object(
+                self.module, "dispatch_to_cc1",
+                side_effect=lambda *a, **k: dispatched.append(a) or True,
+            ),
+        )
+
+        self.assertTrue(result)
+        self.assertEqual([], dispatched)
+        waiting = self.control.status(job_id)
+        self.assertEqual("queued", waiting["status"])
+        self.assertIsNone(waiting["worker_id"])
+        self.assertEqual(1, waiting["current_attempt"])
+        self.assertEqual(["录音转写完成，等 cc1 空出来"], self.notifications)
+
+        # pane 空出来后同一 attempt 从 transcript_ready 接着跑，不重新转写
+        again = self.module._control_claim_next()
+        self.assertEqual("transcript_ready", again["start_stage"])
+        result = self._process(
+            again,
+            transcribe=patch.object(self.module, "transcribe", side_effect=AssertionError),
+            _existing_transcript_path=patch.object(
+                self.module, "_existing_transcript_path", return_value=self.transcript
+            ),
+        )
+
+        self.assertTrue(result)
+        status = self.control.status(job_id)
+        self.assertEqual("minutes_generating", status["status"])
+        self.assertEqual(1, status["current_attempt"])
+        self.assertIsNotNone(status["codex_dispatched_at"])
+        self.assertNotIn("这段录音没能处理完", self.notifications)
+
+    def test_pane_busy_too_many_times_fails_visibly(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        busy = patch.object(self.module, "_agent_pane_available", return_value=False)
+        with patch.object(self.control, "MAX_DISPATCH_DEFERRALS", 1):
+            self._process(self.module._control_claim_next(), _agent_pane_available=busy)
+            again = self.module._control_claim_next()
+            result = self._process(
+                again,
+                _agent_pane_available=patch.object(
+                    self.module, "_agent_pane_available", return_value=False
+                ),
+                _existing_transcript_path=patch.object(
+                    self.module, "_existing_transcript_path", return_value=self.transcript
+                ),
+            )
+
+        self.assertFalse(result)
+        status = self.control.status(job_id)
+        self.assertEqual("failed", status["status"])
+        self.assertEqual("Agent pane stayed busy", status["last_error"])
+
+    def test_busy_pane_with_stop_requested_ends_interrupted_not_stuck(self):
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        claim = self.module._control_claim_next()
+        real_interrupt = self.module._control_interrupt_if_requested
+
+        def stop_after_transcribing_check(*args, **kwargs):
+            result = real_interrupt(*args, **kwargs)
+            self.control.stop_after_stage(job_id)
+            return result
+
+        self._process(
+            claim,
+            _agent_pane_available=patch.object(
+                self.module, "_agent_pane_available", return_value=False
+            ),
+            _control_interrupt_if_requested=patch.object(
+                self.module, "_control_interrupt_if_requested",
+                side_effect=stop_after_transcribing_check,
+            ),
+        )
+
+        self.assertEqual("interrupted", self.control.status(job_id)["status"])
 
 
 class InboxRescanTests(unittest.TestCase):

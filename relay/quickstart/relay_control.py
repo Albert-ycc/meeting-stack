@@ -34,6 +34,8 @@ MAX_MINUTES_EVIDENCE_BYTES = 8 * 1024 * 1024
 MAX_HOTWORD_PROMPT_BYTES = 64 * 1024
 MAX_HOTWORD_TERMS = 20
 CURRENT_MINUTES_PROTOCOL_VERSION = 3
+# 派纪要 Agent 时 pane 被占用、放回队列等待的次数上限；超过就按失败收口，不无声地等下去
+MAX_DISPATCH_DEFERRALS = 10
 _MINUTES_STRATEGIES = {"single_pass", "topic_hierarchical", "multi_stage"}
 _MINUTES_ITEM_KINDS = {
     "fact",
@@ -4114,6 +4116,92 @@ class RelayControl:
         finally:
             connection.close()
 
+    def defer_dispatch(
+        self,
+        job_id: str,
+        *,
+        expected_attempt: int,
+        expected_worker: str,
+    ) -> dict[str, Any]:
+        """派纪要 Agent 时 pane 正被占用：同一 attempt 放回队列，pane 空出来后从当前阶段接着跑。
+
+        返回 ``{"outcome": "deferred" | "interrupted" | "exhausted", "deferrals": n}``；
+        exhausted 时不改状态，由调用方按失败收口。
+        """
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._job_row(connection, job_id)
+            self._assert_claim_identity(
+                row,
+                expected_attempt=expected_attempt,
+                expected_worker=expected_worker,
+                action="等待派单",
+            )
+            old_status = row["status"]
+            if (
+                old_status not in {"transcript_ready", "minutes_generating"}
+                or row["codex_dispatched_at"]
+            ):
+                raise InvalidTransitionError(
+                    f"只有未派出的 transcript_ready/minutes_generating 可以等待派单，当前为 {old_status}"
+                )
+            previous = connection.execute(
+                """
+                SELECT COUNT(*) FROM events
+                WHERE job_id = ? AND attempt_no = ? AND event_type = 'dispatch_deferred'
+                """,
+                (job_id, row["current_attempt"]),
+            ).fetchone()[0]
+            deferrals = int(previous) + 1
+            if deferrals > MAX_DISPATCH_DEFERRALS:
+                return {"outcome": "exhausted", "deferrals": int(previous)}
+            # 放回队列后 claim_next 不领 stop_after_stage 的任务；用户已要求停就直接收成 interrupted
+            target = "interrupted" if row["stop_after_stage"] else "queued"
+            now = _now()
+            updated = connection.execute(
+                """
+                UPDATE jobs
+                SET status = ?, retry_stage = ?, worker_id = NULL, claimed_at = NULL,
+                    stop_after_stage = 0, updated_at = ?
+                WHERE job_id = ? AND current_attempt = ? AND status = ?
+                  AND worker_id = ? AND codex_dispatched_at IS NULL
+                """,
+                (
+                    target,
+                    old_status,
+                    now,
+                    job_id,
+                    row["current_attempt"],
+                    old_status,
+                    expected_worker,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise InvalidTransitionError("等待派单 CAS 失败")
+            attempt_updated = connection.execute(
+                """
+                UPDATE attempts SET status = ?
+                WHERE job_id = ? AND attempt_no = ? AND status = ?
+                """,
+                (target, job_id, row["current_attempt"], old_status),
+            )
+            if attempt_updated.rowcount != 1:
+                raise InvalidTransitionError("等待派单 attempt CAS 失败")
+            self._append_event(
+                connection,
+                job_id,
+                row["current_attempt"],
+                "dispatch_deferred" if target == "queued" else "stopped_after_stage",
+                old_status,
+                target,
+                stage=old_status,
+                payload={"deferrals": deferrals} if target == "queued" else {},
+            )
+        return {
+            "outcome": "deferred" if target == "queued" else "interrupted",
+            "deferrals": deferrals,
+        }
+
     def recover_orphaned_claims(self, *, idle_worker_id: str | None = None) -> int:
         """watchdog 重启时把上个进程领取但未收口的 attempt 标为 interrupted。
 
@@ -6743,6 +6831,20 @@ def record_codex_dispatched(
     expected_worker: str | None = None,
 ) -> dict[str, Any]:
     return _service(db_path).record_codex_dispatched(
+        job_id,
+        expected_attempt=expected_attempt,
+        expected_worker=expected_worker,
+    )
+
+
+def defer_dispatch(
+    job_id: str,
+    db_path: str | Path | None = None,
+    *,
+    expected_attempt: int,
+    expected_worker: str,
+) -> dict[str, Any]:
+    return _service(db_path).defer_dispatch(
         job_id,
         expected_attempt=expected_attempt,
         expected_worker=expected_worker,

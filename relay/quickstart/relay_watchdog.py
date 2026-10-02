@@ -501,6 +501,21 @@ def _control_fail(
     )
 
 
+def _control_defer_dispatch(
+    job_id: str,
+    *,
+    expected_attempt: int,
+    expected_worker: str,
+) -> dict:
+    return _retry_on_db_lock(
+        lambda: _relay_control_module().defer_dispatch(
+            job_id,
+            expected_attempt=expected_attempt,
+            expected_worker=expected_worker,
+        )
+    )
+
+
 def _control_finish_whisper_retry(
     job_id: str,
     *,
@@ -1394,6 +1409,11 @@ _STATUS_MESSAGES: dict[str, tuple[str, str]] = {
         "这段录音跟已有的重复了",
         "库里已经有同一场录音，这次不重复转写，也不重复占额度。",
     ),
+    "dispatch_deferred": (
+        "录音转写完成，等 cc1 空出来",
+        "{clip}已经转成文字。cc1 现在有人在用，我先不打扰；\n"
+        "空出来后会自动接着写纪要，不用点重试。",
+    ),
     "interrupted": (
         "处理中途停下了",
         "{clip}处理到一半被打断，进度已经存好。\n"
@@ -2041,6 +2061,35 @@ def process_controlled_claim(claim: dict) -> bool:
             job_id=job_id,
             attempt_no=attempt_no,
         )
+
+        if not _agent_pane_available():
+            # 转写跑了几十分钟，期间用户可能在 cc1 里开了会话：pane 忙不算失败，放回队列等它空出来
+            deferred = _control_defer_dispatch(
+                job_id,
+                expected_attempt=attempt_no,
+                expected_worker=worker_id,
+            )
+            if deferred["outcome"] == "exhausted":
+                _control_fail(
+                    job_id,
+                    current_stage,
+                    "Agent pane stayed busy",
+                    expected_attempt=attempt_no,
+                    expected_worker=worker_id,
+                )
+                notify_workbench_status(job_id, "failed", duration_min)
+                return False
+            if deferred["outcome"] == "interrupted":
+                notify_workbench_status(job_id, "interrupted", duration_min)
+                return True
+            log.warning(
+                "任务 %s：cc1 正被占用，放回队列等待派单（第 %d 次）",
+                job_id,
+                deferred["deferrals"],
+            )
+            if deferred["deferrals"] == 1:
+                notify_workbench_status(job_id, "dispatch_deferred", duration_min)
+            return True
 
         if start_stage != "minutes_generating":
             _control_record_stage(

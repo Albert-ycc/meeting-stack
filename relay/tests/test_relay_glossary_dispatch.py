@@ -142,6 +142,8 @@ class ProjectHintControlTests(unittest.TestCase):
 class WatchdogGlossaryTests(unittest.TestCase):
     def setUp(self):
         self.module = _load("relay_watchdog_glossary", WATCHDOG_PATH)
+        # 用例不准碰本机真实的 tmux 会话
+        self.module.TMUX_SOCKET = Path(tempfile.gettempdir()) / "relay-tests-no-such-tmux-socket"
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.snapshot = self.root / "glossary-snapshot.json"
@@ -222,6 +224,7 @@ class WatchdogGlossaryTests(unittest.TestCase):
                 patch.object(module, "_control_record_stage"), \
                 patch.object(module, "_control_record_minutes_plan_source"), \
                 patch.object(module, "_control_interrupt_if_requested", return_value=False), \
+                patch.object(module, "_agent_pane_available", return_value=True), \
                 patch.object(module, "dispatch_to_cc1", return_value=True) as dispatch, \
                 patch.object(module, "_control_record_codex_dispatched"), \
                 patch.object(module, "notify_lark"), \
