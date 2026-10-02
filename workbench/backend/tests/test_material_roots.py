@@ -1,5 +1,7 @@
 """材料根目录（v13 / 第一期 1a）：按差异增删、原子替换、三态、挂载前校验。"""
 
+import os
+import unicodedata
 from pathlib import Path
 
 from meeting_workbench import materials
@@ -166,6 +168,53 @@ def test_same_folder_on_another_project_is_rejected_with_its_name(tmp_path):
 
     assert response.status_code == 409
     assert "云图AI" in response.json()["detail"]
+
+
+def _two_spellings(browse_root):
+    """同一个文件夹的大小写写法：大小写不敏感的文件系统（macOS 默认）上是同一个文件夹，敏感的上（Linux）
+    另建一个，靠假的 same_folder 当成同一个。"""
+    folder = browse_root / "Café资料"
+    folder.mkdir()
+    variant = browse_root / "CAFÉ资料"
+    if not variant.exists():
+        variant.mkdir()
+    return folder, variant
+
+
+def test_same_folder_spelled_differently_is_rejected_on_another_project(tmp_path, monkeypatch):
+    client, _settings, headers, browse_root = _client(tmp_path)
+    folder, variant = _two_spellings(browse_root)
+    _project(client, headers, "云图AI", roots=[folder])
+    other = _project(client, headers, "数据中台")
+    asked = []
+
+    def same_folder(first, second):
+        asked.append((first, second))
+        return unicodedata.normalize("NFC", first).casefold() == (
+            unicodedata.normalize("NFC", second).casefold()
+        )
+
+    monkeypatch.setattr(materials, "same_folder", same_folder)
+
+    for spelling in (str(variant), unicodedata.normalize("NFD", str(variant))):
+        response = client.post(
+            f"/api/projects/{other['id']}/material-roots",
+            json={"path": spelling},
+            headers=headers,
+        )
+        assert response.status_code == 409, response.text
+        assert "云图AI" in response.json()["detail"]
+    assert asked
+
+
+def test_same_folder_asks_the_file_system(tmp_path):
+    folder, variant = _two_spellings(tmp_path)
+    assert materials.same_folder(str(folder), str(folder))
+    # 文件系统分不分大小写，same_folder 就跟着它说
+    assert materials.same_folder(str(folder), str(variant)) == (
+        os.stat(folder).st_ino == os.stat(variant).st_ino
+    )
+    assert materials.same_folder(str(folder), str(tmp_path / "不存在")) is False
 
 
 def test_nested_mount_is_allowed_with_a_hint(tmp_path):

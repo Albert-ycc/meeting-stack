@@ -287,6 +287,15 @@ def _within(path: Path, root: Path) -> bool:
     return path == root_real or path.is_relative_to(root_real)
 
 
+def same_folder(first: str, second: str) -> bool:
+    """是不是磁盘上的同一个文件夹。macOS 默认的 APFS 不分大小写、不分 Unicode 写法，同一个文件夹
+    可以写成好几种字符串，只能问文件系统；对方不在线（盘没插）时问不了，当不是。"""
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return False
+
+
 def validate_new_root(
     connection: Any, settings: Settings, project_id: str, raw_path: str
 ) -> tuple[str, list[dict[str, Any]]]:
@@ -304,13 +313,13 @@ def validate_new_root(
     for protected, message in _protected_roots(settings):
         if _within(resolved, protected):
             raise ValueError(message)
-    owner = connection.execute(
-        """SELECT p.name FROM project_material_roots r JOIN projects p ON p.id = r.project_id
-            WHERE r.path=? AND r.project_id != ?""",
-        (str(resolved), project_id),
-    ).fetchone()
-    if owner is not None:
-        raise ConflictError(f"这个文件夹已挂在「{owner['name']}」项目下")
+    for owner in connection.execute(
+        """SELECT r.path, p.name FROM project_material_roots r JOIN projects p ON p.id = r.project_id
+            WHERE r.project_id != ?""",
+        (project_id,),
+    ).fetchall():
+        if owner["path"] == str(resolved) or same_folder(str(resolved), owner["path"]):
+            raise ConflictError(f"这个文件夹已挂在「{owner['name']}」项目下")
     nested: list[dict[str, Any]] = []
     for row in connection.execute(
         """SELECT r.path, r.project_id, p.name AS project_name
