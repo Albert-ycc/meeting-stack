@@ -656,6 +656,8 @@ export default function App({ apiClient = api }: AppProps) {
     [jobs],
   );
 
+  // 只认快慢档，不认具体视图：依赖 view 的话每换一页定时器就重来，一直在页面间点来点去，角标、状态永远不刷新
+  const fastPoll = view === "jobs" || hasActiveJobs;
   useEffect(() => {
     const refresh = () => {
       if (document.hidden) return;
@@ -675,10 +677,7 @@ export default function App({ apiClient = api }: AppProps) {
       void loadGlossaryPending();
       void loadAttention();
     };
-    const interval = window.setInterval(
-      refresh,
-      view === "jobs" || hasActiveJobs ? 5_000 : 15_000,
-    );
+    const interval = window.setInterval(refresh, fastPoll ? 5_000 : 15_000);
     const onVisibility = () => {
       if (!document.hidden) refresh();
     };
@@ -687,7 +686,7 @@ export default function App({ apiClient = api }: AppProps) {
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [apiClient, hasActiveJobs, loadAttention, loadGlossaryPending, loadJobs, loadPendingCount, view]);
+  }, [apiClient, fastPoll, loadAttention, loadGlossaryPending, loadJobs, loadPendingCount]);
 
   useEffect(() => {
     if (view !== "library" || detail || searchActive) return;
@@ -1572,6 +1571,7 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
         onOpenProject={openProjectDetail}
         onOpenRequirement={openRequirementDetail}
+        onTasksChanged={() => void loadPendingCount(true)}
         projects={projects}
       />
     );

@@ -392,6 +392,21 @@ describe("待办：完成与撤销", () => {
     expect(screen.getByRole("status")).toHaveTextContent("已完成「安排与华谊的会」");
   });
 
+  it("完成、撤销、审核卡上确认以后都告诉 App 任务变了（侧栏角标跟着重取）", async () => {
+    const onTasksChanged = vi.fn();
+    renderPage(makeClient(), true, { onTasksChanged });
+    await userEvent.click(within(await todoRow("安排与华谊的会")).getByRole("button", { name: /^完成「/ }));
+    await waitFor(() => expect(onTasksChanged).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(onTasksChanged.mock.calls.length).toBeGreaterThanOrEqual(2));
+
+    onTasksChanged.mockClear();
+    await userEvent.click(screen.getByRole("tab", { name: /待确认/ }));
+    act(() => panelProps().onChanged());
+    expect(onTasksChanged).toHaveBeenCalledTimes(1);
+  });
+
   it("左侧勾选框也是完成", async () => {
     const apiClient = makeClient();
     renderPage(apiClient);

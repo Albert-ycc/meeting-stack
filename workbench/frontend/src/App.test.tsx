@@ -270,6 +270,30 @@ describe("App refresh and navigation safety", () => {
     expect(jobs).toHaveBeenCalledTimes(3);
   });
 
+  it("侧栏待办角标 15 秒刷一次，一直在页面间切换也照刷，不被换页重置", async () => {
+    vi.useFakeTimers();
+    const tasks = vi.fn().mockResolvedValue({ items: [], total: 18, limit: 1, offset: 0 });
+    render(<App apiClient={client({ tasks } as Partial<ApiClient>)} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const pendingPolls = () =>
+      tasks.mock.calls.filter(([params]) => (params as { status?: string }).status === "pending_confirm").length;
+    const before = pendingPolls();
+
+    // 每 10 秒换一次页，三轮共 30 秒：至少该刷过一次
+    for (const name of ["录音档案", "项目管理", "录音档案"]) {
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+        await Promise.resolve();
+      });
+      fireEvent.click(screen.getByRole("button", { name }));
+    }
+    expect(pendingPolls()).toBeGreaterThan(before);
+  });
+
   it("refreshes the visible library every fifteen seconds and immediately after returning to it", async () => {
     vi.useFakeTimers();
     const meetings = vi.fn().mockResolvedValue({

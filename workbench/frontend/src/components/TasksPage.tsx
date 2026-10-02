@@ -40,6 +40,8 @@ interface TasksPageProps {
   onClaimCandidate: (candidateId: string) => void;
   /** 3g：任务抽屉里的文件交付物点了打开预览抽屉 */
   onOpenPreview?: (fileId: number) => void;
+  /** 任务有了增删改（确认、驳回、撤销、新建……）：App 据此重取侧栏「待办」角标 */
+  onTasksChanged?: () => void;
 }
 
 type TabKey = "pending" | "open" | "done" | "cancelled" | "expired";
@@ -121,6 +123,7 @@ export function TasksPage({
   onOpenRequirement,
   onClaimCandidate,
   onOpenPreview,
+  onTasksChanged,
 }: TasksPageProps) {
   const [todo, setTodo] = useState<TodoPayload | null>(null);
   const [listTasks, setListTasks] = useState<Task[]>([]);
@@ -356,6 +359,7 @@ export function TasksPage({
     const running = (async () => {
       try {
         await action();
+        onTasksChanged?.();
       } catch (error) {
         showToast(error instanceof Error ? error.message : "操作失败，请稍后重试", { tone: "error" });
       } finally {
@@ -370,6 +374,7 @@ export function TasksPage({
   // 页面别处有写操作后：重取本页数据，并让待确认的审核卡也重取
   const refresh = async () => {
     setReloadKey((key) => key + 1);
+    onTasksChanged?.();
     await loadRef.current();
   };
 
@@ -866,7 +871,10 @@ export function TasksPage({
               apiClient={apiClient}
               canWrite={canWrite}
               filters={panelFilters}
-              onChanged={() => void load()}
+              onChanged={() => {
+                onTasksChanged?.();
+                void load();
+              }}
               onClaimCandidate={onClaimCandidate}
               onEditTask={(task) => {
                 setEditFromCard(true);
