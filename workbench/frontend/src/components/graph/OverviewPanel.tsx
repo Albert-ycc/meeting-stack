@@ -228,16 +228,25 @@ function IslandBody({ props, island }: { props: OverviewPanelProps; island: Over
   const [roots, setRoots] = useState<GraphRootsPayload | null>(null);
   const [busy, setBusy] = useState(false);
   const reassign = useReassign(props);
-  const hasMeetings = island.waiting.review + island.waiting.doorstep > 0;
+  const hasReview = island.waiting.review > 0;
+  const hasDoorstep = island.waiting.doorstep > 0;
   const hasTasks = island.waiting.tasks > 0;
 
-  // 在等你的会（待复核的、门口的）和待确认任务：点开岛时取
+  // 在等你的会（待复核的、门口的）和待确认任务：点开岛时取。
+  // 不取全库待复核的再在前端挑：全库超过一页时，排在后面的这个项目的会就拿不到。
+  // 待复核的按项目取；门口的取没归项目的待复核，按日期倒序，时间窗里的排在最前面。
+  // 「候选里有这个项目」接口过滤不了，没归项目的待复核在窗口里超过 500 场时仍可能漏
   useEffect(() => {
     let active = true;
     setWaitingError("");
+    const listMeetings = (projectId: string) =>
+      apiClient.meetings({ attribution: "needs_review", project_id: projectId, limit: 500 }).then((payload) => payload.items);
     const meetings =
-      hasMeetings && typeof apiClient.meetings === "function"
-        ? apiClient.meetings({ attribution: "needs_review", limit: 100 }).then((payload) => payload.items)
+      (hasReview || hasDoorstep) && typeof apiClient.meetings === "function"
+        ? Promise.all([
+            hasReview ? listMeetings(island.id) : [],
+            hasDoorstep ? listMeetings("none") : [],
+          ]).then(([review, doorstep]) => [...review, ...doorstep])
         : Promise.resolve([] as MeetingSummary[]);
     const tasks =
       hasTasks && typeof apiClient.tasks === "function"
@@ -249,7 +258,7 @@ function IslandBody({ props, island }: { props: OverviewPanelProps; island: Over
     return () => {
       active = false;
     };
-  }, [apiClient, hasMeetings, hasTasks, island.id, props.version]);
+  }, [apiClient, hasReview, hasDoorstep, hasTasks, island.id, props.version]);
 
   // 文件夹在不在线：读资料盘缓存，不读盘
   useEffect(() => {

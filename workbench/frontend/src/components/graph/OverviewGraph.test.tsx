@@ -197,6 +197,36 @@ describe("OverviewGraph", () => {
     expect(await screen.findByText("已确认「补报价单」")).toBeInTheDocument();
   });
 
+  it("项目岛面板：全库待复核的会超过 100 场时，这个项目的待复核和门口的会一场不少", async () => {
+    // 按后端的口径造库：/api/meetings 按 project_id、attribution 过滤，按日期倒序，limit 默认 100
+    type Row = { id: string; title: string; project_id: string | null; recording_date: string; created_at: string; candidates: unknown[] };
+    const day = (n: number) => `2026-09-2${n}T10:00:00`;
+    const rows: Row[] = [];
+    // 别的项目 150 场，日期都比云图AI 的新
+    for (let i = 0; i < 150; i += 1) rows.push({ id: `b${i}`, title: `数据中台的会${i}`, project_id: "b", recording_date: "2026-09-26T12:00:00", created_at: "2026-09-26T12:00:00", candidates: [] });
+    for (let i = 0; i < 3; i += 1) rows.push({ id: `ar${i}`, title: `云图待复核${i}`, project_id: "a", recording_date: day(i), created_at: day(i), candidates: [] });
+    const doorCandidate = { project_id: "a", project_name: "云图AI", count: 1, llm: false, current: false };
+    for (let i = 0; i < 2; i += 1) rows.push({ id: `ad${i}`, title: `云图门口${i}`, project_id: null, recording_date: day(i), created_at: day(i), candidates: [doorCandidate] });
+    const meetings = vi.fn(async (filters: { project_id?: string; limit?: number } = {}) => {
+      const hit = rows
+        .filter((row) => !filters.project_id || (filters.project_id === "none" ? row.project_id === null : row.project_id === filters.project_id))
+        .sort((x, y) => y.recording_date.localeCompare(x.recording_date));
+      const limit = Math.min(filters.limit ?? 100, 500);
+      return { items: hit.slice(0, limit), total: hit.length, limit, offset: 0 };
+    });
+    const overview = overviewPayload({
+      islands: [island("a", "云图AI", { meetings: 7, waiting: { review: 3, doorstep: 2, tasks: 0 } }), island("b", "数据中台", { color: "#7a5af8", meetings: 2 })],
+    });
+    render(<Harness apiClient={makeClient(overview, foldersPayload(), { meetings })} />);
+    await userEvent.click(await screen.findByRole("button", { name: /^项目：云图AI/ }));
+    const side = await panel();
+
+    for (const title of ["云图待复核0", "云图待复核1", "云图待复核2", "云图门口0", "云图门口1"]) {
+      expect(await within(side).findByRole("group", { name: `${title} 归哪个项目` })).toBeInTheDocument();
+    }
+    expect(within(side).queryByText("都处理好了")).not.toBeInTheDocument();
+  });
+
   it("港湾面板：待你选那一行用资料库的组件，选了那一行消失；底部进资料库", async () => {
     const onOpenLibrary = vi.fn();
     const apiClient = makeClient();
