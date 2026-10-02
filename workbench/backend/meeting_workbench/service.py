@@ -292,6 +292,7 @@ class MeetingService:
             copied.append(segment)
         if copy_segments:
             self.db.replace_segments_with_connection(connection, draft_id, meeting_id, copied)
+            self.db.reuse_embeddings_with_connection(connection, draft_id, [str(current_id)])
         connection.execute(
             """UPDATE meetings SET current_transcript_version_id=?,
                status='draft_modified', updated_at=? WHERE id=?""",
@@ -345,6 +346,8 @@ class MeetingService:
             self.db.replace_segments_with_connection(
                 connection, version_id, meeting_id, write_segments
             )
+            # 文字没变的段沿用向量，语义索引只补改了的和新增的
+            self.db.reuse_embeddings_with_connection(connection, version_id, [based_on_id])
             connection.execute(
                 "UPDATE meetings SET status='draft_modified', updated_at=? WHERE id=?",
                 (utc_now(), meeting_id),
@@ -610,6 +613,9 @@ class MeetingService:
             rows = connection.execute(
                 "SELECT * FROM segments WHERE version_id=? ORDER BY ordinal", (version_id,)
             ).fetchall()
+            previous_current = connection.execute(
+                "SELECT current_transcript_version_id FROM meetings WHERE id=?", (meeting_id,)
+            ).fetchone()[0]
             draft_id = self.db.create_transcript_version_with_connection(
                 connection,
                 meeting_id,
@@ -623,6 +629,10 @@ class MeetingService:
                 segment["id"] = f"seg-{uuid.uuid4().hex}"
                 copied.append(segment)
             self.db.replace_segments_with_connection(connection, draft_id, meeting_id, copied)
+            # 选中的旧版本自己的向量一般已被语义索引清掉，当前版本里文字相同的段的向量照样能用
+            self.db.reuse_embeddings_with_connection(
+                connection, draft_id, [version_id, previous_current]
+            )
             connection.execute(
                 """UPDATE meetings SET current_transcript_version_id = ?,
                    status = 'draft_modified', updated_at = ? WHERE id = ?""",

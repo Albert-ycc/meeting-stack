@@ -2081,6 +2081,47 @@ class Database:
         )
 
     @staticmethod
+    def reuse_embeddings_with_connection(
+        connection: sqlite3.Connection,
+        version_id: str,
+        source_version_ids: Sequence[str],
+    ) -> int:
+        """新版本里文字和源版本某一段完全一样的段，沿用那一段的向量，返回复制了几行。
+
+        向量只由文字决定。保存、复制出草稿、回滚都给段落发新 id，新版本以前一条向量都没有，改一个字
+        保存也要让语义索引把整场会重新编码。所以按文字对，不按 id：每个模型的向量连维度、生成时间
+        原样复制；文字变了的、新增的段没有对应，留给语义索引去补；这一段已经有的向量不覆盖。
+        源版本按传入顺序优先：回滚时旧版本自己的向量一般已被语义索引清掉，当前版本里文字相同的段还在。"""
+        donors: dict[str, str] = {}
+        for source in dict.fromkeys(version for version in source_version_ids if version):
+            for segment_id, text in connection.execute(
+                """SELECT s.id, s.text FROM segments s
+                    WHERE s.version_id = ?
+                      AND EXISTS (SELECT 1 FROM embeddings e WHERE e.segment_id = s.id)
+                    ORDER BY s.ordinal""",
+                (source,),
+            ):
+                donors.setdefault(text, segment_id)
+        if not donors:
+            return 0
+        pairs = [
+            (donors[text], segment_id)
+            for segment_id, text in connection.execute(
+                "SELECT id, text FROM segments WHERE version_id = ?", (version_id,)
+            )
+            if text in donors
+        ]
+        if not pairs:
+            return 0
+        return connection.execute(
+            """INSERT OR IGNORE INTO embeddings(segment_id, model, dimensions, vector, created_at)
+               SELECT json_extract(p.value, '$[1]'), e.model, e.dimensions, e.vector, e.created_at
+                 FROM json_each(?) p
+                 JOIN embeddings e ON e.segment_id = json_extract(p.value, '$[0]')""",
+            (json.dumps(pairs),),
+        ).rowcount
+
+    @staticmethod
     def sync_transcript_metadata_with_connection(
         connection: sqlite3.Connection,
         meeting_id: str,
