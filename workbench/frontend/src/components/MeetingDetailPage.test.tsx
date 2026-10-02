@@ -1,5 +1,6 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError, type ApiClient } from "../api";
@@ -345,6 +346,7 @@ describe("MeetingDetailPage Whisper comparison", () => {
     await userEvent.type(screen.getByLabelText("重新转写本场热词"), " ＡＣＭＥ, acme\n云图");
     await userEvent.click(screen.getByRole("button", { name: "重新转写" }));
     expect(retranscribe).toHaveBeenCalledWith("vm-1", ["ACME", "云图"]);
+    expect(screen.getByLabelText("重新转写本场热词")).toHaveValue("");
   });
 
   it("renders minutes evidence and maps 404/409 to honest states", async () => {
@@ -2002,5 +2004,273 @@ describe("MeetingDetailPage 逐字稿选句建需求（R01-10）", () => {
     expect(screen.getByRole("toolbar", { name: "选中的原话" })).toHaveTextContent("逐字稿有没保存的修改，先保存或放弃再选句");
     expect(screen.queryByRole("button", { name: "建成需求" })).not.toBeInTheDocument();
     expect(onCreateRequirement).not.toHaveBeenCalled();
+  });
+});
+
+describe("MeetingDetailPage 同一场会静默刷新不冲掉没保存的编辑", () => {
+  // 服务器上这场会的当前样子；保存、词典改过来之后由用例改它，onReload 照 App 的静默刷新换一个新对象
+  interface Server {
+    transcriptVersion: string;
+    text: string;
+    minutesVersion: string;
+    markdown: string;
+  }
+  function detailOf(server: Server, extra: Partial<MeetingDetail> = {}): MeetingDetail {
+    return {
+      id: "vm-1",
+      title: "会",
+      status: "completed_unreviewed",
+      tags: [],
+      artifacts: [],
+      segments: [{ id: "s1", ordinal: 0, start_ms: 0, end_ms: 5_000, text: server.text }],
+      speakers: [],
+      events: [],
+      current_transcript_version_id: server.transcriptVersion,
+      current_minutes_version_id: server.minutesVersion,
+      transcript_versions: [
+        { id: server.transcriptVersion, meeting_id: "vm-1", version_no: 1, kind: "funasr", published: 0, created_at: "2026-07-10T00:00:00Z" },
+      ],
+      minutes_versions: [
+        { id: server.minutesVersion, meeting_id: "vm-1", version_no: 1, markdown: server.markdown, kind: "ai", published: 0, created_at: "2026-07-10T00:00:00Z" },
+      ],
+      ...extra,
+    };
+  }
+  function renderHost(apiClient: ApiClient, server: Server, extra: Partial<MeetingDetail> = {}) {
+    const onDirty = vi.fn();
+    let flipMobile: (value: boolean) => void = () => undefined;
+    function Host() {
+      const [detail, setDetail] = useState(() => detailOf(server, extra));
+      const [isMobile, setIsMobile] = useState(false);
+      // App 的 loadDetail 静默刷新后会把自己记的 dirty 清掉，页面要重新报一次
+      const [appDirty, setAppDirty] = useState(false);
+      const [reloads, setReloads] = useState(0);
+      flipMobile = setIsMobile;
+      onDirty.mockImplementation(setAppDirty);
+      return (
+        <>
+          <output data-testid="app-dirty">{String(appDirty)}</output>
+          <output data-testid="reloads">{reloads}</output>
+          <MeetingDetailPage
+            apiClient={apiClient}
+            initialSeekMs={0}
+            isMobile={isMobile}
+            meeting={detail}
+            onBack={vi.fn()}
+            onDirtyChange={onDirty}
+            onReload={async () => {
+              setDetail(detailOf(server, extra));
+              setAppDirty(false);
+              setReloads((count) => count + 1);
+            }}
+            projects={[]}
+            tags={[]}
+          />
+        </>
+      );
+    }
+    render(<Host />);
+    return { setMobile: (value: boolean) => act(() => flipMobile(value)) };
+  }
+  // 等静默刷新落地，再等页面把「还有没保存的」重新报给外层
+  async function settledAfterReload(count: number) {
+    await waitFor(() => expect(screen.getByTestId("reloads")).toHaveTextContent(String(count)));
+    await waitFor(() => expect(screen.getByTestId("app-dirty")).toHaveTextContent("true"));
+  }
+  async function editMinutes(text: string) {
+    await userEvent.click(screen.getByRole("tab", { name: /会议纪要/ }));
+    if (!screen.queryByRole("textbox", { name: "会议纪要编辑器" })) {
+      await userEvent.click(screen.getByRole("button", { name: "编辑纪要" }));
+    }
+    await userEvent.type(screen.getByRole("textbox", { name: "会议纪要编辑器" }), text);
+  }
+  async function editTranscript(text: string) {
+    await userEvent.click(screen.getByRole("tab", { name: /逐字稿/ }));
+    if (!screen.queryByRole("button", { name: "保存草稿" })) {
+      await userEvent.click(screen.getByRole("button", { name: "编辑逐字稿" }));
+    }
+    const row = screen.getByLabelText("00:00 逐字稿");
+    await userEvent.clear(row);
+    await userEvent.type(row, text);
+  }
+
+  it("纪要改了没保存，去保存逐字稿：纪要改动还在，之后保存纪要仍按打开时的版本去比", async () => {
+    const server: Server = { transcriptVersion: "tv-1", text: "原句", minutesVersion: "mv-1", markdown: "服务器上的纪要" };
+    const saveTranscript = vi.fn().mockImplementation(async (_id: string, segments: Segment[]) => {
+      server.transcriptVersion = "tv-2";
+      server.text = segments[0].text;
+      return { version_id: "tv-2" };
+    });
+    const saveMinutes = vi.fn().mockResolvedValue({ version_id: "mv-2" });
+    renderHost({ transcriptVersionSegments: vi.fn(), saveTranscript, saveMinutes } as unknown as ApiClient, server);
+
+    await editMinutes("——我加的一大段");
+    await editTranscript("改过的句子");
+    await userEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    expect(saveTranscript).toHaveBeenCalledWith("vm-1", expect.any(Array), "tv-1");
+    // 纪要还是没保存的状态，外层也知道
+    await settledAfterReload(1);
+
+    // 逐字稿这侧跟着服务器，不再算没保存
+    expect(screen.queryByRole("button", { name: "保存草稿" })).not.toBeInTheDocument();
+    expect(screen.getByText("改过的句子")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /会议纪要/ }));
+    expect(screen.getByRole("textbox", { name: "会议纪要编辑器" })).toHaveValue("服务器上的纪要——我加的一大段");
+    await userEvent.click(screen.getByRole("button", { name: "保存纪要草稿" }));
+    expect(saveMinutes).toHaveBeenCalledWith("vm-1", "服务器上的纪要——我加的一大段", "mv-1");
+  });
+
+  it("逐字稿改了没保存，去保存纪要：逐字稿改动还在，之后保存逐字稿仍按打开时的版本去比", async () => {
+    const server: Server = { transcriptVersion: "tv-1", text: "原句", minutesVersion: "mv-1", markdown: "服务器上的纪要" };
+    const saveMinutes = vi.fn().mockImplementation(async (_id: string, markdown: string) => {
+      server.minutesVersion = "mv-2";
+      server.markdown = markdown;
+      return { version_id: "mv-2" };
+    });
+    const saveTranscript = vi.fn().mockResolvedValue({ version_id: "tv-2" });
+    renderHost({ transcriptVersionSegments: vi.fn(), saveTranscript, saveMinutes } as unknown as ApiClient, server);
+
+    await editTranscript("我改的句子");
+    await editMinutes("——补一句");
+    await userEvent.click(screen.getByRole("button", { name: "保存纪要草稿" }));
+    expect(saveMinutes).toHaveBeenCalledWith("vm-1", "服务器上的纪要——补一句", "mv-1");
+    await settledAfterReload(1);
+    expect(screen.getByText("服务器上的纪要——补一句")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /逐字稿/ }));
+    expect(screen.getByLabelText("00:00 逐字稿")).toHaveValue("我改的句子");
+    await userEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    expect(saveTranscript).toHaveBeenCalledWith("vm-1", expect.any(Array), "tv-1");
+  });
+
+  it("逐字稿改了没保存，词典「改过来」改了纪要：纪要换成服务器的新内容，逐字稿改动还在", async () => {
+    const server: Server = { transcriptVersion: "tv-1", text: "原句", minutesVersion: "mv-1", markdown: "云途的纪要" };
+    const glossary = {
+      basis: "public", project: null, meeting_project: null, mismatch: false, receipt: null,
+      minutes_version_id: "mv-1", stale: false, checked_at: "2026-09-26T10:00:00+00:00", corrected: [],
+      missed: [{ kind: "missed", term: "云图", wrong: "云途", term_project_id: null, transcript_count: 0, minutes_count: 1 }],
+      applied: null,
+    } satisfies MeetingDetail["glossary"];
+    const applyMeetingGlossary = vi.fn().mockImplementation(async () => {
+      server.minutesVersion = "mv-2";
+      server.markdown = "云图的纪要";
+      return { version_id: "mv-2", replaced: 1, glossary: null };
+    });
+    renderHost(
+      { transcriptVersionSegments: vi.fn(), applyMeetingGlossary, checkMeetingGlossary: vi.fn() } as unknown as ApiClient,
+      server,
+      { glossary },
+    );
+
+    await editTranscript("我改的句子");
+    await userEvent.click(screen.getByRole("tab", { name: /会议纪要/ }));
+    await userEvent.click(screen.getByRole("button", { name: "改过来" }));
+    expect(applyMeetingGlossary).toHaveBeenCalledWith("vm-1", "mv-1");
+    await settledAfterReload(1);
+    expect(screen.getByText("云图的纪要")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: /逐字稿/ }));
+    expect(screen.getByLabelText("00:00 逐字稿")).toHaveValue("我改的句子");
+  });
+
+  it("纪要没保存时服务器上的纪要被别处改了：本地改动保留，保存时走版本冲突，丢弃后才换成最新", async () => {
+    const server: Server = { transcriptVersion: "tv-1", text: "原句", minutesVersion: "mv-1", markdown: "服务器上的纪要" };
+    const saveTranscript = vi.fn().mockImplementation(async () => {
+      // 保存逐字稿的同时，别处（另一个窗口、重新生成）把纪要改成了新版本
+      server.transcriptVersion = "tv-2";
+      server.minutesVersion = "mv-9";
+      server.markdown = "别处改过的纪要";
+      return { version_id: "tv-2" };
+    });
+    const saveMinutes = vi.fn().mockRejectedValue(new ApiError("纪要已有更新版本", 409));
+    renderHost({ transcriptVersionSegments: vi.fn(), saveTranscript, saveMinutes } as unknown as ApiClient, server);
+
+    await editMinutes("——我加的");
+    await editTranscript("改过的句子");
+    await userEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await settledAfterReload(1);
+
+    await userEvent.click(screen.getByRole("tab", { name: /会议纪要/ }));
+    expect(screen.getByRole("textbox", { name: "会议纪要编辑器" })).toHaveValue("服务器上的纪要——我加的");
+    await userEvent.click(screen.getByRole("button", { name: "保存纪要草稿" }));
+    expect(saveMinutes).toHaveBeenCalledWith("vm-1", "服务器上的纪要——我加的", "mv-1");
+    expect(await screen.findByRole("heading", { name: "纪要有更新版本" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "会议纪要编辑器" })).toHaveValue("服务器上的纪要——我加的");
+
+    await userEvent.click(screen.getByRole("button", { name: "丢弃我的修改并加载最新" }));
+    await userEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "丢弃并加载最新" }));
+    expect(await screen.findByText("别处改过的纪要")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "纪要有更新版本" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("app-dirty")).toHaveTextContent("false"));
+  });
+
+  it("窗口跨过手机断点再回来：纪要和逐字稿没保存的改动都还在", async () => {
+    const server: Server = { transcriptVersion: "tv-1", text: "原句", minutesVersion: "mv-1", markdown: "服务器上的纪要" };
+    const { setMobile } = renderHost({ transcriptVersionSegments: vi.fn() } as unknown as ApiClient, server);
+
+    await editTranscript("我改的句子");
+    await editMinutes("——我加的");
+    setMobile(true);
+    setMobile(false);
+
+    await userEvent.click(screen.getByRole("tab", { name: /会议纪要/ }));
+    if (!screen.queryByRole("textbox", { name: "会议纪要编辑器" })) {
+      await userEvent.click(screen.getByRole("button", { name: "编辑纪要" }));
+    }
+    expect(screen.getByRole("textbox", { name: "会议纪要编辑器" })).toHaveValue("服务器上的纪要——我加的");
+    await userEvent.click(screen.getByRole("tab", { name: /逐字稿/ }));
+    expect(screen.getByText("我改的句子")).toBeInTheDocument();
+  });
+
+  it("归属勾了没保存、热词填了没用，去保存逐字稿：都还在", async () => {
+    const server: Server = { transcriptVersion: "tv-1", text: "原句", minutesVersion: "mv-1", markdown: "纪要" };
+    const saveTranscript = vi.fn().mockImplementation(async (_id: string, segments: Segment[]) => {
+      server.transcriptVersion = "tv-2";
+      server.text = segments[0].text;
+      return { version_id: "tv-2" };
+    });
+    function Host() {
+      const [detail, setDetail] = useState(() => detailOf(server));
+      return (
+        <MeetingDetailPage
+          apiClient={{ transcriptVersionSegments: vi.fn(), saveTranscript } as unknown as ApiClient}
+          initialSeekMs={0}
+          isMobile={false}
+          meeting={detail}
+          onBack={vi.fn()}
+          onReload={async () => setDetail(detailOf(server))}
+          projects={[]}
+          tags={[{ id: "tag-a", name: "周会", color: "#376f68" }]}
+        />
+      );
+    }
+    render(<Host />);
+    await userEvent.click(screen.getByRole("checkbox", { name: "周会" }));
+    await userEvent.type(screen.getByLabelText("重新转写本场热词"), "云图");
+    await editTranscript("改过的句子");
+    await userEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+
+    await waitFor(() => expect(screen.getByText("改过的句子")).toBeInTheDocument());
+    expect(screen.getByRole("checkbox", { name: "周会" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "保存归档归属" })).toBeEnabled();
+    expect(screen.getByLabelText("重新转写本场热词")).toHaveValue("云图");
+  });
+
+  it("换了一场会才全部重置", async () => {
+    const first = detailOf({ transcriptVersion: "tv-1", text: "原句", minutesVersion: "mv-1", markdown: "第一场纪要" });
+    const second = { ...detailOf({ transcriptVersion: "tv-b", text: "第二场原句", minutesVersion: "mv-b", markdown: "第二场纪要" }), id: "vm-2" };
+    const props = {
+      apiClient: { transcriptVersionSegments: vi.fn() } as unknown as ApiClient,
+      initialSeekMs: 0,
+      isMobile: false,
+      onBack: vi.fn(),
+      onReload: vi.fn(),
+      projects: [],
+      tags: [],
+    };
+    const { rerender } = render(<MeetingDetailPage {...props} meeting={first} />);
+    await editMinutes("——我加的");
+    rerender(<MeetingDetailPage {...props} meeting={second} />);
+    expect(screen.queryByRole("textbox", { name: "会议纪要编辑器" })).not.toBeInTheDocument();
+    expect(screen.getByText("第二场纪要")).toBeInTheDocument();
   });
 });

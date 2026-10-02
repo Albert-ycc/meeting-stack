@@ -154,6 +154,10 @@ function segmentSnapshot(segments: Segment[]) {
   );
 }
 
+function sameIds(left: string[], right: string[]) {
+  return [...left].sort().join("\u0000") === [...right].sort().join("\u0000");
+}
+
 function nextSegmentId() {
   const suffix = globalThis.crypto?.randomUUID?.().replaceAll("-", "") ??
     `${Date.now()}${Math.random().toString(16).slice(2)}`;
@@ -438,47 +442,138 @@ export function MeetingDetailPage({
     ];
   }, [meeting.conflict, meeting.conflicts, meeting.id, meeting.updated_at]);
 
+  const acceptQualitySnapshot = useCallback((snapshot: MeetingDetail) => {
+    const qualitySnapshot: QualitySnapshot = {
+      shadowRuns: snapshot.asr_shadow_runs ?? [],
+      transcriptVersions: snapshot.transcript_versions,
+    };
+    if (goldDirtyRef.current) {
+      pendingQualitySnapshot.current = qualitySnapshot;
+      // Runtime status may advance, but the version list remains pinned so the active candidate cannot switch.
+      setShadowRuns(qualitySnapshot.shadowRuns);
+      return;
+    }
+    pendingQualitySnapshot.current = null;
+    setShadowRuns(qualitySnapshot.shadowRuns);
+    setQualityVersions(qualitySnapshot.transcriptVersions);
+  }, []);
+
+  // 下面换数据的 effect 要知道「此刻页面上改没改」，又不能因为每敲一个字就重跑，所以每次渲染记一份
+  const local = useRef({
+    segments,
+    baselineSegments,
+    minutes,
+    baselineMinutes,
+    selectedProjectId,
+    baselineProjectId,
+    selectedTagIds,
+    baselineTagIds,
+    selectedRequirementRefs,
+    baselineRequirementRefs,
+  });
+  local.current = {
+    segments,
+    baselineSegments,
+    minutes,
+    baselineMinutes,
+    selectedProjectId,
+    baselineProjectId,
+    selectedTagIds,
+    baselineTagIds,
+    selectedRequirementRefs,
+    baselineRequirementRefs,
+  };
+  const shownMeetingId = useRef(meeting.id);
+
   useEffect(() => {
-    setSegments(meeting.segments);
-    setBaselineSegments(meeting.segments);
-    setMinutes(currentMinutes?.markdown ?? "");
-    setBaselineMinutes(currentMinutes?.markdown ?? "");
+    const serverMinutes = currentMinutes?.markdown ?? "";
+    const serverProjectId = meeting.project_id ?? "";
+    const serverTagIds = meeting.tags.map((tag) => tag.id);
+    const serverRequirements = meeting.requirements ?? [];
     setTranscriptVersion(meeting.current_transcript_version_id ?? "");
     setMinutesVersion(meeting.current_minutes_version_id ?? "");
-    setTranscriptBaseVersionId(meeting.current_transcript_version_id ?? null);
-    setMinutesBaseVersionId(meeting.current_minutes_version_id ?? null);
-    setEngine("funasr");
-    setCandidateSegments([]);
-    setComparison(null);
-    setCandidateState("idle");
-    setCandidateError("");
-    setGoldSamples([]);
-    setGoldState(isMobile ? "ready" : "loading");
-    setGoldDirty(false);
-    goldDirtyRef.current = false;
-    pendingQualitySnapshot.current = null;
-    setShadowRuns(meeting.asr_shadow_runs ?? []);
-    setQualityVersions(meeting.transcript_versions);
-    setHotwordText("");
-    setSelectedProjectId(meeting.project_id ?? "");
-    setSelectedTagIds(meeting.tags.map((tag) => tag.id));
-    setBaselineProjectId(meeting.project_id ?? "");
     setAttribution(meeting.attribution);
     setCard(meeting.card);
     setLiveProject(liveProjectOf(meeting));
-    setBaselineTagIds(meeting.tags.map((tag) => tag.id));
-    setSelectedRequirementRefs(meeting.requirements ?? []);
-    setBaselineRequirementRefs(meeting.requirements ?? []);
-    revisions.current = { transcript: 0, minutes: 0, classification: 0 };
-    setEditingTranscript(false);
-    setEditingMinutes(false);
-    setSaveConflict(null);
-  }, [currentMinutes?.markdown, isMobile, meeting]);
+    if (shownMeetingId.current !== meeting.id) {
+      // 换了一场会：上一场的编辑、对照、金标全部不要了
+      shownMeetingId.current = meeting.id;
+      setSegments(meeting.segments);
+      setBaselineSegments(meeting.segments);
+      setMinutes(serverMinutes);
+      setBaselineMinutes(serverMinutes);
+      setTranscriptBaseVersionId(meeting.current_transcript_version_id ?? null);
+      setMinutesBaseVersionId(meeting.current_minutes_version_id ?? null);
+      setEngine("funasr");
+      setCandidateSegments([]);
+      setComparison(null);
+      setCandidateState("idle");
+      setCandidateError("");
+      setGoldSamples([]);
+      setGoldState("loading");
+      setGoldDirty(false);
+      goldDirtyRef.current = false;
+      pendingQualitySnapshot.current = null;
+      setShadowRuns(meeting.asr_shadow_runs ?? []);
+      setQualityVersions(meeting.transcript_versions);
+      setHotwordText("");
+      setSelectedProjectId(serverProjectId);
+      setSelectedTagIds(serverTagIds);
+      setBaselineProjectId(serverProjectId);
+      setBaselineTagIds(serverTagIds);
+      setSelectedRequirementRefs(serverRequirements);
+      setBaselineRequirementRefs(serverRequirements);
+      revisions.current = { transcript: 0, minutes: 0, classification: 0 };
+      setEditingTranscript(false);
+      setEditingMinutes(false);
+      setSaveConflict(null);
+      return;
+    }
+    // 同一场会的静默刷新（保存了另一侧、词典改过来、改了说话人……）：没改过的一侧换成服务器的新内容；
+    // 改过没保存的一侧原样留着，连同打开时的版本号——服务器那边要是真变了，保存时走版本冲突，不悄悄盖掉
+    const now = local.current;
+    const transcriptKept = segmentSnapshot(now.segments) !== segmentSnapshot(now.baselineSegments);
+    const minutesKept = now.minutes !== now.baselineMinutes;
+    if (!transcriptKept) {
+      setSegments(meeting.segments);
+      setBaselineSegments(meeting.segments);
+      setTranscriptBaseVersionId(meeting.current_transcript_version_id ?? null);
+      setEditingTranscript(false);
+    }
+    if (!minutesKept) {
+      setMinutes(serverMinutes);
+      setBaselineMinutes(serverMinutes);
+      setMinutesBaseVersionId(meeting.current_minutes_version_id ?? null);
+      setEditingMinutes(false);
+    }
+    setSaveConflict((current) =>
+      (current === "transcript" && transcriptKept) || (current === "minutes" && minutesKept) ? current : null,
+    );
+    // 归属三项逐项看：没改的跟服务器走；改了的保留，比较基准换成服务器现在的值，保存时只带真正不一样的
+    if (now.selectedProjectId === now.baselineProjectId) setSelectedProjectId(serverProjectId);
+    setBaselineProjectId(serverProjectId);
+    if (sameIds(now.selectedTagIds, now.baselineTagIds)) setSelectedTagIds(serverTagIds);
+    setBaselineTagIds(serverTagIds);
+    if (sameIds(now.selectedRequirementRefs.map(({ id }) => id), now.baselineRequirementRefs.map(({ id }) => id))) {
+      setSelectedRequirementRefs(serverRequirements);
+    }
+    setBaselineRequirementRefs(serverRequirements);
+    // 金标正在改时版本列表钉住不换，和轮询 Qwen 的规矩一样；没在改金标才回到主稿
+    acceptQualitySnapshot(meeting);
+    if (!goldDirtyRef.current) {
+      setEngine("funasr");
+      setCandidateSegments([]);
+      setComparison(null);
+      setCandidateState("idle");
+      setCandidateError("");
+    }
+  }, [acceptQualitySnapshot, currentMinutes, meeting]);
 
+  // App 静默刷新详情时会把它记的「有没保存的修改」清掉，换了 meeting 对象就再报一次
   useEffect(() => {
     onDirtyChange?.(hasUnsavedChanges);
     return () => onDirtyChange?.(false);
-  }, [hasUnsavedChanges, onDirtyChange]);
+  }, [hasUnsavedChanges, meeting, onDirtyChange]);
 
   useEffect(() => {
     onNavigationLockChange?.(isSaving);
@@ -556,22 +651,6 @@ export function MeetingDetailPage({
       setGoldState("error");
     }
   }, [apiClient, isMobile, meeting.id]);
-
-  const acceptQualitySnapshot = useCallback((snapshot: MeetingDetail) => {
-    const qualitySnapshot: QualitySnapshot = {
-      shadowRuns: snapshot.asr_shadow_runs ?? [],
-      transcriptVersions: snapshot.transcript_versions,
-    };
-    if (goldDirtyRef.current) {
-      pendingQualitySnapshot.current = qualitySnapshot;
-      // Runtime status may advance, but the version list remains pinned so the active candidate cannot switch.
-      setShadowRuns(qualitySnapshot.shadowRuns);
-      return;
-    }
-    pendingQualitySnapshot.current = null;
-    setShadowRuns(qualitySnapshot.shadowRuns);
-    setQualityVersions(qualitySnapshot.transcriptVersions);
-  }, []);
 
   const changeGoldDirty = useCallback((dirty: boolean) => {
     goldDirtyRef.current = dirty;
@@ -859,6 +938,9 @@ export function MeetingDetailPage({
   const discardSaveConflict = async () => {
     setBusy(true);
     setNotice("");
+    // 先退回打开时的样子，刷新回来的最新版本才会换上（改过没保存的一侧刷新时是保留的）
+    if (saveConflict === "transcript") setSegments(baselineSegments);
+    if (saveConflict === "minutes") setMinutes(baselineMinutes);
     setSaveConflict(null);
     try {
       await onReload();
@@ -964,11 +1046,14 @@ export function MeetingDetailPage({
           ? "已采用外部版本，原草稿保留在版本历史"
           : "草稿已丢弃，当前版本已切换为外部文件",
     );
-  const requestRetranscription = () => {
+  const requestRetranscription = async () => {
     const hotwords = parseHotwordsInput(hotwordText);
-    return hotwords.length
-      ? apiClient.retranscribe(meeting.id, hotwords)
-      : apiClient.retranscribe(meeting.id);
+    const result = hotwords.length
+      ? await apiClient.retranscribe(meeting.id, hotwords)
+      : await apiClient.retranscribe(meeting.id);
+    // 热词跟着这次重转走了；刷新不再清它（同一场会刷新要留住还没用上的输入）
+    setHotwordText("");
+    return result;
   };
   const saveGoldSample = async (segmentId: string, reference: string) => {
     if (goldState !== "ready") throw new Error("金标尚未完成加载");
