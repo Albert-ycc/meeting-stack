@@ -88,23 +88,27 @@ MACHINE_PROGRAMS = frozenset(
 
 
 @pytest.fixture(autouse=True)
-def _no_machine_programs(monkeypatch: pytest.MonkeyPatch):
+def _no_machine_programs(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory):
     """本机装的认字、编译、音视频程序在测试里一律当没装：找程序（PATH、Homebrew 两个目录）找不到，真要起也起不来
     （抛 FileNotFoundError，和没装时一样）。不然结果随跑它的机器变，Mac 上还会真编译 Vision 程序。
-    测试自己在临时目录里造的假程序照常能起；要假程序的用例照旧自己传 which / run。"""
+    测试自己在临时目录里造的假程序照常能起（含 --basetemp 指到系统临时目录以外的时候）；要假程序的用例
+    照旧自己传 which / run。"""
     import shutil
     import subprocess
     import tempfile
 
     from meeting_workbench import ocr_engines
 
-    temp_root = os.path.realpath(tempfile.gettempdir())
+    temp_roots = tuple(
+        os.path.realpath(folder) + os.sep
+        for folder in (tempfile.gettempdir(), tmp_path_factory.getbasetemp())
+    )
 
     def machine_program(name: object) -> bool:
         text = os.fsdecode(name) if isinstance(name, str | bytes | os.PathLike) else ""
         if os.path.basename(text) not in MACHINE_PROGRAMS:
             return False
-        return not os.path.realpath(text).startswith(temp_root + os.sep)
+        return not os.path.realpath(text).startswith(temp_roots)
 
     real_which = shutil.which
 
