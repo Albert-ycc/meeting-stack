@@ -1615,7 +1615,11 @@ def create_app(
         否则 `/etc/passwd`、`--help` 这类值会原样交给 relayctl 当 argv。"""
         if not raw or raw.startswith("-"):
             raise HTTPException(400, "音频路径不在允许范围")
-        path = Path(raw).expanduser().resolve()
+        try:
+            path = Path(raw).expanduser().resolve()
+        except (OSError, ValueError) as error:
+            # 带 NUL 的路径 resolve 时抛 ValueError
+            raise HTTPException(400, "音频路径不在允许范围") from error
         allowed_roots = [
             settings.archive_root.resolve(),
             settings.staging_root.resolve(),

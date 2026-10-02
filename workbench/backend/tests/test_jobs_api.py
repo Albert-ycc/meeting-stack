@@ -338,7 +338,7 @@ def test_manual_path_enqueue_is_json_and_returns_job_id(tmp_path):
 
 @pytest.mark.parametrize(
     "audio_path",
-    ["/etc/passwd", "", "--help", "~/x.m4a"],
+    ["/etc/passwd", "", "--help", "~/x.m4a", "a\x00b.m4a"],
 )
 def test_manual_path_enqueue_rejects_paths_outside_managed_roots(tmp_path, audio_path):
     client, relay = make_client(tmp_path)

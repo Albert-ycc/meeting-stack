@@ -24,6 +24,9 @@ from .hotwords import HotwordValidationError, normalize_hotwords
 ALLOWED_UPLOAD_EXTENSIONS = {".m4a", ".mp3", ".wav"}
 UPLOAD_ID_RE = re.compile(r"^upload-[0-9a-f]{32}$")
 UPLOAD_ENQUEUE_LEASE_SECONDS = 60
+# complete 时临时文件名最长：「.upload-<32 位>-<文件名>.」再加 mkstemp 的 8 位随机串，要放得进 255 字节
+NAME_MAX_BYTES = 255
+UPLOAD_TEMP_NAME_OVERHEAD = len(f".upload-{'0' * 32}-.".encode()) + 8
 
 
 class UploadError(RuntimeError):
@@ -58,6 +61,10 @@ class UploadManager:
             or Path(safe_name).suffix.lower() not in ALLOWED_UPLOAD_EXTENSIONS
         ):
             raise UploadError("仅支持 m4a、mp3、wav 录音")
+        if any(ord(char) < 32 or ord(char) == 127 for char in safe_name):
+            raise UploadError("文件名里有控制字符，请改名后再传")
+        if len(safe_name.encode()) + UPLOAD_TEMP_NAME_OVERHEAD > NAME_MAX_BYTES:
+            raise UploadError("文件名太长，请改短后再传")
         if size_bytes <= 0 or size_bytes > self.settings.max_json_upload_bytes:
             raise UploadError("录音大小无效或超过限制")
         self.sessions_root.mkdir(parents=True, exist_ok=True)

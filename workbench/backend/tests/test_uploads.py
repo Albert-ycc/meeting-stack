@@ -186,3 +186,24 @@ def test_expired_enqueue_claim_can_be_recovered_by_new_owner(tmp_path):
 
     assert recovered is not None
     assert recovered["enqueue_owner"] == "new-owner"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["a\x00b.m4a", "a\nb.m4a", "a\x1fb.m4a", "a\x7fb.m4a", "x" * 202 + ".m4a", "录" * 68 + ".m4a"],
+)
+def test_start_rejects_names_that_cannot_become_a_file(tmp_path, filename):
+    uploads = manager(tmp_path)
+
+    with pytest.raises(UploadError, match="文件名"):
+        uploads.start(filename, 4)
+    assert not uploads.sessions_root.exists() or list(uploads.sessions_root.iterdir()) == []
+
+
+def test_longest_accepted_name_completes(tmp_path):
+    uploads = manager(tmp_path)
+    filename = "x" * 201 + ".m4a"
+    session = uploads.start(filename, 4)
+    uploads.write_chunk(session.upload_id, 0, base64.b64encode(b"data").decode())
+
+    assert uploads.complete(session.upload_id).name.endswith(filename)
