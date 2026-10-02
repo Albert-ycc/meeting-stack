@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -1452,6 +1452,83 @@ END;
 )
 
 
+def _refresh_stems(connection: sqlite3.Connection) -> dict[str, int]:
+    """词干规则变了（v19：结尾的 (v2)、第三版、终稿这类并进同一个词干）：库里存的词干一起重算，
+    新旧两套键并存的话，同一份「报价单」会在库里分成两组。
+
+    - material_files 的 stem、stem_key 只由文件名决定，按现行的 derive_stem 直接重算（含已不见的行）。
+    - 会上提到（meeting_file_mentions）和关联（relations）里记的 stem_key 是同一套键，按它们连着的那份
+      文件搬到新键上，不然「不是这份文件」「手动换过的文件」跟着旧键悬空。用户表过态的行（rejected、
+      picked）先搬，新键上已经有系统生成的行就替掉它（比对会重新算出来）；两边都是用户表过态的，这一行
+      留在旧键上，不起作用。relations 的 ident 写入时定下、不改。
+    - material_index_state.stems_hash 不动：下一轮扫完时按新词干算出的摘要和它对不上，stems_rev 自己加一，
+      各会按新词干重新比对（提到的细节、文件挑选在那时重算）。
+    """
+    from .file_stems import derive_stem, stem_key
+
+    keys: dict[int, tuple[str, str]] = {}
+    by_path: dict[tuple[int, str], int] = {}
+    updates: list[tuple[str, str, int]] = []
+    for row in connection.execute(
+        "SELECT id, root_id, rel_path, name, stem, stem_key FROM material_files"
+    ).fetchall():
+        stem = derive_stem(row["name"])
+        key = stem_key(stem)
+        keys[row["id"]] = (row["stem_key"], key)
+        by_path[(row["root_id"], row["rel_path"])] = row["id"]
+        if stem != row["stem"] or key != row["stem_key"]:
+            updates.append((stem, key, row["id"]))
+    connection.executemany("UPDATE material_files SET stem = ?, stem_key = ? WHERE id = ?", updates)
+    moved = {file_id: pair for file_id, pair in keys.items() if pair[0] != pair[1]}
+    stats = {"files": len(updates), "mentions": 0, "mentions_left": 0, "relations": 0}
+    if not moved:
+        return stats
+    for row in connection.execute(
+        """SELECT meeting_id, project_id, stem_key, file_id, status, picked
+             FROM meeting_file_mentions WHERE file_id IS NOT NULL
+            ORDER BY status = 'rejected' DESC, picked DESC, meeting_id, project_id, stem_key"""
+    ).fetchall():
+        pair = moved.get(row["file_id"])
+        if pair is None or pair[0] != row["stem_key"]:
+            continue
+        where = (row["meeting_id"], row["project_id"])
+        target = connection.execute(
+            """SELECT status, picked FROM meeting_file_mentions
+                WHERE meeting_id = ? AND project_id = ? AND stem_key = ?""",
+            (*where, pair[1]),
+        ).fetchone()
+        if target is not None:
+            decided = row["status"] == "rejected" or row["picked"]
+            if not decided or target["status"] != "active" or target["picked"]:
+                stats["mentions_left"] += 1
+                continue
+            connection.execute(
+                """DELETE FROM meeting_file_mentions
+                    WHERE meeting_id = ? AND project_id = ? AND stem_key = ?""",
+                (*where, pair[1]),
+            )
+        connection.execute(
+            """UPDATE meeting_file_mentions SET stem_key = ?
+                WHERE meeting_id = ? AND project_id = ? AND stem_key = ?""",
+            (pair[1], *where, row["stem_key"]),
+        )
+        stats["mentions"] += 1
+    for row in connection.execute(
+        "SELECT id, root_id, rel_path, file_id, stem_key FROM relations WHERE stem_key IS NOT NULL"
+    ).fetchall():
+        file_id = (
+            row["file_id"]
+            if row["file_id"] in keys
+            else by_path.get((row["root_id"], row["rel_path"]))
+        )
+        pair = moved.get(file_id)
+        if pair is None or pair[0] != row["stem_key"]:
+            continue
+        connection.execute("UPDATE relations SET stem_key = ? WHERE id = ?", (pair[1], row["id"]))
+        stats["relations"] += 1
+    return stats
+
+
 class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -1832,6 +1909,9 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_material_files_mtime "
                 "ON material_files(root_id, mtime_ns)"
             )
+            if current_version < 19:
+                # v19：文件名词干规则补了结尾的 (v2)、第三版、终稿，存量词干一起重算（只做一次）。
+                _refresh_stems(connection)
             # 会议卡片（1c）默认开启，但只对这之后新生成纪要的会自动写；上线前的历史会议
             # 等工作台横幅问过再补写。两个键都只在第一次启动时写入，之后不再改。
             now = utc_now()

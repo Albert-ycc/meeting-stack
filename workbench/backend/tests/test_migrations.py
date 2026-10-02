@@ -1585,7 +1585,7 @@ def test_version_eighteen_migration_adds_task_due_without_backfill(tmp_path):
     db.initialize(before_migrate=lambda: backups.append(db.user_version()))
 
     assert backups == [17]
-    assert db.user_version() == SCHEMA_VERSION == 18
+    assert db.user_version() == SCHEMA_VERSION
     assert db.query_one("SELECT title, status, due_date, due_phrase FROM tasks") == {
         "title": "明天晚上先上后台并撤下码，统一验证扫码",
         "status": "confirmed",
