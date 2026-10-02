@@ -14,6 +14,7 @@ import type {
   GraphFileDetail,
   GraphPayload,
   GraphRootsPayload,
+  GraphWindow,
   MeetingBrief,
   RecentFile,
 } from "./graphTypes";
@@ -291,6 +292,49 @@ describe("ProjectGraph", () => {
     render(<Harness apiClient={apiClient} initial="m:old2" />);
     await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("c:older"));
     expect(await screen.findByRole("complementary", { name: "详情面板" })).toBeInTheDocument();
+  });
+
+  it("折叠组读失败后换到另一个组，错误不跟过去，列出这一组的会", async () => {
+    const graph = payload({
+      collapsed: [
+        { id: "c:older", kind: "older", label: "更早 2 场", count: 2, from: "2026-05-01", to: "2026-07-20", meeting_ids: ["old1", "old2"], ring: "outer" },
+        { id: "c:2026-08", kind: "month", label: "8 月 1 场", count: 1, from: "2026-08-01", to: "2026-08-20", meeting_ids: ["aug1"], ring: "outer" },
+      ],
+    });
+    const graphCollapsed = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("读取失败：网络断了"))
+      .mockResolvedValue({
+        id: "c:2026-08",
+        label: "8 月 1 场",
+        months: [{ month: "2026-08", label: "8 月", meetings: [{ meeting_id: "aug1", title: "八月那场会", date: "2026-08-10", open_tasks: 0 }] }],
+      });
+    render(<Harness apiClient={makeClient(graph, { graphCollapsed })} initial="c:older" />);
+    expect(await screen.findByText("读取失败：网络断了")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^8 月 1 场/ }));
+    expect(await screen.findByText(/八月那场会/)).toBeInTheDocument();
+    expect(screen.queryByText("读取失败：网络断了")).toBeNull();
+  });
+
+  it("选着折叠组时换时间窗，按新时间窗重取这一组", async () => {
+    const graph = vi.fn(async (_project: string, window?: GraphWindow) =>
+      payload({
+        window: { requested: window ?? null, effective: window ?? "28d", days: window === "90d" ? 90 : 28, widened_reason: null },
+        collapsed: [
+          { id: "c:older", kind: "older", label: "更早 2 场", count: 2, from: "2026-05-01", to: "2026-07-20", meeting_ids: ["old1", "old2"], ring: "outer" },
+        ],
+      }),
+    );
+    const graphCollapsed = vi.fn(async (_project: string, _group: string, window?: string) => ({
+      id: "c:older",
+      label: "更早",
+      months: [{ month: "2026-07", label: "7 月", meetings: [{ meeting_id: "old1", title: `旧会（${window}）`, date: "2026-07-01", open_tasks: 0 }] }],
+    }));
+    render(<Harness apiClient={makeClient(payload(), { graph, graphCollapsed })} initial="c:older" />);
+    expect(await screen.findByText(/旧会（28d）/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "90 天" }));
+    expect(await screen.findByText(/旧会（90d）/)).toBeInTheDocument();
+    expect(graphCollapsed).toHaveBeenLastCalledWith("p", "c:older", "90d");
   });
 
   it("关系图读不出来时给出原因和重试", async () => {

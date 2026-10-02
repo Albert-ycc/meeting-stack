@@ -1051,19 +1051,31 @@ function describe(layout: StarLayout, id: string): string {
 // ------------------------------------------------------------------ 简单列表
 
 function CollapsedBody({ props, groupId }: { props: GraphPanelProps; groupId: string }) {
-  const [payload, setPayload] = useState<CollapsedPayload | null>(null);
-  const [error, setError] = useState("");
+  // 结果按「项目 + 组 + 时间窗」记：换组或换时间窗时旧的列表和旧的错误都不算数，要重取
+  const [state, setState] = useState<{ key: string; payload: CollapsedPayload | null; error: string }>({
+    key: "",
+    payload: null,
+    error: "",
+  });
+  const projectId = props.graph.project.id;
+  const windowKey = props.graph.window.effective;
+  const key = `${projectId}|${groupId}|${windowKey}`;
   useEffect(() => {
     let active = true;
     props.apiClient
-      .graphCollapsed(props.graph.project.id, groupId, props.graph.window.effective)
-      .then((value) => active && setPayload(value))
-      .catch((reason: unknown) => active && setError(reason instanceof Error ? reason.message : "读取失败"));
+      .graphCollapsed(projectId, groupId, windowKey)
+      .then((value) => active && setState({ key, payload: value, error: "" }))
+      .catch(
+        (reason: unknown) =>
+          active && setState({ key, payload: null, error: reason instanceof Error ? reason.message : "读取失败" }),
+      );
     return () => {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupId, props.version]);
+  }, [key, props.version]);
+  const payload = state.key === key ? state.payload : null;
+  const error = state.key === key ? state.error : "";
   if (error) return <p className="graph-panel__error">{error}</p>;
   if (!payload) return <p className="graph-panel__muted">正在读取…</p>;
   return (
