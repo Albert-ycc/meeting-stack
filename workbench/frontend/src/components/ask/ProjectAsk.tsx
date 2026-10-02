@@ -251,9 +251,10 @@ function AskInner({
   const highlight = current?.plan?.highlight ?? [];
   const handlers: ChipHandlers = { onOpenMeeting, onOpenPreview, player, highlight };
 
-  const listToggle = (turn: AskTurn, label: string) => (
+  const listToggle = (turn: AskTurn, label: string, autoFocus = false) => (
     <button
       aria-expanded={openList === turn.id}
+      autoFocus={autoFocus}
       className="text-button ask-toggle"
       onClick={() => setOpenList(openList === turn.id ? null : turn.id)}
       type="button"
@@ -371,7 +372,7 @@ function TurnView({
   turn: AskTurn;
   handlers: ChipHandlers;
   listOpen: boolean;
-  listToggle: (turn: AskTurn, label: string) => ReactNode;
+  listToggle: (turn: AskTurn, label: string, autoFocus?: boolean) => ReactNode;
   copied: boolean;
   onCopy: (text: string) => void;
   onRetry: () => void;
@@ -409,16 +410,18 @@ function TurnView({
         <div className="ask-confirm">
           <p className="ask-status">{foundText(plan.counts)}</p>
           <p className="ask-confirm__line">{plan.confirm.text}</p>
+          {/* 这一步是同意把材料原文发出去：默认焦点不能落在［发送］上，弹出来直接回车就把材料发走了。
+              落在不发材料的那个选项上（没有会议段落时是展开原文的开关）；键盘用户 Shift+Tab 回到［发送］照样能发 */}
           <div className="ask-confirm__actions">
-            <button autoFocus className="primary-button" onClick={() => onSend(true)} type="button">
+            <button className="primary-button" onClick={() => onSend(true)} type="button">
               发送
             </button>
             {plan.counts.meetings > 0 && (
-              <button className="ghost-button" onClick={() => onSend(false)} type="button">
+              <button autoFocus className="ghost-button" onClick={() => onSend(false)} type="button">
                 只用会议回答
               </button>
             )}
-            {listToggle(turn, "看看是哪几段")}
+            {listToggle(turn, "看看是哪几段", plan.counts.meetings === 0)}
           </div>
           {listOpen && <SourceList handlers={handlers} sources={plan.sources} />}
         </div>

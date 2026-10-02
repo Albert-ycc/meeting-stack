@@ -160,7 +160,7 @@ describe("ProjectAsk", () => {
     expect(screen.getByText("在等 AI 回答")).toBeInTheDocument();
   });
 
-  it("有材料时［发送］正上方写那一行，点［发送］（或回车）之前不发", async () => {
+  it("有材料时［发送］正上方写那一行，点［发送］之前不发", async () => {
     const apiClient = client();
     renderAsk(apiClient);
     await askQuestion();
@@ -168,14 +168,58 @@ describe("ProjectAsk", () => {
     const line = screen.getByText("将发送 1 段材料原文给 api.deepseek.com");
     const send = screen.getByRole("button", { name: "发送" });
     expect(line.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(send).toHaveFocus();
     expect(apiClient.ask).not.toHaveBeenCalled();
     // 「看看是哪几段」展开会发出去的原文
     await userEvent.click(screen.getByRole("button", { name: /看看是哪几段/ }));
     expect(screen.getByText("预算表里的总价")).toBeInTheDocument();
+    expect(apiClient.ask).not.toHaveBeenCalled();
+    // 键盘用户自己落到［发送］上再回车，照样能发
     send.focus();
     await userEvent.keyboard("{Enter}");
     await waitFor(() => expect(apiClient.ask).toHaveBeenCalledWith("p1", "plan-1", true));
+  });
+
+  describe("确认要不要把材料原文发出去：默认焦点不落在［发送］上", () => {
+    it("有会议段落：焦点落在［只用会议回答］，一弹出来就回车发出去的不带材料原文", async () => {
+      const apiClient = client();
+      renderAsk(apiClient);
+      await askQuestion();
+      const send = await screen.findByRole("button", { name: "发送" });
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "只用会议回答" })).toHaveFocus());
+      expect(send).not.toHaveFocus();
+      await userEvent.keyboard("{Enter}");
+
+      await waitFor(() => expect(apiClient.ask).toHaveBeenCalledWith("p1", "plan-1", false));
+      expect(apiClient.ask).not.toHaveBeenCalledWith("p1", "plan-1", true);
+    });
+
+    it("键盘用户 Shift+Tab 回到［发送］，回车照样能把材料原文发出去", async () => {
+      const apiClient = client();
+      renderAsk(apiClient);
+      await askQuestion();
+      await waitFor(() => expect(screen.getByRole("button", { name: "只用会议回答" })).toHaveFocus());
+
+      await userEvent.tab({ shift: true });
+      expect(screen.getByRole("button", { name: "发送" })).toHaveFocus();
+      await userEvent.keyboard("{Enter}");
+
+      await waitFor(() => expect(apiClient.ask).toHaveBeenCalledWith("p1", "plan-1", true));
+    });
+
+    it("只有材料段落（没有［只用会议回答］）：焦点落在［看看是哪几段］，回车只是展开要发的原文，什么也不发", async () => {
+      const apiClient = client(plan({ counts: { meetings: 0, materials: 1 }, sources: [M1] }));
+      renderAsk(apiClient);
+      await askQuestion();
+      await screen.findByRole("button", { name: "发送" });
+
+      await waitFor(() => expect(screen.getByRole("button", { name: /看看是哪几段/ })).toHaveFocus());
+      expect(screen.getByRole("button", { name: "发送" })).not.toHaveFocus();
+      await userEvent.keyboard("{Enter}");
+
+      expect(await screen.findByText("预算表里的总价")).toBeInTheDocument();
+      expect(apiClient.ask).not.toHaveBeenCalled();
+    });
   });
 
   it("［只用会议回答］发 withMaterials false；会议段落为 0 时没有这个按钮", async () => {
