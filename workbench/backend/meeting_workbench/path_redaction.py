@@ -14,6 +14,7 @@ from typing import Any
 # 网址 https://host/a、3/4、and/or、确认/驳回、Retry/重试、./a、../a 的斜杠都不是起点；
 # 路径前面得是空白、引号、括号或标点（含全角冒号「：」和英文冒号 missing:/Volumes/…）。
 # ~/ 开头的家目录路径也算；file:///… 网址整个换掉。
+# 只换至少两级的路径（/Volumes/会议.m4a）：一级的（/tmp、「确认 /驳回」里的 /驳回）没有目录可藏，不动。
 _START = re.compile(r"(?:file://|(?<![\w/.~])~?)/(?=[^\s/'\"])")
 _NEXT_WORD = re.compile(r" +([^ \t\r\n'\"<>|]+)")
 # 一个词里不会出现的字符：空白、引号、<>|
@@ -23,6 +24,11 @@ _PATH_END_MARKS = ":;,)]}"
 # 没有引号的路径，目录名里可能带空格（「260905 EDC 系统选型」）：往后最多看这几个词，
 # 找到还带 / 的词，就当路径没完
 _LOOKAHEAD = 4
+
+
+def _levels(path: str) -> int:
+    """路径有几级：按 / 切开，空的不算（/tmp/ 也是一级）。"""
+    return len([part for part in path.split("/") if part])
 
 
 def _quoted_end(text: str, start: int, quote: str) -> int:
@@ -36,13 +42,15 @@ def _quoted_end(text: str, start: int, quote: str) -> int:
 
 def _unquoted_end(text: str, start: int) -> int:
     """没有引号的路径到哪里结束：先读到空白为止；目录名里带空格时，下一个词里还有「/」（而且它自己
-    不是新路径的开头）就接着读。没加引号、目录名里空格又多过 4 个词的，目录名的后半段会留下来；
-    Python 异常文本里的路径都带引号，不受这个限制。"""
+    不是新路径的开头）就接着读；读到的还只有一级（/驳回）时不往后读，它多半不是路径。没加引号、
+    目录名里空格又多过 4 个词的，目录名的后半段会留下来；Python 异常文本里的路径都带引号，不受这个限制。"""
     position = start
     while True:
         while position < len(text) and text[position] not in _WORD_BREAK:
             position += 1
         if position >= len(text) or text[position] != " " or text[position - 1] in _PATH_END_MARKS:
+            return position
+        if _levels(text[start:position]) < 2:
             return position
         probe = position
         for _ in range(_LOOKAHEAD):
@@ -63,15 +71,19 @@ def _file_name(path: str) -> str:
 
 
 def redact_paths(text: str) -> str:
-    """文字里的绝对路径（带不带引号都算）换成最后一级的名字，别的字一个不动。"""
+    """文字里至少两级的绝对路径（带不带引号都算）换成最后一级的名字，别的字一个不动。"""
     pieces: list[str] = []
     position = 0
     while match := _START.search(text, position):
         start = match.start()
         quote = text[start - 1] if start and text[start - 1] in "'\"" else None
         end = _quoted_end(text, match.end(), quote) if quote else _unquoted_end(text, match.end())
-        pieces.append(text[position:start])
-        pieces.append(_file_name(text[start:end]))
+        if _levels(text[match.end() : end]) < 2:
+            # 一级的（/tmp、「确认 /驳回」里的 /驳回）：没有目录可藏，按原样放过去
+            pieces.append(text[position:end])
+        else:
+            pieces.append(text[position:start])
+            pieces.append(_file_name(text[start:end]))
         position = end
     pieces.append(text[position:])
     return "".join(pieces)

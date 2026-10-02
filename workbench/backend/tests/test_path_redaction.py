@@ -116,6 +116,36 @@ CASES = [
         "（会议.m4a）读不了",
         id="全角括号后面的路径",
     ),
+    pytest.param("/Volumes/会议.m4a 不存在", "会议.m4a 不存在", id="两级的路径照换"),
+    pytest.param(
+        "[Errno 2] No such file or directory: '/etc/hosts'",
+        "[Errno 2] No such file or directory: 'hosts'",
+        id="带引号的两级路径照换",
+    ),
+    pytest.param("确认 /驳回 都不可用", "确认 /驳回 都不可用", id="一级：空格加斜杠加中文"),
+    pytest.param("Whisper /FunASR 都失败", "Whisper /FunASR 都失败", id="一级：空格加斜杠加英文"),
+    pytest.param("cd /tmp 失败", "cd /tmp 失败", id="一级：/tmp"),
+    pytest.param("cd /tmp/ 失败", "cd /tmp/ 失败", id="一级：带结尾斜杠的 /tmp/"),
+    pytest.param(
+        "[Errno 13] Permission denied: '/tmp'",
+        "[Errno 13] Permission denied: '/tmp'",
+        id="带引号的一级路径不动",
+    ),
+    pytest.param(
+        "确认 /驳回 失败：/Volumes/外置中枢/会议纪要与录音/会议.m4a 不存在",
+        "确认 /驳回 失败：会议.m4a 不存在",
+        id="一级的 /驳回 不动，后面的真路径照换（不能把 /驳回 当成目录名往后读）",
+    ),
+    pytest.param(
+        "Permission denied: ~/会议.m4a",
+        "Permission denied: ~/会议.m4a",
+        id="家目录下一级：没有目录可藏",
+    ),
+    pytest.param(
+        "cannot open file:///会议.m4a",
+        "cannot open file:///会议.m4a",
+        id="file:// 后面只有一级",
+    ),
     pytest.param(
         "Permission denied: ~/Movies/iphone-relay-products/会议.m4a",
         "Permission denied: 会议.m4a",
@@ -178,8 +208,8 @@ def test_no_directory_survives_and_no_absolute_path_start_is_left(text, expected
     # 这几个目录名只在路径的中间出现过：不管哪种写法，都不能留下
     for directory in ("外置中枢", "iphone-relay-products", "/Users/albert", "/Volumes"):
         assert directory not in redacted
-    # 也不剩任何以 / 或 ~/ 开头的路径
-    assert not re.search(r"(?<![\w/.~])(?:~/|/)(?=[^\s/'\"])", redacted)
+    # 也不剩任何以 / 或 ~/ 开头、至少两级的路径（一级的 /tmp、/驳回 按口径不动）
+    assert not re.search(r"(?<![\w/.~])(?:~/|/)[^\s/'\"]+/[^\s'\"]", redacted)
 
 
 def test_job_errors_are_redacted_and_everything_else_is_left_alone():
