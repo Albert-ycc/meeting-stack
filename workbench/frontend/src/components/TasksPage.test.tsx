@@ -835,6 +835,31 @@ describe("审查补丁", () => {
     expect(apiClient.todo).not.toHaveBeenCalled();
   });
 
+  it("记着的所属需求已不在进行中下拉里：单独取回来补成一项，下拉显示的就是列表正按它筛的那条", async () => {
+    window.sessionStorage.setItem("meeting-workbench:view:tasks.requirementDraft", JSON.stringify("req-done"));
+    window.sessionStorage.setItem("meeting-workbench:view:tasks.appliedRequirementId", JSON.stringify("req-done"));
+    const requirement = vi.fn().mockResolvedValue({ id: "req-done", title: "EDC 选型", priority: "P1", status: "done" });
+    const apiClient = makeClient(seedTasks(), { requirement } as Partial<ApiClient>);
+    renderPage(apiClient);
+
+    const select = screen.getByLabelText("所属需求") as HTMLSelectElement;
+    await waitFor(() => expect(select.options[select.selectedIndex]?.textContent).toBe("P1 EDC 选型（已完成）"));
+    expect(requirement).toHaveBeenCalledWith("req-done");
+    expect(apiClient.todo).toHaveBeenLastCalledWith(expect.objectContaining({ requirement_id: "req-done" }));
+  });
+
+  it("记着的所属需求已经删掉：和记着的项目一样剪掉，列表不再按它筛", async () => {
+    window.sessionStorage.setItem("meeting-workbench:view:tasks.requirementDraft", JSON.stringify("req-gone"));
+    window.sessionStorage.setItem("meeting-workbench:view:tasks.appliedRequirementId", JSON.stringify("req-gone"));
+    const requirement = vi.fn().mockRejectedValue(new ApiError("需求不存在", 404, {}));
+    const apiClient = makeClient(seedTasks(), { requirement } as Partial<ApiClient>);
+    renderPage(apiClient);
+
+    await waitFor(() => expect(apiClient.todo).toHaveBeenLastCalledWith({}));
+    const select = screen.getByLabelText("所属需求") as HTMLSelectElement;
+    expect(select.value).toBe("");
+  });
+
   it("日期输入框限定 2000～2099 年", async () => {
     renderPage(makeClient());
     await screen.findByText("安排与华谊的会");

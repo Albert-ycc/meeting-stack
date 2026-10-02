@@ -6,7 +6,7 @@ import { useToast } from "./Toast";
 import { Pagination } from "./Pagination";
 import { DirectionBar } from "./pool/DirectionBar";
 import { linkBody, originalLink } from "./projects/detail/workModel";
-import { PriorityBadge } from "./RequirementBadges";
+import { PriorityBadge, REQUIREMENT_STATUS_LABELS } from "./RequirementBadges";
 import { TaskDrawer } from "./TaskDrawer";
 import { TaskEditModal } from "./TaskEditModal";
 import { ReviewCardsPanel } from "./todo/ReviewCardsPanel";
@@ -168,7 +168,10 @@ export function TasksPage({
   const [appliedDateTo, setAppliedDateTo] = usePersistentState("tasks.appliedDateTo", "");
   const [appliedName, setAppliedName] = usePersistentState("tasks.appliedName", "");
 
-  const [requirementOptions, setRequirementOptions] = useState<RequirementSummary[]>([]);
+  // null＝还没取回来
+  const [requirementOptions, setRequirementOptions] = useState<RequirementSummary[] | null>(null);
+  // 记着的需求不在下拉选项里（已完成、搁置，或超出选项范围）：单独取回来补成一项，下拉才对得上列表正按什么筛
+  const [extraRequirements, setExtraRequirements] = useState<Array<{ id: string; label: string }>>([]);
 
   const projectKey = projectIds.join(",");
 
@@ -289,6 +292,45 @@ export function TasksPage({
       cancelled = true;
     };
   }, [apiClient, scopedProjectId]);
+
+  const missingRequirementKey =
+    requirementOptions === null
+      ? ""
+      : [...new Set([requirementDraft, appliedRequirementId])]
+          .filter((id) => id && id !== "none" && !requirementOptions.some((requirement) => requirement.id === id))
+          .join(",");
+  useEffect(() => {
+    if (!missingRequirementKey) {
+      setExtraRequirements([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const found = await Promise.all(
+        missingRequirementKey.split(",").map(async (id) => {
+          try {
+            const requirement = await apiClient.requirement(id);
+            const status =
+              requirement.status === "active" ? "" : `（${REQUIREMENT_STATUS_LABELS[requirement.status] ?? requirement.status}）`;
+            return { id, label: `${requirement.priority} ${requirement.title}${status}` };
+          } catch (error) {
+            // 需求已经删掉：和记着的项目一样剪掉；别的错（网络）先占个位，免得下拉显示成「全部需求」
+            return error instanceof ApiError && error.status === 404 ? { id, label: "" } : { id, label: "所选需求" };
+          }
+        }),
+      );
+      if (cancelled) return;
+      const gone = new Set(found.filter((item) => !item.label).map((item) => item.id));
+      setExtraRequirements(found.filter((item) => item.label));
+      if (gone.has(requirementDraft)) setRequirementDraft("");
+      if (gone.has(appliedRequirementId)) setAppliedRequirementId("");
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // 缺的 id 由草稿和已应用值算出，它们一变这里就重跑，回来时读到的就是当前值
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiClient, missingRequirementKey]);
 
   const counts = todo?.counts ?? {};
   const tabCounts: Record<TabKey, number> = {
@@ -709,9 +751,14 @@ export function TasksPage({
           <select onChange={(event) => setRequirementDraft(event.target.value)} value={requirementDraft}>
             <option value="">全部需求</option>
             <option value="none">未归需求</option>
-            {requirementOptions.map((requirement) => (
+            {(requirementOptions ?? []).map((requirement) => (
               <option key={requirement.id} value={requirement.id}>
                 {requirement.priority} {requirement.title}
+              </option>
+            ))}
+            {extraRequirements.map((requirement) => (
+              <option key={requirement.id} value={requirement.id}>
+                {requirement.label}
               </option>
             ))}
           </select>
