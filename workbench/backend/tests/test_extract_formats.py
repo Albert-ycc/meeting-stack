@@ -244,6 +244,19 @@ def test_broken_packages_are_corrupt_only_on_parse_failure(tmp_path):
     )
 
 
+def test_unsupported_compression_method_is_unsupported_not_corrupt(tmp_path):
+    """成员用了 zipfile 不支持的压缩方式（deflate64 = 9）：是「读不了这种格式」，不是文件坏了。"""
+    path = build_docx(tmp_path / "deflate64.docx", ["正文"])
+    data = bytearray(path.read_bytes())
+    for signature, offset in ((b"PK\x03\x04", 8), (b"PK\x01\x02", 10)):
+        start = 0
+        while (index := data.find(signature, start)) != -1:
+            data[index + offset : index + offset + 2] = (9).to_bytes(2, "little")
+            start = index + 4
+    path.write_bytes(bytes(data))
+    assert read(path)["status"] == "unsupported"
+
+
 def test_iwork_is_unsupported(tmp_path):
     assert (
         read(write_zip(tmp_path / "总结.pages", {"Index/Document.iwa": b"x"}))["status"]

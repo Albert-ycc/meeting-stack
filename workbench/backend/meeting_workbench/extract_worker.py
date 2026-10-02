@@ -132,14 +132,15 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
         return _status("timeout")
     except PermissionError:
         return _status("permission")
+    except NotImplementedError:
+        # 压缩包用了不支持的压缩方式；它是 RuntimeError 的子类，得排在前面
+        return _status(formats.UNSUPPORTED)
     except RuntimeError as error:
         # zipfile 遇到加密成员抛 RuntimeError；别的 RuntimeError 当解析失败
         if "encrypted" in str(error).lower() or "password" in str(error).lower():
             return _status(formats.PASSWORD)
         traceback.print_exc(file=sys.stderr)
         return _status(formats.CORRUPT)
-    except NotImplementedError:
-        return _status(formats.UNSUPPORTED)  # 压缩包用了不支持的压缩方式
     except OSError as error:
         print(f"{path}: io_error {error!r}", file=sys.stderr)
         return _status("io_error")
