@@ -37,6 +37,14 @@ def write_headers(client):
     return {"X-CSRF-Token": token, "Origin": "http://testserver"}
 
 
+def add_probe_route(app, path, endpoint):
+    """给已建好的应用加一条只在用例里用的路由。本机 build 过前端（workbench/frontend/dist 存在）时，
+    create_app 把静态文件挂在 /，挂载之后再加的路由排在它后面、永远匹配不到（回 404）；
+    插到最前面，用例就不随本机有没有 build 过前端而变。"""
+    app.get(path)(endpoint)
+    app.router.routes.insert(0, app.router.routes.pop())
+
+
 def test_write_endpoints_require_same_origin_csrf_and_json(tmp_path):
     client, _ = make_client(tmp_path)
     bootstrap = client.get("/api/bootstrap")
@@ -221,10 +229,10 @@ def test_out_of_range_integers_in_writes_are_rejected(tmp_path, method, url, bod
 def test_unexpected_integer_overflow_is_a_validation_error_not_a_crash(tmp_path):
     client, _ = make_client(tmp_path)
 
-    @client.app.get("/api/test-overflow")
     def overflow():
         raise OverflowError("Python int too large to convert to SQLite INTEGER")
 
+    add_probe_route(client.app, "/api/test-overflow", overflow)
     client = TestClient(client.app, raise_server_exceptions=False)
     response = client.get("/api/test-overflow")
 
@@ -922,10 +930,10 @@ def test_concurrent_same_name_tags_create_one_and_reject_the_rest(tmp_path):
 def test_unhandled_error_response_still_carries_security_headers(tmp_path):
     client, _ = make_client(tmp_path)
 
-    @client.app.get("/api/test-crash")
     def crash():
         raise RuntimeError("boom")
 
+    add_probe_route(client.app, "/api/test-crash", crash)
     client = TestClient(client.app, raise_server_exceptions=False)
     response = client.get("/api/test-crash")
 
