@@ -2,6 +2,8 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
@@ -869,3 +871,49 @@ def test_minutes_save_requires_matching_nullable_base_version(tmp_path):
         ("vm-20260102-101500",),
     )
     assert current["markdown"] == "# 第一版"
+
+
+def test_meeting_metadata_dedupes_tag_ids_and_rejects_blank_title(tmp_path):
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    seed_editable_meeting(Database(settings.database_path), settings.archive_root)
+    tag = client.post("/api/tags", json={"name": "周会"}, headers=headers).json()
+    url = "/api/meetings/vm-20260102-101500"
+    title_before = client.get(url).json()["title"]
+
+    duplicated = client.patch(
+        url, json={"title": "新标题", "tag_ids": [tag["id"], tag["id"]]}, headers=headers
+    )
+    assert duplicated.status_code == 200
+    assert [item["id"] for item in duplicated.json()["tags"]] == [tag["id"]]
+    assert duplicated.json()["title"] == "新标题"
+
+    for title in ["", "   ", "长" * 201]:
+        assert client.patch(url, json={"title": title}, headers=headers).status_code == 422
+    assert client.get(url).json()["title"] == "新标题" != title_before
+
+
+@pytest.mark.parametrize("name", ["", "   ", "长" * 65])
+def test_tag_name_must_be_non_blank_and_short(tmp_path, name):
+    client, _ = make_client(tmp_path)
+    headers = write_headers(client)
+
+    assert client.post("/api/tags", json={"name": name}, headers=headers).status_code == 422
+    assert client.get("/api/tags").json() == []
+
+
+def test_concurrent_same_name_tags_create_one_and_reject_the_rest(tmp_path):
+    client, _ = make_client(tmp_path)
+    headers = write_headers(client)
+    client = TestClient(client.app, raise_server_exceptions=False, cookies=client.cookies)
+    barrier = threading.Barrier(8)
+
+    def create(_index):
+        barrier.wait()
+        return client.post("/api/tags", json={"name": " 同名 "}, headers=headers).status_code
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        statuses = sorted(pool.map(create, range(8)))
+
+    assert statuses == [200] + [400] * 7
+    assert [tag["name"] for tag in client.get("/api/tags").json()] == ["同名"]

@@ -18,7 +18,14 @@ from typing import Annotated, Any, Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from .config import Settings
 from .backup import BackupManager
@@ -514,7 +521,7 @@ class RequirementTasksInput(BaseModel):
 
 
 class TagInput(BaseModel):
-    name: str
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
     color: str = "#667085"
 
 
@@ -673,7 +680,10 @@ class ReExtractInput(BaseModel):
 
 
 class MeetingMetadataInput(BaseModel):
-    title: str | None = None
+    title: (
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+        | None
+    ) = None
     project_id: str | None = None
     tag_ids: list[str] | None = None
     requirement_ids: list[str] | None = None
@@ -3541,14 +3551,15 @@ def create_app(
                     event_payload["project_to"] = target
                     event_payload["origin_before"] = current["project_origin"]
             if body.tag_ids is not None:
-                for tag_id in body.tag_ids:
+                tag_ids = dedupe_preserve_order(body.tag_ids)
+                for tag_id in tag_ids:
                     if (
                         connection.execute("SELECT 1 FROM tags WHERE id=?", (tag_id,)).fetchone()
                         is None
                     ):
                         raise NotFoundError(f"标签不存在：{tag_id}")
                 connection.execute("DELETE FROM meeting_tags WHERE meeting_id=?", (meeting_id,))
-                for tag_id in body.tag_ids:
+                for tag_id in tag_ids:
                     connection.execute(
                         "INSERT INTO meeting_tags(meeting_id, tag_id) VALUES (?, ?)",
                         (meeting_id, tag_id),
@@ -5031,14 +5042,15 @@ def create_app(
 
     @app.post("/api/tags")
     def create_tag(body: TagInput):
-        name = body.name.strip()
-        if db.query_one("SELECT 1 FROM tags WHERE name=?", (name,)):
-            raise HTTPException(400, "标签已存在")
         tag_id = f"tag-{secrets.token_hex(8)}"
-        db.execute(
-            "INSERT INTO tags(id, name, color, created_at) VALUES (?, ?, ?, ?)",
-            (tag_id, name, body.color, utc_now()),
+        # 先查后插在并发同名时会撞 UNIQUE；让插入本身判断重名
+        inserted = db.execute_rowcount(
+            "INSERT INTO tags(id, name, color, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(name) DO NOTHING",
+            (tag_id, body.name, body.color, utc_now()),
         )
+        if not inserted:
+            raise HTTPException(400, "标签已存在")
         db.add_event("tag_created", actor="user", payload={"tag_id": tag_id})
         return db.query_one("SELECT * FROM tags WHERE id = ?", (tag_id,))
 
