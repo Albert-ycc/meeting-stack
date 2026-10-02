@@ -32,6 +32,8 @@ export function useMiniPlayer() {
   const [playing, setPlaying] = useState(false);
   const [positionMs, setPositionMs] = useState(0);
   const stopAtRef = useRef(0);
+  // 还在等元数据的那次起播：新点一个 ▶ 时要撤掉，不然元数据到了会跳回上一次点的位置
+  const pendingRef = useRef<(() => void) | null>(null);
 
   const play = useCallback((url: string, atMs: number, label: string, options?: PlayOptions) => {
     const clipped = options?.clip !== false;
@@ -41,14 +43,26 @@ export function useMiniPlayer() {
     setPositionMs(start);
     const audio = audioRef.current;
     if (!audio) return;
+    const stale = pendingRef.current;
+    if (stale) audio.removeEventListener("loadedmetadata", stale);
+    pendingRef.current = null;
     const begin = () => {
+      pendingRef.current = null;
       audio.currentTime = start / 1000;
       void audio.play?.()?.catch?.(() => setPlaying(false));
     };
+    const wait = () => {
+      pendingRef.current = begin;
+      audio.addEventListener("loadedmetadata", begin, { once: true });
+    };
     if (audio.getAttribute("src") !== url) {
       audio.setAttribute("src", url);
-      audio.addEventListener("loadedmetadata", begin, { once: true });
+      wait();
       audio.load?.();
+    } else if (stale) {
+      // 同一个录音还没加载完：接着等，元数据到了从这一次点的位置起播；上次没加载成就重新加载
+      wait();
+      if (audio.error) audio.load?.();
     } else {
       begin();
     }
