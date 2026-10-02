@@ -200,6 +200,25 @@ def test_files_still_changing_are_skipped(tmp_path):
     assert keys(db)["刚下载.pdf"] is not None
 
 
+def test_files_still_changing_do_not_take_up_the_batch_and_future_times_are_not_waited_for(
+    tmp_path,
+):
+    """一批 200 个名额按修改时间从新到旧取：还在 2 分钟等待里的文件排在最前，占满名额又都被跳过，
+    后面的文件一个都算不到。修改时间在未来的（相机时钟错）排得更前，而且永远过不了等待。"""
+    db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path)
+    recent = time.time() - 10
+    for number in range(material_content.KEY_BATCH):
+        put(root / "刚拷进来" / f"照片{number:03d}.txt", f"第 {number} 张", when=recent)
+    put(root / "相机" / "时钟错了.txt", "未来", when=time.time() + 365 * 86400)
+    put(root / "需求说明.txt", "正常的老文件")
+    index(indexer)
+    content.run_round()
+    found = keys(db)
+    assert found["需求说明.txt"] is not None
+    assert found["相机/时钟错了.txt"] is not None
+    assert not any(found[f"刚拷进来/照片{number:03d}.txt"] for number in range(3))
+
+
 def test_write_back_is_skipped_when_the_file_changes_while_hashing(tmp_path, monkeypatch):
     db, settings, root, root_id, content, indexer, _now, _state = setup(tmp_path)
     doc = put(root / "报价单.csv", "1,2")

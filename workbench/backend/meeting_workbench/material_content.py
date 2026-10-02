@@ -38,6 +38,7 @@ from .material_rules import (
     IWORK_EXTS,
     LAYER_MEDIA,
     LAYER_UNSUPPORTED,
+    MEDIA_EXTS,
     layer_for_ext,
 )
 from .materials import ROOT_ONLINE, volume_state
@@ -53,6 +54,9 @@ READ_CHUNK = 1024 * 1024
 
 SETTLE_SECONDS = 120
 MEDIA_SETTLE_SECONDS = 600
+# 修改时间比现在晚这么多的不算「还在变」：拷贝中的文件不会是未来时间，多半是相机时钟错、FAT 卡上按
+# 别的时区写的时间，当成还在变就永远轮不到
+FUTURE_GRACE_SECONDS = 300
 PERMISSION_RETRY = timedelta(hours=24)
 IO_FIRST_RETRY = timedelta(hours=1)
 IO_SECOND_RETRY = timedelta(hours=24)
@@ -73,6 +77,7 @@ ERROR_UNSUPPORTED = "unsupported"
 
 _CONTENT_EXTS_SQL = ", ".join(f"'{ext}'" for ext in sorted(CONTENT_EXTS | IWORK_EXTS))
 _KEYED_EXTS_SQL = ", ".join(f"'{ext}'" for ext in sorted(CONTENT_EXTS))
+_MEDIA_EXTS_SQL = ", ".join(f"'{ext}'" for ext in sorted(MEDIA_EXTS))
 
 
 class _EndRound(Exception):
@@ -372,6 +377,20 @@ class MaterialContent:
             ],
         )
 
+    def _settling_sql(self) -> tuple[str, list[Any]]:
+        """还在变（判断和 key_file 一样）。这些排到同一档的最后：按修改时间从新到旧排它们总在最前，
+        一批 200 个名额会被它们占满、又全被跳过，后面的文件永远轮不到。"""
+        wall = self.wall()
+        return (
+            f"""(f.mtime_ns <= ?
+                 AND f.mtime_ns > CASE WHEN f.ext IN ({_MEDIA_EXTS_SQL}) THEN ? ELSE ? END)""",
+            [
+                int((wall + FUTURE_GRACE_SECONDS) * 1e9),
+                int((wall - MEDIA_SETTLE_SECONDS) * 1e9),
+                int((wall - SETTLE_SECONDS) * 1e9),
+            ],
+        )
+
     def _needs_key_sql(self) -> str:
         return "(f.content_key IS NULL OR f.content_size IS NOT f.size OR f.content_mtime_ns IS NOT f.mtime_ns)"
 
@@ -403,13 +422,20 @@ class MaterialContent:
             chosen.setdefault(int(row["id"]), row)
         if len(chosen) < limit:
             priority_sql, priority_params = self._priority_sql(online)
+            settling_sql, settling_params = self._settling_sql()
             for row in self.db.query_all(
                 f"""SELECT f.*, {priority_sql} AS priority FROM material_files f
                      WHERE f.root_id IN ({marks}) AND f.gone_at IS NULL AND f.zone != 'cards'
                        AND f.ext IN ({_CONTENT_EXTS_SQL}) AND {retry_sql}
-                     ORDER BY priority, f.mtime_ns DESC, f.id
+                     ORDER BY priority, {settling_sql}, f.mtime_ns DESC, f.id
                      LIMIT ?""",
-                (*priority_params, *online, *retry_params, limit - len(chosen)),
+                (
+                    *priority_params,
+                    *online,
+                    *retry_params,
+                    *settling_params,
+                    limit - len(chosen),
+                ),
             ):
                 chosen.setdefault(int(row["id"]), dict(row))
         return list(chosen.values())
@@ -489,7 +515,7 @@ class MaterialContent:
             return False
         layer = layer_for_ext(ext)
         settle = MEDIA_SETTLE_SECONDS if layer == LAYER_MEDIA else SETTLE_SECONDS
-        if self.wall() - mtime_ns / 1e9 < settle:
+        if -FUTURE_GRACE_SECONDS <= self.wall() - mtime_ns / 1e9 < settle:
             return False
         try:
             key, _read_size = compute_content_key(path)
