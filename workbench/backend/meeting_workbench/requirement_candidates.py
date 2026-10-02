@@ -1313,7 +1313,10 @@ def restore_candidate(
     db: Database, candidate_id: str, *, now: datetime | None = None
 ) -> dict[str, Any]:
     """撤销丢掉：30 天内回到待认领，丢掉时摘下来的任务挂回去，回到丢掉之前的样子（和撤销合并一致）。
-    这期间已经被挂到别的需求或候选上的任务不动。"""
+    这期间已经被挂到别的需求或候选上的任务不动。
+
+    同项目这期间又有了同名的待认领候选时不撤回（同项目同名的待认领候选只该有一条）：并进那条做不到可逆，
+    也会丢掉这条自己的说明和同一场会的第二句原话，所以只提示，这条原样留在「已丢掉」里。"""
     moment = now or datetime.now(UTC)
     stamp = moment.isoformat()
     with db.transaction() as connection:
@@ -1324,6 +1327,16 @@ def restore_candidate(
             days=DROP_UNDO_DAYS
         ):
             raise ConflictError(f"丢掉超过 {DROP_UNDO_DAYS} 天，不能撤销了")
+        same_name = _pending_same_name(
+            connection, candidate["name_key"], candidate["project_id"], {candidate_id}
+        )
+        if same_name is not None:
+            title = connection.execute(
+                "SELECT title FROM requirement_candidates WHERE id=?", (same_name,)
+            ).fetchone()["title"]
+            raise ConflictError(
+                f"同项目里已经有一条同名的待认领候选「{title}」，先认领、合并或丢掉那一条，再撤销这条"
+            )
         for task_id in json.loads(candidate["drop_undo"] or "[]"):
             if connection.execute(
                 """UPDATE tasks SET candidate_id=?, updated_at=?
