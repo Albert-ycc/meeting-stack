@@ -5,7 +5,7 @@ import { formatTime } from "../format";
 import { isComposingKeydown } from "../keyboard";
 import type { CueTermDetail } from "./graph/graphTypes";
 import type { GlossaryTerm, GlossaryTermConflict, Project } from "../types";
-import { GLOSSARY_CATEGORIES, formatFullDate, termNameError } from "./glossaryModel";
+import { GLOSSARY_CATEGORIES, formatFullDate, glossaryTextProblem, termNameError } from "./glossaryModel";
 import { IconBack, IconPlay, IconTrash, IconX } from "./glossaryUi";
 
 /**
@@ -110,8 +110,9 @@ function ChipField({
   const add = () => {
     const value = draft.trim();
     if (!value) return;
-    if (value.length < min || value.length > max) {
-      setProblem(`每条 ${min}–${max} 字`);
+    const wrong = glossaryTextProblem(value, min, max);
+    if (wrong) {
+      setProblem(wrong === "length" ? `每条 ${min}–${max} 字` : "要有中文或字母，不能是纯数字");
       return;
     }
     if (values.includes(value) || value === term) {
@@ -325,7 +326,7 @@ function TermEditorForm({
     const take = (values: string[], pending: string, kind: "aliases" | "also") => {
       const value = pending.trim();
       const [min, max] = CHIP_LIMITS[kind];
-      if (!value || value.length < min || value.length > max || values.includes(value) || value === trimmed) return values;
+      if (!value || glossaryTextProblem(value, min, max) || values.includes(value) || value === trimmed) return values;
       return [...values, value];
     };
     return { aliases: take(draft.aliases, aliasDraft, "aliases"), also: take(draft.also, alsoDraft, "also") };

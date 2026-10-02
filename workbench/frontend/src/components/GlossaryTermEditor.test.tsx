@@ -263,6 +263,38 @@ describe("GlossaryTermEditor", () => {
     expect(screen.getByText("已经有这一条了")).toBeTruthy();
   });
 
+  it("校验跟后端一致：错写、也叫不能纯数字、须含中文或字母，长度按字数算；不合规的不在保存时带上", async () => {
+    const apiClient = client();
+    renderEditor(apiClient);
+    fireEvent.change(screen.getByLabelText("正确写法"), { target: { value: "随访" } });
+    const alias = screen.getByLabelText("添加错写");
+    const also = screen.getByLabelText("添加也叫");
+
+    for (const bad of ["12", "，，"]) {
+      fireEvent.change(alias, { target: { value: bad } });
+      fireEvent.keyDown(alias, { key: "Enter" });
+      expect(screen.getByText("要有中文或字母，不能是纯数字")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: `移除错写：${bad}` })).toBeNull();
+    }
+    fireEvent.change(also, { target: { value: "2026" } });
+    fireEvent.keyDown(also, { key: "Enter" });
+    expect(screen.queryByRole("button", { name: "移除也叫：2026" })).toBeNull();
+
+    // 8 个字（含 emoji，UTF-16 是 14 位）后端收，前端也得收
+    fireEvent.change(alias, { target: { value: "ab😀😀😀😀😀😀" } });
+    fireEvent.keyDown(alias, { key: "Enter" });
+    expect(alias).toHaveValue("");
+
+    // 敲了没回车的不合规错写，保存时不带上，免得整条被后端拒掉
+    fireEvent.change(alias, { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "加入词典" }));
+    await waitFor(() =>
+      expect(apiClient.createGlossaryTerm).toHaveBeenCalledWith(
+        expect.objectContaining({ aliases: ["ab😀😀😀😀😀😀"], also: [] }),
+      ),
+    );
+  });
+
   it("编辑时没改动，名称框里回车不再保存一遍", async () => {
     const apiClient = client();
     renderEditor(apiClient, { term: projectTerm });

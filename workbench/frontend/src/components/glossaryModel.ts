@@ -84,11 +84,22 @@ export function matchesCandidateSearch(word: MaterialWord, needle: string): bool
   return word.term.toLowerCase().includes(needle) || word.wrongs.some((wrong) => wrong.text.toLowerCase().includes(needle));
 }
 
+/**
+ * 正确写法、错写、也叫共用的校验，和后端 glossary.validate_term_text 同一套：
+ * NFKC 后按字数（码点）算长度，不能纯数字，须含中文或字母。不合规时说是长度还是内容的问题。
+ */
+export function glossaryTextProblem(text: string, min: number, max: number): "length" | "content" | null {
+  const value = text.normalize("NFKC").trim();
+  const length = Array.from(value).length;
+  if (length < min || length > max) return "length";
+  if (/^\d+$/.test(value) || !/[A-Za-z一-鿿]/.test(value)) return "content";
+  return null;
+}
+
 /** 正确写法：1–40 字，须含中文或字母；空串不报错（还没写）。 */
 export function termNameError(text: string): string {
   if (!text) return "";
-  if (text.length > 40 || !/[一-龥A-Za-z]/.test(text)) return "1–40 字，须包含中文或字母";
-  return "";
+  return glossaryTextProblem(text, 1, 40) ? "1–40 字，须包含中文或字母" : "";
 }
 
 /** 「2026年08月25日」；不是合法时间就原样返回前 10 位 */
