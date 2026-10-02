@@ -39,25 +39,39 @@ class AsrEvaluationError(ValueError):
 
 
 def _edit_distance(reference: str, hypothesis: str) -> int:
+    """Levenshtein 距离（增、删、改各算 1）。位并行算法（Myers 1999、Hyyrö 2003）：短串的每个位置占
+    Python 大整数的一位，填一行表只要十来次整数运算，4000×4000 约 10 毫秒（逐格填表要近 2 秒）。
+    结果和逐格填表逐值相等，用例拿逐格填表的写法对拍。"""
     if reference == hypothesis:
         return 0
     if len(reference) < len(hypothesis):
         reference, hypothesis = hypothesis, reference
     if not hypothesis:
         return len(reference)
-    previous = list(range(len(hypothesis) + 1))
-    for row, reference_char in enumerate(reference, start=1):
-        current = [row]
-        for column, hypothesis_char in enumerate(hypothesis, start=1):
-            current.append(
-                min(
-                    current[-1] + 1,
-                    previous[column] + 1,
-                    previous[column - 1] + (reference_char != hypothesis_char),
-                )
-            )
-        previous = current
-    return previous[-1]
+    width = len(hypothesis)
+    at: dict[str, int] = {}
+    for column, char in enumerate(hypothesis):
+        at[char] = at.get(char, 0) | (1 << column)
+    mask = (1 << width) - 1
+    last = 1 << (width - 1)
+    # 同一行里相邻两格差 +1 / -1 的位置；第 0 行是 0、1、2…，起初全是 +1
+    plus, minus = mask, 0
+    distance = width
+    for char in reference:
+        match = at.get(char, 0)
+        diagonal = match | minus
+        carry = (((match & plus) + plus) ^ plus) | match
+        row_plus = minus | ~(carry | plus)
+        row_minus = plus & carry
+        if row_plus & last:
+            distance += 1
+        elif row_minus & last:
+            distance -= 1
+        row_plus = (row_plus << 1) | 1
+        row_minus <<= 1
+        plus = (row_minus | ~(diagonal | row_plus)) & mask
+        minus = row_plus & diagonal & mask
+    return distance
 
 
 def _is_hallucination(
