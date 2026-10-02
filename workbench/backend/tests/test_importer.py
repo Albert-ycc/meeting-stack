@@ -2563,3 +2563,22 @@ def test_malformed_whisper_reference_is_skipped_and_minutes_still_import(tmp_pat
     meeting = db.query_one("SELECT current_minutes_version_id FROM meetings")
     assert meeting["current_minutes_version_id"]
     assert db.exact_search("主稿正文")
+
+
+@pytest.mark.parametrize(
+    "meeting_id", ["fp-3fa20231109e7c0d4b19a2c", "legacy-9b20240229aa77cc01de"]
+)
+def test_hex_in_fingerprint_ids_is_not_read_as_a_recording_date(tmp_path, meeting_id):
+    directory = tmp_path / "会议目录"
+    directory.mkdir()
+    mtime = datetime(2026, 3, 4, 5, 6, 7).timestamp()
+    os.utime(directory, (mtime, mtime))
+
+    recorded_at = datetime.fromisoformat(ArchiveImporter._recording_date(meeting_id, directory))
+
+    assert recorded_at.timestamp() == mtime
+    assert ArchiveImporter._untitled_label(meeting_id) == "未命名录音"
+
+
+def test_vm_ids_still_carry_their_recording_date():
+    assert ArchiveImporter._untitled_label("vm-20260705-101500") == "260705 未命名录音"

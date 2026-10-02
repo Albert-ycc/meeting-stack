@@ -2477,7 +2477,10 @@ class ArchiveImporter:
         编号对人没有检索价值；退成“日期 + 未命名录音”至少能按时间线认出来，
         纪要补齐后下一轮扫描会自动换回真实标题。
         """
-        match = re.search(r"(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)", meeting_id)
+        # 只有 vm- 编号带录音时间戳；fp-/legacy- 后面是哈希，碰巧像日期也不能当日期。
+        match = meeting_id.startswith("vm-") and re.search(
+            r"(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)", meeting_id
+        )
         if not match:
             return UNTITLED_TITLE_SUFFIX
         return f"{match.group(1)[2:]}{match.group(2)}{match.group(3)} {UNTITLED_TITLE_SUFFIX}"
@@ -2493,7 +2496,7 @@ class ArchiveImporter:
 
     @staticmethod
     def _recording_date(meeting_id: str, directory: Path) -> str | None:
-        match = re.search(
+        match = meeting_id.startswith("vm-") and re.search(
             r"(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)[-_]?([0-2]\d)?([0-5]\d)?([0-5]\d)?", meeting_id
         )
         if match:
