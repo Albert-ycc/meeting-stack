@@ -1013,12 +1013,15 @@ describe("RequirementFormPage 进页面时的焦点（审查 B5）", () => {
 
   it("认领、修改：数据读回来、输入框能用了，焦点放到需求名上", async () => {
     renderForm({ requirementCandidate: vi.fn().mockResolvedValue(candidateDetail()) });
-    expect(await screen.findByDisplayValue("京东仓签收凭证")).toHaveFocus();
+    // 焦点是数据读回来那次渲染之后的 effect 里才放上去的，机器一忙断言会早一拍
+    const title = await screen.findByDisplayValue("京东仓签收凭证");
+    await waitFor(() => expect(title).toHaveFocus());
   });
 
   it("修改页读回来以后焦点也在需求名上", async () => {
     renderEdit();
-    expect(await screen.findByDisplayValue("京东科研仓对接")).toHaveFocus();
+    const title = await screen.findByDisplayValue("京东科研仓对接");
+    await waitFor(() => expect(title).toHaveFocus());
   });
 
   it("候选已经被处理过：输入框是灰的，不抢焦点", async () => {
