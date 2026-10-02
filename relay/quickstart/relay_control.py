@@ -924,6 +924,19 @@ def _source_key(audio: Path, *, normalized_pcm: bool = False) -> str:
     return "path:" + str(audio.resolve())
 
 
+def _stat_fingerprint(path: Path) -> tuple[int, int, int, int]:
+    # 写事务里只比廉价指纹：换文件会换 inode，任何写入或改 mtime 都会动 ctime
+    stat = path.lstat()
+    return (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _snapshot_fingerprints(files: dict[str, Path]) -> dict[str, tuple[int, int, int, int]]:
+    try:
+        return {relative: _stat_fingerprint(path) for relative, path in files.items()}
+    except OSError as exc:
+        raise PublishValidationError("产物在校验后无法读取") from exc
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -2178,17 +2191,23 @@ class RelayControl:
         self,
         installed: Path | None,
         recovery_root: Path | None,
+        install_row: sqlite3.Row | None = None,
     ) -> None:
         del installed
         if recovery_root is None or not recovery_root.exists():
             return
         try:
-            journal = json.loads(
-                (recovery_root / "journal.json").read_text(encoding="utf-8")
-            )
-            job_id = journal.get("job_id")
-            with self._connect() as connection:
-                row = self._job_row(connection, str(job_id))
+            if install_row is not None:
+                # 安装在写事务外做，CAS 失败时任务可能已被重试成新 attempt；
+                # 按安装时的那一行回滚（安装方持有归档锁，期间没人能把它标成 ready）。
+                row = install_row
+            else:
+                journal = json.loads(
+                    (recovery_root / "journal.json").read_text(encoding="utf-8")
+                )
+                job_id = journal.get("job_id")
+                with self._connect() as connection:
+                    row = self._job_row(connection, str(job_id))
             self._recover_whisper_install(row, recovery_root)
         except Exception:
             # 恢复状态必须留给下轮 reconcile；不能在异常路径破坏唯一备份。
@@ -2210,24 +2229,27 @@ class RelayControl:
     ) -> bool:
         installed: Path | None = None
         backup: Path | None = None
+        row: sqlite3.Row | None = None
         committed = False
         with self._archive_lock():
             connection = self._connect()
             try:
-                connection.execute("BEGIN IMMEDIATE")
                 row = self._job_row(connection, job_id)
                 if (
                     row["status"] not in {"completed_unreviewed", "draft_modified"}
                     or row["whisper_status"] not in {"pending", "running"}
                     or int(row["whisper_attempt"]) != int(row["current_attempt"])
                 ):
-                    connection.rollback()
                     return False
+                # 拷贝和原音频哈希在写事务外做（归档锁仍持有，文件侧照旧互斥）；
+                # 期间任务若被改动，下面的 CAS 失败并按 journal 撤掉这次安装。
                 installed, backup = self._install_whisper_ref(
                     row,
                     product_archive,
                     source_boundary=self.products_root,
                 )
+                connection.execute("BEGIN IMMEDIATE")
+                current = self._job_row(connection, job_id)
                 now = _now()
                 updated = connection.execute(
                     """
@@ -2258,7 +2280,7 @@ class RelayControl:
                     job_id,
                     row["current_attempt"],
                     "whisper_reconciled",
-                    row["whisper_status"],
+                    current["whisper_status"],
                     "ready",
                     stage="whisper",
                     payload={"source": str(product_archive)},
@@ -2270,7 +2292,7 @@ class RelayControl:
             except Exception:
                 if not committed:
                     connection.rollback()
-                    self._rollback_whisper_install(installed, backup)
+                    self._rollback_whisper_install(installed, backup, row)
                 raise
             finally:
                 connection.close()
@@ -3895,9 +3917,9 @@ class RelayControl:
         connection = self._connect()
         backup: Path | None = None
         installed: Path | None = None
+        row: sqlite3.Row | None = None
         committed = False
         try:
-            connection.execute("BEGIN IMMEDIATE")
             row = self._job_row(connection, job_id)
             if (
                 int(row["current_attempt"]) != attempt_no
@@ -3910,6 +3932,8 @@ class RelayControl:
                     "Whisper 重试回执与当前 attempt/generation/worker 不一致"
                 )
 
+            # 拷贝和原音频哈希在写事务外做；期间 attempt/generation 若变化，
+            # 下面带全部身份条件的 CAS 失败并按 journal 撤掉这次安装。
             if success:
                 if artifact_dir is None:
                     raise ArtifactValidationError(
@@ -3926,6 +3950,7 @@ class RelayControl:
                     source_boundary=self.archive_root,
                 )
 
+            connection.execute("BEGIN IMMEDIATE")
             now = _now()
             updated = connection.execute(
                 """
@@ -3972,7 +3997,7 @@ class RelayControl:
         except Exception:
             if not committed:
                 connection.rollback()
-                self._rollback_whisper_install(installed, backup)
+                self._rollback_whisper_install(installed, backup, row)
             raise
         finally:
             connection.close()
@@ -5510,7 +5535,8 @@ class RelayControl:
         }
 
     @staticmethod
-    def _assert_publish_snapshot_unchanged(validation: dict[str, Any]) -> None:
+    def _publish_snapshot_files(validation: dict[str, Any]) -> dict[str, Path]:
+        """发布目录的结构复核（manifest 哈希、路径链、符号链接、文件集合），返回待核对的产物。"""
         manifest = Path(validation["manifest_path"])
         if (
             not manifest.is_file()
@@ -5559,14 +5585,42 @@ class RelayControl:
         }
         if physical_files != set(validation["artifact_hashes"]):
             raise PublishValidationError("发布目录文件集合在校验后发生变化")
+        return {
+            relative_path: root / relative_path
+            for relative_path in validation["artifact_hashes"]
+        }
+
+    @staticmethod
+    def _assert_publish_snapshot_unchanged(validation: dict[str, Any]) -> None:
+        files = RelayControl._publish_snapshot_files(validation)
         for relative_path, expected_hash in validation["artifact_hashes"].items():
-            candidate = root / relative_path
+            candidate = files[relative_path]
             if (
                 not candidate.is_file()
                 or candidate.is_symlink()
                 or _sha256_file(candidate) != expected_hash
             ):
                 raise PublishValidationError("发布产物在校验后发生变化")
+
+    def _capture_publish_fingerprints(
+        self, validation: dict[str, Any]
+    ) -> dict[str, tuple[int, int, int, int]]:
+        """写事务外完整复验一遍哈希，并记下复验前后都没变的廉价指纹，供事务内比对。"""
+        before = _snapshot_fingerprints(self._publish_snapshot_files(validation))
+        self._assert_publish_snapshot_unchanged(validation)
+        after = _snapshot_fingerprints(self._publish_snapshot_files(validation))
+        if before != after:
+            raise PublishValidationError("发布产物在校验期间发生变化")
+        return after
+
+    @staticmethod
+    def _assert_publish_fingerprints_unchanged(
+        validation: dict[str, Any],
+        fingerprints: dict[str, tuple[int, int, int, int]],
+    ) -> None:
+        files = RelayControl._publish_snapshot_files(validation)
+        if _snapshot_fingerprints(files) != fingerprints:
+            raise PublishValidationError("发布产物在校验后发生变化")
 
     def _capture_completion_snapshot(
         self, report: ArchiveValidationReport
@@ -5597,11 +5651,18 @@ class RelayControl:
             "manifest_sha256": _sha256_file(manifest),
             "artifact_hashes": expected,
         }
+        # 完整哈希放在写事务外；事务内只比对复验前后都没变的廉价指纹
+        before = _snapshot_fingerprints(self._completion_snapshot_files(snapshot))
         self._assert_completion_snapshot_unchanged(snapshot)
+        after = _snapshot_fingerprints(self._completion_snapshot_files(snapshot))
+        if before != after:
+            raise PublishValidationError("完成回执产物在校验期间发生变化")
+        snapshot["artifact_fingerprints"] = after
         return snapshot
 
     @staticmethod
-    def _assert_completion_snapshot_unchanged(snapshot: dict[str, Any]) -> None:
+    def _completion_snapshot_files(snapshot: dict[str, Any]) -> dict[str, Path]:
+        """完成回执目录的结构复核（manifest 哈希、路径链、符号链接、文件集合），返回待核对的产物。"""
         root = Path(snapshot["root"])
         archive_root = Path(snapshot["archive_root"])
         if archive_root.is_symlink() or not archive_root.is_dir():
@@ -5651,12 +5712,23 @@ class RelayControl:
             and path != manifest
             and not _is_archive_noise(path, root)
         }
-        expected = snapshot["artifact_hashes"]
-        if set(physical) != set(expected):
+        if set(physical) != set(snapshot["artifact_hashes"]):
             raise PublishValidationError("完成回执文件集合在校验后发生变化")
-        for relative_path, path in physical.items():
+        return physical
+
+    @staticmethod
+    def _assert_completion_snapshot_unchanged(snapshot: dict[str, Any]) -> None:
+        expected = snapshot["artifact_hashes"]
+        for relative_path, path in RelayControl._completion_snapshot_files(
+            snapshot
+        ).items():
             if _sha256_file(path) != expected[relative_path]:
                 raise PublishValidationError("完成回执产物在校验后发生变化")
+
+    def _assert_completion_snapshot_fingerprints(self, snapshot: dict[str, Any]) -> None:
+        files = self._completion_snapshot_files(snapshot)
+        if _snapshot_fingerprints(files) != snapshot["artifact_fingerprints"]:
+            raise PublishValidationError("完成回执产物在校验后发生变化")
 
     def mark_draft_modified(self, job_id: str) -> dict[str, Any]:
         allowed = {"completed_unreviewed", "published", "draft_modified"}
@@ -5931,6 +6003,8 @@ class RelayControl:
             snapshot_status = row["status"]
             snapshot_attempt = int(row["current_attempt"])
             snapshot_archive = row["archive_dir"]
+        # 大文件哈希不能占着任务库写锁做（GB 级 WAV 在外置盘上要几十秒，会把 worker 回写挤超时）
+        fingerprints = self._capture_publish_fingerprints(validation)
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -5945,7 +6019,7 @@ class RelayControl:
                     )
                 if current["published_manifest_sha256"] != validation["manifest_sha256"]:
                     raise PublishValidationError("已发布 manifest 已被改写，拒绝刷新发布快照")
-                self._assert_publish_snapshot_unchanged(validation)
+                self._assert_publish_fingerprints_unchanged(validation, fingerprints)
                 connection.execute(
                     """
                     UPDATE jobs
@@ -5993,7 +6067,7 @@ class RelayControl:
                         "manifest_path": validation["manifest_path"],
                     },
                 )
-                self._assert_publish_snapshot_unchanged(validation)
+                self._assert_publish_fingerprints_unchanged(validation, fingerprints)
                 connection.commit()
                 self._assert_published_after_commit(
                     job_id, int(current["current_attempt"]), validation
@@ -6008,7 +6082,7 @@ class RelayControl:
                 or current["archive_dir"] != snapshot_archive
             ):
                 raise InvalidTransitionError("发布校验期间任务状态已变化")
-            self._assert_publish_snapshot_unchanged(validation)
+            self._assert_publish_fingerprints_unchanged(validation, fingerprints)
             now = _now()
             previous_published_snapshot = None
             if current["published_manifest_path"]:
@@ -6090,7 +6164,7 @@ class RelayControl:
                         else {}
                     ),
                 )
-            self._assert_publish_snapshot_unchanged(validation)
+            self._assert_publish_fingerprints_unchanged(validation, fingerprints)
             connection.commit()
             self._assert_published_after_commit(
                 job_id, snapshot_attempt, validation
@@ -6235,7 +6309,7 @@ class RelayControl:
             current = self._job_row(connection, job_id)
             if int(current["current_attempt"]) != callback_attempt:
                 raise InvalidTransitionError("attempt 已在校验期间发生变化")
-            self._assert_completion_snapshot_unchanged(completion_snapshot)
+            self._assert_completion_snapshot_fingerprints(completion_snapshot)
             if recovery_stage is not None:
                 if (
                     current["status"] != "failed"
@@ -6341,7 +6415,21 @@ class RelayControl:
                     stage="whisper",
                     payload={"error": whisper_error} if whisper_error else {},
                 )
+            self._assert_completion_snapshot_fingerprints(completion_snapshot)
+        # 事务内只比了廉价指纹；提交后再完整复验一遍哈希，指纹看不出的改写在这里失败收口
+        try:
             self._assert_completion_snapshot_unchanged(completion_snapshot)
+        except Exception as exc:
+            self.fail(
+                job_id,
+                stage="archive_validation",
+                error="completion_post_commit_validation",
+                expected_attempt=callback_attempt,
+                expected_status="completed_unreviewed",
+            )
+            if isinstance(exc, PublishValidationError):
+                raise
+            raise PublishValidationError("完成回执提交后完整性复验失败") from exc
         if self.auto_pending_archive:
             try:
                 self._promote_pending_archive(job_id)

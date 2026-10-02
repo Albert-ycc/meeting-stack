@@ -3494,13 +3494,14 @@ class RelayControlTests(unittest.TestCase):
         draft = create_complete_archive(self.root, job_id)
         self.control.complete_minutes(job_id, draft)
         manifest = create_published_archive(self.root, draft, job_id)
-        original_assert = self.control._assert_publish_snapshot_unchanged
+        original_check = self.control._assert_publish_fingerprints_unchanged
         calls = 0
 
-        def mutate_after_precommit_assert(validation):
+        def mutate_after_precommit_check(validation, fingerprints):
             nonlocal calls
-            original_assert(validation)
+            original_check(validation, fingerprints)
             calls += 1
+            # 第 2 次是写事务里提交前的最后一次比对；之后的改写只能靠提交后的完整复验拦住
             if calls == 2:
                 (manifest.parent / "测试会议.md").write_text(
                     "# SQLite 提交后被改写", encoding="utf-8"
@@ -3508,8 +3509,8 @@ class RelayControlTests(unittest.TestCase):
 
         with patch.object(
             self.control,
-            "_assert_publish_snapshot_unchanged",
-            side_effect=mutate_after_precommit_assert,
+            "_assert_publish_fingerprints_unchanged",
+            side_effect=mutate_after_precommit_check,
         ):
             with self.assertRaises(self.module.PublishValidationError):
                 self.control.mark_published(
@@ -3519,6 +3520,263 @@ class RelayControlTests(unittest.TestCase):
         current = self.control.status(job_id)
         self.assertEqual("failed", current["status"])
         self.assertEqual("publish_post_commit_validation", current["failure_stage"])
+
+    def _record_work_under_write_lock(self, db_path: Path, *, copy: bool = False):
+        """把「在任务库写锁里做的大文件哈希 / 拷贝」记下来：探针连接拿不到写锁就说明锁被占着。"""
+        under_lock: list[str] = []
+
+        def write_lock_held() -> bool:
+            probe = sqlite3.connect(db_path, timeout=0, isolation_level=None)
+            try:
+                probe.execute("BEGIN IMMEDIATE")
+                probe.execute("ROLLBACK")
+                return False
+            except sqlite3.OperationalError:
+                return True
+            finally:
+                probe.close()
+
+        original_sha = self.module._sha256_file
+        original_copytree = self.module.shutil.copytree
+
+        def probing_sha(path):
+            # manifest 只有几 KB，留在事务里比对是允许的
+            if Path(path).name != "workbench-manifest.json" and write_lock_held():
+                under_lock.append(f"sha256:{Path(path).name}")
+            return original_sha(path)
+
+        def probing_copytree(*args, **kwargs):
+            if write_lock_held():
+                under_lock.append(f"copytree:{Path(args[0]).name}")
+            return original_copytree(*args, **kwargs)
+
+        patches = [patch.object(self.module, "_sha256_file", side_effect=probing_sha)]
+        if copy:
+            patches.append(
+                patch.object(self.module.shutil, "copytree", side_effect=probing_copytree)
+            )
+        return under_lock, patches
+
+    def test_mark_published_hashes_artifacts_outside_the_write_transaction(self):
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.record_stage(job_id, "transcript_ready")
+        self.control.record_stage(job_id, "minutes_generating")
+        draft = create_complete_archive(self.root, job_id)
+        self.control.complete_minutes(job_id, draft)
+        manifest = create_published_archive(self.root, draft, job_id)
+        under_lock, patches = self._record_work_under_write_lock(self.db_path)
+
+        for patcher in patches:
+            patcher.start()
+        try:
+            published = self.control.mark_published(
+                job_id, manifest, "vm-20260710-120000-ABC"
+            )
+            refreshed = self.control.mark_published(
+                job_id, manifest, "vm-20260710-120000-ABC"
+            )
+        finally:
+            for patcher in patches:
+                patcher.stop()
+
+        self.assertEqual("published", published["status"])
+        self.assertEqual("published", refreshed["status"])
+        self.assertEqual([], under_lock)
+
+    def test_mark_published_rejects_same_size_rewrite_with_restored_mtime(self):
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.record_stage(job_id, "transcript_ready")
+        self.control.record_stage(job_id, "minutes_generating")
+        draft = create_complete_archive(self.root, job_id)
+        self.control.complete_minutes(job_id, draft)
+        manifest = create_published_archive(self.root, draft, job_id)
+        target = manifest.parent / "测试会议.md"
+        original_capture = self.control._capture_publish_fingerprints
+
+        def capture_then_rewrite(validation):
+            fingerprints = original_capture(validation)
+            before = target.stat()
+            content = target.read_bytes()
+            target.write_bytes(content[:-1] + (b"X" if content[-1:] != b"X" else b"Y"))
+            os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+            return fingerprints
+
+        with patch.object(
+            self.control,
+            "_capture_publish_fingerprints",
+            side_effect=capture_then_rewrite,
+        ):
+            with self.assertRaises(self.module.PublishValidationError):
+                self.control.mark_published(
+                    job_id, manifest, "vm-20260710-120000-ABC"
+                )
+
+        self.assertNotEqual("published", self.control.status(job_id)["status"])
+
+    def test_complete_minutes_hashes_artifacts_outside_the_write_transaction(self):
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.record_stage(job_id, "transcript_ready")
+        self.control.record_stage(job_id, "minutes_generating")
+        archive = create_complete_archive(self.root, job_id)
+        under_lock, patches = self._record_work_under_write_lock(self.db_path)
+
+        for patcher in patches:
+            patcher.start()
+        try:
+            completed = self.control.complete_minutes(job_id, archive)
+        finally:
+            for patcher in patches:
+                patcher.stop()
+
+        self.assertEqual("completed_unreviewed", completed["status"])
+        self.assertEqual([], under_lock)
+
+    def test_complete_minutes_rejects_change_between_capture_and_commit(self):
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.record_stage(job_id, "transcript_ready")
+        self.control.record_stage(job_id, "minutes_generating")
+        archive = create_complete_archive(self.root, job_id)
+        original_capture = self.control._capture_completion_snapshot
+
+        def capture_then_mutate(report):
+            snapshot = original_capture(report)
+            (archive / "测试会议.md").write_text("# 捕获后改写", encoding="utf-8")
+            return snapshot
+
+        with patch.object(
+            self.control,
+            "_capture_completion_snapshot",
+            side_effect=capture_then_mutate,
+        ):
+            with self.assertRaises(self.module.PublishValidationError):
+                self.control.complete_minutes(job_id, archive)
+
+        self.assertEqual("minutes_generating", self.control.status(job_id)["status"])
+
+    def test_complete_minutes_fails_closed_when_files_change_after_last_precommit_check(self):
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.record_stage(job_id, "transcript_ready")
+        self.control.record_stage(job_id, "minutes_generating")
+        archive = create_complete_archive(self.root, job_id)
+        original_check = self.control._assert_completion_snapshot_fingerprints
+        calls = 0
+
+        def mutate_after_precommit_check(snapshot):
+            nonlocal calls
+            original_check(snapshot)
+            calls += 1
+            if calls == 2:
+                (archive / "测试会议.md").write_text(
+                    "# SQLite 提交前最后一刻被改写", encoding="utf-8"
+                )
+
+        with patch.object(
+            self.control,
+            "_assert_completion_snapshot_fingerprints",
+            side_effect=mutate_after_precommit_check,
+        ):
+            with self.assertRaises(self.module.PublishValidationError):
+                self.control.complete_minutes(job_id, archive)
+
+        current = self.control.status(job_id)
+        self.assertEqual("failed", current["status"])
+        self.assertEqual("archive_validation", current["failure_stage"])
+
+    def test_product_whisper_install_copies_and_hashes_outside_the_write_transaction(self):
+        job_id = self._advance_to_minutes(self.control, self.audio)
+        hidden = create_complete_archive(self.root, job_id, include_whisper=False)
+        self.control.complete_minutes(job_id, hidden, attempt_no=1)
+        self.control.record_substate(job_id, "whisper", "running")
+        products_root = self.root / "products"
+        product_archive = products_root / self.audio.stem / self.audio.stem
+        whisper_source = create_whisper_staging(self.root, stem=self.audio.stem) / "whisper-ref"
+        product_archive.mkdir(parents=True)
+        shutil.copytree(whisper_source, product_archive / "whisper-ref")
+        control = self._pending_control()
+        control.products_root = products_root
+        under_lock, patches = self._record_work_under_write_lock(self.db_path, copy=True)
+
+        for patcher in patches:
+            patcher.start()
+        try:
+            summary = control.reconcile_pending_archives()
+        finally:
+            for patcher in patches:
+                patcher.stop()
+
+        self.assertIn(job_id, summary["whisper_ready"], summary)
+        self.assertEqual([], under_lock)
+
+    def test_whisper_retry_install_copies_and_hashes_outside_the_write_transaction(self):
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.record_stage(job_id, "transcript_ready")
+        self.control.record_stage(job_id, "minutes_generating")
+        archive = create_complete_archive(self.root, job_id, include_whisper=False)
+        self.control.complete_minutes(job_id, archive)
+        self.control.record_substate(job_id, "whisper", "failed", error="engine")
+        self.control.retry_substate(job_id, "whisper")
+        claim = self.control.claim_whisper_retry(worker_id="worker-123456")
+        staging = create_whisper_staging(self.root)
+        under_lock, patches = self._record_work_under_write_lock(self.db_path, copy=True)
+
+        for patcher in patches:
+            patcher.start()
+        try:
+            completed = self.control.finish_whisper_retry(
+                job_id,
+                attempt_no=claim["attempt"],
+                generation=claim["generation"],
+                worker_id=claim["worker_id"],
+                success=True,
+                artifact_dir=staging,
+            )
+        finally:
+            for patcher in patches:
+                patcher.stop()
+
+        self.assertEqual("ready", completed["substates"]["whisper"]["status"])
+        self.assertEqual([], under_lock)
+
+    def test_whisper_retry_install_rolls_back_when_generation_changes_during_copy(self):
+        job_id = self.control.enqueue(self.audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.record_stage(job_id, "transcript_ready")
+        self.control.record_stage(job_id, "minutes_generating")
+        archive = create_complete_archive(self.root, job_id, include_whisper=False)
+        self.control.complete_minutes(job_id, archive)
+        self.control.record_substate(job_id, "whisper", "failed", error="engine")
+        self.control.retry_substate(job_id, "whisper")
+        claim = self.control.claim_whisper_retry(worker_id="worker-123456")
+        staging = create_whisper_staging(self.root)
+        original_copytree = self.module.shutil.copytree
+
+        def copy_while_user_retries(*args, **kwargs):
+            result = original_copytree(*args, **kwargs)
+            # 拷贝期间工作台发起了新一轮整单重试：whisper 回执必须 CAS 失败并撤掉刚装的副本
+            self.control.retry(job_id, "transcribing")
+            return result
+
+        with patch.object(
+            self.module.shutil, "copytree", side_effect=copy_while_user_retries
+        ):
+            with self.assertRaises(self.module.InvalidTransitionError):
+                self.control.finish_whisper_retry(
+                    job_id,
+                    attempt_no=claim["attempt"],
+                    generation=claim["generation"],
+                    worker_id=claim["worker_id"],
+                    success=True,
+                    artifact_dir=staging,
+                )
+
+        self.assertFalse((archive / "whisper-ref").exists())
+        self.assertEqual("queued", self.control.status(job_id)["status"])
 
     def test_mark_published_rejects_symlink_inside_history(self):
         job_id = self.control.enqueue(self.audio)
