@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { Job, JobSubstateName, JobSubstateStatus, LoadState } from "../types";
 import { formatDate, statusLabel, statusTone, failureStageLabel } from "../format";
 import { parseHotwordsInput, validateHotwordsInput } from "../hotwords";
+import { UploadCancelledError } from "../upload";
 import { AsyncState } from "./AsyncState";
 import { NoticeBanner, useNotice } from "./Notice";
 
@@ -11,6 +12,8 @@ interface JobsPageProps {
   jobs: Job[];
   message?: string;
   onCancel: (jobId: string) => Promise<void>;
+  /** 取消正在传的录音：上传在 App 里跑，换页再回来的页面实例也要能取消，所以取消也交给 App */
+  onCancelUpload: () => void;
   onRetry: (jobId: string, stage: string, hotwords?: string[]) => Promise<void>;
   onRetrySubstate: (jobId: string, name: JobSubstateName) => Promise<void>;
   onStopAfterStage: (jobId: string) => Promise<void>;
@@ -61,6 +64,7 @@ export function JobsPage({
   jobs,
   message,
   onCancel,
+  onCancelUpload,
   onRetry,
   onRetrySubstate,
   onStopAfterStage,
@@ -72,6 +76,11 @@ export function JobsPage({
   const fileRef = useRef<HTMLInputElement>(null);
   const { notice: actionNotice, setNotice: setActionMessage, dismissNotice: dismissActionNotice } = useNotice();
   const [busy, setBusy] = useState(false);
+  // 点了取消到上传真的收尾（进度清成 null）之前，按钮停在「正在取消…」：这段时间在清服务端的会话
+  const [cancelling, setCancelling] = useState(false);
+  useEffect(() => {
+    if (uploadPercent === null) setCancelling(false);
+  }, [uploadPercent]);
   const [uploadHotwordText, setUploadHotwordText] = useState("");
   const [retryHotwordText, setRetryHotwordText] = useState<Record<string, string>>({});
   const uploadHotwordError = validateHotwordsInput(uploadHotwordText);
@@ -98,7 +107,9 @@ export function JobsPage({
       setUploadHotwordText((current) => current === requestHotwordText ? "" : current);
       setActionMessage(result);
     } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : "上传失败", "error");
+      // 用户自己取消的不是失败：说一句已取消，热词留着，可以马上重新选文件
+      if (error instanceof UploadCancelledError) setActionMessage("已取消上传");
+      else setActionMessage(error instanceof Error ? error.message : "上传失败", "error");
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -143,6 +154,20 @@ export function JobsPage({
           </button>
           {uploadPercent !== null && (
             <progress aria-label="录音上传进度" className="upload-progress" max={100} value={uploadPercent} />
+          )}
+          {/* 传到 100% 以后是在落盘入队，已经取消不了了 */}
+          {uploadPercent !== null && uploadPercent < 100 && (
+            <button
+              className="text-button job-import-control__cancel"
+              disabled={cancelling}
+              onClick={() => {
+                setCancelling(true);
+                onCancelUpload();
+              }}
+              type="button"
+            >
+              {cancelling ? "正在取消…" : "取消上传"}
+            </button>
           )}
         </div>
       </header>

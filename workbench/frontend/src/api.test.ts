@@ -969,6 +969,39 @@ describe("请求超时和取消", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("上传的一块带取消信号：用户取消上传时这一块的请求真被中止，抛 AbortError（不是超时、不是 ApiError），分块本来没有时限", async () => {
+    const fetchMock = hangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("t");
+    const controller = new AbortController();
+
+    const result = track(api.uploadChunk("upload-1", 0, "YXVkaQ==", controller.signal));
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(result.status).toBe("pending");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(false);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(result.status).toBe("rejected");
+    expect(isAbortError(result.error)).toBe(true);
+    expect(result.error).not.toBeInstanceOf(ApiError);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("上传的一块：信号已经取消就不发请求", async () => {
+    const fetchMock = hangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("t");
+    const controller = new AbortController();
+    controller.abort();
+
+    const error = await api.uploadChunk("upload-1", 0, "YXVkaQ==", controller.signal).catch((reason: unknown) => reason);
+
+    expect(isAbortError(error)).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("响应体读到一半卡住也算：读请求照样 30 秒超时", async () => {
     const stalledBody = new Response(new ReadableStream({ start() {} }), { headers: { "Content-Type": "application/json" } });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stalledBody));

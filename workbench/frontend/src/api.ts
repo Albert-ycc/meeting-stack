@@ -607,6 +607,8 @@ export interface ReadOptions {
 interface WriteOptions {
   /** 毫秒；null 是没有上限 */
   timeoutMs?: number | null;
+  /** 调用方自己要中止这一次（上传时用户点了取消）：被中止的写抛 AbortError（isAbortError） */
+  signal?: AbortSignal;
 }
 
 /**
@@ -696,11 +698,11 @@ async function write<T>(
   path: string,
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   body: Record<string, unknown>,
-  { timeoutMs = WRITE_TIMEOUT_MS }: WriteOptions = {},
+  { timeoutMs = WRITE_TIMEOUT_MS, signal: cancelSignal }: WriteOptions = {},
 ): Promise<T> {
   // 时限按每一次发出去的请求算：令牌过期后的重放从它发出那一刻重新计
   const send = <R>(token: string, handle: (response: Response) => Promise<R>) =>
-    withDeadline({ timeoutMs, timeoutMessage: WRITE_TIMEOUT_MESSAGE }, async (signal) =>
+    withDeadline({ signal: cancelSignal, timeoutMs, timeoutMessage: WRITE_TIMEOUT_MESSAGE }, async (signal) =>
       handle(
         await fetch(path, {
           method,
@@ -1573,12 +1575,12 @@ export const api = {
       size_bytes: sizeBytes,
       ...(hotwords.length ? { hotwords } : {}),
     }),
-  uploadChunk: (uploadId: string, index: number, contentBase64: string) =>
+  uploadChunk: (uploadId: string, index: number, contentBase64: string, signal?: AbortSignal) =>
     write<{ upload_id: string; index: number; bytes: number; sha256: string }>(
       `/api/uploads/${encodeURIComponent(uploadId)}/chunks/${index}`,
       "PUT",
       { content_base64: contentBase64 },
-      NO_TIME_LIMIT,
+      { ...NO_TIME_LIMIT, signal },
     ),
   completeUpload: (uploadId: string) =>
     write<UploadReceipt>(

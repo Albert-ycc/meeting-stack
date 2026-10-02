@@ -870,6 +870,47 @@ describe("手工导入录音", () => {
     await waitFor(() => expect(apiClient.completeUpload).toHaveBeenCalledWith("upload-1"));
     await waitFor(() => expect(unloadPrevented()).toBe(false));
   });
+
+  it("分块发到一半点［取消上传］：中止这一块、不再发后面的、清掉服务端会话，不弹失败，回到能重新导入的样子", async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    const apiClient = client({
+      startUpload: vi.fn().mockResolvedValue({ upload_id: "upload-1", chunk_bytes: 3, chunk_count: 3 }),
+      uploadChunk: vi.fn((_uploadId: string, index: number, _content: string, signal?: AbortSignal) => {
+        signals.push(signal);
+        if (index === 0) return Promise.resolve({});
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new DOMException("请求已取消", "AbortError")), { once: true });
+        });
+      }),
+      cancelUpload: vi.fn().mockResolvedValue({ ok: true, upload_id: "upload-1" }),
+      completeUpload: vi.fn(),
+    } as unknown as Partial<ApiClient>);
+    const unloadPrevented = () => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    render(<App apiClient={apiClient} />);
+    fireEvent.click(await screen.findByRole("button", { name: "转写录音" }));
+    await userEvent.upload(
+      await screen.findByLabelText("选择录音文件"),
+      new File(["abcdefg"], "a.m4a", { type: "audio/mp4" }),
+    );
+    await waitFor(() => expect(apiClient.uploadChunk).toHaveBeenCalledTimes(2)); // 第 1 块在路上
+    expect(unloadPrevented()).toBe(true);
+
+    await userEvent.click(await screen.findByRole("button", { name: "取消上传" }));
+
+    await waitFor(() => expect(apiClient.cancelUpload).toHaveBeenCalledWith("upload-1"));
+    expect(await screen.findByText("已取消上传")).toBeInTheDocument();
+    expect(signals[1]?.aborted).toBe(true);
+    expect(apiClient.uploadChunk).toHaveBeenCalledTimes(2);
+    expect(apiClient.completeUpload).not.toHaveBeenCalled();
+    expect(screen.queryByText(/上传失败|请求已取消|aborted/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "＋ 手工导入录音" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /取消上传|正在取消/ })).not.toBeInTheDocument();
+    await waitFor(() => expect(unloadPrevented()).toBe(false));
+  });
 });
 
 describe("全局检索框和输入法", () => {

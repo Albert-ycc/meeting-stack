@@ -280,6 +280,8 @@ export default function App({ apiClient = api }: AppProps) {
   const [jobsStale, setJobsStale] = useState(false);
   // 手工导入录音的进度（百分比），没在传是 null。挂在 App 上：切到别的页面上传照样在跑，刷新、关标签页也要先问
   const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  // 正在传的这一次的取消开关：［取消上传］经它中止，换页再回来的页面实例也够得着
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
   // 正在打开（或已打开）的会议。detail 要等接口回来才有，地址栏 #meetings/<id> 以它为准。
   const [openMeetingId, setOpenMeetingId] = useState<string | null>(null);
@@ -1712,14 +1714,21 @@ export default function App({ apiClient = api }: AppProps) {
         jobs={jobs}
         message={jobsMessage}
         onCancel={async (jobId) => { await apiClient.cancelJob(jobId); await loadJobs(); }}
+        onCancelUpload={() => uploadAbortRef.current?.abort()}
         onRetry={async (jobId, stage, hotwords) => { await apiClient.retryJob(jobId, stage, hotwords); await loadJobs(); }}
         onRetrySubstate={async (jobId, name) => { await apiClient.retryJobSubstate(jobId, name); await loadJobs(); }}
         onStopAfterStage={async (jobId) => { await apiClient.stopAfterStage(jobId); await loadJobs(); }}
         onUpload={async (file, hotwords) => {
+          const controller = new AbortController();
+          uploadAbortRef.current = controller;
           setUploadPercent(0);
           try {
-            const receipt = await uploadRecordingInChunks(apiClient, file, hotwords, (sent, total) =>
-              setUploadPercent(total > 0 ? Math.floor((sent / total) * 100) : 0),
+            const receipt = await uploadRecordingInChunks(
+              apiClient,
+              file,
+              hotwords,
+              (sent, total) => setUploadPercent(total > 0 ? Math.floor((sent / total) * 100) : 0),
+              { signal: controller.signal },
             );
             await loadJobs();
             return receipt.job_id

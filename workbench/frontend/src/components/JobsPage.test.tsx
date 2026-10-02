@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Job } from "../types";
+import { UploadCancelledError } from "../upload";
 import { JobsPage } from "./JobsPage";
 
 const job: Job = {
@@ -28,6 +29,7 @@ describe("JobsPage non-blocking substates", () => {
         available
         jobs={[job]}
         onCancel={vi.fn()}
+        onCancelUpload={vi.fn()}
         onRetry={vi.fn()}
         onRetrySubstate={onRetrySubstate}
         onStopAfterStage={vi.fn()}
@@ -59,6 +61,7 @@ describe("JobsPage non-blocking substates", () => {
         available
         jobs={[retryable]}
         onCancel={vi.fn()}
+        onCancelUpload={vi.fn()}
         onRetry={onRetry}
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
@@ -88,7 +91,7 @@ describe("JobsPage non-blocking substates", () => {
 
   it("retains upload hotwords after failure and clears them only after a successful retry", async () => {
     const onUpload = vi.fn().mockRejectedValueOnce(new Error("上传失败")).mockResolvedValueOnce("已入队");
-    render(<JobsPage available jobs={[]} onCancel={vi.fn()} onRetry={vi.fn()} onRetrySubstate={vi.fn()} onStopAfterStage={vi.fn()} onUpload={onUpload} state="empty" uploadPercent={null} />);
+    render(<JobsPage available jobs={[]} onCancel={vi.fn()} onCancelUpload={vi.fn()} onRetry={vi.fn()} onRetrySubstate={vi.fn()} onStopAfterStage={vi.fn()} onUpload={onUpload} state="empty" uploadPercent={null} />);
     const hotwords = screen.getByLabelText("手工导入本场热词");
     const picker = screen.getByLabelText("选择录音文件");
     await userEvent.type(hotwords, "ACME，云图");
@@ -107,6 +110,7 @@ describe("JobsPage non-blocking substates", () => {
         available
         jobs={[]}
         onCancel={vi.fn()}
+        onCancelUpload={vi.fn()}
         onRetry={vi.fn()}
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
@@ -129,6 +133,7 @@ describe("JobsPage non-blocking substates", () => {
         available
         jobs={[]}
         onCancel={vi.fn()}
+        onCancelUpload={vi.fn()}
         onRetry={vi.fn()}
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
@@ -150,6 +155,7 @@ describe("JobsPage non-blocking substates", () => {
         available
         jobs={[job]}
         onCancel={vi.fn()}
+        onCancelUpload={vi.fn()}
         onRetry={vi.fn()}
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
@@ -171,6 +177,7 @@ describe("JobsPage non-blocking substates", () => {
         jobs={[job]}
         message="任务台账暂时不可用"
         onCancel={vi.fn()}
+        onCancelUpload={vi.fn()}
         onRetry={vi.fn()}
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
@@ -192,6 +199,7 @@ describe("JobsPage non-blocking substates", () => {
         jobs={[]}
         message="任务台账暂时不可用"
         onCancel={vi.fn()}
+        onCancelUpload={vi.fn()}
         onRetry={vi.fn()}
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
@@ -220,6 +228,7 @@ describe("JobsPage non-blocking substates", () => {
         available
         jobs={[{ ...job, state: "failed", failure_stage: failureStage }]}
         onCancel={vi.fn()}
+        onCancelUpload={vi.fn()}
         onRetry={onRetry}
         onRetrySubstate={vi.fn()}
         onStopAfterStage={vi.fn()}
@@ -241,6 +250,7 @@ describe("JobsPage non-blocking substates", () => {
           available
           jobs={[{ ...job, state: "failed", failure_stage: failureStage }]}
           onCancel={vi.fn()}
+          onCancelUpload={vi.fn()}
           onRetry={vi.fn()}
           onRetrySubstate={vi.fn()}
           onStopAfterStage={vi.fn()}
@@ -255,4 +265,91 @@ describe("JobsPage non-blocking substates", () => {
       expect(screen.getByRole("button", { name: "重新生成纪要" })).toBeInTheDocument();
     },
   );
+});
+
+describe("JobsPage 取消上传", () => {
+  function page(uploadPercent: number | null, extra: Partial<Parameters<typeof JobsPage>[0]> = {}) {
+    return (
+      <JobsPage
+        available
+        jobs={[]}
+        onCancel={vi.fn()}
+        onCancelUpload={vi.fn()}
+        onRetry={vi.fn()}
+        onRetrySubstate={vi.fn()}
+        onStopAfterStage={vi.fn()}
+        onUpload={vi.fn()}
+        state="empty"
+        uploadPercent={uploadPercent}
+        {...extra}
+      />
+    );
+  }
+
+  it("上传进行中（还没到 100%）有［取消上传］：点了交给 App，按钮换成不能再点的「正在取消…」，传完以后整块回到导入按钮", async () => {
+    const onCancelUpload = vi.fn();
+    const { rerender } = render(page(40, { onCancelUpload }));
+
+    expect(screen.getByRole("button", { name: /上传中 40%/ })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "取消上传" }));
+
+    expect(onCancelUpload).toHaveBeenCalledTimes(1);
+    const cancelling = screen.getByRole("button", { name: "正在取消…" });
+    expect(cancelling).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "取消上传" })).not.toBeInTheDocument();
+
+    rerender(page(null, { onCancelUpload }));
+    expect(screen.queryByRole("button", { name: /取消上传|正在取消/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "＋ 手工导入录音" })).toBeEnabled();
+
+    // 取消收尾以后再传一个：按钮是新的，不停在上一次的「正在取消…」
+    rerender(page(10, { onCancelUpload }));
+    expect(screen.getByRole("button", { name: "取消上传" })).toBeEnabled();
+  });
+
+  it("没在传、或者已经传到 100%（在落盘入队，取消不了了）：不出［取消上传］", () => {
+    const { rerender } = render(page(null));
+    expect(screen.queryByRole("button", { name: /取消上传/ })).not.toBeInTheDocument();
+
+    rerender(page(100));
+    expect(screen.getByRole("button", { name: /上传中 100%/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /取消上传/ })).not.toBeInTheDocument();
+  });
+
+  it("换了一个页面再回来（页面实例是新的，上传还在 App 里跑）：照样能取消", async () => {
+    const onCancelUpload = vi.fn();
+    render(page(63, { onCancelUpload }));
+
+    await userEvent.click(screen.getByRole("button", { name: "取消上传" }));
+
+    expect(onCancelUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it("取消后不弹失败提示：给一句「已取消上传」，热词留着，同一个文件可以马上重新选", async () => {
+    const onUpload = vi.fn().mockRejectedValueOnce(new UploadCancelledError()).mockResolvedValueOnce("已入队");
+    render(page(null, { onUpload }));
+    const hotwords = screen.getByLabelText("手工导入本场热词");
+    const picker = screen.getByLabelText("选择录音文件");
+    const file = new File(["audio"], "meeting.m4a", { type: "audio/mp4" });
+    await userEvent.type(hotwords, "ACME，云图");
+
+    await userEvent.upload(picker, file);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("已取消上传");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(hotwords).toHaveValue("ACME，云图");
+    expect(screen.getByRole("button", { name: "＋ 手工导入录音" })).toBeEnabled();
+    await userEvent.upload(picker, file);
+    expect(onUpload).toHaveBeenCalledTimes(2);
+    expect(onUpload).toHaveBeenLastCalledWith(expect.any(File), ["ACME", "云图"]);
+  });
+
+  it("别的失败照常弹红色的失败提示，不被当成取消", async () => {
+    render(page(null, { onUpload: vi.fn().mockRejectedValue(new Error("服务端拒收：分块超过限制")) }));
+
+    await userEvent.upload(screen.getByLabelText("选择录音文件"), new File(["a"], "a.m4a"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("服务端拒收：分块超过限制");
+    expect(screen.queryByText("已取消上传")).not.toBeInTheDocument();
+  });
 });

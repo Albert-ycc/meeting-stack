@@ -1597,6 +1597,7 @@ textarea {
 .job-retry-hotwords textarea,
 .meeting-hotwords textarea { padding: 6px 8px; resize: vertical; color: var(--ink); font: inherit; line-height: 1.4; background: rgb(var(--fg-rgb) / 0.053); border: 1px solid var(--line); border-radius: 8px; }
 .job-import-control .field-error { grid-column: 1 / -1; }
+.job-import-control__cancel { grid-column: 1 / -1; justify-self: end; padding: 0; }
 .field-error { color: var(--danger); font-size: 8px; line-height: 1.35; }
 .job-retry-hotwords { display: flex; min-width: 172px; flex-direction: column; gap: 3px; margin-right: auto; color: var(--ink-soft); font-size: 8px; }
 .job-retry-hotwords textarea { min-height: 30px; }
