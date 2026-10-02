@@ -678,15 +678,16 @@ def read_xlsx(package: Package, out: Collector) -> None:
         else:
             shared.append("")
         element.clear()
-    sheets: list[tuple[str, str]] = []
+    # 部件路径 → 表名。很多张表指向同一个部件时（文件自己拼出来的）只读一次，表名取最先出现的那张
+    sheets: dict[str, str] = {}
     rels = _rels(package, "xl/workbook.xml")
     for element in _catalog(package, "xl/workbook.xml"):
         if _local(element.tag) == "sheet":
             rid = next((value for key, value in element.attrib.items() if _local(key) == "id"), "")
             target = rels.get(rid)
-            if target:
-                sheets.append((element.get("name") or "", target))
-    for name, target in sheets:
+            if target and target not in sheets:
+                sheets[target] = element.get("name") or ""
+    for target, name in sheets.items():
         sheet = SheetWriter(out, name)
         stop = False
         for _event, element in package.iterparse(target, keep=lambda tag: _local(tag) == "row"):
@@ -752,12 +753,15 @@ def read_pptx(package: Package, out: Collector) -> None:
             )
             if rid in rels:
                 order.append(rels[rid])
+    # 同一张幻灯片被很多个 sldId 引用时（文件自己拼出来的）只读一次，位置取最先出现的
+    order = list(dict.fromkeys(order))
     if not order:
         order = sorted(
             (name for name in package.names if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
             key=lambda name: int(re.findall(r"\d+", name)[-1]),
         )
     out.pages = len(order)
+    noted: set[str] = set()
     for number, slide in enumerate(order, start=1):
         loc = f"第 {number} 页"
         lines = list(_drawing_paragraphs(package, slide))
@@ -765,7 +769,8 @@ def read_pptx(package: Package, out: Collector) -> None:
         notes = next(
             (target for target in _rels(package, slide).values() if "notesSlide" in target), None
         )
-        if notes:
+        if notes and notes not in noted:
+            noted.add(notes)
             note_lines = [
                 line for line in _drawing_paragraphs(package, notes) if not line.strip().isdigit()
             ]
@@ -903,11 +908,14 @@ def read_epub(package: Package, out: Collector) -> None:
             manifest[element.get("id")] = element.get("href")
         elif _local(element.tag) == "itemref":
             spine.append(element.get("idref"))
-    for idref in spine:
-        href = manifest.get(idref)
-        if not href:
-            continue
-        data = package.read(posixpath.normpath(posixpath.join(folder, href)))
+    # 按部件去重：spine 里同一章被引用很多次、或很多个 id 指向同一个 href（文件自己拼出来的）只读一次
+    chapters = dict.fromkeys(
+        posixpath.normpath(posixpath.join(folder, href))
+        for href in map(manifest.get, spine)
+        if href
+    )
+    for chapter in chapters:
+        data = package.read(chapter)
         if data is None:
             continue
         for paragraph in _split_paragraphs(html_to_text(decode_html(data))):
