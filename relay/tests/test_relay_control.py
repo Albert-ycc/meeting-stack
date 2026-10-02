@@ -1142,6 +1142,19 @@ class RelayControlTests(unittest.TestCase):
         self.assertTrue(all(worker["fresh"] for worker in result["workers"]))
         self.assertNotIn("audio_path", json.dumps(result))
 
+    def test_health_opens_the_right_database_when_the_path_has_uri_special_characters(self):
+        """路径里的 ? # % 不能被当成 URI 的分隔和转义：否则读到别的文件，或者把只读选项吞掉。"""
+        odd_db = self.root / "任务%41库?mode=rw#片段.sqlite3"
+        control = self.module.RelayControl(odd_db, archive_root=self.root)
+        control.enqueue(self.audio)
+        files_before = sorted(path.name for path in self.root.iterdir())
+
+        result = control.health(control_enabled=True)
+
+        self.assertEqual(1, result["counts"]["queued"])
+        self.assertNotIn("error_type", result)
+        self.assertEqual(files_before, sorted(path.name for path in self.root.iterdir()))
+
     def test_runtime_worker_table_is_created_only_by_first_heartbeat(self):
         lazy_db = self.root / "lazy-runtime.sqlite3"
         control = self.module.RelayControl(lazy_db, archive_root=self.root)

@@ -2942,7 +2942,7 @@ class RelayControl:
         try:
             if not self.db_path.is_file():
                 raise FileNotFoundError
-            uri = f"file:{self.db_path.resolve()}?mode=ro"
+            uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
             with sqlite3.connect(uri, uri=True, timeout=2) as connection:
                 connection.row_factory = sqlite3.Row
                 tables = {
