@@ -184,6 +184,24 @@ def _stall_info(
     }
 
 
+def _comment_events(connection: Any, task_ids: Iterable[str]) -> dict[str, list[dict[str, Any]]]:
+    """这些任务的评论，按任务分组。_stall_info 只看评论的时间，别的事件不取；一条 IN 查询，不逐条查。"""
+    ids = list(dict.fromkeys(task_ids))
+    comments: dict[str, list[dict[str, Any]]] = {}
+    if not ids:
+        return comments
+    for row in connection.execute(
+        f"""SELECT task_id, created_at FROM task_events
+             WHERE kind = 'comment' AND task_id IN ({", ".join("?" for _ in ids)})
+             ORDER BY id""",
+        ids,
+    ):
+        comments.setdefault(row["task_id"], []).append(
+            {"kind": "comment", "created_at": row["created_at"]}
+        )
+    return comments
+
+
 def _without_surrogates(text: str) -> str:
     """模型回的文字里孤立的代理字符（JSON 里的 \\ud800 这类转义解出来的）写不进 SQLite，整批会失败：
     回复一进来就去掉，任务、候选、存档的原始回复都安全。"""
@@ -2615,23 +2633,38 @@ class TaskService:
         for task in stalled:
             if self.notifier.stall_reminder(task):
                 stats["stall_sent"] += 1
-        if self._digest_due():
+        # 先查台账：统计要过一遍全部任务，今天发过了就别每一轮扫描都算一遍
+        if self._digest_due() and not self.notifier.digest_sent_today():
             if self.notifier.daily_digest(self._digest_stats()):
                 stats["digest_sent"] = True
         return stats
 
-    def _stall_candidates(self) -> list[dict[str, Any]]:
-        rows = self.db.query_all(
-            """SELECT t.* FROM tasks t
-                WHERE t.status IN ('confirmed', 'in_progress')
-                ORDER BY t.created_at"""
-        )
-        candidates: list[dict[str, Any]] = []
+    def _open_task_stalls(self, *, newest_first: bool) -> list[dict[str, Any]]:
+        """已确认、进行中的任务和它们的停滞情况。只取判停滞和点名要用的几列，评论时间一条 SQL 取齐，
+        不逐条 task_summary（每条要开 5 次连接）。"""
+        with self.db.autocommit() as connection:
+            rows = connection.execute(
+                f"""SELECT t.id, t.title, t.assignee, t.status_changed_at, p.name AS project_name
+                      FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+                     WHERE t.status IN ('confirmed', 'in_progress')
+                     ORDER BY t.created_at{" DESC" if newest_first else ""}"""
+            ).fetchall()
+            comments = _comment_events(connection, (row["id"] for row in rows))
+        tasks = []
         for row in rows:
-            task = self.task_summary(row)
-            if task["stalled"]:
-                candidates.append(task)
-        return candidates
+            task = dict(row)
+            task.update(
+                _stall_info(
+                    row["status_changed_at"],
+                    comments.get(row["id"], ()),
+                    self.settings.task_stall_after_days,
+                )
+            )
+            tasks.append(task)
+        return tasks
+
+    def _stall_candidates(self) -> list[dict[str, Any]]:
+        return [task for task in self._open_task_stalls(newest_first=False) if task["stalled"]]
 
     def _digest_due(self) -> bool:
         # 当天过了 09:00 都算 due（台账幂等保证一天只发一次）；精确匹配到
@@ -2641,28 +2674,33 @@ class TaskService:
         return (now.hour, now.minute) >= (DIGEST_HOUR, DIGEST_MINUTE)
 
     def _digest_stats(self) -> dict[str, Any]:
-        rows = self.db.query_all("""SELECT t.* FROM tasks t ORDER BY t.created_at DESC""")
-        pending: list[dict[str, Any]] = []
-        in_progress: list[dict[str, Any]] = []
-        stalled: list[dict[str, Any]] = []
-        done_today: list[str] = []
+        # 点名的先后按任务建的先后倒序：最近建的停滞任务排第一
+        in_progress = self._open_task_stalls(newest_first=True)
+        stalled = [task for task in in_progress if task["stalled"]]
+        with self.db.autocommit() as connection:
+            pending_count = connection.execute(
+                "SELECT COUNT(*) AS n FROM tasks WHERE status='pending_confirm'"
+            ).fetchone()["n"]
+            pending_sources = sorted(
+                {
+                    row["title"]
+                    for row in connection.execute(
+                        """SELECT DISTINCT m.title FROM tasks t JOIN meetings m ON m.id = t.meeting_id
+                            WHERE t.status = 'pending_confirm'"""
+                    )
+                    if row["title"]
+                }
+            )
+            done_rows = connection.execute(
+                "SELECT title, status_changed_at FROM tasks WHERE status='done' ORDER BY created_at DESC"
+            ).fetchall()
         # 「今天完成」按本地日算，和下面「昨天自动归属」同一口径
         today = datetime.now().astimezone().date()
-        for row in rows:
-            task = self.task_summary(row)
-            if task["status"] == "pending_confirm":
-                pending.append(task)
-            elif task["status"] in ("confirmed", "in_progress"):
-                in_progress.append(task)
-                if task["stalled"]:
-                    stalled.append(task)
-            elif task["status"] == "done":
-                done_at = _parse_dt(task.get("status_changed_at"))
-                if done_at and done_at.astimezone().date() == today:
-                    done_today.append(task["title"])
-        pending_sources = sorted(
-            {task["meeting_title"] for task in pending if task["meeting_title"]}
-        )
+        done_today = []
+        for row in done_rows:
+            done_at = _parse_dt(row["status_changed_at"])
+            if done_at and done_at.astimezone().date() == today:
+                done_today.append(row["title"])
         # 归属一行：昨天（本地日）自动归属了几场，现在还有几场等你选项目。
         local_now = datetime.now().astimezone()
         today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2683,8 +2721,8 @@ class TaskService:
         return {
             "auto_assigned_yesterday": int(auto_row["count"] if auto_row else 0),
             "needs_review": needs_review,
-            "total": len(pending) + len(in_progress) + len(done_today),
-            "pending": len(pending),
+            "total": pending_count + len(in_progress) + len(done_today),
+            "pending": pending_count,
             "pending_sources": pending_sources,
             "in_progress": len(in_progress),
             "stalled": len(stalled),

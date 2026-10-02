@@ -33,6 +33,11 @@ from .db import Database, utc_now
 from .task_due import beijing_today
 
 
+def digest_day() -> str:
+    """晨报一天一份的台账键，也是卡片标题上的日期：北京日历的日期（和 tasks._digest_due 的 09:00 同一个日历）。"""
+    return beijing_today().isoformat()
+
+
 def _format_anchor_ms(ms: int | None) -> str:
     """毫秒时间锚点 → mm:ss；无锚点返回空串。"""
     if not ms:
@@ -616,6 +621,10 @@ class LarkNotifier:
         )
         return row is not None
 
+    def digest_sent_today(self) -> bool:
+        """今天的晨报已经发过：调用方据此跳过统计，统计要过一遍全部任务，不值得每一轮扫描都算。"""
+        return self._sent("digest", digest_day())
+
     def _record(self, kind: str, ref_key: str) -> None:
         self.db.execute(
             "INSERT INTO notifications(kind, ref_key, sent_at) VALUES (?, ?, ?)",
@@ -1005,8 +1014,7 @@ class LarkNotifier:
             line += f"，{review} 场等你选项目。" if review else "。"
             parts.append(line)
         text = "\n".join(parts)
-        # 一天一份按北京日期记（和 tasks._digest_due 的 09:00 同一个日历）
-        day = beijing_today().isoformat()
+        day = digest_day()
         return self._send(
             "digest",
             day,
