@@ -415,6 +415,37 @@ describe("GlossaryPage", () => {
     await waitFor(() => expect(apiClient.restoreGlossarySuggestion).toHaveBeenCalledWith("sug-9"));
   });
 
+  it("删掉列表里仅剩的一条（选中着）后，不再去取这条的详情", async () => {
+    // 刷新列表的请求还没回来时，旧列表里只剩刚删的这条，选中项不能落回它身上，否则详情接口回 404
+    const reloads: Array<(value: GlossaryTerm[]) => void> = [];
+    const glossaryTerms = vi
+      .fn()
+      .mockResolvedValueOnce([generalTerm, projectTerm])
+      .mockImplementation(() => new Promise<GlossaryTerm[]>((resolve) => reloads.push(resolve)));
+    const glossaryTermDetail = vi.fn().mockResolvedValue({ term_id: "x", meetings: [] });
+    const apiClient = client({
+      glossaryTerms,
+      glossaryTermDetail,
+      deleteGlossaryTerm: vi.fn().mockResolvedValue({ ok: true }),
+    });
+    render(<GlossaryPage apiClient={apiClient} canWrite meetings={meetings} projects={projects} />);
+
+    expect(await within(await screen.findByRole("listbox", { name: "词条" })).findByText("生长激素")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("搜索术语"), { target: { value: "生长激素" } });
+    await waitFor(() => expect(glossaryTermDetail).toHaveBeenCalledWith("term-2"));
+    const before = glossaryTermDetail.mock.calls.filter(([id]) => id === "term-2").length;
+
+    fireEvent.click(within(list()).getByRole("button", { name: "删除『生长激素』" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+    await waitFor(() => expect(apiClient.deleteGlossaryTerm).toHaveBeenCalledWith("term-2"));
+    await waitFor(() => expect(reloads.length).toBeGreaterThan(0));
+    reloads.forEach((resolve) => resolve([generalTerm]));
+
+    expect(await screen.findByText(/已删除「生长激素」/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "删除『生长激素』" })).toBeNull());
+    expect(glossaryTermDetail.mock.calls.filter(([id]) => id === "term-2").length).toBe(before);
+  });
+
   it("只读模式（canWrite=false）不展示编辑、新增与删除操作", async () => {
     render(<GlossaryPage apiClient={client()} canWrite={false} meetings={meetings} projects={projects} />);
 

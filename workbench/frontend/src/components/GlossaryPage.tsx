@@ -465,7 +465,9 @@ export function GlossaryPage({
     void run(async () => {
       await apiClient.deleteGlossaryTerm(term.id);
       const at = visibleTermIds.indexOf(term.id);
-      if (term.id === selectedTermId) setSelectedTermId(visibleTermIds[at + 1] ?? visibleTermIds[at - 1] ?? null);
+      const next = visibleTermIds[at + 1] ?? visibleTermIds[at - 1];
+      // 没有相邻的就先不动：列表还没刷新时置空，上面的兜底会把刚删的这条又选回来，再去取它的详情拿到 404
+      if (term.id === selectedTermId && next) setSelectedTermId(next);
       setNotice(`已删除「${term.term}」`);
       await reloadAfterWrite();
     });
