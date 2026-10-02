@@ -214,7 +214,10 @@ def main():
                     continue
                 sentences.append(sentence)
             if not info.get("sentence_info") and info.get("text"):
-                sentences.append({"start": off * 1000, "end": off * 1000,
+                # 整段文本覆盖整块，终点取块终点；起止相同的 SRT 句会被纪要计划判为损坏
+                start_ms = off * 1000
+                end_ms = max(float(chunk_plan.get("end", off)) * 1000, start_ms + 10)
+                sentences.append({"start": start_ms, "end": end_ms,
                                   "text": info["text"], "spk": f"{prefix}spk?"})
 
     sentences = [s for s in sentences if s["text"]]
