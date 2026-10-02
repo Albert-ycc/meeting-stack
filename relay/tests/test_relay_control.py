@@ -12,6 +12,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -852,6 +853,129 @@ class SchemaMigrationRaceTests(unittest.TestCase):
             other.close()
 
         self.assertEqual([], errors)
+
+
+class ConstructionCostTests(unittest.TestCase):
+    """watchdog 每 2 秒构造好几个 RelayControl、心跳每次取一次进程启动指纹：这两样都不该每次重来。"""
+
+    SCHEMA_STATEMENTS = ("CREATE", "ALTER", "PRAGMA TABLE_INFO", "PRAGMA JOURNAL_MODE")
+
+    def setUp(self):
+        self.module = load_control_module()
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.database = self.root / "jobs.sqlite3"
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _construct_recording_statements(self) -> list[str]:
+        statements: list[str] = []
+        original_connect = self.module.RelayControl._connect
+
+        def connect_and_trace(control):
+            connection = original_connect(control)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(self.module.RelayControl, "_connect", connect_and_trace):
+            self.module.RelayControl(self.database, archive_root=self.root)
+        return statements
+
+    def _schema_statements(self, statements: list[str]) -> list[str]:
+        return [
+            sql for sql in statements if sql.lstrip().upper().startswith(self.SCHEMA_STATEMENTS)
+        ]
+
+    def test_repeated_construction_runs_the_schema_check_only_the_first_time(self):
+        first = self._construct_recording_statements()
+        later = [self._construct_recording_statements() for _ in range(4)]
+
+        self.assertTrue(self._schema_statements(first), "第一次构造应当建表")
+        for statements in later:
+            self.assertEqual([], self._schema_statements(statements))
+            self.assertLessEqual(len(statements), 4)
+
+    def test_schema_check_runs_again_when_another_process_changes_the_schema(self):
+        self._construct_recording_statements()
+        with sqlite3.connect(self.database) as connection:
+            connection.execute("ALTER TABLE jobs DROP COLUMN project_hint")
+
+        statements = self._construct_recording_statements()
+
+        self.assertTrue(self._schema_statements(statements))
+        with sqlite3.connect(self.database) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+        self.assertIn("project_hint", columns)
+
+    def test_a_schema_upgrade_by_a_newer_process_does_not_break_the_next_construction(self):
+        control = self.module.RelayControl(self.database, archive_root=self.root)
+        with sqlite3.connect(self.database) as connection:
+            connection.execute("ALTER TABLE jobs ADD COLUMN column_from_newer_code TEXT")
+
+        again = self.module.RelayControl(self.database, archive_root=self.root)
+
+        self.assertEqual([], again.list_jobs())
+        self.assertEqual([], control.list_jobs())
+        with sqlite3.connect(self.database) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+        self.assertIn("column_from_newer_code", columns)
+
+    def test_a_replaced_database_file_is_initialized_again(self):
+        self.module.RelayControl(self.database, archive_root=self.root)
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(self.database) + suffix).unlink(missing_ok=True)
+
+        recreated = self.module.RelayControl(self.database, archive_root=self.root)
+
+        self.assertEqual([], recreated.list_jobs())
+
+    def _count_ps_forks(self):
+        """ps 换成记账的假货：不管问哪个 pid 都回同一个启动时间，用例不依赖本机的 ps 和 pid。"""
+        forks: list[list[str]] = []
+
+        def fake_ps(arguments, *_args, **_kwargs):
+            self.assertEqual("ps", arguments[0])
+            forks.append(arguments)
+            return SimpleNamespace(returncode=0, stdout="Fri Oct  2 07:57:57 2026\n")
+
+        return forks, patch.object(self.module.subprocess, "run", fake_ps)
+
+    def test_heartbeats_and_worker_ids_ask_ps_for_this_process_only_once(self):
+        control = self.module.RelayControl(self.database, archive_root=self.root)
+        forks, patched = self._count_ps_forks()
+
+        with patched:
+            for _ in range(5):
+                control.heartbeat_worker("watchdog", mode="controlled", status="running")
+            ids = {self.module.make_worker_id("watchdog") for _ in range(5)}
+
+        self.assertLessEqual(len(forks), 1)
+        self.assertEqual(1, len(ids))
+
+    def test_start_token_of_another_pid_is_asked_every_time(self):
+        """别的进程的指纹是用来认 PID 复用的，缓存了就认不出了。"""
+        forks, patched = self._count_ps_forks()
+        other_pid = os.getpid() + 1
+
+        with patched:
+            self.module._process_start_token(other_pid)
+            self.module._process_start_token(other_pid)
+
+        self.assertEqual(2, len(forks))
+
+    def test_own_start_token_is_asked_again_in_a_forked_child(self):
+        """子进程继承了父进程的缓存，但它的 pid 不同，指纹必须重新取。"""
+        forks, patched = self._count_ps_forks()
+        real_pid = os.getpid()
+
+        with patched:
+            self.module._process_start_token(real_pid)
+            with patch.object(self.module.os, "getpid", return_value=real_pid + 7):
+                self.module._process_start_token(real_pid + 7)
+                self.module._process_start_token(real_pid + 7)
+
+        self.assertEqual(2, len(forks))
 
 
 class RelayControlTests(unittest.TestCase):

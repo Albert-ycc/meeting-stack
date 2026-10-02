@@ -975,8 +975,18 @@ def _validated_input_transcript(path: str | Path) -> tuple[Path, int, str]:
     return resolved, size, _sha256_file(resolved)
 
 
+# 本进程自己的启动指纹（pid, 指纹）：进程活着期间不会变，心跳、领任务、认 worker 每次都 fork 一个 ps
+# 去取没有意义。只缓存自己；别的进程的指纹是用来认 PID 复用的，必须每次现取。
+_own_start_token: tuple[int, str] | None = None
+
+
 def _process_start_token(pid: int) -> str | None:
     """用进程启动时间区分重启后复用的 PID；macOS 与 Linux 的 ps 均支持 lstart。"""
+    global _own_start_token
+    # 对着当前 pid 比：fork 出的子进程继承了缓存，但它的 pid 不同，会重新取
+    is_own = pid == os.getpid()
+    if is_own and _own_start_token is not None and _own_start_token[0] == pid:
+        return _own_start_token[1]
     try:
         completed = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
@@ -990,7 +1000,10 @@ def _process_start_token(pid: int) -> str | None:
     started_at = " ".join(completed.stdout.split())
     if completed.returncode != 0 or not started_at:
         return None
-    return hashlib.sha256(started_at.encode("utf-8")).hexdigest()[:12]
+    token = hashlib.sha256(started_at.encode("utf-8")).hexdigest()[:12]
+    if is_own:
+        _own_start_token = (pid, token)
+    return token
 
 
 def make_worker_id(prefix: str = "worker", pid: int | None = None) -> str:
@@ -1171,6 +1184,13 @@ def inspect_whisper_ref(archive_dir: str | Path) -> dict[str, Any]:
         "files": sorted(str(path.relative_to(root)) for path in files),
         "selected_stem": complete_stems[0] if len(complete_stems) == 1 else None,
     }
+
+
+# 本进程里已跑过建表检查的库：键是（路径, 设备号, inode），值是跑完后库里的 schema_version
+# （SQLite 每改一次表结构自增的计数）。watchdog 每 2 秒构造好几个 RelayControl，表结构没变就不必
+# 每次都 executescript 加两遍 PRAGMA table_info。别的进程升级了表结构、库文件被换掉，计数或 inode
+# 就对不上，会再检查一次；库里不记任何版本号，新旧代码混跑、回滚都不受影响。
+_SCHEMA_CHECKED: dict[tuple[str, int, int], int] = {}
 
 
 class RelayControl:
@@ -2481,8 +2501,25 @@ class RelayControl:
             temporary.unlink(missing_ok=True)
         return target.resolve(), size, digest
 
+    def _schema_checked_key(self) -> tuple[str, int, int] | None:
+        try:
+            stat = self.db_path.stat()
+        except OSError:
+            return None
+        return (str(self.db_path), stat.st_dev, stat.st_ino)
+
+    @staticmethod
+    def _schema_version(connection: sqlite3.Connection) -> int:
+        return connection.execute("PRAGMA schema_version").fetchone()[0]
+
     def _initialize(self) -> None:
         with self._connect() as connection:
+            checked_key = self._schema_checked_key()
+            if (
+                checked_key is not None
+                and _SCHEMA_CHECKED.get(checked_key) == self._schema_version(connection)
+            ):
+                return
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(
                 """
@@ -2774,6 +2811,9 @@ class RelayControl:
                       AND archive_dir IS NOT NULL
                     """
                 )
+            checked_key = self._schema_checked_key()
+            if checked_key is not None:
+                _SCHEMA_CHECKED[checked_key] = self._schema_version(connection)
 
     @staticmethod
     def _ensure_runtime_workers_table(connection: sqlite3.Connection) -> None:
