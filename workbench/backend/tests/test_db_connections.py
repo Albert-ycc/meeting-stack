@@ -5,6 +5,7 @@ sqlite3.Connection 的语句缓存反向引用连接本身，只用 `with sqlite
 """
 
 import gc
+from contextlib import closing
 import os
 import re
 from pathlib import Path
@@ -144,3 +145,8 @@ def test_serve_keeps_higher_existing_limit(monkeypatch):
     monkeypatch.setattr(resource, "setrlimit", lambda kind, limits: calls.append(limits))
     cli._raise_open_file_limit()
     assert calls == []
+
+
+def test_connections_wait_five_seconds_for_a_write_lock(tmp_path):
+    with closing(Database(tmp_path / "w.sqlite3").connect()) as connection:
+        assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 5000

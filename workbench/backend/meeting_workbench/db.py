@@ -1451,9 +1451,11 @@ class Database:
 
     def connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path, timeout=30)
+        connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
+        # 等写锁的上限只在这一处设：5 秒。connect() 的 timeout 也是同一个设置，
+        # 两处都写会互相覆盖（以前写的 30 秒从来没生效过）。
         connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
