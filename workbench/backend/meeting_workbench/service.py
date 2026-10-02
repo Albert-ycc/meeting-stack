@@ -2358,10 +2358,6 @@ class MeetingService:
         return "\n\n".join(blocks)
 
     @staticmethod
-    def _render_txt(segments: list[dict[str, Any]]) -> str:
-        return render_transcript_txt(segments)
-
-    @staticmethod
     def _render_speakers(segments: list[dict[str, Any]]) -> str:
         speakers: dict[str, str] = {}
         for segment in segments:

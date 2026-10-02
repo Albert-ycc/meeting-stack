@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from meeting_workbench.db import Database, utc_now
+from meeting_workbench.search import literal_search
 
 
 def count_reads(db: Database, fn: Callable[[sqlite3.Connection], Any]) -> int:
@@ -22,6 +23,12 @@ def count_reads(db: Database, fn: Callable[[sqlite3.Connection], Any]) -> int:
         fn(connection)
         connection.set_trace_callback(None)
     return len(statements)
+
+
+def segment_hits(db: Database, text: str) -> list[dict[str, Any]]:
+    """用生产的检索（search.literal_search）搜 text，只留逐字稿命中。导入类用例拿它确认
+    「这段正文进了当前逐字稿、而且搜得到」；搜得到包括全文索引行也写进去了。"""
+    return [item for item in literal_search(db, [text]) if item["match_kind"] == "segment"]
 
 
 def seed_editable_meeting(db: Database, root: Path, meeting_id: str = "vm-20260102-101500"):

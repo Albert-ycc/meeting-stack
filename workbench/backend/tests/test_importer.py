@@ -15,6 +15,8 @@ from meeting_workbench.importer import ArchiveImporter, SourceBundle, artifact_k
 from meeting_workbench.rendering import render_transcript_txt
 from meeting_workbench.service import MeetingService
 
+from .helpers import segment_hits
+
 
 def test_minutes_evidence_has_a_dedicated_artifact_kind():
     assert artifact_kind(Path("/tmp/minutes-evidence.json")) == "minutes_evidence"
@@ -146,8 +148,8 @@ def test_official_archive_wins_but_staging_source_is_traceable(tmp_path):
     assert meeting["canonical_dir"] == str(official_dir)
     assert meeting["status"] == "published"
     assert {row["source_root"] for row in artifacts} == {"archive", "staging"}
-    assert db.exact_search("正式稿内容")
-    assert db.exact_search("降级稿内容") == []
+    assert segment_hits(db, "正式稿内容")
+    assert segment_hits(db, "降级稿内容") == []
 
 
 def test_scan_isolates_deep_json_and_still_imports_normal_meeting(tmp_path):
@@ -171,7 +173,7 @@ def test_scan_isolates_deep_json_and_still_imports_normal_meeting(tmp_path):
     report = ArchiveImporter(db, settings).scan()
 
     assert report.errors >= 1
-    assert db.exact_search("正常会议仍应导入")
+    assert segment_hits(db, "正常会议仍应导入")
 
 
 def test_scan_filters_invalid_json_even_when_srt_is_preferred(tmp_path):
@@ -198,7 +200,7 @@ def test_scan_filters_invalid_json_even_when_srt_is_preferred(tmp_path):
     report = ArchiveImporter(db, settings).scan()
 
     assert report.errors == 2
-    assert db.exact_search("SRT 仍可正常导入")
+    assert segment_hits(db, "SRT 仍可正常导入")
     assert (
         db.query_one("SELECT COUNT(*) AS count FROM artifacts WHERE path LIKE '%.json'")["count"]
         == 0
@@ -231,7 +233,7 @@ def test_scan_isolates_directory_discovery_error(tmp_path, monkeypatch):
     report = importer.scan()
 
     assert report.errors == 1
-    assert db.exact_search("其他目录仍应导入")
+    assert segment_hits(db, "其他目录仍应导入")
 
 
 def test_scan_isolates_directory_stat_permission_error(tmp_path, monkeypatch):
@@ -260,7 +262,7 @@ def test_scan_isolates_directory_stat_permission_error(tmp_path, monkeypatch):
     report = importer.scan()
 
     assert report.errors == 1
-    assert db.exact_search("目录 stat 失败不应饿死扫描")
+    assert segment_hits(db, "目录 stat 失败不应饿死扫描")
 
 
 def test_sqlite_failure_still_aborts_scan(tmp_path, monkeypatch):
@@ -416,7 +418,7 @@ def test_same_size_and_mtime_text_change_imports_a_new_version_without_draft(tmp
         "SELECT current_transcript_version_id FROM meetings WHERE id=?", (meeting_id,)
     )["current_transcript_version_id"]
     assert current_version != original_version
-    assert db.exact_search("外部改写")
+    assert segment_hits(db, "外部改写")
     assert (
         db.query_one("SELECT sha256 FROM artifacts WHERE path=?", (str(srt),))["sha256"]
         == hashlib.sha256(srt.read_bytes()).hexdigest()
@@ -668,8 +670,8 @@ def test_two_vm_recordings_in_one_official_directory_stay_separate(tmp_path):
         "vm-20260702-100000-aaaaaaaa",
         "vm-20260702-150000-bbbbbbbb",
     }
-    assert db.exact_search("上午会议")[0]["meeting_id"].endswith("aaaaaaaa")
-    assert db.exact_search("下午会议")[0]["meeting_id"].endswith("bbbbbbbb")
+    assert segment_hits(db, "上午会议")[0]["meeting_id"].endswith("aaaaaaaa")
+    assert segment_hits(db, "下午会议")[0]["meeting_id"].endswith("bbbbbbbb")
 
 
 def test_support_directories_do_not_become_official_meetings(tmp_path):
@@ -720,7 +722,7 @@ def test_prompt_txt_is_never_selected_as_transcript(tmp_path):
 
     ArchiveImporter(db, settings).scan()
 
-    assert db.exact_search("提示词") == []
+    assert segment_hits(db, "提示词") == []
 
 
 def test_minutes_are_imported_and_html_is_sanitized(tmp_path):
@@ -918,7 +920,7 @@ def test_rescan_is_idempotent_and_external_change_conflicts_with_draft(tmp_path)
     assert (
         db.query_one("SELECT conflict FROM meetings WHERE id='vm-20260101-120000'")["conflict"] == 1
     )
-    assert db.exact_search("外部修订正文") == []
+    assert segment_hits(db, "外部修订正文") == []
 
 
 def test_transcript_markdown_is_searchable_but_not_misclassified_as_minutes(tmp_path):
@@ -938,7 +940,7 @@ def test_transcript_markdown_is_searchable_but_not_misclassified_as_minutes(tmp_
 
     ArchiveImporter(db, settings).scan()
 
-    assert db.exact_search("Markdown 逐字稿")
+    assert segment_hits(db, "Markdown 逐字稿")
     meeting = db.query_one("SELECT current_minutes_version_id FROM meetings")
     assert meeting["current_minutes_version_id"] is None
 
@@ -1064,8 +1066,8 @@ def test_pending_review_children_are_separate_managed_unreviewed_meetings(tmp_pa
         row["source_root"] for row in db.query_all("SELECT DISTINCT source_root FROM artifacts")
     } == {"draft"}
     assert db.query_one("SELECT COUNT(*) AS count FROM transcript_versions")["count"] == 2
-    assert db.exact_search("第一场正文")[0]["meeting_id"] == first_id
-    assert db.exact_search("第二场正文")[0]["meeting_id"] == second_id
+    assert segment_hits(db, "第一场正文")[0]["meeting_id"] == first_id
+    assert segment_hits(db, "第二场正文")[0]["meeting_id"] == second_id
 
 
 def test_top_level_managed_directory_remains_unreviewed_draft_source(tmp_path):
@@ -2385,7 +2387,7 @@ def test_speaker_backfill_skips_safely_when_funasr_json_text_mismatches_srt(tmp_
     assert segments and all(row["speaker_label"] is None for row in segments)
     assert db.query_all("SELECT 1 FROM speakers WHERE meeting_id=?", (meeting_id,)) == []
     # 逐字稿导入本身不受补标失败影响。
-    assert db.exact_search("真实转写文本")
+    assert segment_hits(db, "真实转写文本")
 
 
 def test_cached_sha256_reuses_fingerprint_cache_row_without_rehashing(tmp_path, monkeypatch):
@@ -2578,7 +2580,7 @@ def test_malformed_whisper_reference_is_skipped_and_minutes_still_import(tmp_pat
 
     meeting = db.query_one("SELECT current_minutes_version_id FROM meetings")
     assert meeting["current_minutes_version_id"]
-    assert db.exact_search("主稿正文")
+    assert segment_hits(db, "主稿正文")
 
 
 @pytest.mark.parametrize(
