@@ -89,6 +89,18 @@
   }
 }
 
+/* 窗口再窄（768 一档）两栏放不下：表单被挤到 150px，输入框伸到预览下面。预览换到表单下面，不再吸顶 */
+@media (max-width: 1023px) {
+  .form-page__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .form-preview {
+    position: static;
+    max-width: 384px;
+  }
+}
+
 .form-card {
   display: grid;
   gap: 22px;
