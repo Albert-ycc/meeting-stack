@@ -546,6 +546,42 @@ def test_re_extract_keeps_drafts_people_touched(tmp_path, monkeypatch):
     assert "对口径" not in second
 
 
+def test_re_extract_while_scan_is_extracting_that_meeting_is_refused(tmp_path, monkeypatch):
+    """扫描正在抽这场会（批次 running、在等 AI）时点［重新抽取］：回 409 让人稍后再试，不把扫描那一行删掉
+    重插、两边各自落库。扫描抽完，草稿都挂在还在的批次上。"""
+    client, settings = make_client(tmp_path)
+    headers = write_headers(client)
+    db = Database(settings.database_path)
+    seed_editable_meeting(db, settings.archive_root)
+    seed_minutes(client, settings)
+    db.execute(
+        """INSERT INTO task_extractions(meeting_id, minutes_version_id, supplement, created_at)
+           VALUES (?, 'mv-1', '', ?)""",
+        (MEETING, utc_now()),
+    )
+    during_scan = []
+
+    def slow_ai(self, prompt):
+        if not during_scan:
+            during_scan.append(None)  # 先占位：重抽自己也会调到这里，别再套一层
+            during_scan[0] = client.post(
+                f"/api/meetings/{MEETING}/tasks/re-extract",
+                json={"supplement": "再来"},
+                headers=headers,
+            )
+        return ai_tasks("做看板")
+
+    monkeypatch.setattr(TaskService, "_call_llm", slow_ai)
+
+    assert TaskService(db, settings).extract_pending()["succeeded"] == 1
+
+    assert during_scan[0].status_code == 409
+    assert db.query_all(
+        """SELECT t.title, x.status FROM tasks t
+             JOIN task_extractions x ON x.id = t.extraction_id"""
+    ) == [{"title": "做看板", "status": "done"}]
+
+
 def test_re_extract_after_scan_seed_does_not_hit_unique_index(tmp_path, monkeypatch):
     """回归：scan 已给空 supplement 预 seed 后，用户再点「重新抽取」（空 supplement）不得撞唯一索引报 500。"""
     client, settings = make_client(tmp_path)

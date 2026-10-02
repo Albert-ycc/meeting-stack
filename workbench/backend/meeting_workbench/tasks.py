@@ -93,6 +93,8 @@ EVENT_KINDS = {
 DELIVERABLE_KINDS = ("figma", "lark", "file", "link")
 
 MAX_EXTRACTION_ATTEMPTS = 3
+# 抽取批次 running 超过这么久没抽完，算进程崩溃留下的，回收重来
+STALLED_EXTRACTION_MINUTES = 10
 # 每场会最多抽几条：每场平均 6 条、最多 19 条时待确认积压到 383 条两周无人处理（260914）。
 MAX_TASKS_PER_EXTRACTION = 3
 # 确认/驳回后多久内允许撤销。
@@ -1954,7 +1956,7 @@ class TaskService:
         不能用批次创建时间：重试批次的 created_at 天然很老，用它会把
         正在执行的批次误判超时、回收后再次认领造成同批次双跑。
         """
-        threshold = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
+        threshold = (datetime.now(UTC) - timedelta(minutes=STALLED_EXTRACTION_MINUTES)).isoformat()
         self.db.execute(
             """UPDATE task_extractions
                   SET status='pending', claimed_at=NULL, error='超时回收'
@@ -2044,7 +2046,16 @@ class TaskService:
         supplement = supplement.strip()
         logger.info("re_extract 开始 meeting=%s supplement=%r", meeting_id, supplement[:40])
         now = utc_now()
+        threshold = (datetime.now(UTC) - timedelta(minutes=STALLED_EXTRACTION_MINUTES)).isoformat()
         with self.db.transaction() as connection:
+            # 扫描（或另一次重抽）正在抽这场会：不删它那一行重插，否则两边各自落库、它的批次行没了
+            if connection.execute(
+                """SELECT 1 FROM task_extractions
+                    WHERE meeting_id=? AND status='running'
+                      AND COALESCE(claimed_at, created_at) >= ?""",
+                (meeting_id, threshold),
+            ).fetchone():
+                raise ConflictError("这场会正在抽任务，等这一轮抽完再重新抽取")
             # 旧草稿不在这里删：AI 回来、新结果落库的同一个事务里才对账（_extract_one），失败时原样留着。
             # 清掉该会议当前版本的旧抽取行（含 scan 预 seed 的占位），避免撞唯一索引，
             # 也顺带避免旧版本/旧 supplement 的 pending 批次残留。
