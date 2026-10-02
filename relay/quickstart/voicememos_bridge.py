@@ -54,18 +54,30 @@ def _stop(signum, frame):
     _running = False
 
 
-def load_seen() -> set:
-    if STATE_FILE.exists():
-        try:
-            return set(json.loads(STATE_FILE.read_text(encoding="utf-8")))
-        except Exception as e:
-            log.warning("state 文件损坏，重建基线：%s", e)
-    return set()
+def load_seen() -> set | None:
+    """读已处理清单。文件不存在或已损坏时返回 None，由调用方按首次启动处理。"""
+    if not STATE_FILE.exists():
+        return None
+    try:
+        return set(json.loads(STATE_FILE.read_text(encoding="utf-8")))
+    except Exception as e:
+        # 损坏时当成空清单，会把手机里全部历史录音重新搬进监听目录、逐条转写派单。
+        # 所以按首次启动处理（现存录音全部记为已处理），坏文件改名留着排查。
+        broken = STATE_FILE.with_name(f"{STATE_FILE.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+        STATE_FILE.replace(broken)
+        log.error("state 文件损坏，已改名留证 %s；按首次启动处理，现存录音全部记为已处理、不搬运：%s", broken, e)
+        return None
 
 
 def save_seen(seen: set):
+    # 先写临时文件再整体替换，写到一半断电或磁盘满时旧清单原样保留
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(sorted(seen), ensure_ascii=False, indent=0), encoding="utf-8")
+    tmp = STATE_FILE.with_name(f"{STATE_FILE.name}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(sorted(seen), ensure_ascii=False, indent=0))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, STATE_FILE)
 
 
 def list_recordings() -> dict:
@@ -114,11 +126,10 @@ def main():
         sys.exit(1)
 
     seen = load_seen()
-    first_run = not STATE_FILE.exists()
     snapshot = list_recordings()
 
-    if first_run:
-        # 首次启动：现存录音全部记为已处理，不回灌历史
+    if seen is None:
+        # 首次启动（或清单损坏）：现存录音全部记为已处理，不回灌历史
         seen = set(snapshot)
         save_seen(seen)
         log.info("首次启动，基线 %d 个历史录音已跳过", len(seen))
