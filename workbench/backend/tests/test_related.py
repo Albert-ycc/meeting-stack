@@ -10,7 +10,7 @@ import json
 import os
 import sqlite3
 import threading
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -631,6 +631,64 @@ def test_link_thresholds_and_top_five():
     assert idents[0] == "m|k6"  # 窗数一样时共同词多的、分高的在前
     links = related.link_rows("m", scope, rows[-2:], skip=set(), segments={})
     assert [row["ident"] for row in links] == ["m|two"]  # 1 个窗但 2 个共同词
+
+
+def _shown_idents(db):
+    return [
+        row["ident"]
+        for row in db.query_all(
+            "SELECT ident FROM relations WHERE kind = 'related' AND status = 'shown' ORDER BY ident"
+        )
+    ]
+
+
+def test_a_rejected_link_frees_its_slot_for_the_sixth(tmp_path):
+    """驳回的和副本、到处相关一样在截前 5 名之前挡掉：驳回第一名重算以后，第 6 名补上来，仍是 5 条。"""
+    db = Database(tmp_path / "w.sqlite3")
+    db.initialize()
+    db.execute("INSERT INTO projects(id, name, created_at) VALUES ('p', '云图AI', ?)", (utc_now(),))
+    db.execute(
+        "INSERT INTO project_material_roots(project_id, path, created_at) VALUES ('p', ?, ?)",
+        (str(tmp_path), utc_now()),
+    )
+    root = db.query_one("SELECT id FROM project_material_roots")["id"]
+    add_meeting(db, "m", ago=1, project_id="p")
+    keys = [f"q2:{index:032d}" for index in range(6)]
+    for index, key in enumerate(keys):
+        db.execute(
+            """INSERT INTO material_contents(content_key, layer, state, chars, chunks, created_at, updated_at)
+               VALUES (?, 'text', 'done', 100, 1, 'x', 'x')""",
+            (key,),
+        )
+        chunk = db.execute(
+            "INSERT INTO material_chunks(content_key, ordinal, loc, text) VALUES (?, 0, '', '正文')",
+            (key,),
+        )
+        add_file(db, root, f"f{index}.docx", key=key)
+        for window in (0, 45_000):
+            db.execute(
+                """INSERT INTO meeting_window_passages(meeting_id, start_ms, rank, chunk_id, content_key,
+                       ordinal, score, words, seg_ms) VALUES ('m', ?, ?, ?, ?, 0, ?, ?, 0)""",
+                (window, index, chunk, key, 0.70 + index / 100, json.dumps(["驻场服务"])),
+            )
+
+    def write(at):
+        with db.transaction() as connection:
+            scope = related.load_scope(connection, "p")
+            related.write_links(connection, "m", scope, copies=[], segments={}, now=at, since=at)
+
+    write(NOW.isoformat())
+    assert _shown_idents(db) == [f"m|{key}" for key in keys[1:]]
+    top = db.query_one("SELECT id FROM relations WHERE ident = ?", (f"m|{keys[5]}",))["id"]
+    with db.transaction() as connection:
+        relations.answer(
+            connection, top, {"answer": "no"}, (NOW + timedelta(minutes=1)).isoformat()
+        )
+    write((NOW + timedelta(minutes=30)).isoformat())
+
+    assert _shown_idents(db) == [f"m|{key}" for key in keys[:5]]
+    rejected = db.query_one("SELECT status FROM relations WHERE ident = ?", (f"m|{keys[5]}",))
+    assert rejected["status"] == "rejected"
 
 
 def test_dead_content_is_cleared(tmp_path):

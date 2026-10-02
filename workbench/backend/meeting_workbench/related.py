@@ -1182,7 +1182,16 @@ def write_links(
         [row["content_key"] for row in passages],
         extra_scanned=extra_scanned,
     )
-    rows = link_rows(meeting_id, scope, passages, skip=set(copies) | hubs, segments=segments)
+    # 你驳回的和副本、到处相关一样在截前 5 名之前挡掉，不占名额
+    rejected = rejected_filter(connection, meeting_id, scope.project_id)
+    blocked = {
+        str(row["content_key"])
+        for row in passages
+        if is_blocked(str(row["content_key"]), scope.files.get(str(row["content_key"])), rejected)
+    }
+    rows = link_rows(
+        meeting_id, scope, passages, skip=set(copies) | hubs | blocked, segments=segments
+    )
     written = relations_module.upsert_system(connection, rows, now, since=since)
     written += relations_module.clear_missing(
         connection,
