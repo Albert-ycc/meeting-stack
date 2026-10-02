@@ -91,7 +91,7 @@
 
 .poster__anchor:hover {
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
 }
 
 .poster__anchor-play {
@@ -196,7 +196,7 @@
 .poster__tag--p0 {
   border-color: var(--signal);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
 }
 
 .poster__tag--p1 {
@@ -416,7 +416,7 @@
 .poster__pill.is-primary:hover:not(:disabled) {
   border-color: var(--signal);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
 }
 
 .poster__text-action:disabled,

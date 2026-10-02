@@ -649,7 +649,7 @@
 .form-actions__submit {
   border: 1px solid var(--signal);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
   font-weight: 600;
 }
 

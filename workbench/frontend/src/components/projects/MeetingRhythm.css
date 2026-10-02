@@ -34,7 +34,7 @@
 
 .rhythm__bar.is-zero {
   height: 2px;
-  background: var(--faint);
+  background: var(--muted-2);
 }
 
 .rhythm__bar.is-now {

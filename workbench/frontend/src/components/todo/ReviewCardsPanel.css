@@ -387,7 +387,7 @@
 
 .review-button--signal {
   padding: 8px 20px;
-  color: #fff;
+  color: var(--on-signal);
   font-size: 13px;
   background: var(--signal);
   border-color: var(--signal);

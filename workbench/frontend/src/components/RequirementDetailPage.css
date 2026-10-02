@@ -136,7 +136,7 @@
 
 .requirement-detail__edit {
   padding: 9px 16px;
-  color: #fff;
+  color: var(--on-signal);
   font-size: 12px;
   font-weight: 600;
   background: var(--signal);
@@ -193,7 +193,7 @@
 .requirement-detail__level--p0 {
   border-color: var(--signal);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
 }
 
 .requirement-detail__level--p1 {
@@ -305,8 +305,8 @@
 .requirement-detail__status {
   padding: 1px 8px;
   border-radius: 4px;
-  background: color-mix(in srgb, #1f9d55 14%, transparent);
-  color: #1f9d55;
+  background: var(--ok-bg);
+  color: var(--ok-strong);
   font-size: 12px;
   line-height: 18px;
 }

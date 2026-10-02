@@ -295,7 +295,7 @@
 }
 
 .task-edit-modal__segmented button[aria-pressed="true"] {
-  color: var(--ink);
+  color: var(--on-signal);
   font-weight: 600;
   background: var(--signal);
 }
@@ -341,7 +341,7 @@
 }
 
 .task-edit-modal__submit {
-  color: var(--ink);
+  color: var(--on-signal);
   font-weight: 600;
   background: var(--signal);
   border: 1px solid var(--signal);

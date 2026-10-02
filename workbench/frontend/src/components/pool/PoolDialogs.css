@@ -154,7 +154,7 @@
 .merge-target__priority--p0 {
   border-color: var(--signal);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
 }
 
 .pool-dialog__note {
@@ -206,7 +206,7 @@
 .pool-dialog__submit {
   border: 1px solid var(--signal);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
   font-weight: 600;
 }
 

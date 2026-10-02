@@ -46,6 +46,12 @@ meeting-stack 的三个组件之一，负责资料库、检索、播放与编辑
 `rgb(var(--fg-rgb) / α)`、阴影写 `rgb(0 0 0 / calc(α * var(--shadow-k)))`，两套主题各自
 调深浅；canvas 组件把 `useTheme().resolved` 放进依赖，换主题时重绘。
 
+**文字对比度按小字 4.5:1 算**：`--faint` 是最低一档的字色，两套主题里落在 `--bg`、`--surface`、
+`--raised` 以及卡片上叠 `--line` 的小标签上都够；实色橙底（按钮、角标、P0 标签）上的字一律写
+`var(--on-signal)`（近黑，两套主题共用），不要写 `--ink` 或 `#fff`——深色主题里这两样压在橙底上
+只有 2.4~2.8:1；绿色小字用 `--ok-strong`。`src/styles.contrast.test.ts` 按 token 的真实取值算数，
+再扫所有 CSS 里橙底规则的字色，改回去用例会红。
+
 ## 交互约定
 
 - 每个视图和打开的会议都有地址锚点（`#library`、`#tasks`、`#meetings/<id>` …），视图切换压入

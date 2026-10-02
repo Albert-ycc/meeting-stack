@@ -157,7 +157,7 @@
   padding: 9px 18px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--on-signal);
   background: var(--signal);
   border: 1px solid var(--signal);
   border-radius: 12px;

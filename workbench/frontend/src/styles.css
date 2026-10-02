@@ -43,7 +43,9 @@
   --ink-2: #cfcfcf;
   --muted: #9a9a9a;
   --muted-2: #767676;
-  --faint: #5a5a5a;
+  /* 最低一档的字（表头、图表说明、空态、「没有来源录音」）：原来 #5a5a5a 在 #181818 上只有 2.6:1，
+     现在在最亮的 --raised、以及卡片上叠 --line 的小标签上也 ≥ 4.5:1 */
+  --faint: #919191;
 
   /* —— 线与描边 —— */
   --line: rgba(255, 255, 255, 0.07);
@@ -55,9 +57,12 @@
   --signal: #f0783b;
   --signal-bg: rgba(240, 120, 59, 0.14);
   --signal-line: rgba(240, 120, 59, 0.32);
+  /* 实色橙底（按钮、角标、P0 标签）上的字：#ededed、白字压在 #f0783b 上只有 2.4~2.8:1，改成近黑，两套主题共用 */
+  --on-signal: #161616;
   --ok: #3ecf8e;
   --ok-bg: rgba(62, 207, 142, 0.13);
   --ok-line: rgba(62, 207, 142, 0.3);
+  --ok-strong: #3ecf8e; /* 绿色小字：深色主题里 --ok 本身够亮，浅色主题另有一个更深的 */
   --warn: #e0a33c;
   --warn-bg: rgba(224, 163, 60, 0.13);
   --warn-line: rgba(224, 163, 60, 0.3);
@@ -109,7 +114,7 @@
   --ink-2: #353535;
   --muted: #5e5e5e;
   --muted-2: #767676;
-  --faint: #a3a3a3;
+  --faint: #686868; /* 原来 #a3a3a3 只有 2.3~2.5:1；理由同深色主题那一档 */
 
   --line: rgba(0, 0, 0, 0.08);
   --line-strong: rgba(0, 0, 0, 0.14);
@@ -122,6 +127,7 @@
   --ok: #17915d;
   --ok-bg: rgba(23, 145, 93, 0.1);
   --ok-line: rgba(23, 145, 93, 0.3);
+  --ok-strong: #0e7549;
   --warn: #b0701a;
   --warn-bg: rgba(176, 112, 26, 0.1);
   --warn-line: rgba(176, 112, 26, 0.3);
@@ -967,7 +973,7 @@ textarea {
 
 .archive-day__relative {
   padding: 2px 6px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 9px;
   font-style: normal;
   background: var(--signal);
@@ -1803,7 +1809,7 @@ textarea {
 /* 逐字稿选中一段时浮出的［建成需求］（S04）：时间锚 + 按钮 */
 .transcript-pick { position: absolute; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 5px 5px 5px 11px; white-space: nowrap; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
 .transcript-pick__time { color: var(--ink-soft); font-family: var(--font-mono); font-size: 11px; }
-.transcript-pick button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px; color: #fff; font-size: 12px; font-weight: 600; background: var(--signal); border: 0; border-radius: 8px; cursor: pointer; }
+.transcript-pick button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px; color: var(--on-signal); font-size: 12px; font-weight: 600; background: var(--signal); border: 0; border-radius: 8px; cursor: pointer; }
 .transcript-pick button svg { width: 12px; height: 12px; }
 .transcript-pick small { color: var(--danger); font-size: 11px; }
 .transcript-row { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); transition: background 120ms ease; }
@@ -1879,13 +1885,13 @@ textarea {
 .minutes-actions p { color: var(--ink-soft); font-size: 10px; line-height: 1.65; }
 .minutes-actions button { width: 100%; }
 .publish-rule { height: 1px; margin: 10px 0; background: var(--stage); }
-.minutes-actions .publish-button { padding: 11px; color: var(--ink); background: var(--signal-dark); border-color: var(--signal-dark); }
+.minutes-actions .publish-button { padding: 11px; color: var(--on-signal); background: var(--signal-dark); border-color: var(--signal-dark); }
 
 /* 两个重生成入口并列：左默认后端，右换 Claude 重写 */
 .minutes-actions .regen-group { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .minutes-actions .regen-claude { color: var(--signal-dark); background: var(--surface); border-color: var(--signal-dark); }
 .minutes-actions .regen-claude::before { content: "◆"; margin-right: 5px; font-size: 7px; vertical-align: 1px; }
-.minutes-actions .regen-claude:hover:not(:disabled) { color: var(--ink); background: var(--signal-dark); }
+.minutes-actions .regen-claude:hover:not(:disabled) { color: var(--on-signal); background: var(--signal-dark); }
 .minutes-actions .regen-claude:disabled { color: var(--muted); background: var(--bg); border-color: var(--line); }
 .minutes-actions .regen-hint { margin: -3px 0 2px; font-size: 9px; }
 
@@ -2042,7 +2048,7 @@ textarea {
 .rail-badge {
   margin-left: auto;
   background: var(--signal);
-  color: var(--ink);
+  color: var(--on-signal);
   font-style: normal;
   font-size: 11px;
   font-weight: 600;
@@ -2310,7 +2316,7 @@ textarea {
 }
 
 .todo-item__confirm:hover:not(:disabled) {
-  color: var(--heading);
+  color: var(--on-signal);
   background: var(--signal);
   border-color: transparent;
   transform: translateY(-1px);

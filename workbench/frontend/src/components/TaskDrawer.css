@@ -427,7 +427,7 @@ button.task-drawer__requirement-link:hover {
 .task-drawer__comment-send {
   flex: none;
   padding: 9px 16px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 12px;
   font-weight: 600;
   background: var(--signal);
@@ -484,7 +484,7 @@ button.task-drawer__requirement-link:hover {
 
 .task-drawer__primary {
   padding: 9px 16px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 12px;
   font-weight: 600;
   background: var(--signal);

@@ -173,7 +173,7 @@
 }
 
 .link-tasks-modal__actions .link-tasks-modal__confirm {
-  color: var(--ink);
+  color: var(--on-signal);
   font-weight: 600;
   background: var(--signal);
   border-color: var(--signal);

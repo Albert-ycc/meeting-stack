@@ -7,7 +7,7 @@
 .projects-create {
   flex: none;
   padding: 10px 16px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 12px;
   white-space: nowrap;
   background: var(--signal);

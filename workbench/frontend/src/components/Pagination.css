@@ -25,7 +25,7 @@
 }
 
 .pagination-numbers button.is-active {
-  color: var(--ink);
+  color: var(--on-signal);
   font-weight: 600;
   background: var(--signal);
   border-color: var(--signal);

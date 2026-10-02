@@ -161,7 +161,7 @@
 .folder-picker__card button.folder-picker__go-root {
   width: auto;
   padding: 9px 16px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-weight: 600;
   font-size: 12px;
   background: var(--signal);
@@ -211,7 +211,7 @@
 }
 
 .folder-picker__card button.folder-picker__confirm {
-  color: var(--ink);
+  color: var(--on-signal);
   font-weight: 600;
   background: var(--signal);
   border: 1px solid var(--signal);

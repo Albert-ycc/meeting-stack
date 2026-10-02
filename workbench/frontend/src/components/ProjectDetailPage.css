@@ -143,7 +143,7 @@
 
 .detail-head__create-requirement {
   padding: 8px 14px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 12px;
   font-weight: 600;
   background: var(--signal);
@@ -375,7 +375,7 @@
 }
 
 .detail-subtabs button[aria-selected="true"] span {
-  color: var(--ink);
+  color: var(--on-signal);
   background: var(--signal);
 }
 

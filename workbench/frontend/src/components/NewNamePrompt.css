@@ -172,7 +172,7 @@
 
 /* 默认的那个主按钮是实心 */
 .name-prompt__main--solid {
-  color: var(--ink);
+  color: var(--on-signal);
   font-weight: 600;
   background: var(--signal);
   border-color: var(--signal);

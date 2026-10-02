@@ -220,7 +220,7 @@
   padding: 0 6px;
   border-radius: var(--r-pill);
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
   font-size: 11px;
   line-height: 16px;
 }

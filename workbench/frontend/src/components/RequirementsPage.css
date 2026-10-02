@@ -3,7 +3,7 @@
 .requirements-create {
   flex: none;
   padding: 10px 16px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 12px;
   white-space: nowrap;
   background: var(--signal);
@@ -127,7 +127,7 @@
 }
 
 .requirements-tabs button[aria-selected="true"] span {
-  color: var(--ink);
+  color: var(--on-signal);
   background: var(--signal);
 }
 
@@ -163,7 +163,7 @@
 
 .requirements-empty button {
   padding: 9px 16px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 12px;
   background: var(--signal);
   border: 1px solid var(--signal);

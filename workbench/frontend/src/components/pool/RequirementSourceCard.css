@@ -110,7 +110,7 @@
 
 .source-card__flag.is-origin {
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
 }
 
 .source-card__axis {

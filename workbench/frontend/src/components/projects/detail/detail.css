@@ -162,7 +162,7 @@
   right: 8px;
   z-index: 4;
   padding: 3px 10px;
-  color: #fff;
+  color: var(--on-signal);
   font-size: 12px;
   background: var(--signal);
   border-radius: var(--r-pill);

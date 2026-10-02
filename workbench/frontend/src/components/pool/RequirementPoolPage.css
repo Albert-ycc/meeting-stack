@@ -81,7 +81,7 @@
   border: 1px solid var(--signal);
   border-radius: 12px;
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
   font: inherit;
   font-size: 14px;
   font-weight: 600;
@@ -346,7 +346,7 @@
   border: 1px solid var(--signal);
   border-radius: 12px;
   background: var(--signal);
-  color: #fff;
+  color: var(--on-signal);
   font: inherit;
   font-size: 14px;
   font-weight: 600;

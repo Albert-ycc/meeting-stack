@@ -25,7 +25,7 @@
 
 .meeting-tasks-panel__count {
   background: var(--signal);
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 11px;
   font-style: normal;
   border-radius: 12px;

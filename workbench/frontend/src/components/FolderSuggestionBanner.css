@@ -139,7 +139,7 @@
 
 .folder-suggestion__submit {
   padding: 8px 16px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 13px;
   font-weight: 600;
   background: var(--signal);

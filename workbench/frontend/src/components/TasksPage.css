@@ -80,7 +80,7 @@
 .tasks-create {
   flex: none;
   padding: 11px 18px;
-  color: #fff;
+  color: var(--on-signal);
   font-size: 14px;
   font-weight: 600;
   white-space: nowrap;

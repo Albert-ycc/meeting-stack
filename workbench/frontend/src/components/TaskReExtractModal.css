@@ -52,7 +52,7 @@
   align-items: center;
   margin: 10px 0 0;
   padding: 2px 9px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 11px;
   font-style: normal;
   background: var(--signal);
@@ -231,7 +231,7 @@
 
 .re-extract-modal__submit {
   padding: 10px 16px;
-  color: var(--ink);
+  color: var(--on-signal);
   font-size: 12px;
   font-weight: 500;
   background: var(--signal);
