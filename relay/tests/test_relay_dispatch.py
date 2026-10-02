@@ -650,6 +650,20 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         # 新状态还没写文案时保底可读，不静默丢通知
         self.assertIn("brand_new_state", sent[3][1])
 
+    def test_interrupted_notice_does_not_promise_automatic_resume(self):
+        module = load_watchdog_module()
+        sent = []
+        with patch.object(
+            module, "notify_lark", side_effect=lambda title, body: sent.append((title, body))
+        ):
+            module.notify_workbench_status("job-abc", "interrupted", 46.0)
+
+        title, body = sent[0]
+        self.assertEqual("已按你的要求停下", title)
+        self.assertIn("点重试", body)
+        self.assertNotIn("自己接着往下跑", body)
+        self.assertNotIn("不用管", body)
+
     def test_enabled_flag_records_stages_and_adds_completion_callback(self):
         module = load_watchdog_module()
         recorded = []
