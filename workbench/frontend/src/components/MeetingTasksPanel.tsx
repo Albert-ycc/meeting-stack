@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiError, type ApiClient } from "../api";
+import type { ApiClient } from "../api";
 import type { Task, TaskStatus, Project } from "../types";
 import { AsyncState } from "./AsyncState";
 import { TaskEditModal } from "./TaskEditModal";
@@ -53,7 +53,6 @@ export function MeetingTasksPanel({
   const [tasks, setTasks] = useState<Task[]>([]);
   const [state, setState] = useState<LoadState>("loading");
   const { notice, setNotice, dismissNotice } = useNotice();
-  const [reExtracting, setReExtracting] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
   const [reExtractOpen, setReExtractOpen] = useState(false);
 
@@ -121,14 +120,6 @@ export function MeetingTasksPanel({
       </section>
     );
   }
-  if (tasks.length === 0) {
-    return (
-      <section className="meeting-tasks-panel" aria-label="本场任务">
-        <p className="meeting-tasks-panel__empty">本场会暂无任务。</p>
-      </section>
-    );
-  }
-
   return (
     <section className="meeting-tasks-panel" aria-label="本场任务">
       <div className="meeting-tasks-panel__head">
@@ -137,16 +128,13 @@ export function MeetingTasksPanel({
           {pending.length > 0 && <em className="meeting-tasks-panel__count">{pending.length}</em>}
         </div>
         {canWrite && (
-          <button
-            className="ghost-button"
-            disabled={reExtracting}
-            onClick={() => setReExtractOpen(true)}
-            type="button"
-          >
+          <button className="ghost-button" onClick={() => setReExtractOpen(true)} type="button">
             重新抽取
           </button>
         )}
       </div>
+      {/* 一条都没抽出来正是最需要重抽的时候，头部和［重新抽取］照样给 */}
+      {tasks.length === 0 && <p className="meeting-tasks-panel__empty">本场会暂无任务。</p>}
       {pending.length > 0 && (
         <div className="meeting-tasks-panel__group">
           <div className="meeting-tasks-panel__group-title">待确认</div>

@@ -66,4 +66,12 @@ describe("会议详情的本场任务", () => {
 
     expect(await screen.findByRole("option", { name: "明德基金会科普同行" })).toBeInTheDocument();
   });
+
+  it("一条任务都没抽出来时也能重新抽取", async () => {
+    renderPanel([]);
+
+    expect(await screen.findByText("本场会暂无任务。")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "重新抽取" }));
+    expect(screen.getByRole("dialog", { name: "补充上下文，重新生成这批任务" })).toBeInTheDocument();
+  });
 });
