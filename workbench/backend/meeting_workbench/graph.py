@@ -2493,13 +2493,21 @@ def fulltext_counts(connection: Any, project_id: str, variants: list[str]) -> di
     result: dict[str, Any] = {"variants": cleaned, "total": 0, "meeting_count": 0, "meetings": []}
     if not cleaned:
         return result
-    where = " OR ".join("instr(lower(s.text), ?) > 0" for _ in cleaned)
+    # SQLite 的 lower() 只转 ASCII：写法里有全角、带变音这类非 ASCII 的大小写字母时，SQL 里预筛不出来，
+    # 只能把项目的逐字稿都取回来交给下面的 pattern 数；其余（中文、ASCII）照旧在 SQL 里预筛
+    if any(
+        char.lower() != char.upper() and not char.isascii() for value in cleaned for char in value
+    ):
+        where, params = "1", ()
+    else:
+        where = " OR ".join("instr(lower(s.text), ?) > 0" for _ in cleaned)
+        params = tuple(value.lower() for value in cleaned)
     rows = connection.execute(
         f"""SELECT m.id, m.title, m.recording_date, m.created_at, s.start_ms, s.text
               FROM meetings m JOIN segments s ON s.version_id = m.current_transcript_version_id
              WHERE m.project_id = ? AND ({where})
              ORDER BY m.id, s.start_ms""",
-        (project_id, *(value.lower() for value in cleaned)),
+        (project_id, *params),
     ).fetchall()
     pattern = re.compile("|".join(re.escape(value) for value in cleaned), re.IGNORECASE)
     per_meeting: dict[str, dict[str, Any]] = {}

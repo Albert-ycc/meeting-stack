@@ -236,6 +236,29 @@ def test_fulltext_counts_all_spellings_once_and_ignores_window(tmp_path):
     assert client.get("/api/graph/projects/nope/fulltext", params={"q": "x"}).status_code == 404
 
 
+def test_fulltext_counts_full_width_and_accented_spellings(tmp_path):
+    """全角字母、带变音的写法也数得到，大小写不同照样算；没有大小写的中文、ASCII 写法不受影响。"""
+    _client, _settings, db = make_db(tmp_path)
+    add_project(db, "p", "云图AI")
+    add_meeting(
+        db,
+        "m",
+        ago=0,
+        project_id="p",
+        segments=[
+            (0, "ＣＲＭ 的权限要重新梳理"),
+            (2000, "Café 那个页面先下线"),
+            (4000, "ｃｒｍ 和 CRM 也要改"),
+        ],
+    )
+    with db.autocommit() as connection:
+        totals = [
+            graph.fulltext_counts(connection, "p", variants)["total"]
+            for variants in (["ＣＲＭ"], ["CAFÉ"], ["CRM"], ["权限"])
+        ]
+    assert totals == [2, 1, 1, 1]
+
+
 def make_root(db, tmp_path, name="云图AI", project_id="p"):
     root = tmp_path / "materials" / name
     root.mkdir(parents=True)
