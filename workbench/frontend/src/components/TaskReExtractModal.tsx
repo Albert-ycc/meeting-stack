@@ -51,6 +51,12 @@ export function TaskReExtractModal({
         setSubmitting(false);
         return;
       }
+      // 后端抽失败时不删旧草稿、也不抛错，只回 failed：不能当成功关掉
+      if (result.status !== "done") {
+        setError("这次没抽成，原来的任务没动，可以稍后再试一次");
+        setSubmitting(false);
+        return;
+      }
       onReExtracted();
       onClose();
     } catch (caught) {
