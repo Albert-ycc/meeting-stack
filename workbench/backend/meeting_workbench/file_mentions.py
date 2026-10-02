@@ -35,6 +35,7 @@ from .material_content import key_file_now
 from .material_index import MATCH_ZONES, STATE_MISSING, STATE_OFFLINE
 from .project_names import also_entries
 from .project_profile import MAX_ANCHORS, light_key, norm_key
+from .task_due import BEIJING_TZ
 from .text_scan import FormScanner
 
 MATCH_VERSION = "4b-1"
@@ -215,11 +216,12 @@ def _latest(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def _local(ns: int) -> datetime:
-    return datetime.fromtimestamp(ns / 1_000_000_000).astimezone()
+    """按会上说话人的日历（北京时间）看这个时刻：「昨天」「这周」是会上的日子，不随跑声档的 Mac 的时区变。"""
+    return datetime.fromtimestamp(ns / 1_000_000_000, BEIJING_TZ)
 
 
 def _day_start_ns(day: date_type) -> int:
-    return int(datetime.combine(day, day_time(0, 0)).astimezone().timestamp() * 1_000_000_000)
+    return int(datetime.combine(day, day_time(0, 0), BEIJING_TZ).timestamp() * 1_000_000_000)
 
 
 def pick_by_hint(
@@ -229,7 +231,7 @@ def pick_by_hint(
     previous_ns: int | None = None,
 ) -> dict[str, Any] | None:
     """按提示在词干组里挑一份（4b，2d 和 L5 同一套）：{"version": 3} 挑那一版；{"rel": …} 以会议当天
-    （本机时区，一周从周一开始）为准：上周是上一个周一到周日之间修改时间最新的；这周是本周到开会时为止
+    （北京日历，一周从周一开始）为准：上周是上一个周一到周日之间修改时间最新的；这周是本周到开会时为止
     最新的；昨天、今天是那一天里最新的（今天要早于开会）；上次开会是不晚于同项目上一场会的最新一份；
     最新是不晚于开会的最新一份；上一版是不晚于开会的第二新一份。找不到回 None（调用方再用 _pick_by_date）。"""
     if not hint or not group:
@@ -405,14 +407,16 @@ class ProjectContext:
 
 
 def _meeting_ns(recording_date: str | None, created_at: str | None) -> int | None:
-    """会议时间（纳秒）：只有日期时取那天结束。"""
+    """会议时间（纳秒）：只有日期时取那天（北京日历）结束；不带时区的时间按本机时间理解。"""
     for raw in (recording_date, created_at):
         if not raw:
             continue
         text = str(raw).strip().replace("Z", "+00:00")
         try:
             if len(text) == 10:
-                moment = datetime.combine(datetime.fromisoformat(text).date(), day_time(23, 59, 59))
+                moment = datetime.combine(
+                    datetime.fromisoformat(text).date(), day_time(23, 59, 59), BEIJING_TZ
+                )
             else:
                 moment = datetime.fromisoformat(text.replace(" ", "T"))
         except ValueError:

@@ -704,7 +704,7 @@ def test_two_groups_or_wrong_kind_do_not_link(tmp_path):
 
 
 def calendar(tmp_path):
-    """一份固定日历：会是 2026-09-28 周一 10:00；文件分布在上周、这周、昨天（周日）、今天。"""
+    """一份固定日历（北京时间）：会是 2026-09-28 周一 10:00；文件分布在上周、这周、昨天（周日）、今天。"""
     db, root_id = fm_setup(tmp_path)
     ids = {}
     for label, when in (
@@ -715,12 +715,10 @@ def calendar(tmp_path):
         ("v5", "2026-09-28T18:00:00"),  # 今天、开会之后
     ):
         ids[label] = add_file(db, root_id, f"报价单 {label}.xlsx")
-        stamp = int(datetime.fromisoformat(when).astimezone().timestamp() * 1_000_000_000)
+        stamp = int(datetime.fromisoformat(when + "+08:00").timestamp() * 1_000_000_000)
         db.execute("UPDATE material_files SET mtime_ns = ? WHERE id = ?", (stamp, ids[label]))
     group = context_of(db).groups["报价单"]
-    meeting = int(
-        datetime.fromisoformat("2026-09-28T10:00:00").astimezone().timestamp() * 1_000_000_000
-    )
+    meeting = int(datetime.fromisoformat("2026-09-28T10:00:00+08:00").timestamp() * 1_000_000_000)
     return group, meeting, ids
 
 
@@ -738,9 +736,7 @@ def calendar(tmp_path):
 )
 def test_when_rel_on_a_fixed_calendar(tmp_path, rel, expected):
     group, meeting, ids = calendar(tmp_path)
-    previous = int(
-        datetime.fromisoformat("2026-09-22T10:00:00").astimezone().timestamp() * 1_000_000_000
-    )
+    previous = int(datetime.fromisoformat("2026-09-22T10:00:00+08:00").timestamp() * 1_000_000_000)
     chosen = file_mentions.pick_by_hint(group, {"rel": rel}, meeting, previous)
     assert chosen["id"] == ids[expected]
     assert file_mentions.pick_by_hint(group, {"version": 2}, meeting)["id"] == ids["v2"]
@@ -749,9 +745,7 @@ def test_when_rel_on_a_fixed_calendar(tmp_path, rel, expected):
 
 def test_sunday_meeting_counts_its_own_week(tmp_path):
     group, _meeting, ids = calendar(tmp_path)
-    sunday = int(
-        datetime.fromisoformat("2026-09-27T21:00:00").astimezone().timestamp() * 1_000_000_000
-    )
+    sunday = int(datetime.fromisoformat("2026-09-27T21:00:00+08:00").timestamp() * 1_000_000_000)
     # 周日开会：「这周」从 9/21 周一算起，取开会前最新的那份（周日晚上 8 点）
     assert file_mentions.pick_by_hint(group, {"rel": "this_week"}, sunday)["id"] == ids["v3"]
     # 「上周」是 9/14 到 9/20：上上周六那份

@@ -1,7 +1,11 @@
 """第二期 2d：会上提到文件名的比对、你的改动、会议简报里的文件。"""
 
 import json
+import os
+import time
 from datetime import datetime
+
+import pytest
 
 from meeting_workbench import file_mentions, graph
 from meeting_workbench.db import utc_now
@@ -717,3 +721,35 @@ def test_match_version_change_recompares_every_meeting(tmp_path, monkeypatch):
     assert file_mentions.MATCH_VERSION == "4b-1"
     monkeypatch.setattr(file_mentions, "MATCH_VERSION", "4b-2")
     assert run(db) == {"pending": 2, "tried": 2, "written": 2}
+
+
+@pytest.mark.parametrize("zone", ["Asia/Shanghai", "America/Los_Angeles"])
+def test_day_hints_follow_the_beijing_calendar_whatever_the_machine_zone(zone):
+    """会在北京白天开，「昨天」「这周」是会上的日子：Mac 在太平洋时区时也得挑北京日历上的那一版。"""
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = zone
+    time.tzset()
+    try:
+
+        def at(text):
+            return int(datetime.fromisoformat(text).timestamp() * 1_000_000_000)
+
+        group = [
+            {"id": 1, "name": "报价单.xlsx", "mtime_ns": at("2026-10-01T16:00:00+08:00")},
+            {"id": 2, "name": "报价单.xlsx", "mtime_ns": at("2026-09-30T20:00:00+08:00")},
+            {"id": 3, "name": "报价单.xlsx", "mtime_ns": at("2026-09-27T23:00:00+08:00")},
+        ]
+        meeting = file_mentions._meeting_ns("2026-10-02T10:00:00+08:00", None)
+        picked = {
+            rel: file_mentions.pick_by_hint(group, {"rel": rel}, meeting)["id"]
+            for rel in ("yesterday", "this_week", "last_week")
+        }
+        assert picked == {"yesterday": 1, "this_week": 1, "last_week": 3}
+        # 只有日期时取北京那天的最后一秒
+        assert file_mentions._meeting_ns("2026-10-02", None) == at("2026-10-02T23:59:59+08:00")
+    finally:
+        if old is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
