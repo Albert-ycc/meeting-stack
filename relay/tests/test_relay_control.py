@@ -4815,6 +4815,103 @@ class RelayControlTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual([job_id], [item["job_id"] for item in payload])
 
+    def _insert_bare_jobs(self, count: int, *, status: str = "published") -> list[str]:
+        """直接往任务表里塞空壳任务（只填必填列），造几百条用例才不慢；updated_at 递增。"""
+        job_ids = [f"job-{index:016x}" for index in range(count)]
+        with sqlite3.connect(self.db_path) as connection:
+            connection.executemany(
+                "INSERT INTO jobs(job_id, source_key, audio_path, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        job_id,
+                        f"path:/bare/{index}",
+                        f"/bare/{index}.m4a",
+                        status,
+                        "2026-10-01T00:00:00+00:00",
+                        f"2026-10-01T{index // 3600:02d}:{index // 60 % 60:02d}:{index % 60:02d}+00:00",
+                    )
+                    for index, job_id in enumerate(job_ids)
+                ],
+            )
+        return job_ids
+
+    def test_list_jobs_by_job_ids_is_not_cut_off_by_the_500_row_cap(self):
+        """工作台要核对每场会的 index 子状态，会比 500 多时按任务号取也得取全，不能漏。"""
+        job_ids = self._insert_bare_jobs(650)
+
+        capped = self.control.list_jobs(limit=500)
+        wanted = self.control.list_jobs(job_ids=job_ids)
+
+        self.assertEqual(500, len(capped))
+        self.assertEqual(650, len(wanted))
+        self.assertEqual(set(job_ids), {item["job_id"] for item in wanted})
+        row = wanted[0]
+        self.assertIn("current_attempt", row)
+        self.assertIn("index_status", row)
+        self.assertEqual(
+            sorted(wanted, key=lambda item: (item["updated_at"], item["job_id"]), reverse=True),
+            wanted,
+        )
+
+    def test_list_jobs_by_job_ids_skips_unknown_ids_and_dedupes(self):
+        job_ids = self._insert_bare_jobs(5)
+
+        found = self.control.list_jobs(
+            job_ids=[job_ids[1], job_ids[3], job_ids[1], "job-ffffffffffffffff"]
+        )
+
+        self.assertEqual({job_ids[1], job_ids[3]}, {item["job_id"] for item in found})
+        self.assertEqual(2, len(found))
+
+    def test_list_jobs_with_empty_job_id_list_is_empty_not_everything(self):
+        self._insert_bare_jobs(3)
+
+        self.assertEqual([], self.control.list_jobs(job_ids=[]))
+        self.assertEqual(3, len(self.control.list_jobs()))
+
+    def test_list_jobs_by_job_ids_still_honours_the_status_filter(self):
+        published = self._insert_bare_jobs(2)
+        failed_id = "job-00000000000000ff"
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "INSERT INTO jobs(job_id, source_key, audio_path, status, created_at, updated_at) "
+                "VALUES (?, 'path:/bare/f', '/bare/f.m4a', 'failed', 'x', '2026-10-02T00:00:00+00:00')",
+                (failed_id,),
+            )
+
+        found = self.control.list_jobs(status="failed", job_ids=[*published, failed_id])
+
+        self.assertEqual([failed_id], [item["job_id"] for item in found])
+
+    def test_cli_list_takes_repeated_job_id_and_ignores_limit(self):
+        job_ids = self._insert_bare_jobs(4)
+        with patch.dict(
+            os.environ,
+            {
+                "MEETING_RELAY_JOBS_DB": str(self.db_path),
+                "MEETING_RELAY_ARCHIVE_ROOT": str(self.root),
+            },
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = self.module.main(
+                    [
+                        "list",
+                        "--json",
+                        "--limit",
+                        "1",
+                        "--job-id",
+                        job_ids[0],
+                        "--job-id",
+                        job_ids[2],
+                    ]
+                )
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(output.getvalue())
+        self.assertEqual({job_ids[0], job_ids[2]}, {item["job_id"] for item in payload})
+
     def test_cli_retry_substate_creates_pending_retry_request(self):
         with patch.dict(
             os.environ,

@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from .config import Settings
 from .hotwords import normalize_hotwords
@@ -22,6 +22,10 @@ PROJECT_HINT_ENV = "MEETING_RELAY_PROJECT_HINT"
 # relay 入队时生成 "job-" 加 16 位小写十六进制（生产的任务号全是这个形状）。这里放宽到字母数字、
 # 下划线、连字符，只为保证任务号进 relayctl 的 argv 后不会被当成选项、路径或带空白的串。
 _JOB_ID_RE = re.compile(r"job-[0-9A-Za-z_-]{1,64}")
+
+# 按任务号向 relayctl list 点名时一次最多带多少个。每个任务号在 argv 里占 30 来个字节，
+# 1000 个约 30KB，离系统的参数总长上限（macOS 约 1MB）很远；生产现有 169 场会，一次就取完。
+JOB_IDS_PER_LIST = 1000
 
 
 class RelayUnavailable(RuntimeError):
@@ -154,16 +158,42 @@ class RelayClient:
             raise RelayUnavailable("relayctl 未返回有效 job_id")
         return job_id
 
-    def list_jobs(self, *, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    def list_jobs(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 200,
+        job_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if job_ids is not None and not job_ids:
+            return []
         arguments = ["list", "--json", "--limit", str(limit)]
         if status:
             arguments.extend(["--status", status])
+        for job_id in job_ids or ():
+            arguments.extend(["--job-id", check_job_id(job_id)])
         payload = self._json(self._run(arguments))
         if isinstance(payload, dict):
             payload = payload.get("jobs", [])
         if not isinstance(payload, list):
             raise RelayUnavailable("relayctl list 返回格式错误")
         return payload
+
+    def jobs_by_id(self, job_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """按任务号一批取回任务摘要（含 current_attempt、index_status）。点名的任务不受 list
+        500 行上限截断；格式不对的任务号不可能在 relay 里，当作查不到，不往 relayctl 传。"""
+        wanted = [
+            job_id
+            for job_id in dict.fromkeys(job_ids)
+            if isinstance(job_id, str) and _JOB_ID_RE.fullmatch(job_id)
+        ]
+        found: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(wanted), JOB_IDS_PER_LIST):
+            for job in self.list_jobs(job_ids=wanted[start : start + JOB_IDS_PER_LIST]):
+                if not isinstance(job, dict) or not isinstance(job.get("job_id"), str):
+                    raise RelayUnavailable("relayctl list 返回格式错误")
+                found[job["job_id"]] = job
+        return found
 
     def status(self, job_id: str) -> dict[str, Any]:
         payload = self._json(self._run(["status", check_job_id(job_id), "--json"]))

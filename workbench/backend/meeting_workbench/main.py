@@ -1032,7 +1032,7 @@ def create_app(
         app.state.last_scan = last_scan
 
     def sync_index_substates() -> None:
-        if not hasattr(relay, "set_substate"):
+        if not (hasattr(relay, "set_substate") and hasattr(relay, "jobs_by_id")):
             return
         rows = db.query_all(
             """SELECT m.source_job_id AS job_id, COUNT(s.id) AS segment_count,
@@ -1044,22 +1044,30 @@ def create_app(
                 GROUP BY m.source_job_id""",
             (settings.semantic_model,),
         )
-        for row in rows:
-            target = (
+        targets = {
+            row["job_id"]: (
                 "ready"
                 if int(row["segment_count"] or 0) > 0 and int(row["missing_count"] or 0) == 0
                 else "pending"
             )
+            for row in rows
+        }
+        # 一次取回全部任务的现状再比对，只有不一致才写（原来每场会起一个 relayctl status 子进程）。
+        # 每轮都读 relay 的现状、不记「上次同步过」：relay 那边会被别的动作改掉（比如子状态重试
+        # 把 index 重置成 pending），下一轮要能纠正回来。
+        try:
+            jobs = relay.jobs_by_id(targets)
+        except RelayUnavailable:
+            return
+        for job_id, target in targets.items():
+            job = jobs.get(job_id)
+            if job is None or job.get("index_status") == target:
+                continue
+            current_attempt = job.get("current_attempt")
+            if isinstance(current_attempt, bool) or not isinstance(current_attempt, int):
+                continue
             try:
-                job = relay.status(row["job_id"])
-                current = job.get("index_status") or job.get("substates", {}).get("index", {}).get(
-                    "status"
-                )
-                if current != target:
-                    current_attempt = job.get("current_attempt")
-                    if isinstance(current_attempt, bool) or not isinstance(current_attempt, int):
-                        raise RelayUnavailable("relayctl status 缺少有效 current_attempt")
-                    relay.set_substate(row["job_id"], "index", target, attempt=current_attempt)
+                relay.set_substate(job_id, "index", target, attempt=current_attempt)
             except RelayUnavailable:
                 continue
 

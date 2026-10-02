@@ -6763,12 +6763,14 @@ class RelayControl:
         }
 
     def list_jobs(
-        self, status: str | None = None, limit: int = 100
+        self,
+        status: str | None = None,
+        limit: int = 100,
+        job_ids: Iterable[str] | None = None,
     ) -> list[dict[str, Any]]:
         if status is not None and status not in ALL_STATES:
             raise RelayControlError(f"未知状态筛选: {status}")
-        safe_limit = max(1, min(int(limit), 500))
-        query = (
+        select = (
             "SELECT job_id, status, current_attempt, retry_stage, stop_after_stage, "
             "failure_stage, last_error, deduplicated_to, meeting_id, "
             "published_archive_dir, "
@@ -6776,14 +6778,31 @@ class RelayControl:
             "created_at, updated_at "
             "FROM jobs"
         )
-        parameters: list[Any] = []
-        if status is not None:
-            query += " WHERE status = ?"
-            parameters.append(status)
-        query += " ORDER BY updated_at DESC, job_id DESC LIMIT ?"
-        parameters.append(safe_limit)
         with self._connect() as connection:
-            rows = connection.execute(query, parameters).fetchall()
+            if job_ids is None:
+                query = select
+                parameters: list[Any] = []
+                if status is not None:
+                    query += " WHERE status = ?"
+                    parameters.append(status)
+                query += " ORDER BY updated_at DESC, job_id DESC LIMIT ?"
+                parameters.append(max(1, min(int(limit), 500)))
+                rows = connection.execute(query, parameters).fetchall()
+            else:
+                # 调用方点名要这些任务（工作台一次核对每场会的 index 子状态）：不受 limit 和 500 行
+                # 上限截断，否则任务比 500 多时较早的会永远核对不到。一条语句的参数个数有上限，
+                # 按 500 个一批查，再合起来按同一个顺序排。
+                wanted = list(dict.fromkeys(job_ids))
+                rows = []
+                for start in range(0, len(wanted), 500):
+                    batch = wanted[start : start + 500]
+                    query = f"{select} WHERE job_id IN ({','.join('?' * len(batch))})"
+                    parameters = list(batch)
+                    if status is not None:
+                        query += " AND status = ?"
+                        parameters.append(status)
+                    rows.extend(connection.execute(query, parameters).fetchall())
+                rows.sort(key=lambda row: (row["updated_at"], row["job_id"]), reverse=True)
         return [
             {
                 "job_id": row["job_id"],
@@ -7282,6 +7301,12 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="列出任务摘要，不返回正文")
     list_parser.add_argument("--status", choices=sorted(ALL_STATES))
     list_parser.add_argument("--limit", type=int, default=100)
+    list_parser.add_argument(
+        "--job-id",
+        action="append",
+        dest="job_ids",
+        help="只列这些任务（可重复）；带它时不受 --limit 和 500 行上限截断",
+    )
     list_parser.add_argument("--json", action="store_true", dest="as_json")
 
     check_whisper_parser = subparsers.add_parser(
@@ -7433,7 +7458,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"{result['job_id']}  archive_policy={result['archive_policy']}")
         elif args.command == "list":
-            result = control.list_jobs(status=args.status, limit=args.limit)
+            result = control.list_jobs(
+                status=args.status, limit=args.limit, job_ids=args.job_ids
+            )
             if args.as_json:
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             else:
