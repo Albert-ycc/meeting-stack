@@ -32,6 +32,7 @@ from .backup import BackupManager
 from .db import ConflictStore, Database, dedupe_preserve_order, escape_like_pattern, utc_now
 from .importer import SAFE_MEETING_ID_RE, ArchiveImporter
 from .security import WriteProtectionMiddleware
+from .path_redaction import redact_job_paths, redact_paths
 from .relay_client import RelayClient, RelayUnavailable
 from .semantic import SemanticBusy, SemanticIndex, SemanticPaused, SemanticUnavailable
 from .service import (
@@ -2687,21 +2688,23 @@ def create_app(
         status: str | None = None,
         limit: int = Query(200, ge=1, le=500),
     ):
+        # 转写录音页把失败原因和这里的 503 文案直接显示出来：文字里的绝对路径只留文件名
         try:
             return {
                 "items": [
-                    attach_meeting(job) for job in relay.list_jobs(status=status, limit=limit)
+                    redact_job_paths(attach_meeting(job))
+                    for job in relay.list_jobs(status=status, limit=limit)
                 ]
             }
         except RelayUnavailable as error:
-            raise HTTPException(503, str(error)) from error
+            raise HTTPException(503, redact_paths(str(error))) from error
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
         try:
-            return attach_meeting(relay.status(job_id))
+            return redact_job_paths(attach_meeting(relay.status(job_id)))
         except RelayUnavailable as error:
-            raise HTTPException(503, str(error)) from error
+            raise HTTPException(503, redact_paths(str(error))) from error
 
     @app.post("/api/jobs/enqueue")
     def enqueue_job(body: JobEnqueueInput):

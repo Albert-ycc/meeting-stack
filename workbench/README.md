@@ -343,8 +343,12 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
   `same-site`，且不是整页导航）一律 403：页面读不到结果，但 `/api/media/N/peaks` 这类接口会真的起 ffmpeg，
   不能让任意网页盲打这台电脑的资源。整页导航（飞书卡片、书签）、本站页面、地址栏、不带 `Sec-Fetch-*` 的
   客户端（curl、老浏览器）照常。跨站的 iframe 也算在内（它的模式同样是 navigate，但页面看不到结果）
-- 播放和手填路径入队（`/api/media`、`/api/jobs/enqueue`）只放行归档根、中转产物根和上传落盘的
-  `~/.meeting-workbench/uploads`，数据目录里的数据库、备份、缓存不在其内（`Settings.audio_roots`）
+- 播放、手填路径入队和影子转写（`/api/media`、`/api/jobs/enqueue`、Qwen 影子稿）只放行归档根、中转产物根和上传落盘的
+  `~/.meeting-workbench/uploads`，数据目录里的数据库、备份、缓存不在其内（`Settings.audio_roots`、`Settings.in_audio_roots`）
+- 转写录音页显示的 relay 失败原因（`GET /api/jobs`、`GET /api/jobs/{job_id}` 的 `last_error` 和各子状态的 `error`，
+  以及这两个接口的 503 文案）回给浏览器前，文字里的绝对路径只留文件名，Tailscale 远程打开时看不到本机的目录结构
+  （`path_redaction.py`）；完整原文还在 relay 的任务库和日志里。页面不显示的字段（`audio_path`、`published_archive_dir`、
+  `events` 等）和别的接口没有动
 - 项目和标签的颜色只收 `#rrggbb`（创建、修改都校验）
 - 移动端界面只读，用于资料库、检索、播放和阅读；接口权限仍由 Tailnet ACL 控制，不把 UA 或屏幕尺寸当成鉴权凭据
 - 大录音通过 4 MiB JSON 分块上传，仅接受 `m4a/mp3/wav`，不会在浏览器或服务端一次性展开整段 Base64
