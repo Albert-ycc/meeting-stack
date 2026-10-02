@@ -203,6 +203,31 @@ describe("ProjectGraph", () => {
     expect(await screen.findByText("已撤销刚才的改动")).toBeInTheDocument();
   });
 
+  it("定时重取比写后重取晚回来时，旧数据既不进画面也不进缓存", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let releaseStale: (value: GraphPayload) => void = () => undefined;
+    const graph = vi
+      .fn()
+      .mockResolvedValueOnce(withDoorstep())
+      .mockImplementationOnce(() => new Promise<GraphPayload>((resolve) => (releaseStale = resolve)))
+      .mockResolvedValue(payload());
+    const view = render(<Harness apiClient={makeClient(payload(), { graph })} />);
+    await screen.findByRole("button", { name: "可能是这个项目的会：门口的会" });
+    act(() => vi.advanceTimersByTime(30_000));
+    vi.useRealTimers();
+    expect(graph).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "都不是" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "可能是这个项目的会：门口的会" })).toBeNull());
+    await act(async () => releaseStale(withDoorstep()));
+    expect(screen.queryByRole("button", { name: "可能是这个项目的会：门口的会" })).toBeNull();
+    view.unmount();
+
+    // 再进这张图：先画的缓存得是写之后的那份
+    render(<Harness apiClient={makeClient(payload(), { graph: vi.fn(() => new Promise(() => undefined)) })} />);
+    await screen.findByRole("button", { name: /^会议：初审规则沟通 a/ });
+    expect(screen.queryByRole("button", { name: "可能是这个项目的会：门口的会" })).toBeNull();
+  });
+
   it("聚焦过的门口的会作答后从图上消失，会议这一侧的 Tab 停靠点退回到剩下的第一个", async () => {
     const graph = vi.fn().mockResolvedValueOnce(withDoorstep()).mockResolvedValue(payload());
     render(<Harness apiClient={makeClient(payload(), { graph })} />);

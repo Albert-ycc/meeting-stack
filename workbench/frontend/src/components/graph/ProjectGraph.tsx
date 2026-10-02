@@ -493,8 +493,9 @@ export function ProjectGraph({
     setLoading(true);
     try {
       const payload = await apiClient.graph(projectId, windowChoice ?? undefined, focus ?? undefined);
-      graphCache.set(cacheKey(projectId, windowChoice, focus), payload);
+      // 先对序号再进缓存：晚回来的旧响应（比如写之前发出的定时重取）不能把缓存盖回写之前
       if (token !== requestRef.current) return;
+      graphCache.set(cacheKey(projectId, windowChoice, focus), payload);
       setGraph(payload);
       setLoadError("");
       const moveTo = afterAnswerRef.current;
