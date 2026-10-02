@@ -53,6 +53,26 @@ def test_browse_unreadable_folder_is_a_conflict_not_a_crash(tmp_path):
     assert response.json()["detail"] == "没有权限读取这个文件夹"
 
 
+def test_paths_with_a_nul_byte_get_a_chinese_400(tmp_path):
+    """路径里带 NUL 的，三个取路径的入口都回 400 和中文说明，不把 lstat 的英文报错原样漏出去。"""
+    (client, settings), browse_root = make_material_client(tmp_path)
+    headers = write_headers(client)
+    bad = str(browse_root) + "/x\x00y"
+
+    responses = [
+        client.get("/api/materials/browse", params={"path": bad}),
+        client.put("/api/settings/project-parent", json={"path": bad}, headers=headers),
+        client.post(
+            "/api/projects",
+            json={"name": "带 NUL 的项目", "color": "#222222", "material_roots": [bad]},
+            headers=headers,
+        ),
+    ]
+
+    assert [r.status_code for r in responses] == [400, 400, 400]
+    assert [r.json()["detail"] for r in responses] == ["路径无法解析"] * 3
+
+
 def test_add_material_root_rejects_hidden_segment(tmp_path):
     (client, settings), browse_root = make_material_client(tmp_path)
     hidden_root = browse_root / ".隐藏根目录"

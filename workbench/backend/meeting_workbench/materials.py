@@ -64,7 +64,8 @@ def resolve_within(base: Path, raw: str | None) -> Path:
         raise ValueError("路径必须是绝对路径")
     try:
         real = candidate.resolve(strict=False)
-    except OSError as error:
+    except (OSError, ValueError) as error:
+        # 带 NUL 的路径 resolve 抛的是 ValueError（lstat: embedded null character），英文原文别漏给用户
         raise ValueError("路径无法解析") from error
     assert_no_hidden_segment(real)
     if real != base_real and not real.is_relative_to(base_real):
