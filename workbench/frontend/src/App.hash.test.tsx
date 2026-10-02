@@ -125,6 +125,32 @@ describe("地址栏锚点直达", () => {
     expect(screen.queryByRole("heading", { name: "待办" })).not.toBeInTheDocument();
   });
 
+  it("冷加载带 #library、启动接口还没回时就提交了检索：启动完成后检索结果还在，底下的视图和地址栏仍是录音档案", async () => {
+    window.history.replaceState(null, "", "/#library");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const base = client({ search: vi.fn().mockResolvedValue({ mode: "exact", items: [] }) } as Partial<ApiClient>);
+    const bootstrap = vi.fn(async () => {
+      await gate;
+      return (base.bootstrap as () => Promise<unknown>)();
+    });
+    render(<App apiClient={{ ...base, bootstrap } as unknown as ApiClient} />);
+
+    await userEvent.type(screen.getByLabelText("全局检索"), "接口清单");
+    await userEvent.click(screen.getByRole("button", { name: "检索" }));
+    expect(await screen.findByRole("heading", { name: "“接口清单”" })).toBeInTheDocument();
+    await act(async () => {
+      release();
+      await gate;
+    });
+
+    expect(screen.getByRole("heading", { name: "“接口清单”" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#library"));
+    expect(currentNav()).toHaveTextContent("录音档案");
+  });
+
   it("冷加载带 #glossary 停在词典页", async () => {
     window.history.replaceState(null, "", "/#glossary");
 

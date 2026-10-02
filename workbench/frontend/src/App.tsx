@@ -166,6 +166,17 @@ function localFromQuery(params: URLSearchParams): GraphLocal | null {
   return null;
 }
 
+// 只对应一个视图、不带 id 的锚点
+const SIMPLE_VIEWS: Record<string, AppView> = {
+  "": "overview",
+  "#overview": "overview",
+  "#library": "library",
+  "#requirements": "requirements",
+  "#tasks": "tasks",
+  "#projects": "projects",
+  "#jobs": "jobs",
+};
+
 /** 地址栏里的 id 解码。手改出来的畸形百分号编码（#meetings/%E4）解不开就原样当 id，落到「不存在」，不抛出去 */
 function safeDecode(value: string): string {
   try {
@@ -193,6 +204,8 @@ export default function App({ apiClient = api }: AppProps) {
   // 启动接口回来之前用户已经点过侧栏、打开过会、搜过：启动完成后不再按地址栏里的旧锚点拉回去，
   // 反过来把用户所在的视图写回地址栏（bootSettled 变一次，让下面「视图 → 地址栏」再跑一遍）
   const navigatedDuringBootRef = useRef(false);
+  // 启动期间只是提交了检索（没换视图）：检索结果盖在视图上，底下的视图仍按地址栏里的锚点来
+  const searchedDuringBootRef = useRef(false);
   const [bootSettled, setBootSettled] = useState(false);
   // 这一轮视图变化来自浏览器前进/后退（或冷加载），地址栏已经是对的，只能 replace 不能再 push，
   // 否则每按一次后退都会多压一条历史，后退键永远退不出去。
@@ -590,16 +603,7 @@ export default function App({ apiClient = api }: AppProps) {
       setGlossaryProjectId(null);
       setView("glossary");
     } else {
-      const simpleViews: Record<string, AppView> = {
-        "": "overview",
-        "#overview": "overview",
-        "#library": "library",
-        "#requirements": "requirements",
-        "#tasks": "tasks",
-        "#projects": "projects",
-        "#jobs": "jobs",
-      };
-      const target = simpleViews[hash];
+      const target = SIMPLE_VIEWS[hash];
       if (target) setView(target);
     }
   }, []);
@@ -623,7 +627,12 @@ export default function App({ apiClient = api }: AppProps) {
         setLinksFlags(linksFlagsFrom(boot));
         setPendingCount(boot.pending_confirm_count);
         // 空锚点就是默认的工作台；启动期间用户可能已经点了别的视图，不能再拉回来。
-        if (window.location.hash && !navigatedDuringBootRef.current) applyHash();
+        // 只检索过的：#library 这类单纯的视图锚点照样认（applyHash 会关掉检索，这里只换视图）；
+        // 会议、需求详情这类锚点让位给用户的检索
+        if (window.location.hash && !navigatedDuringBootRef.current) {
+          if (!searchedDuringBootRef.current) applyHash();
+          else if (SIMPLE_VIEWS[window.location.hash]) setView(SIMPLE_VIEWS[window.location.hash]);
+        }
         hashReadyRef.current = true;
       } catch (error) {
         hashReadyRef.current = true;
@@ -631,7 +640,7 @@ export default function App({ apiClient = api }: AppProps) {
         setLibraryState("error");
         setDetailError(error instanceof Error ? error.message : "无法连接本地工作台");
       }
-      if (active && navigatedDuringBootRef.current) {
+      if (active && (navigatedDuringBootRef.current || searchedDuringBootRef.current)) {
         // 用户在启动期间去过的地方替换掉地址栏里的旧锚点，不压历史
         historySyncRef.current = true;
         setBootSettled(true);
@@ -1254,7 +1263,7 @@ export default function App({ apiClient = api }: AppProps) {
     }
     const requestSequence = ++searchRequestSequence.current;
     historySyncRef.current = false;
-    navigatedDuringBootRef.current = true;
+    searchedDuringBootRef.current = true;
     listScrollRef.current = null;
     resetDetailState();
     if (overrides.word !== undefined) setQuery(normalized);
