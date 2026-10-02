@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 from meeting_workbench.db import Database
 
 from .test_tasks_api import make_client, write_headers
@@ -33,6 +35,22 @@ def test_browse_rejects_hidden_ancestor_segment(tmp_path):
     response = client.get("/api/materials/browse", params={"path": str(nested)})
     assert response.status_code == 400
     assert "隐藏目录" in response.json()["detail"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root 不受目录权限限制")
+def test_browse_unreadable_folder_is_a_conflict_not_a_crash(tmp_path):
+    """进到没有读权限的文件夹（比如受隐私保护的 ~/Library/Mail）回 409 和一句中文，不是 500。"""
+    (client, settings), browse_root = make_material_client(tmp_path)
+    locked = browse_root / "锁住的"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        response = client.get("/api/materials/browse", params={"path": str(locked)})
+    finally:
+        locked.chmod(0o755)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "没有权限读取这个文件夹"
 
 
 def test_add_material_root_rejects_hidden_segment(tmp_path):

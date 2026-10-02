@@ -200,8 +200,15 @@ def browse_directory(base: Path, raw_path: str | None) -> dict[str, Any]:
             # 取径器照原文显示（1a-55）
             raise ConflictError("资料盘未连接，插上后再选")
         raise NotFoundError("目录不存在")
+    try:
+        with os.scandir(target) as listing:
+            entries = list(listing)
+    except PermissionError as error:
+        raise ConflictError("没有权限读取这个文件夹") from error
+    except OSError as error:
+        raise ConflictError("读不了这个文件夹") from error
     dirs: list[dict[str, str]] = []
-    for entry in os.scandir(target):
+    for entry in entries:
         if _is_skipped(entry.name):
             continue
         try:
