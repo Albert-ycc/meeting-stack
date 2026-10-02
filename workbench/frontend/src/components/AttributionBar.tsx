@@ -193,20 +193,32 @@ export function AttributionBar({
   const assign = (projectId: string, others: string[] = []) =>
     run(async () => {
       const detail = await apiClient.updateMeeting(meetingId, { project_id: projectId });
-      for (const other of others) {
-        await apiClient.updateMeeting(other, { project_id: projectId });
-      }
+      // 这场已经改成了，先反映到页面上；同名的另几场各改各的，一场失败不连累这场和后面几场
       const change = changeFromDetail(detail);
       if (change) onChange(change);
       setChanging(false);
       setPromptOpen(false);
+      const failures: string[] = [];
+      for (const other of others) {
+        try {
+          await apiClient.updateMeeting(other, { project_id: projectId });
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : "操作失败");
+        }
+      }
       const target = projectId && projectId !== "__ai__" ? projectName(projectId) || detail.project_name || "" : "";
       const effects = detail.effects;
       const note = effects ? reassignNote(effects.tasks_moved, effects.tasks_left.length, effects.card) : "";
       const head =
         projectId === "__ai__" ? "已交给 AI 重新判断" : target ? `已改到 ${target}` : "已标为不归项目";
-      const tail = others.length ? `；同名的另 ${others.length} 场会也改过去了` : "";
-      onNotice(`${note ? `${head}：${note}` : head}${tail}`, others.length ? undefined : effects?.undo_until);
+      const tail = !others.length
+        ? ""
+        : failures.length
+          ? `；同名的另 ${others.length} 场里 ${failures.length} 场没改成：${failures[0]}`
+          : `；同名的另 ${others.length} 场会也改过去了`;
+      const message = `${note ? `${head}：${note}` : head}${tail}`;
+      if (failures.length) onNotice(message, undefined, "warning");
+      else onNotice(message, others.length ? undefined : effects?.undo_until);
       await onProjectsChanged?.();
     });
 
@@ -250,16 +262,27 @@ export function AttributionBar({
   const moveLeftTasks = (projectId: string) =>
     run(async () => {
       const left = attribution.reassigned_from?.tasks_left ?? [];
+      // 逐条移，移成的就从「挂在旧需求上」里去掉；没移成的留着，可以再点一次
+      const stuck: typeof left = [];
+      let reason = "";
       for (const task of left) {
-        await apiClient.updateTask(task.id, { project_id: projectId, requirement_id: null });
+        try {
+          await apiClient.updateTask(task.id, { project_id: projectId, requirement_id: null });
+        } catch (error) {
+          stuck.push(task);
+          reason ||= error instanceof Error ? error.message : "操作失败";
+        }
       }
       onChange({
         attribution: {
           ...attribution,
-          reassigned_from: attribution.reassigned_from && { ...attribution.reassigned_from, tasks_left: [] },
+          reassigned_from: attribution.reassigned_from && { ...attribution.reassigned_from, tasks_left: stuck },
         },
       });
-      onNotice(`${left.length} 条任务也移过来了，已移出原来的需求`);
+      const moved = left.length - stuck.length;
+      if (!stuck.length) onNotice(`${left.length} 条任务也移过来了，已移出原来的需求`);
+      else if (moved) onNotice(`${moved} 条任务移过来了，${stuck.length} 条没移成：${reason}`, undefined, "warning");
+      else onNotice(`任务没移过来：${reason}`, undefined, "error");
     });
 
   const dismissCue = (termId: string, term: string) =>

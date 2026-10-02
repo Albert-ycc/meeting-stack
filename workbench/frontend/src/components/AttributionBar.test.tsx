@@ -216,6 +216,48 @@ describe("AttributionBar 等待与像新项目", () => {
     expect(updateMeeting).toHaveBeenCalledWith("m-1", { project_id: "p-a" });
   });
 
+  it("［用它］把同名几场会一起改，中途一场失败：这场的新归属照样反映到页面上，提示说清几场没改成", async () => {
+    const nameCandidates = vi.fn().mockResolvedValue({
+      hint: { kind: "project", name: "云图", spoken: [] },
+      candidates: [{ name: "云图", folder_path: null, spoken: null, ai: true, similar_folder_path: null }],
+      meetings: [
+        { id: "m-1", title: "这场", date: "2026-09-01", said_ms: null },
+        { id: "m-2", title: "另一场", date: "2026-09-02", said_ms: null },
+        { id: "m-3", title: "第三场", date: "2026-09-03", said_ms: null },
+      ],
+      default_action: "create_project",
+      project: null,
+      requirement_projects: [],
+      folder: { mode: "none", reason: null },
+      folders_state: "ready",
+      create_parent: null,
+      create_parent_source: null,
+      create_parent_state: null,
+    });
+    const createProjectWith = vi.fn().mockRejectedValue(
+      new ApiError("已有「云图AI」，是不是它？", 409, {
+        suggestion: { project_id: "p-a", name: "云图AI", also_names: [], matched: "云图", match: "similar" },
+      }),
+    );
+    const updateMeeting = vi
+      .fn()
+      .mockResolvedValueOnce(detail("p-a", { state: "manual", origin: "manual" }))
+      .mockRejectedValueOnce(new ApiError("会议不存在", 404, { detail: "会议不存在" }))
+      .mockResolvedValueOnce(detail("p-a", { state: "manual", origin: "manual" }));
+    const { onChange, onNotice } = setup(
+      attribution({ state: "new_project", project_id: null, origin: null, new_project_name: "云图" }),
+      { nameCandidates, createProjectWith, updateMeeting },
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "建成项目" }));
+    await userEvent.click(await screen.findByRole("button", { name: "用它" }));
+
+    expect(updateMeeting.mock.calls.map((call) => call[0])).toEqual(["m-1", "m-2", "m-3"]);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][0].attribution.project_id).toBe("p-a");
+    expect(onNotice).toHaveBeenCalledWith("已改到 云图AI；同名的另 2 场里 1 场没改成：会议不存在", undefined, "warning");
+  });
+
   it("［仍然新建］带 force，建好后读回会议", async () => {
     const createProjectWith = vi
       .fn()
@@ -363,6 +405,24 @@ describe("AttributionBar 刚改过", () => {
 
     expect(updateTask).toHaveBeenCalledWith("t-1", { project_id: "p-b", requirement_id: null });
     expect(onChange.mock.calls[0][0].attribution.reassigned_from.tasks_left).toEqual([]);
+  });
+
+  it("留在旧需求上的任务移过去时一条失败：移成的从提示里去掉，没移成的留着能再点", async () => {
+    const left = [
+      { id: "t-1", title: "改登录页", requirement_id: "r-1", requirement_title: "登录改版" },
+      { id: "t-2", title: "改注册页", requirement_id: "r-1", requirement_title: "登录改版" },
+    ];
+    const updateTask = vi.fn().mockResolvedValueOnce({}).mockRejectedValueOnce(new ApiError("任务不存在", 404));
+    const { onChange, onNotice } = setup(
+      { ...changed, reassigned_from: { ...changed.reassigned_from!, tasks_left: left } },
+      { updateTask },
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "也移过去" }));
+
+    expect(updateTask).toHaveBeenCalledTimes(2);
+    expect(onChange.mock.calls[0][0].attribution.reassigned_from.tasks_left).toEqual([left[1]]);
+    expect(onNotice).toHaveBeenCalledWith("1 条任务移过来了，1 条没移成：任务不存在", undefined, "warning");
   });
 
   it("以后不再用这个词判断项目", async () => {
