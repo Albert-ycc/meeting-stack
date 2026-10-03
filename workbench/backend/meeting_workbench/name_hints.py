@@ -15,8 +15,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .db import utc_now
-from .project_names import also_entries
-from .project_profile import is_subsequence, light_key, norm_key
+from .project_names import also_entries, names_similar
+from .project_profile import light_key, norm_key
 from .service import ConflictError, NotFoundError
 from .tasks import UNDO_WINDOW_SECONDS
 from .text_scan import FormScanner, appears
@@ -39,14 +39,13 @@ def strip_project_suffix(name: str) -> str:
 
 
 def similar_title(a: str, b: str) -> bool:
-    """需求标题相近：轻键相同，或较短一方 ≥3 字且是另一方的子序列（和 _match_kind 同一套，只是用轻键）。"""
+    """需求标题相近：轻键相同，或 names_similar（和项目名、文件夹名同一套：较短一方 ≥3 字，原样出现在
+    较长一方里，或较长一方只是在中间多了一段连着的字）。比的是轻键：「二期」「v2」不去，
+    「云图二期」和「云图三期」是两回事。字散在几处的不算：「数据导出」不是「数据权限与导出管理」的相近标题。"""
     key_a, key_b = light_key(a), light_key(b)
     if not key_a or not key_b:
         return False
-    if key_a == key_b:
-        return True
-    short, long = sorted((key_a, key_b), key=len)
-    return len(short) >= 3 and is_subsequence(short, long)
+    return key_a == key_b or names_similar(key_a, key_b)
 
 
 def json_names(raw: Any) -> list[str]:
