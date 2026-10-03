@@ -10,7 +10,7 @@
 cd workbench
 .venv/bin/ruff format backend        # 必跑：install-local.sh 会用 ruff format --check 卡住没格式化的代码
 .venv/bin/ruff check backend
-.venv/bin/pytest backend/tests
+.venv/bin/pytest backend/tests -o tmp_path_retention_policy=failed   # 不加的话每轮把全部用例的临时目录留下（约 1.7GB），盘小的机器会被写满
 ```
 
 改了 `workbench/frontend`：
@@ -22,6 +22,7 @@ npm run typecheck
 ```
 
 改了路由、浏览器历史、盖在页面上的二级页、滚动位置这一类：vitest（jsdom）测不出来，提交前要在真浏览器里点一遍。
+`workbench/scripts/e2e/run.py` 一条命令建隔离环境、造数、跑全部实点用例（先 `npm run build`，用法见 `workbench/README.md`），不会碰 8765。
 2026-10-01 需求池收尾时就有两处用例全绿、真浏览器里却是错的：React 换了一层结构，把会议页卸掉重建了；浏览器后退时按历史记录恢复滚动，
 盖掉了代码放回去的位置。另外，Playwright 自带的 Chromium 解不了 m4a 里的 AAC，测播放只能看 `paused`，看不到时间往前走。
 
@@ -43,7 +44,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests   # 要用装了
 260928 升级时有十来个用例只在开发环境能过，都是下面这几种：
 
 - **时区**：用例里的时间按 `+08:00` 写、按日期断言的，要钉时区（后端复用 `tests/test_timeline.py` 的 `shanghai`
-  fixture，前端 `vite.config.ts` 已钉 `TZ=Asia/Shanghai`）。产品代码里「今天」「昨天」按本地日算，不要用 UTC 日期。
+  fixture，前端 `vite.config.ts` 已钉 `TZ=Asia/Shanghai`）。产品代码里的「哪一天」按北京日历（`task_due.BEIJING_TZ`、
+  `beijing_today()`；用户 2026-10-03 定的全站口径，会都在北京白天开），不要用 UTC，也不要按本机时区。这类逻辑的用例
+  要在非上海时区（比如 `America/Los_Angeles`）下再跑一遍：进程时区钉成上海时，偷用本机时区的代码照样是绿的。
 - **真实当前时间**：别让用例的结果取决于今天几点（比如假时钟加 31 天，却拿真实时间记下的时间戳去比）。
 - **平台**：`sys.platform` 相关的分支要在用例里钉住，不然在 Mac 上会真去开访达。
 - **本机装的程序**：找程序的逻辑会去看 Homebrew 目录，用例要把这条路也挡掉。
