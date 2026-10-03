@@ -63,16 +63,25 @@ NO_CONFIG_EXIT_CODE = 78  # sysexits.h 的 EX_CONFIG
 
 
 def _load_env_files(
-    files: Iterable[Path] = ENV_FILES, environ: MutableMapping[str, str] = os.environ
+    files: Iterable[Path] = ENV_FILES,
+    environ: MutableMapping[str, str] = os.environ,
+    skipped: list[str] | None = None,
 ) -> list[str]:
     """把 .env 里监听进程用的键补进 environ，返回补进去的键名（不含值）。
 
     已在环境变量里的值优先，.env 不覆盖（值为空串的也算已在环境里，和工作台读 Settings 一致）；
     .env 里的空值等于没写；两份 .env 都写了的项，后一份（workbench/）的优先。
+    值里带 NUL 的那一行当没写：写进 os.environ 会抛 ValueError，进程一启动就崩（relay_env 同样跳过这种行）。
+    跳过的记进 skipped（哪个文件的哪个键，不含值），启动后写进日志。
     """
     merged: dict[str, str | None] = {}
     for path in files:
-        merged.update(dotenv_values(path))
+        for key, value in dotenv_values(path).items():
+            if value is not None and "\x00" in value:
+                if skipped is not None and key in ENV_KEYS:
+                    skipped.append(f"{path.parent.name}/{path.name} 的 {key}")
+                continue
+            merged[key] = value
     applied = []
     for key in ENV_KEYS:
         value = merged.get(key)
@@ -85,8 +94,9 @@ def _load_env_files(
 # 只在作为脚本起来时读 .env：被 import、被用例加载时不读，本机真实的 .env 带不进用例。
 # 要赶在下面按环境变量取值之前。
 _DOTENV_APPLIED: list[str] = []
+_DOTENV_SKIPPED: list[str] = []
 if __name__ == "__main__":
-    _DOTENV_APPLIED = _load_env_files()
+    _DOTENV_APPLIED = _load_env_files(skipped=_DOTENV_SKIPPED)
 
 OWNER_OPEN_ID = os.getenv(OWNER_OPEN_ID_ENV, "").strip()  # 只有这个用户的操作会被处理
 CHAT_ID = os.getenv(CHAT_ID_ENV, "").strip()  # 任务跟进群
@@ -430,6 +440,9 @@ def _require_config() -> None:
 
 
 def main() -> None:
+    # 赶在查配置之前说：缺的那一项可能就是这样被跳过的
+    for line in _DOTENV_SKIPPED:
+        log.warning("%s 这一行带 NUL 字符，当没写（不记值）", line)
     _require_config()
     EVENTS_DIR.mkdir(parents=True, exist_ok=True)
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
