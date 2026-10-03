@@ -110,9 +110,11 @@ def list_recordings() -> dict:
 
 def poke_voice_memos():
     """Voice Memos 不在运行则隐藏唤醒，让它保持 iCloud 增量同步"""
-    r = subprocess.run(["pgrep", "-x", "VoiceMemos"], capture_output=True)
+    r = subprocess.run(["pgrep", "-x", "VoiceMemos"], capture_output=True, check=False)
     if r.returncode != 0:
-        subprocess.run(["open", "-g", "-j", "-b", "com.apple.VoiceMemos"], capture_output=True)
+        subprocess.run(
+            ["open", "-g", "-j", "-b", "com.apple.VoiceMemos"], capture_output=True, check=False
+        )
         log.info("已隐藏唤醒 Voice Memos（保持 iCloud 同步活性）")
 
 

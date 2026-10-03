@@ -89,7 +89,8 @@ def detect_silence_intervals(audio):
         return []
     starts = [float(value) for value in re.findall(r"silence_start: ([0-9.]+)", result.stderr)]
     ends = [float(value) for value in re.findall(r"silence_end: ([0-9.]+)", result.stderr)]
-    return list(zip(starts, ends))
+    # 两边条数不保证一样（比如录音停在静音里，最后一个 silence_start 可能没有配对的 silence_end），多出来的丢掉
+    return list(zip(starts, ends, strict=False))
 
 
 def plan_chunks(duration, silence_intervals):

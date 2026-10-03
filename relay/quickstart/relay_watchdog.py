@@ -666,6 +666,7 @@ def get_audio_duration_sec(audio: Path) -> float | None:
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     try:
         return float(r.stdout.strip())
@@ -773,6 +774,7 @@ def transcribe(
                 stdout=process_log,
                 stderr=subprocess.STDOUT,
                 text=True,
+                check=False,
             ).returncode
         else:
             process = subprocess.Popen(
@@ -1185,6 +1187,7 @@ def _tmux(*args: str) -> subprocess.CompletedProcess:
         ["tmux", "-S", str(TMUX_SOCKET), *args],
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -1436,7 +1439,7 @@ def _notify_lark_via_app(title: str, body: str) -> bool:
             },
             token,
         )
-    except Exception as exc:  # noqa: BLE001 - 通知失败绝不能拖垮转写主流程
+    except Exception as exc:  # 通知失败绝不能拖垮转写主流程
         log.warning("飞书直连通知失败（不影响主流程）：%s", str(exc)[:200])
         return False
     if result.get("code") != 0:

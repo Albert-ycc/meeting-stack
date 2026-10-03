@@ -1378,11 +1378,13 @@ class RelayControl:
             date_prefix = date_prefix[2:]
         else:
             try:
-                date_prefix = datetime.fromtimestamp(
-                    Path(row["audio_path"]).stat().st_mtime
-                ).strftime("%y%m%d")
+                date_prefix = (
+                    datetime.fromtimestamp(Path(row["audio_path"]).stat().st_mtime)
+                    .astimezone()
+                    .strftime("%y%m%d")
+                )
             except OSError:
-                date_prefix = datetime.now().strftime("%y%m%d")
+                date_prefix = datetime.now().astimezone().strftime("%y%m%d")
         md_stems = {
             path.stem
             for path in source.iterdir()

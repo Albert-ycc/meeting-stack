@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 # tests/ 没有 __init__，按文件路径跑单个文件时同目录的公共模块不在 sys.path 上
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from isolated_env import isolate_environment  # noqa: E402
+from isolated_env import isolate_environment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

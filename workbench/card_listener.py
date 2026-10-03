@@ -138,7 +138,7 @@ class ShengdangError(Exception):
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["LARK_CLI_NO_PROXY"] = "1"
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, check=False)
 
 
 def _cli(method: str, path: str, data: dict | None = None) -> dict:
@@ -225,7 +225,7 @@ class ShengdangClient:
             # 的任务确认成功都会被判成失败，卡片不刷新还倒推一条「确认失败：<任务详情>」。
             raise ShengdangError(
                 str(payload.get("detail") or payload.get("error") or f"HTTP {error.code}")
-            )
+            ) from error
 
     def list_tasks(self, extraction_id: int) -> list[dict]:
         data = self._request("GET", f"/api/tasks?extraction_id={extraction_id}&limit=200")
@@ -276,7 +276,7 @@ def handle_event(client: ShengdangClient, event: dict) -> None:
     # 用户只能得出「按钮坏了」，连排查线索都没有。
     try:
         result = client.confirm(task_id) if act == "confirm" else client.reject(task_id)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         log.error("%s %s 失败：%s", act, task_id, error)
         label = "确认" if act == "confirm" else "驳回"
         _send_text(f"⚠️ 声档任务{label}失败：{error}\n（任务 {task_id}，卡片状态未变更）")
@@ -305,14 +305,14 @@ def handle_event(client: ShengdangClient, event: dict) -> None:
             )
             r = _update_card(message_id, card)
             log.info("卡片刷新 message_id=%s code=%s", message_id, r.get("code"))
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             log.error("卡片刷新失败：%s", error)
 
 
 def process_file(client: ShengdangClient, path: Path, seen: set[str]) -> bool:
     try:
         event = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         log.warning("解析事件文件失败 %s：%s", path, error)
         return False
     event_id = event.get("header", {}).get("event_id")
@@ -320,7 +320,7 @@ def process_file(client: ShengdangClient, path: Path, seen: set[str]) -> bool:
         return True
     try:
         handle_event(client, event)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         log.error("处理事件失败 %s：%s", event_id, error)
     seen.add(event_id)
     _save_seen(seen)
@@ -454,7 +454,7 @@ def main() -> None:
                     except OSError:
                         pass
             time.sleep(2)
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             log.error("监听循环异常：%s", error)
             time.sleep(5)
 

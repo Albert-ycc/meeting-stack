@@ -97,7 +97,7 @@ def main():
                 f"{os.path.basename(wav)} 起点 {offset_ms // 1000}s：{len(sentences)} 句，{time.time() - began:.1f}s"
             )
             answer = {"id": request_id, "ok": True, "sentences": sentences}
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             log(f"转写失败：{type(error).__name__}: {error}")
             answer = {"id": request_id, "ok": False, "error": f"{type(error).__name__}: {error}"}
         answers.write(json.dumps(answer, ensure_ascii=False) + "\n")

@@ -139,7 +139,7 @@ def build_minutes_ready_card(
     所以把摘要和决议直接摊开，当场就能判断这场会要不要马上跟进。
     """
     # 会议标题来自纪要 H1，常带「· 会议纪要」后缀被截掉后留个孤零零的分隔符。
-    title = (meeting_title or "").strip().rstrip("·-—|·").strip() or "未命名录音"
+    title = (meeting_title or "").strip().rstrip("·-—|").strip() or "未命名录音"
     meta = "，".join(
         part
         for part in (

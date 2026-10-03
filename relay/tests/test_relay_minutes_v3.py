@@ -9,7 +9,7 @@ from pathlib import Path
 
 # tests/ 没有 __init__，按文件路径跑单个文件时同目录的公共模块不在 sys.path 上
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from isolated_env import isolate_environment  # noqa: E402
+from isolated_env import isolate_environment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -456,7 +456,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
         # 窗口必须仍然首尾相接、完整覆盖整场录音
         self.assertEqual(0.0, plan["windows"][0]["start_sec"])
         self.assertEqual(1800, plan["windows"][-1]["end_sec"])
-        for left, right in zip(plan["windows"], plan["windows"][1:]):
+        for left, right in zip(plan["windows"], plan["windows"][1:], strict=False):
             self.assertEqual(left["end_sec"], right["start_sec"])
 
     def test_plan_clamps_zero_duration_fallback_cue_from_funasr_chunk(self):

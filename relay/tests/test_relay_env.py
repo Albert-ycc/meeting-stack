@@ -265,6 +265,7 @@ class EntryPointTests(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         )
 
     def test_relayctl_uses_the_jobs_db_named_in_the_env_file(self):
@@ -321,6 +322,7 @@ class EntryPointTests(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         )
 
         self.assertEqual(1, result.returncode, result.stderr)
@@ -338,6 +340,7 @@ class EntryPointTests(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         )
 
         self.assertEqual(1, result.returncode, result.stderr)
@@ -354,6 +357,7 @@ class EntryPointTests(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         )
 
         self.assertEqual(1, result.returncode, result.stderr)

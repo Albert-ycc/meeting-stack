@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import relay_control as rc  # noqa: E402
+import relay_control as rc
 
 
 def _manifest_identity(root: Path) -> tuple[str | None, int | None]:
