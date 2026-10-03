@@ -1,0 +1,5 @@
+# 和工作台后端同一套 ruff 规则（行宽、目标版本、开了哪些规则都在 workbench/pyproject.toml）。有这份文件，从哪个目录跑
+# ruff 这里的文件都按那一套查；没有它，在仓库根或本目录里跑会退回 ruff 的默认（行宽 88），和 install-local.sh 对不上。
+extend = "../workbench/pyproject.toml"
+# relayctl 没有 .py 后缀，按目录找文件时 ruff 默认不认它
+extend-include = ["quickstart/relayctl"]
