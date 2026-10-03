@@ -16,6 +16,9 @@
   needle 写说得最多的那个叫法。词干命中前后 8 个字以内的口头版本号（「第三版」「V3版」「3.0版」，
   中文数字到二十）和全名针并列计入 versions（组里有这一版才算）；「终版」「定稿」、final 在组里恰好
   一份文件名带这类字样时选那一份。都没有时先看 L5 写的 hints_json（pick_by_hint），再用 _pick_by_date。
+- 4b-2：文件名里的版本号认 vN、v1.2 和「第 N 版 / 第 N 稿」（和 file_stems 结尾去掉的两种写法同一份，
+  并进同一个词干的几份文件靠它分出来），口头的「第 N 稿」同「第 N 版」，「终稿」「最终稿」和「终版」一样
+  当终版；v1.2 以前被当成 12，现在是 (1, 2)，v3.0 才算「第三版」。
 """
 
 from __future__ import annotations
@@ -24,13 +27,14 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from collections import Counter
 from datetime import date as date_type, datetime, time as day_time, timedelta
 from typing import Any, Callable
 
 from . import relation_read
 from .db import Database, utc_now
-from .file_stems import STEM_NO, STEM_TWICE, STEM_YES, stem_usability
+from .file_stems import ORDINAL, STEM_NO, STEM_TWICE, STEM_YES, V_TAG, stem_usability
 from .material_content import key_file_now
 from .material_index import MATCH_ZONES, STATE_MISSING, STATE_OFFLINE
 from .project_names import also_entries
@@ -38,13 +42,15 @@ from .project_profile import MAX_ANCHORS, light_key, norm_key
 from .task_due import BEIJING_TZ
 from .text_scan import FormScanner
 
-MATCH_VERSION = "4b-1"
+MATCH_VERSION = "4b-2"
 PER_MEETING = 20
 GENERIC_MIN_MEETINGS = 4
 MINUTES_MIN_CHARS = 3
 ROUND_MEETINGS = 20
 ROUND_SECONDS = 5.0
-_VERSION_TAG = re.compile(r"(?<![a-z])v\d{1,3}(?:\.\d{1,3}){0,2}(?![\d.]*\d)", re.IGNORECASE)
+# 文件名里的版本号：vN、v1.2（后面不能再跟数字，v30 不是 v3）和「第 N 版 / 第 N 稿」，写法和 file_stems 结尾
+# 去掉的同一份（V_TAG、ORDINAL）。
+_VERSION_TAG = re.compile(rf"{V_TAG}(?![\d.]*\d)|{ORDINAL}", re.IGNORECASE)
 _HHMMSS = re.compile(r"\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]")
 _ZONES_SQL = ", ".join(f"'{zone}'" for zone in MATCH_ZONES)
 # 4b：词干命中前后看几个字找口头版本号和「终版」
@@ -62,18 +68,20 @@ _CN_DIGITS = {
     "九": 9,
 }
 _NUM = r"[一二两三四五六七八九十]{1,3}|\d{1,2}"
-# 「第三版」「第3版」「三版」「V3版」「版本三」「3.0版」。光杆「N版」最容易误判：「上一版」「这一版」
+# 「第三版」「第三稿」「第3版」「三版」「V3版」「版本三」「3.0版」。光杆「N版」最容易误判：「上一版」「这一版」
 # 「下一版」「新一版」「这两版」「改了三版」说的不是第几版，所以前面是这些字（或数字本身的一部分）时不认；
 # 光杆的「一版」「两版」多半是在数版数（「出一版」「做了两版」），也不认（「第一版」「版本一」照认）。
+# 「第一稿件」是另一个词，不是第一稿。
 _BARE_NOT_AFTER = "上下这那前后新旧同每哪几各某本此该头首末好多了过出一二两三四五六七八九十"
 _ORAL_VERSION = re.compile(
-    rf"第\s*(?P<a>{_NUM})\s*版"
+    rf"第\s*(?P<a>{_NUM})\s*(?:版|稿(?!件))"
     rf"|(?P<e>\d{{1,2}})\.0\s*版"
     rf"|[vV]\s*(?P<c>\d{{1,2}})\s*版"
     rf"|版本\s*(?P<d>{_NUM})"
     rf"|(?<![{_BARE_NOT_AFTER}\d.vV第])(?![一两]\s*版)(?P<b>{_NUM})\s*版(?!本)"
 )
-_FINAL = re.compile(r"最终版|终版|定稿|(?<![a-z])final(?![a-z])", re.IGNORECASE)
+# 终版这一类：词干结尾去掉的修饰里，意思是「最后一版」的几种（审定稿里带着「定稿」，也算）
+_FINAL = re.compile(r"最终版|最终稿|终版|终稿|定稿|(?<![a-z])final(?![a-z])", re.IGNORECASE)
 # L5 留给 2d 的时间提示（hints_json 里的 rel），和 loose_mentions 的 when.rel 同一组
 HINT_RELS = ("last_week", "this_week", "yesterday", "today", "last_meeting", "latest", "previous")
 
@@ -135,11 +143,18 @@ def _json_list(raw: Any) -> list[str]:
     )
 
 
-def version_tag(name: str) -> str | None:
-    """文件名里的版本号（v3、V1.2），全名比对用。"""
-    base = name.rpartition(".")[0] or name
+def _version_marker(name: str) -> str | None:
+    """文件名（去掉扩展名）里最后一个版本号的原样写法；先做 NFKC，全角的「Ｖ２」「第３版」和半角一样。"""
+    text = unicodedata.normalize("NFKC", name)
+    base = text.rpartition(".")[0] or text
     found = _VERSION_TAG.findall(base)
-    return light_key(found[-1]) if found else None
+    return found[-1] if found else None
+
+
+def version_tag(name: str) -> str | None:
+    """文件名里的版本号（v3、V1.2、第三版、第 3 稿），折成和逐字稿同一套写法（light_key），全名比对用。"""
+    marker = _version_marker(name)
+    return light_key(marker) if marker else None
 
 
 def cn_number(text: str) -> int | None:
@@ -161,7 +176,7 @@ def cn_number(text: str) -> int | None:
 
 
 def spoken_version(text: str) -> int | None:
-    """一段话里的口头版本号（「第三版」「V3版」「版本三」「3.0版」），没有回 None。"""
+    """一段话里的口头版本号（「第三版」「第三稿」「V3版」「版本三」「3.0版」），没有回 None。"""
     for match in _ORAL_VERSION.finditer(text or ""):
         raw = next((value for value in match.groupdict().values() if value), "")
         number = cn_number(raw)
@@ -187,14 +202,16 @@ def near_final(text: str, start: int, end: int) -> bool:
 
 
 def version_number(name: str) -> tuple[int, ...] | None:
-    """文件名里的版本号拆成数字：v3 → (3,)，V1.2 → (1, 2)。"""
-    tag = version_tag(name)
-    if not tag:
+    """文件名里的版本号拆成数字：v3 → (3,)，V1.2 → (1, 2)，第三版 → (3,)，第 12 稿 → (12,)。
+    第几版超过 20 的认不出（口头版本号也只到 20），回 None。从原样写法拆，不从 light_key 折过的 tag 拆：
+    折的时候把小数点去掉了，V1.2 会变成 12。"""
+    marker = _version_marker(name)
+    if not marker:
         return None
-    try:
-        return tuple(int(part) for part in tag[1:].split("."))
-    except ValueError:
-        return None
+    if marker[0] in "vV":
+        return tuple(int(part) for part in marker[1:].split("."))
+    number = cn_number(re.sub(r"[\s第版稿]", "", marker))
+    return None if number is None else (number,)
 
 
 def is_version(name: str, number: int) -> bool:

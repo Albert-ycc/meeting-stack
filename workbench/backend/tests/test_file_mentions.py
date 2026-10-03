@@ -718,8 +718,8 @@ def test_match_version_change_recompares_every_meeting(tmp_path, monkeypatch):
     add_meeting(db, "m2", ago=2, project_id="p", segments=said("报价单再看一下"))
     assert run(db)["tried"] == 2
     assert run(db)["pending"] == 0
-    assert file_mentions.MATCH_VERSION == "4b-1"
-    monkeypatch.setattr(file_mentions, "MATCH_VERSION", "4b-2")
+    assert file_mentions.MATCH_VERSION == "4b-2"
+    monkeypatch.setattr(file_mentions, "MATCH_VERSION", "4b-3")
     assert run(db) == {"pending": 2, "tried": 2, "written": 2}
 
 
