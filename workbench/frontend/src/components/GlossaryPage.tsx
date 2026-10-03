@@ -4,6 +4,7 @@ import { useConfirm } from "./ConfirmDialog";
 import {
   CandidateDetail,
   CandidateList,
+  type CandidateEntry,
   useGlossaryCandidates,
   visibleCandidateIds,
 } from "./GlossaryCandidates";
@@ -523,6 +524,24 @@ export function GlossaryPage({
     void candidates[kind](entry);
   };
 
+  // —— 一组一起记入：先说清楚是哪些词；选中的在这批里就先跳到这批之外的下一个 ——
+  const acceptAllCandidates = (projectName: string, list: CandidateEntry[]) => {
+    if (!canWrite || list.length === 0) return;
+    const names = list.slice(0, 6).map((entry) => `『${entry.word.term}』`).join("");
+    void confirm({
+      title: `把${projectName}的 ${list.length} 个词都记入词典？`,
+      message: `${names}${list.length > 6 ? ` 等 ${list.length} 个` : ""}。记完可以在提示条上一起撤销。`,
+      confirmLabel: `记入 ${list.length} 个`,
+    }).then((ok) => {
+      if (!ok) return;
+      const ids = new Set(list.map((entry) => entry.id));
+      if (selectedCandId && ids.has(selectedCandId)) {
+        setSelectedCandId(nextPending(visibleCandIds, selectedCandId, (id) => ids.has(id) || Boolean(candidates.answers[id])));
+      }
+      void candidates.acceptMany(list);
+    });
+  };
+
   // —— 键盘：J/K 上下、/ 搜索、C 新增、1 记入、2 不是；输入框里和输入法组合中一律不触发 ——
   const keyHandler = useRef<(event: KeyboardEvent) => void>(() => undefined);
   keyHandler.current = (event: KeyboardEvent) => {
@@ -736,6 +755,7 @@ export function GlossaryPage({
               expanded={expandedGroups}
               mode={candidateScope}
               needle={needle}
+              onAcceptAll={acceptAllCandidates}
               onExpand={(id) => setExpandedGroups((current) => ({ ...current, [id]: true }))}
               onOpenProject={openProjectMaterial}
               onSelect={selectCandidate}

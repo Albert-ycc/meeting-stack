@@ -37,6 +37,21 @@ export function isBlocked(word: MaterialWord, removed: string[]): boolean {
   return Boolean(word.existing_term) && word.wrongs.length > 0 && word.wrongs.every((wrong) => removed.includes(wrong.text));
 }
 
+/** 这一组里还能一起记入的：没回答过、没在办、没被去光写法 */
+export function batchable(store: Pick<CandidateStore, "answers" | "busy" | "removed">, items: CandidateEntry[]): CandidateEntry[] {
+  return items.filter(
+    (entry) => !store.answers[entry.id] && !store.busy.has(entry.id) && !isBlocked(entry.word, store.removed[entry.id] ?? []),
+  );
+}
+
+/** 这个词自己记不上（已经答过、写法全被占、词不合规）；别的错（服务忙、断网、旧后端）后面的也记不上，就停 */
+const wordLevelFailure = (reason: unknown) => reason instanceof ApiError && (reason.status === 409 || reason.status === 422);
+
+function termList(entries: CandidateEntry[]): string {
+  const names = entries.slice(0, 3).map((entry) => `『${entry.word.term}』`).join("");
+  return entries.length > 3 ? `${names}等 ${entries.length} 个` : names;
+}
+
 interface UseCandidatesOptions {
   apiClient: ApiClient;
   /** canWrite、第四期开关、三个回答接口都在，才有待认词这一整块 */
@@ -53,6 +68,8 @@ export function useGlossaryCandidates({ apiClient, enabled, onTermsChanged, noti
   const [answers, setAnswers] = useState<Record<string, CandidateAnswer>>({});
   const [removed, setRemoved] = useState<Record<string, string[]>>({});
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  // 一起记入正在跑的那一组；同一时间只跑一组
+  const [batch, setBatch] = useState<{ projectId: string; done: number; total: number } | null>(null);
   const inboxSeq = useRef(0);
   const projectSeq = useRef(0);
 
@@ -140,12 +157,21 @@ export function useGlossaryCandidates({ apiClient, enabled, onTermsChanged, noti
     [groups, pendingIn],
   );
 
-  const markBusy = (id: string, on: boolean) =>
+  const markBusy = (ids: string | string[], on: boolean) =>
     setBusy((current) => {
       const next = new Set(current);
-      if (on) next.add(id);
-      else next.delete(id);
+      for (const id of typeof ids === "string" ? [ids] : ids) {
+        if (on) next.add(id);
+        else next.delete(id);
+      }
       return next;
+    });
+
+  const clearAnswer = (id: string) =>
+    setAnswers((current) => {
+      const rest = { ...current };
+      delete rest[id];
+      return rest;
     });
 
   const dropEntry = (entry: CandidateEntry) =>
@@ -171,11 +197,7 @@ export function useGlossaryCandidates({ apiClient, enabled, onTermsChanged, noti
       markBusy(entry.id, true);
       try {
         const result = await apiClient.undoGlossaryCandidate(entry.projectId, { key: entry.word.key });
-        setAnswers((current) => {
-          const rest = { ...current };
-          delete rest[entry.id];
-          return rest;
-        });
+        clearAnswer(entry.id);
         notify(result.text, "success");
         await onTermsChanged();
       } catch (reason) {
@@ -230,10 +252,94 @@ export function useGlossaryCandidates({ apiClient, enabled, onTermsChanged, noti
     [answers, apiClient, busy, notify, undo],
   );
 
+  /** 一起撤销：逐个调撤销接口，最后只给一条提示 */
+  const undoMany = useCallback(
+    async (list: CandidateEntry[]) => {
+      const ids = list.map((entry) => entry.id);
+      markBusy(ids, true);
+      let undone = 0;
+      let failure: unknown = null;
+      for (const entry of list) {
+        try {
+          await apiClient.undoGlossaryCandidate(entry.projectId, { key: entry.word.key });
+          clearAnswer(entry.id);
+          undone += 1;
+        } catch (reason) {
+          failure ??= reason;
+        }
+      }
+      markBusy(ids, false);
+      if (failure) {
+        notify(`${undone ? `撤销了 ${undone} 个，` : ""}${list.length - undone} 个没撤成：${answerFailure(failure)}`, "error");
+      } else {
+        notify(`已撤销，${undone} 个词回到待认`, "success");
+      }
+      if (undone) await onTermsChanged();
+    },
+    [apiClient, notify, onTermsChanged],
+  );
+
+  /** 一起记入：按顺序逐个调记入接口（带着各自去掉的写法），最后只给一条提示，撤销也是一起撤 */
+  const acceptMany = useCallback(
+    async (list: CandidateEntry[]) => {
+      const todo = batchable({ answers, busy, removed }, list);
+      if (batch || todo.length === 0) return;
+      const ids = todo.map((entry) => entry.id);
+      markBusy(ids, true);
+      setBatch({ projectId: todo[0].projectId, done: 0, total: todo.length });
+      let added = 0;
+      const undoable: CandidateEntry[] = [];
+      const missed: CandidateEntry[] = [];
+      let stopped: unknown = null;
+      let left = 0;
+      for (const [index, entry] of todo.entries()) {
+        try {
+          const result = await apiClient.acceptGlossaryCandidate(entry.projectId, {
+            key: entry.word.key,
+            not_wrong: removed[entry.id] ?? [],
+          });
+          setAnswers((current) => ({
+            ...current,
+            [entry.id]: { state: "added", text: result.text, undoUntil: result.already ? null : result.undo_until },
+          }));
+          added += 1;
+          if (!result.already) undoable.push(entry);
+        } catch (reason) {
+          if (reason instanceof ApiError && reason.status === 404 && !isOldBackend(reason)) dropEntry(entry);
+          else if (wordLevelFailure(reason)) missed.push(entry);
+          else stopped = reason;
+        }
+        markBusy(entry.id, false);
+        setBatch((current) => current && { ...current, done: current.done + 1 });
+        if (stopped) {
+          left = todo.length - index;
+          break;
+        }
+      }
+      markBusy(ids, false);
+      setBatch(null);
+
+      const head = added ? `已记入 ${added} 个词` : "";
+      let text = head;
+      if (stopped) {
+        text = `${head ? `${head}；` : ""}${answerFailure(stopped)}，剩下 ${left} 个还没记`;
+      } else if (missed.length) {
+        text = `${head ? `${head}；` : ""}${termList(missed)}没记上，点开单独记入能看到原因`;
+      }
+      const onUndo = undoable.length ? () => void undoMany(undoable) : undefined;
+      notify(text || "这些词已经不在了", !added || stopped || missed.length ? "error" : "success", onUndo);
+      if (added) await onTermsChanged();
+    },
+    [answers, apiClient, batch, busy, notify, onTermsChanged, removed, undoMany],
+  );
+
   const dropWrong = (id: string, wrong: string) =>
     setRemoved((current) => ({ ...current, [id]: [...(current[id] ?? []), wrong] }));
 
-  return { groups, inboxState, entries, answers, removed, busy, pendingIn, pendingTotal, loadInbox, loadProject, accept, reject, undo, dropWrong };
+  return {
+    groups, inboxState, entries, answers, removed, busy, batch, pendingIn, pendingTotal,
+    loadInbox, loadProject, accept, acceptMany, reject, undo, dropWrong,
+  };
 }
 
 export type CandidateStore = ReturnType<typeof useGlossaryCandidates>;
@@ -255,6 +361,8 @@ interface CandidateListProps {
   onExpand: (projectId: string) => void;
   onSelect: (id: string) => void;
   onOpenProject: (projectId: string) => void;
+  /** 分组头上的［全部记入］：这一组里还能记的词（跟着搜索走，折叠着的也算） */
+  onAcceptAll: (projectName: string, entries: CandidateEntry[]) => void;
   canAnswer: boolean;
 }
 
@@ -298,7 +406,7 @@ function rowInfo(word: MaterialWord, removed: string[]) {
 }
 
 export function CandidateList({
-  store, mode, projectId, needle, selectedId, expanded, onExpand, onSelect, onOpenProject, canAnswer,
+  store, mode, projectId, needle, selectedId, expanded, onExpand, onSelect, onOpenProject, onAcceptAll, canAnswer,
 }: CandidateListProps) {
   const groups = candidateGroups(store, mode, projectId, needle);
   if (groups.length === 0) {
@@ -313,18 +421,40 @@ export function CandidateList({
     <div aria-label="待认词" role="listbox">
       {groups.map(({ group, items }) => {
         const limit = mode === "inbox" && !expanded[group.project_id] && !needle ? INBOX_LIMIT : items.length;
+        const ready = canAnswer ? batchable(store, items) : [];
+        const running = store.batch?.projectId === group.project_id ? store.batch : null;
+        const acceptAll = (ready.length > 1 || running) && (
+          <button
+            className="gw-btn gw-btn--xs"
+            disabled={Boolean(store.batch)}
+            onClick={() => onAcceptAll(group.project_name, ready)}
+            type="button"
+          >
+            {running ? `记入中 ${running.done}/${running.total}` : `全部记入 ${ready.length}`}
+          </button>
+        );
         return (
           <section key={group.project_id}>
-            {mode === "inbox" && (
+            {mode === "inbox" ? (
               <div className="gw-gh gw-gh--flat">
                 <i className="gw-dot" style={{ background: group.project_color ?? undefined }} />
                 <span>{group.project_name}</span>
                 <span className="gw-gh__n">{store.pendingIn(group.project_id)}</span>
                 <span className="gw-gh__sp" />
+                {acceptAll}
                 <button className="gw-lb" onClick={() => onOpenProject(group.project_id)} type="button">
                   进入项目 ›
                 </button>
               </div>
+            ) : (
+              canAnswer && (
+                <div className="gw-gh gw-gh--flat">
+                  <span>待认</span>
+                  <span className="gw-gh__n">{store.pendingIn(group.project_id)}</span>
+                  <span className="gw-gh__sp" />
+                  {acceptAll}
+                </div>
+              )
             )}
             {items.slice(0, limit).map((entry) => {
               const answer = store.answers[entry.id];

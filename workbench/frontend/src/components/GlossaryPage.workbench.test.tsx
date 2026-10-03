@@ -693,6 +693,88 @@ describe("词典页 · 待认词收件箱", () => {
     expect(within(candidateList()).queryByText("已记入")).toBeNull();
   });
 
+  it("分组头「全部记入 N」：先确认，再逐个记入（折叠的也算、去掉的写法带上、答过的跳过），一条提示一起撤销", async () => {
+    const apiClient = client({ glossaryCandidatesInbox: vi.fn().mockResolvedValue(INBOX(MEDMI_WORDS_WITH_WRONGS)) });
+    mount(apiClient);
+    await ready();
+    await openInbox("不良反应");
+
+    const detail = screen.getByRole("complementary", { name: "候选词详情" });
+    fireEvent.click(within(detail).getByRole("button", { name: "不是听错：不良感应" }));
+    fireEvent.click(within(candidateList()).getByRole("button", { name: "不是：初审通" }));
+    await waitFor(() => expect(within(candidateList()).getByRole("button", { name: "全部记入 6" })).toBeTruthy());
+    expect(within(candidateList()).getByRole("button", { name: "全部记入 2" })).toBeTruthy();
+
+    // 取消就什么都不记
+    fireEvent.click(within(candidateList()).getByRole("button", { name: "全部记入 6" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("把医米科研用药的 6 个词都记入词典？");
+    expect(dialog).toHaveTextContent("『不良反应』『药房端』『历史用药』");
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(apiClient.acceptGlossaryCandidate).not.toHaveBeenCalled();
+
+    fireEvent.click(within(candidateList()).getByRole("button", { name: "全部记入 6" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "记入 6 个" }));
+    expect(await screen.findByText("已记入 6 个词", { selector: ".action-banner__text" })).toBeTruthy();
+    expect(apiClient.acceptGlossaryCandidate).toHaveBeenCalledTimes(6);
+    expect(apiClient.acceptGlossaryCandidate).toHaveBeenNthCalledWith(1, "project-m", { key: "不良反应", not_wrong: ["不良感应"] });
+    expect(apiClient.acceptGlossaryCandidate).toHaveBeenCalledWith("project-m", { key: "项目课题", not_wrong: [] });
+    expect(apiClient.acceptGlossaryCandidate).not.toHaveBeenCalledWith("project-m", { key: "初审通", not_wrong: [] });
+    // 这一组都答完了：按钮收起，词条只重读一次
+    expect(within(candidateList()).queryByRole("button", { name: /全部记入 \d+$/ })).toHaveTextContent("全部记入 2");
+    await waitFor(() => expect(apiClient.glossaryTerms).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(await screen.findByText("已撤销，6 个词回到待认", { selector: ".action-banner__text" })).toBeTruthy();
+    expect(apiClient.undoGlossaryCandidate).toHaveBeenCalledTimes(6);
+    expect(within(candidateList()).getByRole("button", { name: "全部记入 6" })).toBeTruthy();
+  });
+
+  it("一起记入时，词自己记不上的跳过接着记；服务出错就停，剩下的留着待认", async () => {
+    const taken = new ApiError("『初审通』已经用在别的词条上了", 409, { detail: "『初审通』已经用在别的词条上了" });
+    const ok = { text: "已记入", already: false, undo_until: UNDO_UNTIL() };
+    const skipOne = client({
+      acceptGlossaryCandidate: vi.fn().mockImplementation(async (_p: string, body: { key: string }) => {
+        if (body.key === "初审通") throw taken;
+        return ok;
+      }),
+    });
+    const first = mount(skipOne);
+    await ready();
+    await openInbox();
+    fireEvent.click(within(candidateList()).getByRole("button", { name: "全部记入 7" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "记入 7 个" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("已记入 6 个词；『初审通』没记上，点开单独记入能看到原因");
+    expect(skipOne.acceptGlossaryCandidate).toHaveBeenCalledTimes(7);
+    first.unmount();
+    clearPersistentViewState();
+
+    const busyServer = client({
+      acceptGlossaryCandidate: vi
+        .fn()
+        .mockResolvedValueOnce(ok)
+        .mockRejectedValue(new ApiError("服务忙", 500, { detail: "服务忙" })),
+    });
+    mount(busyServer);
+    await ready();
+    await openInbox();
+    fireEvent.click(within(candidateList()).getByRole("button", { name: "全部记入 7" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "记入 7 个" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("已记入 1 个词；服务忙，剩下 6 个还没记");
+    expect(busyServer.acceptGlossaryCandidate).toHaveBeenCalledTimes(2);
+    expect(within(candidateList()).getByRole("button", { name: "全部记入 6" })).toBeTruthy();
+  });
+
+  it("项目里的「从材料里找到的词」也有「全部记入」", async () => {
+    mount(client());
+    await ready();
+    await openInbox();
+    fireEvent.click(within(candidateList()).getAllByRole("button", { name: "进入项目 ›" })[1]);
+    await within(candidateList()).findByText("病例材料");
+    expect(within(candidateList()).getByText("待认")).toBeTruthy();
+    expect(within(candidateList()).getByRole("button", { name: "全部记入 2" })).toBeTruthy();
+  });
+
   it("搜索候选词，命中听错的写法也算", async () => {
     mount(client({ glossaryCandidatesInbox: vi.fn().mockResolvedValue(INBOX(MEDMI_WORDS_WITH_WRONGS)) }));
     await ready();
@@ -716,6 +798,7 @@ describe("词典页 · 待认词收件箱", () => {
     await openInbox();
     expect(screen.queryByRole("button", { name: /^记入/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^不是/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /全部记入/ })).toBeNull();
   });
 
   it("收件箱接口不在时，左栏没有待认词，其余照常", async () => {
