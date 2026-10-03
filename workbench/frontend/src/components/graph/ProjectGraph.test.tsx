@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, ApiTimeoutError, type ApiClient, type LinksState, type RelationQuestion } from "../../api";
+import { ApiError, ApiNetworkError, ApiTimeoutError, type ApiClient, type LinksState, type RelationQuestion } from "../../api";
 import { LinksFlagsContext } from "../links/LinksFlagsContext";
 import type { Project } from "../../types";
 import type { MaterialFilePreview, Task } from "../../types";
@@ -574,7 +574,7 @@ describe("ProjectGraph 撤销失败和在途", () => {
   const undoKey = () => fireEvent.keyDown(document.body, { key: "z", metaKey: true });
 
   it.each([
-    ["网络断了", () => new TypeError("Failed to fetch"), "Failed to fetch"],
+    ["连不上服务", () => new ApiNetworkError(), "连不上声档服务，检查它是否在运行"],
     ["写请求超时", () => new ApiTimeoutError("服务没有响应，可能仍在处理，稍后刷新确认"), "服务没有响应，可能仍在处理，稍后刷新确认"],
     ["服务端 500", () => new ApiError("服务出错了，稍后再试", 500, { detail: "服务出错了，稍后再试" }), "服务出错了，稍后再试"],
     ["429 让稍后再来", () => new ApiError("请求太频繁，稍后再试", 429, { detail: "请求太频繁，稍后再试" }), "请求太频繁，稍后再试"],
@@ -656,7 +656,7 @@ describe("ProjectGraph 撤销失败和在途", () => {
     // 先归这场会（第一步），再有第二步（拖到需求上关联）；第二步的撤销断网，第一步不受影响
     const undoUntil = new Date(Date.now() + 10 * 60_000).toISOString();
     const graph = withDoorstep();
-    const removeRequirementMeeting = vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue({});
+    const removeRequirementMeeting = vi.fn().mockRejectedValueOnce(new ApiNetworkError()).mockResolvedValue({});
     const apiClient = makeClient(graph, {
       removeRequirementMeeting,
       updateMeeting: vi.fn(async () => ({ effects: { tasks_moved: 0, tasks_left: [], undo_until: undoUntil } })),
@@ -668,7 +668,7 @@ describe("ProjectGraph 撤销失败和在途", () => {
     expect(await screen.findByText("已关联到「需求 r1」")).toBeInTheDocument();
 
     undoKey();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to fetch");
+    expect(await screen.findByRole("alert")).toHaveTextContent("连不上声档服务，检查它是否在运行");
     undoKey();
     expect(await screen.findByText("已撤销：这场会不再关联「需求 r1」")).toBeInTheDocument();
     expect(removeRequirementMeeting).toHaveBeenCalledTimes(2);
@@ -2318,7 +2318,7 @@ describe("ProjectGraph 放宽的提到（4b）", () => {
     };
     const undoRelation = vi.fn(async (relationId: number) => {
       // 第一次撤：11 成功，12 断网，13 成功
-      if (relationId === 12 && undoRelation.mock.calls.filter(([id]) => id === 12).length === 1) throw new TypeError("Failed to fetch");
+      if (relationId === 12 && undoRelation.mock.calls.filter(([id]) => id === 12).length === 1) throw new ApiNetworkError();
       return { relation: {}, removed_deliverable_id: null };
     });
     const apiClient = looseClient({ getGraphFile: vi.fn(async () => detail()), undoRelation });
@@ -2329,7 +2329,7 @@ describe("ProjectGraph 放宽的提到（4b）", () => {
     const notice = (await screen.findByText("已把 3 场会换成「报价单v1.xlsx」")).closest("[role='status']") as HTMLElement;
 
     await userEvent.click(within(notice).getByRole("button", { name: "撤销" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to fetch");
+    expect(await screen.findByRole("alert")).toHaveTextContent("连不上声档服务，检查它是否在运行");
     expect(undoRelation.mock.calls.map(([id]) => id)).toEqual([11, 12, 13]);
 
     fireEvent.keyDown(document.body, { key: "z", metaKey: true });

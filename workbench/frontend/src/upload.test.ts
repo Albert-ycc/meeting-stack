@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiError, type ApiClient } from "./api";
+import { ApiError, ApiNetworkError, type ApiClient } from "./api";
 import { UploadCancelledError, uploadRecordingInChunks } from "./upload";
 
 describe("uploadRecordingInChunks", () => {
@@ -56,11 +56,12 @@ describe("uploadRecordingInChunks", () => {
   const receipt = { path: "/tmp/meeting.m4a", size_bytes: 7, status: "queued", job_id: "job-1" };
   const noWait = { retryDelaysMs: [0, 0] };
 
-  it("一块传失败（网络抖了、后端 5xx）先重试，重试成功整段照常传完", async () => {
+  it("一块传失败（没连上、后端 5xx）先重试，重试成功整段照常传完", async () => {
+    // 没连上：api.ts 把 fetch 的网络错误换成 ApiNetworkError（status 0），照样要重试
     const uploadChunk = vi
       .fn()
       .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ApiNetworkError())
       .mockRejectedValueOnce(new ApiError("Internal Server Error", 502))
       .mockResolvedValue({});
     const apiClient = {
@@ -78,7 +79,7 @@ describe("uploadRecordingInChunks", () => {
   });
 
   it("重试用完还失败：取消服务端的上传会话放掉配额，报原来的错", async () => {
-    const uploadChunk = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    const uploadChunk = vi.fn().mockRejectedValue(new ApiNetworkError());
     const cancelUpload = vi.fn().mockResolvedValue({ ok: true });
     const apiClient = {
       startUpload: vi.fn().mockResolvedValue(session),
@@ -89,7 +90,7 @@ describe("uploadRecordingInChunks", () => {
 
     await expect(
       uploadRecordingInChunks(apiClient, new File(["abcdefg"], "meeting.m4a"), [], undefined, noWait),
-    ).rejects.toThrow("Failed to fetch");
+    ).rejects.toThrow("连不上声档服务，检查它是否在运行");
     expect(uploadChunk).toHaveBeenCalledTimes(3);
     expect(cancelUpload).toHaveBeenCalledWith("upload-1");
     expect(apiClient.completeUpload).not.toHaveBeenCalled();
@@ -97,7 +98,7 @@ describe("uploadRecordingInChunks", () => {
 
   it("后端明确拒收的块（409）不重试；取消会话失败也不盖掉原来的错", async () => {
     const uploadChunk = vi.fn().mockRejectedValue(new ApiError("分块超过限制", 409));
-    const cancelUpload = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    const cancelUpload = vi.fn().mockRejectedValue(new ApiNetworkError());
     const apiClient = {
       startUpload: vi.fn().mockResolvedValue(session),
       uploadChunk,

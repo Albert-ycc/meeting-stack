@@ -26,9 +26,9 @@ function blobToBase64(blob: Blob): Promise<string> {
 // 一块传失败先等一下再试：网络抖一下、后端忙一下不至于让几百兆的录音整段重来。同一块重复写是覆盖，重试安全
 const CHUNK_RETRY_DELAYS_MS = [1_000, 3_000];
 
-/** 后端明确拒收的（4xx，比如分块大小不对、会话不存在）重试也没用；断网、5xx 才重试 */
+/** 后端明确拒收的（4xx，比如分块大小不对、会话不存在）重试也没用；没连上（status 0）、5xx 才重试 */
 function worthRetrying(error: unknown): boolean {
-  return !(error instanceof ApiError) || error.status >= 500;
+  return !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
 }
 
 /** 用户点了［取消上传］：不是故障，界面不弹失败，只说一句已取消 */

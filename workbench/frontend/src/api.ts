@@ -169,6 +169,18 @@ export class ApiTimeoutError extends ApiError {
   }
 }
 
+/**
+ * 连不上服务（没起、断网、被代理或防火墙拦了）。这时 fetch 只抛一个没头没尾的 TypeError，文案还随浏览器变
+ * （Failed to fetch、Load failed、NetworkError when attempting to fetch resource.），不能直接给人看。
+ * 没有 HTTP 状态（status 为 0），和 ApiTimeoutError 一样：按 ApiError 显示 message 的地方照样能显示。
+ */
+export class ApiNetworkError extends ApiError {
+  constructor() {
+    super("连不上声档服务，检查它是否在运行", 0);
+    this.name = "ApiNetworkError";
+  }
+}
+
 /** 调用方自己取消的请求（被新请求取代、页面卸载）：不是故障，catch 里直接丢掉、不提示 */
 export function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
@@ -618,6 +630,17 @@ interface WriteOptions {
 const NO_TIME_LIMIT: WriteOptions = { timeoutMs: null };
 
 /**
+ * 所有请求（读、写、关系图三个直接 fetch 的读）都经过 withDeadline，网络错误在这一处统一换成人话：
+ * Fetch 标准里网络出错一律是 TypeError（连响应体读到一半断了也是）；取消是 AbortError、我们自己的超时是 ApiTimeoutError，
+ * 都不是 TypeError，不受影响。原始错误留在 console 里查。
+ */
+function asNetworkError(error: unknown): unknown {
+  if (!(error instanceof TypeError)) return error;
+  console.warn("[api] 连不上服务", error);
+  return new ApiNetworkError();
+}
+
+/**
  * 给一次请求（从发出到响应体读完）加上时限和调用方的取消。
  * 到点或被取消时先中止底层 fetch，再让这一次直接拒绝：响应体读到一半卡住、或者 fetch 被替身顶掉时也一样生效。
  */
@@ -626,7 +649,13 @@ async function withDeadline<T>(
   run: (signal: AbortSignal | undefined) => Promise<T>,
 ): Promise<T> {
   if (outer?.aborted) throw new DOMException("请求已取消", "AbortError");
-  if (timeoutMs === null && !outer) return run(undefined);
+  if (timeoutMs === null && !outer) {
+    try {
+      return await run(undefined);
+    } catch (error) {
+      throw asNetworkError(error);
+    }
+  }
   const controller = new AbortController();
   let stopped: Error | null = null;
   let stop: (reason: Error) => void = () => {};
@@ -645,7 +674,7 @@ async function withDeadline<T>(
     return await Promise.race([run(controller.signal), stoppedFirst]);
   } catch (error) {
     // 中止之后 fetch 自己也会抛 AbortError：对外统一成触发中止的那个原因
-    throw stopped ?? error;
+    throw stopped ?? asNetworkError(error);
   } finally {
     clearTimeout(timer);
     outer?.removeEventListener("abort", onOuterAbort);
