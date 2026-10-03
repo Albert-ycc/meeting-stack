@@ -28,6 +28,7 @@ from .config import Settings
 from .db import Database, utc_now
 from .name_hints import accept_requirement_name, filter_spoken
 from .project_profile import also_name_list, build_cue_table, count_cues, norm_key
+from .safe_log import describe_error
 from .service import ConflictError, NotFoundError
 from .tasks import UNDO_WINDOW_SECONDS, LLMUnavailable, call_llm, llm_ready
 
@@ -501,9 +502,9 @@ class ProjectLinker:
                 cue_table = self.cue_table()
             try:
                 report = self._link_one(link, cue_table=cue_table)
-            except Exception:
+            except Exception as error:
                 stats["failed"] += 1
-                logger.exception("会议项目归类失败 link_id=%s", link_id)
+                logger.error("会议项目归类失败 link_id=%s：%s", link_id, describe_error(error))
                 with self.db.transaction() as connection:
                     connection.execute(
                         """UPDATE project_links

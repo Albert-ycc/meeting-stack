@@ -34,6 +34,7 @@ from .importer import SAFE_MEETING_ID_RE, ArchiveImporter
 from .security import WriteProtectionMiddleware
 from .path_redaction import redact_job_paths, redact_paths
 from .relay_client import RelayClient, RelayUnavailable
+from .safe_log import describe_error
 from .semantic import SemanticBusy, SemanticIndex, SemanticPaused, SemanticUnavailable
 from .service import (
     ConflictError,
@@ -1412,8 +1413,8 @@ def create_app(
                 stats = await asyncio.to_thread(material_content.run_round)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
-                logger.exception("材料内容这一轮失败")
+            except Exception as error:  # noqa: BLE001
+                logger.error("材料内容这一轮失败：%s", describe_error(error))
             await asyncio.sleep(
                 material_content_module.WORK_LOOP_SECONDS
                 if stats.get("work")
@@ -1429,8 +1430,8 @@ def create_app(
                 stats = await asyncio.to_thread(material_media.run_once)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
-                logger.exception("材料录音转写这一轮失败")
+            except Exception as error:  # noqa: BLE001
+                logger.error("材料录音转写这一轮失败：%s", describe_error(error))
             await asyncio.sleep(
                 material_media_module.WORK_LOOP_SECONDS
                 if stats.get("work")
@@ -1449,8 +1450,8 @@ def create_app(
                 raise
             except SemanticUnavailable:
                 logger.warning("本地语义模型不可用，材料向量先不补")
-            except Exception:  # noqa: BLE001
-                logger.exception("材料向量这一轮失败")
+            except Exception as error:  # noqa: BLE001
+                logger.error("材料向量这一轮失败：%s", describe_error(error))
             await asyncio.sleep(material_vectors_module.LOOP_SECONDS)
 
     async def material_fts_task() -> None:
@@ -1467,8 +1468,8 @@ def create_app(
                 )
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
-            logger.exception("补材料全文表失败，下次启动接着补")
+        except Exception as error:  # noqa: BLE001
+            logger.error("补材料全文表失败，下次启动接着补：%s", describe_error(error))
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):

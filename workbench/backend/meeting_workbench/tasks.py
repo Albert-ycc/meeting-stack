@@ -45,6 +45,7 @@ from .project_folders import pending_folders, queue_pending_folder
 from .project_profile import light_key, norm_key
 from .project_cards import card_stats, empty_stats
 from .project_seats import project_latest_meetings, seat_ranks
+from .safe_log import describe_error
 from .semantic import SemanticIndex
 from . import task_due
 from .service import ConflictError, NotFoundError
@@ -2193,7 +2194,7 @@ class TaskService:
         if not meeting["current_minutes_version_id"]:
             raise ConflictError("该会议还没有纪要，无法抽取任务")
         supplement = supplement.strip()
-        logger.info("re_extract 开始 meeting=%s supplement=%r", meeting_id, supplement[:40])
+        logger.info("re_extract 开始 meeting=%s 补充说明 %d 字", meeting_id, len(supplement))
         now = utc_now()
         threshold = (datetime.now(UTC) - timedelta(minutes=STALLED_EXTRACTION_MINUTES)).isoformat()
         with self.db.transaction() as connection:
@@ -2290,18 +2291,19 @@ class TaskService:
                 )
         except LLMUnavailable:
             return {"status": "unavailable", **empty}
-        except Exception:
+        except Exception as error:
             # AI 没回、回的不是 JSON、requirements 格式不对：这场会原来的候选一条不动
-            logger.exception("抽需求候选失败 meeting=%s", meeting_id)
+            logger.error("抽需求候选失败 meeting=%s：%s", meeting_id, describe_error(error))
             return {"status": "failed", **empty}
+        # 没出的原因里带着 AI 给的需求名和写库的错误消息，日志只记条数
         logger.info(
-            "抽需求候选 meeting=%s 新建=%d 更新=%d 并入=%d 撤下=%d 没出=%s",
+            "抽需求候选 meeting=%s 新建=%d 更新=%d 并入=%d 撤下=%d 没出=%d",
             meeting_id,
             len(saved["created"]),
             len(saved["updated"]),
             len(saved["merged"]),
             saved["removed"],
-            saved["skipped"],
+            len(saved["skipped"]),
         )
         return {
             "status": "done",
@@ -2375,19 +2377,21 @@ class TaskService:
                         context=candidates,
                         extraction_id=extraction["id"],
                     )
-                except Exception:
+                except Exception as error:
                     connection.execute("ROLLBACK TO requirement_candidates")
-                    logger.exception("需求候选没存上，任务照常 meeting=%s", meeting_id)
+                    logger.error(
+                        "需求候选没存上，任务照常 meeting=%s：%s", meeting_id, describe_error(error)
+                    )
                 else:
                     by_no = saved["by_no"]
                     logger.info(
-                        "需求候选 meeting=%s 新建=%d 更新=%d 并入=%d 撤下=%d 没出=%s",
+                        "需求候选 meeting=%s 新建=%d 更新=%d 并入=%d 撤下=%d 没出=%d",
                         meeting_id,
                         len(saved["created"]),
                         len(saved["updated"]),
                         len(saved["merged"]),
                         saved["removed"],
-                        saved["skipped"],
+                        len(saved["skipped"]),
                     )
                 finally:
                     connection.execute("RELEASE requirement_candidates")
