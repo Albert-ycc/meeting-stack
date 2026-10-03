@@ -24,7 +24,8 @@ meeting-stack 的三个组件之一，负责资料库、检索、播放与编辑
 「片段2·说话人1」，跨片段的同号说话人未必是同一人）。会议详情页可把标签改成真名，改名
 只作用于当前标签的段落、只在本场会议内生效。说话人数据来自 FunASR 转写自带的 cam++
 分离，SRT 仍是逐字稿文本权威，`funasr.json` 只按段序号对齐补说话人字段；新会议导入时
-自动补标，存量由 `backend/scripts/backfill_speakers.py` 一次性回填（设计决策见
+自动补标（`speaker_backfill.py`，解析在 `parsers.py` 的 `parse_funasr_json`），存量由
+`backend/scripts/backfill_speakers.py` 一次性回填（设计决策见
 [docs/speaker-diarization.md](../docs/speaker-diarization.md)）。
 
 ## 视觉体系

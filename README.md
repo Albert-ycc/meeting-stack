@@ -101,7 +101,8 @@ SaaS 的数据库里，你的代码、需求文档、项目记录躺在自己电
 这次改造的方案在动手前过了一轮四角色评审（架构 / 后端 / 前端 / 测试），每个角色被强制要求做方案
 起草人没做过的取证动作才准下结论——切块合并 bug 就是四路各自独立实测发现的，三个核心设计也是被
 评审推翻后换成的现在这版。完整设计决策见 [docs/speaker-diarization.md](docs/speaker-diarization.md)，
-参考实现见 [speaker-diarization/](speaker-diarization/)。
+代码在 `workbench/backend/meeting_workbench/`：切块感知的标签解析是 `parsers.py` 的 `parse_funasr_json`，就地补标是
+`speaker_backfill.py`（新会议导入时自动补，存量由 `workbench/backend/scripts/backfill_speakers.py` 一次性回填）。
 
 ## 1.4：给纪要生成注入一份「权威写法对照表」
 
@@ -119,13 +120,15 @@ SaaS 的数据库里，你的代码、需求文档、项目记录躺在自己电
 命中强特征词」判定注入，匹配只用长度 ≥3 的词，过滤「代表 / 专家 / 看板」这类 2 字高频通用词，
 避免无关项目词挤进注入表。误命中的代价大于漏命中，宁可漏不可误。
 
-完整设计决策见 [docs/glossary-correction.md](docs/glossary-correction.md)，参考实现见
-[glossary/](glossary/)。
+完整设计决策见 [docs/glossary-correction.md](docs/glossary-correction.md)。代码：快照导出（排序、原子写）和编辑纪要时的
+diff 更正提取在 `workbench/backend/meeting_workbench/glossary.py`（`rewrite_snapshot`、`extract_correction_candidates`、
+`record_corrections_from_diff`），转写侧按场挑词在 [glossary/injection.py](glossary/injection.py)。
 
 ## 1.5：从「任务池」到「项目 → 需求 → 任务」
 
 1.1–1.4 以参考实现和设计文档的形式发布，`workbench/` 本身一直停在首发快照。1.5 把工作台的完整代码
-同步进来，参考实现里讲的东西现在都在 `workbench/` 里真实跑着：任务抽取与飞书通知
+同步进来，参考实现里讲的东西现在都在 `workbench/` 里真实跑着（说话人和词典那几份没人引用的参考实现已经删掉，
+以 `workbench/` 里的代码为准）：任务抽取与飞书通知
 （`notify.py` / `tasks.py`）、说话人补标（`speaker_backfill.py`）、术语词典（`glossary.py`）。
 
 **任务池之上多了两层。** 项目挂「材料根目录」，需求归属项目、挂材料文件夹、关联多场会议。优先级

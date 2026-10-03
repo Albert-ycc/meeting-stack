@@ -79,5 +79,6 @@ launchd 每 5 分钟会把服务拉回来，回填窗口内扫描循环必然复
 - 单麦克风远场的自动聚类天然「主干可信、边界串段」，改名界面明确只作用于当前标签，
   不承诺跨块、跨会议的身份一致性。
 
-参考实现见 `speaker-diarization/`：`chunk_aware_labels.py`（切块感知的标签解析）、
-`inplace_backfill.py`（就地补标的骨架：对齐校验、UPSERT、事件幂等）。
+代码在 `workbench/backend/meeting_workbench/`：`parsers.py` 的 `parse_funasr_json`（切块感知的标签解析）、
+`speaker_backfill.py`（就地补标：对齐校验、事务边界归调用方）；存量回填脚本是 `workbench/backend/scripts/backfill_speakers.py`
+（一场一个事务、事件台账带版本号做幂等）。

@@ -1225,7 +1225,7 @@ def rewrite_snapshot(db: Database, snapshot_path: Path | str) -> None:
             "scope": row["scope"],
             "category": row["category"],
         }
-        # 可选字段，schema_version 保持 1：读取方遇到别的版本会整份当空（snapshot_export.py）
+        # 可选字段，schema_version 保持 1：读取方遇到别的版本会整份当空（glossary/injection.py 的 load_snapshot）
         if row["project_id"]:
             entry["project_id"] = row["project_id"]
         also = json.loads(row["also"] or "[]")
