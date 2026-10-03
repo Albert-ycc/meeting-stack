@@ -989,6 +989,33 @@ describe("ProjectDetailPage 的时间线（4c）", () => {
     expect(await within(card).findByText("这个项目的会还没有列出决议")).toBeInTheDocument();
   });
 
+  it("浏览器在太平洋时区：日期标题、时刻、「后来改了」「起记录」照后台给的北京日期写，不按浏览器时区换算", async () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    try {
+      // 北京 10月1日 00:30 在太平洋还是 9月30日 09:30：先确认这边真换了时区
+      expect(new Date("2026-09-30T16:30:00Z").getDate()).toBe(30);
+      const projectTimeline = vi.fn().mockResolvedValue(timelinePayload({
+        days: [{ day: "2026-10-01", label: "10月1日 周四", more_dirs: 0, items: [
+          { type: "meeting", at: "2026-09-30T16:30:00+00:00", time: "00:30",
+            meeting: { id: "m1", title: "初审规则沟通", duration_sec: 2880, audio_url: null },
+            decisions: [{ id: "dec-1", text: "阈值先按 0.8 执行", start_ms: null, later: { date: "2026-10-01", text: "阈值改成 0.7" } }],
+            decisions_more: 0 },
+        ] }],
+        next_before: null,
+        file_log_since: "2026-10-01",
+      }));
+      await renderTimeline({ projectTimeline } as Partial<ApiClient>);
+
+      const card = await screen.findByRole("region", { name: "时间线" });
+      expect(await within(card).findByRole("heading", { name: "10月1日 周四" })).toBeInTheDocument();
+      expect(within(card).getByRole("button", { name: "00:30 会议『初审规则沟通』· 48 分钟" })).toBeInTheDocument();
+      expect(within(card).getByText("定了：阈值先按 0.8 执行 · 10月1日后来改了")).toBeInTheDocument();
+      expect(within(card).getByText("文件从 10月1日 起记录")).toBeInTheDocument();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("三种状态：没挂根目录时［挂上文件夹］走现有流程；在等时 15 秒重取", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

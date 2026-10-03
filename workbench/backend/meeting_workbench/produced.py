@@ -434,7 +434,7 @@ def _marks(values: Sequence[Any]) -> str:
 
 
 def _meeting_day(row: Mapping[str, Any]) -> date | None:
-    """开会的日子，北京日历（和 file_events.beijing_day 同一套：「会后 N 天」的两边必须同一套日历）。"""
+    """开会的日子，北京日历（和文件流水的 day 同一套：「会后 N 天」的两边必须同一套日历）。"""
     if not row.get("meeting_id"):
         return None
     return meeting_date(
@@ -514,8 +514,7 @@ def _match(
 
 def _evidence(pick: _Pick) -> dict[str, Any]:
     event = pick.event
-    # 流水的 day 列是本机日历（时间线用），「会后 N 天」要北京日历：按行里的瞬时重算
-    event_day = file_events.beijing_day(event)
+    event_day = date.fromisoformat(str(event["day"]))
     meeting_day = _meeting_day(pick.task.row)
     if meeting_day is not None:
         ref, since_day = REF_MEETING, meeting_day

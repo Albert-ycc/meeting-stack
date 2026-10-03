@@ -1225,9 +1225,9 @@ CREATE INDEX IF NOT EXISTS idx_meeting_window_passages_content
 CREATE INDEX IF NOT EXISTS idx_meetings_project ON meetings(project_id);
 CREATE INDEX IF NOT EXISTS idx_requirement_meetings_meeting ON requirement_meetings(meeting_id);
 
--- 文件新增、修改、不见的流水，只追加，由 material_files 上的两个触发器写。file_id 不设外键：
--- 文件行删掉以后流水还在，判断挪位置要用。day 是本机日期，at 是 UTC 时刻。
--- (root_id, size, mtime_ns) 给挪位置配对；changed 同一个文件同一天只一行。
+-- 文件新增、修改、不见的流水，只追加，由 material_files 上的两个触发器写（FILE_EVENT_TRIGGERS，在 SCHEMA
+-- 后面）。file_id 不设外键：文件行删掉以后流水还在，判断挪位置要用。day 是北京日历的日期（v19 起，以前是
+-- 本机日期），at 是 UTC 时刻。(root_id, size, mtime_ns) 给挪位置配对；changed 同一个文件同一天只一行。
 CREATE TABLE IF NOT EXISTS material_file_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     root_id INTEGER NOT NULL REFERENCES project_material_roots(id) ON DELETE CASCADE,
@@ -1248,60 +1248,6 @@ CREATE INDEX IF NOT EXISTS idx_material_file_events_sig
     ON material_file_events(root_id, size, mtime_ns);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_material_file_events_changed_day
     ON material_file_events(file_id, day) WHERE kind = 'changed';
-
--- 只记 normal 区，和 package 区里的 key、pages、numbers；这个根目录第一次整轮（last_full_at 为空，
--- 换了路径以后也会清空）一行都不记。比较一律用 IS：包的 size 是空的。
-CREATE TRIGGER IF NOT EXISTS material_file_events_insert
-AFTER INSERT ON material_files
-WHEN (NEW.zone = 'normal' OR (NEW.zone = 'package' AND NEW.ext IN ('key', 'pages', 'numbers')))
-    AND NEW.gone_at IS NULL
-    AND EXISTS (SELECT 1 FROM material_index_state s
-                 WHERE s.root_id = NEW.root_id AND s.last_full_at IS NOT NULL)
-BEGIN
-    INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
-                                     size, mtime_ns, day, at)
-    VALUES (NEW.root_id, NEW.id, NEW.rel_path, NEW.dir_rel, 'added', NULL, NEW.size, NEW.mtime_ns,
-            date('now', 'localtime'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
-END;
--- 只看 size、mtime_ns、gone_at 三列（只填 content_key 不记）。gone_at 从空变有记 gone（带原来的
--- size、mtime 和 content_key），从有变空记 added（又出现了）；活文件的 size 或 mtime 变了记
--- changed（带变之前的 content_key），同一天只一行、保留当天第一次的旧标识。changed 的 day 在 mtime
--- 落在过去 2 天到未来 5 分钟之间时取 mtime 的本机日期。exFAT、FAT 盘换时区会让整盘的修改时间一起
--- 挪整刻钟：大小没变、mtime 差正好是 15 分钟的整数倍时不记。
-CREATE TRIGGER IF NOT EXISTS material_file_events_update
-AFTER UPDATE OF size, mtime_ns, gone_at ON material_files
-WHEN (NEW.zone = 'normal' OR (NEW.zone = 'package' AND NEW.ext IN ('key', 'pages', 'numbers')))
-    AND (NEW.size IS NOT OLD.size OR NEW.mtime_ns IS NOT OLD.mtime_ns
-         OR NEW.gone_at IS NOT OLD.gone_at)
-    AND EXISTS (SELECT 1 FROM material_index_state s
-                 WHERE s.root_id = NEW.root_id AND s.last_full_at IS NOT NULL)
-BEGIN
-    INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
-                                     size, mtime_ns, day, at)
-    SELECT NEW.root_id, NEW.id, NEW.rel_path, NEW.dir_rel,
-           CASE WHEN NEW.gone_at IS NOT NULL THEN 'gone' ELSE 'added' END,
-           CASE WHEN NEW.gone_at IS NOT NULL THEN OLD.content_key END,
-           CASE WHEN NEW.gone_at IS NOT NULL THEN OLD.size ELSE NEW.size END,
-           CASE WHEN NEW.gone_at IS NOT NULL THEN OLD.mtime_ns ELSE NEW.mtime_ns END,
-           date('now', 'localtime'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-     WHERE (OLD.gone_at IS NULL) != (NEW.gone_at IS NULL);
-    INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
-                                     size, mtime_ns, day, at)
-    SELECT NEW.root_id, NEW.id, NEW.rel_path, NEW.dir_rel, 'changed', OLD.content_key,
-           NEW.size, NEW.mtime_ns,
-           CASE WHEN NEW.mtime_ns IS NOT NULL
-                 AND NEW.mtime_ns / 1000000000
-                     BETWEEN CAST(strftime('%s', 'now') AS INTEGER) - 172800
-                         AND CAST(strftime('%s', 'now') AS INTEGER) + 300
-                THEN date(NEW.mtime_ns / 1000000000, 'unixepoch', 'localtime')
-                ELSE date('now', 'localtime') END,
-           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-     WHERE OLD.gone_at IS NULL AND NEW.gone_at IS NULL
-       AND NOT (NEW.size IS OLD.size AND NEW.mtime_ns IS NOT NULL AND OLD.mtime_ns IS NOT NULL
-                AND (NEW.mtime_ns - OLD.mtime_ns) % 900000000000 = 0)
-    ON CONFLICT(file_id, day) WHERE kind = 'changed'
-    DO UPDATE SET size = excluded.size, mtime_ns = excluded.mtime_ns, at = excluded.at;
-END;
 
 -- 4h 从材料里挖出来、等你确认的词。不写进 glossary_terms 当未确认词；［记入］以后才复制过去，
 -- term_id 和 undo_json 给 600 秒内撤销用。evidence_json 只存位置和次数。dropped 是证据没了。
@@ -1409,6 +1355,75 @@ BEGIN
      WHERE requirement_id = OLD.requirement_id AND meeting_id = OLD.meeting_id;
 END;
 """
+
+# 北京日历的日期（SQLite date() 的修饰）：中国没有夏令时，北京时间就是 UTC 加 8 小时，和 task_due.BEIJING_TZ
+# 同一个日历，不随服务进程所在的时区变。文件流水的 day、时间线按天分组的 SQL 都用它。
+BEIJING_DAY = "'+8 hours'"
+
+
+def _changed_day(mtime: str, moment: str) -> str:
+    """changed 的 day：修改时间落在「那一刻前 2 天到后 5 分钟」之间时取修改时间的北京日期，否则取那一刻的
+    （修改时间不可信：盘换了时区、时钟不准）。触发器里那一刻是 'now'；v19 重算存量时是行里的 at，触发器写 at
+    用的就是同一个 'now'。"""
+    seconds = f"CAST(strftime('%s', {moment}) AS INTEGER)"
+    return f"""CASE WHEN {mtime} IS NOT NULL
+                 AND {mtime} / 1000000000 BETWEEN {seconds} - 172800 AND {seconds} + 300
+                THEN date({mtime} / 1000000000, 'unixepoch', {BEIJING_DAY})
+                ELSE date({moment}, {BEIJING_DAY}) END"""
+
+
+# 文件流水的两个触发器（4a）。单独放在 SCHEMA 外面：SCHEMA 里一律 IF NOT EXISTS，库里已有的旧触发器换不掉，
+# v19 迁移（day 从本机日历换成北京日历）先删掉旧的，再按这里重建。
+# - insert：只记 normal 区，和 package 区里的 key、pages、numbers；这个根目录第一次整轮（last_full_at 为空，
+#   换了路径以后也会清空）一行都不记。比较一律用 IS：包的 size 是空的。
+# - update：只看 size、mtime_ns、gone_at 三列（只填 content_key 不记）。gone_at 从空变有记 gone（带原来的
+#   size、mtime 和 content_key），从有变空记 added（又出现了）；活文件的 size 或 mtime 变了记 changed（带变之前
+#   的 content_key），同一天只一行、保留当天第一次的旧标识，day 按 _changed_day。exFAT、FAT 盘换时区会让整盘的
+#   修改时间一起挪整刻钟：大小没变、mtime 差正好是 15 分钟的整数倍时不记。
+FILE_EVENT_TRIGGERS = (
+    f"""CREATE TRIGGER IF NOT EXISTS material_file_events_insert
+AFTER INSERT ON material_files
+WHEN (NEW.zone = 'normal' OR (NEW.zone = 'package' AND NEW.ext IN ('key', 'pages', 'numbers')))
+    AND NEW.gone_at IS NULL
+    AND EXISTS (SELECT 1 FROM material_index_state s
+                 WHERE s.root_id = NEW.root_id AND s.last_full_at IS NOT NULL)
+BEGIN
+    INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
+                                     size, mtime_ns, day, at)
+    VALUES (NEW.root_id, NEW.id, NEW.rel_path, NEW.dir_rel, 'added', NULL, NEW.size, NEW.mtime_ns,
+            date('now', {BEIJING_DAY}), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END""",
+    f"""CREATE TRIGGER IF NOT EXISTS material_file_events_update
+AFTER UPDATE OF size, mtime_ns, gone_at ON material_files
+WHEN (NEW.zone = 'normal' OR (NEW.zone = 'package' AND NEW.ext IN ('key', 'pages', 'numbers')))
+    AND (NEW.size IS NOT OLD.size OR NEW.mtime_ns IS NOT OLD.mtime_ns
+         OR NEW.gone_at IS NOT OLD.gone_at)
+    AND EXISTS (SELECT 1 FROM material_index_state s
+                 WHERE s.root_id = NEW.root_id AND s.last_full_at IS NOT NULL)
+BEGIN
+    INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
+                                     size, mtime_ns, day, at)
+    SELECT NEW.root_id, NEW.id, NEW.rel_path, NEW.dir_rel,
+           CASE WHEN NEW.gone_at IS NOT NULL THEN 'gone' ELSE 'added' END,
+           CASE WHEN NEW.gone_at IS NOT NULL THEN OLD.content_key END,
+           CASE WHEN NEW.gone_at IS NOT NULL THEN OLD.size ELSE NEW.size END,
+           CASE WHEN NEW.gone_at IS NOT NULL THEN OLD.mtime_ns ELSE NEW.mtime_ns END,
+           date('now', {BEIJING_DAY}), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE (OLD.gone_at IS NULL) != (NEW.gone_at IS NULL);
+    INSERT INTO material_file_events(root_id, file_id, rel_path, dir_rel, kind, content_key,
+                                     size, mtime_ns, day, at)
+    SELECT NEW.root_id, NEW.id, NEW.rel_path, NEW.dir_rel, 'changed', OLD.content_key,
+           NEW.size, NEW.mtime_ns,
+           {_changed_day("NEW.mtime_ns", "'now'")},
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE OLD.gone_at IS NULL AND NEW.gone_at IS NULL
+       AND NOT (NEW.size IS OLD.size AND NEW.mtime_ns IS NOT NULL AND OLD.mtime_ns IS NOT NULL
+                AND (NEW.mtime_ns - OLD.mtime_ns) % 900000000000 = 0)
+    ON CONFLICT(file_id, day) WHERE kind = 'changed'
+    DO UPDATE SET size = excluded.size, mtime_ns = excluded.mtime_ns, at = excluded.at;
+END""",
+)
+SCHEMA += "".join(f"\n{trigger};\n" for trigger in FILE_EVENT_TRIGGERS)
 
 # 1g：关系图的持久版本号。这些表每次增删改都给 app_state 里的 graph_rev 加一，图接口拿它
 # 算 ETag。放在触发器里而不是进程内计数，重启进程、命令行工具写库都能算进去。
@@ -1527,6 +1542,67 @@ def _refresh_stems(connection: sqlite3.Connection) -> dict[str, int]:
         connection.execute("UPDATE relations SET stem_key = ? WHERE id = ?", (pair[1], row["id"]))
         stats["relations"] += 1
     return stats
+
+
+def _rebase_file_event_days(connection: sqlite3.Connection) -> dict[str, int]:
+    """v19：文件流水的 day 从本机日历换成北京日历（时间线整页按北京日历分天、翻页）。
+
+    - 两个触发器删掉，按 FILE_EVENT_TRIGGERS 重建。
+    - 存量按行里记下的那一刻重算，规则和触发器一样：added、gone 取 at，changed 按 _changed_day（at 就是触发器
+      当时的 'now'；同一天改过几次的那行，at 和修改时间都是最后一次的，day 也是按最后一次算的）。at 解析不了
+      的保持原样。
+    - changed 同一个文件同一天只一行：本机日历里分在两天、换成北京日历落在同一天的几行并成一行，和触发器一样
+      留先记的那行（它带着当天第一次修改前的旧标识），大小、修改时间、记下的那一刻取最后一次的，其余几行删掉。
+    返回 {"days": day 改了的行数, "merged": 并掉删除的行数}；再跑一遍两个数都是 0。
+    """
+    connection.execute("DROP TRIGGER IF EXISTS material_file_events_insert")
+    connection.execute("DROP TRIGGER IF EXISTS material_file_events_update")
+    for trigger in FILE_EVENT_TRIGGERS:
+        connection.execute(trigger)
+    rows = connection.execute(
+        f"""SELECT id, file_id, kind, day, at, size, mtime_ns,
+                   COALESCE(CASE WHEN kind = 'changed' THEN {_changed_day("mtime_ns", "at")}
+                                 ELSE date(at, {BEIJING_DAY}) END, day) AS beijing
+              FROM material_file_events ORDER BY id"""
+    ).fetchall()
+    first: dict[tuple[int, str], sqlite3.Row] = {}
+    last: dict[tuple[int, str], sqlite3.Row] = {}
+    merged: list[int] = []
+    for row in rows:
+        if row["kind"] != "changed":
+            continue
+        key = (row["file_id"], row["beijing"])
+        if key not in first:
+            first[key] = last[key] = row
+            continue
+        merged.append(row["id"])
+        if (row["at"], row["id"]) > (last[key]["at"], last[key]["id"]):
+            last[key] = row
+    connection.executemany(
+        "DELETE FROM material_file_events WHERE id = ?", [(event_id,) for event_id in merged]
+    )
+    connection.executemany(
+        "UPDATE material_file_events SET size = ?, mtime_ns = ?, at = ? WHERE id = ?",
+        [
+            (last[key]["size"], last[key]["mtime_ns"], last[key]["at"], row["id"])
+            for key, row in first.items()
+            if last[key] is not row
+        ],
+    )
+    dropped = set(merged)
+    moved = [
+        (row["beijing"], row["id"])
+        for row in rows
+        if row["id"] not in dropped and row["beijing"] != row["day"]
+    ]
+    # 分两步改：先挪到带「~」的临时值，同一个文件的 changed 往后挪一天时（28→29、29→30），前一行不会撞上
+    # 后一行还没改的旧 day（唯一索引是逐行查的）
+    connection.executemany(
+        "UPDATE material_file_events SET day = day || '~' WHERE id = ?",
+        [(event_id,) for _day, event_id in moved],
+    )
+    connection.executemany("UPDATE material_file_events SET day = ? WHERE id = ?", moved)
+    return {"days": len(moved), "merged": len(merged)}
 
 
 class Database:
@@ -1910,8 +1986,10 @@ class Database:
                 "ON material_files(root_id, mtime_ns)"
             )
             if current_version < 19:
-                # v19：文件名词干规则补了结尾的 (v2)、第三版、终稿，存量词干一起重算（只做一次）。
+                # v19：文件名词干规则补了结尾的 (v2)、第三版、终稿，存量词干一起重算（只做一次）；
+                # 文件流水的 day 换成北京日历，触发器重建、存量重算。
                 _refresh_stems(connection)
+                _rebase_file_event_days(connection)
             # 会议卡片（1c）默认开启，但只对这之后新生成纪要的会自动写；上线前的历史会议
             # 等工作台横幅问过再补写。两个键都只在第一次启动时写入，之后不再改。
             now = utc_now()

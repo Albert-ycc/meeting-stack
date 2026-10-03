@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from meeting_workbench import file_events
 from meeting_workbench.db import Database, utc_now
@@ -14,10 +15,12 @@ from .helpers import count_reads
 from .test_material_index import add_root, graph_rev, make, run_until_done, write
 
 NOW = datetime(2026, 9, 27, 8, 0, tzinfo=UTC)
+BEIJING = ZoneInfo("Asia/Shanghai")
 
 
 def today() -> str:
-    return datetime.now().astimezone().date().isoformat()
+    """触发器写的 day 是北京日历的日期。"""
+    return datetime.now(BEIJING).date().isoformat()
 
 
 def events(db: Database) -> list[dict]:
@@ -262,12 +265,11 @@ def test_only_normal_files_and_iwork_packages_are_recorded(tmp_path):
     assert {row["size"] for row in events(db) if row["rel_path"].startswith("方案")} == {None}
 
 
-def test_changed_day_follows_the_file_mtime(tmp_path):
+def test_changed_day_follows_the_file_mtime(tmp_path, process_zone):
     db, root_id = setup(tmp_path)
     swept(db, root_id)
-    # 要的是不带时区的本机墙上时间：mtime 记到本机日历的哪一天，加减天数也按墙上时间算。换成固定偏移的
-    # 带时区时间，昨天到今天之间切过夏令时的话「一天前」会差一个钟头，赶上午夜前后就记到另一天
-    now = datetime.now()  # noqa: DTZ005
+    # mtime 记到北京日历的哪一天（不随进程时区变）；北京没有夏令时，加减天数按北京的墙上时间算就是按瞬时算
+    now = datetime.now(BEIJING)
     ids = [add_file(db, root_id, f"文件{index}.docx", mtime_ns=1) for index in range(4)]
     db.execute("DELETE FROM material_file_events")
     cases = {

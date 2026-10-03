@@ -249,7 +249,7 @@ def idle_world(tmp_path):
     )
     # 4e：根目录收完过一轮；一条昨天确认的任务和它确认以后新增的一份名字对得上的文件（L4 写产出）；
     # 一场定了「总价下调 5%」的会和一份月初就有、还写着下调 3% 的文件（H2 写影响）
-    from .test_file_events import swept
+    from .test_file_events import BEIJING, swept
 
     db.execute("UPDATE app_state SET value = ? WHERE key = 'links_since'", (at(-30 * 86400),))
     swept(db, root_id)
@@ -264,7 +264,7 @@ def idle_world(tmp_path):
         "UPDATE material_file_events SET at = ?, day = ? WHERE file_id = ?",
         (
             file_events.at_text(NOW - timedelta(hours=1)),
-            (NOW - timedelta(hours=1)).astimezone().date().isoformat(),
+            (NOW - timedelta(hours=1)).astimezone(BEIJING).date().isoformat(),
             detail_id,
         ),
     )

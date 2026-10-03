@@ -1,10 +1,11 @@
 """第四期 4c：项目时间线（GET /api/projects/{project_id}/timeline）。
 
-按本机的「有动静的天」翻页：一页最多 days 天（1 到 31），新的天在前，同一天里按时间先后；next_before 是
-下一页的起点。只读，最多 10 条语句（文件动静一页超过 500 条时 classify 每 500 条多一条）：
+按北京日历的「有动静的天」翻页（task_due.BEIJING_TZ；分天、翻页和窗口的边界、每条的日期和时刻都按北京时间，
+不随服务进程和浏览器所在的时区变）：一页最多 days 天（1 到 31），新的天在前，同一天里按时间先后；next_before
+是下一页的起点。只读，最多 10 条语句（文件动静一页超过 500 条时 classify 每 500 条多一条）：
 1. 项目、links_since、根目录和它们的收文件名状态；
-2. 项目的会（本地日期在 Python 里按 graph.local_day 算）；
-3. 任务的确认、完成和交付物（全项目，天在 SQL 里按本机时区算）；
+2. 项目的会（北京日期在 Python 里算）；
+3. 任务的确认、完成和交付物（全项目，天在 SQL 里按北京日历算）；
 4. 文件有动静的天（流水和记录开始前按修改时间的，只取这一页要的天数加一）；
 5. 这一页的会的决议（最多 8 条，带「后来改了」）；
 6. 这一页的会的录音；
@@ -13,7 +14,8 @@
 10. 这一页记录开始前的文件（按修改时间）。
 
 来源和规则（规格第 5 节「时间线的接口」）：
-- 会议：日期、时间按 graph.local_day 的规则；最多 8 条还在的决议，每条带「后来改了」。
+- 会议：录音时间没带时区的按本机时间理解、created_at 没带时区的按 UTC（和 graph.local_day 同一套理解），
+  日期、时间换成北京时间；最多 8 条还在的决议，每条带「后来改了」。
 - 任务确认：confirmed 事件、以「→ confirmed」结尾的 status_changed、手动建的任务的 created_at，三者取最早；
   现在仍是已确认、进行中或完成的才列。任务完成：最后一次以「→ done」结尾的 status_changed，现在仍是完成的
   才列。同一天同一种有 3 条以上的合成一行。
@@ -32,8 +34,10 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from . import file_events
+from .db import BEIJING_DAY
 from .decisions import effective_requirement, pair_state_line, project_names
 from .relation_read import AUDIO_ID_SQL
+from .task_due import BEIJING_TZ, beijing_today
 
 KINDS = ("all", "decisions", "tasks", "files")
 DAYS_DEFAULT = 7
@@ -52,8 +56,8 @@ ATTACH_ROOT = {"kind": "attach_root", "label": "挂上文件夹"}
 TIMELINE_SENTENCES = (NO_ROOTS, ROOT_OFFLINE, FIRST_PASS)
 
 _FILE_ZONES = "(f.zone = 'normal' OR (f.zone = 'package' AND f.ext IN ('key', 'pages', 'numbers')))"
-# 任务的确认时间（三种来源取最早，'~' 排在所有时间后面，当作没有）和最后一次完成时间
-_TASKS_SQL = """
+# 任务的确认时间（三种来源取最早，'~' 排在所有时间后面，当作没有）和最后一次完成时间；天按北京日历
+_TASKS_SQL = f"""
 WITH tt AS (
     SELECT t.id, t.title, t.status,
            min(COALESCE((SELECT MIN(e.created_at) FROM task_events e
@@ -66,14 +70,14 @@ WITH tt AS (
       FROM tasks t
      WHERE t.project_id = :pid AND t.status IN ('confirmed', 'in_progress', 'done')
 )
-SELECT 'confirmed' AS event, id, title, confirmed_at AS at, date(confirmed_at, 'localtime') AS day,
+SELECT 'confirmed' AS event, id, title, confirmed_at AS at, date(confirmed_at, {BEIJING_DAY}) AS day,
        NULL AS task_id, NULL AS task_title, NULL AS url, NULL AS rel_path
   FROM tt WHERE confirmed_at != '~'
 UNION ALL
-SELECT 'done', id, title, done_at, date(done_at, 'localtime'), NULL, NULL, NULL, NULL
+SELECT 'done', id, title, done_at, date(done_at, {BEIJING_DAY}), NULL, NULL, NULL, NULL
   FROM tt WHERE status = 'done' AND done_at IS NOT NULL
 UNION ALL
-SELECT 'deliverable', CAST(d.id AS TEXT), d.title, d.created_at, date(d.created_at, 'localtime'), t.id, t.title,
+SELECT 'deliverable', CAST(d.id AS TEXT), d.title, d.created_at, date(d.created_at, {BEIJING_DAY}), t.id, t.title,
        d.url, df.rel_path
   FROM deliverables d JOIN tasks t ON t.id = d.task_id
   LEFT JOIN deliverable_files df ON df.deliverable_id = d.id
@@ -99,22 +103,25 @@ def day_label(day: date, today: date) -> str:
     return f"{day.year}年{day.month}月{day.day}日 {weekday}"
 
 
-def _meeting_moment(recording_date: str | None, created_at: str | None) -> datetime | None:
-    """会议的时刻（带时区）；只有日期时为 None。规则和 graph.local_day 一样。"""
+def _meeting_when(
+    recording_date: str | None, created_at: str | None
+) -> tuple[date, datetime | None]:
+    """会议在北京日历上的日子和时刻（带时区）。录音时间没带时区的按本机时间理解，created_at 没带时区的按 UTC
+    （和 graph.local_day 同一套理解）；只有日期的，日子就是它、没有时刻；都解析不了时算北京的今天。"""
     for raw, naive_is_utc in ((recording_date, False), (created_at, True)):
         if not raw:
             continue
         text = str(raw).strip()
-        if len(text) <= 10:
-            return None
         try:
             value = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError:
             continue
+        if len(text) <= 10:
+            return value.date(), None
         if value.tzinfo is None:
             value = value.replace(tzinfo=UTC) if naive_is_utc else value.astimezone()
-        return value
-    return None
+        return value.astimezone(BEIJING_TZ).date(), value
+    return beijing_today(), None
 
 
 def _at(moment: datetime | None) -> str | None:
@@ -122,7 +129,7 @@ def _at(moment: datetime | None) -> str | None:
 
 
 def _clock(moment: datetime | None) -> str | None:
-    return moment.astimezone().strftime("%H:%M") if moment is not None else None
+    return moment.astimezone(BEIJING_TZ).strftime("%H:%M") if moment is not None else None
 
 
 def _parse_utc(value: str | None) -> datetime | None:
@@ -135,13 +142,14 @@ def _parse_utc(value: str | None) -> datetime | None:
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
-def _local_day(value: str | None) -> date | None:
+def _beijing_day(value: str | None) -> date | None:
     moment = _parse_utc(value)
-    return moment.astimezone().date() if moment is not None else None
+    return moment.astimezone(BEIJING_TZ).date() if moment is not None else None
 
 
 def _midnight_ns(day: date) -> int:
-    return int(datetime.combine(day, time(0, 0)).astimezone().timestamp()) * 1_000_000_000
+    """北京那一天 0 点的纳秒时间戳。"""
+    return int(datetime.combine(day, time(0, 0), BEIJING_TZ).timestamp()) * 1_000_000_000
 
 
 def _last_segment(value: str | None) -> str:
@@ -162,13 +170,11 @@ def project_timeline(
     worker: Any = None,
     settings: Any = None,
 ) -> dict[str, Any]:
-    from .graph import local_day
-
     if kind not in KINDS:
         raise ValueError(f"不认识的筛选：{kind}")
     days = max(1, min(DAYS_MAX, int(days)))
     moment = now or datetime.now(UTC)
-    today = moment.astimezone().date()
+    today = beijing_today(moment)
     stop = before or today + timedelta(days=1)
     want_meetings = kind in ("all", "decisions")
     want_tasks = kind in ("all", "tasks")
@@ -187,11 +193,11 @@ def project_timeline(
     if project is None:
         raise TimelineNotFound("项目不存在")
     roots = [root for root in json.loads(project["roots_json"] or "[]") if isinstance(root, dict)]
-    since_day = _local_day(project["links_since"])
+    since_day = _beijing_day(project["links_since"])
     # 每个根目录记录开始的那一天：links_since 和挂上的时间取较晚的
     boundaries: dict[int, date] = {}
     for root in roots:
-        attached = _local_day(root.get("created_at"))
+        attached = _beijing_day(root.get("created_at"))
         candidates = [day for day in (since_day, attached) if day is not None]
         if candidates:
             boundaries[int(root["id"])] = max(candidates)
@@ -209,7 +215,7 @@ def project_timeline(
             (project_id,),
         ).fetchall():
             item = dict(row)
-            item["day"] = local_day(item["recording_date"], item["created_at"])
+            item["day"], item["moment"] = _meeting_when(item["recording_date"], item["created_at"])
             meetings.append(item)
             if kind == "decisions" and not item["decision_count"]:
                 continue
@@ -343,8 +349,6 @@ def _page_decisions(
 
 
 def _later(raw: str | None) -> dict[str, Any] | None:
-    from .graph import local_day
-
     if not raw:
         return None
     try:
@@ -352,7 +356,7 @@ def _later(raw: str | None) -> dict[str, Any] | None:
     except ValueError:
         return None
     return {
-        "date": local_day(data.get("rec"), data.get("created")).isoformat(),
+        "date": _meeting_when(data.get("rec"), data.get("created"))[0].isoformat(),
         "text": data.get("text") or "",
     }
 
@@ -368,7 +372,7 @@ def _meeting_items(
     project_id: str,
     excluded: Sequence[str],
 ) -> None:
-    moment = _meeting_moment(meeting["recording_date"], meeting["created_at"])
+    moment = meeting["moment"]
     at, clock = _at(moment), _clock(moment)
     audio_url = f"/api/media/{audio_id}" if audio_id else None
     if kind == "decisions":
@@ -518,7 +522,7 @@ def _file_days(
     prelog, prelog_params = _window_sql(windows, None, stop)
     union = ""
     if prelog:
-        union = f"""UNION SELECT date(f.mtime_ns / 1000000000, 'unixepoch', 'localtime') AS day
+        union = f"""UNION SELECT date(f.mtime_ns / 1000000000, 'unixepoch', {BEIJING_DAY}) AS day
                       FROM material_files f
                      WHERE ({prelog}) AND f.gone_at IS NULL AND {_FILE_ZONES}"""
     rows = connection.execute(
@@ -547,7 +551,7 @@ def _prelog_groups(
         params,
     ).fetchall():
         moment = datetime.fromtimestamp(int(row["mtime_ns"]) / 1_000_000_000, UTC)
-        key = (moment.astimezone().date(), int(row["root_id"]), str(row["dir_rel"]))
+        key = (moment.astimezone(BEIJING_TZ).date(), int(row["root_id"]), str(row["dir_rel"]))
         group = groups.setdefault(
             key,
             {

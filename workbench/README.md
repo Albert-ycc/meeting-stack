@@ -470,9 +470,10 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
   <第一条标题>」；北京 09:00 时北京的今天才刚开始，「今天完成」几乎恒为 0），「昨天自动归属」按北京的昨天 00:00 到次日 00:00。
   今天已经发过晨报的轮次不再算统计（先问通知台账）
 - 日期口径：和会上说的相对日期挂钩的一律按北京日历（`task_due.BEIJING_TZ`）：晨报、待办的「今天」、决议对比提示词里的「今年」和
-  每场会的日期、产出建议里的「会后 N 天」（文件流水按行里的瞬时重算北京日期，`file_events.beijing_day`）。和界面显示对齐的
+  每场会的日期、产出建议里的「会后 N 天」、项目时间线（分天、翻页、每条的日期和时刻）。文件流水的 `day` 列是北京日期（v19 起；
+  触发器按 UTC 加 8 小时写，中国没有夏令时），时间线按它翻页，「会后 N 天」直接拿它和会的日期比。和界面显示对齐的
   「按会议日期筛选」用服务进程所在时区的本机日历，带偏移的录音日期（`-07:00`、`+00:00`）按瞬时换算后再取日期，不再取前 10 位；
-  没带时区的值当本机时间。文件流水的 `day` 列保持本机日历（时间线按它翻页），不随北京日历改
+  没带时区的值当本机时间
 - 项目归属三级：AI 直接匹配既有项目 → 本地语义模型兜底 → 建议新建（确认任务时才真正建项目）
 - **会议自动归属项目（260905 新增）**：流水线在「纪要生成 → 完成」之后多一步。会议有纪要且从未归属过时，
   扫描周期里自动归类，命中即停：AI 看标题 + 纪要 + 项目列表给出精确项目名（只认 `confidence=high`）→
@@ -790,7 +791,8 @@ Vision 程序第一次用时在 `~/.meeting-workbench/bin/` 下编译。
   部分、逐字稿、文件名和材料文字。每场会一次调用，和 4b 共用每天 200 次；改错字不花调用。标错了点［不是一回事］，
   过了撤销期也能在「你标过和 9月28日 周会那条不是一回事」那一行改回。关系图的会议简报和展开一场会也写「后来改了」。
 - 项目页多一条「时间线」（在「AI 自动建的项目」提示之后、「材料根目录」之前）：按天列会议和定下的决议、确认和完成
-  的任务、交付物、文件的新增和修改，能按［决议］［任务］［文件］筛。**文件的动静从升级这天起记**（每个资料盘第一次
+  的任务、交付物、文件的新增和修改，能按［决议］［任务］［文件］筛；分天和每条的日期、时刻都按北京时间，服务进程和浏览器
+  在别的时区也一样。**文件的动静从升级这天起记**（每个资料盘第一次
   整轮收文件名时不记），更早的文件按现在的修改时间归到那一天，只往前看 62 天；页脚写「文件从 9月27日 起记录」。
 - `links decisions --meeting <id>` 打印这场会对比时会发的提示词，只打印，不发送。
 
@@ -940,10 +942,12 @@ PDF 文字；图片认出的字、录音转的字、代码、数据和字幕文�
 deliverables / task_extractions / notifications 五张表及 projects.origin 列；v8 新增
 术语词典 glossary_terms / glossary_suggestions 两张表，快照导出到
 `~/.meeting-workbench/glossary-snapshot.json` 供转写侧消费；v9 新增 `meetings.project_origin` 与
-`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`；v16 新增深度关联——`relations`、`decisions`、`decision_scan`、`mention_extractions`、`meeting_related_scan`、`meeting_windows`、`meeting_window_passages`、`material_file_events`、`glossary_candidates`、`glossary_mining_scan`、`glossary_mining_seeds` 十一张表，`meetings`、`requirement_meetings` 上各一个索引，以及文件流水、离开项目、版本号的触发器；`meeting_windows`、`meeting_window_passages`、`meeting_related_scan` 能重算，不进备份；v17 新增需求池改版——`requirement_candidates`（需求候选）、`requirement_sources`（需求来源：会议、会上原话、时间锚）两张表，`projects.seat`、`requirements.summary`、`tasks.candidate_id` 三列，候选表上撤销合并用的 `merged_at`、`merge_undo`，`requirement_meetings` 上一个触发器（一场会移出需求的关联会议时去掉这场会的原话），以及候选上线时刻 `requirement_candidates_since`（之前的纪要不自动抽候选），迁移里不回填任何候选；v18 新增任务截止 `tasks.due_date`、`tasks.due_phrase` 两列和撤销确认用的 `tasks.confirm_undo`，存量任务不回填；v19 不改表结构，只把存量的文件名词干按新规则重算一遍（见「文件名索引和会上提到文件名」）。都是只加不改）。
+`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`；v16 新增深度关联——`relations`、`decisions`、`decision_scan`、`mention_extractions`、`meeting_related_scan`、`meeting_windows`、`meeting_window_passages`、`material_file_events`、`glossary_candidates`、`glossary_mining_scan`、`glossary_mining_seeds` 十一张表，`meetings`、`requirement_meetings` 上各一个索引，以及文件流水、离开项目、版本号的触发器；`meeting_windows`、`meeting_window_passages`、`meeting_related_scan` 能重算，不进备份；v17 新增需求池改版——`requirement_candidates`（需求候选）、`requirement_sources`（需求来源：会议、会上原话、时间锚）两张表，`projects.seat`、`requirements.summary`、`tasks.candidate_id` 三列，候选表上撤销合并用的 `merged_at`、`merge_undo`，`requirement_meetings` 上一个触发器（一场会移出需求的关联会议时去掉这场会的原话），以及候选上线时刻 `requirement_candidates_since`（之前的纪要不自动抽候选），迁移里不回填任何候选；v18 新增任务截止 `tasks.due_date`、`tasks.due_phrase` 两列和撤销确认用的 `tasks.confirm_undo`，存量任务不回填；v19 不改表结构，只把存量的文件名词干按新规则重算一遍（见「文件名索引和会上提到文件名」），并把文件流水的 `day` 换成北京日期（两个触发器重建，存量按记下的那一刻重算，同一个文件改到北京同一天的几行并成一行）。都是只加不改）。
 
 **从 v19 退回 v18**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=18` 后用 v18 的代码启动。新词干不用动：
-v18 的代码读它没有问题，下一次整轮重读材料文件名时会按旧规则改回去。回到 v19 时自动再迁一次（再做一次迁移前备份）。
+v18 的代码读它没有问题，下一次整轮重读材料文件名时会按旧规则改回去。文件流水的两个触发器留在北京日历（v18 建触发器用的是
+IF NOT EXISTS，换不回去），回滚期间 v18 的时间线里文件的动静可能比同一刻的会议、任务晚一天；要完全回到本机日历就恢复迁移前的备份。
+回到 v19 时自动再迁一次（再做一次迁移前备份），已经是北京日期的流水一行不改。
 
 **从 v18 退回 v17**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=17` 后用 v17 的代码启动。不要删截止和 `confirm_undo` 这几列：v17 不读它们，回滚期间界面上看不到截止，会后抽出的任务不带截止。回到 v18 时自动从 17 升到 18，已有的截止都在。
 

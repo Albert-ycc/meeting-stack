@@ -17,7 +17,7 @@ from meeting_workbench.relation_read import produced_evidence_text, task_questio
 from meeting_workbench.relations import RelationError
 from meeting_workbench.tasks import TaskService, _delete_deliverable, _insert_deliverable
 
-from .test_file_events import swept
+from .test_file_events import BEIJING, swept
 
 NOW = datetime(2026, 9, 27, 8, 0, tzinfo=UTC)
 ROOT = "/材料/能源平台资料"
@@ -144,10 +144,11 @@ def put_file(
 
 
 def move_events(db, file_id: int, when: datetime, kind: str | None = None) -> None:
+    """把流水挪到 when：记下的那一刻和北京日历的 day（触发器写的就是北京日期）。"""
     where = "file_id = ?" + (" AND kind = ?" if kind else "")
     params = (
         at_text(when),
-        when.astimezone().date().isoformat(),
+        when.astimezone(BEIJING).date().isoformat(),
         file_id,
         *((kind,) if kind else ()),
     )
@@ -673,7 +674,7 @@ def test_shared_words_are_worked_out_once_per_text(tmp_path, monkeypatch):
         when = at(-2)
         connection.execute(
             "UPDATE material_file_events SET at = ?, day = ?",
-            (at_text(when), when.astimezone().date().isoformat()),
+            (at_text(when), when.astimezone(BEIJING).date().isoformat()),
         )
         connection.execute(
             """INSERT INTO material_file_events(root_id, file_id, kind, rel_path, dir_rel, size, mtime_ns, content_key, at, day)
@@ -978,7 +979,7 @@ def test_evidence_counts_days_after_the_meeting(tmp_path):
     assert evidence(row) == {
         "event_id": evidence(row)["event_id"],
         "event_kind": "added",
-        "event_day": at(-1).astimezone().date().isoformat(),
+        "event_day": at(-1).astimezone(BEIJING).date().isoformat(),
         "scope": "folder",
         "folder": "能耗看板/",
         "words": [],
