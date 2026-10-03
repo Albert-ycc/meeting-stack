@@ -60,14 +60,36 @@ meeting-stack 的三个组件之一，负责资料库、检索、播放与编辑
   回到打开它之前的视图（检索结果也保留），不再一律回录音档案。
 - 保存、回滚、改说话人后会议详情静默刷新，不整页闪加载，标签页、滚动与播放进度都保留；
   需求详情同理。
-- 弹窗共用 `components/useDialog.ts`：焦点进出与 Tab 循环、背景不滚动、Esc 关闭（输入法组合中
-  的 Esc 不算）。有输入内容的表单弹窗点背景不关；只做选择的弹窗点背景关，且只认按下和松开都在
-  背景上的点击。
+- 弹窗共用 `components/useDialog.ts`：焦点进出、背景不滚动、Esc 关闭。Esc 统一走 `useDialogEscape`（监听挂在
+  window 上，输入法组合中的 Esc 不算）：叠着几层时一次只关最上面一层，弹窗里的控件（下拉、菜单）自己拦下的 Esc
+  弹窗不关。Tab、Shift+Tab 由 `useDialogFocus` 接管，在弹窗里按文档顺序循环，不靠浏览器原生的 Tab（Safari 默认
+  Tab 不停在按钮上，靠原生会让焦点跑到弹窗后面的页面上）；日期输入框里年月日几格交给浏览器自己走。有输入内容的
+  表单弹窗点背景不关；只做选择的弹窗点背景关，且只认按下和松开都在背景上的点击。
 - 页面里的丢弃草稿、丢弃我的修改（保存冲突时）、写回会议文件夹、删除术语、移除材料根目录这类操作走
-  `components/ConfirmDialog.tsx` 的二次确认；需要调接口的确认，失败原因写在确认框里。
+  `components/ConfirmDialog.tsx` 的二次确认；需要调接口的确认，失败原因写在确认框里。危险操作（丢弃、删除、移除）的确认框
+  默认聚焦「取消」，直接按回车只是取消。需要调接口的确认遇到请求超时（见下）时，脚注只剩「关闭」，不再给「再执行一次」：
+  服务端可能已经在做，回车、Esc、✕ 都按没有确认处理，页面不会当成已经做完。
   离开有未保存修改的会议、需求表单页（点侧栏、检索、打开别的会、浏览器前进后退）的守卫用的是浏览器
   原生 `window.confirm`：浏览器后退时要在 `popstate` 里当场决定留下还是放行，只能用同步的原生框，
   其余入口跟它保持一致。原生框不跟主题，也没有 ConfirmDialog 的焦点约定。
+- 项目内问答要发材料原文时的确认（［发送］正上方写「将发送 N 段材料原文给 …」）：默认焦点不在［发送］上——有会议段落时在
+  ［只用会议回答］，没有时在［看看是哪几段］——直接按回车不会把材料原文发出去。
+- 请求有超时和取消（`api.ts` 的 `withDeadline`）：读 30 秒、写 120 秒，到点放弃等待并提示「服务没有响应…」，写请求不自动
+  重发；重抽任务、抽需求候选、上传分块、整批搬卡片这类后端本来就可能跑过 120 秒的写不设上限。会议详情、检索被新的请求取代时
+  中止旧的请求。非 JSON 的错误响应（500 的纯文本、代理返回的 502 HTML 页）界面只显示「请求失败（状态码）」，正文进浏览器
+  console。断网（fetch 的网络错误）统一提示「连不上声档服务，检查它是否在运行」，不再露出各浏览器自己的英文。
+- 会议页上的时间锚都是「跳到那里并开始播放」：逐字稿的时间、相关材料「从 … 播放会上这段」、纪要证据「跳转到证据」、归属条的
+  线索、风险对照、Whisper / Qwen 对照稿的时间。带时间锚打开会议（检索命中的时间点、会议卡片里的时间点链接）同样，读到录音
+  就放。浏览器拒绝自动播放时（没有用户手势，比如直接从卡片链接冷打开）停在那个位置，不报错。时间锚是 0 的普通打开不播放。
+  播放时逐字稿的「跟随当前句」只在焦点不在查找框、文本框里时才跟。
+- 逐字稿很长的会（生产里最长一场 5980 段）编辑时，每一行是单独的 `memo` 组件、自成排版单元（`contain: content`），敲一个字只重画
+  这一行；「改没改过」先比引用、再逐字段比，敲一个字再删掉不算改过。3000 段、CPU 降速 4 倍时每个按键的主线程占用从 103 毫秒降到
+  28 毫秒。
+- 关系图每 30 秒带上次的 etag 对一次数据，没变（304）就不换图对象、不重算布局；星图和相关线各带各自的 etag，谁变了只换谁。
+  节点面板按 Esc 在页面上哪里按都关（监听挂在 window 上，点线、点面板里的字之后也行）；盖着弹窗、图例时第一次 Esc 只关弹窗或
+  图例，输入框里的 Esc 只清搜索。拖会、「换成这份」这类撤销失败时（断网、超时、5xx、408、429），这一步留在撤销栈里，⌘Z 或
+  提示条上的［撤销］可以再来；服务端明确回绝的（撤销期已过、已经撤销过、对象不在了等其余 4xx）才出栈。撤销在途时同一步不会
+  发第二次，提示条上的［撤销］置灰而不是消失。
 - 复制路径在 `http://<局域网 IP>` 这类非安全上下文里退回 `execCommand("copy")`（`src/clipboard.ts`）。
 - 待办的页签、查询条件和页码，项目管理的查询条件和「我的方向」点选，词典的页签和分类，项目详情顶部的页签
   （需求与任务 / 录音 / 材料，按项目各记各的），以及「需求与任务」里已完成 / 已取消那一栏的展开收起，
@@ -192,6 +214,12 @@ echo "报价最后定了多少" | .venv/bin/meeting-workbench links ask --projec
 # 从材料里找到的词（4h）：这个项目排好序的词，每个一行，带次数和一处证据；--dry-run 当场挖一遍，什么都不写
 .venv/bin/meeting-workbench links words --project <项目 id> --dry-run
 ```
+
+`scan` 清理失效记录时有一道比例保护：一个根（归档根按 archive、history、draft 三种标签分别算，暂存根单独算）这一轮要清的
+失效记录超过一半、并且多于 20 条，后台循环就跳过这一个根，打一条 warning（同一个根持续这样只打一次），并记进扫描报告的
+`mass_cleanup_skipped`（`scan` 命令的 JSON 输出里看得到）。确认归档盘没出问题、这些记录确实该清以后，跑一次
+`.venv/bin/meeting-workbench scan --allow-mass-cleanup`，让这一次照清。这个参数同时放行「根里一个文件都没发现」那道旧保护
+（暂存根被 relay 正常清空以后，旧记录一直清不掉的出口）；后台循环永远带两道保护。
 
 `doctor` 多了两项，只报告、不影响退出码：`materials`（Vision 程序编译好没有、tesseract 和中文语言包、
 textutil、ffmpeg、FunASR 找到没有，以及 macOS 版本和芯片型号）和 `material_fts`（材料全文表和片段对得上是 `ok`，
@@ -326,10 +354,17 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 ## 数据与安全
 
 - 数据库：`~/.meeting-workbench/workbench.sqlite3`
-- 本机备份：`~/.meeting-workbench/backups/`，保留 14 份
-- 外置盘镜像：正式归档根下 `.meeting-workbench-backups/`，保留 14 份
+- 本机备份：`~/.meeting-workbench/backups/`，默认保留 14 份
+- 外置盘镜像：正式归档根下 `.meeting-workbench-backups/`，默认保留 14 份
+- 保留份数用 `MEETING_WORKBENCH_BACKUP_RETENTION` 调（默认 14，最小 1，本机和镜像共用这一个值，每份几百 MB）。改小以后，
+  下一次备份的轮转会清掉多出的旧副本；写成 0、负数或不是整数，启动时就报错
 - 每次备份都会生成唯一快照并执行 SQLite 完整性、SHA-256 与落盘校验；结果写入
-  `~/.meeting-workbench/backups/last-backup.json`。外置盘副本失败时保留本机快照并标记降级
+  `~/.meeting-workbench/backups/last-backup.json`。外置盘副本失败时保留本机快照并标记降级。轮转只校验刚生成的那一份，
+  旧副本不再逐份打开校验（一次备份的校验时间约从 200 秒降到 12 秒），代价是旧副本以后静默损坏，轮转时不会再发现
+- 副本写完后落成回滚日志模式（`journal_mode=DELETE`，WAL 已合进主文件），校验时只读打开不再在旁边生成 `-wal`、`-shm`；
+  没能切成回滚日志模式（别的连接占着、WAL 没合干净）一律当备份失败，不装上可能缺内容的副本。轮转删副本时连 `-wal`、`-shm`
+  一起删，并清掉主文件已经不在的孤儿旁路文件（只认 `workbench-…` 命名的，别的文件不动）。把副本拷回去当库用，`initialize`
+  会把它落回 WAL，运行模式不变
 - 备份不含 `embeddings`（`backup.py` 的 `DERIVED_TABLES`）：向量占主库七成体积且能从 `segments`
   重算，快照体积因此从 400 MB 级降到 120 MB 级。**从备份恢复后不需要额外操作** —— 服务启动后的
   后台循环会调 `SemanticIndex.rebuild()` 自动补齐，补齐前语义检索结果为空、全文检索不受影响。
@@ -368,7 +403,7 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 - 项目和标签的颜色只收 `#rrggbb`（创建、修改都校验）
 - 移动端界面只读，用于资料库、检索、播放和阅读；接口权限仍由 Tailnet ACL 控制，不把 UA 或屏幕尺寸当成鉴权凭据
 - 大录音通过 4 MiB JSON 分块上传，仅接受 `m4a/mp3/wav`，不会在浏览器或服务端一次性展开整段 Base64
-- 数据库使用 schema v18；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层、项目材料的文件名索引、材料内容、第四期的深度关联和需求池（需求候选、需求来源、项目座次）都保存在 SQLite。
+- 数据库使用 schema v19；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层、项目材料的文件名索引、材料内容、第四期的深度关联和需求池（需求候选、需求来源、项目座次）都保存在 SQLite。
   外部文件与数据库草稿冲突时，必须明确选择保留草稿、
   采用外部版本或丢弃草稿；音频完整性及发布恢复冲突只能由对应复验流程关闭，解决一种冲突不会清除其他冲突
 - 逐字稿和纪要保存携带页面打开时的基础版本；遇到并发变化返回 409，并保留浏览器中的未保存文字
@@ -396,6 +431,22 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 
 - 任务状态机：待确认 → 已确认 → 进行中 → 已完成 / 已取消（驳回 = 取消）
 - AI 抽取挂在工作台扫描周期内，检测到新的纪要版本自动触发；未配置模型时自动跳过、不影响主链
+- 重抽（［重新抽取］或纪要换了版本）时认得出你改过名的草稿：AI 抽出草稿、重抽原地更新草稿时，时间线事件正文末尾记下 AI 当时给的名字
+  （「AI 从会后纪要生成本条任务草稿：「做看板」」），重抽对动过的草稿把这些名字也算作它的名字，AI 又抽到同一件事就不另出一条。
+  新抽出的草稿的时间线第一行因此多了 AI 当初的名字。升级前抽出的草稿事件里没记名字，认不出（和以前一样），这类草稿最多留 7 天就过期
+- 服务端执行挂需求的范围（和前端选择器是同一份规矩，`can_link_candidates`）：改挂（PATCH）和确认（单条、批量、全部确认）时，
+  新挂的需求必须是进行中的；已确认的任务不能再挂候选（候选只有待确认的任务或没归项目的任务能挂）。违规回 409 和人话，如
+  「需求「X」已搁置，只能挂到进行中的需求」。10 分钟内刚改过挂接（有 `requirement_changed` 事件）的任务不再校验，好让［撤销］
+  能把原来的挂接写回去；`POST /api/tasks` 带需求、需求详情页的「关联已有任务」不拦
+- 撤销丢掉的候选时，同项目里已经有一条同名的待认领候选就不撤回，回 409「同项目里已经有一条同名的待认领候选「X」，先认领、合并或
+  丢掉那一条，再撤销这条」：被丢掉的那条原样留在「已丢掉」里，摘下来的任务也不动。会议没归项目的候选不按名字去重
+- 晨报（北京时间 09:00，一天一份）的统计按北京日历：「今天完成」换成「昨天完成」（`done_yesterday`，卡片上那一行写「昨天完成 N 条：
+  <第一条标题>」；北京 09:00 时北京的今天才刚开始，「今天完成」几乎恒为 0），「昨天自动归属」按北京的昨天 00:00 到次日 00:00。
+  今天已经发过晨报的轮次不再算统计（先问通知台账）
+- 日期口径：和会上说的相对日期挂钩的一律按北京日历（`task_due.BEIJING_TZ`）：晨报、待办的「今天」、决议对比提示词里的「今年」和
+  每场会的日期、产出建议里的「会后 N 天」（文件流水按行里的瞬时重算北京日期，`file_events.beijing_day`）。和界面显示对齐的
+  「按会议日期筛选」用服务进程所在时区的本机日历，带偏移的录音日期（`-07:00`、`+00:00`）按瞬时换算后再取日期，不再取前 10 位；
+  没带时区的值当本机时间。文件流水的 `day` 列保持本机日历（时间线按它翻页），不随北京日历改
 - 项目归属三级：AI 直接匹配既有项目 → 本地语义模型兜底 → 建议新建（确认任务时才真正建项目）
 - **会议自动归属项目（260905 新增）**：流水线在「纪要生成 → 完成」之后多一步。会议有纪要且从未归属过时，
   扫描周期里自动归类，命中即停：AI 看标题 + 纪要 + 项目列表给出精确项目名（只认 `confidence=high`）→
@@ -571,6 +622,16 @@ AI 还会提「这个项目里一件还没有的事」（新需求名）和会�
 ［建成需求］（P2，同名的会一起关联，根目录下有同名子文件夹时挂成需求文件夹）、［不是新项目］/［不算新需求］，
 都能在 10 分钟内撤销。`meeting-workbench backfill-projects --evaluate` 回测命中率和「有新需求提示的会」的比例。
 
+**项目名「相近」**（`project_names.names_similar`）：新建项目时问「是不是它」、新项目建好后回扫没归属的会、判一个名字和已有项目
+像不像三处共用这一条：较短一方（`norm_key` 之后）至少 3 个字，并且原样出现在较长一方里（多出来的字只在开头或结尾），或较长一方
+只是在较短一方中间多了一段连着的字、头尾都对得上（缩写、少写或多写一两个字）；字散在几处的不算——「智慧医院」不再被当成
+「智慧医疗院区」的相近名，「云图科研」和「云图科研用药」、「云图用药」和「云图科研用药」仍然相近。
+
+**换规则后的冷启动整理**（`cold_start.py`，幂等，做完记在 `app_state` 里不再做）：弱归属复评（旧规则里靠内容相近、任务多数
+归进项目的会，用新规则重判一遍，每轮扫描最多 5 场）、旧词典分组整理、同名文件夹询问。同一条复评累计抛错满 3 次就按「保持原样」
+收口（`method=reeval_kept`：会议的项目和来源不动，不多出证据和候选），不再占复评名额，`cold_start_done` 才写得上。次数记在
+`project_links.attempts` 上，AI 暂时调不通时的重试也记在这一列，两种合起来数，所以重试两次后又抛一次也会在第三次收口。
+
 **项目总文件夹**（`project_folders.py`）：设好以后（项目页标题下那一行），新建项目默认在它下面建同名文件夹；
 下面还没挂到项目的文件夹会列出来让你认领（挂到已有项目、建成新项目、不是项目）。资料盘没插时照常建项目，
 插上后 1 分钟内自动补建文件夹并提示；文件夹在 Finder 里改了名，项目页会问「是不是改名成了『X』」，
@@ -591,7 +652,10 @@ AI 还会提「这个项目里一件还没有的事」（新需求名）和会�
 断点续扫，目录修改时间没变就不重读，每 24 小时整轮重读一次；「不见了」只按目录重读的结果判断，资料盘掉了或
 读不了就停下、不当成空。系统影子文件和 Office 的 `~$` 锁文件跳过；`node_modules`、`.git` 和点开头的文件夹只记个数；
 `声档会议记录/` 里的卡片和代码、配置文件只收名字不比对；`.key`、`.pages` 这类包算一个文件；不跟随符号链接。
-文件名去掉版本号、副本编号、日期、编号后变成「会上会说的词」，扫描循环里拿逐字稿比对（每轮最多 20 场会或 5 秒）：
+文件名去掉版本号、副本编号、日期、编号后变成「会上会说的词」（版本号、副本编号的写法包括括号里只有一个修饰的 `报价单 (v2)`、
+`（v2）`、`[v3]`、`【v3】`、`（终稿）`，以及 `第 N 版`、`第 N 稿`、`终稿`、`最终稿`、`初稿`、`修订稿`、`修改稿`；括号里是别的内容
+（`(终稿评审)`、`(吉士医医生端 · 一期)`）或方括号里的纯数字（`[3]`）不去，整个名字只剩修饰词时留着；升级到 schema v19 时库里存量的
+词干一次重算完，不用等整轮重读），扫描循环里拿逐字稿比对（每轮最多 20 场会或 5 秒）：
 最长优先、落在更长的项目名和词条里的不算、2 个字的词要说 2 次、同名多份时按会上说的版本或会议日期选一份。
 会议面板列出这场会提到的文件，项目图画成文件节点和「提到」线；［不是这份文件］只挡这场会、这个项目。
 项目页材料那一节有每个文件夹的索引进度（`GET /api/materials/index-status`）。
@@ -668,7 +732,9 @@ Vision 程序第一次用时在 `~/.meeting-workbench/bin/` 下编译。
   ［现在重试］（`links retry`）才恢复；连不上时退避 1 分钟、5 分钟、30 分钟，之后每 30 分钟试一次。发出去的只有
   逐字稿和决议原文，材料原文和文件名一概不发。
 - AI 调用（`llm.py`）：每次读 key 文件；整次调用有截止时间（DeepSeek 忙时会一直发空行保活）；日志只记错误代码、
-  HTTP 状态和用时，不记提示词和回答。任务抽取和项目归属照旧用原来的调用。
+  HTTP 状态和用时，不记提示词和回答。任务抽取和项目归属照旧用原来的调用。后台 AI 循环和任务的外层异常日志（`links_llm_loop`、
+  深度关联、决议入库、纪要体检、冷启动复评、问答）也不打整段 traceback、不记异常消息：只记异常类型名和最多 3 处出错位置
+  （文件名只留最后两段，`safe_log.describe_error`），任务里带的敏感文字不会因为一个意外异常进日志。
 - 顺手修了两处：保存、回滚纪要和词典「替换」生成的草稿版本不再重新抽任务（只抽新生成或导入的纪要，
   ［重新抽取］照旧能用）；文件被 40 场以上的会提到时，「被提到」的场数不再封顶在 40。
 
@@ -839,11 +905,14 @@ PDF 文字；图片认出的字、录音转的字、代码、数据和字幕文�
 
 ## 数据库迁移
 
-首次启动会自动备份并把数据库迁移到当前 schema v18（v7 曾新增 tasks / task_events /
+首次启动会自动备份并把数据库迁移到当前 schema v19（v7 曾新增 tasks / task_events /
 deliverables / task_extractions / notifications 五张表及 projects.origin 列；v8 新增
 术语词典 glossary_terms / glossary_suggestions 两张表，快照导出到
 `~/.meeting-workbench/glossary-snapshot.json` 供转写侧消费；v9 新增 `meetings.project_origin` 与
-`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`；v16 新增深度关联——`relations`、`decisions`、`decision_scan`、`mention_extractions`、`meeting_related_scan`、`meeting_windows`、`meeting_window_passages`、`material_file_events`、`glossary_candidates`、`glossary_mining_scan`、`glossary_mining_seeds` 十一张表，`meetings`、`requirement_meetings` 上各一个索引，以及文件流水、离开项目、版本号的触发器；`meeting_windows`、`meeting_window_passages`、`meeting_related_scan` 能重算，不进备份；v17 新增需求池改版——`requirement_candidates`（需求候选）、`requirement_sources`（需求来源：会议、会上原话、时间锚）两张表，`projects.seat`、`requirements.summary`、`tasks.candidate_id` 三列，候选表上撤销合并用的 `merged_at`、`merge_undo`，`requirement_meetings` 上一个触发器（一场会移出需求的关联会议时去掉这场会的原话），以及候选上线时刻 `requirement_candidates_since`（之前的纪要不自动抽候选），迁移里不回填任何候选；v18 新增任务截止 `tasks.due_date`、`tasks.due_phrase` 两列和撤销确认用的 `tasks.confirm_undo`，存量任务不回填。都是只加不改）。
+`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`；v16 新增深度关联——`relations`、`decisions`、`decision_scan`、`mention_extractions`、`meeting_related_scan`、`meeting_windows`、`meeting_window_passages`、`material_file_events`、`glossary_candidates`、`glossary_mining_scan`、`glossary_mining_seeds` 十一张表，`meetings`、`requirement_meetings` 上各一个索引，以及文件流水、离开项目、版本号的触发器；`meeting_windows`、`meeting_window_passages`、`meeting_related_scan` 能重算，不进备份；v17 新增需求池改版——`requirement_candidates`（需求候选）、`requirement_sources`（需求来源：会议、会上原话、时间锚）两张表，`projects.seat`、`requirements.summary`、`tasks.candidate_id` 三列，候选表上撤销合并用的 `merged_at`、`merge_undo`，`requirement_meetings` 上一个触发器（一场会移出需求的关联会议时去掉这场会的原话），以及候选上线时刻 `requirement_candidates_since`（之前的纪要不自动抽候选），迁移里不回填任何候选；v18 新增任务截止 `tasks.due_date`、`tasks.due_phrase` 两列和撤销确认用的 `tasks.confirm_undo`，存量任务不回填；v19 不改表结构，只把存量的文件名词干按新规则重算一遍（见「文件名索引和会上提到文件名」）。都是只加不改）。
+
+**从 v19 退回 v18**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=18` 后用 v18 的代码启动。新词干不用动：
+v18 的代码读它没有问题，下一次整轮重读材料文件名时会按旧规则改回去。回到 v19 时自动再迁一次（再做一次迁移前备份）。
 
 **从 v18 退回 v17**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=17` 后用 v17 的代码启动。不要删截止和 `confirm_undo` 这几列：v17 不读它们，回滚期间界面上看不到截止，会后抽出的任务不带截止。回到 v18 时自动从 17 升到 18，已有的截止都在。
 

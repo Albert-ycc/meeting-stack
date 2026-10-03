@@ -180,8 +180,9 @@ cd workbench
 .venv/bin/meeting-workbench materials status # 材料读了多少、哪些读不了
 ```
 
-备份保留 14 份，本机在 `~/.meeting-workbench/backups/`，归档根下另有一份镜像。
-每次备份都会做 SQLite 完整性检查与 SHA-256 校验。
+备份默认保留 14 份，本机在 `~/.meeting-workbench/backups/`，归档根下另有一份镜像（两边各留这么多）。想改份数写
+`MEETING_WORKBENCH_BACKUP_RETENTION`（最小 1，每份几百 MB；改小以后，下一次备份会清掉多出的旧副本）。
+每次备份都会做 SQLite 完整性检查与 SHA-256 校验，只校验新生成的那一份。
 
 ## 故障排查
 

@@ -298,12 +298,12 @@ cp .env.example .env    # 至少改 MEETING_WORKBENCH_ARCHIVE_ROOT 和 MEETING_R
 
 ```bash
 ./workbench/scripts/remote-bootstrap.sh          # 工作台（自己读 .env）
-# 录音监听：relay 不读 .env，先把 .env 导成环境变量再起
-(set -a; source ./.env; set +a; exec python3 relay/quickstart/relay_watchdog.py)
+# 录音监听：relay 自己读 .env（找法和工作台一样），不用再 source（要先装 watchdog 包，见 docs/install.md）
+python3 relay/quickstart/relay_watchdog.py
 workbench/.venv/bin/python workbench/card_listener.py   # 任务确认卡片回调监听（可选，先配好群和本人，见下）
 ```
 
-relay 的环境里必须有 `MEETING_RELAY_CONTROL_ENABLED=1`（`.env.example` 里已写好，上面的写法会带进去）。
+relay 的环境里必须有 `MEETING_RELAY_CONTROL_ENABLED=1`（`.env.example` 里已写好，relay 启动时会读到它）。
 不设时 watchdog 走旧同步路径：工作台入队的任务没人领，监听目录里短于 10 分钟的音频会被当成口述指令，
 转写后直接派给 Agent 执行。所以监听目录别用会落进不可信文件的目录。
 
@@ -316,9 +316,10 @@ relay 的环境里必须有 `MEETING_RELAY_CONTROL_ENABLED=1`（`.env.example` �
 
 ## 配置
 
-所有配置走环境变量。工作台自己读 `.env`（仓库根和 `workbench/` 下的都读，两处都写了的项以 `workbench/.env`
-为准，与从哪个目录启动无关）；relay、转写脚本不读 `.env`，要以环境变量注入，写法见上面的启动命令；卡片监听自己读 `.env`
-里它用的几项，环境变量优先，见 [workbench/README.md](workbench/README.md) 的「卡片回调监听」。
+所有配置走环境变量，也可以写进 `.env`（仓库根和 `workbench/` 下的都读，两处都写了的项以 `workbench/.env` 为准，与从哪个
+目录启动无关）：工作台读全部；relay（watchdog、relayctl）作为命令启动时只取自己用的键（`MEETING_RELAY_*`、`RELAY_*`、
+`TRANSCRIBE_ENGINE`）；卡片监听只取它用的几项，见 [workbench/README.md](workbench/README.md) 的「卡片回调监听」。
+三处都是已经在环境变量里的值优先，`.env` 不覆盖；手工单独跑转写脚本不读 `.env`。
 常用的几个：
 
 | 变量 | 默认 | 说明 |
