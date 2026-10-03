@@ -119,14 +119,14 @@ DIGEST_HOUR = 9
 DIGEST_MINUTE = 0
 
 
-_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# 只认 ASCII 数字：\d 认所有文字的数字，年份写成全角、阿拉伯-印度数字的连 strptime 也能过，比较时同样恒假
+_DATE_ONLY_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 
 def _validate_date_only(value: str) -> None:
-    """`meeting_date_from`/`meeting_date_to` 只接受 `YYYY-MM-DD`：这两个参数直接拿去和
-    recording_date 的日期做字符串比较（D20），垃圾输入不报错只会让比较恒假、
-    静默返回空集，比报错更容易被误读成「这段时间真没任务」（ADV-B-10）。
-    `/api/meetings` 的 `date_from`/`date_to` 共用 recording_date_range，但不走这道校验。"""
+    """会议日期筛选（任务池、待确认审核卡的 `meeting_date_from`/`meeting_date_to`，会议列表的
+    `date_from`/`date_to`）只接受 `YYYY-MM-DD`：这几个参数直接拿去和 recording_date 的日期做字符串比较（D20），
+    垃圾输入不报错只会让比较恒假、静默返回空集，比报错更容易被误读成「这段时间真没任务」（ADV-B-10）。"""
     if not _DATE_ONLY_RE.match(value):
         raise ValueError("日期格式应为 YYYY-MM-DD")
     try:

@@ -105,7 +105,7 @@ from .project_names import (
     delete_empty_project,
     merge_project,
 )
-from .tasks import TaskService, llm_ready, recording_date_range
+from .tasks import TaskService, _validate_date_only, llm_ready, recording_date_range
 from .hotwords import hotword_audit, normalize_hotwords
 from .attention import (
     ATTENTION_KINDS,
@@ -2117,6 +2117,12 @@ def create_app(
         if project_id is not None:
             clauses.append("m.project_id = ?")
             params.append(project_id)
+        for value in (date_from, date_to):
+            if value is not None:
+                try:
+                    _validate_date_only(value)
+                except ValueError as error:
+                    raise HTTPException(400, str(error)) from error
         date_clauses, date_params = recording_date_range("m.recording_date", date_from, date_to)
         clauses += date_clauses
         params += date_params
