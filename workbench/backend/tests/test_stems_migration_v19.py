@@ -85,6 +85,30 @@ def test_migration_regroups_stored_stems_and_leaves_the_rest(tmp_path, monkeypat
     assert db.user_version() == SCHEMA_VERSION == 19
 
 
+def test_words_the_old_rule_cut_in_half_are_regrouped(tmp_path, monkeypatch):
+    """旧规则只认「定稿」，「审定稿」被削成「审」、「最终定稿」被削成「最终」，「送审稿」不认，都和原文档分成了
+    别的组；迁移按整个词重算，一起并回「考核办法」。"""
+    db, root_id = setup(tmp_path)
+    names = ("考核办法.docx", "考核办法审定稿.docx", "考核办法最终定稿.docx", "考核办法送审稿.docx")
+    with monkeypatch.context() as patch:
+        patch.setattr(file_stems, "_TRAILING", _OLD_TRAILING)
+        for name in names:
+            add_file(db, root_id, name)
+    before = stems(db)
+    assert {before[name][1] for name in names} == {
+        "考核办法",
+        "考核办法审",
+        "考核办法最终",
+        "考核办法送审稿",
+    }
+    as_v18(db)
+
+    db.initialize()
+
+    after = stems(db)
+    assert {after[name] for name in names} == {("考核办法", "考核办法")}
+
+
 def test_running_it_again_changes_nothing(tmp_path, monkeypatch):
     db, _root_id, _ids = old_database(tmp_path, monkeypatch)
     as_v18(db)

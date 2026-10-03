@@ -98,10 +98,48 @@ def test_versioned_names_collapse_into_the_base_stem(name):
         ("终稿.docx", "终稿"),
         ("第三版.docx", "第三版"),
         ("final.docx", "final"),
+        ("审定稿.docx", "审定稿"),
+        ("送审稿.docx", "送审稿"),
+        ("最终定稿.docx", "最终定稿"),
+        # 稿次的词在中间：不削
+        ("审定稿件评审记录.docx", "审定稿件评审记录"),
+        ("送审稿说明.docx", "送审稿说明"),
+        ("最终定稿评审会.docx", "最终定稿评审会"),
+        ("审定.docx", "审定"),
     ],
 )
 def test_names_that_only_look_like_versions_are_left_alone(name, stem):
     assert derive_stem(name) == stem
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # 「定稿」前面还有别的字：整个词去掉，不能只削尾巴剩下「审」「最终」
+        "考核办法定稿.docx",
+        "考核办法审定稿.docx",
+        "考核办法 审定稿.docx",
+        "考核办法（审定稿）.docx",
+        "考核办法送审稿.docx",
+        "考核办法-送审稿.docx",
+        "考核办法（送审稿）.docx",
+        "考核办法最终定稿.docx",
+        "考核办法最后定稿.docx",
+        "考核办法最终审定稿.docx",
+        # 「最终」加修订、修改：同一类
+        "考核办法最终修订稿.docx",
+        "考核办法（最终修改稿）.docx",
+        "考核办法最终修订版.docx",
+        "考核办法最终修改版.docx",
+        # 叠在别的修饰上
+        "考核办法 第三版 审定稿.docx",
+        "考核办法 送审稿 v2.docx",
+        "260926 考核办法 最终定稿 (1).docx",
+    ],
+)
+def test_stage_words_are_removed_as_whole_words(name):
+    assert derive_stem(name) == "考核办法"
+    assert stem_key(derive_stem(name)) == stem_key("考核办法")
 
 
 # 文件名上限 255 个字符（exFAT 按 UTF-16 单元算，全是汉字也能有 255 个）。最坏的输入：一长串分隔符、
