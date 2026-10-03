@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import logging.config
+from pathlib import Path
 from typing import Any
 
 from uvicorn.config import LOGGING_CONFIG
@@ -73,7 +74,33 @@ def build_log_config(settings: Settings) -> dict[str, Any]:
     return config
 
 
+class LogFileError(Exception):
+    """MEETING_WORKBENCH_LOG_FILE 指的地方写不了。消息是给人看的：哪项配置、指到了什么、怎么改。"""
+
+
+def _open_log_file(path: Path) -> None:
+    """照轮转文件的方式先打开一次。指到目录、没有写权限时 dictConfig 只报「Unable to configure handler
+    'file'」和一大段 traceback，看不出是哪项配置、哪里不对；这里换成一句人话，照旧起不来。"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8"):
+            pass
+    except OSError as error:
+        if path.is_dir():
+            problem = f"是一个目录。改成目录里的一个文件，比如 {path / 'web.log'}"
+        elif isinstance(error, PermissionError):
+            problem = f"写不进去：当前用户没有权限写 {error.filename}。换一个能写的位置，或者改那个目录的权限"
+        elif isinstance(error, (FileExistsError, NotADirectoryError)):
+            problem = f"用不了：路径中间的 {error.filename} 不是目录。换一个路径"
+        else:
+            problem = f"打不开：{error.strerror or error}"
+        raise LogFileError(
+            f"日志文件 MEETING_WORKBENCH_LOG_FILE={path} {problem}"
+            "（在环境变量或 .env 里改；这一项删掉的话，日志记到标准错误）"
+        ) from None
+
+
 def configure_serve_logging(settings: Settings) -> None:
     if settings.log_file is not None:
-        settings.log_file.parent.mkdir(parents=True, exist_ok=True)
+        _open_log_file(settings.log_file)
     logging.config.dictConfig(build_log_config(settings))
