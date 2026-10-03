@@ -185,6 +185,32 @@ MEETING_WORKBENCH_CSRF_COOKIE_NAME=meeting_workbench_dev_csrf \
   Origin 对不上，被后端的跨源校验挡下。开发服务器适合调样式和只读页面；要点写操作，先 `npm run build`，
   直接打开后端自己的端口（后端服务 `frontend/dist`）。
 
+### 浏览器回归
+
+路由和历史、盖在页面上的二级页、滚动位置、播放、焦点、两个标签页同时改这一类，jsdom 测不出来，要在真浏览器里点。
+脚本在 `scripts/e2e/`，一条命令跑完（先 `npm run build`，后端服务的是 `frontend/dist`；dist 比源码旧时入口会拦住，
+加 `--build` 让它替你跑）：
+
+```bash
+cd workbench
+/usr/local/bin/python3 scripts/e2e/run.py                              # 全部用例，只跑 Chromium，二十分钟左右
+/usr/local/bin/python3 scripts/e2e/run.py e05 p02 --browser chromium,webkit   # 按文件名前缀挑；webkit、firefox 只跑声明了支持的
+/usr/local/bin/python3 scripts/e2e/run.py --list                       # 看有哪些用例、哪些会改数据
+```
+
+入口自己建一份临时环境：数据目录、归档根、暂存根、`HOME`、CSRF cookie 名都是新的，中转仓库指向空目录，飞书、AI、
+语义检索、深度关联全关，也不读 `.env`。它用当前目录的代码造数（十几场带音频的会议、项目、待办、需求、词典，日期都按今天
+往前推）、起服务，逐个跑用例并汇总通过和失败，停服务只按自己记下的 PID，最后删掉临时目录。端口默认在 8850～8899 里挑空闲的，
+`--port` 可以指定，8765 一律拒绝。有失败时留下服务日志、各用例的输出和失败时的截图，路径在最后打出来。会改数据的用例
+（文件里写了 `MUTATES = True`）跑完，整份数据恢复到造数后的样子再跑下一个。后端的 Python 默认用 `workbench/.venv`，
+worktree 里没有 `.venv` 时用 `--backend-python` 借主仓库的；Playwright 要用装了 `playwright` 包的那个 Python。
+
+写新用例：放进 `scripts/e2e/cases/`，文件开头一行说明就是 `--list` 里的说明；`from common import …` 取公共件
+（`check` 记一条检查，`Collector` 收页面异常、失败请求和 4xx/5xx，`done` 汇总并给退出码）；要在别的浏览器里跑写
+`ENGINES = ("chromium", "webkit")`。会议编号里带日期，造数时跟着「今天」变，用 `mid("a1a1a1a1")` 按后缀取，别写死。
+Playwright 自带的 Chromium 不一定解得了 m4a 里的 AAC（各版本不一样），要稳妥地看播放时间往前走，就用「播放验证」那场会（wav）。写用例时可以 `run.py --serve`
+只起实例、不跑用例，按它打出来的命令手动跑一个用例；用例改了数据，`kill -USR1 <它打出来的 pid>` 恢复到造数后的样子。
+
 ## 常用维护
 
 ```bash
