@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import secrets
 from urllib.parse import urlsplit
 
@@ -16,6 +17,29 @@ FOREIGN_SITES = {"cross-site", "same-site"}
 EMBEDDED_DESTINATIONS = {"iframe", "frame", "embed", "object"}
 # 预取（speculation rules、<link rel=prerender>）同样是 navigate、dest 是 document，只有 Sec-Purpose 说明没人在看
 SPECULATIVE_PURPOSES = ("prefetch", "prerender")
+# 请求体里数组、对象最多嵌套几层。前端和卡片监听发的最深的是保存逐字稿（{segments: [{…}]}，3 层）。
+# 不挡的话，校验失败回 422 时 FastAPI 会把整个请求体逐层递归编码进响应，嵌到八九百层就撞上 Python 的
+# 递归上限，异常出在异常处理里，落成 500 和一段 traceback；任意键都收的 dict 请求体还会原样交给处理函数
+MAX_JSON_DEPTH = 64
+# JSON 字符串（含转义）：写在字符串里的括号不算嵌套
+_JSON_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"', re.DOTALL)
+_NOT_BRACKETS = bytes(byte for byte in range(256) if byte not in b"[]{}")
+
+
+def json_too_deep(body: bytes, limit: int = MAX_JSON_DEPTH) -> bool:
+    """请求体里的数组、对象嵌套超过 limit 层。不解析，只数字符串外面的括号；不是合法 JSON 的交给后面的解析去报错。"""
+    # 括号总共都不到 limit 个，就不可能嵌套超过 limit 层：几乎所有请求到这里就放行，4MB 的上传块也只多数两遍
+    if body.count(b"[") + body.count(b"{") <= limit:
+        return False
+    depth = 0
+    for byte in _JSON_STRING.sub(b"", body).translate(None, _NOT_BRACKETS):
+        if byte in b"[{":
+            depth += 1
+            if depth > limit:
+                return True
+        else:
+            depth -= 1
+    return False
 
 
 class WriteProtectionMiddleware(BaseHTTPMiddleware):
@@ -107,6 +131,12 @@ class WriteProtectionMiddleware(BaseHTTPMiddleware):
                 if len(body) + len(chunk) > self.max_request_bytes:
                     return self._secure(JSONResponse({"detail": "请求体过大"}, status_code=413))
                 body.extend(chunk)
+            if json_too_deep(body):
+                return self._secure(
+                    JSONResponse(
+                        {"detail": f"请求体嵌套过深（超过 {MAX_JSON_DEPTH} 层）"}, status_code=400
+                    )
+                )
             request._body = bytes(body)
         return self._secure(await call_next(request))
 
