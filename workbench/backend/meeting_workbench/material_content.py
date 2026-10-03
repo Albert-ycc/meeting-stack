@@ -259,7 +259,7 @@ class MaterialContent:
             if close is not None:
                 try:
                     close()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("关闭材料读取器失败")
 
     def wait_idle(self, timeout: float) -> bool:
@@ -289,7 +289,7 @@ class MaterialContent:
             # 3c：每 10 分钟看一次认字、转写程序有没有新装上（没到时间立刻返回）
             try:
                 self.before_round()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("检查材料读取程序失败")
         deadline = self.clock() + self.round_seconds
         roots = {
@@ -334,7 +334,7 @@ class MaterialContent:
             return False
         try:
             return bool(self.fts_rebuilding())
-        except Exception:  # noqa: BLE001
+        except Exception:
             return True
 
     def _checkpoint(self, deadline: float) -> None:

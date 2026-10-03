@@ -562,7 +562,7 @@ class PendingFolders:
                     continue
                 try:
                     created = self._drain_one(row, force=force)
-                except Exception:  # noqa: BLE001 — 一个出错不影响别的
+                except Exception:  # 一个出错不影响别的
                     logger.exception("补建项目文件夹失败：%s", project_id)
                     continue
                 if created is not None:

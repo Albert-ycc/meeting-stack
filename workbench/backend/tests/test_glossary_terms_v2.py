@@ -263,7 +263,7 @@ def test_rename_racing_another_writer_is_a_duplicate_not_an_integrity_error(tmp_
     def rename():
         try:
             outcome["rename"] = update_term(db, term["id"], term="乙方")["term"]
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             outcome["rename"] = type(error).__name__
 
     thread = threading.Thread(target=rename, name="rename")
@@ -272,7 +272,7 @@ def test_rename_racing_another_writer_is_a_duplicate_not_an_integrity_error(tmp_
     try:
         create_term(db, term="乙方")
         outcome["create"] = "ok"
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         outcome["create"] = type(error).__name__
     thread.join(10)
     # 改名先拿到写锁，建词条等它提交以后才查重

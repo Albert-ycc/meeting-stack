@@ -21,7 +21,7 @@ from meeting_workbench.importer import ArchiveImporter
 from .test_importer import write_managed_unreviewed_bundle
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import backfill_speakers  # noqa: E402  (只能在 sys.path 调整之后导入)
+import backfill_speakers  # 只能在 sys.path 调整之后导入
 
 # 第二项是「按字符串拼 URI 时会被打开的那个路径」：? 处被截断、%41 被解码成 A
 WEIRD_DIRS = {

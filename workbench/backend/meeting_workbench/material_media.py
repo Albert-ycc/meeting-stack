@@ -214,7 +214,7 @@ def overlap_rule(script: str | None) -> Callable[..., bool] | None:
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 rule = getattr(module, "is_overlap_duplicate", None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("读不到 %s 里的重叠去重，材料录音段落交界处可能有重复句", source)
         _overlap_rules[cache_key] = rule
     return _overlap_rules[cache_key]

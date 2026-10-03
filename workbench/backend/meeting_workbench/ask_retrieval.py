@@ -647,7 +647,7 @@ def retrieve(
     ):
         try:
             query_vector = semantic.encode_query(question)
-        except Exception as error:  # noqa: BLE001  模型没装好、暂停：只按原词找
+        except Exception as error:  # 模型没装好、暂停：只按原词找
             logger.info("问答没编码问题：%s", type(error).__name__)
             query_vector = None
 
@@ -1007,7 +1007,7 @@ def _semantic_segments(
         return []
     try:
         found = semantic.search_vector(query_vector, scope=project_id, limit=FALLBACK_SEGMENTS)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         logger.info("问答退回逐字稿段向量没跑成：%s", type(error).__name__)
         return []
     return [

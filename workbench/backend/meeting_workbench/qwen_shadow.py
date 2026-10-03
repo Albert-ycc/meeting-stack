@@ -437,7 +437,7 @@ class QwenShadowService:
                 pass
             except subprocess.TimeoutExpired:
                 self._mark_failed(run_id, "failed", "Qwen 离线转写超时")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # 任何别的错误（SRT 格式意外、库出错、自己的 bug）都记 failed：留在 running 的话，
                 # 租约过期后会被当成孤儿放回队列，整段音频再转一遍，永远不会停
                 self._mark_failed(run_id, "failed", "Qwen 离线转写失败")

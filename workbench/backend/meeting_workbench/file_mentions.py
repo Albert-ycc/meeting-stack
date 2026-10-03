@@ -1181,6 +1181,6 @@ def pick_mention_file(db: Database, meeting_id: str, stem_key: str, file_id: int
     # 当场算好内容标识：以后文件挪了位置，按内容找回你选的这份（盘不在、读不了就算了）
     try:
         key_file_now(db, file_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return _result(row)

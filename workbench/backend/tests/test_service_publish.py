@@ -1765,7 +1765,7 @@ def test_publish_rejects_concurrent_save_before_swap_without_diverging_files_and
     def run_publish():
         try:
             service.publish(meeting_id)
-        except Exception as error:  # noqa: BLE001 - captured for cross-thread assertion
+        except Exception as error:  # captured for cross-thread assertion
             errors.append(error)
 
     thread = threading.Thread(target=run_publish)
@@ -1829,14 +1829,14 @@ def test_save_started_after_publish_lock_creates_a_fresh_draft(tmp_path, monkeyp
     def run_publish():
         try:
             service.publish(meeting_id)
-        except Exception as error:  # noqa: BLE001 - cross-thread assertion
+        except Exception as error:  # cross-thread assertion
             errors.append(error)
 
     def run_save():
         save_started.set()
         try:
             service.save_segments(meeting_id, edited_segments)
-        except Exception as error:  # noqa: BLE001 - cross-thread assertion
+        except Exception as error:  # cross-thread assertion
             errors.append(error)
 
     publish_thread = threading.Thread(target=run_publish)

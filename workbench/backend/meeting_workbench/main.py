@@ -1388,7 +1388,7 @@ def create_app(
                 await asyncio.to_thread(roots_cache.refresh)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("刷新资料盘状态失败")
             await asyncio.sleep(graph_module.ROOTS_REFRESH_SECONDS)
 
@@ -1400,7 +1400,7 @@ def create_app(
                 await asyncio.to_thread(material_indexer.run_round)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("文件名索引这一轮失败")
             await asyncio.sleep(MATERIAL_INDEX_SECONDS)
 
@@ -1413,7 +1413,7 @@ def create_app(
                 stats = await asyncio.to_thread(material_content.run_round)
             except asyncio.CancelledError:
                 raise
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:
                 logger.error("材料内容这一轮失败：%s", describe_error(error))
             await asyncio.sleep(
                 material_content_module.WORK_LOOP_SECONDS
@@ -1430,7 +1430,7 @@ def create_app(
                 stats = await asyncio.to_thread(material_media.run_once)
             except asyncio.CancelledError:
                 raise
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:
                 logger.error("材料录音转写这一轮失败：%s", describe_error(error))
             await asyncio.sleep(
                 material_media_module.WORK_LOOP_SECONDS
@@ -1450,7 +1450,7 @@ def create_app(
                 raise
             except SemanticUnavailable:
                 logger.warning("本地语义模型不可用，材料向量先不补")
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:
                 logger.error("材料向量这一轮失败：%s", describe_error(error))
             await asyncio.sleep(material_vectors_module.LOOP_SECONDS)
 
@@ -1468,7 +1468,7 @@ def create_app(
                 )
         except asyncio.CancelledError:
             raise
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             logger.error("补材料全文表失败，下次启动接着补：%s", describe_error(error))
 
     @asynccontextmanager
@@ -1548,7 +1548,7 @@ def create_app(
             # 重启清理放在材料循环启动之前：上次留下的转写进程、临时文件
             try:
                 await asyncio.to_thread(cleanup_leftovers, db, settings.data_dir)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("清理上次留下的材料进程失败")
             content_worker = asyncio.create_task(
                 material_content_loop(), name="meeting-workbench-material-content"
@@ -3654,7 +3654,7 @@ def create_app(
         """改归属、确认、撤销之后立刻同步卡片；卡片是旁路，写不了只记日志，不影响这次改动。"""
         try:
             result = card_writer.sync_meeting(meeting_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("会议卡片同步失败：%s", meeting_id)
             return None
         return {key: result.get(key) for key in ("action", "from", "to", "reason")}
@@ -4540,7 +4540,7 @@ def create_app(
         """挂上（或换了）文件夹后，把这个项目积压的卡片当场补写，提示「已补写 N 张会议卡片」。"""
         try:
             return card_writer.reconcile_project(project_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("补写会议卡片失败：%s", project_id)
             return 0
 

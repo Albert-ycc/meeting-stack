@@ -329,7 +329,7 @@ def parse_safely(markdown: str | None) -> Parsed:
         return Parsed([], NO_MINUTES, None)
     try:
         return parse_decisions(markdown)
-    except Exception as error:  # noqa: BLE001  一场会的纪要出错不影响别的会
+    except Exception as error:  # 一场会的纪要出错不影响别的会
         logger.warning("决议段解析出错：%s", describe_error(error))
         return Parsed([], EMPTY, None)
 
@@ -662,7 +662,7 @@ def ingest_pending(
             counts[ingest_meeting(db, row, now=moment, cutoff=cutoff)] += 1
         except sqlite3.OperationalError:
             raise
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             # 某场会一直出同一个意料之外的错时，不能让它每轮都结束整轮、把 L2 和清理一起卡住。
             # 日志只记类型名和位置（safe_log）：异常消息里可能带着纪要原文
             logger.error("决议入库跳过一场会：%s：%s", row.get("id"), describe_error(error))

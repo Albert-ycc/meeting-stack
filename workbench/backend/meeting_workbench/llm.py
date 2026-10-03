@@ -202,7 +202,7 @@ def _once(request: urllib.request.Request, timeout: float, clock: Callable[[], f
     finally:
         try:
             response.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return _parse(body)
 

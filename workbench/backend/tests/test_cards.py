@@ -588,7 +588,7 @@ def test_concurrent_reassign_and_reconcile_leave_one_card(tmp_path):
         try:
             barrier.wait()
             action()
-        except Exception as error:  # noqa: BLE001 - 线程里的异常要带回主线程断言
+        except Exception as error:  # 线程里的异常要带回主线程断言
             errors.append(error)
 
     # 来回改几次归属，每次都让两边同时起跑

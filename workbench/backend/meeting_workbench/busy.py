@@ -173,7 +173,7 @@ class BusySignal:
             return None
         try:
             state = self.relay_state() or {}
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         worker = state.get("worker") if isinstance(state, dict) else None
         stage = worker.get("current_stage") if isinstance(worker, dict) else None
@@ -195,6 +195,6 @@ class BusySignal:
             row = self.db.query_one(
                 "SELECT 1 AS busy FROM asr_shadow_runs WHERE state='running' LIMIT 1"
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         return REASON_QWEN if row else None

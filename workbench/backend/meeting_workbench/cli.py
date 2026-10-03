@@ -836,7 +836,7 @@ def _links_ask(args: argparse.Namespace, settings: Settings) -> int:
             semantic.warm()
             vectors = MaterialVectors(db, settings, semantic)
             vectors.refresh()
-        except Exception as error:  # noqa: BLE001  模型没装好时只按原词找
+        except Exception as error:  # 模型没装好时只按原词找
             print(f"这次只按原词找（{type(error).__name__}）")
             semantic = vectors = None
     connection = _read_only(settings)

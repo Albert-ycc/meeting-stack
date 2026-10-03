@@ -289,7 +289,7 @@ def test_reassigning_while_the_scanner_reconciles_leaves_one_card(tmp_path):
         while not stop.is_set():
             try:
                 writer.reconcile()
-            except Exception as error:  # noqa: BLE001 - 带回主线程断言
+            except Exception as error:  # 带回主线程断言
                 errors.append(error)
 
     thread = threading.Thread(target=scanner)

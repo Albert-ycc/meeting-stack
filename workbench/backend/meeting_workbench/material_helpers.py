@@ -468,7 +468,7 @@ def serve_json_lines(
             for item in items:
                 answers.write(json.dumps({**item, "id": request_id}, ensure_ascii=False) + "\n")
                 answers.flush()
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             answers.write(
                 json.dumps(
                     {
@@ -497,7 +497,7 @@ def cleanup_leftovers(
         rows = db.query_all(
             "SELECT content_key, pid FROM material_media_jobs WHERE pid IS NOT NULL"
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         rows = []
     if rows:
         try:

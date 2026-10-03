@@ -211,7 +211,7 @@ class LinksWorker:
             return False
         try:
             return bool(self.busy())
-        except Exception:  # noqa: BLE001  忙信号出错时当作忙，宁可多等
+        except Exception:  # 忙信号出错时当作忙，宁可多等
             return True
 
     def run_round(self) -> dict[str, Any]:
@@ -656,7 +656,7 @@ async def links_loop(
             stats = await asyncio.to_thread(worker.run_round)
         except asyncio.CancelledError:
             raise
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             logger.error("关联整理这一轮失败：%s", describe_error(error))
         await _wait(worker, stop, next_delay(stats), sleep)
 

@@ -994,7 +994,7 @@ class _SliceSpy:
         self.matrix, self.seen = matrix, seen
 
     @property
-    def T(self):  # noqa: N802
+    def T(self):
         return _SliceSpy(self.matrix.T, self.seen)
 
     def __rmatmul__(self, other):

@@ -456,7 +456,7 @@ async def run_in_daemon(fn: Callable[[], Any]) -> Any:
     def target() -> None:
         try:
             result = fn()
-        except BaseException as error:  # noqa: BLE001  交回事件循环那边再抛
+        except BaseException as error:  # 交回事件循环那边再抛
             try:
                 loop.call_soon_threadsafe(deliver, future.set_exception, error)
             except RuntimeError:
@@ -482,7 +482,7 @@ async def links_llm_loop(
     # 外层异常只记类型名和位置（safe_log）：任务里意料之外的异常消息可能带着会议原文
     try:
         await run_in_daemon(worker.refresh_state)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         logger.error("读 AI 循环的状态失败：%s", describe_error(error))
     await _wait(stop, first_delay, sleep)
     while not stop.is_set():
@@ -491,7 +491,7 @@ async def links_llm_loop(
             result = await run_in_daemon(worker.tick)
         except asyncio.CancelledError:
             raise
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             logger.error("AI 循环这一次失败：%s", describe_error(error))
         await _wait(
             stop, CALLED_DELAY_SECONDS if result.get("called") else IDLE_DELAY_SECONDS, sleep

@@ -34,7 +34,7 @@ os.environ["MEETING_WORKBENCH_LARK_APP_SECRET_FILE"] = "/nonexistent/meeting-wor
 os.environ["MEETING_WORKBENCH_LARK_CLI_BIN"] = "/nonexistent/meeting-workbench-test-lark-cli"
 os.environ["MEETING_WORKBENCH_ALLOWED_HOSTS"] = "testserver"
 
-from meeting_workbench.config import Settings  # noqa: E402
+from meeting_workbench.config import Settings
 
 Settings.model_config["env_file"] = None
 

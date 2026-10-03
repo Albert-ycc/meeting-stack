@@ -2737,7 +2737,7 @@ class RootsCache:
                 for hook in list(self.after_refresh):
                     try:
                         hook()
-                    except Exception:  # noqa: BLE001 — 补建失败不影响下一轮
+                    except Exception:  # 补建失败不影响下一轮
                         logger.exception("刷新资料盘状态后的任务失败")
             finally:
                 self._running.release()
@@ -2778,7 +2778,7 @@ class RootsCache:
                 self._probes = probes
                 self.rounds += 1
             self._write_fingerprints(fresh)
-        except Exception:  # noqa: BLE001 — 后台刷新失败只记日志，下一轮再来
+        except Exception:  # 后台刷新失败只记日志，下一轮再来
             logger.exception("刷新资料盘状态失败")
 
     def _read_listings(self) -> dict[str, dict[str, Any]]:

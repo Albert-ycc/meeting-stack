@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import backfill_speakers  # noqa: E402  (只能在 sys.path 调整之后导入)
+import backfill_speakers  # 只能在 sys.path 调整之后导入
 
 from meeting_workbench.config import Settings
 from meeting_workbench.db import utc_now

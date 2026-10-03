@@ -440,7 +440,7 @@ class AskService:
             raise AskError(409, PROJECT_BUSY)
         try:
             self.registry.spawn(lambda: self._run(job))
-        except Exception as error:  # noqa: BLE001  线程起不来：退回这一次、结束任务、放开项目锁和名额
+        except Exception as error:  # 线程起不来：退回这一次、结束任务、放开项目锁和名额
             logger.warning("问答没起来：项目 %s，%s", job.project_id, describe_error(error))
             self._refund()
             self.registry.finish(job, "stopped", {"reason": "error"})
@@ -497,7 +497,7 @@ class AskService:
                 payload["retry"] = False
             if not error.sent:
                 self._refund()
-        except Exception as error:  # noqa: BLE001  任何意外都停下，只记类型名和位置
+        except Exception as error:  # 任何意外都停下，只记类型名和位置
             code = "error"
             payload = {"reason": "error"}
             logger.warning("问答出错：项目 %s，%s", job.project_id, describe_error(error))
@@ -515,7 +515,7 @@ class AskService:
     def _refund(self) -> None:
         try:
             self.worker.refund("qa")
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             logger.warning("问答退回用量没成：%s", describe_error(error))
 
     # ------------------------------------------------------------------ 轮询

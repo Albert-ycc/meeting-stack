@@ -48,3 +48,11 @@ filterwarnings = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+
+[tool.ruff.lint]
+# 默认规则（E4、E7、E9、F）之外再开的：
+# - RUF100：写了 noqa 却不起作用（规则没开，或那一行本来就不报）也算错，免得注释和规则对不上。
+# 宽 except（BLE001）不开：它对写了 logger.exception / exc_info 的放行，对只记类型名和位置的
+# describe_error 写法报错，开了等于逼着往日志里打整段 traceback（AI 相关的循环特意不这样记）；
+# 这里的宽 except 都是有意的（后台循环、旁路失败只记账），挨个加 noqa 只是把旁边的注释再说一遍。
+extend-select = ["RUF100"]
