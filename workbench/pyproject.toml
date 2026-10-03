@@ -37,6 +37,13 @@ packages = ["backend/meeting_workbench"]
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 addopts = "-q"
+# 只装了 httpx、没装 httpx2 时，starlette 的 TestClient 一导入就发一条弃用告警（告警原话是「install httpx2 instead」）。
+# 要它消失只能装 httpx2，按规矩不装新依赖，所以只按「类别 + 消息」过滤这一条：同一个类别下别的告警（比如给
+# TestClient 传 timeout）、别的弃用告警都照常报。以后装上 httpx2（把上面 test 依赖里的 httpx 换成它），这条告警
+# 就不会再出现，把下面这行和 backend/tests/test_pytest_warning_filter.py 一起删掉。
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette\\.testclient` is deprecated; install `httpx2` instead\\.:starlette.exceptions.StarletteDeprecationWarning",
+]
 
 [tool.ruff]
 target-version = "py312"
