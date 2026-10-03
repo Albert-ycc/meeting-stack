@@ -1270,7 +1270,9 @@ def cli_world(tmp_path, monkeypatch):
     db.execute(
         "INSERT INTO app_state(key, value, updated_at) VALUES ('links_llm_usage', ?, ?)",
         (
-            json.dumps({"day": datetime.now().date().isoformat(), "background": 7, "qa": 2}),
+            json.dumps(
+                {"day": datetime.now().astimezone().date().isoformat(), "background": 7, "qa": 2}
+            ),
             utc_now(),
         ),
     )

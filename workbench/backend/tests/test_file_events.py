@@ -17,7 +17,7 @@ NOW = datetime(2026, 9, 27, 8, 0, tzinfo=UTC)
 
 
 def today() -> str:
-    return date.today().isoformat()
+    return datetime.now().astimezone().date().isoformat()
 
 
 def events(db: Database) -> list[dict]:
@@ -265,7 +265,9 @@ def test_only_normal_files_and_iwork_packages_are_recorded(tmp_path):
 def test_changed_day_follows_the_file_mtime(tmp_path):
     db, root_id = setup(tmp_path)
     swept(db, root_id)
-    now = datetime.now()
+    # 要的是不带时区的本机墙上时间：mtime 记到本机日历的哪一天，加减天数也按墙上时间算。换成固定偏移的
+    # 带时区时间，昨天到今天之间切过夏令时的话「一天前」会差一个钟头，赶上午夜前后就记到另一天
+    now = datetime.now()  # noqa: DTZ005
     ids = [add_file(db, root_id, f"文件{index}.docx", mtime_ns=1) for index in range(4)]
     db.execute("DELETE FROM material_file_events")
     cases = {

@@ -307,7 +307,7 @@ def prune(
 ) -> int:
     """删掉 day 早于 keep_days 天前的流水，一次最多 limit 行。调用方每个事务调一次，删满了就再开
     一个事务接着删。today 是本机日期。返回删了几行。"""
-    cutoff = ((today or datetime.now().date()) - timedelta(days=keep_days)).isoformat()
+    cutoff = ((today or datetime.now().astimezone().date()) - timedelta(days=keep_days)).isoformat()
     return conn.execute(
         """DELETE FROM material_file_events
             WHERE id IN (SELECT id FROM material_file_events WHERE day < ? ORDER BY id LIMIT ?)""",

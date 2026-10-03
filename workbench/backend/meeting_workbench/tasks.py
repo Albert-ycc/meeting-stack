@@ -130,7 +130,7 @@ def _validate_date_only(value: str) -> None:
     if not _DATE_ONLY_RE.match(value):
         raise ValueError("日期格式应为 YYYY-MM-DD")
     try:
-        datetime.strptime(value, "%Y-%m-%d")
+        datetime.strptime(value, "%Y-%m-%d")  # noqa: DTZ007 只看日期合不合法，结果不用，不涉及时区
     except ValueError as error:
         raise ValueError("日期格式应为 YYYY-MM-DD") from error
 

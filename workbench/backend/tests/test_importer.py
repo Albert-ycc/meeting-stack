@@ -2589,7 +2589,7 @@ def test_malformed_whisper_reference_is_skipped_and_minutes_still_import(tmp_pat
 def test_hex_in_fingerprint_ids_is_not_read_as_a_recording_date(tmp_path, meeting_id):
     directory = tmp_path / "会议目录"
     directory.mkdir()
-    mtime = datetime(2026, 3, 4, 5, 6, 7).timestamp()
+    mtime = datetime(2026, 3, 4, 5, 6, 7).astimezone().timestamp()
     os.utime(directory, (mtime, mtime))
 
     recorded_at = datetime.fromisoformat(ArchiveImporter._recording_date(meeting_id, directory))

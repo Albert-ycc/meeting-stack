@@ -503,7 +503,7 @@ def _links_status(args: argparse.Namespace, settings: Settings) -> int:
 
     connection = _read_only(settings)
     try:
-        today = datetime.now().date().isoformat()
+        today = datetime.now().astimezone().date().isoformat()
         waiting = {
             "decisions": decisions.pending_count(connection),
             "mentions": connection.execute(
@@ -934,7 +934,7 @@ def _links_doctor(db: Database, settings: Settings) -> dict[str, Any]:
     ready = llm_ready(settings)
     try:
         with db.autocommit() as connection:
-            usage = read_usage(connection, datetime.now().date().isoformat())
+            usage = read_usage(connection, datetime.now().astimezone().date().isoformat())
     except sqlite3.Error:
         usage = {"background": None, "qa": None}
     if not settings.links_enabled:

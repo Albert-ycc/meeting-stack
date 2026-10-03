@@ -20,7 +20,7 @@ def days_ago(n, today=TODAY):
 
 def stop_clock(monkeypatch):
     """经路由的用例：路由自己取「今天」。把那几处的时钟停在此刻，用例造数据和路由用的是同一天，跑过午夜也不差一天。"""
-    moment = datetime.now()
+    moment = datetime.now()  # noqa: DTZ005 假时钟和真的 datetime.now() 一样：不传 tz 时给不带时区的本机时间
 
     class Stopped(datetime):
         @classmethod

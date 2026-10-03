@@ -23,7 +23,7 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 import numpy as np
@@ -506,7 +506,7 @@ def short_date(value: str, today: date | None = None) -> str:
         day = date.fromisoformat(value[:10])
     except (TypeError, ValueError):
         return ""
-    this_year = (today or date.today()).year
+    this_year = (today or datetime.now().astimezone().date()).year
     return (
         f"{day.month}/{day.day}" if day.year == this_year else f"{day.year}/{day.month}/{day.day}"
     )

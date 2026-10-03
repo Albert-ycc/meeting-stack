@@ -392,7 +392,7 @@ def render_summary(report: dict[str, Any], out_dir: Path) -> str:
 
 
 def default_out_dir(data_dir: Path) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     return data_dir / "ocr-trial" / stamp
 
 
