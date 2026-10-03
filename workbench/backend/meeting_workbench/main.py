@@ -895,6 +895,24 @@ def _read_lark_app_secret(settings: Settings) -> str:
         return ""
 
 
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+class FrontendFiles(StaticFiles):
+    """前端构建产物。assets/ 下的文件名带内容哈希，内容一变名字就变，浏览器可以一直缓存；index.html（访问 / 时回落到的
+    也是它）每次回来问一声（no-cache，没变就回 304），新构建一上线页面就换到新的文件名上。别的文件（fonts/、theme-init.js）
+    名字不带哈希，不加缓存头，和原来一样。"""
+
+    def file_response(self, full_path: Any, *args: Any, **kwargs: Any) -> Response:
+        response = super().file_response(full_path, *args, **kwargs)
+        served = Path(full_path).relative_to(Path(self.directory).resolve())
+        if served.parts[:1] == ("assets",):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif served == Path("index.html"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def create_app(
     settings: Settings | None = None, relay_client: RelayClient | None = None
 ) -> FastAPI:
@@ -5405,8 +5423,7 @@ def create_app(
     def glossary_snapshot():
         return read_snapshot(snapshot_path)
 
-    frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-    if frontend_dist.is_dir():
-        app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+    if FRONTEND_DIST.is_dir():
+        app.mount("/", FrontendFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
     return app
