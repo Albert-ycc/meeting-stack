@@ -272,6 +272,10 @@ def _control_reconcile_pending_archives() -> dict:
     return _relay_control_module().reconcile_pending_archives()
 
 
+def _control_cleanup_inbox_sources() -> dict:
+    return _relay_control_module().cleanup_inbox_sources(INBOX)
+
+
 def _control_runtime_heartbeat(
     name: str,
     *,
@@ -1104,9 +1108,7 @@ def build_meeting_prompt(
             f"或重命名 hidden attempt。\n"
             f"- 回调失败时按错误补齐文件并走阶段重试；没有成功回执，不得宣称任务完成。\n"
         )
-        cleanup_requirement = (
-            "- 不删除或修改 Downloads、产物目录或正式归档中的原音频；发布后由工作台统一清理冗余。\n"
-        )
+        cleanup_requirement = "- 不删除或修改 Downloads、产物目录或正式归档中的原音频；归档后 Relay 会自动删掉 Downloads 那份。\n"
     else:
         archive_location = f"{ARCHIVE_ROOT}/{yymmdd} <会议主题>/"
         artifact_requirement = (
@@ -2360,6 +2362,21 @@ def run_control_worker_once() -> bool:
         except Exception:
             # 对账是修复旁路，不得因单轮异常阻断主 worker 领取任务。
             log.exception("待校对对账异常，本轮继续")
+        try:
+            cleanup_summary = _control_cleanup_inbox_sources()
+            if cleanup_summary.get("removed"):
+                log.info(
+                    "监听目录里 %d 段已归档的原音频已删除（归档里有哈希一致的一份）",
+                    len(cleanup_summary["removed"]),
+                )
+            if cleanup_summary.get("errors"):
+                log.warning(
+                    "监听目录清理有 %d 个任务失败，下一轮再试：%s",
+                    len(cleanup_summary["errors"]),
+                    cleanup_summary["errors"],
+                )
+        except Exception:
+            log.exception("监听目录清理异常，本轮继续")
     if not _settle_pending_claims():
         # 没补写完的那单还挂在本 worker 名下：不能把它当空闲 claim 回收，也领不了新任务。
         return False

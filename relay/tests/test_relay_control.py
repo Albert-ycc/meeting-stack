@@ -2642,6 +2642,129 @@ class RelayControlTests(unittest.TestCase):
             self.assertTrue((pending / "whisper-ref" / name).is_file(), name)
         self.assertFalse(hidden.exists())
 
+    def _archived_inbox_job(self):
+        """监听目录里一段录音，走完纪要并提升到归档根下一级目录。"""
+        inbox_tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(inbox_tempdir.cleanup)
+        inbox = Path(inbox_tempdir.name).resolve()
+        source = inbox / self.audio.name
+        source.write_bytes(b"audio")
+        control = self._pending_control()
+        job_id = self._advance_to_minutes(control, source)
+        hidden = create_complete_archive(self.root, job_id)
+        archive = Path(control.complete_minutes(job_id, hidden, attempt_no=1)["archive_dir"])
+        self.assertEqual(self.root.resolve(), archive.parent.resolve())
+        return control, job_id, inbox, source, archive / source.name
+
+    def test_cleanup_inbox_removes_source_once_archive_holds_identical_copy(self):
+        control, job_id, inbox, source, copy = self._archived_inbox_job()
+
+        summary = control.cleanup_inbox_sources(inbox)
+
+        self.assertEqual({"ok": True, "removed": [job_id], "errors": []}, summary)
+        self.assertFalse(source.exists())
+        self.assertEqual(b"audio", copy.read_bytes())
+        events = [
+            event
+            for event in control.status(job_id)["events"]
+            if event["event_type"] == "inbox_source_removed"
+        ]
+        self.assertEqual(1, len(events))
+        self.assertEqual(str(copy), events[0]["payload"]["archive_copy"])
+        # 已经删过的下一轮直接跳过
+        self.assertEqual([], control.cleanup_inbox_sources(inbox)["removed"])
+
+    def test_cleanup_inbox_keeps_source_when_archive_copy_differs(self):
+        control, _job_id, inbox, source, copy = self._archived_inbox_job()
+        copy.write_bytes(b"AUDIO")
+
+        summary = control.cleanup_inbox_sources(inbox)
+
+        self.assertEqual([], summary["removed"])
+        self.assertTrue(source.is_file())
+
+    def test_cleanup_inbox_keeps_source_replaced_after_enqueue(self):
+        control, _job_id, inbox, source, _copy = self._archived_inbox_job()
+        source.write_bytes(b"other")
+
+        summary = control.cleanup_inbox_sources(inbox)
+
+        self.assertEqual([], summary["removed"])
+        self.assertEqual(b"other", source.read_bytes())
+
+    def test_cleanup_inbox_keeps_source_when_archive_copy_missing(self):
+        control, _job_id, inbox, source, copy = self._archived_inbox_job()
+        copy.unlink()
+
+        summary = control.cleanup_inbox_sources(inbox)
+
+        self.assertEqual([], summary["removed"])
+        self.assertTrue(source.is_file())
+
+    def test_cleanup_inbox_ignores_audio_outside_inbox(self):
+        control, _job_id, inbox, source, _copy = self._archived_inbox_job()
+        other_inbox = inbox / "elsewhere"
+        other_inbox.mkdir()
+
+        summary = control.cleanup_inbox_sources(other_inbox)
+
+        self.assertEqual([], summary["removed"])
+        self.assertTrue(source.is_file())
+
+    def test_cleanup_inbox_waits_for_unfinished_or_hidden_archive(self):
+        inbox_tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(inbox_tempdir.cleanup)
+        inbox = Path(inbox_tempdir.name).resolve()
+        source = inbox / self.audio.name
+        source.write_bytes(b"audio")
+        # self.control 不自动提升：纪要回执后归档还在隐藏的 .workbench-drafts 里
+        job_id = self._advance_to_minutes(self.control, source)
+        self.assertEqual([], self.control.cleanup_inbox_sources(inbox)["removed"])
+        hidden = create_complete_archive(self.root, job_id)
+        self.control.complete_minutes(job_id, hidden, attempt_no=1)
+        self.assertNotEqual(
+            self.root.resolve(),
+            Path(self.control.status(job_id)["archive_dir"]).resolve().parent,
+        )
+
+        summary = self.control.cleanup_inbox_sources(inbox)
+
+        self.assertEqual([], summary["removed"])
+        self.assertTrue(source.is_file())
+
+    def test_cleanup_inbox_keeps_source_when_job_changes_before_delete(self):
+        control, job_id, inbox, source, _copy = self._archived_inbox_job()
+        real_sha256 = self.module._sha256_file
+
+        def retry_while_hashing(path):
+            digest = real_sha256(path)
+            if Path(path) == source:
+                control.retry(job_id, "transcribing")
+            return digest
+
+        with patch.object(self.module, "_sha256_file", side_effect=retry_while_hashing):
+            summary = control.cleanup_inbox_sources(inbox)
+
+        self.assertEqual("queued", control.status(job_id)["status"])
+        self.assertEqual({"ok": True, "removed": [], "errors": []}, summary)
+        self.assertTrue(source.is_file())
+
+    def test_cleanup_inbox_reports_unlink_failure_without_recording_event(self):
+        control, job_id, inbox, source, _copy = self._archived_inbox_job()
+
+        with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
+            summary = control.cleanup_inbox_sources(inbox)
+
+        self.assertFalse(summary["ok"])
+        self.assertEqual(job_id, summary["errors"][0]["job_id"])
+        self.assertTrue(source.is_file())
+        self.assertFalse(
+            any(
+                event["event_type"] == "inbox_source_removed"
+                for event in control.status(job_id)["events"]
+            )
+        )
+
     def test_whisper_reconcile_recovers_copy_interrupted_outside_visible_pending(self):
         control = self._pending_control()
         job_id = self._advance_to_minutes(control, self.audio)
