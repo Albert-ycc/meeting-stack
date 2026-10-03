@@ -21,19 +21,23 @@ import { AsyncState } from "./components/AsyncState";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { FadeContent } from "./components/motion/FadeContent";
 import { MagneticButton } from "./components/motion/MagneticButton";
-import { GlossaryPage } from "./components/GlossaryPage";
-import { JobsPage } from "./components/JobsPage";
-import { LibraryPage } from "./components/LibraryPage";
-import { MeetingDetailPage } from "./components/MeetingDetailPage";
 import { OverviewPage } from "./components/OverviewPage";
-import { ProjectDetailPage } from "./components/ProjectDetailPage";
-import { OverviewGraph } from "./components/graph/OverviewGraph";
-import { ProjectGraph } from "./components/graph/ProjectGraph";
 import type { GraphLocal } from "./components/graph/graphTypes";
 import type { ProjectViewMode } from "./components/graph/graphPrefs";
-import { ProjectsPage } from "./components/ProjectsPage";
-import { RequirementDetailPage } from "./components/RequirementDetailPage";
-import { RequirementsPage } from "./components/RequirementsPage";
+import {
+  GlossaryPage,
+  JobsPage,
+  LibraryPage,
+  MeetingDetailPage,
+  OverviewGraph,
+  ProjectDetailPage,
+  ProjectGraph,
+  ProjectsPage,
+  RequirementDetailPage,
+  RequirementsPage,
+  SearchPage,
+  TasksPage,
+} from "./pages";
 import {
   LEAVE_FORM_CONFIRM,
   RequirementFormPage,
@@ -53,11 +57,9 @@ import {
 } from "./components/pool/RequirementPoolPage";
 import { cancelScrollRestore, recordScrollNow, restoreScrollFromHistory, startScrollRecorder } from "./scrollRestore";
 import { readPersistentState, writePersistentState } from "./viewState";
-import { SearchPage } from "./components/SearchPage";
 import { setDraft as setAskDraft } from "./components/ask/askStore";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { MaterialPreviewDrawer } from "./components/MaterialPreview";
-import { TasksPage } from "./components/TasksPage";
 import { LinksFlagsContext, linksFlagsFrom, type LinksFlags } from "./components/links/LinksFlagsContext";
 import { RecentAnswersContext, createRecentAnswerStore } from "./components/links/useRelationAnswer";
 import { isComposingKeydown } from "./keyboard";

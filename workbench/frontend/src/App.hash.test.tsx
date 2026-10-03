@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import App, { MOBILE_READ_ONLY_QUERY } from "./App";
 import { ApiError, type ApiClient } from "./api";
+import { preloadPages } from "./pages";
 import { forgetOverviewCache } from "./components/graph/OverviewGraph";
 import { foldersPayload, overviewPayload } from "./components/graph/overviewFixtures";
 import { forgetGraphCache } from "./components/graph/ProjectGraph";
@@ -78,6 +79,11 @@ function emptyPool() {
     dropped_count: 0,
   };
 }
+
+// 各页是按页拆的块：先把它们都拉到手，渲染才和整包时一样是同步的，用例不用为「页面还没到」多等一拍
+beforeAll(async () => {
+  await preloadPages();
+});
 
 beforeEach(() => {
   vi.stubGlobal("matchMedia", vi.fn(() => desktopMatchMedia()));

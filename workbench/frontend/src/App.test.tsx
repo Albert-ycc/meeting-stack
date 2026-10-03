@@ -1,9 +1,10 @@
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import App, { MEETING_PAGE_SIZE, MOBILE_READ_ONLY_QUERY, useMobileBreakpoint } from "./App";
 import { ApiError, type ApiClient } from "./api";
+import { preloadPages } from "./pages";
 import type { MeetingDetail, MeetingSummary } from "./types";
 
 const firstMeeting: MeetingSummary = {
@@ -77,6 +78,11 @@ function client(overrides: Partial<ApiClient> = {}) {
     ...overrides,
   } as unknown as ApiClient;
 }
+
+// 各页是按页拆的块：先把它们都拉到手，渲染才和整包时一样是同步的，用例不用为「页面还没到」多等一拍
+beforeAll(async () => {
+  await preloadPages();
+});
 
 beforeEach(() => {
   // 视图切换会写地址栏锚点，每个用例从干净的地址冷启动。
