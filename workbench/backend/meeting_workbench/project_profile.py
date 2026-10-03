@@ -61,11 +61,6 @@ def light_key(name: str) -> str:
     )
 
 
-def is_subsequence(short: str, long: str) -> bool:
-    iterator = iter(long)
-    return all(char in iterator for char in short)
-
-
 @dataclass(frozen=True)
 class Cue:
     project_id: str

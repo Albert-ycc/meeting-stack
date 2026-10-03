@@ -152,18 +152,6 @@ def _cli(method: str, path: str, data: dict | None = None) -> dict:
     return json.loads(out[brace:])
 
 
-def _send_card(card: dict) -> dict:
-    return _cli(
-        "POST",
-        "/open-apis/im/v1/messages",
-        {
-            "receive_id": CHAT_ID,
-            "msg_type": "interactive",
-            "content": json.dumps(card, ensure_ascii=False),
-        },
-    )
-
-
 def _send_text(text: str) -> dict:
     return _cli(
         "POST",
@@ -257,9 +245,6 @@ class ShengdangClient:
         # 空 body 也要发 {}：不带 Content-Type 的写请求会被服务端挡在
         # 「写操作只接受 application/json」上，卡片按钮点了没反应。
         return self._request("POST", f"/api/tasks/{task_id}/reject", {})
-
-    def batch_confirm(self, task_ids: list[str]) -> dict:
-        return self._request("POST", "/api/tasks/batch-confirm", {"task_ids": task_ids})
 
 
 # ------------------------------------------------------------------ 事件处理

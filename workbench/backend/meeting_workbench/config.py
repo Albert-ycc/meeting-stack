@@ -98,8 +98,6 @@ class Settings(BaseSettings):
     # 待确认草稿放多少天没处理就自动归入「已过期」；<=0 关闭。
     task_draft_expire_days: float = 7.0
     task_stall_cooldown_days: float = 2.0
-    # 项目归属语义匹配相似度阈值（0~1）
-    project_similarity_threshold: float = 0.62
     # —— 材料内容（第三期）——
     # 材料的正文、图片文字、录音文字在后台慢慢读；关掉后只建文件名索引。
     material_content_enabled: bool = True

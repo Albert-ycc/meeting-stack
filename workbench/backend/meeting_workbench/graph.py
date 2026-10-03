@@ -20,7 +20,6 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -300,17 +299,6 @@ def _clock(raw: str | None) -> str:
 
 
 # ---------------------------------------------------------------------- 整张图
-
-
-@dataclass
-class _Context:
-    project: dict[str, Any]
-    projects: dict[str, dict[str, Any]]
-    today: date
-    now: datetime
-    window_key: str
-    window_days: int | None
-    meetings: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _select_window(
