@@ -1187,27 +1187,33 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         self.assertEqual(2, reconcile_pending.call_count)
         self.assertEqual(3, claim_next.call_count)
 
-    def test_worker_cleans_inbox_on_reconcile_cadence_and_survives_cleanup_errors(self):
+    def test_worker_cleans_audio_copies_daily_and_survives_cleanup_errors(self):
         module = load_watchdog_module()
+        self.assertEqual(86400.0, module.AUDIO_CLEANUP_INTERVAL_SEC)
         module.PENDING_RECONCILE_INTERVAL_SEC = 30.0
+        # 启动那一轮清一次；之后对账照旧每 30 秒，清理要满一天才再来
+        ticks = [100.0, 131.0, 86499.0, 86531.0]
         with (
-            patch.object(module.time, "monotonic", side_effect=[100.0, 101.0, 131.0]),
-            patch.object(module, "_control_reconcile_pending_archives", return_value={}),
+            patch.object(module.time, "monotonic", side_effect=ticks),
+            patch.object(
+                module, "_control_reconcile_pending_archives", return_value={}
+            ) as reconcile_pending,
             patch.object(
                 module,
-                "_control_cleanup_inbox_sources",
-                side_effect=[OSError("外置盘没挂"), {"ok": True, "removed": ["job-a"]}],
+                "_control_cleanup_local_audio_copies",
+                side_effect=[OSError("外置盘没挂"), {"ok": True, "removed": ["/a.m4a"]}],
             ) as cleanup,
             patch.object(module, "_agent_pane_available", return_value=True),
             patch.object(module, "_control_reconcile_codex_handoffs", return_value=0),
             patch.object(module, "_control_recover_orphaned_claims", return_value=0),
             patch.object(module, "_control_claim_next", return_value=None) as claim_next,
         ):
-            results = [module.run_control_worker_once() for _ in range(3)]
+            results = [module.run_control_worker_once() for _ in ticks]
 
-        self.assertEqual([False, False, False], results)
+        self.assertEqual([False] * 4, results)
+        self.assertEqual(4, reconcile_pending.call_count)
         self.assertEqual(2, cleanup.call_count)
-        self.assertEqual(3, claim_next.call_count)
+        self.assertEqual(4, claim_next.call_count)
 
     def test_pending_reconcile_interval_is_configurable_and_positive(self):
         with patch.dict(

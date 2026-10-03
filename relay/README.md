@@ -25,9 +25,10 @@ relay_watchdog.py   监听目录，新音频入工作台任务队列（受控模
 Voice Memos 桥接只是众多入口之一，任何来源的音频文件落进监听目录都会被处理，不校验来源，
 所以别用会落进不可信文件的目录（比如网页能自动下载到的目录），专门建一个只放录音的目录最稳妥。
 
-监听目录里的录音出完纪要、归档进归档根下的会议目录后，watchdog 每轮对账时会把监听目录里那份删掉：
-只删归档里有同名文件、两边 sha256 都等于入队时记下的那个的；对不上的、还没归档的、失败的任务一律不动。
-每删一份在任务事件里记一条 `inbox_source_removed`。
+录音出完纪要、归档进归档根下的会议目录后，本机上的两份冗余副本会被删掉：监听目录里的原音频，和产物目录里
+转写用的工作副本（后者要等 Whisper 对照转写跑完）。只删归档里有同名文件、两边 sha256 都等于入队时记下的那个的；
+对不上的、还没归档的、失败的任务一律不动。watchdog 启动时清一次，之后每天一次（`MEETING_RELAY_AUDIO_CLEANUP_INTERVAL`，
+单位秒，默认 86400）。每删一份在任务事件里记一条 `local_audio_removed`。
 
 **必须设 `MEETING_RELAY_CONTROL_ENABLED=1`。** 不设时 watchdog 走旧同步路径：不领工作台入队的任务，
 而是用 ffprobe 探测时长后分流——短于 10 分钟的当成口述指令，转写文本直接派给 AI Agent 执行；
@@ -66,6 +67,7 @@ relay 自己用的键（`MEETING_RELAY_*`、`RELAY_*`、`TRANSCRIBE_ENGINE`）�
 |---|---|---|
 | `MEETING_RELAY_CONTROL_ENABLED` | 空 | 必须设成 `1`：走工作台任务队列（受控模式）；不设走旧同步路径（见上） |
 | `MEETING_RELAY_WATCH_DIR` | `~/Downloads` | 监听目录 |
+| `MEETING_RELAY_AUDIO_CLEANUP_INTERVAL` | `86400` | 清理本机冗余录音的间隔（秒） |
 | `MEETING_RELAY_ARCHIVE_ROOT` | `~/MeetingArchive` | 正式归档根 |
 | `MEETING_RELAY_PRODUCTS_ROOT` | `~/Movies/meeting-relay-products` | 转写产物工作目录 |
 | `MEETING_RELAY_JOBS_DB` | `~/.meeting-relay/workbench-jobs.sqlite3` | 任务队列库 |

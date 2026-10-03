@@ -2376,25 +2376,33 @@ class RelayControl:
                 )
         return summary
 
-    def cleanup_inbox_sources(self, inbox: str | Path) -> dict[str, Any]:
-        """删掉监听目录里已归档的原音频。
+    def cleanup_local_audio_copies(self, inbox: str | Path) -> dict[str, Any]:
+        """删掉本机上已归档录音的冗余副本。
 
-        只删同时满足这些条件的：任务已出纪要（completed_unreviewed / draft_modified /
-        published），音频就在监听目录第一层，归档根下一级的会议目录里有同名文件，
-        且两边的 sha256 都等于入队时记下的那个。其余一律不动，下一轮再看。
+        两处：监听目录第一层的原音频，产物目录里转写用的工作副本（`<stem>/<name>`、
+        `<stem>/<stem>/<name>`）。只删同时满足这些条件的：任务已出纪要
+        （completed_unreviewed / draft_modified / published），归档根下一级的会议目录里有
+        同名文件，且两边的 sha256 都等于入队时记下的那个。产物目录那份还要等 Whisper 对照
+        转写跑完（它在后台读这份）。其余一律不动，下一轮再看。
         """
         summary: dict[str, Any] = {"ok": True, "removed": [], "errors": []}
-        inbox_dir = Path(os.path.abspath(str(Path(inbox).expanduser())))
-        if inbox_dir.is_symlink() or not inbox_dir.is_dir():
-            return summary
-        inbox_dir = inbox_dir.resolve()
+        inbox_path = Path(os.path.abspath(str(Path(inbox).expanduser())))
+        inbox_dir = (
+            inbox_path.resolve() if inbox_path.is_dir() and not inbox_path.is_symlink() else None
+        )
+        products_dir = (
+            self.products_root.resolve()
+            if self.products_root.is_dir() and not self.products_root.is_symlink()
+            else None
+        )
         archive_root = self.archive_root.resolve()
         eligible = ("completed_unreviewed", "draft_modified", "published")
+        whisper_busy = ("pending", "running")
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT job_id, current_attempt, status, audio_path, audio_sha256,
-                    archive_dir, published_archive_dir
+                SELECT job_id, current_attempt, status, whisper_status, audio_path,
+                    audio_sha256, archive_dir, published_archive_dir
                 FROM jobs
                 WHERE status IN (?, ?, ?) AND audio_sha256 IS NOT NULL
                 ORDER BY updated_at, job_id
@@ -2405,7 +2413,20 @@ class RelayControl:
             job_id = str(row["job_id"])
             source = Path(str(row["audio_path"]))
             try:
-                if source.parent != inbox_dir or source.is_symlink() or not source.is_file():
+                candidates: list[Path] = []
+                if inbox_dir is not None and source.parent == inbox_dir:
+                    candidates.append(source)
+                if products_dir is not None and row["whisper_status"] not in whisper_busy:
+                    for work_copy in (
+                        products_dir / source.stem / source.name,
+                        products_dir / source.stem / source.stem / source.name,
+                    ):
+                        if work_copy.resolve().is_relative_to(products_dir):
+                            candidates.append(work_copy)
+                candidates = [
+                    path for path in candidates if path.is_file() and not path.is_symlink()
+                ]
+                if not candidates:
                     continue
                 copy = None
                 for value in (row["published_archive_dir"], row["archive_dir"]):
@@ -2419,7 +2440,6 @@ class RelayControl:
                         or archive.resolve().parent != archive_root
                         or candidate.is_symlink()
                         or not candidate.is_file()
-                        or candidate.resolve() == source.resolve()
                     ):
                         continue
                     copy = candidate
@@ -2427,12 +2447,16 @@ class RelayControl:
                 if copy is None:
                     continue
                 expected = str(row["audio_sha256"])
-                source_print = _stat_fingerprint(source)
                 copy_print = _stat_fingerprint(copy)
-                # 大小对不上就不必读盘算哈希，否则每轮都要把外置盘上的整段录音读一遍
-                if source_print[1] != copy_print[1]:
-                    continue
-                if _sha256_file(source) != expected or _sha256_file(copy) != expected:
+                verified: dict[Path, tuple[int, int, int, int]] = {}
+                for path in candidates:
+                    if path.resolve() == copy.resolve():
+                        continue
+                    path_print = _stat_fingerprint(path)
+                    # 大小对不上就不必读盘算哈希，否则每轮都要把整段录音读一遍
+                    if path_print[1] == copy_print[1] and _sha256_file(path) == expected:
+                        verified[path] = path_print
+                if not verified or _sha256_file(copy) != expected:
                     continue
                 with self._connect() as connection:
                     connection.execute("BEGIN IMMEDIATE")
@@ -2442,33 +2466,39 @@ class RelayControl:
                         or current["audio_path"] != row["audio_path"]
                         or current["archive_dir"] != row["archive_dir"]
                         or current["published_archive_dir"] != row["published_archive_dir"]
-                        or _stat_fingerprint(source) != source_print
                         or _stat_fingerprint(copy) != copy_print
                     ):
                         continue
-                    self._append_event(
-                        connection,
-                        job_id,
-                        int(current["current_attempt"]),
-                        "inbox_source_removed",
-                        current["status"],
-                        current["status"],
-                        stage="inbox_cleanup",
-                        payload={
-                            "source": str(source),
-                            "archive_copy": str(copy),
-                            "sha256": expected,
-                        },
-                    )
-                    # 删不掉就抛出去，事件跟着回滚
-                    source.unlink()
-                summary["removed"].append(job_id)
+                    if current["whisper_status"] in whisper_busy:
+                        verified = {path: fp for path, fp in verified.items() if path == source}
+                    verified = {
+                        path: fp for path, fp in verified.items() if _stat_fingerprint(path) == fp
+                    }
+                    for path in verified:
+                        self._append_event(
+                            connection,
+                            job_id,
+                            int(current["current_attempt"]),
+                            "local_audio_removed",
+                            current["status"],
+                            current["status"],
+                            stage="audio_cleanup",
+                            payload={
+                                "path": str(path),
+                                "archive_copy": str(copy),
+                                "sha256": expected,
+                            },
+                        )
+                    # 删不掉就抛出去，这一单的事件整体回滚（已删掉的下一轮自然跳过）
+                    for path in verified:
+                        path.unlink()
+                        summary["removed"].append(str(path))
             except Exception as exc:
                 summary["ok"] = False
                 summary["errors"].append(
                     {
                         "job_id": job_id,
-                        "stage": "inbox_cleanup",
+                        "stage": "audio_cleanup",
                         "error_type": type(exc).__name__,
                         "error": str(exc),
                     }
@@ -6820,11 +6850,11 @@ def reconcile_pending_archives(
     return _service(db_path).reconcile_pending_archives()
 
 
-def cleanup_inbox_sources(
+def cleanup_local_audio_copies(
     inbox: str | Path,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    return _service(db_path).cleanup_inbox_sources(inbox)
+    return _service(db_path).cleanup_local_audio_copies(inbox)
 
 
 def stop_after_stage(job_id: str, db_path: str | Path | None = None) -> dict[str, Any]:

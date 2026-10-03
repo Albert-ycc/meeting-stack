@@ -149,6 +149,10 @@ def _positive_interval_from_env(name: str, default: str) -> float:
 PENDING_RECONCILE_INTERVAL_SEC = _positive_interval_from_env(
     "MEETING_RELAY_PENDING_RECONCILE_INTERVAL", "30"
 )
+# 清理本机上已归档录音的冗余副本（监听目录原音频、产物目录工作副本），启动时一次，之后默认一天一次
+AUDIO_CLEANUP_INTERVAL_SEC = _positive_interval_from_env(
+    "MEETING_RELAY_AUDIO_CLEANUP_INTERVAL", "86400"
+)
 # 控制模式下周期性补扫监听目录（停机期间落地、事件漏掉的录音），见 AudioHandler.rescan_inbox
 INBOX_RESCAN_INTERVAL_SEC = _positive_interval_from_env(
     "MEETING_RELAY_INBOX_RESCAN_INTERVAL", "300"
@@ -183,6 +187,7 @@ DISABLE_DUAL = os.getenv("RELAY_DISABLE_DUAL") == "1"
 
 STARTUP_EPOCH = time.time()
 _next_pending_reconcile_at = 0.0
+_next_audio_cleanup_at = 0.0
 
 logging.basicConfig(
     level=logging.INFO,
@@ -272,8 +277,8 @@ def _control_reconcile_pending_archives() -> dict:
     return _relay_control_module().reconcile_pending_archives()
 
 
-def _control_cleanup_inbox_sources() -> dict:
-    return _relay_control_module().cleanup_inbox_sources(INBOX)
+def _control_cleanup_local_audio_copies() -> dict:
+    return _relay_control_module().cleanup_local_audio_copies(INBOX)
 
 
 def _control_runtime_heartbeat(
@@ -1108,7 +1113,7 @@ def build_meeting_prompt(
             f"或重命名 hidden attempt。\n"
             f"- 回调失败时按错误补齐文件并走阶段重试；没有成功回执，不得宣称任务完成。\n"
         )
-        cleanup_requirement = "- 不删除或修改 Downloads、产物目录或正式归档中的原音频；归档后 Relay 会自动删掉 Downloads 那份。\n"
+        cleanup_requirement = "- 不删除或修改 Downloads、产物目录或正式归档中的原音频；归档后 Relay 会自动删掉 Downloads 和产物目录里的那两份。\n"
     else:
         archive_location = f"{ARCHIVE_ROOT}/{yymmdd} <会议主题>/"
         artifact_requirement = (
@@ -2348,7 +2353,7 @@ def process_controlled_claim(claim: dict) -> bool:
 
 
 def run_control_worker_once() -> bool:
-    global _next_pending_reconcile_at
+    global _next_pending_reconcile_at, _next_audio_cleanup_at
     now = time.monotonic()
     if now >= _next_pending_reconcile_at:
         _next_pending_reconcile_at = now + PENDING_RECONCILE_INTERVAL_SEC
@@ -2362,21 +2367,23 @@ def run_control_worker_once() -> bool:
         except Exception:
             # 对账是修复旁路，不得因单轮异常阻断主 worker 领取任务。
             log.exception("待校对对账异常，本轮继续")
+    if now >= _next_audio_cleanup_at:
+        _next_audio_cleanup_at = now + AUDIO_CLEANUP_INTERVAL_SEC
         try:
-            cleanup_summary = _control_cleanup_inbox_sources()
+            cleanup_summary = _control_cleanup_local_audio_copies()
             if cleanup_summary.get("removed"):
                 log.info(
-                    "监听目录里 %d 段已归档的原音频已删除（归档里有哈希一致的一份）",
+                    "本机 %d 份已归档录音的冗余副本已删除（归档里有哈希一致的一份）",
                     len(cleanup_summary["removed"]),
                 )
             if cleanup_summary.get("errors"):
                 log.warning(
-                    "监听目录清理有 %d 个任务失败，下一轮再试：%s",
+                    "冗余录音清理有 %d 个任务失败，下次再试：%s",
                     len(cleanup_summary["errors"]),
                     cleanup_summary["errors"],
                 )
         except Exception:
-            log.exception("监听目录清理异常，本轮继续")
+            log.exception("冗余录音清理异常，下次再试")
     if not _settle_pending_claims():
         # 没补写完的那单还挂在本 worker 名下：不能把它当空闲 claim 回收，也领不了新任务。
         return False
