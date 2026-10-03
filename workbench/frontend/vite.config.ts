@@ -12,6 +12,25 @@ export default defineConfig(({ command, mode }) => {
   if (backend.warning && command === "serve" && mode !== "test") console.warn(backend.warning);
   return {
     plugins: [react()],
+    build: {
+      // Vite 8 换成了 rolldown：rollupOptions.output.manualChunks 已标为弃用，按 codeSplitting.groups 写。
+      // 第三方库几个月才换一次，应用代码每次发布都变：分开放，发布后只有应用那几块换文件名（内容哈希），
+      // 库的几块名字不变，浏览器里缓存的那份还能用。按「谁跟谁一起变」拆：react 全家一块，framer-motion 一块，
+      // d3 一块，wavesurfer 一块，剩下的第三方（目前就是 react-markdown 那一串）一块
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              { name: "vendor-react", test: /node_modules[\\/](?:react|react-dom|scheduler)[\\/]/, priority: 40 },
+              { name: "vendor-motion", test: /node_modules[\\/](?:framer-motion|motion-dom|motion-utils)[\\/]/, priority: 30 },
+              { name: "vendor-d3", test: /node_modules[\\/]d3-[^\\/]+[\\/]/, priority: 30 },
+              { name: "vendor-wavesurfer", test: /node_modules[\\/]wavesurfer\.js[\\/]/, priority: 30 },
+              { name: "vendor", test: /node_modules[\\/]/, priority: 10 },
+            ],
+          },
+        },
+      },
+    },
     server: {
       host: "127.0.0.1",
       port: 5173,
