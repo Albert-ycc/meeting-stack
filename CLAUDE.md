@@ -25,6 +25,18 @@ npm run typecheck
 2026-10-01 需求池收尾时就有两处用例全绿、真浏览器里却是错的：React 换了一层结构，把会议页卸掉重建了；浏览器后退时按历史记录恢复滚动，
 盖掉了代码放回去的位置。另外，Playwright 自带的 Chromium 解不了 m4a 里的 AAC，测播放只能看 `paused`，看不到时间往前走。
 
+改了 `relay/`（`glossary/`、`transcribe/`、`task-notify/`、`workbench/card_listener.py` 也一样，ruff 规则和后端同一套）：
+
+```bash
+cd workbench
+.venv/bin/ruff format card_listener.py ../relay ../glossary ../transcribe ../task-notify   # install-local.sh 同样会卡格式
+.venv/bin/ruff check card_listener.py ../relay ../glossary ../transcribe ../task-notify
+cd ../relay
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests   # 要用装了 watchdog 的 Python，见 relay/README.md「Python 依赖」
+```
+
+`card_listener.py` 的用例在后端用例里（`backend/tests/test_card_listener.py`）。
+
 ## 用例不能依赖跑它的机器
 
 声档实际跑在用户的 Mac 上（macOS、太平洋时区、装着 Homebrew 的 tesseract），开发常在 Linux、UTC 的环境里。
@@ -38,5 +50,5 @@ npm run typecheck
 
 ## 其他
 
-- 全量格式化那次的提交记在 `.git-blame-ignore-revs`；本地跑一次
+- 全量格式化的提交记在 `.git-blame-ignore-revs`；本地跑一次
   `git config blame.ignoreRevsFile .git-blame-ignore-revs`，`git blame` 就会跳过它。

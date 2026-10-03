@@ -3,3 +3,6 @@
 
 # backend 全量跑一次 ruff format（260928）
 982c75a97b79183f733fe371e4c4db1854db450a
+
+# relay、glossary、transcribe、task-notify 和 workbench/card_listener.py 跑一次 ruff format（261002）
+1cc1fcd305fd50a537ee7472f50eef5329f9063d
