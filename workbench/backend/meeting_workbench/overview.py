@@ -32,8 +32,9 @@ from .project_folders import CHECKING, parent_status, pending_folders
 
 DEFAULT_WINDOW = "28d"
 HARBOUR_RECENT = 8
-# 项目数超过这么多时，窗口内没有会的项目折成「其余 N 个项目」。
-MAX_ISLANDS = 40
+# 概览画成太阳系：前端按「最近一次会离今天多久」分圈，最外圈项目多了自己收成小行星带，所以项目全部返回。
+# 只有多到这个数（远超一个人同时在推的量）才把最久没开会的折成「其余 N 个项目」。
+MAX_ISLANDS = 400
 MAX_FOLDERS = 12
 HARBOUR_STATES = ("ai_pending", "needs_review", "none", "new_project")
 
@@ -220,14 +221,15 @@ def overview(
     ordered = list(islands.values())
     more: dict[str, Any] | None = None
     if len(ordered) > MAX_ISLANDS:
-        quiet = [island for island in ordered if island["meetings"] == 0]
-        keep = len(ordered) - len(quiet)
-        # 窗口内有会的全留；空位按创建先后给没会的项目，剩下的折起来。
-        room = max(0, MAX_ISLANDS - keep)
-        folded = {island["id"] for island in quiet[room:]}
-        if folded:
-            ordered = [island for island in ordered if island["id"] not in folded]
-            more = {"count": len(folded), "project_ids": [pid for pid in islands if pid in folded]}
+        # 按最近一次会由近到远留（没开过会的排最后，一样新的按创建先后），最久没开会的折起来。
+        # 和时间窗无关：窗口只决定球的大小，不决定谁在图上（7 天窗口时 7–27 天前开过会的也要在 28 天那圈）。
+        by_recency = sorted(ordered, key=lambda island: island["last_day"] or "", reverse=True)
+        kept = {island["id"] for island in by_recency[:MAX_ISLANDS]}
+        ordered = [island for island in ordered if island["id"] in kept]
+        more = {
+            "count": len(islands) - len(kept),
+            "project_ids": [pid for pid in islands if pid not in kept],
+        }
 
     pairs: dict[tuple[str, str], int] = {}
     for row in bridge_rows:

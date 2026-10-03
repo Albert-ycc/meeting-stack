@@ -13,6 +13,7 @@ from .test_graph import (
     add_project,
     add_requirement,
     build,
+    days_ago,
     make_db,
     seed_three_projects,
 )
@@ -107,20 +108,54 @@ def test_harbour_counts_states_and_lists_recent_meetings(tmp_path):
     assert run(db, ai_configured=False)["harbour"]["ai_configured"] is False
 
 
-def test_quiet_projects_fold_when_there_are_many(tmp_path):
+def test_all_projects_come_back_whatever_the_window(tmp_path):
+    """太阳系按最近一次会分圈、最外圈多了前端自己收成小行星带：45 个项目全部返回，不按时间窗折叠。"""
     _client, _settings, db = make_db(tmp_path)
     for index in range(45):
         add_project(db, f"p-{index:02d}", f"项目{index:02d}")
     for index in range(5):
         add_meeting(db, f"m-{index}", ago=1, project_id=f"p-{index + 40:02d}", origin="manual")
+    add_meeting(db, "m-ten", ago=10, project_id="p-00", origin="manual")
 
-    body = run(db)
+    for window in ("7d", "28d"):
+        body = run(db, window=window)
+        assert len(body["islands"]) == 45
+        assert body["islands_more"] is None
+    # 7 天窗口里没会、10 天前开过会的项目照样在图上，last_day 照给（它落在 28 天那圈）
+    p00 = next(island for island in run(db, window="7d")["islands"] if island["id"] == "p-00")
+    assert p00["meetings"] == 0
+    assert p00["last_day"] == days_ago(10)[:10]
 
-    assert len(body["islands"]) == 40
-    assert {f"p-{index:02d}" for index in range(40, 45)} <= {
-        island["id"] for island in body["islands"]
-    }
-    assert body["islands_more"]["count"] == 5
+
+def test_beyond_the_cap_the_longest_quiet_projects_fold(tmp_path, monkeypatch):
+    """多到上限时按最近一次会由近到远留，最久没开会的（没开过会的排最后）折起来，和时间窗无关。"""
+    monkeypatch.setattr(overview, "MAX_ISLANDS", 10)
+    _client, _settings, db = make_db(tmp_path)
+    for index in range(15):
+        add_project(db, f"p-{index:02d}", f"项目{index:02d}")
+    # 开过会的都是后建的项目，免得「按创建先后留」碰巧也对
+    for index, ago in ((14, 2), (13, 3), (12, 20), (11, 40), (10, 60), (9, 90)):
+        add_meeting(db, f"m-{index}", ago=ago, project_id=f"p-{index:02d}", origin="manual")
+
+    for window in ("7d", "28d", "all"):
+        body = run(db, window=window)
+        # 6 个开过会的全留，剩下 4 个位置给没开过会的里建得最早的；返回仍按创建先后排
+        assert [island["id"] for island in body["islands"]] == [
+            "p-00",
+            "p-01",
+            "p-02",
+            "p-03",
+            "p-09",
+            "p-10",
+            "p-11",
+            "p-12",
+            "p-13",
+            "p-14",
+        ]
+        assert body["islands_more"] == {
+            "count": 5,
+            "project_ids": ["p-04", "p-05", "p-06", "p-07", "p-08"],
+        }
 
 
 def test_overview_sql_count_is_fixed(tmp_path):
