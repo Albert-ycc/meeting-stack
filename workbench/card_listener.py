@@ -27,6 +27,7 @@ workbench/.env 为准，和工作台读 .env 是同一套规则）：
   card-listener.log   本进程自己的
   card-subscribe.log  订阅子进程（lark-cli）的输出，本进程每分钟看一眼，超过上限就轮转
 """
+
 from __future__ import annotations
 
 import http.cookiejar
@@ -199,9 +200,7 @@ class ShengdangClient:
         if body is not None:
             data = json.dumps(body, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(
-            BASE + path, data=data, headers=headers, method=method
-        )
+        req = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
         try:
             with self.opener.open(req, timeout=15) as resp:
                 return json.loads(resp.read())
@@ -214,11 +213,7 @@ class ShengdangClient:
             # 且不落盘。本进程常驻数周，只要声档重启过一次，缓存的 token 与 cookie 就永久
             # 失效，之后每次点按钮都被挡在 403，表现为「卡片点了没反应」。
             # 所以遇到 CSRF 类 403 必须重新握手一次再重试，不能把 token 当常量。
-            if (
-                error.code == 403
-                and not retried
-                and "CSRF" in str(payload.get("detail", ""))
-            ):
+            if error.code == 403 and not retried and "CSRF" in str(payload.get("detail", "")):
                 log.warning("CSRF 失效，重新握手后重试：%s %s", method, path)
                 self.token = None
                 self.cookiejar.clear()
@@ -233,9 +228,7 @@ class ShengdangClient:
             )
 
     def list_tasks(self, extraction_id: int) -> list[dict]:
-        data = self._request(
-            "GET", f"/api/tasks?extraction_id={extraction_id}&limit=200"
-        )
+        data = self._request("GET", f"/api/tasks?extraction_id={extraction_id}&limit=200")
         return data.get("items", [])
 
     def confirm(self, task_id: str) -> dict:
@@ -352,13 +345,17 @@ def _start_subscriber() -> subprocess.Popen:
         return subprocess.Popen(
             [
                 LARK_CLI,
-                "event", "+subscribe",
+                "event",
+                "+subscribe",
                 # 这条命令只认 bot 身份，不显式指定就走 auto-detect，配了 users 的 app
                 # 会被判成 user 身份而报 validation 错误退出（退出码 2）。_cli() 里的
                 # API 调用一直显式带 --as bot，唯独这里漏了。
-                "--as", "bot",
-                "--event-types", "card.action.trigger",
-                "--output-dir", ".",
+                "--as",
+                "bot",
+                "--event-types",
+                "card.action.trigger",
+                "--output-dir",
+                ".",
             ],
             cwd=str(EVENTS_DIR),
             env=env,
@@ -370,11 +367,7 @@ def _start_subscriber() -> subprocess.Popen:
 
 def _subscriber_alive() -> bool:
     try:
-        return bool(
-            subprocess.check_output(
-                ["pgrep", "-f", SUBSCRIBER_PATTERN], text=True
-            ).strip()
-        )
+        return bool(subprocess.check_output(["pgrep", "-f", SUBSCRIBER_PATTERN], text=True).strip())
     except subprocess.CalledProcessError:
         return False
 

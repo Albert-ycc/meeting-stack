@@ -15,6 +15,7 @@ macOS TCC 会拦住 launchd 进程链（包括它自启的 tmux server）读取 
 Group Container。sshd 通常在「完全磁盘访问」名单内，经 ssh localhost 启动的
 进程链可继承该授权，实测放行。详见 docs/install.md 的权限章节。
 """
+
 import json
 import os
 import shutil
@@ -25,13 +26,17 @@ import time
 import logging
 from pathlib import Path
 
-RECORDINGS_DIR = Path(os.getenv(
-    "VM_RECORDINGS_DIR",
-    str(Path.home() / "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"),
-))
-OUTBOX     = Path(os.getenv("VM_OUTBOX", str(Path.home() / "Downloads")))
-STATE_FILE = Path(os.getenv("VM_STATE_FILE", str(Path.home() / ".local/state/meeting-relay/vmbridge_seen.json")))
-LOG_FILE   = Path.home() / "Library/Logs/meeting-relay-vmbridge.log"
+RECORDINGS_DIR = Path(
+    os.getenv(
+        "VM_RECORDINGS_DIR",
+        str(Path.home() / "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"),
+    )
+)
+OUTBOX = Path(os.getenv("VM_OUTBOX", str(Path.home() / "Downloads")))
+STATE_FILE = Path(
+    os.getenv("VM_STATE_FILE", str(Path.home() / ".local/state/meeting-relay/vmbridge_seen.json"))
+)
+LOG_FILE = Path.home() / "Library/Logs/meeting-relay-vmbridge.log"
 
 POLL_SEC = int(os.getenv("VM_POLL_SEC", "15"))
 # Voice Memos app 不在运行时 iCloud 可能不拉增量，定期隐藏唤醒保证同步活性；0 = 关闭
@@ -65,7 +70,11 @@ def load_seen() -> set | None:
         # 所以按首次启动处理（现存录音全部记为已处理），坏文件改名留着排查。
         broken = STATE_FILE.with_name(f"{STATE_FILE.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
         STATE_FILE.replace(broken)
-        log.error("state 文件损坏，已改名留证 %s；按首次启动处理，现存录音全部记为已处理、不搬运：%s", broken, e)
+        log.error(
+            "state 文件损坏，已改名留证 %s；按首次启动处理，现存录音全部记为已处理、不搬运：%s",
+            broken,
+            e,
+        )
         return None
 
 
@@ -92,7 +101,9 @@ def list_recordings() -> dict:
                 except FileNotFoundError:
                     continue
     except PermissionError:
-        log.error("TCC 拒绝读取 %s —— 本脚本必须经 ssh localhost 链启动（见文件头注释）", RECORDINGS_DIR)
+        log.error(
+            "TCC 拒绝读取 %s —— 本脚本必须经 ssh localhost 链启动（见文件头注释）", RECORDINGS_DIR
+        )
         raise
     return result
 
@@ -122,7 +133,9 @@ def main():
     signal.signal(signal.SIGINT, _stop)
 
     if not RECORDINGS_DIR.exists():
-        log.error("Recordings 目录不存在：%s（Mac 端 Voice Memos iCloud 同步未开？）", RECORDINGS_DIR)
+        log.error(
+            "Recordings 目录不存在：%s（Mac 端 Voice Memos iCloud 同步未开？）", RECORDINGS_DIR
+        )
         sys.exit(1)
 
     seen = load_seen()
@@ -134,8 +147,13 @@ def main():
         save_seen(seen)
         log.info("首次启动，基线 %d 个历史录音已跳过", len(seen))
 
-    log.info("vmbridge 启动：监听 %s → %s（轮询 %ds，唤醒间隔 %ds）",
-             RECORDINGS_DIR, OUTBOX, POLL_SEC, POKE_SEC)
+    log.info(
+        "vmbridge 启动：监听 %s → %s（轮询 %ds，唤醒间隔 %ds）",
+        RECORDINGS_DIR,
+        OUTBOX,
+        POLL_SEC,
+        POKE_SEC,
+    )
 
     pending = {}  # 候选新文件 {name: (size, mtime)}，连续两轮一致才搬运
     last_poke = 0.0

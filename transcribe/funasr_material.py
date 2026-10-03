@@ -16,6 +16,7 @@
   - 原来的 stdout 只写回答；库里的 print 都转到 stderr（服务把它接到日志文件）。
   - stdin 读到 EOF 就退出：服务没了它也不会留着。
 """
+
 import json
 import os
 import sys
@@ -37,14 +38,18 @@ def sentences_from(result, offset_ms):
         text = str(item.get("text") or "").strip()
         if not text:
             continue
-        sentences.append({
-            "start_ms": int(item.get("start", 0)) + offset_ms,
-            "end_ms": int(item.get("end", 0)) + offset_ms,
-            "text": text,
-        })
+        sentences.append(
+            {
+                "start_ms": int(item.get("start", 0)) + offset_ms,
+                "end_ms": int(item.get("end", 0)) + offset_ms,
+                "text": text,
+            }
+        )
     if not sentences and str(info.get("text") or "").strip():
         # 没有句子时间戳时整段算一句，起止都记在这段的起点
-        sentences.append({"start_ms": offset_ms, "end_ms": offset_ms, "text": str(info["text"]).strip()})
+        sentences.append(
+            {"start_ms": offset_ms, "end_ms": offset_ms, "text": str(info["text"]).strip()}
+        )
     return sentences
 
 
@@ -88,7 +93,9 @@ def main():
             began = time.time()
             result = model.generate(input=wav, batch_size_s=BATCH_SIZE_S, sentence_timestamp=True)
             sentences = sentences_from(result, offset_ms)
-            log(f"{os.path.basename(wav)} 起点 {offset_ms // 1000}s：{len(sentences)} 句，{time.time() - began:.1f}s")
+            log(
+                f"{os.path.basename(wav)} 起点 {offset_ms // 1000}s：{len(sentences)} 句，{time.time() - began:.1f}s"
+            )
             answer = {"id": request_id, "ok": True, "sentences": sentences}
         except Exception as error:  # noqa: BLE001
             log(f"转写失败：{type(error).__name__}: {error}")

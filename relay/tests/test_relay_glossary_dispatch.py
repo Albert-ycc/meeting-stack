@@ -1,4 +1,5 @@
 """1d-2b：项目提示进任务表，出纪要前按这场会挑词，写回执并把对照表拼进 prompt。"""
+
 import importlib.util
 import io
 import json
@@ -61,13 +62,30 @@ SNAPSHOT = {
     "schema_version": 1,
     "updated_at": "2026-09-26T10:00:00+00:00",
     "terms": [
-        {"term": "数理协会", "aliases": ["树立协会"], "scope": "云图AI", "category": "机构", "project_id": "p-yt"},
-        {"term": "主数据", "aliases": ["珠数据"], "scope": "数据中台", "category": "术语", "project_id": "p-zt"},
+        {
+            "term": "数理协会",
+            "aliases": ["树立协会"],
+            "scope": "云图AI",
+            "category": "机构",
+            "project_id": "p-yt",
+        },
+        {
+            "term": "主数据",
+            "aliases": ["珠数据"],
+            "scope": "数据中台",
+            "category": "术语",
+            "project_id": "p-zt",
+        },
         {"term": "随访", "aliases": ["随方"], "scope": "通用", "category": "术语"},
     ],
     "projects": [
         {"id": "p-yt", "name": "云图AI", "also": [], "cues": [{"text": "云图AI", "kind": "name"}]},
-        {"id": "p-zt", "name": "数据中台", "also": [], "cues": [{"text": "数据中台", "kind": "name"}]},
+        {
+            "id": "p-zt",
+            "name": "数据中台",
+            "also": [],
+            "cues": [{"text": "数据中台", "kind": "name"}],
+        },
     ],
 }
 
@@ -200,7 +218,9 @@ class WatchdogGlossaryTests(unittest.TestCase):
         self.assertIn("## 本场术语对照表（以此为准）", prompt)
         self.assertLess(prompt.index("本场术语对照表"), prompt.index("## 归档规范"))
         self.assertIn("`glossary-injection.json`：只读", prompt)
-        plain = self.module.build_meeting_prompt(Path("/tmp/audio.m4a"), "/tmp/a.txt", 1200, job_id="job-1")
+        plain = self.module.build_meeting_prompt(
+            Path("/tmp/audio.m4a"), "/tmp/a.txt", 1200, job_id="job-1"
+        )
         self.assertNotIn("本场术语对照表", plain)
         self.assertNotIn("glossary-injection.json", plain)
 
@@ -221,26 +241,32 @@ class WatchdogGlossaryTests(unittest.TestCase):
             job_id = control.enqueue(audio, project_hint="数据中台")
             claim = control.claim_next(worker_id="worker-glossary")
             attempt_dir = self.root / ".workbench-drafts" / job_id / "attempt-1"
-            with patch.object(module, "_job_audio_path", return_value=audio), \
-                patch.object(module, "wait_stable", return_value=True), \
-                patch.object(module, "_control_record_source_audio"), \
-                patch.object(module, "get_audio_duration_sec", return_value=601), \
-                patch.object(module, "transcribe", return_value=str(self.transcript)), \
-                patch.object(module, "_control_update_whisper_progress"), \
-                patch.object(module, "_control_record_stage"), \
-                patch.object(module, "_control_record_minutes_plan_source"), \
-                patch.object(module, "_control_interrupt_if_requested", return_value=False), \
-                patch.object(module, "_agent_pane_available", return_value=True), \
-                patch.object(module, "dispatch_to_cc1", return_value=True) as dispatch, \
-                patch.object(module, "_control_record_codex_dispatched"), \
-                patch.object(module, "notify_lark"), \
-                patch.object(module, "save_last_meeting"), \
-                patch.object(module, "mark_processed"):
+            with (
+                patch.object(module, "_job_audio_path", return_value=audio),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "_control_record_source_audio"),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", return_value=str(self.transcript)),
+                patch.object(module, "_control_update_whisper_progress"),
+                patch.object(module, "_control_record_stage"),
+                patch.object(module, "_control_record_minutes_plan_source"),
+                patch.object(module, "_control_interrupt_if_requested", return_value=False),
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(module, "dispatch_to_cc1", return_value=True) as dispatch,
+                patch.object(module, "_control_record_codex_dispatched"),
+                patch.object(module, "notify_lark"),
+                patch.object(module, "save_last_meeting"),
+                patch.object(module, "mark_processed"),
+            ):
                 result = module.process_controlled_claim(claim)
-            receipt = json.loads((attempt_dir / "glossary-injection.json").read_text(encoding="utf-8"))
+            receipt = json.loads(
+                (attempt_dir / "glossary-injection.json").read_text(encoding="utf-8")
+            )
 
         self.assertTrue(result)
-        self.assertEqual({"id": "p-zt", "name": "数据中台", "source": "hint", "score": None}, receipt["project"])
+        self.assertEqual(
+            {"id": "p-zt", "name": "数据中台", "source": "hint", "score": None}, receipt["project"]
+        )
         self.assertEqual((job_id, 1), (receipt["job_id"], receipt["attempt"]))
         prompt = dispatch.call_args.args[0]
         self.assertIn("本场按「数据中台」项目挑了 2 条词", prompt)

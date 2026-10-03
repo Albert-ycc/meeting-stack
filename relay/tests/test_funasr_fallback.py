@@ -67,7 +67,12 @@ class FunAsrTextOnlyChunkTests(unittest.TestCase):
                 (Path("c1.wav"), 2700.0, None, {"start": 2700.0, "end": 3000.0, "hard_cut": False}),
             ],
             [
-                {"text": "第一块", "sentence_info": [{"start": 0, "end": 1500, "text": "第一块正常的话", "spk": 0}]},
+                {
+                    "text": "第一块",
+                    "sentence_info": [
+                        {"start": 0, "end": 1500, "text": "第一块正常的话", "spk": 0}
+                    ],
+                },
                 {"text": "第二块只有整段文本没有分句"},
             ],
         )

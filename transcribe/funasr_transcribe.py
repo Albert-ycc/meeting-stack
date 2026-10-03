@@ -18,6 +18,7 @@
     会被硬塞进完全不相干的会议里 5-6 处。实际采用的热词表打进 stdout 供审计。
   - batch_size_s 保持 60，调大能提速但内存峰值会上去，别随手改。
 """
+
 import json
 import re
 import subprocess
@@ -26,12 +27,12 @@ import tempfile
 import time
 from pathlib import Path
 
-CHUNK_SEC = 3000          # 50 分钟硬上限
-CHUNK_TARGET_SEC = 2700   # 45 分钟目标长度
-CHUNK_SEARCH_SEC = 90     # 在目标点前后寻找安静边界
-CHUNK_OVERLAP_SEC = 2     # 无安静边界时的硬切重叠
-HOTWORD_CAP = 20          # 热词上限，防假注入
-BATCH_SIZE_S = 60         # 转写批大小（秒），内存峰值与它正相关
+CHUNK_SEC = 3000  # 50 分钟硬上限
+CHUNK_TARGET_SEC = 2700  # 45 分钟目标长度
+CHUNK_SEARCH_SEC = 90  # 在目标点前后寻找安静边界
+CHUNK_OVERLAP_SEC = 2  # 无安静边界时的硬切重叠
+HOTWORD_CAP = 20  # 热词上限，防假注入
+BATCH_SIZE_S = 60  # 转写批大小（秒），内存峰值与它正相关
 
 
 def log(msg):
@@ -40,9 +41,11 @@ def log(msg):
 
 def audio_duration(path):
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True, check=True)
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     return float(out.stdout.strip())
 
 
@@ -66,8 +69,16 @@ def detect_silence_intervals(audio):
     """用 ffmpeg 找安静区间；检测失败时安全降级为硬切。"""
     result = subprocess.run(
         [
-            "ffmpeg", "-hide_banner", "-nostats", "-i", str(audio),
-            "-af", "silencedetect=noise=-35dB:d=0.4", "-f", "null", "-",
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(audio),
+            "-af",
+            "silencedetect=noise=-35dB:d=0.4",
+            "-f",
+            "null",
+            "-",
         ],
         capture_output=True,
         text=True,
@@ -147,8 +158,7 @@ def to_wav_chunks(audio, tmpdir):
         off = item["start"]
         chunk_len = item["end"] - item["start"]
         wav = Path(tmpdir) / f"chunk{i}.wav"
-        cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(audio),
-               "-ac", "1", "-ar", "16000"]
+        cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(audio), "-ac", "1", "-ar", "16000"]
         if len(plan) > 1:
             cmd += ["-ss", f"{off:.3f}", "-t", f"{chunk_len:.3f}"]
         cmd.append(str(wav))
@@ -156,10 +166,9 @@ def to_wav_chunks(audio, tmpdir):
         overlap_boundary = plan[i - 1]["end"] if i and plan[i - 1]["hard_cut"] else None
         chunks.append((wav, off, overlap_boundary, item))
     boundaries = ", ".join(
-        f"{item['start']:.1f}-{item['end']:.1f}{'*' if item['hard_cut'] else ''}"
-        for item in plan
+        f"{item['start']:.1f}-{item['end']:.1f}{'*' if item['hard_cut'] else ''}" for item in plan
     )
-    log(f"音频 {dur/60:.1f} 分钟，切为 {len(plan)} 块（* 为带重叠硬切）：{boundaries}")
+    log(f"音频 {dur / 60:.1f} 分钟，切为 {len(plan)} 块（* 为带重叠硬切）：{boundaries}")
     return chunks, len(plan)
 
 
@@ -188,19 +197,18 @@ def main():
         vad_kwargs={"max_single_segment_time": 30000},
         disable_update=True,
     )
-    log(f"模型加载 {time.time()-t0:.1f}s")
+    log(f"模型加载 {time.time() - t0:.1f}s")
 
     sentences, raw = [], []
     with tempfile.TemporaryDirectory() as tmpdir:
         chunks, n_chunks = to_wav_chunks(audio, tmpdir)
         for i, (wav, off, overlap_boundary, chunk_plan) in enumerate(chunks):
             t1 = time.time()
-            res = model.generate(input=str(wav), batch_size_s=BATCH_SIZE_S,
-                                 hotword=hotword)
-            log(f"块 {i+1}/{n_chunks} 转写 {time.time()-t1:.1f}s")
+            res = model.generate(input=str(wav), batch_size_s=BATCH_SIZE_S, hotword=hotword)
+            log(f"块 {i + 1}/{n_chunks} 转写 {time.time() - t1:.1f}s")
             info = res[0]
             raw.append({"chunk": i, "offset_sec": off, "plan": chunk_plan, "result": info})
-            prefix = f"c{i+1}-" if n_chunks > 1 else ""
+            prefix = f"c{i + 1}-" if n_chunks > 1 else ""
             for s in info.get("sentence_info", []):
                 sentence = {
                     "start": s.get("start", 0) + off * 1000,
@@ -208,17 +216,16 @@ def main():
                     "text": s.get("text", "").strip(),
                     "spk": f"{prefix}spk{s.get('spk', '?')}",
                 }
-                if overlap_boundary and is_overlap_duplicate(
-                    sentence, sentences, overlap_boundary
-                ):
+                if overlap_boundary and is_overlap_duplicate(sentence, sentences, overlap_boundary):
                     continue
                 sentences.append(sentence)
             if not info.get("sentence_info") and info.get("text"):
                 # 整段文本覆盖整块，终点取块终点；起止相同的 SRT 句会被纪要计划判为损坏
                 start_ms = off * 1000
                 end_ms = max(float(chunk_plan.get("end", off)) * 1000, start_ms + 10)
-                sentences.append({"start": start_ms, "end": end_ms,
-                                  "text": info["text"], "spk": f"{prefix}spk?"})
+                sentences.append(
+                    {"start": start_ms, "end": end_ms, "text": info["text"], "spk": f"{prefix}spk?"}
+                )
 
     sentences = [s for s in sentences if s["text"]]
     if not sentences:
@@ -227,7 +234,8 @@ def main():
 
     # <stem>.txt：每句一行
     (outdir / f"{stem}.txt").write_text(
-        "\n".join(s["text"] for s in sentences) + "\n", encoding="utf-8")
+        "\n".join(s["text"] for s in sentences) + "\n", encoding="utf-8"
+    )
 
     # <stem>.srt
     srt = []
@@ -240,27 +248,29 @@ def main():
     for s in sentences:
         if s["spk"] != cur_spk and buf:
             t = int(seg_start // 1000)
-            lines.append(f"[{cur_spk}] [{t//60:02d}:{t%60:02d}] {''.join(buf)}")
+            lines.append(f"[{cur_spk}] [{t // 60:02d}:{t % 60:02d}] {''.join(buf)}")
             buf = []
         if s["spk"] != cur_spk:
             cur_spk, seg_start = s["spk"], s["start"]
         buf.append(s["text"])
     if buf:
         t = int(seg_start // 1000)
-        lines.append(f"[{cur_spk}] [{t//60:02d}:{t%60:02d}] {''.join(buf)}")
+        lines.append(f"[{cur_spk}] [{t // 60:02d}:{t % 60:02d}] {''.join(buf)}")
     header = ""
     if n_chunks > 1:
-        header = (f"# 长音频已切 {n_chunks} 块分别转写，说话人编号跨块不连续"
-                  f"（c1-spk0 与 c2-spk0 未必是同一人）\n")
-    (outdir / f"{stem}.spk.txt").write_text(
-        header + "\n".join(lines) + "\n", encoding="utf-8")
+        header = (
+            f"# 长音频已切 {n_chunks} 块分别转写，说话人编号跨块不连续"
+            f"（c1-spk0 与 c2-spk0 未必是同一人）\n"
+        )
+    (outdir / f"{stem}.spk.txt").write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
 
     # <stem>.funasr.json
     (outdir / f"{stem}.funasr.json").write_text(
-        json.dumps(raw, ensure_ascii=False, default=str), encoding="utf-8")
+        json.dumps(raw, ensure_ascii=False, default=str), encoding="utf-8"
+    )
 
     n_spk = len({s["spk"] for s in sentences})
-    log(f"完成：{len(sentences)} 句，说话人 {n_spk} 个，总耗时 {time.time()-t0:.1f}s")
+    log(f"完成：{len(sentences)} 句，说话人 {n_spk} 个，总耗时 {time.time() - t0:.1f}s")
 
 
 if __name__ == "__main__":

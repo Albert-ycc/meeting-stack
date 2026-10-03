@@ -37,7 +37,9 @@ def tearDownModule():
 
 
 def load_env_module():
-    spec = importlib.util.spec_from_file_location("relay_env_under_test", QUICKSTART / "relay_env.py")
+    spec = importlib.util.spec_from_file_location(
+        "relay_env_under_test", QUICKSTART / "relay_env.py"
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -81,12 +83,12 @@ class LoadEnvFilesTests(unittest.TestCase):
     def test_export_prefix_quotes_and_inline_comments(self):
         env_file = self._write(
             ".env",
-            'export MEETING_RELAY_AGENT=claude\n'
+            "export MEETING_RELAY_AGENT=claude\n"
             'MEETING_RELAY_TMUX_SESSION="my agent"  # 带空格要加引号\n'
             "MEETING_RELAY_LLM_BACKEND='claude'\n"
             "MEETING_RELAY_CLAUDE_MODEL=opus # 行尾注释\n"
             "MEETING_RELAY_DEEPSEEK_MODEL=a#b\n"
-            "MEETING_RELAY_LARK_CHAT_ID=\"unclosed\n",
+            'MEETING_RELAY_LARK_CHAT_ID="unclosed\n',
         )
 
         _applied, environ = self._load(env_file)
@@ -126,7 +128,9 @@ class LoadEnvFilesTests(unittest.TestCase):
         self.assertEqual({}, environ)
 
     def test_workbench_dir_file_beats_repo_root_file_and_later_lines_beat_earlier_ones(self):
-        root_file = self._write(".env", "MEETING_RELAY_AGENT=codex\nMEETING_RELAY_TMUX_SESSION=root\n")
+        root_file = self._write(
+            ".env", "MEETING_RELAY_AGENT=codex\nMEETING_RELAY_TMUX_SESSION=root\n"
+        )
         workbench_file = self._write(
             "workbench/.env", "MEETING_RELAY_AGENT=claude\nMEETING_RELAY_AGENT=claude2\n"
         )
@@ -145,7 +149,9 @@ class LoadEnvFilesTests(unittest.TestCase):
             env_file, environ={"MEETING_RELAY_AGENT": "claude", "MEETING_RELAY_TMUX_SESSION": ""}
         )
 
-        self.assertEqual({"MEETING_RELAY_AGENT": "claude", "MEETING_RELAY_TMUX_SESSION": ""}, environ)
+        self.assertEqual(
+            {"MEETING_RELAY_AGENT": "claude", "MEETING_RELAY_TMUX_SESSION": ""}, environ
+        )
         self.assertEqual([], applied)
 
     def test_only_keys_relay_reads_are_loaded(self):
@@ -172,7 +178,9 @@ class LoadEnvFilesTests(unittest.TestCase):
         self.assertEqual(set(applied), set(environ))
 
     def test_a_line_with_a_nul_byte_is_ignored_instead_of_crashing_the_start(self):
-        env_file = self._write(".env", "MEETING_RELAY_AGENT=cla\x00ude\nMEETING_RELAY_TMUX_SESSION=ok\n")
+        env_file = self._write(
+            ".env", "MEETING_RELAY_AGENT=cla\x00ude\nMEETING_RELAY_TMUX_SESSION=ok\n"
+        )
 
         applied, environ = self._load(env_file)
 
@@ -181,7 +189,9 @@ class LoadEnvFilesTests(unittest.TestCase):
 
     def test_per_call_project_hint_is_never_taken_from_a_file(self):
         """项目提示是工作台每次入队、重试时按场次传的，还特意先摘掉继承来的；文件里的静态值不能把它带回来。"""
-        env_file = self._write(".env", "MEETING_RELAY_PROJECT_HINT=p-old\nMEETING_RELAY_AGENT=claude\n")
+        env_file = self._write(
+            ".env", "MEETING_RELAY_PROJECT_HINT=p-old\nMEETING_RELAY_AGENT=claude\n"
+        )
 
         applied, environ = self._load(env_file)
 

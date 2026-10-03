@@ -7,6 +7,7 @@
 - 确认后重建状态卡：已确认条目保留全部细节、去掉按钮；待确认条目保留按钮。
 - 不产任何外链（本地化部署，外部网络访问不到工作台）。
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -87,9 +88,7 @@ def _task_text_block(task: dict[str, Any], index: int) -> dict[str, Any]:
     if anchor:
         meta.append(f"时间：{anchor}")
     quote = (task.get("anchor_quote") or "").strip()
-    inner: list[dict[str, Any]] = [
-        {"tag": "markdown", "content": f"**{index}. {task['title']}**"}
-    ]
+    inner: list[dict[str, Any]] = [{"tag": "markdown", "content": f"**{index}. {task['title']}**"}]
     if meta:
         inner.append({"tag": "markdown", "content": "　".join(meta)})
     if quote:
@@ -185,4 +184,9 @@ def build_status_card(
             "content": f"会后任务 · {len(tasks)} 条" + ("，已全部确认 ✅" if all_done else ""),
         },
     }
-    return {"schema": "2.0", "config": {"wide_screen_mode": True}, "header": header, "body": {"elements": elements}}
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": header,
+        "body": {"elements": elements},
+    }

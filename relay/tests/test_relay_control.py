@@ -154,9 +154,7 @@ def create_complete_archive(
                 {
                     "schema_version": 1,
                     "minutes_protocol_version": 3,
-                    "source_srt_sha256": hashlib.sha256(
-                        source_srt.read_bytes()
-                    ).hexdigest(),
+                    "source_srt_sha256": hashlib.sha256(source_srt.read_bytes()).hexdigest(),
                     "input_transcript_sha256": None,
                     "total_duration_sec": 2,
                     "cue_count": 1,
@@ -194,9 +192,7 @@ def create_complete_archive(
         (whisper / "whisper.log").write_text("ok", encoding="utf-8")
 
     artifact_paths = sorted(
-        str(path.relative_to(archive))
-        for path in archive.rglob("*")
-        if path.is_file()
+        str(path.relative_to(archive)) for path in archive.rglob("*") if path.is_file()
     )
     manifest = {
         "schema_version": 1,
@@ -204,13 +200,13 @@ def create_complete_archive(
         "job_id": job_id,
         "attempt": attempt,
         "artifacts": [
-                    {
-                        "path": path,
-                        "bytes": (archive / path).stat().st_size,
-                        "sha256": hashlib.sha256((archive / path).read_bytes()).hexdigest(),
-                    }
-                    for path in artifact_paths
-                ],
+            {
+                "path": path,
+                "bytes": (archive / path).stat().st_size,
+                "sha256": hashlib.sha256((archive / path).read_bytes()).hexdigest(),
+            }
+            for path in artifact_paths
+        ],
     }
     input_snapshot = archive / "input-transcript.txt"
     if input_snapshot.is_file():
@@ -223,12 +219,8 @@ def create_complete_archive(
         encoding="utf-8",
     )
     if minutes_protocol_version >= 3:
-        source_digest = hashlib.sha256(
-            (archive / f"{stem}.srt").read_bytes()
-        ).hexdigest()
-        plan_digest = hashlib.sha256(
-            (archive / "minutes-plan.json").read_bytes()
-        ).hexdigest()
+        source_digest = hashlib.sha256((archive / f"{stem}.srt").read_bytes()).hexdigest()
+        plan_digest = hashlib.sha256((archive / "minutes-plan.json").read_bytes()).hexdigest()
         for database_path in root.glob("*.sqlite3"):
             try:
                 with sqlite3.connect(database_path) as connection:
@@ -258,9 +250,7 @@ def create_published_archive(
     draft_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     attempt = draft_manifest["attempt"]
     audio = next(
-        path
-        for path in published.iterdir()
-        if path.suffix.lower() in {".m4a", ".mp3", ".wav"}
+        path for path in published.iterdir() if path.suffix.lower() in {".m4a", ".mp3", ".wav"}
     )
     artifact_paths = sorted(
         str(path.relative_to(published))
@@ -274,9 +264,7 @@ def create_published_archive(
         json.dumps(
             {
                 "schema_version": 1,
-                "minutes_protocol_version": draft_manifest.get(
-                    "minutes_protocol_version", 1
-                ),
+                "minutes_protocol_version": draft_manifest.get("minutes_protocol_version", 1),
                 "job_id": job_id,
                 "attempt": attempt,
                 "meeting_id": meeting_id,
@@ -289,18 +277,14 @@ def create_published_archive(
                     {
                         "path": path,
                         "bytes": (published / path).stat().st_size,
-                        "sha256": hashlib.sha256(
-                            (published / path).read_bytes()
-                        ).hexdigest(),
+                        "sha256": hashlib.sha256((published / path).read_bytes()).hexdigest(),
                     }
                     for path in artifact_paths
                 ],
                 **(
                     {
                         "requested_stage": draft_manifest["requested_stage"],
-                        "input_transcript_sha256": draft_manifest[
-                            "input_transcript_sha256"
-                        ],
+                        "input_transcript_sha256": draft_manifest["input_transcript_sha256"],
                     }
                     if draft_manifest.get("requested_stage") == "minutes_generating"
                     else {}
@@ -322,9 +306,7 @@ def rewrite_archive_as_published(
     draft_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     attempt = draft_manifest["attempt"]
     audio = next(
-        path
-        for path in archive.iterdir()
-        if path.suffix.lower() in {".m4a", ".mp3", ".wav"}
+        path for path in archive.iterdir() if path.suffix.lower() in {".m4a", ".mp3", ".wav"}
     )
     artifact_paths = sorted(
         str(path.relative_to(archive))
@@ -338,9 +320,7 @@ def rewrite_archive_as_published(
         json.dumps(
             {
                 "schema_version": 1,
-                "minutes_protocol_version": draft_manifest.get(
-                    "minutes_protocol_version", 1
-                ),
+                "minutes_protocol_version": draft_manifest.get("minutes_protocol_version", 1),
                 "job_id": job_id,
                 "attempt": attempt,
                 "meeting_id": meeting_id,
@@ -353,9 +333,7 @@ def rewrite_archive_as_published(
                     {
                         "path": relative,
                         "bytes": (archive / relative).stat().st_size,
-                        "sha256": hashlib.sha256(
-                            (archive / relative).read_bytes()
-                        ).hexdigest(),
+                        "sha256": hashlib.sha256((archive / relative).read_bytes()).hexdigest(),
                     }
                     for relative in artifact_paths
                 ],
@@ -426,12 +404,8 @@ def create_minutes_only_archive(
             {
                 "schema_version": 1,
                 "minutes_protocol_version": 3,
-                "source_srt_sha256": hashlib.sha256(
-                    input_snapshot.read_bytes()
-                ).hexdigest(),
-                "input_transcript_sha256": hashlib.sha256(
-                    input_snapshot.read_bytes()
-                ).hexdigest(),
+                "source_srt_sha256": hashlib.sha256(input_snapshot.read_bytes()).hexdigest(),
+                "input_transcript_sha256": hashlib.sha256(input_snapshot.read_bytes()).hexdigest(),
                 "total_duration_sec": 2,
                 "cue_count": 1,
                 "windows": [
@@ -467,9 +441,7 @@ def create_minutes_only_archive(
         "job_id": job_id,
         "attempt": attempt,
         "requested_stage": "minutes_generating",
-        "input_transcript_sha256": hashlib.sha256(
-            input_snapshot.read_bytes()
-        ).hexdigest(),
+        "input_transcript_sha256": hashlib.sha256(input_snapshot.read_bytes()).hexdigest(),
         "artifacts": [
             {
                 "path": path,
@@ -482,9 +454,7 @@ def create_minutes_only_archive(
     (archive / "workbench-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
     )
-    plan_digest = hashlib.sha256(
-        (archive / "minutes-plan.json").read_bytes()
-    ).hexdigest()
+    plan_digest = hashlib.sha256((archive / "minutes-plan.json").read_bytes()).hexdigest()
     for database_path in root.glob("*.sqlite3"):
         try:
             with sqlite3.connect(database_path) as connection:
@@ -659,9 +629,7 @@ def refresh_published_manifest(manifest_path: Path) -> None:
         }
         for path in artifact_paths
     ]
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
 
 def archive_artifact_hashes(archive: Path) -> dict[str, str]:
@@ -730,16 +698,31 @@ class PendingReconcileIndexTests(unittest.TestCase):
                 published = archive / f"2607{index:02d} 会议{index}"
                 published.mkdir()
                 (published / "workbench-manifest.json").write_text(
-                    json.dumps({"schema_version": 1, "job_id": f"job-{index}",
-                                "attempt": 1, "status": "published"}),
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "job_id": f"job-{index}",
+                            "attempt": 1,
+                            "status": "published",
+                        }
+                    ),
                     encoding="utf-8",
                 )
                 connection.execute(
                     """INSERT INTO jobs(job_id, source_key, audio_path, status,
                        current_attempt, archive_dir, published_archive_dir,
                        created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (f"job-{index}", f"k{index}", f"/x/{index}.m4a", "published", 1,
-                     str(published), str(published), now, now),
+                    (
+                        f"job-{index}",
+                        f"k{index}",
+                        f"/x/{index}.m4a",
+                        "published",
+                        1,
+                        str(published),
+                        str(published),
+                        now,
+                        now,
+                    ),
                 )
                 connection.execute(
                     """INSERT INTO attempts(job_id, attempt_no, requested_stage,
@@ -751,8 +734,14 @@ class PendingReconcileIndexTests(unittest.TestCase):
                     leftover = archive / f"2607{index:02d} 会议{index}（待校对）"
                     leftover.mkdir()
                     (leftover / "workbench-manifest.json").write_text(
-                        json.dumps({"schema_version": 1, "job_id": f"job-{index}",
-                                    "attempt": 1, "status": "completed_unreviewed"}),
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "job_id": f"job-{index}",
+                                "attempt": 1,
+                                "status": "completed_unreviewed",
+                            }
+                        ),
                         encoding="utf-8",
                     )
                 if index % 4 == 0:
@@ -760,8 +749,14 @@ class PendingReconcileIndexTests(unittest.TestCase):
                     other = archive / f"2607{index:02d} 会议{index}（旧 attempt）"
                     other.mkdir()
                     (other / "workbench-manifest.json").write_text(
-                        json.dumps({"schema_version": 1, "job_id": f"job-{index}",
-                                    "attempt": 0, "status": "completed_unreviewed"}),
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "job_id": f"job-{index}",
+                                "attempt": 0,
+                                "status": "completed_unreviewed",
+                            }
+                        ),
                         encoding="utf-8",
                     )
         (archive / "没有 manifest 的目录").mkdir()
@@ -779,15 +774,20 @@ class PendingReconcileIndexTests(unittest.TestCase):
                 return original(archive_dir)
 
             recover = control._recover_published_pending_sources
-            patches = [patch.object(module.RelayControl, "_manifest_metadata",
-                                    staticmethod(counting))]
+            patches = [
+                patch.object(module.RelayControl, "_manifest_metadata", staticmethod(counting))
+            ]
             if per_job_scan:
                 # 原来的做法：每个任务各自把归档根扫一遍
-                patches.append(patch.object(
-                    control, "_recover_published_pending_sources",
-                    side_effect=lambda job_id, attempt_no, archive_index=None:
-                        recover(job_id, attempt_no),
-                ))
+                patches.append(
+                    patch.object(
+                        control,
+                        "_recover_published_pending_sources",
+                        side_effect=lambda job_id, attempt_no, archive_index=None: recover(
+                            job_id, attempt_no
+                        ),
+                    )
+                )
             for patcher in patches:
                 patcher.start()
             try:
@@ -810,8 +810,9 @@ class PendingReconcileIndexTests(unittest.TestCase):
 
         self.assertEqual(legacy, indexed)
         self.assertEqual(legacy_visible, indexed_visible)
-        self.assertTrue(any(error["stage"] == "published_pending_cleanup"
-                            for error in indexed["errors"]))
+        self.assertTrue(
+            any(error["stage"] == "published_pending_cleanup" for error in indexed["errors"])
+        )
         # 12 个已发布 + 4 个残留 + 3 个旧 attempt 副本 = 19 个带 manifest 的目录各读一次，
         # 另外 4 个有残留的任务在清理校验里各自再读自己的 manifest
         self.assertLessEqual(indexed_reads, 19 + 4)
@@ -826,8 +827,11 @@ class PendingReconcileIndexTests(unittest.TestCase):
 
             summary = control.reconcile_pending_archives()
 
-        failed = sorted(error["job_id"] for error in summary["errors"]
-                        if error["stage"] == "published_pending_cleanup")
+        failed = sorted(
+            error["job_id"]
+            for error in summary["errors"]
+            if error["stage"] == "published_pending_cleanup"
+        )
         self.assertEqual(["job-0", "job-1", "job-2"], failed)
 
 
@@ -1018,9 +1022,7 @@ class RelayControlTests(unittest.TestCase):
         except TypeError as error:
             if "auto_pending_archive" not in str(error):
                 raise
-            self.control = self.module.RelayControl(
-                self.db_path, archive_root=self.root
-            )
+            self.control = self.module.RelayControl(self.db_path, archive_root=self.root)
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -1042,10 +1044,7 @@ class RelayControlTests(unittest.TestCase):
             if "auto_pending_archive" not in str(error):
                 raise
             if strict_interface:
-                self.fail(
-                    "RelayControl 缺少 auto_pending_archive 回滚开关接口: "
-                    f"{error}"
-                )
+                self.fail(f"RelayControl 缺少 auto_pending_archive 回滚开关接口: {error}")
             control = self.module.RelayControl(target_db, archive_root=self.root)
             control.auto_pending_archive = True
             return control
@@ -1087,9 +1086,7 @@ class RelayControlTests(unittest.TestCase):
         recovered = self.control.enqueue(self.audio, hotword_prompt_path=retry_hotwords)
 
         self.assertEqual(first, recovered)
-        with self.assertRaisesRegex(
-            self.module.InvalidTransitionError, "不能在幂等入队时更换热词"
-        ):
+        with self.assertRaisesRegex(self.module.InvalidTransitionError, "不能在幂等入队时更换热词"):
             self.control.enqueue(self.audio, hotword_prompt_path=changed_hotwords)
 
     def test_new_attempt_uses_minutes_protocol_v3_and_claim_exposes_it(self):
@@ -1184,9 +1181,7 @@ class RelayControlTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='runtime_workers'"
             ).fetchone()[0]
 
-        control.heartbeat_worker(
-            "watchdog", mode="controlled", status="running", pid=os.getpid()
-        )
+        control.heartbeat_worker("watchdog", mode="controlled", status="running", pid=os.getpid())
 
         with sqlite3.connect(f"file:{lazy_db}?mode=ro", uri=True) as connection:
             after = connection.execute(
@@ -1211,9 +1206,7 @@ class RelayControlTests(unittest.TestCase):
         self.assertFalse(worker["fresh"])
 
     def test_runtime_health_reports_legacy_mode_as_degraded(self):
-        self.control.heartbeat_worker(
-            "watchdog", mode="legacy", status="running", pid=os.getpid()
-        )
+        self.control.heartbeat_worker("watchdog", mode="legacy", status="running", pid=os.getpid())
 
         result = self.control.health(control_enabled=False)
 
@@ -1290,9 +1283,7 @@ class RelayControlTests(unittest.TestCase):
     def test_existing_database_migrates_substate_attempt_and_publish_columns(self):
         job_id = self.control.enqueue(self.audio)
         with sqlite3.connect(self.db_path) as connection:
-            existing_job_columns = {
-                row[1] for row in connection.execute("PRAGMA table_info(jobs)")
-            }
+            existing_job_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
             for column in (
                 "whisper_attempt",
                 "whisper_retry_requested",
@@ -1340,17 +1331,13 @@ class RelayControlTests(unittest.TestCase):
         draft = create_complete_archive(self.root, job_id)
         self.control.complete_minutes(job_id, draft)
         manifest = create_published_archive(self.root, draft, job_id)
-        published = self.control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        published = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
         with sqlite3.connect(self.db_path) as connection:
             connection.execute("ALTER TABLE jobs DROP COLUMN published_archive_dir")
 
         migrated = self.module.RelayControl(self.db_path, archive_root=self.root)
 
-        self.assertEqual(
-            published["archive_dir"], migrated.status(job_id)["published_archive_dir"]
-        )
+        self.assertEqual(published["archive_dir"], migrated.status(job_id)["published_archive_dir"])
 
     def test_claim_next_atomically_claims_one_queued_attempt(self):
         first = self.control.enqueue(self.audio)
@@ -1412,11 +1399,10 @@ class RelayControlTests(unittest.TestCase):
             finally:
                 claim_finished.set()
 
-        with patch.object(
-            self.control, "_job_row", side_effect=pause_cancel_after_read
-        ), ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="cancel-race"
-        ) as executor:
+        with (
+            patch.object(self.control, "_job_row", side_effect=pause_cancel_after_read),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="cancel-race") as executor,
+        ):
             cancel_future = executor.submit(self.control.cancel, job_id)
             self.assertTrue(row_read.wait(timeout=2))
             claim_future = executor.submit(claim)
@@ -1452,11 +1438,10 @@ class RelayControlTests(unittest.TestCase):
             finally:
                 claim_finished.set()
 
-        with patch.object(
-            self.control, "_job_row", side_effect=pause_stop_after_read
-        ), ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="stop-race"
-        ) as executor:
+        with (
+            patch.object(self.control, "_job_row", side_effect=pause_stop_after_read),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="stop-race") as executor,
+        ):
             stop_future = executor.submit(self.control.stop_after_stage, job_id)
             self.assertTrue(row_read.wait(timeout=2))
             claim_future = executor.submit(claim)
@@ -1552,9 +1537,7 @@ class RelayControlTests(unittest.TestCase):
         # 别的活着的 worker 的 claim 不受「我空闲」的影响
         self.assertEqual(
             0,
-            self.control.recover_orphaned_claims(
-                idle_worker_id=f"relayctl-{os.getpid()}"
-            ),
+            self.control.recover_orphaned_claims(idle_worker_id=f"relayctl-{os.getpid()}"),
         )
         self.assertEqual("transcribing", self.control.status(stranded)["status"])
 
@@ -1589,9 +1572,7 @@ class RelayControlTests(unittest.TestCase):
 
     def test_restart_recovery_rejects_reused_pid_with_different_start_token(self):
         job_id = self.control.enqueue(self.audio)
-        self.control.claim_next(
-            worker_id=f"watchdog-{os.getpid()}-000000000000"
-        )
+        self.control.claim_next(worker_id=f"watchdog-{os.getpid()}-000000000000")
 
         with patch.object(
             self.module,
@@ -1606,12 +1587,14 @@ class RelayControlTests(unittest.TestCase):
     def test_pid_permission_error_still_rejects_mismatched_start_token(self):
         worker_id = "watchdog-424242-000000000000"
 
-        with patch.object(self.module.os, "kill", side_effect=PermissionError), \
-                patch.object(
-                    self.module,
-                    "_process_start_token",
-                    return_value="111111111111",
-                ):
+        with (
+            patch.object(self.module.os, "kill", side_effect=PermissionError),
+            patch.object(
+                self.module,
+                "_process_start_token",
+                return_value="111111111111",
+            ),
+        ):
             alive = self.module._worker_process_is_alive(worker_id)
 
         self.assertFalse(alive)
@@ -1619,8 +1602,10 @@ class RelayControlTests(unittest.TestCase):
     def test_pid_permission_error_is_conservatively_alive_when_token_unreadable(self):
         worker_id = "watchdog-424242-000000000000"
 
-        with patch.object(self.module.os, "kill", side_effect=PermissionError), \
-                patch.object(self.module, "_process_start_token", return_value=None):
+        with (
+            patch.object(self.module.os, "kill", side_effect=PermissionError),
+            patch.object(self.module, "_process_start_token", return_value=None),
+        ):
             alive = self.module._worker_process_is_alive(worker_id)
 
         self.assertTrue(alive)
@@ -1641,11 +1626,14 @@ class RelayControlTests(unittest.TestCase):
             self.control.retry(job_id, "transcribing")
             return self.control.claim_next(worker_id="worker-new")
 
-        with patch.object(
-            self.module,
-            "_worker_process_is_alive",
-            side_effect=pause_dead_worker_check,
-        ), ThreadPoolExecutor(max_workers=2) as executor:
+        with (
+            patch.object(
+                self.module,
+                "_worker_process_is_alive",
+                side_effect=pause_dead_worker_check,
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
             recovery = executor.submit(self.control.recover_orphaned_claims)
             self.assertTrue(worker_checked.wait(timeout=2))
             retry = executor.submit(retry_and_claim)
@@ -1796,9 +1784,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcribing")
         self.control.fail(job_id, stage="transcribing", error="FunASR failed")
 
-        self.control.retry(
-            job_id, "minutes_generating", transcript_path=self.input_transcript
-        )
+        self.control.retry(job_id, "minutes_generating", transcript_path=self.input_transcript)
 
         claim = self.control.claim_next(worker_id="worker-backend-default")
         self.assertIsNone(claim["llm_backend"])
@@ -1809,9 +1795,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
         self.control.fail(job_id, stage="minutes_generating", error="Codex failed")
-        self.control.retry(
-            job_id, "minutes_generating", transcript_path=self.input_transcript
-        )
+        self.control.retry(job_id, "minutes_generating", transcript_path=self.input_transcript)
 
         self.control.record_stage(job_id, "minutes_generating")
 
@@ -1866,9 +1850,7 @@ class RelayControlTests(unittest.TestCase):
             self.control.complete_minutes(job_id, archive, attempt_no=1)
 
         self.assertIn("manifest_requested_stage", caught.exception.report.missing)
-        self.assertIn(
-            "manifest_input_transcript_sha256", caught.exception.report.missing
-        )
+        self.assertIn("manifest_input_transcript_sha256", caught.exception.report.missing)
 
     def test_input_snapshot_never_satisfies_full_transcript_requirement(self):
         job_id = self.control.enqueue(self.audio)
@@ -1948,21 +1930,19 @@ class RelayControlTests(unittest.TestCase):
 
     def test_volumes_archive_requires_a_real_mountpoint(self):
         archive_root = Path("/Volumes/Detached/meetings")
-        control = self.module.RelayControl(
-            self.root / "volume.sqlite3", archive_root=archive_root
-        )
+        control = self.module.RelayControl(self.root / "volume.sqlite3", archive_root=archive_root)
 
-        with patch.object(Path, "is_symlink", return_value=False), \
-                patch.object(Path, "is_dir", return_value=True), \
-                patch.object(self.module.os.path, "ismount", return_value=False):
+        with (
+            patch.object(Path, "is_symlink", return_value=False),
+            patch.object(Path, "is_dir", return_value=True),
+            patch.object(self.module.os.path, "ismount", return_value=False),
+        ):
             with self.assertRaises(self.module.RelayControlError):
                 control.enqueue(self.audio, compute_hash=False)
 
     def test_volumes_archive_requires_a_distinct_mounted_device(self):
         archive_root = Path("/Volumes/Detached/meetings")
-        control = self.module.RelayControl(
-            self.root / "device.sqlite3", archive_root=archive_root
-        )
+        control = self.module.RelayControl(self.root / "device.sqlite3", archive_root=archive_root)
         original_stat = os.stat
 
         def matching_volume_stat(path, *args, **kwargs):
@@ -1970,18 +1950,18 @@ class RelayControlTests(unittest.TestCase):
                 return os.stat_result((0, 0, 7, 0, 0, 0, 0, 0, 0, 0))
             return original_stat(path, *args, **kwargs)
 
-        with patch.object(Path, "is_symlink", return_value=False), \
-                patch.object(Path, "is_dir", return_value=True), \
-                patch.object(self.module.os.path, "ismount", return_value=True), \
-                patch.object(self.module.os, "stat", side_effect=matching_volume_stat):
+        with (
+            patch.object(Path, "is_symlink", return_value=False),
+            patch.object(Path, "is_dir", return_value=True),
+            patch.object(self.module.os.path, "ismount", return_value=True),
+            patch.object(self.module.os, "stat", side_effect=matching_volume_stat),
+        ):
             with self.assertRaises(self.module.RelayControlError):
                 control.enqueue(self.audio, compute_hash=False)
 
     def test_volumes_archive_accepts_a_distinct_real_mount(self):
         archive_root = Path("/Volumes/Attached/meetings")
-        control = self.module.RelayControl(
-            self.root / "mounted.sqlite3", archive_root=archive_root
-        )
+        control = self.module.RelayControl(self.root / "mounted.sqlite3", archive_root=archive_root)
         original_stat = os.stat
 
         def distinct_volume_stat(path, *args, **kwargs):
@@ -1991,10 +1971,12 @@ class RelayControlTests(unittest.TestCase):
                 return os.stat_result((0, 0, 8, 0, 0, 0, 0, 0, 0, 0))
             return original_stat(path, *args, **kwargs)
 
-        with patch.object(Path, "is_symlink", return_value=False), \
-                patch.object(Path, "is_dir", return_value=True), \
-                patch.object(self.module.os.path, "ismount", return_value=True), \
-                patch.object(self.module.os, "stat", side_effect=distinct_volume_stat):
+        with (
+            patch.object(Path, "is_symlink", return_value=False),
+            patch.object(Path, "is_dir", return_value=True),
+            patch.object(self.module.os.path, "ismount", return_value=True),
+            patch.object(self.module.os, "stat", side_effect=distinct_volume_stat),
+        ):
             job_id = control.enqueue(self.audio, compute_hash=False)
 
         self.assertEqual("queued", control.status(job_id)["status"])
@@ -2005,9 +1987,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
         self.control.fail(job_id, stage="minutes_generating", error="Codex failed")
-        self.control.retry(
-            job_id, "minutes_generating", transcript_path=self.input_transcript
-        )
+        self.control.retry(job_id, "minutes_generating", transcript_path=self.input_transcript)
 
         claim = self.control.claim_next(worker_id="worker-retry")
 
@@ -2045,9 +2025,7 @@ class RelayControlTests(unittest.TestCase):
         draft_one = create_complete_archive(self.root, job_id)
         self.control.complete_minutes(job_id, draft_one)
         manifest_one = create_published_archive(self.root, draft_one, job_id)
-        first_publish = self.control.mark_published(
-            job_id, manifest_one, "vm-20260710-120000-ABC"
-        )
+        first_publish = self.control.mark_published(job_id, manifest_one, "vm-20260710-120000-ABC")
 
         attempt = self.control.retry(
             job_id, "minutes_generating", transcript_path=self.input_transcript
@@ -2062,9 +2040,7 @@ class RelayControlTests(unittest.TestCase):
             job_id,
             directory_name="260710 工作台发布测试-v2",
         )
-        second_publish = self.control.mark_published(
-            job_id, manifest_two, "vm-20260710-120000-ABC"
-        )
+        second_publish = self.control.mark_published(job_id, manifest_two, "vm-20260710-120000-ABC")
 
         self.assertEqual(2, attempt)
         self.assertEqual("queued", queued["status"])
@@ -2081,16 +2057,12 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual("published", second_publish["status"])
         self.assertEqual(str(manifest_two.parent.resolve()), second_publish["archive_dir"])
         published_events = [
-            event
-            for event in second_publish["events"]
-            if event["event_type"] == "job_published"
+            event for event in second_publish["events"] if event["event_type"] == "job_published"
         ]
         self.assertEqual(2, len(published_events))
         self.assertEqual(
             first_publish["published_manifest_sha256"],
-            published_events[1]["payload"]["previous_published_snapshot"][
-                "manifest_sha256"
-            ],
+            published_events[1]["payload"]["previous_published_snapshot"]["manifest_sha256"],
         )
 
     def test_new_attempt_cannot_be_published_with_an_old_attempt_manifest(self):
@@ -2101,21 +2073,15 @@ class RelayControlTests(unittest.TestCase):
         draft_one = create_complete_archive(self.root, job_id, attempt=1)
         self.control.complete_minutes(job_id, draft_one, attempt_no=1)
         old_manifest = create_published_archive(self.root, draft_one, job_id)
-        self.control.mark_published(
-            job_id, old_manifest, "vm-20260710-120000-ABC"
-        )
+        self.control.mark_published(job_id, old_manifest, "vm-20260710-120000-ABC")
 
-        self.control.retry(
-            job_id, "minutes_generating", transcript_path=self.input_transcript
-        )
+        self.control.retry(job_id, "minutes_generating", transcript_path=self.input_transcript)
         self.control.claim_next(worker_id="worker-current-attempt")
         draft_two = create_minutes_only_archive(self.root, job_id, attempt=2)
         self.control.complete_minutes(job_id, draft_two, attempt_no=2)
 
         with self.assertRaises(self.module.PublishValidationError) as caught:
-            self.control.mark_published(
-                job_id, old_manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, old_manifest, "vm-20260710-120000-ABC")
 
         self.assertIn("attempt", str(caught.exception))
         current = self.control.status(job_id)
@@ -2132,9 +2098,7 @@ class RelayControlTests(unittest.TestCase):
         draft = create_complete_archive(self.root, job_id)
         self.control.complete_minutes(job_id, draft)
         manifest = create_published_archive(self.root, draft, job_id)
-        published = self.control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        published = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         attempt = self.control.retry(job_id, "transcribing")
         status = self.control.status(job_id)
@@ -2172,9 +2136,7 @@ class RelayControlTests(unittest.TestCase):
 
         self.assertEqual("transcribing", self.control.status(job_id)["status"])
         self.assertTrue(self.control.should_stop_after_stage(job_id))
-        self.assertTrue(
-            self.control.interrupt_if_stop_requested(job_id, "transcribing")
-        )
+        self.assertTrue(self.control.interrupt_if_stop_requested(job_id, "transcribing"))
         self.assertEqual("interrupted", self.control.status(job_id)["status"])
 
     def test_stop_after_stage_interrupts_queued_job_before_it_runs(self):
@@ -2206,16 +2168,12 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual("completed_unreviewed", result["status"])
         self.assertEqual(str(archive.resolve()), result["archive_dir"])
         self.assertIn("workbench-manifest.json", result["artifacts"])
-        self.assertIn(
-            "whisper-ref/vm-20260710-120000-ABC.vtt", result["artifacts"]
-        )
+        self.assertIn("whisper-ref/vm-20260710-120000-ABC.vtt", result["artifacts"])
         self.assertEqual("ready", result["substates"]["whisper"]["status"])
 
     def test_protocol_v2_completion_requires_minutes_evidence(self):
         job_id = self._advance_to_minutes(self.control, self.audio)
-        archive = create_complete_archive(
-            self.root, job_id, include_minutes_evidence=False
-        )
+        archive = create_complete_archive(self.root, job_id, include_minutes_evidence=False)
 
         with self.assertRaises(self.module.ArtifactValidationError) as caught:
             self.control.complete_minutes(job_id, archive)
@@ -2254,9 +2212,7 @@ class RelayControlTests(unittest.TestCase):
                 (archive / "minutes-plan.json").read_bytes()
             ).hexdigest(),
         )
-        srt.write_text(
-            "1\n00:00:01,000 --> 00:00:02,000\n篡改\n", encoding="utf-8"
-        )
+        srt.write_text("1\n00:00:01,000 --> 00:00:02,000\n篡改\n", encoding="utf-8")
         tampered_text_hash = hashlib.sha256("篡改".encode("utf-8")).hexdigest()
         plan_path = archive / "minutes-plan.json"
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -2265,9 +2221,7 @@ class RelayControlTests(unittest.TestCase):
         plan_path.write_text(json.dumps(plan), encoding="utf-8")
         evidence_path = archive / "minutes-evidence.json"
         evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-        evidence["topics"][0]["items"][0][
-            "source_text_sha256"
-        ] = tampered_text_hash
+        evidence["topics"][0]["items"][0]["source_text_sha256"] = tampered_text_hash
         evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
         refresh_published_manifest(archive / "workbench-manifest.json")
 
@@ -2308,9 +2262,7 @@ class RelayControlTests(unittest.TestCase):
         with self.assertRaises(self.module.ArtifactValidationError) as caught:
             self.control.complete_minutes(job_id, archive)
 
-        self.assertIn(
-            "minutes_evidence_anchor:D01", caught.exception.report.missing
-        )
+        self.assertIn("minutes_evidence_anchor:D01", caught.exception.report.missing)
 
     def test_protocol_v2_publish_rejects_stale_minutes_evidence_anchor(self):
         job_id = self._advance_to_minutes(self.control, self.audio)
@@ -2318,15 +2270,11 @@ class RelayControlTests(unittest.TestCase):
         self.control.complete_minutes(job_id, draft)
         manifest_path = create_published_archive(self.root, draft, job_id)
         published = manifest_path.parent
-        (published / "测试会议.md").write_text(
-            "# 会议纪要\n\n发布稿删除了时间锚", encoding="utf-8"
-        )
+        (published / "测试会议.md").write_text("# 会议纪要\n\n发布稿删除了时间锚", encoding="utf-8")
         refresh_published_manifest(manifest_path)
 
         with self.assertRaises(self.module.PublishValidationError) as caught:
-            self.control.mark_published(
-                job_id, manifest_path, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, manifest_path, "vm-20260710-120000-ABC")
 
         self.assertIn("minutes_evidence_anchor:D01", str(caught.exception))
 
@@ -2353,7 +2301,11 @@ class RelayControlTests(unittest.TestCase):
             (pending / "workbench-manifest.json").read_text(encoding="utf-8")
         )
         self.assertEqual(
-            (before_manifest["schema_version"], before_manifest["job_id"], before_manifest["attempt"]),
+            (
+                before_manifest["schema_version"],
+                before_manifest["job_id"],
+                before_manifest["attempt"],
+            ),
             (after_manifest["schema_version"], after_manifest["job_id"], after_manifest["attempt"]),
         )
 
@@ -2386,11 +2338,7 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual(
             1,
             len(
-                [
-                    event
-                    for event in second["events"]
-                    if event["event_type"] == "minutes_completed"
-                ]
+                [event for event in second["events"] if event["event_type"] == "minutes_completed"]
             ),
         )
         pending_dirs = control._visible_pending_for_job(job_id, attempt_no=1)
@@ -2401,14 +2349,10 @@ class RelayControlTests(unittest.TestCase):
         second_audio = self.root / "vm-20260710-120001-DEF.m4a"
         second_audio.write_bytes(b"audio")
         first_job = self._advance_to_minutes(control, self.audio)
-        first_hidden = create_complete_archive(
-            self.root, first_job, stem=self.audio.stem
-        )
+        first_hidden = create_complete_archive(self.root, first_job, stem=self.audio.stem)
         first = control.complete_minutes(first_job, first_hidden, attempt_no=1)
         second_job = self._advance_to_minutes(control, second_audio)
-        second_hidden = create_complete_archive(
-            self.root, second_job, stem=second_audio.stem
-        )
+        second_hidden = create_complete_archive(self.root, second_job, stem=second_audio.stem)
         second = control.complete_minutes(second_job, second_hidden, attempt_no=1)
 
         first_pending = Path(first["archive_dir"])
@@ -2418,23 +2362,21 @@ class RelayControlTests(unittest.TestCase):
         self.assertNotEqual(first_pending, second_pending)
         self.assertEqual(
             first_job,
-            json.loads(
-                (first_pending / "workbench-manifest.json").read_text(encoding="utf-8")
-            )["job_id"],
+            json.loads((first_pending / "workbench-manifest.json").read_text(encoding="utf-8"))[
+                "job_id"
+            ],
         )
         self.assertEqual(
             second_job,
-            json.loads(
-                (second_pending / "workbench-manifest.json").read_text(encoding="utf-8")
-            )["job_id"],
+            json.loads((second_pending / "workbench-manifest.json").read_text(encoding="utf-8"))[
+                "job_id"
+            ],
         )
 
     def test_whisper_retry_installs_into_visible_pending_archive(self):
         control = self._pending_control()
         job_id = self._advance_to_minutes(control, self.audio)
-        hidden = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        hidden = create_complete_archive(self.root, job_id, include_whisper=False)
         completed = control.complete_minutes(job_id, hidden, attempt_no=1)
         control.record_substate(job_id, "whisper", "failed", error="engine")
         control.retry_substate(job_id, "whisper")
@@ -2474,9 +2416,7 @@ class RelayControlTests(unittest.TestCase):
         queued_audio = self.root / "vm-20260710-120003-QUEUED.m4a"
         queued_audio.write_bytes(b"audio")
         queued_job = self.control.enqueue(queued_audio)
-        queued_hidden = create_complete_archive(
-            self.root, queued_job, stem=queued_audio.stem
-        )
+        queued_hidden = create_complete_archive(self.root, queued_job, stem=queued_audio.stem)
 
         migrate = getattr(self.control, "migrate_pending_archives", None)
         self.assertIsNotNone(migrate, "RelayControl 缺少 migrate_pending_archives")
@@ -2553,23 +2493,15 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual(1, len(installed))
         self.assertEqual(self.root.resolve(), installed[0].parent.resolve())
         self.assertFalse(legacy.exists())
-        self.assertEqual(
-            str(legacy.resolve()), self.control.status(job_id)["archive_dir"]
-        )
+        self.assertEqual(str(legacy.resolve()), self.control.status(job_id)["archive_dir"])
 
         recovered = self._pending_control().migrate_pending_archives([job_id])
 
         self.assertTrue(recovered["ok"], recovered)
         self.assertIn(job_id, recovered["promoted"])
-        self.assertEqual(
-            str(installed[0]), self.control.status(job_id)["archive_dir"]
-        )
+        self.assertEqual(str(installed[0]), self.control.status(job_id)["archive_dir"])
         self.assertFalse(
-            (
-                self.root
-                / ".workbench-pending-journal"
-                / f"{job_id}-attempt-1.json"
-            ).exists()
+            (self.root / ".workbench-pending-journal" / f"{job_id}-attempt-1.json").exists()
         )
 
     def test_migration_ignores_flat_directory_during_publish_ack_window(self):
@@ -2581,9 +2513,7 @@ class RelayControlTests(unittest.TestCase):
         manifest_path = flat / "workbench-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["status"] = "published"
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
-        )
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
         summary = control.migrate_pending_archives([job_id])
 
@@ -2593,9 +2523,7 @@ class RelayControlTests(unittest.TestCase):
             summary["skipped"],
         )
         self.assertTrue(flat.is_dir())
-        self.assertFalse(
-            (self.root / ".workbench-recovery" / "replaced" / job_id).exists()
-        )
+        self.assertFalse((self.root / ".workbench-recovery" / "replaced" / job_id).exists())
 
     def test_database_fixture_policy_prevents_pending_promotion(self):
         control = self._pending_control()
@@ -2615,9 +2543,7 @@ class RelayControlTests(unittest.TestCase):
             {"job_id": job_id, "reason": "policy:hidden_fixture"},
             reconciled["skipped"],
         )
-        self.assertEqual(
-            1, control.health(control_enabled=True)["counts"]["held_test_fixtures"]
-        )
+        self.assertEqual(1, control.health(control_enabled=True)["counts"]["held_test_fixtures"])
 
     def test_archive_contents_cannot_opt_out_of_pending_promotion(self):
         control = self._pending_control()
@@ -2634,9 +2560,7 @@ class RelayControlTests(unittest.TestCase):
                 "sha256": hashlib.sha256(marker.read_bytes()).hexdigest(),
             }
         )
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
-        )
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
         completed = control.complete_minutes(job_id, hidden, attempt_no=1)
 
@@ -2653,11 +2577,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.complete_minutes(job_id, hidden, attempt_no=1)
         target = self.root / "待校对" / "260710 测试会议"
         target.parent.mkdir(exist_ok=True)
-        journal = (
-            self.root
-            / ".workbench-pending-journal"
-            / f"{job_id}-attempt-1.json"
-        )
+        journal = self.root / ".workbench-pending-journal" / f"{job_id}-attempt-1.json"
         journal.parent.mkdir(exist_ok=True)
         journal.write_text(
             json.dumps(
@@ -2686,16 +2606,12 @@ class RelayControlTests(unittest.TestCase):
 
     def test_reconcile_pending_archives_promotes_and_backfills_product_whisper(self):
         job_id = self._advance_to_minutes(self.control, self.audio)
-        hidden = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        hidden = create_complete_archive(self.root, job_id, include_whisper=False)
         self.control.complete_minutes(job_id, hidden, attempt_no=1)
         self.control.record_substate(job_id, "whisper", "running")
         products_root = self.root / "products"
         product_archive = products_root / self.audio.stem / self.audio.stem
-        whisper_source = create_whisper_staging(
-            self.root, stem=self.audio.stem
-        ) / "whisper-ref"
+        whisper_source = create_whisper_staging(self.root, stem=self.audio.stem) / "whisper-ref"
         product_archive.mkdir(parents=True)
         shutil.copytree(whisper_source, product_archive / "whisper-ref")
         control = self._pending_control()
@@ -2729,27 +2645,17 @@ class RelayControlTests(unittest.TestCase):
     def test_whisper_reconcile_recovers_copy_interrupted_outside_visible_pending(self):
         control = self._pending_control()
         job_id = self._advance_to_minutes(control, self.audio)
-        hidden = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        hidden = create_complete_archive(self.root, job_id, include_whisper=False)
         completed = control.complete_minutes(job_id, hidden, attempt_no=1)
         pending = Path(completed["archive_dir"])
         control.record_substate(job_id, "whisper", "running")
         products_root = self.root / "products"
         product_archive = products_root / self.audio.stem / self.audio.stem
         product_archive.mkdir(parents=True)
-        source = create_whisper_staging(
-            self.root, stem=self.audio.stem
-        ) / "whisper-ref"
+        source = create_whisper_staging(self.root, stem=self.audio.stem) / "whisper-ref"
         shutil.copytree(source, product_archive / "whisper-ref")
         control.products_root = products_root
-        recovery = (
-            self.root
-            / ".workbench-recovery"
-            / "whisper-install"
-            / job_id
-            / "attempt-1"
-        )
+        recovery = self.root / ".workbench-recovery" / "whisper-install" / job_id / "attempt-1"
 
         def copy_then_interrupt(source_dir, target_dir, *args, **kwargs):
             target = Path(target_dir)
@@ -2758,27 +2664,19 @@ class RelayControlTests(unittest.TestCase):
             shutil.copy2(first, target / first.name)
             raise KeyboardInterrupt("copy interrupted")
 
-        with patch.object(
-            self.module.shutil, "copytree", side_effect=copy_then_interrupt
-        ):
+        with patch.object(self.module.shutil, "copytree", side_effect=copy_then_interrupt):
             with self.assertRaises(KeyboardInterrupt):
                 control._reconcile_product_whisper(job_id, product_archive)
 
         self.assertTrue((recovery / "journal.json").is_file())
-        self.assertFalse(
-            any(path.name.startswith(".whisper") for path in pending.iterdir())
-        )
+        self.assertFalse(any(path.name.startswith(".whisper") for path in pending.iterdir()))
 
         summary = control.reconcile_pending_archives()
 
         self.assertTrue(summary["ok"], summary)
-        self.assertEqual(
-            "ready", control.status(job_id)["substates"]["whisper"]["status"]
-        )
+        self.assertEqual("ready", control.status(job_id)["substates"]["whisper"]["status"])
         self.assertFalse(recovery.exists())
-        self.assertFalse(
-            any(path.name.startswith(".whisper") for path in pending.iterdir())
-        )
+        self.assertFalse(any(path.name.startswith(".whisper") for path in pending.iterdir()))
 
     def test_whisper_reconcile_recovers_old_moved_install_journal(self):
         control = self._pending_control()
@@ -2790,18 +2688,10 @@ class RelayControlTests(unittest.TestCase):
         products_root = self.root / "products"
         product_archive = products_root / self.audio.stem / self.audio.stem
         product_archive.mkdir(parents=True)
-        source = create_whisper_staging(
-            self.root, stem=self.audio.stem
-        ) / "whisper-ref"
+        source = create_whisper_staging(self.root, stem=self.audio.stem) / "whisper-ref"
         shutil.copytree(source, product_archive / "whisper-ref")
         control.products_root = products_root
-        recovery = (
-            self.root
-            / ".workbench-recovery"
-            / "whisper-install"
-            / job_id
-            / "attempt-1"
-        )
+        recovery = self.root / ".workbench-recovery" / "whisper-install" / job_id / "attempt-1"
         real_replace = self.module.os.replace
 
         def interrupt_before_new_install(source_path, target_path):
@@ -2814,15 +2704,11 @@ class RelayControlTests(unittest.TestCase):
                 raise KeyboardInterrupt("new install interrupted")
             return real_replace(source_path, target_path)
 
-        with patch.object(
-            self.module.os, "replace", side_effect=interrupt_before_new_install
-        ):
+        with patch.object(self.module.os, "replace", side_effect=interrupt_before_new_install):
             with self.assertRaises(KeyboardInterrupt):
                 control._reconcile_product_whisper(job_id, product_archive)
 
-        journal = json.loads(
-            (recovery / "journal.json").read_text(encoding="utf-8")
-        )
+        journal = json.loads((recovery / "journal.json").read_text(encoding="utf-8"))
         self.assertEqual("new_installing", journal["phase"])
         self.assertFalse((pending / "whisper-ref").exists())
         self.assertTrue((recovery / "backup-whisper-ref").is_dir())
@@ -2830,38 +2716,24 @@ class RelayControlTests(unittest.TestCase):
         summary = control.reconcile_pending_archives()
 
         self.assertTrue(summary["ok"], summary)
-        self.assertEqual(
-            "ready", control.status(job_id)["substates"]["whisper"]["status"]
-        )
-        self.assertEqual(
-            "ready", self.module.inspect_whisper_ref(pending)["status"]
-        )
+        self.assertEqual("ready", control.status(job_id)["substates"]["whisper"]["status"])
+        self.assertEqual("ready", self.module.inspect_whisper_ref(pending)["status"])
         self.assertFalse(recovery.exists())
 
     def test_whisper_reconcile_recovers_new_installed_before_database_commit(self):
         control = self._pending_control()
         job_id = self._advance_to_minutes(control, self.audio)
-        hidden = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        hidden = create_complete_archive(self.root, job_id, include_whisper=False)
         completed = control.complete_minutes(job_id, hidden, attempt_no=1)
         pending = Path(completed["archive_dir"])
         control.record_substate(job_id, "whisper", "running")
         products_root = self.root / "products"
         product_archive = products_root / self.audio.stem / self.audio.stem
         product_archive.mkdir(parents=True)
-        source = create_whisper_staging(
-            self.root, stem=self.audio.stem
-        ) / "whisper-ref"
+        source = create_whisper_staging(self.root, stem=self.audio.stem) / "whisper-ref"
         shutil.copytree(source, product_archive / "whisper-ref")
         control.products_root = products_root
-        recovery = (
-            self.root
-            / ".workbench-recovery"
-            / "whisper-install"
-            / job_id
-            / "attempt-1"
-        )
+        recovery = self.root / ".workbench-recovery" / "whisper-install" / job_id / "attempt-1"
 
         with patch.object(
             control, "_append_event", side_effect=KeyboardInterrupt("db interrupted")
@@ -2869,23 +2741,15 @@ class RelayControlTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 control._reconcile_product_whisper(job_id, product_archive)
 
-        journal = json.loads(
-            (recovery / "journal.json").read_text(encoding="utf-8")
-        )
+        journal = json.loads((recovery / "journal.json").read_text(encoding="utf-8"))
         self.assertEqual("new_installed", journal["phase"])
-        self.assertEqual(
-            "running", control.status(job_id)["substates"]["whisper"]["status"]
-        )
+        self.assertEqual("running", control.status(job_id)["substates"]["whisper"]["status"])
 
         summary = control.reconcile_pending_archives()
 
         self.assertTrue(summary["ok"], summary)
-        self.assertEqual(
-            "ready", control.status(job_id)["substates"]["whisper"]["status"]
-        )
-        self.assertEqual(
-            "ready", self.module.inspect_whisper_ref(pending)["status"]
-        )
+        self.assertEqual("ready", control.status(job_id)["substates"]["whisper"]["status"])
+        self.assertEqual("ready", self.module.inspect_whisper_ref(pending)["status"])
         self.assertFalse(recovery.exists())
 
     def test_reconcile_respects_auto_pending_archive_rollback_switch(self):
@@ -2896,9 +2760,7 @@ class RelayControlTests(unittest.TestCase):
         reconciled = self.control.reconcile_pending_archives()
 
         self.assertTrue(hidden.is_dir())
-        self.assertEqual(
-            str(hidden.resolve()), self.control.status(job_id)["archive_dir"]
-        )
+        self.assertEqual(str(hidden.resolve()), self.control.status(job_id)["archive_dir"])
         self.assertNotIn(job_id, reconciled["promoted"])
         migrated = self.control.migrate_pending_archives([job_id])
         self.assertEqual([job_id], migrated["promoted"])
@@ -2907,9 +2769,7 @@ class RelayControlTests(unittest.TestCase):
         occupying_audio = self.root / "vm-20260710-120001-BBB.m4a"
         occupying_audio.write_bytes(b"audio")
         pending_control = self._pending_control()
-        occupying_job = self._advance_to_minutes(
-            pending_control, occupying_audio
-        )
+        occupying_job = self._advance_to_minutes(pending_control, occupying_audio)
         occupying_hidden = create_complete_archive(
             self.root, occupying_job, stem=occupying_audio.stem
         )
@@ -2922,11 +2782,7 @@ class RelayControlTests(unittest.TestCase):
         job_id = self._advance_to_minutes(self.control, self.audio)
         hidden = create_complete_archive(self.root, job_id)
         self.control.complete_minutes(job_id, hidden, attempt_no=1)
-        journal = (
-            self.root
-            / ".workbench-pending-journal"
-            / f"{job_id}-attempt-1.json"
-        )
+        journal = self.root / ".workbench-pending-journal" / f"{job_id}-attempt-1.json"
         journal.parent.mkdir(exist_ok=True)
         journal.write_text(
             json.dumps(
@@ -2955,11 +2811,9 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual(occupied_hashes, archive_artifact_hashes(occupied_target))
         self.assertEqual(
             occupying_job,
-            json.loads(
-                (occupied_target / "workbench-manifest.json").read_text(
-                    encoding="utf-8"
-                )
-            )["job_id"],
+            json.loads((occupied_target / "workbench-manifest.json").read_text(encoding="utf-8"))[
+                "job_id"
+            ],
         )
         self.assertFalse(hidden.exists())
         self.assertFalse(journal.exists())
@@ -2980,15 +2834,11 @@ class RelayControlTests(unittest.TestCase):
                     auto_pending_archive=False,
                 )
                 job_id = self._advance_to_minutes(control, audio)
-                archive = create_complete_archive(
-                    self.root, job_id, stem=audio.stem
-                )
+                archive = create_complete_archive(self.root, job_id, stem=audio.stem)
                 manifest_path = archive / "workbench-manifest.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest[field] = invalid_value
-                manifest_path.write_text(
-                    json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
-                )
+                manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
                 with self.assertRaises(self.module.ArtifactValidationError):
                     control.complete_minutes(job_id, archive)
@@ -3006,19 +2856,12 @@ class RelayControlTests(unittest.TestCase):
         pending = Path(completed["archive_dir"])
         manifest = create_published_archive(self.root, pending, job_id)
 
-        published = control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        published = control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("published", published["status"])
         self.assertFalse(pending.exists())
         recovered = list(
-            (
-                self.root
-                / ".workbench-recovery"
-                / "published"
-                / job_id
-            ).glob("attempt-1-*")
+            (self.root / ".workbench-recovery" / "published" / job_id).glob("attempt-1-*")
         )
         self.assertEqual(1, len(recovered))
 
@@ -3031,9 +2874,7 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual(self.root.resolve(), working.parent.resolve())
         manifest_path = working / "workbench-manifest.json"
         audio = next(
-            path
-            for path in working.iterdir()
-            if path.suffix.lower() in {".m4a", ".mp3", ".wav"}
+            path for path in working.iterdir() if path.suffix.lower() in {".m4a", ".mp3", ".wav"}
         )
         artifact_paths = sorted(
             str(path.relative_to(working))
@@ -3060,9 +2901,7 @@ class RelayControlTests(unittest.TestCase):
                         {
                             "path": relative,
                             "bytes": (working / relative).stat().st_size,
-                            "sha256": hashlib.sha256(
-                                (working / relative).read_bytes()
-                            ).hexdigest(),
+                            "sha256": hashlib.sha256((working / relative).read_bytes()).hexdigest(),
                         }
                         for relative in artifact_paths
                     ],
@@ -3072,9 +2911,7 @@ class RelayControlTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        published = control.mark_published(
-            job_id, manifest_path, "vm-20260710-120000-ABC"
-        )
+        published = control.mark_published(job_id, manifest_path, "vm-20260710-120000-ABC")
 
         self.assertEqual("published", published["status"])
         self.assertEqual(str(working.resolve()), published["archive_dir"])
@@ -3085,14 +2922,10 @@ class RelayControlTests(unittest.TestCase):
         control = self._pending_control()
         job_id = self._advance_to_minutes(control, self.audio)
         first_hidden = create_complete_archive(self.root, job_id, attempt=1)
-        first_completed = control.complete_minutes(
-            job_id, first_hidden, attempt_no=1
-        )
+        first_completed = control.complete_minutes(job_id, first_hidden, attempt_no=1)
         first_directory = Path(first_completed["archive_dir"])
         first_manifest = rewrite_archive_as_published(first_directory, job_id)
-        control.mark_published(
-            job_id, first_manifest, "vm-20260710-120000-ABC"
-        )
+        control.mark_published(job_id, first_manifest, "vm-20260710-120000-ABC")
 
         attempt = control.retry(
             job_id,
@@ -3100,19 +2933,13 @@ class RelayControlTests(unittest.TestCase):
             transcript_path=self.input_transcript,
         )
         control.claim_next(worker_id="worker-reprocess-flat")
-        second_hidden = create_minutes_only_archive(
-            self.root, job_id, attempt=attempt
-        )
-        second_completed = control.complete_minutes(
-            job_id, second_hidden, attempt_no=attempt
-        )
+        second_hidden = create_minutes_only_archive(self.root, job_id, attempt=attempt)
+        second_completed = control.complete_minutes(job_id, second_hidden, attempt_no=attempt)
         second_directory = Path(second_completed["archive_dir"])
         second_manifest = rewrite_archive_as_published(second_directory, job_id)
 
         with self.assertRaises(self.module.PublishValidationError):
-            control.mark_published(
-                job_id, second_manifest, "vm-20260710-120000-ABC"
-            )
+            control.mark_published(job_id, second_manifest, "vm-20260710-120000-ABC")
 
         current = control.status(job_id)
         self.assertTrue(first_directory.is_dir())
@@ -3135,28 +2962,19 @@ class RelayControlTests(unittest.TestCase):
             side_effect=KeyboardInterrupt("cleanup interrupted"),
         ):
             with self.assertRaises(KeyboardInterrupt):
-                control.mark_published(
-                    job_id, manifest, "vm-20260710-120000-ABC"
-                )
+                control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         committed = control.status(job_id)
         published_snapshot = committed["published_snapshot"].copy()
         self.assertEqual("published", committed["status"])
         self.assertTrue(pending.is_dir())
 
-        replayed = control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        replayed = control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual(published_snapshot, replayed["published_snapshot"])
         self.assertFalse(pending.exists())
         recovered = list(
-            (
-                self.root
-                / ".workbench-recovery"
-                / "published"
-                / job_id
-            ).glob("attempt-1-*")
+            (self.root / ".workbench-recovery" / "published" / job_id).glob("attempt-1-*")
         )
         self.assertEqual(1, len(recovered))
 
@@ -3174,9 +2992,7 @@ class RelayControlTests(unittest.TestCase):
             side_effect=KeyboardInterrupt("cleanup interrupted"),
         ):
             with self.assertRaises(KeyboardInterrupt):
-                control.mark_published(
-                    job_id, manifest, "vm-20260710-120000-ABC"
-                )
+                control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
         published_snapshot = control.status(job_id)["published_snapshot"].copy()
 
         summary = control.reconcile_pending_archives()
@@ -3201,9 +3017,7 @@ class RelayControlTests(unittest.TestCase):
             side_effect=KeyboardInterrupt("cleanup interrupted"),
         ):
             with self.assertRaises(KeyboardInterrupt):
-                control.mark_published(
-                    job_id, manifest, "vm-20260710-120000-ABC"
-                )
+                control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
         stored_snapshot = control.status(job_id)["published_snapshot"].copy()
         manifest.write_text("{}", encoding="utf-8")
 
@@ -3212,10 +3026,7 @@ class RelayControlTests(unittest.TestCase):
 
         self.assertFalse(summary["ok"], summary)
         self.assertTrue(
-            any(
-                item.get("stage") == "published_pending_cleanup"
-                for item in summary["errors"]
-            ),
+            any(item.get("stage") == "published_pending_cleanup" for item in summary["errors"]),
             summary,
         )
         self.assertTrue(pending.is_dir())
@@ -3311,9 +3122,7 @@ class RelayControlTests(unittest.TestCase):
             control.mark_published(job_id, manifest, "different-meeting")
 
         self.assertTrue(pending.is_dir())
-        self.assertEqual(
-            str(pending.resolve()), control.status(job_id)["archive_dir"]
-        )
+        self.assertEqual(str(pending.resolve()), control.status(job_id)["archive_dir"])
 
     def _run_precheck(self, archive: Path, *args: str) -> tuple[int, list[str]]:
         spec = importlib.util.spec_from_file_location(
@@ -3323,10 +3132,16 @@ class RelayControlTests(unittest.TestCase):
         assert spec.loader is not None
         spec.loader.exec_module(precheck)
         output = io.StringIO()
-        with patch.dict(os.environ, {
-            "MEETING_RELAY_JOBS_DB": str(self.db_path),
-            "MEETING_RELAY_ARCHIVE_ROOT": str(self.root),
-        }), redirect_stdout(output):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MEETING_RELAY_JOBS_DB": str(self.db_path),
+                    "MEETING_RELAY_ARCHIVE_ROOT": str(self.root),
+                },
+            ),
+            redirect_stdout(output),
+        ):
             code = precheck.main(["precheck_minutes.py", str(archive), *args])
         return code, output.getvalue().split()
 
@@ -3376,9 +3191,7 @@ class RelayControlTests(unittest.TestCase):
             (archive / "测试会议.md").write_text("# 校验后改写", encoding="utf-8")
             return report
 
-        with patch.object(
-            self.control, "validate_archive", side_effect=validate_then_mutate
-        ):
+        with patch.object(self.control, "validate_archive", side_effect=validate_then_mutate):
             with self.assertRaises(self.module.PublishValidationError):
                 self.control.complete_minutes(job_id, archive)
 
@@ -3399,9 +3212,7 @@ class RelayControlTests(unittest.TestCase):
             self.control.retry(job_id, "transcribing")
             return report
 
-        with patch.object(
-            self.control, "validate_archive", side_effect=validate_then_retry
-        ):
+        with patch.object(self.control, "validate_archive", side_effect=validate_then_retry):
             with self.assertRaises(self.module.InvalidTransitionError):
                 self.control.complete_minutes(job_id, invalid, attempt_no=1)
 
@@ -3448,9 +3259,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcribing")
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
-        archive = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        archive = create_complete_archive(self.root, job_id, include_whisper=False)
 
         result = self.control.complete_minutes(job_id, archive)
 
@@ -3462,9 +3271,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcribing")
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
-        archive = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        archive = create_complete_archive(self.root, job_id, include_whisper=False)
         whisper = archive / "whisper-ref"
         whisper.mkdir()
         (whisper / "partial.json").write_text("", encoding="utf-8")
@@ -3498,9 +3305,7 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual("absent", initial["substates"]["index"]["status"])
 
         self.control.record_substate(job_id, "whisper", "running")
-        self.control.record_substate(
-            job_id, "whisper", "failed", error="reference engine failed"
-        )
+        self.control.record_substate(job_id, "whisper", "failed", error="reference engine failed")
         retried = self.control.retry_substate(job_id, "whisper")
         self.control.record_substate(job_id, "index", "running")
         ready = self.control.record_substate(job_id, "index", "ready")
@@ -3516,18 +3321,14 @@ class RelayControlTests(unittest.TestCase):
         with self.assertRaises(self.module.RelayControlError):
             self.control.record_substate(job_id, "index", "ready", attempt_no=0)
 
-        self.assertEqual(
-            "absent", self.control.status(job_id)["substates"]["index"]["status"]
-        )
+        self.assertEqual("absent", self.control.status(job_id)["substates"]["index"]["status"])
 
     def test_whisper_retry_claim_is_single_consumer_and_generation_cas_completes(self):
         job_id = self.control.enqueue(self.audio)
         self.control.record_stage(job_id, "transcribing")
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
-        archive = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        archive = create_complete_archive(self.root, job_id, include_whisper=False)
         self.control.complete_minutes(job_id, archive)
         self.control.record_substate(job_id, "whisper", "failed", error="engine")
         requested = self.control.retry_substate(job_id, "whisper")
@@ -3557,9 +3358,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcribing")
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
-        archive = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        archive = create_complete_archive(self.root, job_id, include_whisper=False)
         self.control.complete_minutes(job_id, archive)
         self.control.record_substate(job_id, "whisper", "failed", error="engine")
         self.control.retry_substate(job_id, "whisper")
@@ -3586,9 +3385,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcribing")
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
-        archive = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        archive = create_complete_archive(self.root, job_id, include_whisper=False)
         self.control.complete_minutes(job_id, archive)
         self.control.record_substate(job_id, "whisper", "failed", error="engine")
         self.control.retry_substate(job_id, "whisper")
@@ -3605,9 +3402,7 @@ class RelayControlTests(unittest.TestCase):
         retried = self.control.retry_substate(job_id, "whisper")
 
         self.assertEqual("failed", failed["substates"]["whisper"]["status"])
-        self.assertEqual(
-            "whisper_process_failed", failed["substates"]["whisper"]["error"]
-        )
+        self.assertEqual("whisper_process_failed", failed["substates"]["whisper"]["error"])
         self.assertEqual(2, retried["substates"]["whisper"]["retry_generation"])
 
     def test_whisper_retry_cannot_report_ready_without_validated_artifacts(self):
@@ -3615,9 +3410,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcribing")
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
-        archive = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        archive = create_complete_archive(self.root, job_id, include_whisper=False)
         self.control.complete_minutes(job_id, archive)
         self.control.record_substate(job_id, "whisper", "failed", error="engine")
         self.control.retry_substate(job_id, "whisper")
@@ -3632,9 +3425,7 @@ class RelayControlTests(unittest.TestCase):
                 success=True,
             )
 
-        self.assertEqual(
-            "running", self.control.status(job_id)["substates"]["whisper"]["status"]
-        )
+        self.assertEqual("running", self.control.status(job_id)["substates"]["whisper"]["status"])
 
     def test_whisper_backup_cleanup_failure_cannot_undo_committed_ready_state(self):
         job_id = self.control.enqueue(self.audio)
@@ -3659,9 +3450,7 @@ class RelayControlTests(unittest.TestCase):
             )
 
         self.assertEqual("ready", completed["substates"]["whisper"]["status"])
-        self.assertEqual(
-            "ready", self.module.inspect_whisper_ref(archive)["status"]
-        )
+        self.assertEqual("ready", self.module.inspect_whisper_ref(archive)["status"])
 
     def test_retranscription_resets_substates_and_rejects_stale_worker_callback(self):
         job_id = self.control.enqueue(self.audio)
@@ -3678,21 +3467,13 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual("pending", status["substates"]["index"]["status"])
         self.assertEqual(2, status["substates"]["whisper"]["attempt"])
         with self.assertRaises(self.module.InvalidTransitionError):
-            self.control.record_substate(
-                job_id, "whisper", "failed", attempt_no=1
-            )
-        self.assertEqual(
-            "pending", self.control.status(job_id)["substates"]["whisper"]["status"]
-        )
+            self.control.record_substate(job_id, "whisper", "failed", attempt_no=1)
+        self.assertEqual("pending", self.control.status(job_id)["substates"]["whisper"]["status"])
 
     def test_publish_whisper_inspection_stays_strict(self):
         job_id = self.control.enqueue(self.audio)
-        incomplete = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
-        complete = create_complete_archive(
-            self.root, "job-whisper-complete", include_whisper=True
-        )
+        incomplete = create_complete_archive(self.root, job_id, include_whisper=False)
+        complete = create_complete_archive(self.root, "job-whisper-complete", include_whisper=True)
 
         incomplete_result = self.module.inspect_whisper_ref(incomplete)
         complete_result = self.module.inspect_whisper_ref(complete)
@@ -3706,9 +3487,7 @@ class RelayControlTests(unittest.TestCase):
         next(whisper.glob("*.json")).write_text("not-json", encoding="utf-8")
         mixed = create_complete_archive(self.root, "job-mixed")
         mixed_whisper = mixed / "whisper-ref"
-        (mixed_whisper / "vm-20260710-120000-ABC.tsv").rename(
-            mixed_whisper / "another.tsv"
-        )
+        (mixed_whisper / "vm-20260710-120000-ABC.tsv").rename(mixed_whisper / "another.tsv")
 
         self.assertEqual("failed", self.module.inspect_whisper_ref(malformed)["status"])
         self.assertNotEqual("ready", self.module.inspect_whisper_ref(mixed)["status"])
@@ -3731,9 +3510,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "minutes_generating")
         archive = create_complete_archive(self.root, job_id, include_whisper=False)
 
-        with patch.object(
-            self.module, "inspect_whisper_ref", side_effect=OSError("disk race")
-        ):
+        with patch.object(self.module, "inspect_whisper_ref", side_effect=OSError("disk race")):
             result = self.control.complete_minutes(job_id, archive)
 
         self.assertEqual("completed_unreviewed", result["status"])
@@ -3763,12 +3540,8 @@ class RelayControlTests(unittest.TestCase):
         self.control.complete_minutes(job_id, draft)
         manifest = create_published_archive(self.root, draft, job_id)
 
-        first = self.control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
-        second = self.control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        first = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
+        second = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("published", first["status"])
         self.assertEqual("vm-20260710-120000-ABC", first["meeting_id"])
@@ -3788,17 +3561,13 @@ class RelayControlTests(unittest.TestCase):
         draft = create_complete_archive(self.root, job_id)
         self.control.complete_minutes(job_id, draft)
         manifest = create_published_archive(self.root, draft, job_id)
-        published = self.control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        published = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
         original_sha = published["published_manifest_sha256"]
         (manifest.parent / "测试会议.md").write_text("# 发布后被改写", encoding="utf-8")
         refresh_published_manifest(manifest)
 
         with self.assertRaises(self.module.PublishValidationError):
-            self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         current = self.control.status(job_id)
         self.assertEqual("published", current["status"])
@@ -3838,9 +3607,7 @@ class RelayControlTests(unittest.TestCase):
             original_assert(validation)
             calls += 1
             if calls == 1:
-                (manifest.parent / "测试会议.md").write_text(
-                    "# commit 前被改写", encoding="utf-8"
-                )
+                (manifest.parent / "测试会议.md").write_text("# commit 前被改写", encoding="utf-8")
 
         with patch.object(
             self.control,
@@ -3848,9 +3615,7 @@ class RelayControlTests(unittest.TestCase):
             side_effect=mutate_after_first_assert,
         ):
             with self.assertRaises(self.module.PublishValidationError):
-                self.control.mark_published(
-                    job_id, manifest, "vm-20260710-120000-ABC"
-                )
+                self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("completed_unreviewed", self.control.status(job_id)["status"])
 
@@ -3881,9 +3646,7 @@ class RelayControlTests(unittest.TestCase):
             side_effect=mutate_after_precommit_check,
         ):
             with self.assertRaises(self.module.PublishValidationError):
-                self.control.mark_published(
-                    job_id, manifest, "vm-20260710-120000-ABC"
-                )
+                self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         current = self.control.status(job_id)
         self.assertEqual("failed", current["status"])
@@ -3938,12 +3701,8 @@ class RelayControlTests(unittest.TestCase):
         for patcher in patches:
             patcher.start()
         try:
-            published = self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
-            refreshed = self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
+            published = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
+            refreshed = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
         finally:
             for patcher in patches:
                 patcher.stop()
@@ -3977,9 +3736,7 @@ class RelayControlTests(unittest.TestCase):
             side_effect=capture_then_rewrite,
         ):
             with self.assertRaises(self.module.PublishValidationError):
-                self.control.mark_published(
-                    job_id, manifest, "vm-20260710-120000-ABC"
-                )
+                self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertNotEqual("published", self.control.status(job_id)["status"])
 
@@ -4130,9 +3887,7 @@ class RelayControlTests(unittest.TestCase):
             self.control.retry(job_id, "transcribing")
             return result
 
-        with patch.object(
-            self.module.shutil, "copytree", side_effect=copy_while_user_retries
-        ):
+        with patch.object(self.module.shutil, "copytree", side_effect=copy_while_user_retries):
             with self.assertRaises(self.module.InvalidTransitionError):
                 self.control.finish_whisper_retry(
                     job_id,
@@ -4160,9 +3915,7 @@ class RelayControlTests(unittest.TestCase):
         (history / "outside-link").symlink_to(manifest.parent / "测试会议.md")
 
         with self.assertRaises(self.module.PublishValidationError):
-            self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
     def test_mark_published_rejects_special_file_inside_history(self):
         job_id = self.control.enqueue(self.audio)
@@ -4177,9 +3930,7 @@ class RelayControlTests(unittest.TestCase):
         os.mkfifo(history / "unexpected.fifo")
 
         with self.assertRaises(self.module.PublishValidationError):
-            self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
     def test_mark_published_ignores_ds_store_but_keeps_it_out_of_manifest(self):
         job_id = self.control.enqueue(self.audio)
@@ -4194,15 +3945,11 @@ class RelayControlTests(unittest.TestCase):
         nested.mkdir()
         (nested / ".DS_Store").write_bytes(b"nested finder metadata")
 
-        published = self.control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        published = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("published", published["status"])
         loaded = json.loads(manifest.read_text(encoding="utf-8"))
-        self.assertFalse(
-            any(".DS_Store" in item["path"] for item in loaded["artifacts"])
-        )
+        self.assertFalse(any(".DS_Store" in item["path"] for item in loaded["artifacts"]))
 
     def test_mark_published_rejects_hidden_appledouble_symlink(self):
         job_id = self.control.enqueue(self.audio)
@@ -4215,9 +3962,7 @@ class RelayControlTests(unittest.TestCase):
         (manifest.parent / "._outside").symlink_to(manifest.parent / "测试会议.md")
 
         with self.assertRaises(self.module.PublishValidationError):
-            self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("completed_unreviewed", self.control.status(job_id)["status"])
 
@@ -4232,9 +3977,7 @@ class RelayControlTests(unittest.TestCase):
         (manifest.parent / "测试会议.md").write_text("被篡改", encoding="utf-8")
 
         with self.assertRaises(self.module.PublishValidationError):
-            self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("completed_unreviewed", self.control.status(job_id)["status"])
 
@@ -4248,9 +3991,7 @@ class RelayControlTests(unittest.TestCase):
         manifest = create_published_archive(self.root, draft, job_id)
 
         with self.assertRaises(self.module.PublishValidationError) as caught:
-            self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertIn("whisper", str(caught.exception).lower())
         self.assertEqual("completed_unreviewed", self.control.status(job_id)["status"])
@@ -4309,9 +4050,7 @@ class RelayControlTests(unittest.TestCase):
         refresh_published_manifest(manifest)
 
         with self.assertRaises(self.module.PublishValidationError) as caught:
-            self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertIn("原音频", str(caught.exception))
         self.assertEqual("completed_unreviewed", self.control.status(job_id)["status"])
@@ -4330,9 +4069,7 @@ class RelayControlTests(unittest.TestCase):
             meeting_id="fp-0123456789abcdef01234567",
         )
 
-        result = self.control.mark_published(
-            job_id, manifest, "fp-0123456789abcdef01234567"
-        )
+        result = self.control.mark_published(job_id, manifest, "fp-0123456789abcdef01234567")
 
         self.assertEqual("published", result["status"])
         self.assertEqual("fp-0123456789abcdef01234567", result["meeting_id"])
@@ -4359,9 +4096,7 @@ class RelayControlTests(unittest.TestCase):
             meeting_id="legacy-customer-session",
         )
 
-        result = self.control.mark_published(
-            job_id, manifest, "legacy-customer-session"
-        )
+        result = self.control.mark_published(job_id, manifest, "legacy-customer-session")
 
         self.assertEqual("ready", completed["substates"]["whisper"]["status"])
         self.assertEqual("published", result["status"])
@@ -4394,9 +4129,7 @@ class RelayControlTests(unittest.TestCase):
         shutil.copytree(reference / "whisper-ref", draft / "whisper-ref")
         manifest = create_published_archive(self.root, draft, job_id)
 
-        published = self.control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        published = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("pending", completed["substates"]["whisper"]["status"])
         self.assertEqual("ready", published["substates"]["whisper"]["status"])
@@ -4416,9 +4149,7 @@ class RelayControlTests(unittest.TestCase):
         manifest = create_published_archive(outside_root, draft, job_id)
 
         with self.assertRaises(self.module.PublishValidationError):
-            self.control.mark_published(
-                job_id, manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("completed_unreviewed", self.control.status(job_id)["status"])
 
@@ -4434,9 +4165,7 @@ class RelayControlTests(unittest.TestCase):
         shutil.copy2(published_manifest, draft_manifest)
 
         with self.assertRaises(self.module.PublishValidationError):
-            self.control.mark_published(
-                job_id, draft_manifest, "vm-20260710-120000-ABC"
-            )
+            self.control.mark_published(job_id, draft_manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("completed_unreviewed", self.control.status(job_id)["status"])
 
@@ -4448,15 +4177,11 @@ class RelayControlTests(unittest.TestCase):
         draft = create_complete_archive(self.root, job_id)
         self.control.complete_minutes(job_id, draft)
         manifest = create_published_archive(self.root, draft, job_id)
-        published = self.control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        published = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         first = self.control.mark_draft_modified(job_id)
         second = self.control.mark_draft_modified(job_id)
-        republished = self.control.mark_published(
-            job_id, manifest, "vm-20260710-120000-ABC"
-        )
+        republished = self.control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
 
         self.assertEqual("draft_modified", first["status"])
         self.assertEqual("draft_modified", second["status"])
@@ -4465,9 +4190,7 @@ class RelayControlTests(unittest.TestCase):
             second["published_manifest_sha256"],
         )
         transitions = [
-            event
-            for event in second["events"]
-            if event["event_type"] == "draft_modified"
+            event for event in second["events"] if event["event_type"] == "draft_modified"
         ]
         self.assertEqual(1, len(transitions))
         self.assertEqual("published", republished["status"])
@@ -4481,9 +4204,7 @@ class RelayControlTests(unittest.TestCase):
         manifest = rewrite_archive_as_published(archive, job_id)
         control.mark_published(job_id, manifest, "vm-20260710-120000-ABC")
         control.mark_draft_modified(job_id)
-        control.record_substate(
-            job_id, "whisper", "failed", attempt_no=1, error="engine"
-        )
+        control.record_substate(job_id, "whisper", "failed", attempt_no=1, error="engine")
 
         with self.assertRaises(self.module.InvalidTransitionError):
             control.retry_substate(job_id, "whisper")
@@ -4503,9 +4224,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(completed_job, "transcribing")
         self.control.record_stage(completed_job, "transcript_ready")
         self.control.record_stage(completed_job, "minutes_generating")
-        archive = create_complete_archive(
-            self.root, completed_job, stem="vm-20260710-130000-DEF"
-        )
+        archive = create_complete_archive(self.root, completed_job, stem="vm-20260710-130000-DEF")
         result = self.control.complete_minutes(completed_job, archive)
 
         self.assertEqual("completed_unreviewed", result["status"])
@@ -4642,9 +4361,7 @@ class RelayControlTests(unittest.TestCase):
         job_id = self.control.enqueue(self.audio)
         archive = create_complete_archive(self.root, job_id)
         transcript = next(
-            path
-            for path in archive.glob("*.txt")
-            if not path.name.endswith("spk.txt")
+            path for path in archive.glob("*.txt") if not path.name.endswith("spk.txt")
         )
         transcript.write_bytes(b"")
         manifest_path = archive / "workbench-manifest.json"
@@ -4740,9 +4457,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
         self.control.fail(job_id, "minutes_generating", "Codex interrupted")
-        self.control.retry(
-            job_id, "minutes_generating", transcript_path=self.input_transcript
-        )
+        self.control.retry(job_id, "minutes_generating", transcript_path=self.input_transcript)
         self.control.claim_next(worker_id="worker-attempt-2")
         stale_archive = create_complete_archive(self.root, job_id, attempt=1)
 
@@ -4777,8 +4492,11 @@ class RelayControlTests(unittest.TestCase):
     def test_cli_set_substate_requires_explicit_attempt(self):
         stderr = io.StringIO()
 
-        with redirect_stdout(io.StringIO()), patch("sys.stderr", stderr), \
-                self.assertRaises(SystemExit) as caught:
+        with (
+            redirect_stdout(io.StringIO()),
+            patch("sys.stderr", stderr),
+            self.assertRaises(SystemExit) as caught,
+        ):
             self.module.build_parser().parse_args(
                 [
                     "set-substate",
@@ -4894,8 +4612,10 @@ class RelayControlTests(unittest.TestCase):
         ):
             job_id = self.module.enqueue(self.audio)
             output = io.StringIO()
-            with patch.object(self.module, "_execute_claim", return_value=True) as execute, \
-                    redirect_stdout(output):
+            with (
+                patch.object(self.module, "_execute_claim", return_value=True) as execute,
+                redirect_stdout(output),
+            ):
                 exit_code = self.module.main(["run-next", "--json"])
 
         self.assertEqual(0, exit_code)
@@ -4909,9 +4629,7 @@ class RelayControlTests(unittest.TestCase):
         self.control.record_stage(job_id, "transcribing")
         self.control.record_stage(job_id, "transcript_ready")
         self.control.record_stage(job_id, "minutes_generating")
-        archive = create_complete_archive(
-            self.root, job_id, include_whisper=False
-        )
+        archive = create_complete_archive(self.root, job_id, include_whisper=False)
         self.control.complete_minutes(job_id, archive)
         self.control.record_substate(job_id, "whisper", "failed", error="engine")
         self.control.retry_substate(job_id, "whisper")
@@ -4923,12 +4641,13 @@ class RelayControlTests(unittest.TestCase):
             },
         ):
             output = io.StringIO()
-            with patch.object(
-                self.module, "_execute_whisper_retry_claim", return_value=True
-            ) as execute, redirect_stdout(output):
-                exit_code = self.module.main(
-                    ["run-whisper-retry", job_id, "--json"]
-                )
+            with (
+                patch.object(
+                    self.module, "_execute_whisper_retry_claim", return_value=True
+                ) as execute,
+                redirect_stdout(output),
+            ):
+                exit_code = self.module.main(["run-whisper-retry", job_id, "--json"])
 
         self.assertEqual(0, exit_code)
         execute.assert_called_once()
@@ -5077,14 +4796,10 @@ class RelayControlTests(unittest.TestCase):
             },
         ):
             job_id = self.module.enqueue(self.audio)
-            self.module.record_substate(
-                job_id, "whisper", "failed", error="whisper failed"
-            )
+            self.module.record_substate(job_id, "whisper", "failed", error="whisper failed")
             output = io.StringIO()
             with redirect_stdout(output):
-                exit_code = self.module.main(
-                    ["retry-substate", job_id, "--name", "whisper"]
-                )
+                exit_code = self.module.main(["retry-substate", job_id, "--name", "whisper"])
 
         self.assertEqual(0, exit_code)
         payload = json.loads(output.getvalue())
@@ -5103,14 +4818,10 @@ class RelayControlTests(unittest.TestCase):
         ):
             output = io.StringIO()
             with redirect_stdout(output):
-                exit_code = self.module.main(
-                    ["migrate-pending", job_id, "--json"]
-                )
+                exit_code = self.module.main(["migrate-pending", job_id, "--json"])
             missing_output = io.StringIO()
             with redirect_stdout(missing_output):
-                missing_exit = self.module.main(
-                    ["migrate-pending", "job-does-not-exist", "--json"]
-                )
+                missing_exit = self.module.main(["migrate-pending", "job-does-not-exist", "--json"])
 
         payload = json.loads(output.getvalue())
         missing_payload = json.loads(missing_output.getvalue())
@@ -5145,9 +4856,7 @@ class RelayControlTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(0, exit_code)
         self.assertEqual("hidden_fixture", payload["archive_policy"])
-        self.assertEqual(
-            "archive_policy_changed", payload["events"][-1]["event_type"]
-        )
+        self.assertEqual("archive_policy_changed", payload["events"][-1]["event_type"])
 
     def test_cli_mark_published_returns_machine_readable_published_status(self):
         with patch.dict(
@@ -5163,9 +4872,7 @@ class RelayControlTests(unittest.TestCase):
             self.module.record_stage(job_id, "minutes_generating")
             draft = create_complete_archive(self.root, job_id)
             completed = self.module.complete_minutes(job_id, draft)
-            manifest = create_published_archive(
-                self.root, Path(completed["archive_dir"]), job_id
-            )
+            manifest = create_published_archive(self.root, Path(completed["archive_dir"]), job_id)
             output = io.StringIO()
             with redirect_stdout(output):
                 exit_code = self.module.main(

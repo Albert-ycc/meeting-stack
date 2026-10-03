@@ -13,6 +13,7 @@
 存在的意义：派单 agent（Claude 或 DeepSeek）写完归档后必须先本地过一遍，
 别拿 complete-minutes 当试跑——那是闸门，不是校验器，失败要整个 attempt 重来。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,9 +63,7 @@ def main(argv: list[str]) -> int:
         print("workbench_manifest_identity")
         return 1
 
-    report = rc.RelayControl().precheck_archive(
-        root, job_id=job_id, attempt_no=attempt_no
-    )
+    report = rc.RelayControl().precheck_archive(root, job_id=job_id, attempt_no=attempt_no)
     if report.valid:
         print("NONE")
         return 0

@@ -98,7 +98,9 @@ class SelectProjectTests(unittest.TestCase):
     def test_old_snapshot_without_projects_still_honours_hint(self):
         old = {key: value for key, value in SNAPSHOT.items() if key != "projects"}
         receipt = injection.select_injection(old, "", "p-zt")
-        self.assertEqual(receipt["project"], {"id": "p-zt", "name": None, "source": "hint", "score": None})
+        self.assertEqual(
+            receipt["project"], {"id": "p-zt", "name": None, "source": "hint", "score": None}
+        )
         self.assertIn("主数据", [entry["term"] for entry in receipt["terms"]])
 
     def test_legacy_bucket_terms_are_never_injected(self):
@@ -210,7 +212,9 @@ class ReceiptTests(unittest.TestCase):
             path = injection.write_receipt(receipt, directory)
             self.assertEqual(path.name, "glossary-injection.json")
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), receipt)
-            self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ["glossary-injection.json"])
+            self.assertEqual(
+                sorted(p.name for p in Path(directory).iterdir()), ["glossary-injection.json"]
+            )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@
   （「一分钟摘要」+「决议」下的有序列表）。
 - 措辞跟内容走：有决议段说「定了这几件事」，只有议题说「聊了这几件事」。
 """
+
 from __future__ import annotations
 
 import re
@@ -60,7 +61,7 @@ def _section_body(text: str, header: re.Match[str] | None) -> str:
     if header is None:
         return ""
     tail = _SECTION_START.search(text, header.end())
-    return text[header.end(): tail.start() if tail else len(text)]
+    return text[header.end() : tail.start() if tail else len(text)]
 
 
 def _clean_item(raw: str) -> str:

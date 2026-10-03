@@ -131,8 +131,7 @@ def _canonical_media_stem(value: str) -> str:
 def _is_archive_noise(path: Path, root: Path) -> bool:
     """Finder/AppleDouble 元数据不属于业务产物，但仍参与安全类型检查。"""
     return any(
-        part.startswith("._") or part == ".DS_Store"
-        for part in path.relative_to(root).parts
+        part.startswith("._") or part == ".DS_Store" for part in path.relative_to(root).parts
     )
 
 
@@ -266,9 +265,7 @@ def _parse_srt_cues(srt_path: Path) -> list[dict[str, Any]]:
                 "cue_index": sequence,
                 "source_start_sec": start,
                 "source_end_sec": end,
-                "source_text_sha256": hashlib.sha256(
-                    cue_text.encode("utf-8")
-                ).hexdigest(),
+                "source_text_sha256": hashlib.sha256(cue_text.encode("utf-8")).hexdigest(),
             }
         )
         previous_end = end
@@ -281,9 +278,7 @@ def _parse_srt_cues(srt_path: Path) -> list[dict[str, Any]]:
 _WINDOW_BOUND_EPSILON = 1e-6
 
 
-def _minimum_minutes_window_duration(
-    total_duration_sec: float, window_count: int
-) -> float:
+def _minimum_minutes_window_duration(total_duration_sec: float, window_count: int) -> float:
     """通常至少 8 分钟；12–16 分钟的不可整除区间允许均衡到至少 6 分钟。"""
     if total_duration_sec >= 480 * window_count:
         return 480.0
@@ -308,10 +303,7 @@ def create_minutes_plan(
         raise RelayControlError("minutes_plan_duration")
     cues = _parse_srt_cues(source)
     duration = max(float(total_duration_sec), float(cues[-1]["source_end_sec"]))
-    if any(
-        cue["source_end_sec"] - cue["source_start_sec"] > 720
-        for cue in cues
-    ):
+    if any(cue["source_end_sec"] - cue["source_start_sec"] > 720 for cue in cues):
         raise RelayControlError("minutes_plan_cue_too_long")
 
     if duration < 480:
@@ -328,9 +320,7 @@ def create_minutes_plan(
         if window_count < wanted_window_count:
             raise RelayControlError("minutes_plan_too_little_speech")
         raise RelayControlError("minutes_plan_window_duration")
-    minimum_window_duration = _minimum_minutes_window_duration(
-        duration, window_count
-    )
+    minimum_window_duration = _minimum_minutes_window_duration(duration, window_count)
 
     groups: list[list[dict[str, Any]]] = []
     cursor = 0
@@ -342,10 +332,7 @@ def create_minutes_plan(
             target_time = duration * number / window_count
             end_index = cursor + 1
             latest = len(cues) - remaining_windows
-            while (
-                end_index < latest
-                and cues[end_index]["source_end_sec"] <= target_time
-            ):
+            while end_index < latest and cues[end_index]["source_end_sec"] <= target_time:
                 end_index += 1
             if end_index < latest:
                 before = abs(cues[end_index - 1]["source_end_sec"] - target_time)
@@ -376,10 +363,7 @@ def create_minutes_plan(
     for index, group in enumerate(groups):
         start = boundaries[index]
         end = boundaries[index + 1]
-        if (
-            duration >= 480
-            and not minimum_window_duration <= end - start <= 720
-        ):
+        if duration >= 480 and not minimum_window_duration <= end - start <= 720:
             raise RelayControlError("minutes_plan_window_duration")
         windows.append(
             {
@@ -494,9 +478,7 @@ def _minutes_plan_context(
             or end <= start
             or (
                 total_duration >= 480
-                and not minimum_window_duration
-                <= float(end) - float(start)
-                <= 720
+                and not minimum_window_duration <= float(end) - float(start) <= 720
             )
             or (
                 total_duration < 480
@@ -546,8 +528,7 @@ def _minutes_plan_context(
         errors.append("minutes_plan_coverage")
     if (
         expected_input_transcript_sha256 is not None
-        and plan.get("input_transcript_sha256")
-        != expected_input_transcript_sha256
+        and plan.get("input_transcript_sha256") != expected_input_transcript_sha256
     ):
         errors.append("minutes_plan_input_hash")
     if expected_source_srt_sha256 is not None and (
@@ -667,11 +648,7 @@ def _minutes_evidence_errors(
             and isinstance(end_sec, (int, float))
             and not isinstance(end_sec, bool)
             and 0 <= start_sec <= end_sec
-            and (
-                protocol_version < 3
-                or plan is None
-                or end_sec <= plan["total_duration_sec"]
-            )
+            and (protocol_version < 3 or plan is None or end_sec <= plan["total_duration_sec"])
         )
         if (
             not isinstance(topic_id, str)
@@ -873,11 +850,9 @@ def _minutes_evidence_errors(
             )
             optional_fields = ("status", "owner", "deadline")
             if any(
-                ledger_record[field] != evidence_record[field]
-                for field in minimum_fields
+                ledger_record[field] != evidence_record[field] for field in minimum_fields
             ) or any(
-                ledger_record[field] is not None
-                and ledger_record[field] != evidence_record[field]
+                ledger_record[field] is not None and ledger_record[field] != evidence_record[field]
                 for field in optional_fields
             ):
                 errors.append(f"minutes_ledger_mismatch:{item_id}")
@@ -965,9 +940,7 @@ def _validated_input_transcript(path: str | Path) -> tuple[Path, int, str]:
     resolved = source.resolve()
     size = resolved.stat().st_size
     if size <= 0 or size > MAX_INPUT_TRANSCRIPT_BYTES:
-        raise RelayControlError(
-            f"输入逐字稿大小必须在 1 到 {MAX_INPUT_TRANSCRIPT_BYTES} 字节之间"
-        )
+        raise RelayControlError(f"输入逐字稿大小必须在 1 到 {MAX_INPUT_TRANSCRIPT_BYTES} 字节之间")
     try:
         resolved.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -1137,17 +1110,13 @@ def inspect_whisper_ref(archive_dir: str | Path) -> dict[str, Any]:
                 by_stem.setdefault(path.stem, {})[key] = path
                 break
     complete_stems = sorted(
-        stem
-        for stem, members in by_stem.items()
-        if set(members) == set(transcript_suffixes)
+        stem for stem, members in by_stem.items() if set(members) == set(transcript_suffixes)
     )
     log_files = [path for path in nonempty if path.name.lower() == "whisper.log"]
     missing: list[str] = []
     if not complete_stems:
         available = (
-            set().union(*(members.keys() for members in by_stem.values()))
-            if by_stem
-            else set()
+            set().union(*(members.keys() for members in by_stem.values())) if by_stem else set()
         )
         missing.extend(sorted(set(transcript_suffixes) - available))
         if not missing:
@@ -1208,13 +1177,9 @@ class RelayControl:
         configured = db_path or os.getenv("MEETING_RELAY_JOBS_DB") or DEFAULT_DB_PATH
         self.db_path = Path(configured).expanduser()
         configured_archive = (
-            archive_root
-            or os.getenv("MEETING_RELAY_ARCHIVE_ROOT")
-            or DEFAULT_ARCHIVE_ROOT
+            archive_root or os.getenv("MEETING_RELAY_ARCHIVE_ROOT") or DEFAULT_ARCHIVE_ROOT
         )
-        self.archive_root = Path(
-            os.path.abspath(str(Path(configured_archive).expanduser()))
-        )
+        self.archive_root = Path(os.path.abspath(str(Path(configured_archive).expanduser())))
         self.auto_pending_archive = (
             True if auto_pending_archive is None else bool(auto_pending_archive)
         )
@@ -1320,12 +1285,7 @@ class RelayControl:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _expected_attempt_dir(self, job_id: str, attempt_no: int) -> Path:
-        return (
-            self.archive_root
-            / ".workbench-drafts"
-            / job_id
-            / f"attempt-{attempt_no}"
-        )
+        return self.archive_root / ".workbench-drafts" / job_id / f"attempt-{attempt_no}"
 
     @staticmethod
     def _manifest_metadata(archive_dir: Path) -> tuple[str, int, str | None]:
@@ -1410,11 +1370,7 @@ class RelayControl:
         vm_match = _VM_ID_RE.search(Path(row["audio_path"]).stem)
         if vm_match is None:
             vm_match = next(
-                (
-                    _VM_ID_RE.search(path.stem)
-                    for path in source.iterdir()
-                    if path.is_file()
-                ),
+                (_VM_ID_RE.search(path.stem) for path in source.iterdir() if path.is_file()),
                 None,
             )
         if vm_match:
@@ -1477,9 +1433,7 @@ class RelayControl:
         attempt_no: int,
         category: str,
     ) -> Path:
-        recovery_root = (
-            self.archive_root / ".workbench-recovery" / category / job_id
-        )
+        recovery_root = self.archive_root / ".workbench-recovery" / category / job_id
         if recovery_root.is_symlink():
             raise RelayControlError("归档恢复目录不安全")
         recovery_root.mkdir(parents=True, exist_ok=True)
@@ -1513,14 +1467,10 @@ class RelayControl:
             if candidate.is_symlink() or not candidate.is_dir():
                 continue
             try:
-                manifest_job, manifest_attempt, manifest_status = (
-                    self._manifest_metadata(candidate)
-                )
+                manifest_job, manifest_attempt, manifest_status = self._manifest_metadata(candidate)
             except RelayControlError:
                 continue
-            index.append(
-                (candidate.resolve(), manifest_job, manifest_attempt, manifest_status)
-            )
+            index.append((candidate.resolve(), manifest_job, manifest_attempt, manifest_status))
         return index
 
     def _visible_pending_for_job(
@@ -1552,9 +1502,7 @@ class RelayControl:
                 manifest_status != "published"
                 and canonical_candidate != published_archive
                 and manifest_job == job_id
-                and (
-                attempt_no is None or manifest_attempt == attempt_no
-                )
+                and (attempt_no is None or manifest_attempt == attempt_no)
             ):
                 matches.append(canonical_candidate)
         return matches
@@ -1564,9 +1512,7 @@ class RelayControl:
         base = pending_root / self._pending_archive_name(row, source)
         vm_match = _VM_ID_RE.search(Path(row["audio_path"]).stem)
         discriminator = vm_match.group(1) if vm_match else str(row["job_id"])
-        vm_candidate = pending_root / (
-            f"{base.name} {self._safe_pending_title(discriminator)}"
-        )
+        vm_candidate = pending_root / (f"{base.name} {self._safe_pending_title(discriminator)}")
         job_candidate = pending_root / f"{vm_candidate.name} {row['job_id']}"
         candidates = [base, vm_candidate, job_candidate]
         suffix = 2
@@ -1579,8 +1525,8 @@ class RelayControl:
             if not candidate.exists():
                 return candidate
             try:
-                candidate_job, candidate_attempt, candidate_status = (
-                    self._manifest_metadata(candidate)
+                candidate_job, candidate_attempt, candidate_status = self._manifest_metadata(
+                    candidate
                 )
             except RelayControlError:
                 candidate_job = ""
@@ -1589,8 +1535,7 @@ class RelayControl:
             published_archive = row["published_archive_dir"]
             is_published_archive = bool(
                 published_archive
-                and candidate.resolve()
-                == Path(published_archive).expanduser().resolve()
+                and candidate.resolve() == Path(published_archive).expanduser().resolve()
             )
             if (
                 candidate_job == row["job_id"]
@@ -1609,14 +1554,15 @@ class RelayControl:
                 archive_policy = self._archive_policy(connection, job_id)
             if row["status"] not in {"completed_unreviewed", "draft_modified"}:
                 raise InvalidTransitionError(
-                    f"待校对提升要求 completed_unreviewed/draft_modified，"
-                    f"当前为 {row['status']}"
+                    f"待校对提升要求 completed_unreviewed/draft_modified，当前为 {row['status']}"
                 )
             attempt_no = int(row["current_attempt"])
             expected_source = self._expected_attempt_dir(job_id, attempt_no)
-            current_value = Path(
-                os.path.abspath(str(Path(row["archive_dir"]).expanduser()))
-            ) if row["archive_dir"] else None
+            current_value = (
+                Path(os.path.abspath(str(Path(row["archive_dir"]).expanduser())))
+                if row["archive_dir"]
+                else None
+            )
             journal_path = self._pending_journal_path(job_id, attempt_no)
             journal: dict[str, Any] | None = None
             if journal_path.is_file() and not journal_path.is_symlink():
@@ -1637,8 +1583,8 @@ class RelayControl:
                     # 工作台先原地安装 published manifest、Relay 后确认回执时会有一个
                     # 很短的窗口；此时不得把正式目录重新搬迁或标成归档失败。
                     try:
-                        current_job, current_attempt, current_status = (
-                            self._manifest_metadata(current_value)
+                        current_job, current_attempt, current_status = self._manifest_metadata(
+                            current_value
                         )
                     except RelayControlError:
                         current_job, current_attempt, current_status = "", -1, None
@@ -1667,19 +1613,12 @@ class RelayControl:
                     and journal.get("attempt") == attempt_no
                 ):
                     journal_source = Path(
-                        os.path.abspath(
-                            str(
-                                Path(
-                                    str(journal.get("source", ""))
-                                ).expanduser()
-                            )
-                        )
+                        os.path.abspath(str(Path(str(journal.get("source", ""))).expanduser()))
                     )
                 if (
                     journal_source is None
                     or journal_source.resolve() != current_value.resolve()
-                    or current_value.parent.resolve()
-                    != (self.archive_root / "待校对").resolve()
+                    or current_value.parent.resolve() != (self.archive_root / "待校对").resolve()
                 ):
                     raise RelayControlError("任务 archive_dir 不是当前 hidden attempt")
                 # legacy 目录已完成 os.replace、DB CAS 尚未提交的恢复窗口。
@@ -1699,9 +1638,7 @@ class RelayControl:
                     self._managed_unreviewed_archive(row, source)
                     target = self._select_pending_target(row, source)
                 else:
-                    installed = self._visible_pending_for_job(
-                        job_id, attempt_no=attempt_no
-                    )
+                    installed = self._visible_pending_for_job(job_id, attempt_no=attempt_no)
                     if len(installed) != 1:
                         raise RelayControlError("找不到可恢复的当前 attempt 待校对目录")
                     target = installed[0]
@@ -1715,27 +1652,19 @@ class RelayControl:
                 }
                 self._write_json_atomically(journal_path, journal)
             else:
-                if (
-                    journal.get("job_id") != job_id
-                    or journal.get("attempt") != attempt_no
-                ):
+                if journal.get("job_id") != job_id or journal.get("attempt") != attempt_no:
                     raise RelayControlError("待校对 journal 与当前 attempt 不匹配")
                 source = Path(
-                    os.path.abspath(
-                        str(Path(str(journal.get("source", ""))).expanduser())
-                    )
+                    os.path.abspath(str(Path(str(journal.get("source", ""))).expanduser()))
                 )
                 source_is_hidden = source.resolve() == expected_source.resolve()
                 source_is_legacy = (
-                    source.parent.resolve()
-                    == (self.archive_root / "待校对").resolve()
+                    source.parent.resolve() == (self.archive_root / "待校对").resolve()
                 )
                 if not source_is_hidden and not source_is_legacy:
                     raise RelayControlError("待校对 journal 来源越界")
                 target = Path(
-                    os.path.abspath(
-                        str(Path(str(journal.get("target", ""))).expanduser())
-                    )
+                    os.path.abspath(str(Path(str(journal.get("target", ""))).expanduser()))
                 )
                 if target.parent.resolve() not in {
                     self.archive_root.resolve(),
@@ -1749,10 +1678,10 @@ class RelayControl:
                         _old_job, old_attempt = self._manifest_identity(old_pending)
                     except RelayControlError:
                         continue
-                    if (
-                        old_attempt == attempt_no
-                        and old_pending in {source.resolve(), target.resolve()}
-                    ):
+                    if old_attempt == attempt_no and old_pending in {
+                        source.resolve(),
+                        target.resolve(),
+                    }:
                         continue
                     self._move_pending_to_recovery(
                         old_pending,
@@ -1850,10 +1779,10 @@ class RelayControl:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._job_row(connection, job_id)
-            if (
-                int(row["current_attempt"]) != attempt_no
-                or row["status"] not in {"completed_unreviewed", "draft_modified"}
-            ):
+            if int(row["current_attempt"]) != attempt_no or row["status"] not in {
+                "completed_unreviewed",
+                "draft_modified",
+            }:
                 return
             connection.execute(
                 """
@@ -1931,10 +1860,7 @@ class RelayControl:
         def promote_to_flat(job_id: str) -> dict[str, Any]:
             promoted = self._promote_pending_archive(job_id)
             promoted_archive = Path(str(promoted["archive_dir"])).expanduser()
-            if (
-                promoted_archive.parent.resolve()
-                == (self.archive_root / "待校对").resolve()
-            ):
+            if promoted_archive.parent.resolve() == (self.archive_root / "待校对").resolve():
                 # 兼容旧版本已经写下的二级 target journal；同一次显式迁移
                 # 必须继续完成扁平化，不能把“仍在待校对”报告成最终成功。
                 promoted = self._promote_pending_archive(job_id)
@@ -1951,14 +1877,10 @@ class RelayControl:
                     continue
                 archive_value = before.get("archive_dir")
                 if not archive_value:
-                    summary["skipped"].append(
-                        {"job_id": candidate, "reason": "archive_dir:null"}
-                    )
+                    summary["skipped"].append({"job_id": candidate, "reason": "archive_dir:null"})
                     continue
                 archive = Path(archive_value).expanduser()
-                expected = self._expected_attempt_dir(
-                    candidate, int(before["current_attempt"])
-                )
+                expected = self._expected_attempt_dir(candidate, int(before["current_attempt"]))
                 if archive.resolve() != expected.resolve():
                     recovery_journal = (
                         self.archive_root
@@ -2052,9 +1974,7 @@ class RelayControl:
             raise RelayControlError("Whisper 安装来源不能是目标归档")
         if not row["audio_sha256"]:
             raise RelayControlError("Whisper 安装缺少原音频哈希")
-        allowed_stems = {
-            _canonical_media_stem(Path(row["audio_path"]).stem)
-        }
+        allowed_stems = {_canonical_media_stem(Path(row["audio_path"]).stem)}
         matched_original_audio = False
         for audio in target_root.iterdir():
             if (
@@ -2067,9 +1987,7 @@ class RelayControl:
                 allowed_stems.add(_canonical_media_stem(audio.stem))
         if not matched_original_audio:
             raise RelayControlError("Whisper 安装目标缺少匹配的原音频")
-        selected_stem = _canonical_media_stem(
-            str(inspection.get("selected_stem") or "")
-        )
+        selected_stem = _canonical_media_stem(str(inspection.get("selected_stem") or ""))
         if not selected_stem or selected_stem not in allowed_stems:
             raise RelayControlError("Whisper 安装产物与原音频不匹配")
         return source, target_root, selected_stem
@@ -2113,9 +2031,7 @@ class RelayControl:
             staged_inspection = inspect_whisper_ref(stage_root)
             if (
                 staged_inspection.get("status") != "ready"
-                or _canonical_media_stem(
-                    str(staged_inspection.get("selected_stem") or "")
-                )
+                or _canonical_media_stem(str(staged_inspection.get("selected_stem") or ""))
                 != selected_stem
             ):
                 raise RelayControlError("Whisper 安装临时副本复验失败")
@@ -2132,9 +2048,7 @@ class RelayControl:
             installed_inspection = inspect_whisper_ref(target_root)
             if (
                 installed_inspection.get("status") != "ready"
-                or _canonical_media_stem(
-                    str(installed_inspection.get("selected_stem") or "")
-                )
+                or _canonical_media_stem(str(installed_inspection.get("selected_stem") or ""))
                 != selected_stem
             ):
                 raise RelayControlError("Whisper 安装后复验失败")
@@ -2209,14 +2123,10 @@ class RelayControl:
 
         if row["whisper_status"] == "ready":
             inspection = inspect_whisper_ref(target_root)
-            selected_stem = _canonical_media_stem(
-                str(journal.get("selected_stem") or "")
-            )
+            selected_stem = _canonical_media_stem(str(journal.get("selected_stem") or ""))
             if (
                 inspection.get("status") != "ready"
-                or _canonical_media_stem(
-                    str(inspection.get("selected_stem") or "")
-                )
+                or _canonical_media_stem(str(inspection.get("selected_stem") or ""))
                 != selected_stem
             ):
                 raise RelayControlError("Whisper 已提交安装无法完成复验")
@@ -2257,9 +2167,7 @@ class RelayControl:
                 # 按安装时的那一行回滚（安装方持有归档锁，期间没人能把它标成 ready）。
                 row = install_row
             else:
-                journal = json.loads(
-                    (recovery_root / "journal.json").read_text(encoding="utf-8")
-                )
+                journal = json.loads((recovery_root / "journal.json").read_text(encoding="utf-8"))
                 job_id = journal.get("job_id")
                 with self._connect() as connection:
                     row = self._job_row(connection, str(job_id))
@@ -2367,9 +2275,7 @@ class RelayControl:
             }
         )
         summary["whisper_recoveries"] = []
-        recovery_base = (
-            self.archive_root / ".workbench-recovery" / "whisper-install"
-        )
+        recovery_base = self.archive_root / ".workbench-recovery" / "whisper-install"
         if recovery_base.is_symlink():
             summary["ok"] = False
             summary["errors"].append(
@@ -2515,9 +2421,8 @@ class RelayControl:
     def _initialize(self) -> None:
         with self._connect() as connection:
             checked_key = self._schema_checked_key()
-            if (
-                checked_key is not None
-                and _SCHEMA_CHECKED.get(checked_key) == self._schema_version(connection)
+            if checked_key is not None and _SCHEMA_CHECKED.get(checked_key) == self._schema_version(
+                connection
             ):
                 return
             connection.execute("PRAGMA journal_mode = WAL")
@@ -2617,12 +2522,10 @@ class RelayControl:
             )
             # 兼容已由早期适配层创建的本地 DB；迁移只增列，不改旧数据。
             job_columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+                row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
             }
             attempt_columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(attempts)").fetchall()
+                row["name"] for row in connection.execute("PRAGMA table_info(attempts)").fetchall()
             }
             migration_columns = {
                 "worker_id",
@@ -2661,15 +2564,11 @@ class RelayControl:
                 "minutes_protocol_version",
                 "llm_backend",
             }
-            if (
-                migration_columns - job_columns
-                or attempt_migration_columns - attempt_columns
-            ):
+            if migration_columns - job_columns or attempt_migration_columns - attempt_columns:
                 # 多进程首启时串行取得写锁，再读一次快照，避免重复 ALTER。
                 connection.execute("BEGIN IMMEDIATE")
                 job_columns = {
-                    row["name"]
-                    for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+                    row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
                 }
                 attempt_columns = {
                     row["name"]
@@ -2699,9 +2598,7 @@ class RelayControl:
                 connection.execute(
                     "ALTER TABLE jobs ADD COLUMN whisper_attempt INTEGER NOT NULL DEFAULT 1"
                 )
-                connection.execute(
-                    "UPDATE jobs SET whisper_attempt = current_attempt"
-                )
+                connection.execute("UPDATE jobs SET whisper_attempt = current_attempt")
             if "whisper_retry_requested" not in job_columns:
                 connection.execute(
                     """
@@ -2736,9 +2633,7 @@ class RelayControl:
             if "meeting_id" not in job_columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN meeting_id TEXT")
             if "published_archive_dir" not in job_columns:
-                connection.execute(
-                    "ALTER TABLE jobs ADD COLUMN published_archive_dir TEXT"
-                )
+                connection.execute("ALTER TABLE jobs ADD COLUMN published_archive_dir TEXT")
                 connection.execute(
                     """
                     UPDATE jobs SET published_archive_dir = archive_dir
@@ -2747,13 +2642,9 @@ class RelayControl:
                 )
 
             if "published_manifest_path" not in job_columns:
-                connection.execute(
-                    "ALTER TABLE jobs ADD COLUMN published_manifest_path TEXT"
-                )
+                connection.execute("ALTER TABLE jobs ADD COLUMN published_manifest_path TEXT")
             if "published_manifest_sha256" not in job_columns:
-                connection.execute(
-                    "ALTER TABLE jobs ADD COLUMN published_manifest_sha256 TEXT"
-                )
+                connection.execute("ALTER TABLE jobs ADD COLUMN published_manifest_sha256 TEXT")
             if "published_at" not in job_columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN published_at TEXT")
             if "hotword_prompt_path" not in job_columns:
@@ -2764,25 +2655,15 @@ class RelayControl:
                 # 工作台告诉 relay 这场会属于哪个项目（项目 id 或名字），出纪要挑词用。
                 connection.execute("ALTER TABLE jobs ADD COLUMN project_hint TEXT")
             if "input_transcript_path" not in attempt_columns:
-                connection.execute(
-                    "ALTER TABLE attempts ADD COLUMN input_transcript_path TEXT"
-                )
+                connection.execute("ALTER TABLE attempts ADD COLUMN input_transcript_path TEXT")
             if "input_transcript_sha256" not in attempt_columns:
-                connection.execute(
-                    "ALTER TABLE attempts ADD COLUMN input_transcript_sha256 TEXT"
-                )
+                connection.execute("ALTER TABLE attempts ADD COLUMN input_transcript_sha256 TEXT")
             if "input_transcript_bytes" not in attempt_columns:
-                connection.execute(
-                    "ALTER TABLE attempts ADD COLUMN input_transcript_bytes INTEGER"
-                )
+                connection.execute("ALTER TABLE attempts ADD COLUMN input_transcript_bytes INTEGER")
             if "source_srt_sha256" not in attempt_columns:
-                connection.execute(
-                    "ALTER TABLE attempts ADD COLUMN source_srt_sha256 TEXT"
-                )
+                connection.execute("ALTER TABLE attempts ADD COLUMN source_srt_sha256 TEXT")
             if "minutes_plan_sha256" not in attempt_columns:
-                connection.execute(
-                    "ALTER TABLE attempts ADD COLUMN minutes_plan_sha256 TEXT"
-                )
+                connection.execute("ALTER TABLE attempts ADD COLUMN minutes_plan_sha256 TEXT")
             if "minutes_protocol_version" not in attempt_columns:
                 connection.execute(
                     """
@@ -2958,13 +2839,10 @@ class RelayControl:
                 if "jobs" in tables:
                     job_columns = {
                         row["name"]
-                        for row in connection.execute(
-                            "PRAGMA table_info(jobs)"
-                        ).fetchall()
+                        for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
                     }
                     pending_archive_expression = (
-                        "SUM(CASE WHEN failure_stage = 'pending_archive' "
-                        "THEN 1 ELSE 0 END)"
+                        "SUM(CASE WHEN failure_stage = 'pending_archive' THEN 1 ELSE 0 END)"
                         if "failure_stage" in job_columns
                         else "0"
                     )
@@ -3002,9 +2880,7 @@ class RelayControl:
                               )
                             """
                         ).fetchone()
-                        counts["held_test_fixtures"] = int(
-                            held_row["count"] or 0
-                        )
+                        counts["held_test_fixtures"] = int(held_row["count"] or 0)
                 database_available = True
         except (FileNotFoundError, OSError, sqlite3.Error) as error:
             error_type = type(error).__name__
@@ -3023,11 +2899,7 @@ class RelayControl:
             process_worker_id = f"worker-{row['pid']}" + (f"-{token}" if token else "")
             worker_id = f"{row['name']}-{row['pid']}" + (f"-{token}" if token else "")
             process_alive = _worker_process_is_alive(process_worker_id)
-            fresh = (
-                row["status"] != "stopped"
-                and age_seconds <= stale_seconds
-                and process_alive
-            )
+            fresh = row["status"] != "stopped" and age_seconds <= stale_seconds and process_alive
             item = {
                 "name": row["name"],
                 "worker_id": worker_id,
@@ -3062,7 +2934,9 @@ class RelayControl:
             watchdog = by_name.get("watchdog")
             runtime_status = "degraded" if watchdog and watchdog["fresh"] else "unavailable"
 
-        selected_worker = by_name.get("control-worker") if control_enabled else by_name.get("watchdog")
+        selected_worker = (
+            by_name.get("control-worker") if control_enabled else by_name.get("watchdog")
+        )
         if selected_worker is None:
             worker = {
                 "state": "absent",
@@ -3107,9 +2981,7 @@ class RelayControl:
         return result
 
     def _job_row(self, connection: sqlite3.Connection, job_id: str) -> sqlite3.Row:
-        row = connection.execute(
-            "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
-        ).fetchone()
+        row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         if row is None:
             raise JobNotFoundError(f"任务不存在: {job_id}")
         return row
@@ -3136,9 +3008,7 @@ class RelayControl:
                         raise InvalidTransitionError("已发布任务不能标记为合成夹具")
                     if row["archive_dir"]:
                         archive = Path(row["archive_dir"]).expanduser()
-                        expected = self._expected_attempt_dir(
-                            job_id, int(row["current_attempt"])
-                        )
+                        expected = self._expected_attempt_dir(job_id, int(row["current_attempt"]))
                         if archive.resolve() != expected.resolve():
                             raise InvalidTransitionError(
                                 "只有尚未归档或仍在 hidden attempt 的任务可标记为合成夹具"
@@ -3180,10 +3050,7 @@ class RelayControl:
         expected_worker: str | None,
         action: str,
     ) -> None:
-        if (
-            expected_attempt is not None
-            and int(row["current_attempt"]) != int(expected_attempt)
-        ):
+        if expected_attempt is not None and int(row["current_attempt"]) != int(expected_attempt):
             raise InvalidTransitionError(f"{action}的 attempt 已变化")
         if expected_worker is not None and row["worker_id"] != expected_worker:
             raise InvalidTransitionError(f"{action}的 worker 已变化")
@@ -3311,9 +3178,7 @@ class RelayControl:
         if requested_stage not in {None, "minutes_generating"}:
             raise RelayControlError("enqueue --stage 仅支持 minutes_generating")
         if minutes_only != (transcript_path is not None):
-            raise RelayControlError(
-                "minutes_generating enqueue 必须同时提供 --transcript"
-            )
+            raise RelayControlError("minutes_generating enqueue 必须同时提供 --transcript")
         _validate_archive_root_for_write(self.archive_root)
         audio_path = Path(audio).expanduser().resolve()
         if not audio_path.is_file():
@@ -3386,12 +3251,12 @@ class RelayControl:
             hotword_sha256 = None
             hotword_count = 0
             if minutes_only and transcript_path is not None:
-                snapshot_path, snapshot_size, snapshot_sha256 = (
-                    self._snapshot_input_transcript(job_id, 1, transcript_path)
+                snapshot_path, snapshot_size, snapshot_sha256 = self._snapshot_input_transcript(
+                    job_id, 1, transcript_path
                 )
             if hotword_prompt_path is not None:
-                hotword_snapshot, hotword_sha256, hotword_count = (
-                    self._snapshot_hotword_prompt(job_id, hotword_prompt_path)
+                hotword_snapshot, hotword_sha256, hotword_count = self._snapshot_hotword_prompt(
+                    job_id, hotword_prompt_path
                 )
             connection.execute(
                 """
@@ -3447,9 +3312,7 @@ class RelayControl:
                 payload={
                     "audio_path": str(audio_path),
                     "source_key": source_key,
-                    "requested_stage": (
-                        "minutes_generating" if minutes_only else "discovered"
-                    ),
+                    "requested_stage": ("minutes_generating" if minutes_only else "discovered"),
                     "input_transcript_sha256": snapshot_sha256,
                     "hotwords_configured": hotword_snapshot is not None,
                     "hotword_prompt_sha256": hotword_sha256,
@@ -3767,9 +3630,7 @@ class RelayControl:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._job_row(connection, job_id)
-            target_attempt = (
-                int(row["current_attempt"]) if attempt_no is None else int(attempt_no)
-            )
+            target_attempt = int(row["current_attempt"]) if attempt_no is None else int(attempt_no)
             if target_attempt < 1:
                 raise RelayControlError("子状态 attempt 必须大于等于 1")
             if target_attempt != int(row["current_attempt"]):
@@ -3830,8 +3691,7 @@ class RelayControl:
                         self._managed_unreviewed_archive(row)
                     except RelayControlError as exc:
                         raise InvalidTransitionError(
-                            "Whisper 单独重试只允许写入未发布 attempt；"
-                            "已发布会议请使用重新转写"
+                            "Whisper 单独重试只允许写入未发布 attempt；已发布会议请使用重新转写"
                         ) from exc
                 connection.execute(
                     f"""
@@ -3872,11 +3732,7 @@ class RelayControl:
                 "failed",
                 "pending",
                 stage=name,
-                payload=(
-                    {"generation": retry_generation}
-                    if retry_generation is not None
-                    else {}
-                ),
+                payload=({"generation": retry_generation} if retry_generation is not None else {}),
             )
         return self.status(job_id)
 
@@ -4021,13 +3877,9 @@ class RelayControl:
             if success:
                 if artifact_dir is None:
                     raise ArtifactValidationError(
-                        ArchiveValidationReport(
-                            Path("."), ["whisper_retry_artifact_dir"], []
-                        )
+                        ArchiveValidationReport(Path("."), ["whisper_retry_artifact_dir"], [])
                     )
-                staging_root = Path(
-                    os.path.abspath(str(Path(artifact_dir).expanduser()))
-                )
+                staging_root = Path(os.path.abspath(str(Path(artifact_dir).expanduser())))
                 installed, backup = self._install_whisper_ref(
                     row,
                     staging_root,
@@ -4183,9 +4035,7 @@ class RelayControl:
                 "input_transcript_bytes": attempt_row["input_transcript_bytes"],
                 "source_srt_sha256": attempt_row["source_srt_sha256"],
                 "minutes_plan_sha256": attempt_row["minutes_plan_sha256"],
-                "minutes_protocol_version": int(
-                    attempt_row["minutes_protocol_version"]
-                ),
+                "minutes_protocol_version": int(attempt_row["minutes_protocol_version"]),
                 "llm_backend": attempt_row["llm_backend"],
                 "attempt": row["current_attempt"],
                 "start_stage": start_stage,
@@ -4260,9 +4110,7 @@ class RelayControl:
             )
             old_status = row["status"]
             if old_status not in allowed_statuses or row["codex_dispatched_at"]:
-                raise InvalidTransitionError(
-                    f"{old_status} 不能放回队列等待（{event_type}）"
-                )
+                raise InvalidTransitionError(f"{old_status} 不能放回队列等待（{event_type}）")
             previous = connection.execute(
                 """
                 SELECT COUNT(*) FROM events
@@ -4451,9 +4299,7 @@ class RelayControl:
 
     def reconcile_codex_handoffs(self, grace_seconds: float = 30) -> int:
         """pane 已回到 shell 后，收口超过宽限期仍无回执的纪要 Agent attempt。"""
-        cutoff = datetime.now(timezone.utc) - timedelta(
-            seconds=max(0.0, float(grace_seconds))
-        )
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(0.0, float(grace_seconds)))
         cutoff_text = cutoff.isoformat(timespec="milliseconds")
         reconciled = 0
         with self._connect() as connection:
@@ -4613,9 +4459,7 @@ class RelayControl:
                 f"不可重试的阶段: {stage}；允许值: {', '.join(sorted(RETRYABLE_STAGES))}"
             )
         if stage == "minutes_generating" and transcript_path is None:
-            raise RelayControlError(
-                "minutes_generating retry 必须提供 --transcript 快照"
-            )
+            raise RelayControlError("minutes_generating retry 必须提供 --transcript 快照")
         if stage != "minutes_generating" and transcript_path is not None:
             raise RelayControlError("--transcript 仅适用于 minutes_generating retry")
         _validate_archive_root_for_write(self.archive_root)
@@ -4641,8 +4485,8 @@ class RelayControl:
             replacement_hotword_sha256 = None
             replacement_hotword_count = 0
             if transcript_path is not None:
-                snapshot_path, snapshot_size, snapshot_sha256 = (
-                    self._snapshot_input_transcript(job_id, attempt_no, transcript_path)
+                snapshot_path, snapshot_size, snapshot_sha256 = self._snapshot_input_transcript(
+                    job_id, attempt_no, transcript_path
                 )
             if hotword_prompt_path is not None:
                 (
@@ -4768,9 +4612,7 @@ class RelayControl:
                 "cancelled",
                 "interrupted",
             }:
-                raise InvalidTransitionError(
-                    f"当前状态 {row['status']} 不能请求阶段后停止"
-                )
+                raise InvalidTransitionError(f"当前状态 {row['status']} 不能请求阶段后停止")
             now = _now()
             if row["status"] == "queued":
                 updated = connection.execute(
@@ -4829,9 +4671,7 @@ class RelayControl:
             connection.execute("BEGIN IMMEDIATE")
             row = self._job_row(connection, job_id)
             if row["status"] != "queued":
-                raise InvalidTransitionError(
-                    f"只有 queued 任务可取消，当前为 {row['status']}"
-                )
+                raise InvalidTransitionError(f"只有 queued 任务可取消，当前为 {row['status']}")
             now = _now()
             updated = connection.execute(
                 """
@@ -5041,19 +4881,14 @@ class RelayControl:
                 if minutes_plan_sha256 is None:
                     minutes_plan_sha256 = attempt["minutes_plan_sha256"]
                 if minutes_protocol_version == 1:
-                    minutes_protocol_version = int(
-                        attempt["minutes_protocol_version"]
-                    )
+                    minutes_protocol_version = int(attempt["minutes_protocol_version"])
 
         path_errors: list[str] = []
         if archive_has_symlink:
             path_errors.append("archive_symlink")
         if job_id is not None and expected_attempt is not None:
             expected_root = (
-                self.archive_root
-                / ".workbench-drafts"
-                / job_id
-                / f"attempt-{expected_attempt}"
+                self.archive_root / ".workbench-drafts" / job_id / f"attempt-{expected_attempt}"
             )
             if root != expected_root:
                 path_errors.append("archive_not_current_attempt_draft")
@@ -5076,10 +4911,7 @@ class RelayControl:
             # 对照稿 I/O 异常由独立子状态收口，不污染主链归档校验。
             optional_entries = []
         all_entries = main_entries + optional_entries
-        if any(
-            path.is_symlink()
-            for path in main_entries
-        ):
+        if any(path.is_symlink() for path in main_entries):
             path_errors.append("artifact_symlink")
         if any(
             not path.is_symlink() and not path.is_file() and not path.is_dir()
@@ -5089,22 +4921,17 @@ class RelayControl:
         all_files = sorted(
             path
             for path in all_entries
-            if path.is_file()
-            and not path.is_symlink()
-            and not _is_archive_noise(path, root)
+            if path.is_file() and not path.is_symlink() and not _is_archive_noise(path, root)
         )
         artifacts = [str(path.relative_to(root)) for path in all_files]
         main_files = [
-            path
-            for path in all_files
-            if path.relative_to(root).parts[0] != "whisper-ref"
+            path for path in all_files if path.relative_to(root).parts[0] != "whisper-ref"
         ]
         main_artifacts = [str(path.relative_to(root)) for path in main_files]
         direct = [path for path in main_files if path.parent == root]
         missing: list[str] = list(path_errors)
         minutes_only = (
-            requested_stage == "minutes_generating"
-            and input_transcript_sha256 is not None
+            requested_stage == "minutes_generating" and input_transcript_sha256 is not None
         )
         required_paths: set[str] = set()
         empty_files = [
@@ -5135,9 +4962,7 @@ class RelayControl:
         source_srt_path: Path | None = None
         if minutes_only:
             input_file = root / (
-                "input-transcript.srt"
-                if minutes_protocol_version >= 3
-                else "input-transcript.txt"
+                "input-transcript.srt" if minutes_protocol_version >= 3 else "input-transcript.txt"
             )
             if (
                 not input_file.is_file()
@@ -5161,31 +4986,16 @@ class RelayControl:
                     and p.name.lower() != "input-transcript.txt"
                 ],
             )
-            require_one(
-                "transcript_srt", [p for p in direct if p.suffix.lower() == ".srt"]
-            )
-            source_srt_path = next(
-                (p for p in direct if p.suffix.lower() == ".srt"), None
-            )
-            require_one(
-                "spk.txt", [p for p in direct if p.name.lower().endswith("spk.txt")]
-            )
+            require_one("transcript_srt", [p for p in direct if p.suffix.lower() == ".srt"])
+            source_srt_path = next((p for p in direct if p.suffix.lower() == ".srt"), None)
+            require_one("spk.txt", [p for p in direct if p.name.lower().endswith("spk.txt")])
             require_one(
                 "funasr_json",
-                [
-                    p
-                    for p in direct
-                    if "funasr" in p.name.lower()
-                    and p.suffix.lower() == ".json"
-                ],
+                [p for p in direct if "funasr" in p.name.lower() and p.suffix.lower() == ".json"],
             )
             require_one(
                 "funasr_log",
-                [
-                    p
-                    for p in direct
-                    if "funasr" in p.name.lower() and p.suffix.lower() == ".log"
-                ],
+                [p for p in direct if "funasr" in p.name.lower() and p.suffix.lower() == ".log"],
             )
 
         md_by_stem = {p.stem: p for p in direct if p.suffix.lower() == ".md"}
@@ -5225,30 +5035,20 @@ class RelayControl:
                     minutes_md_path,
                     protocol_version=minutes_protocol_version,
                     plan_path=(
-                        root / "minutes-plan.json"
-                        if minutes_protocol_version >= 3
-                        else None
+                        root / "minutes-plan.json" if minutes_protocol_version >= 3 else None
                     ),
                     ledger_root=(
-                        root / "minutes-ledger"
-                        if minutes_protocol_version >= 3
-                        else None
+                        root / "minutes-ledger" if minutes_protocol_version >= 3 else None
                     ),
-                    source_srt_path=(
-                        source_srt_path if minutes_protocol_version >= 3 else None
-                    ),
+                    source_srt_path=(source_srt_path if minutes_protocol_version >= 3 else None),
                     expected_input_transcript_sha256=(
                         input_transcript_sha256 if minutes_protocol_version >= 3 else None
                     ),
                     expected_source_srt_sha256=(
-                        trusted_source_srt_sha256
-                        if minutes_protocol_version >= 3
-                        else None
+                        trusted_source_srt_sha256 if minutes_protocol_version >= 3 else None
                     ),
                     expected_minutes_plan_sha256=(
-                        minutes_plan_sha256
-                        if minutes_protocol_version >= 3
-                        else None
+                        minutes_plan_sha256 if minutes_protocol_version >= 3 else None
                     ),
                 )
                 missing.extend(evidence_errors)
@@ -5257,9 +5057,7 @@ class RelayControl:
                     if minutes_protocol_version >= 3:
                         required_paths.add("minutes-plan.json")
                         try:
-                            evidence_payload = json.loads(
-                                evidence_path.read_text(encoding="utf-8")
-                            )
+                            evidence_payload = json.loads(evidence_path.read_text(encoding="utf-8"))
                             if evidence_payload.get("strategy") == "multi_stage":
                                 required_paths.update(
                                     str(path.relative_to(root))
@@ -5291,18 +5089,14 @@ class RelayControl:
                 missing.append("manifest_schema_version")
             if (
                 minutes_protocol_version >= 2
-                and manifest.get("minutes_protocol_version")
-                != minutes_protocol_version
+                and manifest.get("minutes_protocol_version") != minutes_protocol_version
             ):
                 missing.append("manifest_minutes_protocol_version")
             if job_id is not None and manifest.get("job_id") != job_id:
                 missing.append("manifest_job_id")
             if expected_attempt is not None:
                 manifest_attempt = manifest.get("attempt")
-                if (
-                    type(manifest_attempt) is not int
-                    or manifest_attempt != expected_attempt
-                ):
+                if type(manifest_attempt) is not int or manifest_attempt != expected_attempt:
                     missing.append("manifest_attempt")
             if minutes_only:
                 if manifest.get("requested_stage") != "minutes_generating":
@@ -5366,8 +5160,7 @@ class RelayControl:
                     path for path in direct if path.suffix.lower() in AUDIO_EXTENSIONS
                 ]
                 if not any(
-                    path.stat().st_size > 0
-                    and _sha256_file(path) == job["audio_sha256"]
+                    path.stat().st_size > 0 and _sha256_file(path) == job["audio_sha256"]
                     for path in archived_audio
                 ):
                     missing.append("audio_hash_mismatch")
@@ -5387,18 +5180,14 @@ class RelayControl:
             raise PublishValidationError("meeting_id 无效")
         path = Path(os.path.abspath(str(Path(manifest_path).expanduser())))
         if path.name != "workbench-manifest.json" or path.is_symlink() or not path.is_file():
-            raise PublishValidationError(
-                "发布 manifest 不存在、命名错误或是符号链接"
-            )
+            raise PublishValidationError("发布 manifest 不存在、命名错误或是符号链接")
         publish_dir = path.parent
         if self.archive_root.is_symlink() or not self.archive_root.is_dir():
             raise PublishValidationError("归档根目录不可用或是符号链接")
         canonical_publish_dir = publish_dir.resolve()
         canonical_archive_root = self.archive_root.resolve()
         try:
-            relative_publish_dir = canonical_publish_dir.relative_to(
-                canonical_archive_root
-            )
+            relative_publish_dir = canonical_publish_dir.relative_to(canonical_archive_root)
         except ValueError as exc:
             raise PublishValidationError("发布 manifest 不在归档根目录") from exc
         cursor = self.archive_root
@@ -5410,9 +5199,7 @@ class RelayControl:
         current_archive_value = row["archive_dir"]
         if not current_archive_value:
             raise PublishValidationError("任务没有完成回执归档目录")
-        current_archive = Path(
-            os.path.abspath(str(Path(current_archive_value).expanduser()))
-        )
+        current_archive = Path(os.path.abspath(str(Path(current_archive_value).expanduser())))
         canonical_current_archive = current_archive.resolve()
         is_existing_published_directory = row["status"] == "published"
         if row["status"] == "draft_modified" and row["published_archive_dir"]:
@@ -5428,50 +5215,33 @@ class RelayControl:
                 previous_published = row["published_archive_dir"]
                 if (
                     previous_published
-                    and Path(previous_published).expanduser().resolve()
-                    != canonical_publish_dir
+                    and Path(previous_published).expanduser().resolve() != canonical_publish_dir
                 ):
-                    raise PublishValidationError(
-                        "重处理发布必须回写任务原有正式归档目录"
-                    )
+                    raise PublishValidationError("重处理发布必须回写任务原有正式归档目录")
                 # 一级受管目录在发布前后物理路径不变；此时 manifest 已由工作台
                 # 原地替换为 published，不能再用“未校对 manifest”校验器读取。
                 try:
-                    current_job, current_attempt = self._manifest_identity(
-                        current_archive
-                    )
+                    current_job, current_attempt = self._manifest_identity(current_archive)
                 except RelayControlError as exc:
-                    raise PublishValidationError(
-                        "任务当前一级归档身份无效"
-                    ) from exc
+                    raise PublishValidationError("任务当前一级归档身份无效") from exc
                 if (
                     canonical_publish_dir.parent != canonical_archive_root
                     or current_job != row["job_id"]
                     or current_attempt != int(row["current_attempt"])
                 ):
-                    raise PublishValidationError(
-                        "原地发布只允许任务自己的一级归档目录"
-                    )
+                    raise PublishValidationError("原地发布只允许任务自己的一级归档目录")
             else:
                 try:
-                    managed_current = self._managed_unreviewed_archive(
-                        row, current_archive
-                    )
+                    managed_current = self._managed_unreviewed_archive(row, current_archive)
                 except RelayControlError as exc:
-                    raise PublishValidationError(
-                        "任务当前归档不是合法待校对目录"
-                    ) from exc
+                    raise PublishValidationError("任务当前归档不是合法待校对目录") from exc
                 if (
                     canonical_current_archive != managed_current
                     or canonical_publish_dir.parent != canonical_archive_root
                 ):
-                    raise PublishValidationError(
-                        "发布 manifest 不属于任务的正式归档目录"
-                    )
+                    raise PublishValidationError("发布 manifest 不属于任务的正式归档目录")
             if canonical_publish_dir.parent != canonical_archive_root:
-                raise PublishValidationError(
-                    "发布 manifest 不属于任务的正式归档目录"
-                )
+                raise PublishValidationError("发布 manifest 不属于任务的正式归档目录")
 
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -5479,10 +5249,7 @@ class RelayControl:
             raise PublishValidationError("发布 manifest 不是有效 JSON") from exc
         if not isinstance(loaded, dict):
             raise PublishValidationError("发布 manifest 必须是 JSON 对象")
-        if (
-            type(loaded.get("schema_version")) is not int
-            or loaded.get("schema_version") != 1
-        ):
+        if type(loaded.get("schema_version")) is not int or loaded.get("schema_version") != 1:
             raise PublishValidationError("发布 manifest schema_version 无效")
         if loaded.get("job_id") != row["job_id"]:
             raise PublishValidationError("发布 manifest job_id 不匹配")
@@ -5511,9 +5278,7 @@ class RelayControl:
                 (row["job_id"], row["current_attempt"]),
             ).fetchone()
         minutes_protocol_version = (
-            int(attempt_protocol["minutes_protocol_version"])
-            if attempt_protocol is not None
-            else 1
+            int(attempt_protocol["minutes_protocol_version"]) if attempt_protocol is not None else 1
         )
         if (
             minutes_protocol_version >= 2
@@ -5550,10 +5315,7 @@ class RelayControl:
             raise PublishValidationError("无法读取发布目录") from exc
         if any(item.is_symlink() for item in all_entries):
             raise PublishValidationError("发布目录包含符号链接")
-        if any(
-            not item.is_file() and not item.is_dir()
-            for item in all_entries
-        ):
+        if any(not item.is_file() and not item.is_dir() for item in all_entries):
             raise PublishValidationError("发布目录包含特殊文件")
         non_history_entries = [
             item
@@ -5561,9 +5323,7 @@ class RelayControl:
             if ".workbench-history" not in item.relative_to(publish_dir).parts
         ]
         relevant_entries = [
-            item
-            for item in non_history_entries
-            if not _is_archive_noise(item, publish_dir)
+            item for item in non_history_entries if not _is_archive_noise(item, publish_dir)
         ]
         physical_files = {
             str(item.relative_to(publish_dir)): item
@@ -5611,9 +5371,7 @@ class RelayControl:
             raise PublishValidationError("发布 manifest 未完整覆盖实际产物")
 
         direct = [
-            candidate
-            for candidate in listed_files.values()
-            if candidate.parent == publish_dir
+            candidate for candidate in listed_files.values() if candidate.parent == publish_dir
         ]
         required_checks = {
             "audio": any(path.suffix.lower() in AUDIO_EXTENSIONS for path in direct),
@@ -5627,12 +5385,10 @@ class RelayControl:
             "transcript_srt": any(path.suffix.lower() == ".srt" for path in direct),
             "spk.txt": any(path.name.lower().endswith("spk.txt") for path in direct),
             "funasr_json": any(
-                "funasr" in path.name.lower() and path.suffix.lower() == ".json"
-                for path in direct
+                "funasr" in path.name.lower() and path.suffix.lower() == ".json" for path in direct
             ),
             "funasr_log": any(
-                "funasr" in path.name.lower() and path.suffix.lower() == ".log"
-                for path in direct
+                "funasr" in path.name.lower() and path.suffix.lower() == ".log" for path in direct
             ),
         }
         if minutes_only:
@@ -5649,9 +5405,7 @@ class RelayControl:
         required_checks["minutes_md_html_pair"] = bool(md_stems & html_stems)
         missing_main = [name for name, present in required_checks.items() if not present]
         if missing_main:
-            raise PublishValidationError(
-                "发布主产物不完整: " + ", ".join(sorted(missing_main))
-            )
+            raise PublishValidationError("发布主产物不完整: " + ", ".join(sorted(missing_main)))
         if minutes_protocol_version >= 2:
             minutes_stem = sorted(md_stems & html_stems)[0]
             minutes_markdown = next(
@@ -5664,40 +5418,26 @@ class RelayControl:
                 if minutes_only
                 else attempt_protocol["source_srt_sha256"]
             )
-            if (
-                minutes_protocol_version >= 3
-                and trusted_source_srt_sha256 is None
-            ):
+            if minutes_protocol_version >= 3 and trusted_source_srt_sha256 is None:
                 raise PublishValidationError("发布任务缺少可信逐字稿哈希")
-            if (
-                minutes_protocol_version >= 3
-                and attempt_protocol["minutes_plan_sha256"] is None
-            ):
+            if minutes_protocol_version >= 3 and attempt_protocol["minutes_plan_sha256"] is None:
                 raise PublishValidationError("发布任务缺少可信纪要 plan 哈希")
             evidence_errors = _minutes_evidence_errors(
                 publish_dir / "minutes-evidence.json",
                 minutes_markdown,
                 protocol_version=minutes_protocol_version,
                 plan_path=(
-                    publish_dir / "minutes-plan.json"
-                    if minutes_protocol_version >= 3
-                    else None
+                    publish_dir / "minutes-plan.json" if minutes_protocol_version >= 3 else None
                 ),
                 ledger_root=(
-                    publish_dir / "minutes-ledger"
-                    if minutes_protocol_version >= 3
-                    else None
+                    publish_dir / "minutes-ledger" if minutes_protocol_version >= 3 else None
                 ),
                 source_srt_path=(
                     (
                         publish_dir / "input-transcript.srt"
                         if minutes_only
                         else next(
-                            (
-                                path
-                                for path in direct
-                                if path.suffix.lower() == ".srt"
-                            ),
+                            (path for path in direct if path.suffix.lower() == ".srt"),
                             publish_dir / "missing.srt",
                         )
                     )
@@ -5710,9 +5450,7 @@ class RelayControl:
                     else None
                 ),
                 expected_source_srt_sha256=(
-                    trusted_source_srt_sha256
-                    if minutes_protocol_version >= 3
-                    else None
+                    trusted_source_srt_sha256 if minutes_protocol_version >= 3 else None
                 ),
                 expected_minutes_plan_sha256=(
                     attempt_protocol["minutes_plan_sha256"]
@@ -5721,9 +5459,7 @@ class RelayControl:
                 ),
             )
             if evidence_errors:
-                raise PublishValidationError(
-                    "发布纪要证据账本无效: " + ", ".join(evidence_errors)
-                )
+                raise PublishValidationError("发布纪要证据账本无效: " + ", ".join(evidence_errors))
 
         whisper = inspect_whisper_ref(publish_dir)
         if not minutes_only and whisper.get("status") != "ready":
@@ -5755,9 +5491,7 @@ class RelayControl:
         ):
             raise PublishValidationError("发布前后原音频哈希不一致")
         if whisper.get("status") == "ready":
-            whisper_stem = _canonical_media_stem(
-                str(whisper.get("selected_stem") or "")
-            )
+            whisper_stem = _canonical_media_stem(str(whisper.get("selected_stem") or ""))
             allowed_audio_stems = {
                 _canonical_media_stem(Path(row["audio_path"]).stem),
                 _canonical_media_stem(published_audio.stem),
@@ -5766,11 +5500,7 @@ class RelayControl:
                 raise PublishValidationError("whisper-ref 与任务原音频不匹配")
 
         whisper_status = str(whisper.get("status") or "absent")
-        whisper_error = (
-            "whisper-ref incomplete or invalid"
-            if whisper_status == "failed"
-            else None
-        )
+        whisper_error = "whisper-ref incomplete or invalid" if whisper_status == "failed" else None
 
         return {
             "archive_dir": str(publish_dir.resolve()),
@@ -5811,20 +5541,13 @@ class RelayControl:
             raise PublishValidationError("发布目录在校验后无法读取") from exc
         if any(item.is_symlink() for item in all_entries):
             raise PublishValidationError("发布目录在校验后出现符号链接")
-        if any(
-            not item.is_file() and not item.is_dir()
-            for item in all_entries
-        ):
+        if any(not item.is_file() and not item.is_dir() for item in all_entries):
             raise PublishValidationError("发布目录在校验后出现特殊文件")
         non_history_entries = [
-            item
-            for item in all_entries
-            if ".workbench-history" not in item.relative_to(root).parts
+            item for item in all_entries if ".workbench-history" not in item.relative_to(root).parts
         ]
         relevant_entries = [
-            item
-            for item in non_history_entries
-            if not _is_archive_noise(item, root)
+            item for item in non_history_entries if not _is_archive_noise(item, root)
         ]
         physical_files = {
             str(item.relative_to(root))
@@ -5834,8 +5557,7 @@ class RelayControl:
         if physical_files != set(validation["artifact_hashes"]):
             raise PublishValidationError("发布目录文件集合在校验后发生变化")
         return {
-            relative_path: root / relative_path
-            for relative_path in validation["artifact_hashes"]
+            relative_path: root / relative_path for relative_path in validation["artifact_hashes"]
         }
 
     @staticmethod
@@ -5870,9 +5592,7 @@ class RelayControl:
         if _snapshot_fingerprints(files) != fingerprints:
             raise PublishValidationError("发布产物在校验后发生变化")
 
-    def _capture_completion_snapshot(
-        self, report: ArchiveValidationReport
-    ) -> dict[str, Any]:
+    def _capture_completion_snapshot(self, report: ArchiveValidationReport) -> dict[str, Any]:
         root = report.archive_dir
         manifest = root / "workbench-manifest.json"
         try:
@@ -5948,17 +5668,12 @@ class RelayControl:
                 main_entries.extend(top_level.rglob("*"))
         if any(path.is_symlink() for path in main_entries):
             raise PublishValidationError("完成回执目录在校验后出现符号链接")
-        if any(
-            not path.is_file() and not path.is_dir()
-            for path in main_entries
-        ):
+        if any(not path.is_file() and not path.is_dir() for path in main_entries):
             raise PublishValidationError("完成回执目录在校验后出现特殊文件")
         physical = {
             str(path.relative_to(root)): path
             for path in main_entries
-            if path.is_file()
-            and path != manifest
-            and not _is_archive_noise(path, root)
+            if path.is_file() and path != manifest and not _is_archive_noise(path, root)
         }
         if set(physical) != set(snapshot["artifact_hashes"]):
             raise PublishValidationError("完成回执文件集合在校验后发生变化")
@@ -5967,9 +5682,7 @@ class RelayControl:
     @staticmethod
     def _assert_completion_snapshot_unchanged(snapshot: dict[str, Any]) -> None:
         expected = snapshot["artifact_hashes"]
-        for relative_path, path in RelayControl._completion_snapshot_files(
-            snapshot
-        ).items():
+        for relative_path, path in RelayControl._completion_snapshot_files(snapshot).items():
             if _sha256_file(path) != expected[relative_path]:
                 raise PublishValidationError("完成回执产物在校验后发生变化")
 
@@ -6087,9 +5800,7 @@ class RelayControl:
         try:
             self._assert_publish_snapshot_unchanged(validation)
         except Exception as exc:
-            self._record_post_publish_validation_failure(
-                job_id, attempt_no, validation, exc
-            )
+            self._record_post_publish_validation_failure(job_id, attempt_no, validation, exc)
             if isinstance(exc, PublishValidationError):
                 raise
             raise PublishValidationError("发布提交后完整性复验失败") from exc
@@ -6130,11 +5841,7 @@ class RelayControl:
         with self._connect() as connection:
             row = self._job_row(connection, job_id)
         published_value = row["published_archive_dir"]
-        if (
-            published_value
-            and source.resolve()
-            == Path(published_value).expanduser().resolve()
-        ):
+        if published_value and source.resolve() == Path(published_value).expanduser().resolve():
             # 一级目录原地发布后，它就是正式真相源，绝不能作为旧待校对来源清理。
             return False
         pending_root = (self.archive_root / "待校对").resolve()
@@ -6147,9 +5854,7 @@ class RelayControl:
             with self._archive_lock():
                 if not source.exists():
                     return False
-                manifest_job, manifest_attempt, manifest_status = (
-                    self._manifest_metadata(source)
-                )
+                manifest_job, manifest_attempt, manifest_status = self._manifest_metadata(source)
                 if (
                     manifest_job != job_id
                     or manifest_attempt != attempt_no
@@ -6207,27 +5912,20 @@ class RelayControl:
             raise PublishValidationError("已发布快照缺少可复验身份")
         stored_manifest = Path(row["published_manifest_path"]).expanduser()
         try:
-            manifest_relative = stored_manifest.resolve().relative_to(
-                self.archive_root.resolve()
-            )
+            manifest_relative = stored_manifest.resolve().relative_to(self.archive_root.resolve())
         except ValueError as exc:
             raise PublishValidationError("已发布快照 manifest 越界") from exc
         validation_manifest = self.archive_root / manifest_relative
-        validation = self._validate_publish_manifest(
-            row, validation_manifest, row["meeting_id"]
-        )
+        validation = self._validate_publish_manifest(row, validation_manifest, row["meeting_id"])
         if (
-            validation["manifest_sha256"]
-            != row["published_manifest_sha256"]
+            validation["manifest_sha256"] != row["published_manifest_sha256"]
             or validation["archive_dir"] != row["published_archive_dir"]
         ):
             raise PublishValidationError("已发布快照与数据库身份不一致")
         self._assert_publish_snapshot_unchanged(validation)
         recovered: list[str] = []
         for source in sources:
-            if self._recover_published_pending_source(
-                job_id, attempt_no, source
-            ):
+            if self._recover_published_pending_source(job_id, attempt_no, source):
                 recovered.append(str(source))
         return recovered
 
@@ -6263,9 +5961,7 @@ class RelayControl:
                     current["meeting_id"] != meeting_id
                     or current["published_manifest_path"] != validation["manifest_path"]
                 ):
-                    raise InvalidTransitionError(
-                        "已发布任务的 meeting 或 manifest 不一致"
-                    )
+                    raise InvalidTransitionError("已发布任务的 meeting 或 manifest 不一致")
                 if current["published_manifest_sha256"] != validation["manifest_sha256"]:
                     raise PublishValidationError("已发布 manifest 已被改写，拒绝刷新发布快照")
                 self._assert_publish_fingerprints_unchanged(validation, fingerprints)
@@ -6321,9 +6017,7 @@ class RelayControl:
                 self._assert_published_after_commit(
                     job_id, int(current["current_attempt"]), validation
                 )
-                self._recover_published_pending_sources(
-                    job_id, int(current["current_attempt"])
-                )
+                self._recover_published_pending_sources(job_id, int(current["current_attempt"]))
                 return self.status(job_id)
             if (
                 current["status"] != snapshot_status
@@ -6415,12 +6109,8 @@ class RelayControl:
                 )
             self._assert_publish_fingerprints_unchanged(validation, fingerprints)
             connection.commit()
-            self._assert_published_after_commit(
-                job_id, snapshot_attempt, validation
-            )
-            self._recover_published_pending_source(
-                job_id, snapshot_attempt, snapshot_archive
-            )
+            self._assert_published_after_commit(job_id, snapshot_attempt, validation)
+            self._recover_published_pending_source(job_id, snapshot_attempt, snapshot_archive)
         return self.status(job_id)
 
     def complete_minutes(
@@ -6469,16 +6159,10 @@ class RelayControl:
                 and row["status"] in {"completed_unreviewed", "draft_modified"}
                 and callback_attempt == current_attempt
             ):
-                callback_archive = Path(
-                    os.path.abspath(str(Path(archive_dir).expanduser()))
-                )
-                expected_callback = self._expected_attempt_dir(
-                    job_id, current_attempt
-                )
+                callback_archive = Path(os.path.abspath(str(Path(archive_dir).expanduser())))
+                expected_callback = self._expected_attempt_dir(job_id, current_attempt)
                 if callback_archive.resolve() != expected_callback.resolve():
-                    raise InvalidTransitionError(
-                        "完成回执重放不是原 hidden attempt"
-                    )
+                    raise InvalidTransitionError("完成回执重放不是原 hidden attempt")
                 replay_pending_promotion = True
             if row["status"] != "minutes_generating" and recovery_stage is None:
                 if not replay_pending_promotion:
@@ -6490,9 +6174,7 @@ class RelayControl:
             try:
                 return self._promote_pending_archive(job_id)
             except Exception as exc:
-                self._record_pending_archive_failure(
-                    job_id, callback_attempt, exc
-                )
+                self._record_pending_archive_failure(job_id, callback_attempt, exc)
                 raise
 
         report = self.validate_archive(
@@ -6520,9 +6202,7 @@ class RelayControl:
                 "missing": ["inspection_error"],
             }
         if whisper_inspection.get("status") == "ready":
-            allowed_source_stems = {
-                _canonical_media_stem(Path(row["audio_path"]).stem)
-            }
+            allowed_source_stems = {_canonical_media_stem(Path(row["audio_path"]).stem)}
             for archived_audio in report.archive_dir.iterdir():
                 if (
                     archived_audio.is_file()
@@ -6531,12 +6211,8 @@ class RelayControl:
                     and row["audio_sha256"]
                     and _sha256_file(archived_audio) == row["audio_sha256"]
                 ):
-                    allowed_source_stems.add(
-                        _canonical_media_stem(archived_audio.stem)
-                    )
-            whisper_stem = _canonical_media_stem(
-                str(whisper_inspection.get("selected_stem") or "")
-            )
+                    allowed_source_stems.add(_canonical_media_stem(archived_audio.stem))
+            whisper_stem = _canonical_media_stem(str(whisper_inspection.get("selected_stem") or ""))
             if whisper_stem not in allowed_source_stems:
                 whisper_inspection = {
                     **whisper_inspection,
@@ -6552,10 +6228,7 @@ class RelayControl:
                 raise InvalidTransitionError("attempt 已在校验期间发生变化")
             self._assert_completion_snapshot_fingerprints(completion_snapshot)
             if recovery_stage is not None:
-                if (
-                    current["status"] != "failed"
-                    or current["failure_stage"] != recovery_stage
-                ):
+                if current["status"] != "failed" or current["failure_stage"] != recovery_stage:
                     raise InvalidTransitionError(f"{recovery_stage} 状态已发生变化")
                 now = _now()
                 repaired = connection.execute(
@@ -6579,9 +6252,7 @@ class RelayControl:
                     (job_id, callback_attempt),
                 )
                 if repaired_attempt.rowcount != 1:
-                    raise InvalidTransitionError(
-                        f"{recovery_stage} attempt 修复 CAS 失败"
-                    )
+                    raise InvalidTransitionError(f"{recovery_stage} attempt 修复 CAS 失败")
                 self._append_event(
                     connection,
                     job_id,
@@ -6675,9 +6346,7 @@ class RelayControl:
             try:
                 self._promote_pending_archive(job_id)
             except Exception as exc:
-                self._record_pending_archive_failure(
-                    job_id, callback_attempt, exc
-                )
+                self._record_pending_archive_failure(job_id, callback_attempt, exc)
                 raise
         # 产品语义：用户请求“当前阶段结束后停止”时保留已生成产物，但任务仍以
         # interrupted 收口，避免界面把主动停止误显示成完整流水线成功。
@@ -6729,15 +6398,11 @@ class RelayControl:
             "current_attempt": row["current_attempt"],
             "requested_stage": current_attempt_row["requested_stage"],
             "input_transcript_path": current_attempt_row["input_transcript_path"],
-            "input_transcript_sha256": current_attempt_row[
-                "input_transcript_sha256"
-            ],
+            "input_transcript_sha256": current_attempt_row["input_transcript_sha256"],
             "input_transcript_bytes": current_attempt_row["input_transcript_bytes"],
             "source_srt_sha256": current_attempt_row["source_srt_sha256"],
             "minutes_plan_sha256": current_attempt_row["minutes_plan_sha256"],
-            "minutes_protocol_version": int(
-                current_attempt_row["minutes_protocol_version"]
-            ),
+            "minutes_protocol_version": int(current_attempt_row["minutes_protocol_version"]),
             "hotwords_configured": bool(row["hotword_prompt_path"]),
             "hotword_prompt_sha256": row["hotword_prompt_sha256"],
             "project_hint": row["project_hint"],
@@ -7037,9 +6702,7 @@ def defer_unstable_source(
     )
 
 
-def reconcile_codex_handoffs(
-    grace_seconds: float = 30, db_path: str | Path | None = None
-) -> int:
+def reconcile_codex_handoffs(grace_seconds: float = 30, db_path: str | Path | None = None) -> int:
     return _service(db_path).reconcile_codex_handoffs(grace_seconds)
 
 
@@ -7140,9 +6803,7 @@ def record_substate(
     )
 
 
-def retry_substate(
-    job_id: str, name: str, db_path: str | Path | None = None
-) -> dict[str, Any]:
+def retry_substate(job_id: str, name: str, db_path: str | Path | None = None) -> dict[str, Any]:
     return _service(db_path).retry_substate(job_id, name)
 
 
@@ -7200,9 +6861,7 @@ def mark_published(
     return _service(db_path).mark_published(job_id, manifest_path, meeting_id)
 
 
-def mark_draft_modified(
-    job_id: str, db_path: str | Path | None = None
-) -> dict[str, Any]:
+def mark_draft_modified(job_id: str, db_path: str | Path | None = None) -> dict[str, Any]:
     return _service(db_path).mark_draft_modified(job_id)
 
 
@@ -7230,9 +6889,7 @@ def build_parser() -> argparse.ArgumentParser:
     enqueue_parser.add_argument("audio")
     enqueue_parser.add_argument("--stage", choices=["minutes_generating"])
     enqueue_parser.add_argument("--transcript")
-    enqueue_parser.add_argument(
-        "--hotwords", help="本任务使用的 UTF-8 热词文件，最多 20 个词"
-    )
+    enqueue_parser.add_argument("--hotwords", help="本任务使用的 UTF-8 热词文件，最多 20 个词")
     enqueue_parser.add_argument(
         "--backend",
         choices=sorted(LLM_BACKENDS),
@@ -7248,9 +6905,7 @@ def build_parser() -> argparse.ArgumentParser:
     retry_parser.add_argument("job_id")
     retry_parser.add_argument("--stage", required=True, choices=sorted(RETRYABLE_STAGES))
     retry_parser.add_argument("--transcript")
-    retry_parser.add_argument(
-        "--hotwords", help="可选替换任务热词快照；不传则沿用原任务热词"
-    )
+    retry_parser.add_argument("--hotwords", help="可选替换任务热词快照；不传则沿用原任务热词")
     retry_parser.add_argument(
         "--backend",
         choices=sorted(LLM_BACKENDS),
@@ -7272,9 +6927,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     set_substate_parser.add_argument("job_id")
     set_substate_parser.add_argument("--name", required=True, choices=sorted(SUBSTATE_NAMES))
-    set_substate_parser.add_argument(
-        "--status", required=True, choices=sorted(SUBSTATE_STATUSES)
-    )
+    set_substate_parser.add_argument("--status", required=True, choices=sorted(SUBSTATE_STATUSES))
     set_substate_parser.add_argument("--error")
     set_substate_parser.add_argument("--attempt", type=int, required=True)
 
@@ -7307,14 +6960,10 @@ def build_parser() -> argparse.ArgumentParser:
     published_parser.add_argument("--manifest", required=True)
     published_parser.add_argument("--meeting-id", required=True)
 
-    draft_parser = subparsers.add_parser(
-        "mark-draft-modified", help="幂等回写工作稿已修改状态"
-    )
+    draft_parser = subparsers.add_parser("mark-draft-modified", help="幂等回写工作稿已修改状态")
     draft_parser.add_argument("job_id")
 
-    run_parser = subparsers.add_parser(
-        "run-next", help="原子领取并执行队列中的下一个 attempt"
-    )
+    run_parser = subparsers.add_parser("run-next", help="原子领取并执行队列中的下一个 attempt")
     run_parser.add_argument("--json", action="store_true", dest="as_json")
 
     run_whisper_parser = subparsers.add_parser(
@@ -7391,12 +7040,8 @@ def main(argv: list[str] | None = None) -> int:
                         "attempt": attempt,
                         "status": status_result["status"],
                         "requested_stage": status_result["requested_stage"],
-                        "input_transcript_path": status_result[
-                            "input_transcript_path"
-                        ],
-                        "input_transcript_sha256": status_result[
-                            "input_transcript_sha256"
-                        ],
+                        "input_transcript_path": status_result["input_transcript_path"],
+                        "input_transcript_sha256": status_result["input_transcript_sha256"],
                     },
                     ensure_ascii=False,
                 )
@@ -7425,8 +7070,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             else:
                 print(
-                    f"{result['job_id']}  {result['status']}  "
-                    f"attempt={result['current_attempt']}"
+                    f"{result['job_id']}  {result['status']}  attempt={result['current_attempt']}"
                 )
         elif args.command == "health":
             result = control.health()
@@ -7441,9 +7085,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(result, ensure_ascii=False))
         elif args.command == "mark-published":
-            result = control.mark_published(
-                args.job_id, args.manifest, args.meeting_id
-            )
+            result = control.mark_published(args.job_id, args.manifest, args.meeting_id)
             print(json.dumps(result, ensure_ascii=False))
         elif args.command == "mark-draft-modified":
             result = control.mark_draft_modified(args.job_id)
@@ -7486,10 +7128,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.as_json:
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             else:
-                print(
-                    f"promoted={len(result['promoted'])} "
-                    f"errors={len(result['errors'])}"
-                )
+                print(f"promoted={len(result['promoted'])} errors={len(result['errors'])}")
             return 0 if result["ok"] else 1
         elif args.command == "archive-policy":
             result = control.set_archive_policy(args.job_id, args.policy)
@@ -7498,17 +7137,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"{result['job_id']}  archive_policy={result['archive_policy']}")
         elif args.command == "list":
-            result = control.list_jobs(
-                status=args.status, limit=args.limit, job_ids=args.job_ids
-            )
+            result = control.list_jobs(status=args.status, limit=args.limit, job_ids=args.job_ids)
             if args.as_json:
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             else:
                 for item in result:
-                    print(
-                        f"{item['job_id']}  {item['status']}  "
-                        f"attempt={item['current_attempt']}"
-                    )
+                    print(f"{item['job_id']}  {item['status']}  attempt={item['current_attempt']}")
         elif args.command == "check-whisper":
             result = inspect_whisper_ref(args.archive_dir)
             if args.as_json:

@@ -214,9 +214,7 @@ def select_injection(
     public_terms = [
         term for term in terms if term["project_id"] is None and term["scope"] == PUBLIC_SCOPE
     ]
-    protected = {
-        fold(text) for term in project_terms for text in (term["term"], *term["also"])
-    }
+    protected = {fold(text) for term in project_terms for text in (term["term"], *term["also"])}
 
     folded = fold(transcript)
     tiers: dict[str, list[dict[str, Any]]] = {"A": [], "B": [], "C": []}
@@ -303,8 +301,6 @@ def write_receipt(receipt: dict[str, Any], directory: Path | str) -> Path:
     """把回执写进 attempt 目录（临时文件 + replace，读方看不到半截文件）。"""
     target = Path(directory) / INJECTION_FILENAME
     temporary = target.with_name(f".{INJECTION_FILENAME}.tmp")
-    temporary.write_text(
-        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(target)
     return target

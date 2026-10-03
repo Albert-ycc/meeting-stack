@@ -21,6 +21,7 @@ Relay watchdog：监听 ~/Downloads 新音频 → 转写 → 按时长分流派�
    往往被 TCC 拦住，实测经 ssh localhost 链（sshd 通常已在完全磁盘访问名单内）继承放行。
    详见 docs/install.md 的权限章节。
 """
+
 import json
 import hashlib
 import importlib.util
@@ -70,52 +71,50 @@ def _env_path(name: str, default: Path) -> Path:
 
 
 # ── 配置 ─────────────────────────────────────────────────────────────────────
-INBOX                  = _env_path("MEETING_RELAY_WATCH_DIR", Path.home() / "Downloads")
-PRODUCTS_DIR           = _env_path(
+INBOX = _env_path("MEETING_RELAY_WATCH_DIR", Path.home() / "Downloads")
+PRODUCTS_DIR = _env_path(
     "MEETING_RELAY_PRODUCTS_ROOT", Path.home() / "Movies" / "meeting-relay-products"
 )
-STATE_DIR              = _env_path("MEETING_RELAY_STATE_DIR", Path.home() / ".meeting-relay")
-PROCESSED_LOG          = STATE_DIR / "processed.txt"
-PROMPTS_DIR            = STATE_DIR / "prompts"
-LAST_MEETING_FILE      = STATE_DIR / "last_meeting.json"
-INBOX_SCAN_WATERMARK   = STATE_DIR / "inbox-scan-watermark"
-DEFAULT_PROMPT_FILE    = STATE_DIR / "prompt-default.txt"   # 转写词典模板（可选）
-ARCHIVE_ROOT           = _env_path("MEETING_RELAY_ARCHIVE_ROOT", Path.home() / "MeetingArchive")
+STATE_DIR = _env_path("MEETING_RELAY_STATE_DIR", Path.home() / ".meeting-relay")
+PROCESSED_LOG = STATE_DIR / "processed.txt"
+PROMPTS_DIR = STATE_DIR / "prompts"
+LAST_MEETING_FILE = STATE_DIR / "last_meeting.json"
+INBOX_SCAN_WATERMARK = STATE_DIR / "inbox-scan-watermark"
+DEFAULT_PROMPT_FILE = STATE_DIR / "prompt-default.txt"  # 转写词典模板（可选）
+ARCHIVE_ROOT = _env_path("MEETING_RELAY_ARCHIVE_ROOT", Path.home() / "MeetingArchive")
 # 转写脚本默认取仓库内的实现；单独部署时用 MEETING_RELAY_TRANSCRIBE_SH 指向别处。
-TRANSCRIBE_SH          = _env_path(
-    "MEETING_RELAY_TRANSCRIBE_SH", REPO_ROOT / "transcribe" / "transcribe.sh"
-)
-TRANSCRIBE_DUAL_SH     = _env_path(
+TRANSCRIBE_SH = _env_path("MEETING_RELAY_TRANSCRIBE_SH", REPO_ROOT / "transcribe" / "transcribe.sh")
+TRANSCRIBE_DUAL_SH = _env_path(
     "MEETING_RELAY_TRANSCRIBE_DUAL_SH", REPO_ROOT / "transcribe" / "transcribe-dual.sh"
 )
 # 工作台写的词典快照；出纪要前按这场会从里面挑词（glossary/injection.py）。
-GLOSSARY_SNAPSHOT      = _env_path(
+GLOSSARY_SNAPSHOT = _env_path(
     "MEETING_RELAY_GLOSSARY_SNAPSHOT",
     Path.home() / ".meeting-workbench" / "glossary-snapshot.json",
 )
-GLOSSARY_INJECTION_PY  = REPO_ROOT / "glossary" / "injection.py"
+GLOSSARY_INJECTION_PY = REPO_ROOT / "glossary" / "injection.py"
 # 派单目标：Agent 跑在哪个 tmux socket 的哪个 session 里。
-TMUX_SOCKET            = _env_path("MEETING_RELAY_TMUX_SOCKET", Path.home() / ".tmux-socket" / "cc")
-TMUX_SESSION           = os.getenv("MEETING_RELAY_TMUX_SESSION", "agent")
-DEFAULT_AGENT          = "claude"
+TMUX_SOCKET = _env_path("MEETING_RELAY_TMUX_SOCKET", Path.home() / ".tmux-socket" / "cc")
+TMUX_SESSION = os.getenv("MEETING_RELAY_TMUX_SESSION", "agent")
+DEFAULT_AGENT = "claude"
 # 派单后端：deepseek（默认，走 DeepSeek 的 Anthropic 兼容端点，不吃 Claude 订阅额度，
 # 需要 Agent 会话里有 DEEPSEEK_API_KEY）或 claude（直接用 Claude Code 自己的账号）。
 # 用 MEETING_RELAY_LLM_BACKEND 切换；工作台「用 Claude 重写」按 attempt 单独指定。
-DEFAULT_LLM_BACKEND    = "deepseek"
-DEEPSEEK_BASE_URL      = "https://api.deepseek.com/anthropic"
+DEFAULT_LLM_BACKEND = "deepseek"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 # 纪要是照着转写稿抽议题的机械活，结构由 minutes-protocol v3 的硬校验兜底，
 # flash 足够；要临时抬档用 MEETING_RELAY_DEEPSEEK_MODEL=deepseek-v4-pro。
-DEEPSEEK_MODEL         = os.getenv("MEETING_RELAY_DEEPSEEK_MODEL", "deepseek-v4-flash")
-DEEPSEEK_SMALL_MODEL   = "deepseek-v4-flash"   # 会话标题等后台小任务，别回落官方端点
-CLAUDE_MODEL           = os.getenv("MEETING_RELAY_CLAUDE_MODEL", "opus")
-CLAUDE_BIN             = os.getenv("MEETING_RELAY_CLAUDE_BIN", "")
-CLAUDE_FALLBACKS       = (
+DEEPSEEK_MODEL = os.getenv("MEETING_RELAY_DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_SMALL_MODEL = "deepseek-v4-flash"  # 会话标题等后台小任务，别回落官方端点
+CLAUDE_MODEL = os.getenv("MEETING_RELAY_CLAUDE_MODEL", "opus")
+CLAUDE_BIN = os.getenv("MEETING_RELAY_CLAUDE_BIN", "")
+CLAUDE_FALLBACKS = (
     str(Path.home() / ".local/bin/claude"),
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
 )
-CODEX_BIN              = os.getenv("MEETING_RELAY_CODEX_BIN", "")
-CODEX_FALLBACKS        = (
+CODEX_BIN = os.getenv("MEETING_RELAY_CODEX_BIN", "")
+CODEX_FALLBACKS = (
     str(Path.home() / ".local/bin/codex"),
     "/Applications/Codex.app/Contents/Resources/codex",
     "/Applications/ChatGPT.app/Contents/Resources/codex",
@@ -124,16 +123,16 @@ CODEX_FALLBACKS        = (
 # - MEETING_RELAY_LARK_CHAT_ID：发到群（经 lark-cli 以 bot 身份，需 lark-cli 已登录）；
 #   再配 MEETING_RELAY_LARK_APP_ID + _APP_SECRET_FILE 则直连开放平台，不依赖 keychain；
 # - RELAY_LARK_USER_ID：没配群时发私聊给这个 open_id。
-LARK_CHAT_ID           = os.getenv("MEETING_RELAY_LARK_CHAT_ID", "")
-LARK_USER_ID           = os.getenv("RELAY_LARK_USER_ID", "")
-LARK_APP_ID            = os.getenv("MEETING_RELAY_LARK_APP_ID", "")
-LARK_APP_SECRET_FILE   = os.getenv("MEETING_RELAY_LARK_APP_SECRET_FILE", "")
-LARK_LOG_FILE          = _env_path(
+LARK_CHAT_ID = os.getenv("MEETING_RELAY_LARK_CHAT_ID", "")
+LARK_USER_ID = os.getenv("RELAY_LARK_USER_ID", "")
+LARK_APP_ID = os.getenv("MEETING_RELAY_LARK_APP_ID", "")
+LARK_APP_SECRET_FILE = os.getenv("MEETING_RELAY_LARK_APP_SECRET_FILE", "")
+LARK_LOG_FILE = _env_path(
     "MEETING_RELAY_LARK_LOG_FILE", Path.home() / "Library" / "Logs" / "meeting-relay-notify.log"
 )
-LARK_NOTIFY_PATH       = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-AUDIO_EXTS             = {".m4a", ".mp3", ".wav"}
-STABLE_SECS            = 5
+LARK_NOTIFY_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+AUDIO_EXTS = {".m4a", ".mp3", ".wav"}
+STABLE_SECS = 5
 CONTROL_POLL_INTERVAL_SEC = float(os.getenv("MEETING_RELAY_POLL_INTERVAL", "2"))
 
 
@@ -164,9 +163,7 @@ CONTROL_DB_LOCK_RETRY_DELAYS_SEC = (1.0, 2.0, 4.0, 8.0, 15.0)
 MAX_INPUT_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 CURRENT_MINUTES_PROTOCOL_VERSION = 3
 WHISPER_BIN = os.getenv("MEETING_RELAY_WHISPER_BIN", "")
-WHISPER_FALLBACKS = (
-    str(Path.home() / "Library" / "Python" / "3.9" / "bin" / "whisper"),
-)
+WHISPER_FALLBACKS = (str(Path.home() / "Library" / "Python" / "3.9" / "bin" / "whisper"),)
 WHISPER_MODEL_DIR = Path(
     os.getenv("MEETING_RELAY_WHISPER_MODEL_DIR", str(Path.home() / ".cache" / "whisper"))
 ).expanduser()
@@ -268,9 +265,7 @@ def _control_recover_orphaned_claims() -> int:
 
 
 def _control_reconcile_codex_handoffs() -> int:
-    return _relay_control_module().reconcile_codex_handoffs(
-        grace_seconds=CODEX_CALLBACK_GRACE_SEC
-    )
+    return _relay_control_module().reconcile_codex_handoffs(grace_seconds=CODEX_CALLBACK_GRACE_SEC)
 
 
 def _control_reconcile_pending_archives() -> dict:
@@ -583,6 +578,7 @@ def _control_interrupt_if_requested(
 
 # ── 状态 ─────────────────────────────────────────────────────────────────────
 
+
 def load_processed() -> set:
     if PROCESSED_LOG.exists():
         return set(PROCESSED_LOG.read_text(encoding="utf-8").splitlines())
@@ -618,13 +614,21 @@ def load_last_meeting() -> dict | None:
 
 def save_last_meeting(audio_name: str):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    LAST_MEETING_FILE.write_text(json.dumps(
-        {"audio": audio_name, "dispatched_at": time.time(),
-         "dispatched_at_human": time.strftime("%Y-%m-%d %H:%M")},
-        ensure_ascii=False), encoding="utf-8")
+    LAST_MEETING_FILE.write_text(
+        json.dumps(
+            {
+                "audio": audio_name,
+                "dispatched_at": time.time(),
+                "dispatched_at_human": time.strftime("%Y-%m-%d %H:%M"),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 # ── 工具 ─────────────────────────────────────────────────────────────────────
+
 
 def wait_stable(path: Path, timeout: int = 900) -> bool:
     """等文件大小连续 STABLE_SECS 秒不变（iCloud/拷贝进行中的半文件兜底）"""
@@ -650,9 +654,18 @@ def wait_stable(path: Path, timeout: int = 900) -> bool:
 
 def get_audio_duration_sec(audio: Path) -> float | None:
     r = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-         "-of", "csv=p=0", str(audio)],
-        capture_output=True, text=True,
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            str(audio),
+        ],
+        capture_output=True,
+        text=True,
     )
     try:
         return float(r.stdout.strip())
@@ -667,9 +680,7 @@ class MainTranscriptBundleError(RuntimeError):
         self.errors = tuple(dict.fromkeys(error for error in errors if error))
         if not self.errors:
             raise ValueError("main transcript bundle errors must not be empty")
-        super().__init__(
-            "main_transcript_bundle_invalid:" + ",".join(self.errors)
-        )
+        super().__init__("main_transcript_bundle_invalid:" + ",".join(self.errors))
 
 
 class FunasrUnavailableError(MainTranscriptBundleError):
@@ -1016,13 +1027,9 @@ def build_meeting_prompt(
         merge_section = ""
         # 路径必须走 ARCHIVE_ROOT：prompt 在 cc1 里被执行，写死主根会让
         # 第二实例的产物归档进主实例归档根（260825 实测踩过）。
-        archive_location = (
-            f"{ARCHIVE_ROOT}/.workbench-drafts/"
-            f"{job_id}/attempt-{attempt_no}/"
-        )
+        archive_location = f"{ARCHIVE_ROOT}/.workbench-drafts/{job_id}/attempt-{attempt_no}/"
         minutes_only = (
-            requested_stage == "minutes_generating"
-            and input_transcript_sha256 is not None
+            requested_stage == "minutes_generating" and input_transcript_sha256 is not None
         )
         if minutes_only:
             artifact_requirement = (
@@ -1066,11 +1073,11 @@ def build_meeting_prompt(
             f"\n## 工作台任务回执（强制）\n\n"
             f"- `job_id`：`{job_id}`。不得省略、替换或另建任务。\n"
             f"- `workbench-manifest.json` 至少包含 "
-            f"`{{\"schema_version\":1,\"job_id\":\"{job_id}\","
-            f"\"attempt\":{attempt_no},\"minutes_protocol_version\":"
+            f'`{{"schema_version":1,"job_id":"{job_id}",'
+            f'"attempt":{attempt_no},"minutes_protocol_version":'
             f"{minutes_protocol_version}{manifest_mode_fields},"
-            f"\"artifacts\":[{{\"path\":\"相对路径\",\"bytes\":123,"
-            f"\"sha256\":\"64位十六进制\"}}]}}`；artifacts 必须逐一列出除 manifest "
+            f'"artifacts":[{{"path":"相对路径","bytes":123,'
+            f'"sha256":"64位十六进制"}}]}}`；artifacts 必须逐一列出除 manifest '
             f"自身外的全部主链文件，bytes 和 sha256 必须与文件一致；仍在生成的 "
             f"`whisper-ref/` 不属于本次完成回执的前置条件；AppleDouble `._*` 与 "
             f"`.DS_Store` 是噪音，不得写入 artifacts。\n"
@@ -1079,7 +1086,7 @@ def build_meeting_prompt(
             f"一个字都不能改（minutes-plan 绑定了 SRT 的哈希）；术语对照表的纠错只体现在纪要正文里。\n"
             f"- 所有归档文件写完后，**先跑本地预检**（这一步不是可选的，"
             f"`complete-minutes` 用的是同一套校验，本地不过那边一定不过）：\n\n"
-            f"  `{relay_env} python3 {precheck} \"{archive_location}\" "
+            f'  `{relay_env} python3 {precheck} "{archive_location}" '
             f"--job-id {job_id} --attempt {attempt_no}`\n\n"
             f"  返回不是 `NONE` 就按错误码逐条修，改完重跑，直到 `NONE` 为止。"
             f"常见错误码：`minutes_evidence_anchor:<item_id>` 是该 item 的 "
@@ -1089,7 +1096,7 @@ def build_meeting_prompt(
             f"或越出了 topic 区间。\n"
             f"- 预检返回 `NONE` 后，才执行：\n\n"
             f"  `{relay_env} {relayctl} complete-minutes {job_id} --attempt {attempt_no} "
-            f"--archive-dir \"{archive_location}\"`\n\n"
+            f'--archive-dir "{archive_location}"`\n\n'
             f"- `complete-minutes` 成功后 Relay 会自动提升为归档根下可见的一级会议"
             f"目录；校对状态只在工作台显示，不再创建「待校对」分层。不要手工搬移"
             f"或重命名 hidden attempt。\n"
@@ -1099,9 +1106,7 @@ def build_meeting_prompt(
             "- 不删除或修改 Downloads、产物目录或正式归档中的原音频；发布后由工作台统一清理冗余。\n"
         )
     else:
-        archive_location = (
-            f"{ARCHIVE_ROOT}/{yymmdd} <会议主题>/"
-        )
+        archive_location = f"{ARCHIVE_ROOT}/{yymmdd} <会议主题>/"
         artifact_requirement = (
             "- 文件夹里必须齐 **5 类文件**：原音频 `.m4a`、转写 `.txt`、字幕 `.srt`、"
             "纪要 `.md`、纪要 `.html`——**m4a 必须一并拷入归档文件夹**，别留在产物目录就算完\n"
@@ -1174,10 +1179,12 @@ def build_meeting_prompt(
 
 # ── 派单与通知 ─────────────────────────────────────────────────────────────────
 
+
 def _tmux(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["tmux", "-S", str(TMUX_SOCKET), *args],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -1187,9 +1194,7 @@ def resolve_codex_bin() -> str:
         resolved = Path(configured).resolve()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return str(resolved)
-        raise FileNotFoundError(
-            f"MEETING_RELAY_CODEX_BIN 不可执行或不存在: {configured}"
-        )
+        raise FileNotFoundError(f"MEETING_RELAY_CODEX_BIN 不可执行或不存在: {configured}")
 
     candidates = (shutil.which("codex"), *CODEX_FALLBACKS)
     for candidate in candidates:
@@ -1199,8 +1204,7 @@ def resolve_codex_bin() -> str:
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return str(resolved)
     raise FileNotFoundError(
-        "找不到可执行的 Codex CLI；请安装 Codex/ChatGPT App，或设置 "
-        "MEETING_RELAY_CODEX_BIN"
+        "找不到可执行的 Codex CLI；请安装 Codex/ChatGPT App，或设置 MEETING_RELAY_CODEX_BIN"
     )
 
 
@@ -1210,9 +1214,7 @@ def resolve_claude_bin() -> str:
         resolved = Path(configured).resolve()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return str(resolved)
-        raise FileNotFoundError(
-            f"MEETING_RELAY_CLAUDE_BIN 不可执行或不存在: {configured}"
-        )
+        raise FileNotFoundError(f"MEETING_RELAY_CLAUDE_BIN 不可执行或不存在: {configured}")
 
     candidates = (shutil.which("claude"), *CLAUDE_FALLBACKS)
     for candidate in candidates:
@@ -1222,8 +1224,7 @@ def resolve_claude_bin() -> str:
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return str(resolved)
     raise FileNotFoundError(
-        "找不到可执行的 Claude Code CLI；请安装 Claude Code，或设置 "
-        "MEETING_RELAY_CLAUDE_BIN"
+        "找不到可执行的 Claude Code CLI；请安装 Claude Code，或设置 MEETING_RELAY_CLAUDE_BIN"
     )
 
 
@@ -1240,16 +1241,12 @@ def resolve_llm_backend(override: str | None = None) -> str:
         log.warning("未知 attempt 后端=%s，回落全局默认", override)
     backend = os.getenv("MEETING_RELAY_LLM_BACKEND", DEFAULT_LLM_BACKEND).strip().lower()
     if backend not in {"deepseek", "claude"}:
-        log.warning(
-            "未知 MEETING_RELAY_LLM_BACKEND=%s，按 %s 处理", backend, DEFAULT_LLM_BACKEND
-        )
+        log.warning("未知 MEETING_RELAY_LLM_BACKEND=%s，按 %s 处理", backend, DEFAULT_LLM_BACKEND)
         backend = DEFAULT_LLM_BACKEND
     return backend
 
 
-def build_agent_shell_command(
-    prompt_file: Path, backend_override: str | None = None
-) -> str:
+def build_agent_shell_command(prompt_file: Path, backend_override: str | None = None) -> str:
     agent = os.getenv("MEETING_RELAY_AGENT", DEFAULT_AGENT).strip().lower()
     quoted_prompt = shlex.quote(str(prompt_file))
     if agent not in {"claude", "codex"}:
@@ -1265,32 +1262,38 @@ def build_agent_shell_command(
         if backend == "deepseek":
             # DEEPSEEK_API_KEY 由 cc1 的登录 shell 提供；缺失时用 :? 立即报错，
             # 不静默回落 Claude——回落等于偷订阅额度，与配置意图相反。
-            env_prefix = " ".join([
-                "env",
-                f"ANTHROPIC_BASE_URL={shlex.quote(DEEPSEEK_BASE_URL)}",
-                'ANTHROPIC_AUTH_TOKEN="${DEEPSEEK_API_KEY:?relay 派单缺 DEEPSEEK_API_KEY}"',
-                f"ANTHROPIC_MODEL={shlex.quote(DEEPSEEK_MODEL)}",
-                f"ANTHROPIC_SMALL_FAST_MODEL={shlex.quote(DEEPSEEK_SMALL_MODEL)}",
-            ])
+            env_prefix = " ".join(
+                [
+                    "env",
+                    f"ANTHROPIC_BASE_URL={shlex.quote(DEEPSEEK_BASE_URL)}",
+                    'ANTHROPIC_AUTH_TOKEN="${DEEPSEEK_API_KEY:?relay 派单缺 DEEPSEEK_API_KEY}"',
+                    f"ANTHROPIC_MODEL={shlex.quote(DEEPSEEK_MODEL)}",
+                    f"ANTHROPIC_SMALL_FAST_MODEL={shlex.quote(DEEPSEEK_SMALL_MODEL)}",
+                ]
+            )
             return (
                 f"cat {quoted_prompt} | {env_prefix} {claude_bin} "
                 f"--print --model {shlex.quote(DEEPSEEK_MODEL)}"
             )
-        return (
-            f"cat {quoted_prompt} | {claude_bin} "
-            f"--print --model {shlex.quote(CLAUDE_MODEL)}"
-        )
+        return f"cat {quoted_prompt} | {claude_bin} --print --model {shlex.quote(CLAUDE_MODEL)}"
 
     args = [
         resolve_codex_bin(),
         "exec",
-        "--cd", str(REPO_ROOT / "relay"),
-        "--add-dir", str(ARCHIVE_ROOT),
-        "--add-dir", str(PRODUCTS_DIR),
-        "--add-dir", str(INBOX),
-        "--add-dir", str(STATE_DIR),
-        "--sandbox", "danger-full-access",
-        "-c", "approval_policy=\"never\"",
+        "--cd",
+        str(REPO_ROOT / "relay"),
+        "--add-dir",
+        str(ARCHIVE_ROOT),
+        "--add-dir",
+        str(PRODUCTS_DIR),
+        "--add-dir",
+        str(INBOX),
+        "--add-dir",
+        str(STATE_DIR),
+        "--sandbox",
+        "danger-full-access",
+        "-c",
+        'approval_policy="never"',
         "-",
     ]
     return f"cat {quoted_prompt} | " + " ".join(shlex.quote(arg) for arg in args)
@@ -1346,18 +1349,14 @@ def dispatch_to_cc1(prompt: str, kind: str, backend: str | None = None):
 
 
 def _agent_pane_available() -> bool:
-    command_result = _tmux(
-        "display-message", "-p", "-t", TMUX_SESSION, "#{pane_current_command}"
-    )
+    command_result = _tmux("display-message", "-p", "-t", TMUX_SESSION, "#{pane_current_command}")
     if command_result.returncode != 0:
         return False
     shells = {"zsh", "bash", "sh"}
     if (command_result.stdout or "").strip() not in shells:
         return False
 
-    tty_result = _tmux(
-        "display-message", "-p", "-t", TMUX_SESSION, "#{pane_tty}"
-    )
+    tty_result = _tmux("display-message", "-p", "-t", TMUX_SESSION, "#{pane_tty}")
     tty = (tty_result.stdout or "").strip()
     if tty_result.returncode != 0 or not tty.startswith("/dev/"):
         return False
@@ -1456,10 +1455,14 @@ def notify_lark(title: str, body: str):
     msg = f"**{title}**\n\n{body}"
     LARK_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     args = [
-        "lark-cli", "im", "+messages-send",
-        "--as", "bot",
+        "lark-cli",
+        "im",
+        "+messages-send",
+        "--as",
+        "bot",
         *(["--chat-id", LARK_CHAT_ID] if LARK_CHAT_ID else ["--user-id", LARK_USER_ID]),
-        "--markdown", msg,
+        "--markdown",
+        msg,
     ]
     command = (
         f"PATH={shlex.quote(LARK_NOTIFY_PATH)} "
@@ -1499,8 +1502,7 @@ def _clip_phrase(duration_min: float | None) -> str:
 _STATUS_MESSAGES: dict[str, tuple[str, str]] = {
     "minutes_generating": (
         "录音转写完成",
-        "{clip}已经转成文字，我接着写纪要。\n"
-        "纪要写好会再发一条过来，大约还要几分钟，不用守着。",
+        "{clip}已经转成文字，我接着写纪要。\n纪要写好会再发一条过来，大约还要几分钟，不用守着。",
     ),
     "dispatched": (
         "录音转写完成",
@@ -1573,6 +1575,7 @@ def notify_relay_status(status: str, duration_min: float | None = None):
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
+
 
 def handle_audio(audio: Path):
     """未启用控制层时的原同步路径；保留作一键回滚。"""
@@ -1824,9 +1827,7 @@ def process_whisper_retry_claim(claim: dict) -> bool:
         prompt_path_value = claim.get("hotword_prompt_path")
         prompt_sha256 = claim.get("hotword_prompt_sha256")
         selected_prompt = (
-            Path(str(prompt_path_value)).expanduser()
-            if prompt_path_value
-            else DEFAULT_PROMPT_FILE
+            Path(str(prompt_path_value)).expanduser() if prompt_path_value else DEFAULT_PROMPT_FILE
         )
         if selected_prompt.is_file() and not selected_prompt.is_symlink():
             prompt_payload = selected_prompt.read_bytes()
@@ -2025,9 +2026,7 @@ def process_controlled_claim(claim: dict) -> bool:
                 )
             current_stage = "transcribing"
 
-        duration = run_blocking(
-            lambda: get_audio_duration_sec(runtime_audio), stage=current_stage
-        )
+        duration = run_blocking(lambda: get_audio_duration_sec(runtime_audio), stage=current_stage)
         if duration is None:
             _control_fail(
                 job_id,
@@ -2154,10 +2153,7 @@ def process_controlled_claim(claim: dict) -> bool:
                 notify_workbench_status(job_id, "interrupted", duration_min)
                 return True
 
-        minutes_protocol_version = int(
-            claim.get("minutes_protocol_version")
-            or 2
-        )
+        minutes_protocol_version = int(claim.get("minutes_protocol_version") or 2)
         attempt_dir: Path | None = None
         if minutes_protocol_version >= 3:
             source_srt = Path(txt_path)
@@ -2184,9 +2180,7 @@ def process_controlled_claim(claim: dict) -> bool:
                     job_id,
                     attempt_no=attempt_no,
                     source_srt_sha256=str(plan["source_srt_sha256"]),
-                    minutes_plan_sha256=hashlib.sha256(
-                        plan_path.read_bytes()
-                    ).hexdigest(),
+                    minutes_plan_sha256=hashlib.sha256(plan_path.read_bytes()).hexdigest(),
                     expected_worker=worker_id,
                 )
             except Exception as exc:
@@ -2285,9 +2279,7 @@ def process_controlled_claim(claim: dict) -> bool:
             glossary_table=glossary_table,
             glossary_receipt=glossary_receipt,
         )
-        if not dispatch_to_cc1(
-            prompt, kind="会议录音", backend=claim.get("llm_backend")
-        ):
+        if not dispatch_to_cc1(prompt, kind="会议录音", backend=claim.get("llm_backend")):
             _control_fail(
                 job_id,
                 "minutes_generating",
@@ -2391,9 +2383,7 @@ def run_control_worker(stop_event: threading.Event):
             try:
                 now = time.monotonic()
                 if now >= next_heartbeat:
-                    _control_runtime_heartbeat(
-                        "control-worker", mode="controlled", status="idle"
-                    )
+                    _control_runtime_heartbeat("control-worker", mode="controlled", status="idle")
                     next_heartbeat = now + RUNTIME_HEARTBEAT_INTERVAL_SEC
                 worked = run_control_worker_once()
                 error_backoff = max(CONTROL_POLL_INTERVAL_SEC, 0.1)
@@ -2532,7 +2522,11 @@ if __name__ == "__main__":
 
     log.info("Relay watchdog v2（FunASR + Whisper 双跑 · 归档规范固化 · 同场会合并） 启动")
     if _DOTENV_APPLIED:
-        log.info("已从 .env 载入 %d 个配置（只列键名）：%s", len(_DOTENV_APPLIED), "、".join(_DOTENV_APPLIED))
+        log.info(
+            "已从 .env 载入 %d 个配置（只列键名）：%s",
+            len(_DOTENV_APPLIED),
+            "、".join(_DOTENV_APPLIED),
+        )
     configured_agent = os.getenv("MEETING_RELAY_AGENT", DEFAULT_AGENT).strip().lower()
     if configured_agent not in {"claude", "codex"}:
         log.warning(
@@ -2561,10 +2555,16 @@ if __name__ == "__main__":
             log.error("%s", exc)
             sys.exit(1)
     log.info("监听目录：%s", INBOX)
-    log.info("长录音阈值：%d 秒（%.1f 分钟）", LONG_AUDIO_THRESHOLD_SEC, LONG_AUDIO_THRESHOLD_SEC / 60)
+    log.info(
+        "长录音阈值：%d 秒（%.1f 分钟）", LONG_AUDIO_THRESHOLD_SEC, LONG_AUDIO_THRESHOLD_SEC / 60
+    )
     log.info("转写脚本：%s [%s]", TRANSCRIBE_SH, "✓" if TRANSCRIBE_SH.exists() else "✗")
-    log.info("  双轨路径：%s [%s, DISABLE_DUAL=%s]",
-             TRANSCRIBE_DUAL_SH, "✓" if TRANSCRIBE_DUAL_SH.exists() else "✗", DISABLE_DUAL)
+    log.info(
+        "  双轨路径：%s [%s, DISABLE_DUAL=%s]",
+        TRANSCRIBE_DUAL_SH,
+        "✓" if TRANSCRIBE_DUAL_SH.exists() else "✗",
+        DISABLE_DUAL,
+    )
     log.info("启动时刻：%s", time.strftime("%H:%M:%S", time.localtime(STARTUP_EPOCH)))
 
     observer = Observer()
@@ -2602,9 +2602,7 @@ if __name__ == "__main__":
                     log.exception("补扫监听目录失败，下一轮再扫")
                 next_inbox_rescan = now + INBOX_RESCAN_INTERVAL_SEC
             if now >= next_watchdog_heartbeat:
-                _best_effort_runtime_heartbeat(
-                    "watchdog", mode=watchdog_mode, status="running"
-                )
+                _best_effort_runtime_heartbeat("watchdog", mode=watchdog_mode, status="running")
                 next_watchdog_heartbeat = now + RUNTIME_HEARTBEAT_INTERVAL_SEC
             time.sleep(1)
     except KeyboardInterrupt:

@@ -185,9 +185,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            errors = self.module._minutes_evidence_errors(
-                evidence, minutes, protocol_version=2
-            )
+            errors = self.module._minutes_evidence_errors(evidence, minutes, protocol_version=2)
 
         self.assertEqual(3, self.module.CURRENT_MINUTES_PROTOCOL_VERSION)
         self.assertEqual([], errors)
@@ -200,18 +198,15 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             write_hour_srt(srt)
             source_digest = hashlib.sha256(srt.read_bytes()).hexdigest()
 
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
 
         self.assertEqual(3, plan["minutes_protocol_version"])
         self.assertEqual(source_digest, plan["source_srt_sha256"])
         self.assertEqual(60, plan["cue_count"])
-        self.assertEqual(list(range(1, 61)), [
-            cue["cue_index"]
-            for window in plan["windows"]
-            for cue in window["cues"]
-        ])
+        self.assertEqual(
+            list(range(1, 61)),
+            [cue["cue_index"] for window in plan["windows"] for cue in window["cues"]],
+        )
         previous_end = 0
         for window in plan["windows"]:
             self.assertGreaterEqual(window["start_sec"], previous_end)
@@ -228,9 +223,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             audio.write_bytes(b"audio")
             transcript = root / "edited.txt"
             transcript.write_text("工作台编辑稿", encoding="utf-8")
-            control = self.module.RelayControl(
-                root / "jobs.sqlite3", archive_root=archive
-            )
+            control = self.module.RelayControl(root / "jobs.sqlite3", archive_root=archive)
 
             with self.assertRaisesRegex(self.module.RelayControlError, "SRT"):
                 control.enqueue(
@@ -250,9 +243,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             audio.write_bytes(b"audio")
             transcript = root / "edited.txt"
             transcript.write_text("工作台编辑稿", encoding="utf-8")
-            control = self.module.RelayControl(
-                root / "jobs.sqlite3", archive_root=archive
-            )
+            control = self.module.RelayControl(root / "jobs.sqlite3", archive_root=archive)
             job_id = control.enqueue(audio)
             claim = control.claim_next(worker_id="worker-v3txt")
             control.fail(
@@ -279,9 +270,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             archive.mkdir()
             audio = root / "vm-20260714-120002-v3plan.m4a"
             audio.write_bytes(b"audio")
-            control = self.module.RelayControl(
-                root / "jobs.sqlite3", archive_root=archive
-            )
+            control = self.module.RelayControl(root / "jobs.sqlite3", archive_root=archive)
             job_id = control.enqueue(audio)
             claim = control.claim_next(worker_id="worker-v3plan")
             expected = archive / ".workbench-drafts" / job_id / "attempt-1"
@@ -302,9 +291,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             srt = root / "meeting.srt"
             plan_path = root / "minutes-plan.json"
             write_hour_srt(srt)
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
             write_ledgers(root, plan, omit_last=True)
             minutes = root / "minutes.md"
             minutes.write_text("测试结论 [12:99:00]", encoding="utf-8")
@@ -336,9 +323,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             srt = root / "meeting.srt"
             plan_path = root / "minutes-plan.json"
             write_hour_srt(srt)
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
             write_ledgers(root, plan)
             minutes = root / "minutes.md"
             minutes.write_text("测试结论 [00:00:00]", encoding="utf-8")
@@ -365,9 +350,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             srt = root / "meeting.srt"
             plan_path = root / "minutes-plan.json"
             write_hour_srt(srt)
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
             write_ledgers(root, plan)
             minutes = root / "minutes.md"
             minutes.write_text("测试结论 [00:00:00]", encoding="utf-8")
@@ -396,9 +379,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             srt = root / "sparse.srt"
-            srt.write_text(
-                "1\n00:00:00,000 --> 00:00:01,000\n唯一一句\n", encoding="utf-8"
-            )
+            srt.write_text("1\n00:00:00,000 --> 00:00:01,000\n唯一一句\n", encoding="utf-8")
 
             with self.assertRaises(self.module.RelayControlError) as caught:
                 self.module.create_minutes_plan(
@@ -426,18 +407,12 @@ class MinutesProtocolV3Tests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=919
-            )
-            _, errors = self.module._minutes_plan_context(
-                plan_path, source_srt_path=srt
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=919)
+            _, errors = self.module._minutes_plan_context(plan_path, source_srt_path=srt)
 
         self.assertEqual([], errors)
         self.assertEqual(5, plan["cue_count"])
-        cues = [
-            cue for window in plan["windows"] for cue in window["cues"]
-        ]
+        cues = [cue for window in plan["windows"] for cue in window["cues"]]
         previous_end = 0.0
         for cue in cues:
             self.assertGreaterEqual(cue["source_start_sec"], previous_end)
@@ -470,12 +445,8 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             blocks.append(f"41\n{timestamp(1740)} --> {timestamp(1770)}\n散会")
             srt.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
 
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=1800
-            )
-            _, errors = self.module._minutes_plan_context(
-                plan_path, source_srt_path=srt
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=1800)
+            _, errors = self.module._minutes_plan_context(plan_path, source_srt_path=srt)
 
         self.assertEqual([], errors)
         for window in plan["windows"]:
@@ -494,6 +465,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             root = Path(tmpdir)
             srt = root / "meeting.srt"
             plan_path = root / "minutes-plan.json"
+
             def timestamp(seconds: int) -> str:
                 hours, remainder = divmod(seconds, 3600)
                 minutes, seconds = divmod(remainder, 60)
@@ -507,15 +479,11 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             blocks.append("47\n00:45:00,000 --> 00:49:00,000\n第三块")
             srt.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
 
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3000
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3000)
             again = self.module.create_minutes_plan(
                 srt, root / "minutes-plan-again.json", total_duration_sec=3000
             )
-            _, errors = self.module._minutes_plan_context(
-                plan_path, source_srt_path=srt
-            )
+            _, errors = self.module._minutes_plan_context(plan_path, source_srt_path=srt)
 
         self.assertEqual([], errors)
         self.assertEqual(plan, again)
@@ -579,10 +547,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
         self.assertEqual(2, len(plan["windows"]))
         self.assertEqual(919, plan["total_duration_sec"])
         self.assertTrue(
-            all(
-                360 <= window["end_sec"] - window["start_sec"] <= 720
-                for window in plan["windows"]
-            )
+            all(360 <= window["end_sec"] - window["start_sec"] <= 720 for window in plan["windows"])
         )
 
     def test_v3_rejects_evidence_item_missing_from_its_nonempty_window_ledger(self):
@@ -591,9 +556,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             srt = root / "meeting.srt"
             plan_path = root / "minutes-plan.json"
             write_hour_srt(srt)
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
             write_ledgers(root, plan, all_empty=True)
             minutes = root / "minutes.md"
             minutes.write_text("测试结论 [00:00:00]", encoding="utf-8")
@@ -620,9 +583,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             srt = root / "meeting.srt"
             write_hour_srt(srt)
             plan_path = root / "minutes-plan.json"
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
             minutes = root / "minutes.md"
             minutes.write_text("结论 [00:00:00]", encoding="utf-8")
             write_ledgers(root, plan)
@@ -643,9 +604,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             self.assertIn("minutes_evidence_topic", outside_plan)
 
             evidence = make_valid_v3_evidence(plan)
-            evidence["topics"][0]["start_sec"] = evidence["topics"][0][
-                "end_sec"
-            ]
+            evidence["topics"][0]["start_sec"] = evidence["topics"][0]["end_sec"]
             evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
             outside_topic = self.module._minutes_evidence_errors(
                 evidence_path,
@@ -663,9 +622,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             srt = root / "meeting.srt"
             plan_path = root / "minutes-plan.json"
             write_hour_srt(srt)
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
             write_ledgers(root, plan)
             ledger_path = root / "minutes-ledger" / "W001.json"
             ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -697,9 +654,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             srt = root / "meeting.srt"
             plan_path = root / "minutes-plan.json"
             write_hour_srt(srt)
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
             plan["windows"][1]["start_sec"] += 1
             plan_path.write_text(json.dumps(plan), encoding="utf-8")
             write_ledgers(root, plan)
@@ -728,9 +683,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             srt = root / "meeting.srt"
             plan_path = root / "minutes-plan.json"
             write_hour_srt(srt)
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
             write_ledgers(root, plan)
             ledger_path = root / "minutes-ledger" / "W001.json"
             ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -773,9 +726,7 @@ class MinutesProtocolV3Tests(unittest.TestCase):
             srt = root / "meeting.srt"
             plan_path = root / "minutes-plan.json"
             write_hour_srt(srt)
-            plan = self.module.create_minutes_plan(
-                srt, plan_path, total_duration_sec=3600
-            )
+            plan = self.module.create_minutes_plan(srt, plan_path, total_duration_sec=3600)
             write_ledgers(root, plan)
             ledger_path = root / "minutes-ledger" / "W001.json"
             ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -841,13 +792,9 @@ class RelayHotwordRetryTests(unittest.TestCase):
             control.record_stage(job_id, "transcribing")
             control.fail(job_id, "transcribing", "engine")
 
-            control.retry(
-                job_id, "transcribing", hotword_prompt_path=replacement
-            )
+            control.retry(job_id, "transcribing", hotword_prompt_path=replacement)
             claim = control.claim_next(worker_id="worker-hotword-retry")
-            snapshot_text = Path(claim["hotword_prompt_path"]).read_text(
-                encoding="utf-8"
-            )
+            snapshot_text = Path(claim["hotword_prompt_path"]).read_text(encoding="utf-8")
 
         self.assertEqual("新词条\n", snapshot_text)
         self.assertEqual(

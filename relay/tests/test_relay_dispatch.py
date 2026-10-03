@@ -70,12 +70,8 @@ def write_main_transcript_bundle(transcript: Path, text: str = "主稿已完成"
     transcript.with_name(f"{transcript.stem}.spk.txt").write_text(
         "speaker 0: 主稿已完成", encoding="utf-8"
     )
-    transcript.with_name(f"{transcript.stem}.funasr.json").write_text(
-        "{}", encoding="utf-8"
-    )
-    transcript.with_name("funasr.log").write_text(
-        "ok", encoding="utf-8"
-    )
+    transcript.with_name(f"{transcript.stem}.funasr.json").write_text("{}", encoding="utf-8")
+    transcript.with_name("funasr.log").write_text("ok", encoding="utf-8")
 
 
 class IsolatedEnvironmentTests(unittest.TestCase):
@@ -115,12 +111,7 @@ class RelayDispatchTests(unittest.TestCase):
                 self.assertNotIn("capture_output", kwargs)
                 self.assertEqual(subprocess.STDOUT, kwargs["stderr"])
                 self.assertGreaterEqual(kwargs["stdout"].fileno(), 0)
-                transcript = (
-                    module.PRODUCTS_DIR
-                    / audio.stem
-                    / audio.stem
-                    / f"{audio.stem}.txt"
-                )
+                transcript = module.PRODUCTS_DIR / audio.stem / audio.stem / f"{audio.stem}.txt"
                 write_main_transcript_bundle(transcript)
                 kwargs["stdout"].write("FunASR complete\n")
                 kwargs["stdout"].flush()
@@ -177,12 +168,7 @@ class RelayDispatchTests(unittest.TestCase):
             def fake_run(command, **kwargs):
                 prompt = module.PRODUCTS_DIR / audio.stem / "prompt.txt"
                 self.assertEqual("云图\nACME\n", prompt.read_text(encoding="utf-8"))
-                transcript = (
-                    module.PRODUCTS_DIR
-                    / audio.stem
-                    / audio.stem
-                    / f"{audio.stem}.txt"
-                )
+                transcript = module.PRODUCTS_DIR / audio.stem / audio.stem / f"{audio.stem}.txt"
                 write_main_transcript_bundle(transcript)
                 return subprocess.CompletedProcess(command, 0)
 
@@ -202,9 +188,7 @@ class RelayDispatchTests(unittest.TestCase):
             audio.write_bytes(b"audio")
             script = root / "transcribe.sh"
             script.write_text("#!/bin/bash\n", encoding="utf-8")
-            transcript = (
-                module.PRODUCTS_DIR / audio.stem / audio.stem / f"{audio.stem}.txt"
-            )
+            transcript = module.PRODUCTS_DIR / audio.stem / audio.stem / f"{audio.stem}.txt"
 
             class FakeProcess:
                 returncode = None
@@ -226,8 +210,9 @@ class RelayDispatchTests(unittest.TestCase):
                 def kill(self):
                     raise AssertionError("running transcription must not be killed")
 
-            with patch.object(module.subprocess, "Popen", return_value=FakeProcess()), patch.object(
-                module.time, "sleep", return_value=None
+            with (
+                patch.object(module.subprocess, "Popen", return_value=FakeProcess()),
+                patch.object(module.time, "sleep", return_value=None),
             ):
                 result = module.transcribe(
                     audio,
@@ -253,10 +238,16 @@ class RelayDispatchTests(unittest.TestCase):
 
             module.CODEX_BIN = str(broken)
             module.CODEX_FALLBACKS = (str(broken), str(working))
-            with patch.dict(os.environ, {
-                "MEETING_RELAY_AGENT": "codex",
-                "MEETING_RELAY_CODEX_BIN": "",
-            }), patch.object(module.shutil, "which", return_value=None):
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "MEETING_RELAY_AGENT": "codex",
+                        "MEETING_RELAY_CODEX_BIN": "",
+                    },
+                ),
+                patch.object(module.shutil, "which", return_value=None),
+            ):
                 command = module.build_agent_shell_command(tmp / "prompt.md")
 
         self.assertIn(str(working), command)
@@ -277,10 +268,16 @@ class RelayDispatchTests(unittest.TestCase):
 
             module.CODEX_BIN = ""
             module.CODEX_FALLBACKS = (str(link),)
-            with patch.dict(os.environ, {
-                "MEETING_RELAY_AGENT": "codex",
-                "MEETING_RELAY_CODEX_BIN": "",
-            }), patch.object(module.shutil, "which", return_value=None):
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "MEETING_RELAY_AGENT": "codex",
+                        "MEETING_RELAY_CODEX_BIN": "",
+                    },
+                ),
+                patch.object(module.shutil, "which", return_value=None),
+            ):
                 command = module.build_agent_shell_command(tmp / "prompt.md")
 
         self.assertIn(str(target), command)
@@ -297,10 +294,14 @@ class RelayDispatchTests(unittest.TestCase):
             claude.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             claude.chmod(0o755)
             module.CLAUDE_BIN = str(claude)
-            with patch.dict(os.environ, {
-                "MEETING_RELAY_AGENT": "claude",
-                "MEETING_RELAY_CLAUDE_BIN": str(claude),
-            }, clear=False):
+            with patch.dict(
+                os.environ,
+                {
+                    "MEETING_RELAY_AGENT": "claude",
+                    "MEETING_RELAY_CLAUDE_BIN": str(claude),
+                },
+                clear=False,
+            ):
                 os.environ.pop("MEETING_RELAY_LLM_BACKEND", None)
                 default = module.build_agent_shell_command(tmp / "prompt.md")
                 pinned = module.build_agent_shell_command(tmp / "prompt.md", "claude")
@@ -339,10 +340,16 @@ class RelayDispatchTests(unittest.TestCase):
             codex.chmod(0o755)
             module.CODEX_BIN = ""
             module.CODEX_FALLBACKS = (str(codex),)
-            with patch.dict(os.environ, {
-                "MEETING_RELAY_AGENT": "codex",
-                "MEETING_RELAY_CODEX_BIN": "",
-            }), patch.object(module.shutil, "which", return_value=None):
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "MEETING_RELAY_AGENT": "codex",
+                        "MEETING_RELAY_CODEX_BIN": "",
+                    },
+                ),
+                patch.object(module.shutil, "which", return_value=None),
+            ):
                 self.assertTrue(module.dispatch_to_cc1("整理这段录音", kind="测试"))
 
         send_key_calls = [args for args in calls if args and args[0] == "send-keys"]
@@ -374,10 +381,16 @@ class RelayDispatchTests(unittest.TestCase):
             claude.chmod(0o755)
             module.CLAUDE_BIN = ""
             module.CLAUDE_FALLBACKS = (str(claude),)
-            with patch.dict(os.environ, {
-                "MEETING_RELAY_AGENT": "claude",
-                "MEETING_RELAY_CLAUDE_BIN": "",
-            }), patch.object(module.shutil, "which", return_value=None):
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "MEETING_RELAY_AGENT": "claude",
+                        "MEETING_RELAY_CLAUDE_BIN": "",
+                    },
+                ),
+                patch.object(module.shutil, "which", return_value=None),
+            ):
                 self.assertTrue(module.dispatch_to_cc1("整理这段录音", kind="测试"))
 
         send_key_calls = [args for args in calls if args and args[0] == "send-keys"]
@@ -402,10 +415,16 @@ class RelayDispatchTests(unittest.TestCase):
             claude.chmod(0o755)
             module.CLAUDE_BIN = ""
             module.CLAUDE_FALLBACKS = (str(claude),)
-            with patch.dict(os.environ, {
-                "MEETING_RELAY_AGENT": "claude",
-                "MEETING_RELAY_CLAUDE_BIN": "",
-            }), patch.object(module.shutil, "which", return_value=None):
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "MEETING_RELAY_AGENT": "claude",
+                        "MEETING_RELAY_CLAUDE_BIN": "",
+                    },
+                ),
+                patch.object(module.shutil, "which", return_value=None),
+            ):
                 dispatched = module.dispatch_to_cc1("整理这段录音", kind="测试")
 
         self.assertFalse(dispatched)
@@ -430,24 +449,18 @@ class RelayDispatchTests(unittest.TestCase):
 
         def fake_tmux(*args):
             if args[-1] == "#{pane_current_command}":
-                return subprocess.CompletedProcess(
-                    args, 0, stdout="zsh\n", stderr=""
-                )
+                return subprocess.CompletedProcess(args, 0, stdout="zsh\n", stderr="")
             if args[-1] == "#{pane_tty}":
-                return subprocess.CompletedProcess(
-                    args, 0, stdout="/dev/ttys000\n", stderr=""
-                )
+                return subprocess.CompletedProcess(args, 0, stdout="/dev/ttys000\n", stderr="")
             raise AssertionError(f"unexpected tmux call: {args}")
 
-        ps_output = (
-            "Ss   -zsh\n"
-            "S+   /Applications/ChatGPT.app/Contents/Resources/codex\n"
-        )
-        with patch.object(module, "_tmux", side_effect=fake_tmux), patch.object(
-            module.subprocess,
-            "run",
-            return_value=subprocess.CompletedProcess(
-                ["ps"], 0, stdout=ps_output, stderr=""
+        ps_output = "Ss   -zsh\nS+   /Applications/ChatGPT.app/Contents/Resources/codex\n"
+        with (
+            patch.object(module, "_tmux", side_effect=fake_tmux),
+            patch.object(
+                module.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(["ps"], 0, stdout=ps_output, stderr=""),
             ),
         ):
             available = module._agent_pane_available()
@@ -461,11 +474,14 @@ class RelayDispatchTests(unittest.TestCase):
             value = "zsh\n" if args[-1] == "#{pane_current_command}" else "/dev/ttys000\n"
             return subprocess.CompletedProcess(args, 0, stdout=value, stderr="")
 
-        with patch.object(module, "_tmux", side_effect=fake_tmux), patch.object(
-            module.subprocess,
-            "run",
-            return_value=subprocess.CompletedProcess(
-                ["ps"], 0, stdout="Ss+  -zsh\n", stderr=""
+        with (
+            patch.object(module, "_tmux", side_effect=fake_tmux),
+            patch.object(
+                module.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    ["ps"], 0, stdout="Ss+  -zsh\n", stderr=""
+                ),
             ),
         ):
             available = module._agent_pane_available()
@@ -533,15 +549,21 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         notifications = []
         with tempfile.TemporaryDirectory() as tmpdir:
             audio, transcript = self._make_audio_and_transcript(Path(tmpdir))
-            with patch.dict(os.environ, {}, clear=False), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "get_audio_duration_sec", return_value=30), \
-                    patch.object(module, "transcribe", return_value=str(transcript)), \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1", return_value=True), \
-                    patch.object(module, "notify_lark", side_effect=lambda title, body: notifications.append((title, body))), \
-                    patch.object(module, "mark_processed"), \
-                    patch.object(module, "_control_enqueue", side_effect=AssertionError):
+            with (
+                patch.dict(os.environ, {}, clear=False),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "get_audio_duration_sec", return_value=30),
+                patch.object(module, "transcribe", return_value=str(transcript)),
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(module, "dispatch_to_cc1", return_value=True),
+                patch.object(
+                    module,
+                    "notify_lark",
+                    side_effect=lambda title, body: notifications.append((title, body)),
+                ),
+                patch.object(module, "mark_processed"),
+                patch.object(module, "_control_enqueue", side_effect=AssertionError),
+            ):
                 os.environ.pop("MEETING_RELAY_CONTROL_ENABLED", None)
                 module.handle_audio(audio)
 
@@ -559,9 +581,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
     def test_meeting_prompt_uses_single_pass_only_for_short_meetings(self):
         module = load_watchdog_module()
 
-        prompt = module.build_meeting_prompt(
-            Path("/tmp/audio.m4a"), "/tmp/a.txt", 12 * 60
-        )
+        prompt = module.build_meeting_prompt(Path("/tmp/audio.m4a"), "/tmp/a.txt", 12 * 60)
 
         self.assertIn("单轮结构化提取", prompt)
         self.assertNotIn("多阶段递归合并", prompt)
@@ -569,9 +589,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
     def test_meeting_prompt_requires_topic_ledger_for_medium_meetings(self):
         module = load_watchdog_module()
 
-        prompt = module.build_meeting_prompt(
-            Path("/tmp/audio.m4a"), "/tmp/a.txt", 30 * 60
-        )
+        prompt = module.build_meeting_prompt(Path("/tmp/audio.m4a"), "/tmp/a.txt", 30 * 60)
 
         self.assertIn("分议题结构化提取", prompt)
         self.assertIn("minutes-evidence.json", prompt)
@@ -581,9 +599,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
     def test_meeting_prompt_requires_multi_stage_merge_for_long_meetings(self):
         module = load_watchdog_module()
 
-        prompt = module.build_meeting_prompt(
-            Path("/tmp/audio.m4a"), "/tmp/a.txt", 90 * 60
-        )
+        prompt = module.build_meeting_prompt(Path("/tmp/audio.m4a"), "/tmp/a.txt", 90 * 60)
 
         self.assertIn("多阶段递归合并", prompt)
         self.assertIn("不得直接从整篇逐字稿一次生成最终纪要", prompt)
@@ -619,8 +635,13 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
 
             alias = module.PRODUCTS_DIR / ".prompt-safe" / "job-hostile"
             self.assertEqual(b"audio", (alias / "audio.m4a").read_bytes())
-            for name in ("transcript.txt", "transcript.srt", "transcript.spk.txt",
-                         "transcript.funasr.json", "funasr.log"):
+            for name in (
+                "transcript.txt",
+                "transcript.srt",
+                "transcript.spk.txt",
+                "transcript.funasr.json",
+                "funasr.log",
+            ):
                 self.assertTrue((alias / name).is_file(), name)
                 self.assertFalse((alias / name).is_symlink(), name)
 
@@ -635,12 +656,18 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         notifications = []
         with tempfile.TemporaryDirectory() as tmpdir:
             audio, _ = self._make_audio_and_transcript(Path(tmpdir))
-            with patch.dict(os.environ, {}, clear=False), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", return_value=None), \
-                    patch.object(module, "notify_lark", side_effect=lambda title, body: notifications.append((title, body))), \
-                    patch.object(module, "mark_processed"):
+            with (
+                patch.dict(os.environ, {}, clear=False),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", return_value=None),
+                patch.object(
+                    module,
+                    "notify_lark",
+                    side_effect=lambda title, body: notifications.append((title, body)),
+                ),
+                patch.object(module, "mark_processed"),
+            ):
                 os.environ.pop("MEETING_RELAY_CONTROL_ENABLED", None)
                 module.handle_audio(audio)
 
@@ -708,27 +735,35 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 prompts.append(prompt)
                 return True
 
-            with patch.dict(os.environ, {"MEETING_RELAY_CONTROL_ENABLED": "1"}), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", return_value=str(transcript)), \
-                    patch.object(module, "_control_record_source_audio"), \
-                    patch.object(module, "_control_update_whisper_progress") as whisper_progress, \
-                    patch.object(module, "_control_record_stage", side_effect=fake_record), \
-                    patch.object(module, "_control_interrupt_if_requested", return_value=False), \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1", side_effect=fake_dispatch), \
-                    patch.object(module, "_control_record_codex_dispatched"), \
-                    patch.object(module, "notify_lark", side_effect=lambda title, body: notifications.append((title, body))), \
-                    patch.object(module, "save_last_meeting"), \
-                    patch.object(module, "mark_processed"):
-                module.process_controlled_claim({
-                    "job_id": "job-test-123",
-                    "audio_path": str(audio),
-                    "attempt": 4,
-                    "worker_id": "worker-main-4",
-                    "start_stage": "transcribing",
-                })
+            with (
+                patch.dict(os.environ, {"MEETING_RELAY_CONTROL_ENABLED": "1"}),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", return_value=str(transcript)),
+                patch.object(module, "_control_record_source_audio"),
+                patch.object(module, "_control_update_whisper_progress") as whisper_progress,
+                patch.object(module, "_control_record_stage", side_effect=fake_record),
+                patch.object(module, "_control_interrupt_if_requested", return_value=False),
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(module, "dispatch_to_cc1", side_effect=fake_dispatch),
+                patch.object(module, "_control_record_codex_dispatched"),
+                patch.object(
+                    module,
+                    "notify_lark",
+                    side_effect=lambda title, body: notifications.append((title, body)),
+                ),
+                patch.object(module, "save_last_meeting"),
+                patch.object(module, "mark_processed"),
+            ):
+                module.process_controlled_claim(
+                    {
+                        "job_id": "job-test-123",
+                        "audio_path": str(audio),
+                        "attempt": 4,
+                        "worker_id": "worker-main-4",
+                        "start_stage": "transcribing",
+                    }
+                )
 
         self.assertEqual(
             ["transcript_ready", "minutes_generating"],
@@ -736,8 +771,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                kwargs
-                == {"expected_attempt": 4, "expected_worker": "worker-main-4"}
+                kwargs == {"expected_attempt": 4, "expected_worker": "worker-main-4"}
                 for _, _, kwargs in recorded
             )
         )
@@ -765,27 +799,41 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         recorded = []
         with tempfile.TemporaryDirectory() as tmpdir:
             audio, transcript = self._make_audio_and_transcript(Path(tmpdir))
-            with patch.dict(os.environ, {"MEETING_RELAY_CONTROL_ENABLED": "1"}), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "get_audio_duration_sec", return_value=30), \
-                    patch.object(module, "transcribe", return_value=str(transcript)), \
-                    patch.object(module, "_control_record_source_audio"), \
-                    patch.object(module, "_control_update_whisper_progress"), \
-                    patch.object(module, "_control_record_stage", side_effect=lambda _, status, **kwargs: recorded.append((status, kwargs))), \
-                    patch.object(module, "_control_interrupt_if_requested", return_value=False), \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append((prompt, kind)) or True), \
-                    patch.object(module, "_control_record_codex_dispatched"), \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "save_last_meeting"), \
-                    patch.object(module, "mark_processed"):
-                module.process_controlled_claim({
-                    "job_id": "job-short",
-                    "audio_path": str(audio),
-                    "attempt": 1,
-                    "worker_id": "worker-short",
-                    "start_stage": "transcribing",
-                })
+            with (
+                patch.dict(os.environ, {"MEETING_RELAY_CONTROL_ENABLED": "1"}),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "get_audio_duration_sec", return_value=30),
+                patch.object(module, "transcribe", return_value=str(transcript)),
+                patch.object(module, "_control_record_source_audio"),
+                patch.object(module, "_control_update_whisper_progress"),
+                patch.object(
+                    module,
+                    "_control_record_stage",
+                    side_effect=lambda _, status, **kwargs: recorded.append((status, kwargs)),
+                ),
+                patch.object(module, "_control_interrupt_if_requested", return_value=False),
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(
+                    module,
+                    "dispatch_to_cc1",
+                    side_effect=lambda prompt, kind, backend=None: (
+                        prompts.append((prompt, kind)) or True
+                    ),
+                ),
+                patch.object(module, "_control_record_codex_dispatched"),
+                patch.object(module, "notify_lark"),
+                patch.object(module, "save_last_meeting"),
+                patch.object(module, "mark_processed"),
+            ):
+                module.process_controlled_claim(
+                    {
+                        "job_id": "job-short",
+                        "audio_path": str(audio),
+                        "attempt": 1,
+                        "worker_id": "worker-short",
+                        "start_stage": "transcribing",
+                    }
+                )
 
         self.assertEqual(
             ["transcript_ready", "minutes_generating"],
@@ -793,8 +841,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                kwargs
-                == {"expected_attempt": 1, "expected_worker": "worker-short"}
+                kwargs == {"expected_attempt": 1, "expected_worker": "worker-short"}
                 for _, kwargs in recorded
             )
         )
@@ -807,22 +854,26 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             audio, _ = self._make_audio_and_transcript(Path(tmpdir))
             # 放回队列的次数已用满：这一次按失败收口
-            with patch.object(module, "wait_stable", return_value=False), \
-                    patch.object(
-                        module,
-                        "_control_defer_unstable_source",
-                        return_value={"outcome": "exhausted", "deferrals": 4},
-                    ), \
-                    patch.object(module, "_control_fail") as fail, \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "mark_processed"):
-                result = module.process_controlled_claim({
-                    "job_id": "job-stale-safe",
-                    "audio_path": str(audio),
-                    "attempt": 7,
-                    "worker_id": "worker-attempt-7",
-                    "start_stage": "transcribing",
-                })
+            with (
+                patch.object(module, "wait_stable", return_value=False),
+                patch.object(
+                    module,
+                    "_control_defer_unstable_source",
+                    return_value={"outcome": "exhausted", "deferrals": 4},
+                ),
+                patch.object(module, "_control_fail") as fail,
+                patch.object(module, "notify_lark"),
+                patch.object(module, "mark_processed"),
+            ):
+                result = module.process_controlled_claim(
+                    {
+                        "job_id": "job-stale-safe",
+                        "audio_path": str(audio),
+                        "attempt": 7,
+                        "worker_id": "worker-attempt-7",
+                        "start_stage": "transcribing",
+                    }
+                )
 
         self.assertFalse(result)
         fail.assert_called_once_with(
@@ -849,31 +900,33 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 self.assertEqual("worker-stop", kwargs["expected_worker"])
                 return True
 
-            with patch.dict(os.environ, {"MEETING_RELAY_CONTROL_ENABLED": "1"}), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", side_effect=fake_transcribe), \
-                    patch.object(module, "_control_record_source_audio"), \
-                    patch.object(module, "_control_update_whisper_progress"), \
-                    patch.object(module, "_control_record_stage"), \
-                    patch.object(module, "_control_interrupt_if_requested", side_effect=fake_interrupt), \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1") as dispatch, \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "mark_processed"):
-                result = module.process_controlled_claim({
-                    "job_id": "job-stop",
-                    "audio_path": str(audio),
-                    "attempt": 3,
-                    "worker_id": "worker-stop",
-                    "start_stage": "transcribing",
-                })
+            with (
+                patch.dict(os.environ, {"MEETING_RELAY_CONTROL_ENABLED": "1"}),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", side_effect=fake_transcribe),
+                patch.object(module, "_control_record_source_audio"),
+                patch.object(module, "_control_update_whisper_progress"),
+                patch.object(module, "_control_record_stage"),
+                patch.object(module, "_control_interrupt_if_requested", side_effect=fake_interrupt),
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(module, "dispatch_to_cc1") as dispatch,
+                patch.object(module, "notify_lark"),
+                patch.object(module, "mark_processed"),
+            ):
+                result = module.process_controlled_claim(
+                    {
+                        "job_id": "job-stop",
+                        "audio_path": str(audio),
+                        "attempt": 3,
+                        "worker_id": "worker-stop",
+                        "start_stage": "transcribing",
+                    }
+                )
 
         # 停止是一次已确认的协作式中断；watchdog 不应把同一源文件自动重跑。
         self.assertTrue(result)
-        self.assertEqual(
-            ["transcribe_finished", "stop_checked_after_transcribing"], calls
-        )
+        self.assertEqual(["transcribe_finished", "stop_checked_after_transcribing"], calls)
         dispatch.assert_not_called()
 
     def test_whisper_progress_keeps_missing_background_output_nonblocking(self):
@@ -903,9 +956,11 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             audio, _ = self._make_audio_and_transcript(Path(tmpdir))
             handler = module.AudioHandler()
             handler._processed_log.clear()
-            with patch.dict(os.environ, {"MEETING_RELAY_CONTROL_ENABLED": "1"}), \
-                    patch.object(module, "_control_enqueue", return_value="job-queued") as enqueue, \
-                    patch.object(module, "handle_audio", side_effect=AssertionError) as legacy:
+            with (
+                patch.dict(os.environ, {"MEETING_RELAY_CONTROL_ENABLED": "1"}),
+                patch.object(module, "_control_enqueue", return_value="job-queued") as enqueue,
+                patch.object(module, "handle_audio", side_effect=AssertionError) as legacy,
+            ):
                 handler._handle(audio)
 
         enqueue.assert_called_once_with(audio)
@@ -923,27 +978,35 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             existing.write_text("复用的 FunASR 主稿", encoding="utf-8")
             snapshot = root / "input-transcript.txt"
             snapshot.write_text("工作台编辑后的逐字稿", encoding="utf-8")
-            with patch.object(module, "PRODUCTS_DIR", root), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", side_effect=AssertionError) as transcribe, \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True), \
-                    patch.object(module, "_control_record_codex_dispatched"), \
-                    patch.object(module, "_control_fail") as fail, \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "save_last_meeting"), \
-                    patch.object(module, "mark_processed"):
-                result = module.process_controlled_claim({
-                    "job_id": "job-retry-minutes",
-                    "audio_path": str(audio),
-                    "attempt": 2,
-                    "worker_id": "worker-retry-minutes",
-                    "start_stage": "minutes_generating",
-                    "input_transcript_path": str(snapshot),
-                    "input_transcript_sha256": hashlib.sha256(
-                        snapshot.read_bytes()
-                    ).hexdigest(),
-                })
+            with (
+                patch.object(module, "PRODUCTS_DIR", root),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", side_effect=AssertionError) as transcribe,
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(
+                    module,
+                    "dispatch_to_cc1",
+                    side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True,
+                ),
+                patch.object(module, "_control_record_codex_dispatched"),
+                patch.object(module, "_control_fail") as fail,
+                patch.object(module, "notify_lark"),
+                patch.object(module, "save_last_meeting"),
+                patch.object(module, "mark_processed"),
+            ):
+                result = module.process_controlled_claim(
+                    {
+                        "job_id": "job-retry-minutes",
+                        "audio_path": str(audio),
+                        "attempt": 2,
+                        "worker_id": "worker-retry-minutes",
+                        "start_stage": "minutes_generating",
+                        "input_transcript_path": str(snapshot),
+                        "input_transcript_sha256": hashlib.sha256(
+                            snapshot.read_bytes()
+                        ).hexdigest(),
+                    }
+                )
 
         self.assertTrue(result)
         transcribe.assert_not_called()
@@ -973,29 +1036,37 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             stale_transcript.write_text("过期原始主稿", encoding="utf-8")
             snapshot = root / "input-transcript.txt"
             snapshot.write_text("工作台发布后继续编辑的逐字稿", encoding="utf-8")
-            with patch.object(module, "PRODUCTS_DIR", products), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", side_effect=AssertionError) as transcribe, \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True), \
-                    patch.object(module, "_control_record_codex_dispatched"), \
-                    patch.object(module, "_control_fail") as fail, \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "save_last_meeting"), \
-                    patch.object(module, "mark_processed"):
-                result = module.process_controlled_claim({
-                    "job_id": "job-published-retry",
-                    "audio_path": str(missing_source),
-                    "attempt": 2,
-                    "worker_id": "worker-published-retry",
-                    "start_stage": "minutes_generating",
-                    "meeting_id": "fp-0123456789abcdef01234567",
-                    "published_archive_dir": str(published),
-                    "input_transcript_path": str(snapshot),
-                    "input_transcript_sha256": hashlib.sha256(
-                        snapshot.read_bytes()
-                    ).hexdigest(),
-                })
+            with (
+                patch.object(module, "PRODUCTS_DIR", products),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", side_effect=AssertionError) as transcribe,
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(
+                    module,
+                    "dispatch_to_cc1",
+                    side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True,
+                ),
+                patch.object(module, "_control_record_codex_dispatched"),
+                patch.object(module, "_control_fail") as fail,
+                patch.object(module, "notify_lark"),
+                patch.object(module, "save_last_meeting"),
+                patch.object(module, "mark_processed"),
+            ):
+                result = module.process_controlled_claim(
+                    {
+                        "job_id": "job-published-retry",
+                        "audio_path": str(missing_source),
+                        "attempt": 2,
+                        "worker_id": "worker-published-retry",
+                        "start_stage": "minutes_generating",
+                        "meeting_id": "fp-0123456789abcdef01234567",
+                        "published_archive_dir": str(published),
+                        "input_transcript_path": str(snapshot),
+                        "input_transcript_sha256": hashlib.sha256(
+                            snapshot.read_bytes()
+                        ).hexdigest(),
+                    }
+                )
 
         self.assertTrue(result)
         transcribe.assert_not_called()
@@ -1030,30 +1101,38 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             stale.write_text("STALE PRODUCT TRANSCRIPT", encoding="utf-8")
             snapshot = root / "input-transcript.txt"
             snapshot.write_text("EXPLICIT WORKBENCH SNAPSHOT", encoding="utf-8")
-            with patch.object(module, "PRODUCTS_DIR", products), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", side_effect=AssertionError), \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1", side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True), \
-                    patch.object(module, "_control_record_codex_dispatched"), \
-                    patch.object(module, "_control_fail") as fail, \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "save_last_meeting"), \
-                    patch.object(module, "mark_processed"):
-                result = module.process_controlled_claim({
-                    "job_id": "job-three",
-                    "audio_path": str(source),
-                    "attempt": 3,
-                    "worker_id": "worker-three",
-                    "start_stage": "minutes_generating",
-                    "meeting_id": "fp-current",
-                    "source_archive_dir": str(attempt_two),
-                    "published_archive_dir": str(published),
-                    "input_transcript_path": str(snapshot),
-                    "input_transcript_sha256": hashlib.sha256(
-                        snapshot.read_bytes()
-                    ).hexdigest(),
-                })
+            with (
+                patch.object(module, "PRODUCTS_DIR", products),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", side_effect=AssertionError),
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(
+                    module,
+                    "dispatch_to_cc1",
+                    side_effect=lambda prompt, kind, backend=None: prompts.append(prompt) or True,
+                ),
+                patch.object(module, "_control_record_codex_dispatched"),
+                patch.object(module, "_control_fail") as fail,
+                patch.object(module, "notify_lark"),
+                patch.object(module, "save_last_meeting"),
+                patch.object(module, "mark_processed"),
+            ):
+                result = module.process_controlled_claim(
+                    {
+                        "job_id": "job-three",
+                        "audio_path": str(source),
+                        "attempt": 3,
+                        "worker_id": "worker-three",
+                        "start_stage": "minutes_generating",
+                        "meeting_id": "fp-current",
+                        "source_archive_dir": str(attempt_two),
+                        "published_archive_dir": str(published),
+                        "input_transcript_path": str(snapshot),
+                        "input_transcript_sha256": hashlib.sha256(
+                            snapshot.read_bytes()
+                        ).hexdigest(),
+                    }
+                )
 
         self.assertTrue(result)
         fail.assert_not_called()
@@ -1070,12 +1149,16 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             "audio_path": "/tmp/audio.m4a",
             "start_stage": "transcribing",
         }
-        with patch.object(module, "_agent_pane_available", return_value=True), \
-                patch.object(module, "_control_reconcile_pending_archives", return_value={"ok": True}) as reconcile_pending, \
-                patch.object(module, "_control_reconcile_codex_handoffs", return_value=0), \
-                patch.object(module, "_control_recover_orphaned_claims", return_value=0), \
-                patch.object(module, "_control_claim_next", return_value=claim) as claim_next, \
-                patch.object(module, "process_controlled_claim", return_value=True) as process:
+        with (
+            patch.object(module, "_agent_pane_available", return_value=True),
+            patch.object(
+                module, "_control_reconcile_pending_archives", return_value={"ok": True}
+            ) as reconcile_pending,
+            patch.object(module, "_control_reconcile_codex_handoffs", return_value=0),
+            patch.object(module, "_control_recover_orphaned_claims", return_value=0),
+            patch.object(module, "_control_claim_next", return_value=claim) as claim_next,
+            patch.object(module, "process_controlled_claim", return_value=True) as process,
+        ):
             worked = module.run_control_worker_once()
 
         self.assertTrue(worked)
@@ -1086,21 +1169,18 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
     def test_worker_throttles_pending_reconcile_without_delaying_claim_polling(self):
         module = load_watchdog_module()
         module.PENDING_RECONCILE_INTERVAL_SEC = 30.0
-        with patch.object(
-            module.time, "monotonic", side_effect=[100.0, 101.0, 131.0]
-        ), patch.object(
-            module,
-            "_control_reconcile_pending_archives",
-            return_value={"ok": True},
-        ) as reconcile_pending, patch.object(
-            module, "_agent_pane_available", return_value=True
-        ), patch.object(
-            module, "_control_reconcile_codex_handoffs", return_value=0
-        ), patch.object(
-            module, "_control_recover_orphaned_claims", return_value=0
-        ), patch.object(
-            module, "_control_claim_next", return_value=None
-        ) as claim_next:
+        with (
+            patch.object(module.time, "monotonic", side_effect=[100.0, 101.0, 131.0]),
+            patch.object(
+                module,
+                "_control_reconcile_pending_archives",
+                return_value={"ok": True},
+            ) as reconcile_pending,
+            patch.object(module, "_agent_pane_available", return_value=True),
+            patch.object(module, "_control_reconcile_codex_handoffs", return_value=0),
+            patch.object(module, "_control_recover_orphaned_claims", return_value=0),
+            patch.object(module, "_control_claim_next", return_value=None) as claim_next,
+        ):
             results = [module.run_control_worker_once() for _ in range(3)]
 
         self.assertEqual([False, False, False], results)
@@ -1125,12 +1205,8 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
     def test_runtime_heartbeat_integration_accepts_controlled_mode(self):
         module = load_watchdog_module()
 
-        module._control_runtime_heartbeat(
-            "watchdog", mode="controlled", status="running"
-        )
-        module._control_runtime_heartbeat(
-            "control-worker", mode="controlled", status="idle"
-        )
+        module._control_runtime_heartbeat("watchdog", mode="controlled", status="running")
+        module._control_runtime_heartbeat("control-worker", mode="controlled", status="idle")
 
         control_module = module._relay_control_module()
         control = control_module.RelayControl(Path(os.environ["MEETING_RELAY_JOBS_DB"]))
@@ -1148,9 +1224,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
 
         with patch.object(module, "_best_effort_runtime_heartbeat") as heartbeat:
             with self.assertRaisesRegex(RuntimeError, "observer"):
-                module._ensure_runtime_components_alive(
-                    observer, worker, mode="controlled"
-                )
+                module._ensure_runtime_components_alive(observer, worker, mode="controlled")
 
         heartbeat.assert_called_once_with(
             "watchdog",
@@ -1168,9 +1242,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
 
         with patch.object(module, "_best_effort_runtime_heartbeat") as heartbeat:
             with self.assertRaisesRegex(RuntimeError, "control-worker"):
-                module._ensure_runtime_components_alive(
-                    observer, worker, mode="controlled"
-                )
+                module._ensure_runtime_components_alive(observer, worker, mode="controlled")
 
         heartbeat.assert_called_once_with(
             "watchdog",
@@ -1197,8 +1269,9 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             def join(self, timeout=None):
                 self.timeout = timeout
 
-        with patch.object(module.threading, "Thread", FakeThread), patch.object(
-            module.time, "monotonic", side_effect=[0.0, 31.0]
+        with (
+            patch.object(module.threading, "Thread", FakeThread),
+            patch.object(module.time, "monotonic", side_effect=[0.0, 31.0]),
         ):
             result = module._run_with_heartbeat(
                 lambda: "done",
@@ -1220,23 +1293,29 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 heartbeat()
                 return operation()
 
-            with patch.object(module, "_run_with_heartbeat", side_effect=run_guarded), \
-                    patch.object(module, "_best_effort_runtime_heartbeat", side_effect=lambda name, **kwargs: recorded_heartbeats.append((name, kwargs))), \
-                    patch.object(module, "_job_audio_path", return_value=audio), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "_control_record_source_audio"), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", return_value=str(transcript)), \
-                    patch.object(module, "_control_update_whisper_progress"), \
-                    patch.object(module, "_control_record_stage"), \
-                    patch.object(module, "_control_record_minutes_plan_source"), \
-                    patch.object(module, "_control_interrupt_if_requested", return_value=False), \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1", return_value=True), \
-                    patch.object(module, "_control_record_codex_dispatched"), \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "save_last_meeting"), \
-                    patch.object(module, "mark_processed"):
+            with (
+                patch.object(module, "_run_with_heartbeat", side_effect=run_guarded),
+                patch.object(
+                    module,
+                    "_best_effort_runtime_heartbeat",
+                    side_effect=lambda name, **kwargs: recorded_heartbeats.append((name, kwargs)),
+                ),
+                patch.object(module, "_job_audio_path", return_value=audio),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "_control_record_source_audio"),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", return_value=str(transcript)),
+                patch.object(module, "_control_update_whisper_progress"),
+                patch.object(module, "_control_record_stage"),
+                patch.object(module, "_control_record_minutes_plan_source"),
+                patch.object(module, "_control_interrupt_if_requested", return_value=False),
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(module, "dispatch_to_cc1", return_value=True),
+                patch.object(module, "_control_record_codex_dispatched"),
+                patch.object(module, "notify_lark"),
+                patch.object(module, "save_last_meeting"),
+                patch.object(module, "mark_processed"),
+            ):
                 result = module.process_controlled_claim(
                     {
                         "job_id": "job-long-preflight",
@@ -1250,13 +1329,10 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         self.assertTrue(result)
         pretranscription = recorded_heartbeats[:4]
         self.assertEqual(4, len(pretranscription))
-        self.assertTrue(
-            all(name == "control-worker" for name, _kwargs in pretranscription)
-        )
+        self.assertTrue(all(name == "control-worker" for name, _kwargs in pretranscription))
         self.assertTrue(
             all(
-                kwargs["current_job_id"] == "job-long-preflight"
-                and kwargs["status"] == "busy"
+                kwargs["current_job_id"] == "job-long-preflight" and kwargs["status"] == "busy"
                 for _name, kwargs in pretranscription
             )
         )
@@ -1278,13 +1354,17 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 raise RuntimeError("temporary database error")
             return False
 
-        with patch.object(module, "run_control_worker_once", side_effect=run_once), patch.object(
-            module, "_control_runtime_heartbeat"
-        ) as heartbeat, patch.object(module, "_control_runtime_stop"):
+        with (
+            patch.object(module, "run_control_worker_once", side_effect=run_once),
+            patch.object(module, "_control_runtime_heartbeat") as heartbeat,
+            patch.object(module, "_control_runtime_stop"),
+        ):
             module.run_control_worker(stop_event)
 
         self.assertEqual(2, calls)
-        self.assertTrue(any(call.kwargs.get("status") == "degraded" for call in heartbeat.mock_calls))
+        self.assertTrue(
+            any(call.kwargs.get("status") == "degraded" for call in heartbeat.mock_calls)
+        )
         stop_event.wait.assert_called()
 
     def test_whisper_retry_runner_invokes_only_whisper_and_submits_staging(self):
@@ -1317,11 +1397,13 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 kwargs["stdout"].flush()
                 return subprocess.CompletedProcess(command, 0)
 
-            with patch.object(module, "_resolve_whisper_bin", return_value="/fake/whisper"), \
-                    patch.object(module, "_validated_whisper_model_dir", return_value=root), \
-                    patch.object(module.subprocess, "run", side_effect=fake_run) as run, \
-                    patch.object(module, "transcribe", side_effect=AssertionError) as transcribe, \
-                    patch.object(module, "_control_finish_whisper_retry") as finish:
+            with (
+                patch.object(module, "_resolve_whisper_bin", return_value="/fake/whisper"),
+                patch.object(module, "_validated_whisper_model_dir", return_value=root),
+                patch.object(module.subprocess, "run", side_effect=fake_run) as run,
+                patch.object(module, "transcribe", side_effect=AssertionError) as transcribe,
+                patch.object(module, "_control_finish_whisper_retry") as finish,
+            ):
                 result = module.process_whisper_retry_claim(claim)
 
         self.assertTrue(result)
@@ -1353,9 +1435,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 "source_archive_dir": str(target),
                 "target_archive_dir": str(target),
                 "hotword_prompt_path": str(hotwords),
-                "hotword_prompt_sha256": hashlib.sha256(
-                    hotwords.read_bytes()
-                ).hexdigest(),
+                "hotword_prompt_sha256": hashlib.sha256(hotwords.read_bytes()).hexdigest(),
             }
 
             def fake_run(command, **kwargs):
@@ -1366,32 +1446,34 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                     )
                 return subprocess.CompletedProcess(command, 0)
 
-            with patch.object(module, "_resolve_whisper_bin", return_value="/fake/whisper"), \
-                    patch.object(module, "_validated_whisper_model_dir", return_value=root), \
-                    patch.object(module.subprocess, "run", side_effect=fake_run) as run, \
-                    patch.object(module, "_control_finish_whisper_retry"):
+            with (
+                patch.object(module, "_resolve_whisper_bin", return_value="/fake/whisper"),
+                patch.object(module, "_validated_whisper_model_dir", return_value=root),
+                patch.object(module.subprocess, "run", side_effect=fake_run) as run,
+                patch.object(module, "_control_finish_whisper_retry"),
+            ):
                 self.assertTrue(module.process_whisper_retry_claim(claim))
 
         command = run.call_args.args[0]
-        self.assertEqual(
-            "云图\nACME\n", command[command.index("--initial_prompt") + 1]
-        )
+        self.assertEqual("云图\nACME\n", command[command.index("--initial_prompt") + 1])
 
     def test_controlled_claim_fails_closed_when_ffprobe_has_no_duration(self):
         module = load_watchdog_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             audio = Path(tmpdir) / "vm-20260710-120000-ABC.m4a"
             audio.write_bytes(b"audio")
-            with patch.object(module, "_job_audio_path", return_value=audio), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "_control_record_source_audio"), \
-                    patch.object(module, "get_audio_duration_sec", return_value=None), \
-                    patch.object(module, "transcribe") as transcribe, \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1") as dispatch, \
-                    patch.object(module, "_control_fail") as fail, \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "mark_processed"):
+            with (
+                patch.object(module, "_job_audio_path", return_value=audio),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "_control_record_source_audio"),
+                patch.object(module, "get_audio_duration_sec", return_value=None),
+                patch.object(module, "transcribe") as transcribe,
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(module, "dispatch_to_cc1") as dispatch,
+                patch.object(module, "_control_fail") as fail,
+                patch.object(module, "notify_lark"),
+                patch.object(module, "mark_processed"),
+            ):
                 result = module.process_controlled_claim(
                     {
                         "job_id": "job-no-duration",
@@ -1446,9 +1528,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             transcript = Path(tmpdir) / "meeting.txt"
             write_main_transcript_bundle(transcript)
-            transcript.with_name("funasr.log").rename(
-                transcript.with_name("meeting.funasr.log")
-            )
+            transcript.with_name("funasr.log").rename(transcript.with_name("meeting.funasr.log"))
 
             errors = module._main_transcript_bundle_errors(transcript)
 
@@ -1461,30 +1541,23 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             module.PRODUCTS_DIR = root / "products"
             audio = root / "vm-20260710-120000-ABC.m4a"
             audio.write_bytes(b"audio")
-            transcript = (
-                module.PRODUCTS_DIR
-                / audio.stem
-                / audio.stem
-                / f"{audio.stem}.txt"
-            )
+            transcript = module.PRODUCTS_DIR / audio.stem / audio.stem / f"{audio.stem}.txt"
             write_main_transcript_bundle(transcript)
             transcript.with_name("funasr.log").unlink()
-            bundle_error_type = getattr(
-                module, "MainTranscriptBundleError", RuntimeError
-            )
-            bundle_error = bundle_error_type(
-                module._main_transcript_bundle_errors(transcript)
-            )
-            with patch.object(module, "_job_audio_path", return_value=audio), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "_control_record_source_audio"), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", side_effect=bundle_error), \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1") as dispatch, \
-                    patch.object(module, "_control_fail") as fail, \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "mark_processed"):
+            bundle_error_type = getattr(module, "MainTranscriptBundleError", RuntimeError)
+            bundle_error = bundle_error_type(module._main_transcript_bundle_errors(transcript))
+            with (
+                patch.object(module, "_job_audio_path", return_value=audio),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "_control_record_source_audio"),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", side_effect=bundle_error),
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(module, "dispatch_to_cc1") as dispatch,
+                patch.object(module, "_control_fail") as fail,
+                patch.object(module, "notify_lark"),
+                patch.object(module, "mark_processed"),
+            ):
                 result = module.process_controlled_claim(
                     {
                         "job_id": "job-bad-bundle",
@@ -1515,23 +1588,23 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             audio.write_bytes(b"audio")
             transcript = root / "meeting.txt"
             transcript.write_text("只有 TXT，没有 SRT", encoding="utf-8")
-            (root / ".workbench-drafts" / "job-no-srt" / "attempt-1").mkdir(
-                parents=True
-            )
-            with patch.object(module, "_job_audio_path", return_value=audio), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "_control_record_source_audio"), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", return_value=str(transcript)), \
-                    patch.object(module, "_control_update_whisper_progress"), \
-                    patch.object(module, "_control_record_stage"), \
-                    patch.object(module, "_control_record_minutes_plan_source"), \
-                    patch.object(module, "_control_interrupt_if_requested", return_value=False), \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1") as dispatch, \
-                    patch.object(module, "_control_fail") as fail, \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "mark_processed"):
+            (root / ".workbench-drafts" / "job-no-srt" / "attempt-1").mkdir(parents=True)
+            with (
+                patch.object(module, "_job_audio_path", return_value=audio),
+                patch.object(module, "wait_stable", return_value=True),
+                patch.object(module, "_control_record_source_audio"),
+                patch.object(module, "get_audio_duration_sec", return_value=601),
+                patch.object(module, "transcribe", return_value=str(transcript)),
+                patch.object(module, "_control_update_whisper_progress"),
+                patch.object(module, "_control_record_stage"),
+                patch.object(module, "_control_record_minutes_plan_source"),
+                patch.object(module, "_control_interrupt_if_requested", return_value=False),
+                patch.object(module, "_agent_pane_available", return_value=True),
+                patch.object(module, "dispatch_to_cc1") as dispatch,
+                patch.object(module, "_control_fail") as fail,
+                patch.object(module, "notify_lark"),
+                patch.object(module, "mark_processed"),
+            ):
                 result = module.process_controlled_claim(
                     {
                         "job_id": "job-no-srt",
@@ -1561,9 +1634,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 "1\n00:00:01,000 --> 00:00:02,000\n有 SRT 的主稿\n",
                 encoding="utf-8",
             )
-            attempt_dir = (
-                root / ".workbench-drafts"
-            )
+            attempt_dir = root / ".workbench-drafts"
             with patch.dict(
                 os.environ,
                 {
@@ -1572,32 +1643,30 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 },
             ):
                 control_module = module._relay_control_module()
-                control = control_module.RelayControl(
-                    database, archive_root=root
-                )
+                control = control_module.RelayControl(database, archive_root=root)
                 job_id = control.enqueue(audio)
                 claim = control.claim_next(worker_id="worker-with-srt")
                 attempt_dir = attempt_dir / job_id / "attempt-1"
                 self.assertFalse(attempt_dir.exists())
-                with patch.object(module, "_job_audio_path", return_value=audio), \
-                    patch.object(module, "wait_stable", return_value=True), \
-                    patch.object(module, "_control_record_source_audio"), \
-                    patch.object(module, "get_audio_duration_sec", return_value=601), \
-                    patch.object(module, "transcribe", return_value=str(transcript)), \
-                    patch.object(module, "_control_update_whisper_progress"), \
-                    patch.object(module, "_control_record_stage"), \
-                    patch.object(module, "_control_record_minutes_plan_source"), \
-                    patch.object(module, "_control_interrupt_if_requested", return_value=False), \
-                    patch.object(module, "_agent_pane_available", return_value=True), \
-                    patch.object(module, "dispatch_to_cc1", return_value=True) as dispatch, \
-                    patch.object(module, "_control_record_codex_dispatched"), \
-                    patch.object(module, "notify_lark"), \
-                    patch.object(module, "save_last_meeting"), \
-                    patch.object(module, "mark_processed"):
+                with (
+                    patch.object(module, "_job_audio_path", return_value=audio),
+                    patch.object(module, "wait_stable", return_value=True),
+                    patch.object(module, "_control_record_source_audio"),
+                    patch.object(module, "get_audio_duration_sec", return_value=601),
+                    patch.object(module, "transcribe", return_value=str(transcript)),
+                    patch.object(module, "_control_update_whisper_progress"),
+                    patch.object(module, "_control_record_stage"),
+                    patch.object(module, "_control_record_minutes_plan_source"),
+                    patch.object(module, "_control_interrupt_if_requested", return_value=False),
+                    patch.object(module, "_agent_pane_available", return_value=True),
+                    patch.object(module, "dispatch_to_cc1", return_value=True) as dispatch,
+                    patch.object(module, "_control_record_codex_dispatched"),
+                    patch.object(module, "notify_lark"),
+                    patch.object(module, "save_last_meeting"),
+                    patch.object(module, "mark_processed"),
+                ):
                     result = module.process_controlled_claim(claim)
-            plan = json.loads(
-                (attempt_dir / "minutes-plan.json").read_text(encoding="utf-8")
-            )
+            plan = json.loads((attempt_dir / "minutes-plan.json").read_text(encoding="utf-8"))
 
         self.assertTrue(result)
         self.assertEqual(1, plan["cue_count"])
@@ -1621,13 +1690,16 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 "source_archive_dir": str(target),
                 "target_archive_dir": str(target),
             }
-            with patch.object(module, "_resolve_whisper_bin", return_value="/fake/whisper"), \
-                    patch.object(module, "_validated_whisper_model_dir", return_value=root), \
-                    patch.object(
-                        module.subprocess,
-                        "run",
-                        return_value=subprocess.CompletedProcess([], 1),
-                    ), patch.object(module, "_control_finish_whisper_retry") as finish:
+            with (
+                patch.object(module, "_resolve_whisper_bin", return_value="/fake/whisper"),
+                patch.object(module, "_validated_whisper_model_dir", return_value=root),
+                patch.object(
+                    module.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 1),
+                ),
+                patch.object(module, "_control_finish_whisper_retry") as finish,
+            ):
                 result = module.process_whisper_retry_claim(claim)
 
         self.assertFalse(result)
@@ -1644,10 +1716,13 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
             first.write_bytes(b"meeting-1")
             second.write_bytes(b"meeting-2")
             (root / "archive").mkdir()
-            with patch.dict(os.environ, {
-                "MEETING_RELAY_JOBS_DB": str(root / "jobs.sqlite3"),
-                "MEETING_RELAY_ARCHIVE_ROOT": str(root / "archive"),
-            }):
+            with patch.dict(
+                os.environ,
+                {
+                    "MEETING_RELAY_JOBS_DB": str(root / "jobs.sqlite3"),
+                    "MEETING_RELAY_ARCHIVE_ROOT": str(root / "archive"),
+                },
+            ):
                 queued = {
                     control.enqueue(first, compute_hash=False),
                     control.enqueue(second, compute_hash=False),
@@ -1656,10 +1731,12 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 # （同一毫秒入队的两单谁先被领由 job_id 决定，按实际领到的算）
                 stranded = module._control_claim_next()["job_id"]
                 (waiting,) = queued - {stranded}
-                with patch.object(module, "_agent_pane_available", return_value=True), \
-                        patch.object(module, "_control_reconcile_pending_archives", return_value={}), \
-                        patch.object(module, "_control_reconcile_codex_handoffs", return_value=0), \
-                        patch.object(module, "process_controlled_claim", return_value=True) as process:
+                with (
+                    patch.object(module, "_agent_pane_available", return_value=True),
+                    patch.object(module, "_control_reconcile_pending_archives", return_value={}),
+                    patch.object(module, "_control_reconcile_codex_handoffs", return_value=0),
+                    patch.object(module, "process_controlled_claim", return_value=True) as process,
+                ):
                     worked = module.run_control_worker_once()
                 stranded_status = control.status(stranded)["status"]
 
@@ -1669,13 +1746,14 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
 
     def test_worker_leaves_queue_unclaimed_while_codex_pane_is_busy(self):
         module = load_watchdog_module()
-        with patch.object(module, "_agent_pane_available", return_value=False), \
-                patch.object(module, "_control_claim_next") as claim_next:
+        with (
+            patch.object(module, "_agent_pane_available", return_value=False),
+            patch.object(module, "_control_claim_next") as claim_next,
+        ):
             worked = module.run_control_worker_once()
 
         self.assertFalse(worked)
         claim_next.assert_not_called()
-
 
 
 class ControlDbLockTests(unittest.TestCase):
@@ -1690,10 +1768,13 @@ class ControlDbLockTests(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         (self.root / "archive").mkdir()
         self.module.ARCHIVE_ROOT = self.root / "archive"
-        self.env = patch.dict(os.environ, {
-            "MEETING_RELAY_JOBS_DB": str(self.root / "jobs.sqlite3"),
-            "MEETING_RELAY_ARCHIVE_ROOT": str(self.root / "archive"),
-        })
+        self.env = patch.dict(
+            os.environ,
+            {
+                "MEETING_RELAY_JOBS_DB": str(self.root / "jobs.sqlite3"),
+                "MEETING_RELAY_ARCHIVE_ROOT": str(self.root / "archive"),
+            },
+        )
         self.env.start()
         self.audio = self.root / "vm-20261001-090000-AAA.m4a"
         self.audio.write_bytes(b"meeting-1")
@@ -1729,14 +1810,23 @@ class ControlDbLockTests(unittest.TestCase):
             "_job_audio_path": patch.object(module, "_job_audio_path", return_value=self.audio),
             "wait_stable": patch.object(module, "wait_stable", return_value=True),
             "_control_record_source_audio": patch.object(module, "_control_record_source_audio"),
-            "get_audio_duration_sec": patch.object(module, "get_audio_duration_sec", return_value=601),
+            "get_audio_duration_sec": patch.object(
+                module, "get_audio_duration_sec", return_value=601
+            ),
             "transcribe": patch.object(module, "transcribe", return_value=str(self.transcript)),
-            "_control_update_whisper_progress": patch.object(module, "_control_update_whisper_progress"),
-            "prepare_glossary_injection": patch.object(module, "prepare_glossary_injection", return_value=("", False)),
+            "_control_update_whisper_progress": patch.object(
+                module, "_control_update_whisper_progress"
+            ),
+            "prepare_glossary_injection": patch.object(
+                module, "prepare_glossary_injection", return_value=("", False)
+            ),
             "dispatch_to_cc1": patch.object(module, "dispatch_to_cc1", return_value=True),
-            "_agent_pane_available": patch.object(module, "_agent_pane_available", return_value=True),
+            "_agent_pane_available": patch.object(
+                module, "_agent_pane_available", return_value=True
+            ),
             "notify_lark": patch.object(
-                module, "notify_lark",
+                module,
+                "notify_lark",
                 side_effect=lambda title, body: self.notifications.append(title),
             ),
             "save_last_meeting": patch.object(module, "save_last_meeting"),
@@ -1752,10 +1842,12 @@ class ControlDbLockTests(unittest.TestCase):
                 patcher.stop()
 
     def _worker_round(self):
-        with patch.object(self.module, "_agent_pane_available", return_value=True), \
-                patch.object(self.module, "_control_reconcile_pending_archives", return_value={}), \
-                patch.object(self.module, "_control_reconcile_codex_handoffs", return_value=0), \
-                patch.object(self.module, "process_controlled_claim", return_value=True) as process:
+        with (
+            patch.object(self.module, "_agent_pane_available", return_value=True),
+            patch.object(self.module, "_control_reconcile_pending_archives", return_value={}),
+            patch.object(self.module, "_control_reconcile_codex_handoffs", return_value=0),
+            patch.object(self.module, "process_controlled_claim", return_value=True) as process,
+        ):
             worked = self.module.run_control_worker_once()
         return worked, process
 
@@ -1784,11 +1876,14 @@ class ControlDbLockTests(unittest.TestCase):
         claim = self.module._control_claim_next()
         job_id = claim["job_id"]
         (waiting,) = queued - {job_id}
-        with patch.object(
-            self.control,
-            "record_stage",
-            side_effect=sqlite3.OperationalError("database is locked"),
-        ), patch.object(self.control, "fail", side_effect=AssertionError("不该判失败")):
+        with (
+            patch.object(
+                self.control,
+                "record_stage",
+                side_effect=sqlite3.OperationalError("database is locked"),
+            ),
+            patch.object(self.control, "fail", side_effect=AssertionError("不该判失败")),
+        ):
             result = self._process(claim)
 
         self.assertFalse(result)
@@ -1849,19 +1944,20 @@ class ControlDbLockTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual("transcribing", self.control.status(job_id)["status"])
 
-        with patch.object(self.control, "fail", side_effect=original_fail), \
-                patch.object(
-                    self.module, "notify_lark",
-                    side_effect=lambda title, body: self.notifications.append(title),
-                ):
+        with (
+            patch.object(self.control, "fail", side_effect=original_fail),
+            patch.object(
+                self.module,
+                "notify_lark",
+                side_effect=lambda title, body: self.notifications.append(title),
+            ),
+        ):
             self._worker_round()
 
         status = self.control.status(job_id)
         self.assertEqual("failed", status["status"])
         self.assertEqual("worker exception: RuntimeError", status["last_error"])
         self.assertIn("这段录音没能处理完", self.notifications)
-
-
 
     def test_busy_pane_after_transcription_requeues_without_failing(self):
         job_id = self.control.enqueue(self.audio, compute_hash=False)
@@ -1873,7 +1969,8 @@ class ControlDbLockTests(unittest.TestCase):
                 self.module, "_agent_pane_available", return_value=False
             ),
             dispatch_to_cc1=patch.object(
-                self.module, "dispatch_to_cc1",
+                self.module,
+                "dispatch_to_cc1",
                 side_effect=lambda *a, **k: dispatched.append(a) or True,
             ),
         )
@@ -1941,13 +2038,13 @@ class ControlDbLockTests(unittest.TestCase):
                 self.module, "_agent_pane_available", return_value=False
             ),
             _control_interrupt_if_requested=patch.object(
-                self.module, "_control_interrupt_if_requested",
+                self.module,
+                "_control_interrupt_if_requested",
                 side_effect=stop_after_transcribing_check,
             ),
         )
 
         self.assertEqual("interrupted", self.control.status(job_id)["status"])
-
 
     def test_single_engine_config_fails_before_transcribing_with_readable_code(self):
         for engine in ("whisper", "funasr"):
@@ -1968,9 +2065,7 @@ class ControlDbLockTests(unittest.TestCase):
                 self.assertFalse(result)
                 status = self.control.status(job_id)
                 self.assertEqual("failed", status["status"])
-                self.assertEqual(
-                    f"transcribe_engine_unsupported:{engine}", status["last_error"]
-                )
+                self.assertEqual(f"transcribe_engine_unsupported:{engine}", status["last_error"])
                 self.assertEqual(["转写引擎配置不支持"], self.notifications)
 
     def test_funasr_missing_fallback_fails_as_funasr_unavailable(self):
@@ -2008,7 +2103,9 @@ class ControlDbLockTests(unittest.TestCase):
             (work / f"{self.audio.stem}.srt").write_text(
                 "1\n00:00:00,000 --> 00:00:01,000\nwhisper 稿\n", encoding="utf-8"
             )
-            (work / "funasr.log").write_text("WARN: FunASR 环境缺失，回落 whisper 引擎", encoding="utf-8")
+            (work / "funasr.log").write_text(
+                "WARN: FunASR 环境缺失，回落 whisper 引擎", encoding="utf-8"
+            )
             return subprocess.CompletedProcess(command, 0)
 
         with patch.object(module.subprocess, "run", side_effect=whisper_fallback):
@@ -2017,7 +2114,6 @@ class ControlDbLockTests(unittest.TestCase):
 
         self.assertEqual("funasr_unavailable", str(caught.exception))
         self.assertIsInstance(caught.exception, module.MainTranscriptBundleError)
-
 
     def test_sparse_recording_fails_with_no_retry_notice(self):
         job_id = self.control.enqueue(self.audio, compute_hash=False)
@@ -2040,7 +2136,6 @@ class ControlDbLockTests(unittest.TestCase):
         self.assertEqual("failed", status["status"])
         self.assertEqual("minutes_plan_too_little_speech", status["last_error"])
         self.assertEqual(["录音里几乎没有可用内容"], self.notifications)
-
 
     def test_still_growing_source_goes_to_back_of_queue_instead_of_failing(self):
         growing = self.control.enqueue(self.audio, compute_hash=False)
@@ -2095,11 +2190,14 @@ class InboxRescanTests(unittest.TestCase):
         self.module.STATE_DIR = state
         self.module.PROCESSED_LOG = state / "processed.txt"
         self.module.INBOX_SCAN_WATERMARK = state / "inbox-scan-watermark"
-        self.env = patch.dict(os.environ, {
-            "MEETING_RELAY_JOBS_DB": str(self.root / "jobs.sqlite3"),
-            "MEETING_RELAY_ARCHIVE_ROOT": str(self.root / "archive"),
-            "MEETING_RELAY_CONTROL_ENABLED": "1",
-        })
+        self.env = patch.dict(
+            os.environ,
+            {
+                "MEETING_RELAY_JOBS_DB": str(self.root / "jobs.sqlite3"),
+                "MEETING_RELAY_ARCHIVE_ROOT": str(self.root / "archive"),
+                "MEETING_RELAY_CONTROL_ENABLED": "1",
+            },
+        )
         self.env.start()
 
     def tearDown(self):
@@ -2188,9 +2286,7 @@ class InboxRescanTests(unittest.TestCase):
         handler = self.module.AudioHandler()
 
         handler.on_moved(FileMovedEvent(str(outside / moved.name), str(moved)))
-        handler.on_moved(
-            FileMovedEvent(str(moved), str(outside / "vm-20261001-110000-CCC.m4a"))
-        )
+        handler.on_moved(FileMovedEvent(str(moved), str(outside / "vm-20261001-110000-CCC.m4a")))
 
         self.assertEqual(1, self._job_count())
 

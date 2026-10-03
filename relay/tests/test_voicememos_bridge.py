@@ -47,7 +47,9 @@ class VoiceMemosBridgeStateTests(unittest.TestCase):
         handlers_before = list(root.handlers)
         root.handlers = []
         with patch.dict(os.environ, env):
-            spec = importlib.util.spec_from_file_location("voicememos_bridge_under_test", BRIDGE_PATH)
+            spec = importlib.util.spec_from_file_location(
+                "voicememos_bridge_under_test", BRIDGE_PATH
+            )
             module = importlib.util.module_from_spec(spec)
             assert spec.loader is not None
             try:
@@ -96,11 +98,17 @@ class VoiceMemosBridgeStateTests(unittest.TestCase):
             self._run_main(polls=4, on_poll=add_new_recording)
 
         # 历史录音一条都不搬，桥接起来之后的新录音照常搬
-        self.assertEqual(["vm-20251001-090000-NEW.m4a"], sorted(p.name for p in self.outbox.iterdir()))
+        self.assertEqual(
+            ["vm-20251001-090000-NEW.m4a"], sorted(p.name for p in self.outbox.iterdir())
+        )
         self.assertEqual(
             sorted(history + [new_name]), json.loads(self.state_file.read_text(encoding="utf-8"))
         )
-        evidence = [p for p in self.state_file.parent.iterdir() if p.name.startswith(f"{self.state_file.name}.corrupt")]
+        evidence = [
+            p
+            for p in self.state_file.parent.iterdir()
+            if p.name.startswith(f"{self.state_file.name}.corrupt")
+        ]
         self.assertEqual(1, len(evidence))
         self.assertEqual('["20250101 100000-AAA.m4a", ', evidence[0].read_text(encoding="utf-8"))
         self.assertTrue(any("损坏" in line for line in logs.output))
