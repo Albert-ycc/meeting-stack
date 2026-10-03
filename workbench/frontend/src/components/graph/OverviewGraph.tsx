@@ -1,6 +1,6 @@
 /*
  * 全部项目概览（2c）：左侧导航「关系图」打开的页面。取数（ETag、30 秒对一次）、深链（#graph?sel=）、提示条、
- * 取径器和认领框在这里；画布是 OverviewCanvas，右侧面板是 OverviewPanel。
+ * 取径器和认领框在这里；舞台是 OverviewCanvas（倾斜的星图），右侧面板是 OverviewPanel。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -13,11 +13,11 @@ import { NoticeBanner, UNDO_NOTICE_MS, useNotice, type NoticeAction, type Notice
 import { PROJECT_PARENT_PICKER } from "../ProjectParentRow";
 import type { GraphWindow } from "./graphTypes";
 import { readGraphWindow, writeGraphWindow } from "./graphPrefs";
-import { ISLANDS_MORE_ID, layoutOverview, overviewAttention } from "./layoutOverview";
+import { BELT_ID, layoutOverview, overviewAttention } from "./layoutOverview";
 import { OverviewCanvas, PANEL_KINDS } from "./OverviewCanvas";
 import { OverviewPanel } from "./OverviewPanel";
 import type { GraphOverview, OverviewFolders } from "./overviewTypes";
-import { forgetViewportViews } from "./useGraphViewport";
+import { forgetOverviewCamera } from "./overviewScene";
 import { usePanelEscape } from "./usePanelEscape";
 import "./ProjectGraph.css";
 import "./OverviewGraph.css";
@@ -43,7 +43,7 @@ let foldersCache: OverviewFolders | null = null;
 export function forgetOverviewCache() {
   overviewCache.clear();
   foldersCache = null;
-  forgetViewportViews();
+  forgetOverviewCamera();
 }
 
 function errorText(reason: unknown, fallback: string) {
@@ -56,7 +56,7 @@ export interface OverviewGraphProps {
   /** 地址栏里的选中（#graph?sel=p:<id>）；null 表示没选 */
   selection: string | null;
   onSelectionChange: (id: string | null) => void;
-  /** 双击岛、面板里的［打开项目图］ */
+  /** 点项目行星、面板里的［打开项目图］ */
   onOpenProjectGraph: (projectId: string) => void;
   onOpenProject: (projectId: string) => void;
   onOpenMeeting: (meetingId: string) => void;
@@ -92,6 +92,8 @@ export function OverviewGraph({
   const [pickerError, setPickerError] = useState("");
   const [parentBusy, setParentBusy] = useState(false);
   const [claimList, setClaimList] = useState<UnclaimedFolder[] | null>(null);
+  // 面板的小行星带列表里指着的项目：图上给它四角括号
+  const [peekId, setPeekId] = useState<string | null>(null);
   const { notice, setNotice, dismissNotice } = useNotice();
   const requestRef = useRef(0);
   const missingRef = useRef<string | null>(null);
@@ -185,12 +187,12 @@ export function OverviewGraph({
   );
   const attention = useMemo(() => (layout ? overviewAttention(layout) : []), [layout]);
 
-  // 深链目标：折进「其余 N 个项目」的项目选中那个节点
+  // 深链目标：服务器折起来的项目（项目多到上限以外）选中小行星带
   let resolved: string | null = null;
   if (layout && shownOverview && selection) {
     if (layout.byId.has(selection)) resolved = selection;
-    else if (selection.startsWith("p:") && shownOverview.islands_more?.project_ids.includes(selection.slice(2))) {
-      resolved = ISLANDS_MORE_ID;
+    else if (layout.belt && selection.startsWith("p:") && shownOverview.islands_more?.project_ids.includes(selection.slice(2))) {
+      resolved = BELT_ID;
     }
   }
   const selectedNode = resolved ? layout?.byId.get(resolved) ?? null : null;
@@ -340,6 +342,7 @@ export function OverviewGraph({
       <>
         <OverviewCanvas
           attention={attention}
+          folders={shownFolders}
           layout={layout}
           onNothingToDo={() => showNotice("这张图上没有要你处理的了")}
           onOpenIsland={onOpenProjectGraph}
@@ -350,6 +353,7 @@ export function OverviewGraph({
           overview={shownOverview}
           panelOpen={Boolean(panelNode)}
           parentUnset={parentUnset}
+          peekId={panelNode?.kind === "belt" ? peekId : null}
           selectedId={resolved}
         />
         {panelNode && (
@@ -367,6 +371,7 @@ export function OverviewGraph({
               onOpenProject={onOpenProject}
               onOpenProjectGraph={onOpenProjectGraph}
               onOpenRequirement={onOpenRequirement}
+              onPeek={setPeekId}
               onPickParent={openPicker}
               onSelect={onSelectionChange}
               onUnhide={unhide}
@@ -402,11 +407,29 @@ export function OverviewGraph({
             </button>
           ))}
         </div>
-        <span
-          className="project-graph__legend"
-          title="左边是没归项目的会和像新项目的名字，中间是项目（按建立先后），右边是还没挂到项目的文件夹；双击项目进项目图"
-        >
-          左边是没归项目的会和像新项目的名字，中间是项目（按建立先后），右边是还没挂到项目的文件夹；双击项目进项目图
+        <span className="overview-legend">
+          <span>
+            <svg aria-hidden="true" fill="none" height="12" viewBox="0 0 22 12" width="22">
+              <ellipse cx="11" cy="6" rx="10" ry="5" stroke="currentColor" strokeOpacity=".55" />
+              <ellipse cx="11" cy="6" rx="5" ry="2.5" stroke="currentColor" />
+              <circle cx="11" cy="6" fill="var(--signal)" r="1.6" />
+            </svg>
+            离太阳越近，最近一次会越新；每圈越靠前越新
+          </span>
+          <span>
+            <svg aria-hidden="true" fill="none" height="16" stroke="currentColor" viewBox="0 0 16 16" width="16">
+              <path d="M8 1.5v13M2.4 4.8l11.2 6.4M2.4 11.2l11.2-6.4" strokeOpacity=".55" />
+              <circle cx="8" cy="8" fill="currentColor" r="2.4" stroke="none" />
+            </svg>
+            光点越大、星芒越长，这段时间会越多
+          </span>
+          <span>
+            <span aria-hidden="true" className="overview-legend__badge">
+              1
+            </span>
+            在等你的事
+          </span>
+          <span>拖动转视角，点项目进项目图</span>
         </span>
         {loading && overview && !overviewCache.has(windowChoice) && <span className="project-graph__sync">正在换时间窗…</span>}
         {loadError && overview && <span className="project-graph__sync is-error">刷新失败：{loadError}</span>}

@@ -99,6 +99,15 @@ describe.each(THEMES)("%s 主题的文字对比度", (theme) => {
     expect(ratio(solid(theme, "--on-signal"), solid(theme, "--signal"))).toBeGreaterThanOrEqual(4.5);
   });
 
+  it("在等你的数（--warn-strong 底）：深色配 --on-signal、浅色配白字 ≥ 4.5:1；琥珀小字落在舞台和凸起面上 ≥ 4.5:1", () => {
+    const amber = solid(theme, "--warn-strong");
+    const text = solid(theme, theme === "dark" ? "--on-signal" : "--surface");
+    expect(ratio(text, amber)).toBeGreaterThanOrEqual(4.5);
+    for (const name of ["--stage", "--raised"]) {
+      expect(ratio(amber, solid(theme, name)), `--warn-strong 在 ${name} 上`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
   it("绿字（--ok-strong）落在页面底、卡片和它自己的淡绿底上都 ≥ 4.5:1", () => {
     const okStrong = solid(theme, "--ok-strong");
     const okBg = parseColor(tokens(theme)["--ok-bg"]);

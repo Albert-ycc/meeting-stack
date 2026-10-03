@@ -1,429 +1,915 @@
 /* 全部项目概览（OverviewGraph.tsx、OverviewCanvas.tsx、OverviewPanel.tsx）。
- * 坐标约定：layoutOverview 给出的 (x, y) 是节点框的中心，框的宽高就是 box 的宽高，改一边要改另一边。
- * 颜色只用主题变量（深浅色各一套），不写死色值。 */
+ * 星图本身画在 canvas 上（overviewRenderer.ts），这里是正对屏幕的 DOM：名字、琥珀数、圈名、太阳的字、
+ * 两个角上的读数块、搜索框、读数和悬停卡片。名字和琥珀数的位置每帧由 overviewScene.ts 写进 transform。
+ * 颜色只用主题变量；屏幕上的字不小于 12px。 */
 
-/* ── 节点公共 ───────────────────────────── */
-
-.overview-node {
-  position: absolute;
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.3;
-  background: none;
-  border: 0;
-  transform: translate(-50%, -50%);
-  transition: opacity 0.3s var(--exp);
-  -webkit-tap-highlight-color: transparent;
+/* 琥珀数：深色里琥珀底配深字；浅色里 --warn 配白字只有 4.06:1，换更深的 --warn-strong 配白字（7:1），琥珀小字同理 */
+.overview-graph {
+  --badge-fg: var(--on-signal);
 }
 
-button.overview-node,
-.overview-node button {
+:root[data-theme="light"] .overview-graph {
+  --badge-fg: var(--surface);
+}
+
+.overview-graph .num {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* ── 舞台 ───────────────────────────────── */
+
+.overview-viewport {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--stage);
+  border: 1px solid var(--line);
+  border-radius: var(--r-stage);
+  outline: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.overview-viewport:focus-visible {
+  box-shadow: 0 0 0 2px var(--signal);
+}
+
+.star-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+.star-canvas.is-dragging {
+  cursor: grabbing;
+}
+
+.star-canvas.is-pointing {
   cursor: pointer;
 }
 
-.overview-node:focus-visible,
-.overview-node button:focus-visible {
-  outline: 2px solid var(--signal);
-  outline-offset: 3px;
-  border-radius: 10px;
-}
-
-.overview-node.is-dim {
-  opacity: 0.25;
-}
-
-/* 节点上的小按钮（幽灵岛、提示岛、空状态） */
-.overview-node__actions {
-  display: flex;
-  justify-content: center;
-  gap: 4px;
-  cursor: default;
-}
-
-.overview-node__actions button {
-  padding: 3px 8px;
-  color: var(--ink-2);
-  font: inherit;
-  font-size: 11px;
-  white-space: nowrap;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-pill);
-}
-
-.overview-node__actions button:hover {
-  color: var(--heading);
-  border-color: var(--signal-line);
-}
-
-/* ── 项目岛 ─────────────────────────────── */
-
-.overview-node--island,
-.overview-node--island_more {
-  display: grid;
-  place-items: center;
-}
-
-.overview-island__disc {
+.star-layer {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  width: calc(var(--r) * 2);
-  height: calc(var(--r) * 2);
-  background: color-mix(in srgb, var(--project-color, var(--muted)) 16%, var(--surface));
-  border: 1.5px solid color-mix(in srgb, var(--project-color, var(--muted)) 60%, transparent);
-  border-radius: 50%;
-  box-shadow: 0 4px 12px rgb(0 0 0 / calc(0.18 * var(--shadow-k)));
-  transform: translate(-50%, -50%);
-  transition: border-color 0.2s var(--exp), box-shadow 0.2s var(--exp);
+  inset: 0;
+  pointer-events: none;
 }
 
-.overview-island__text {
-  position: relative;
+/* ── 名字：永远正对屏幕，字号固定 ───────── */
+
+.star-label {
+  position: absolute;
+  left: 0;
+  top: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  max-width: 164px;
-  padding: 2px 5px;
-  text-align: center;
-  background: color-mix(in srgb, var(--stage) 55%, transparent);
-  border-radius: 6px;
-}
-
-.overview-island__text strong {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--heading);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 17px;
-  word-break: break-word;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.overview-island__text small {
-  color: var(--muted);
-  font-size: 11.5px;
-  line-height: 14px;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-.overview-node--island:hover .overview-island__disc {
-  border-color: var(--project-color, var(--muted));
-}
-
-.overview-node--island.is-selected .overview-island__disc,
-.overview-node--island_more.is-selected .overview-island__disc {
-  border-color: var(--signal);
-  box-shadow: 0 0 0 3px var(--signal-bg), 0 4px 12px rgb(0 0 0 / calc(0.18 * var(--shadow-k)));
-}
-
-/* 窗口内没会的变淡 */
-.overview-node--island.is-quiet .overview-island__disc {
-  background: color-mix(in srgb, var(--project-color, var(--muted)) 6%, var(--surface));
-  border-color: color-mix(in srgb, var(--project-color, var(--muted)) 28%, transparent);
-  box-shadow: none;
-}
-
-.overview-node--island.is-quiet .overview-island__text strong {
-  color: var(--ink-2);
-  font-weight: 500;
-}
-
-/* 琥珀点：岛右上角，写在等你的数 */
-.overview-island__amber {
-  position: absolute;
-  left: calc(50% + var(--r) * 0.5);
-  top: calc(50% - var(--r) - 3px);
-  min-width: 19px;
-  height: 19px;
-  padding: 0 5px;
-  box-sizing: border-box;
-  color: #1b1b1b;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 19px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  background: var(--warn);
-  border-radius: var(--r-pill);
-  box-shadow: 0 0 0 2px var(--stage);
-}
-
-/* 停了的卡片：灰色 ⊘，在琥珀点下面 */
-.overview-island__stopped {
-  position: absolute;
-  left: calc(50% + var(--r) * 0.62);
-  top: calc(50% + var(--r) * 0.3);
-  width: 18px;
-  height: 18px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 18px;
-  text-align: center;
-  background: var(--stage);
-  border-radius: 50%;
-}
-
-.overview-node--island_more .overview-island__disc {
-  background: var(--surface);
-  border: 1.5px dashed var(--line-strong);
-  box-shadow: none;
-}
-
-.overview-node--island_more .overview-island__text strong {
-  color: var(--muted);
-  font-weight: 500;
-}
-
-/* 一个项目都没有时 */
-.overview-node--empty {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 10px;
-  padding: 12px 16px;
-  color: var(--ink-2);
-  background: color-mix(in srgb, var(--surface) 70%, transparent);
-  border: 1.5px dashed var(--line-strong);
-  border-radius: 16px;
-}
-
-.overview-node--empty p {
+  gap: 1px;
   margin: 0;
+  padding: 1px 3px;
+  /* 后排的名字往说明色里褪（--f：0 在正后方、1 在正前方） */
+  color: color-mix(in oklab, var(--ink) calc(var(--f, 1) * 100%), var(--muted));
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.32;
+  text-align: left;
+  white-space: nowrap;
+  text-shadow:
+    0 0 2px var(--stage),
+    0 0 5px var(--stage),
+    0 0 9px var(--stage);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  pointer-events: auto;
+  transition:
+    opacity 0.24s var(--exp),
+    color 0.2s;
+  will-change: transform;
 }
 
-.overview-node--empty .overview-node__actions {
-  justify-content: flex-start;
+.star-label[data-align="end"] {
+  align-items: flex-end;
+  text-align: right;
 }
 
-/* ── 港湾和幽灵岛（左手） ───────────────── */
+.star-label[data-align="center"] {
+  align-items: center;
+  text-align: center;
+}
 
-.overview-node--harbour {
+.star-label__meta {
+  margin-left: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.star-label__stop {
+  margin-left: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.star-label.is-hot {
+  color: var(--heading);
+}
+
+.star-label.is-hot .star-label__meta {
+  color: var(--ink-2);
+}
+
+.star-label.is-dim {
+  color: var(--muted);
+}
+
+.star-label.is-gone {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 预算外、放不下的名字：藏起来但还占着量尺寸要的布局 */
+.star-label.is-off {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.18s,
+    visibility 0s linear 0.18s;
+}
+
+/* 琥珀数：在等你的事，点开右侧面板 */
+.star-badge {
+  position: absolute;
+  left: 0;
+  top: 0;
+  min-width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0 5px;
+  color: var(--badge-fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  background: var(--warn-strong);
+  border: 0;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px var(--stage);
+  pointer-events: auto;
+  transition: opacity 0.24s var(--exp);
+}
+
+.star-badge:hover {
+  filter: brightness(1.06);
+}
+
+.star-badge[aria-pressed="true"] {
+  box-shadow:
+    0 0 0 2px var(--stage),
+    0 0 0 4px var(--warn-line);
+}
+
+.star-badge.is-gone {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 圈名：R1 7 天内……最外圈成了小行星带时是按钮「更早 · N 个项目 ›」 */
+.star-chip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  margin: 0;
+  padding: 0 7px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  background: var(--stage);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  transition:
+    opacity 0.2s,
+    color 0.2s,
+    border-color 0.2s;
+}
+
+.star-chip__code {
+  color: var(--ink-2);
+}
+
+.star-chip.is-hot {
+  color: var(--ink);
+  border-color: color-mix(in oklab, var(--signal) 55%, transparent);
+}
+
+.star-chip.is-gone {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.star-chip.is-belt {
+  color: var(--ink-2);
+  border-color: color-mix(in oklab, var(--signal) 55%, transparent);
+  pointer-events: auto;
+}
+
+.star-chip.is-belt:hover,
+.star-chip.is-belt[aria-pressed="true"] {
+  color: var(--heading);
+  background: color-mix(in oklab, var(--signal) 10%, var(--stage));
+}
+
+.star-chip__chev {
+  color: var(--signal);
+  font-family: var(--font-mono);
+}
+
+/* 太阳的字放在它旁边，像星图里给亮星注名 */
+.star-sun {
+  position: absolute;
+  left: 0;
+  top: 0;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  justify-content: center;
-  gap: 4px;
-  padding: 10px 14px;
-  text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 18px;
-  box-shadow: 0 4px 12px rgb(0 0 0 / calc(0.18 * var(--shadow-k)));
-}
-
-.overview-harbour__eyebrow {
-  color: var(--muted);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-}
-
-.overview-node--harbour strong {
+  gap: 1px;
   color: var(--heading);
+  text-align: left;
+  white-space: nowrap;
+  text-shadow:
+    0 0 3px var(--stage),
+    0 0 8px var(--stage);
+  pointer-events: none;
+  transition: opacity 0.24s var(--exp);
+}
+
+.star-sun.is-end {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.star-sun b {
   font-size: 14px;
   font-weight: 600;
+  line-height: 1.2;
 }
 
-.overview-node--harbour small {
-  color: var(--muted);
-  font-size: 11.5px;
-  line-height: 1.45;
-}
-
-.overview-node--harbour.is-no-ai strong {
-  color: var(--warn);
-}
-
-.overview-node--harbour:hover,
-.overview-node--harbour.is-selected {
-  border-color: var(--signal);
-}
-
-.overview-node--ghost {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.overview-ghost__title {
-  position: relative;
-  display: grid;
-  flex: none;
-  width: calc(var(--r) * 2);
-  height: calc(var(--r) * 2);
-  padding: 0;
-  place-items: center;
+.star-sun > span {
   color: var(--ink-2);
-  font: inherit;
-  background: none;
-  border: 0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.25;
 }
 
-.overview-ghost__disc {
+.star-sun.is-gone {
+  opacity: 0;
+}
+
+/* 跨项目的线上写「×2」 */
+.star-bridge {
   position: absolute;
-  inset: 0;
-  background: color-mix(in srgb, var(--surface) 55%, transparent);
-  border: 1.5px dashed var(--line-strong);
-  border-radius: 50%;
-  transition: border-color 0.2s var(--exp);
-}
-
-.overview-ghost__text {
-  position: relative;
-  display: -webkit-box;
-  max-width: calc(var(--r) * 2 - 12px);
-  overflow: hidden;
-  font-size: 11.5px;
-  line-height: 1.3;
-  text-align: center;
-  word-break: break-word;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-}
-
-.overview-ghost__title:hover .overview-ghost__disc {
-  border-color: var(--signal-line);
-}
-
-.overview-node--ghost.is-selected .overview-ghost__disc {
-  border-color: var(--signal);
-  background: var(--signal-bg);
-}
-
-.overview-node--ghost_more,
-.overview-node--folder_more {
+  left: 0;
+  top: 0;
+  padding: 0 5px;
   color: var(--muted);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  translate: -50% -50%;
+  background: var(--stage);
+  border-radius: var(--r-pill);
+}
+
+.star-bridge.is-gone {
+  visibility: hidden;
+}
+
+/* ── 左上港湾、右上文件夹（小盘画在 canvas，字在这里） ── */
+
+.star-dock {
+  transition: opacity 0.3s var(--exp);
+}
+
+.star-dock--harbour {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  width: 300px;
+  height: 84px;
+}
+
+/* 字在港湾按钮里，按钮有 1px 边框，绝对定位从边框里面算：离盘子左上角还是 112、10 */
+.star-dock__text {
+  position: absolute;
+  left: 111px;
+  top: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.star-dock__hit {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  transition:
+    background 0.2s,
+    border-color 0.2s;
+}
+
+.star-dock__hit:hover {
+  background: rgb(var(--fg-rgb) / 0.03);
+  border-color: var(--line);
+}
+
+.star-dock__hit[aria-pressed="true"] {
+  background: rgb(var(--fg-rgb) / 0.03);
+  border-color: color-mix(in oklab, var(--signal) 55%, transparent);
+}
+
+.star-dock__eyebrow {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+}
+
+.star-dock__title {
+  color: var(--heading);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.star-dock__title.is-warn {
+  color: var(--warn-strong);
+}
+
+.star-dock__meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.star-dock--folder {
+  position: absolute;
+  right: 120px;
+  top: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  width: 216px;
+  text-align: right;
+}
+
+.star-dock__note {
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: right;
+  text-wrap: balance;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+}
+
+.star-dock__note:hover,
+.star-dock__note[aria-pressed="true"] {
+  color: var(--ink-2);
+}
+
+.star-dock__action {
+  height: 28px;
+  margin-top: 6px;
+  padding: 0 12px;
+  color: var(--ink);
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+}
+
+.star-dock__action:hover {
+  border-color: color-mix(in oklab, var(--signal) 60%, transparent);
+}
+
+/* 没挂的文件夹、像新项目的名字：一个一个的小胶囊 */
+.star-folders,
+.star-ghosts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.star-folders {
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.star-ghosts {
+  position: absolute;
+  left: 112px;
+  top: 88px;
+  width: 280px;
+}
+
+.star-folder,
+.star-ghost {
+  max-width: 200px;
+  height: 24px;
+  padding: 0 8px;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
   white-space: nowrap;
   background: var(--surface);
   border: 1px dashed var(--line-strong);
   border-radius: var(--r-pill);
 }
 
-.overview-node--ghost_more:hover,
-.overview-node--folder_more:hover {
+.star-folder {
+  max-width: 104px;
+}
+
+.star-folder:hover,
+.star-ghost:hover,
+.star-folder[aria-pressed="true"],
+.star-ghost[aria-pressed="true"] {
   color: var(--heading);
-  border-color: var(--signal-line);
+  border-color: var(--signal);
 }
 
-/* ── 没挂到项目的文件夹（右手，灰色虚线岛） ─ */
+.star-folder.is-more,
+.star-ghost.is-more {
+  color: var(--muted);
+}
 
-.overview-node--folder {
+/* ── HUD：在图上找、顶部读数、左下视角读数、右下比例尺、缩放 ── */
+
+.star-finder {
+  position: absolute;
+  left: 50%;
+  top: 12px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
+  gap: 8px;
+  width: 288px;
+  height: 32px;
+  padding: 0 7px 0 10px;
+  background: color-mix(in oklab, var(--stage) 92%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  transform: translateX(-50%);
+  transition:
+    opacity 0.2s,
+    border-color 0.2s;
+}
+
+.star-finder:focus-within {
+  border-color: color-mix(in oklab, var(--signal) 70%, transparent);
+}
+
+.star-finder svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
   color: var(--muted);
 }
 
-.overview-folder__disc {
-  display: grid;
-  width: 50px;
-  height: 50px;
-  place-items: center;
+.star-finder input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+}
+
+.star-finder input:focus-visible {
+  outline: none;
+}
+
+.star-finder input::placeholder {
   color: var(--muted);
-  background: color-mix(in srgb, var(--surface) 50%, transparent);
-  border: 1.5px dashed var(--muted-2);
-  border-radius: 50%;
-  transition: border-color 0.2s var(--exp);
 }
 
-.overview-folder__disc svg {
-  width: 18px;
-  height: 18px;
-}
-
-.overview-folder__name {
-  max-width: 116px;
-  overflow: hidden;
-  color: var(--ink-2);
+.star-finder__count {
+  color: var(--muted);
   font-size: 12px;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.overview-node--folder:hover .overview-folder__disc {
-  border-color: var(--ink-2);
+.star-finder kbd,
+.star-readout kbd {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
 }
 
-.overview-node--folder.is-selected .overview-folder__disc {
-  border-color: var(--signal);
-  border-style: solid;
+.star-finder kbd {
+  padding: 0 5px;
 }
 
-.overview-node--folder_hint,
-.overview-node--folder_status {
+.star-hud-top {
+  position: absolute;
+  left: 50%;
+  top: 52px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+.star-hud-top b {
+  color: var(--ink-2);
+}
+
+.star-hud-top i {
+  width: 1px;
+  height: 10px;
+  background: var(--line-strong);
+}
+
+.star-readout {
+  position: absolute;
+  left: 60px;
+  bottom: 15px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 17px;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.3s var(--exp);
+}
+
+.star-readout b {
+  color: var(--ink-2);
+}
+
+.star-readout__hint {
+  display: block;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.star-readout__hint.is-on {
+  opacity: 1;
+}
+
+.star-readout kbd {
+  margin: 0 2px;
+  padding: 0 4px;
+  color: var(--ink-2);
+  line-height: 1;
+}
+
+.star-key {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: 212px;
+  padding: 8px 10px 9px;
+  background: color-mix(in oklab, var(--stage) 90%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  transition: opacity 0.3s var(--exp);
+}
+
+.star-key__head {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.star-key__canvas {
+  display: block;
+  width: 100%;
+  height: 46px;
+  margin-top: 2px;
+}
+
+.star-key__nums {
+  position: relative;
+  height: 17px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.star-key__nums span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.star-key__nums b {
+  color: var(--ink-2);
+}
+
+.star-zoom {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px 14px;
-  color: var(--muted);
-  font-size: 12.5px;
-  background: color-mix(in srgb, var(--surface) 50%, transparent);
-  border: 1.5px dashed var(--line-strong);
-  border-radius: 16px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / calc(0.25 * var(--shadow-k)));
+  transition: opacity 0.3s var(--exp);
 }
 
-.overview-hint__title {
-  padding: 0;
+.star-zoom button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 32px;
   color: var(--ink-2);
-  font: inherit;
-  text-align: left;
+  font-size: 16px;
+  font-weight: 500;
   background: none;
   border: 0;
 }
 
-.overview-hint__title:hover {
+.star-zoom button + button {
+  border-top: 1px solid var(--line);
+}
+
+.star-zoom button:hover {
   color: var(--heading);
+  background: rgb(var(--fg-rgb) / 0.05);
 }
 
-.overview-node--folder_hint.is-selected {
-  border-color: var(--signal);
+/* 舞台窄（窗口 1280 宽以下）：左上、右上的小盘不画，两块字各占半边；搜索框和顶部读数挪到右下，比例尺收起（底栏的图例还在）。
+ * 窄不窄由 overviewScene 按舞台宽度在视口上设 data-narrow */
+.overview-viewport[data-narrow] .star-dock--harbour {
+  width: calc(50% - 14px);
 }
 
-.overview-node--folder_hint .overview-node__actions {
-  justify-content: flex-start;
+.overview-viewport[data-narrow] .star-dock__text {
+  left: 11px;
+  right: 7px;
+  white-space: normal;
 }
 
-/* ── 跨项目的线 ─────────────────────────── */
+.overview-viewport[data-narrow] .star-ghosts {
+  left: 12px;
+  width: calc(100% - 12px);
+}
 
-.overview-bridges {
+.overview-viewport[data-narrow] .star-dock--folder {
+  top: 12px;
+  right: 12px;
+  width: calc(50% - 20px);
+}
+
+.overview-viewport[data-narrow] .star-finder {
+  top: auto;
+  right: 14px;
+  bottom: 14px;
+  left: auto;
+  width: min(288px, calc(50% - 20px));
+  transform: none;
+}
+
+.overview-viewport[data-narrow] .star-hud-top {
+  top: auto;
+  right: 14px;
+  bottom: 54px;
+  left: auto;
+  transform: none;
+}
+
+.overview-viewport[data-narrow] .star-key {
+  display: none;
+}
+
+/* 飞入时只留星图 */
+.overview-viewport.is-entering :is(.star-finder, .star-hud-top, .star-dock, .star-zoom, .star-readout, .star-key) {
+  opacity: 0;
   pointer-events: none;
 }
 
-.overview-bridge {
-  stroke: rgb(var(--fg-rgb) / 0.28);
-  stroke-width: 1.3;
-  stroke-dasharray: 4 4;
-  vector-effect: non-scaling-stroke;
-  transition: stroke 0.2s var(--exp);
+/* ── 悬停信息卡 ─────────────────────────── */
+
+.star-card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  width: 236px;
+  padding: 12px 14px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow:
+    0 14px 32px rgb(0 0 0 / calc(0.32 * var(--shadow-k))),
+    0 2px 6px rgb(0 0 0 / calc(0.18 * var(--shadow-k)));
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition:
+    opacity 0.18s var(--exp),
+    transform 0.18s var(--exp);
 }
 
-.overview-bridge.is-lit {
-  stroke: rgb(var(--fg-rgb) / 0.6);
-  stroke-width: 2;
+.star-card.is-on {
+  opacity: 1;
+  transform: none;
 }
 
-.overview-bridge__label {
-  padding: 2px 6px;
-  font-size: 10.5px;
+/* 左上、右下两个橙色定位角 */
+.star-card::before,
+.star-card::after {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  content: "";
+  border-color: var(--signal);
+  border-style: solid;
+}
+
+.star-card::before {
+  left: -1px;
+  top: -1px;
+  border-width: 1.5px 0 0 1.5px;
+  border-top-left-radius: 6px;
+}
+
+.star-card::after {
+  right: -1px;
+  bottom: -1px;
+  border-width: 0 1.5px 1.5px 0;
+  border-bottom-right-radius: 6px;
+}
+
+.star-card__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.star-card__eyebrow i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.star-card__eyebrow .num {
+  color: var(--ink-2);
+}
+
+.star-card__title {
+  margin-top: 4px;
+  color: var(--heading);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.star-card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.star-card dt {
+  color: var(--muted);
+}
+
+.star-card dd {
+  margin: 0;
+  color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
 
-/* 缩得很小时只留名字和数 */
-.overview-viewport--summary .overview-island__text {
-  background: none;
+.star-card dd.is-warn {
+  color: var(--warn-strong);
+  font-weight: 600;
+}
+
+.star-card__foot {
+  margin-top: 10px;
+  padding-top: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* 一个项目都没有时 */
+.star-empty {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  width: 300px;
+  padding: 12px 16px;
+  color: var(--ink-2);
+  background: color-mix(in oklab, var(--surface) 70%, transparent);
+  border: 1.5px dashed var(--line-strong);
+  border-radius: 16px;
+  transform: translate(-50%, -50%);
+}
+
+.star-empty p {
+  margin: 0;
+}
+
+.star-empty .star-dock__action {
+  margin-top: 0;
+}
+
+/* ── 底栏图例 ───────────────────────────── */
+
+.overview-legend {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.overview-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.overview-legend svg {
+  flex: none;
+}
+
+.overview-legend__badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  color: var(--badge-fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  background: var(--warn-strong);
+  border-radius: 4px;
 }
 
 /* ── 右侧面板 ───────────────────────────── */
@@ -503,12 +989,87 @@ button.overview-node,
   margin-top: 4px;
 }
 
+/* 小行星带的列表：可搜索，按最近一次会排 */
+.overview-belt__find {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  margin: 8px 0;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+
+.overview-belt__find:focus-within {
+  border-color: color-mix(in oklab, var(--signal) 70%, transparent);
+}
+
+.overview-belt__find svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.overview-belt__find input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  color: var(--ink);
+  font-size: 13px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+}
+
+.overview-belt__find input:focus-visible {
+  outline: none;
+}
+
+.overview-belt__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.overview-belt__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.overview-belt__list li:first-child .overview-belt__row {
+  border-top: 0;
+}
+
+.overview-belt__row:hover,
+.overview-belt__row:focus-visible {
+  background: rgb(var(--fg-rgb) / 0.045);
+}
+
+.overview-belt__when,
+.overview-belt__count {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .overview-node,
-  .overview-island__disc,
-  .overview-ghost__disc,
-  .overview-folder__disc,
-  .overview-bridge {
-    transition: none;
+  .overview-viewport *,
+  .overview-viewport *::before,
+  .overview-viewport *::after {
+    transition-duration: 0s !important;
   }
 }

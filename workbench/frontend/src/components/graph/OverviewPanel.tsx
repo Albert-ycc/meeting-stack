@@ -1,4 +1,4 @@
-/* 全部项目概览的右侧面板：项目岛、港湾、幽灵岛、灰色文件夹岛各自的内容。问题在哪出现就在哪回答，作答后那一行消失。 */
+/* 全部项目概览的右侧面板：项目、小行星带、港湾、像新项目的名字、没挂的文件夹各自的内容。问题在哪出现就在哪回答，作答后那一行消失。 */
 import { useEffect, useState, type ReactNode } from "react";
 
 import type { ApiClient } from "../../api";
@@ -11,10 +11,11 @@ import { NewNamePrompt } from "../NewNamePrompt";
 import type { NoticeAction, NoticeTone } from "../Notice";
 import type { DiskState, GraphRootsPayload } from "./graphTypes";
 import { meetingDateLabel } from "./layout";
-import { islandCountText, type OverviewNode } from "./layoutOverview";
+import { islandAge, islandCountText, monthDay, type BeltNode, type OverviewNode } from "./layoutOverview";
 import type { GraphOverview, HarbourMeeting, OverviewIsland, SuggestedProject } from "./overviewTypes";
 import { CopyPath, Section } from "./panelParts";
 import { harbourLines } from "./OverviewCanvas";
+import "./GraphCanvas.css";
 import "./GraphPanel.css";
 
 export type OverviewNotice = (message: string, tone?: NoticeTone, actions?: NoticeAction[]) => void;
@@ -41,6 +42,8 @@ export interface OverviewPanelProps {
   onOpenRequirement: (requirementId: string) => void;
   /** 资料库：none 是没归项目的会，new_project 是「像新项目」筛选 */
   onOpenLibrary: (filter: "none" | "new_project") => void;
+  /** 小行星带列表里指着哪个项目（p:<id>），图上给它四角括号；移开时为 null */
+  onPeek?: (id: string | null) => void;
   onPickParent: () => void;
   onUseSuggestedParent: (path: string) => void;
   parentBusy: boolean;
@@ -438,6 +441,106 @@ function IslandBody({ props, island }: { props: OverviewPanelProps; island: Over
   );
 }
 
+// ------------------------------------------------------------------ 小行星带（最外圈的全部项目）
+
+const SEARCH_ICON = (
+  <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" viewBox="0 0 16 16">
+    <circle cx="7" cy="7" r="4.8" />
+    <path d="M10.6 10.6 14 14" />
+  </svg>
+);
+
+/** 按最近一次会排（最近的在前，没开过会的在后），可搜索；点一行进项目图 */
+function BeltBody({ props, node }: { props: OverviewPanelProps; node: BeltNode }) {
+  const [query, setQuery] = useState("");
+  const { overview, onPeek } = props;
+  const folded = node.data.folded
+    .map((id) => props.projects.find((project) => project.id === id))
+    .filter((project): project is Project => Boolean(project));
+  const rows = [
+    ...node.data.projects.map((island) => ({
+      id: island.id,
+      name: island.name,
+      age: islandAge(island, overview.today),
+      day: island.last_day,
+      meetings: island.meetings as number | null,
+    })),
+    // 服务器折起来的：比上面的都旧，只有名字
+    ...folded.map((project) => ({ id: project.id, name: project.name, age: null, day: null, meetings: null })),
+  ];
+  const q = query.trim().toLowerCase();
+  const shown = q ? rows.filter((row) => row.name.toLowerCase().includes(q)) : rows;
+  const peek = (id: string | null) => onPeek?.(id ? `p:${id}` : null);
+  return (
+    <>
+      <p className="graph-panel__muted">按最近一次会排，最近的在前；没开过会的在最后</p>
+      <label className="overview-belt__find">
+        {SEARCH_ICON}
+        <input
+          aria-label="在这一圈里找项目"
+          autoComplete="off"
+          // 打开就能直接打字
+          autoFocus
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            if (query) setQuery("");
+            else props.onClose();
+          }}
+          placeholder="在这一圈里找"
+          spellCheck={false}
+          type="text"
+          value={query}
+        />
+        {q && (
+          <span className="overview-belt__count">
+            <span className="num">{shown.length}</span> 个
+          </span>
+        )}
+      </label>
+      {shown.length ? (
+        <ul className="overview-belt__list" onPointerLeave={() => peek(null)}>
+          {shown.map((row) => (
+            <li key={row.id}>
+              <button
+                className="overview-belt__row"
+                onBlur={() => peek(null)}
+                onClick={() => props.onOpenProjectGraph(row.id)}
+                onFocus={() => peek(row.id)}
+                onPointerEnter={() => peek(row.id)}
+                type="button"
+              >
+                <span className="overview-belt__name">{row.name}</span>
+                <span className="overview-belt__when">
+                  {row.day && row.age !== null ? (
+                    <>
+                      <span className="num">T−{String(row.age).padStart(2, "0")}D</span> {monthDay(row.day)}
+                    </>
+                  ) : row.meetings === null ? (
+                    "更早"
+                  ) : (
+                    "没开过会"
+                  )}
+                </span>
+                <span className="overview-belt__count">
+                  {row.meetings === null ? "" : (
+                    <>
+                      <span className="num">{row.meetings}</span> 场
+                    </>
+                  )}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="graph-panel__muted">没找到</p>
+      )}
+    </>
+  );
+}
+
 // ------------------------------------------------------------------ 港湾
 
 const HARBOUR_STATE_TEXT: Record<HarbourMeeting["state"], string> = {
@@ -668,7 +771,7 @@ function FolderBody({ props, node }: { props: OverviewPanelProps; node: Extract<
 
 const KIND_LABEL: Partial<Record<OverviewNode["kind"], string>> = {
   island: "项目",
-  island_more: "项目",
+  belt: "R3 更早或没开过会",
   harbour: "港湾",
   ghost: "像新项目",
   folder: "没挂到项目的文件夹",
@@ -679,8 +782,8 @@ function titleOf(node: OverviewNode, overview: GraphOverview): string {
   switch (node.kind) {
     case "island":
       return node.data.name;
-    case "island_more":
-      return `其余 ${node.data.count} 个项目`;
+    case "belt":
+      return `${node.data.count} 个项目`;
     case "harbour":
       return harbourLines(overview.harbour).head;
     case "ghost":
@@ -712,26 +815,9 @@ export function OverviewPanel(props: OverviewPanelProps) {
         </>
       );
       break;
-    case "island_more": {
-      const folded = node.data.project_ids
-        .map((id) => props.projects.find((project) => project.id === id))
-        .filter((project): project is Project => Boolean(project));
-      body = (
-        <>
-          <p className="graph-panel__muted">这段时间没有会的项目收在这里（按建立先后）。</p>
-          <ul className="graph-panel__list">
-            {folded.map((project) => (
-              <li key={project.id}>
-                <button className="text-button" onClick={() => props.onOpenProjectGraph(project.id)} type="button">
-                  {project.name}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      );
+    case "belt":
+      body = <BeltBody key={node.id} node={node} props={props} />;
       break;
-    }
     case "harbour":
       body = <HarbourBody props={props} />;
       foot = (

@@ -64,6 +64,7 @@
   --ok-line: rgba(62, 207, 142, 0.3);
   --ok-strong: #3ecf8e; /* 绿色小字：深色主题里 --ok 本身够亮，浅色主题另有一个更深的 */
   --warn: #e0a33c;
+  --warn-strong: #e0a33c; /* 琥珀底（在等你的数）、琥珀小字：深色主题里 --warn 本身够亮，浅色主题另有一个更深的，配白字 */
   --warn-bg: rgba(224, 163, 60, 0.13);
   --warn-line: rgba(224, 163, 60, 0.3);
   --danger: #f0645c;
@@ -129,6 +130,7 @@
   --ok-line: rgba(23, 145, 93, 0.3);
   --ok-strong: #0e7549;
   --warn: #b0701a;
+  --warn-strong: #7d4e0f;
   --warn-bg: rgba(176, 112, 26, 0.1);
   --warn-line: rgba(176, 112, 26, 0.3);
   --danger: #d23f37;

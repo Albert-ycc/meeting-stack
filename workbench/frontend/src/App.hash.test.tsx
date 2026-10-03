@@ -721,7 +721,7 @@ describe("全部项目概览的地址 #graph", () => {
     } as unknown as Partial<ApiClient>);
   }
 
-  it("冷加载 #graph?sel=p:a 打开概览并选中那个岛；换选中只改地址栏不压历史", async () => {
+  it("冷加载 #graph?sel=p:a 打开概览并选中那个岛；换选中只改地址栏不压历史；点行星进项目图压一条", async () => {
     forgetOverviewCache();
     window.history.replaceState(null, "", "/#graph?sel=p:a");
     render(<App apiClient={overviewClient()} />);
@@ -732,9 +732,16 @@ describe("全部项目概览的地址 #graph", () => {
     expect(screen.getByRole("button", { name: "关系图" })).toHaveAttribute("aria-current", "page");
 
     const depth = window.history.length;
-    await userEvent.click(screen.getByRole("button", { name: /^项目：数据中台/ }));
-    await waitFor(() => expect(window.location.hash).toBe("#graph?sel=p:b"));
+    await userEvent.click(screen.getByRole("button", { name: "港湾：9 场没归项目的会" }));
+    await waitFor(() => expect(window.location.hash).toBe("#graph?sel=harbour"));
     expect(window.history.length).toBe(depth);
+
+    // 点行星进项目图是压一条历史（后退回到概览），不是替换；jsdom 里当前位置不一定在历史末尾，看 pushState 不看 length
+    const push = vi.spyOn(window.history, "pushState");
+    await userEvent.click(screen.getByRole("button", { name: /^项目：数据中台/ }));
+    await waitFor(() => expect(window.location.hash).toBe("#projects/b/graph"));
+    expect(push).toHaveBeenCalledWith(expect.anything(), "", expect.stringMatching(/#projects\/b\/graph$/));
+    push.mockRestore();
   });
 
   it("左侧导航「关系图」打开概览，地址是 #graph", async () => {

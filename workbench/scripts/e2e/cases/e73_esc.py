@@ -122,7 +122,8 @@ with sync_playwright() as p:
 
     page = fresh(ctx, "/#graph")
     page.wait_for_timeout(800)
-    page.locator("[data-node-id='p:project-yimi']").click()
+    # 点行星本身是进项目图；面板从行星上的琥珀数（在等你的）打开
+    page.locator("[aria-label^='医米科研用药：'][aria-label$='件在等你，打开面板']").click()
     page.wait_for_timeout(900)
     page.locator(
         ".overview-panel h2, .overview-panel h3, .overview-panel p, .overview-panel header"
@@ -130,7 +131,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(200)
     esc(page, 500)
     check(
-        "H 总图点岛、再点面板里的字、按 Esc：面板关",
+        "H 总图点行星上的琥珀数、再点面板里的字、按 Esc：面板关",
         page.locator("aside.overview-panel").count() == 0,
         page.url,
     )

@@ -1,4 +1,4 @@
-"""关系图：放大 / 缩小 / 复位、滚轮平移、拖拽、点岛开面板、时间窗、双击进项目图、点连线开面板、Esc 关面板"""
+"""关系图：放大 / 缩小 / 复位、滚轮缩放、拖动转视角、点琥珀数开面板、时间窗、点行星进项目图、点连线开面板、Esc 关面板"""
 
 from common import (
     BASE,
@@ -12,73 +12,96 @@ from common import (
     sync_playwright,
 )
 
-WORLD = """() => { const g = document.querySelector('.graph-world'); const m = g && g.style.transform.match(/translate\\(([-\\d.]+)px, ([-\\d.]+)px\\) scale\\(([\\d.]+)\\)/);
-  return m ? {x: +m[1], y: +m[2], k: +m[3]} : null }"""
+# 星图左下角的视角读数：方位、仰角、缩放
+VIEW = """() => { const r = document.querySelector('.star-readout');
+  const m = r && r.textContent.match(/方位\\s*(\\d+)°\\s*仰角\\s*(\\d+)°\\s*缩放\\s*([\\d.]+)×/);
+  return m ? {az: +m[1], el: +m[2], k: +m[3]} : null }"""
+# 舞台下半部里一块空的画布（没有名字、读数块盖着），拖动从这里开始
+EMPTY_SPOT = """() => { const c = document.querySelector('.star-canvas').getBoundingClientRect();
+  for (let y = c.top + c.height * 0.62; y < c.bottom - 140; y += 17)
+    for (let x = c.left + c.width * 0.3; x < c.right - c.width * 0.3; x += 23) {
+      const hit = document.elementFromPoint(x, y);
+      if (hit && hit.classList.contains('star-canvas')) return {x, y};
+    }
+  return null }"""
 ISLAND = "main [aria-label^='项目：医米科研用药']"
+# 行星上的琥珀数（在等你的）：种子里医米科研用药有待确认的任务
+AMBER = "main [aria-label^='医米科研用药：'][aria-label$='件在等你，打开面板']"
 
 with sync_playwright() as p:
     b = launch(p)
     ctx, page = new_page(b)
     c = Collector(page, "关系图")
-    world = lambda: page.evaluate(WORLD)  # noqa: E731
+    view = lambda: page.evaluate(VIEW)  # noqa: E731
     page.goto(BASE + "/#graph", wait_until="networkidle")
     page.wait_for_timeout(1200)
-    start = world()
-    check("总图画出来了（有 .graph-world）", start is not None, start)
+    start = view()
+    check(
+        "总图画出来了：读数是打开时的视角（方位 0°、仰角 32°、缩放 1）",
+        start == {"az": 0, "el": 32, "k": 1.0},
+        start,
+    )
     page.get_by_role("button", name="放大").click()
     page.wait_for_timeout(400)
-    zoomed_in = world()
-    check("放大：缩放比例变大", zoomed_in["k"] > start["k"], (start["k"], zoomed_in["k"]))
+    zoomed_in = view()
+    check("放大：缩放变大", zoomed_in["k"] > start["k"], (start["k"], zoomed_in["k"]))
     page.get_by_role("button", name="缩小").click()
     page.get_by_role("button", name="缩小").click()
     page.wait_for_timeout(400)
-    zoomed_out = world()
+    zoomed_out = view()
     check(
         "缩小两下：比放大那一下小，也比开始小",
         zoomed_out["k"] < zoomed_in["k"] and zoomed_out["k"] < start["k"],
         zoomed_out["k"],
     )
     page.get_by_role("button", name="复位").click()
-    page.wait_for_timeout(400)
-    reset = world()
-    check(
-        "复位：回到开始的位置和比例",
-        abs(reset["k"] - start["k"]) < 0.01
-        and abs(reset["x"] - start["x"]) < 2
-        and abs(reset["y"] - start["y"]) < 2,
-        (start, reset),
-    )
+    page.wait_for_timeout(800)
+    reset = view()
+    check("复位：回到打开时的视角", reset == start, (start, reset))
     page.mouse.move(800, 650)
     page.mouse.wheel(0, -400)
     page.wait_for_timeout(400)
-    waved = world()
+    waved = view()
     check(
-        "滚轮是平移（设计如此）：位置变、比例不变，页面本身不滚",
-        (waved["x"], waved["y"]) != (reset["x"], reset["y"])
-        and abs(waved["k"] - reset["k"]) < 0.001
+        "滚轮是缩放（设计如此）：缩放变大、方位和仰角不变，页面本身不滚",
+        waved["k"] > reset["k"]
+        and (waved["az"], waved["el"]) == (reset["az"], reset["el"])
         and scroll_y(page) == 0,
         (reset, waved, scroll_y(page)),
     )
     page.get_by_role("button", name="复位").click()
-    page.wait_for_timeout(400)
-    page.mouse.move(800, 650)
+    page.wait_for_timeout(800)
+    spot = page.evaluate(EMPTY_SPOT)
+    check("舞台下半部找得到一块空的画布", spot is not None, spot)
+    page.mouse.move(spot["x"], spot["y"])
     page.mouse.down()
-    page.mouse.move(600, 550, steps=10)
+    page.mouse.move(spot["x"] + 200, spot["y"], steps=10)
     page.mouse.up()
-    page.wait_for_timeout(300)
-    dragged = world()
+    page.wait_for_timeout(1500)
+    turned = view()
     check(
-        "拖拽平移：往左上拖了 200×100，画布跟着挪（误差 30 以内）",
-        abs((dragged["x"] - reset["x"]) + 200) < 30 and abs((dragged["y"] - reset["y"]) + 100) < 30,
-        (reset, dragged),
+        "横拖转盘：往右拖了 200，方位角跟着转（加上松手后的惯性），仰角不变",
+        turned["az"] != reset["az"] and turned["el"] == reset["el"],
+        (reset, turned),
     )
-    page.get_by_role("button", name="复位").click()
-    page.wait_for_timeout(400)
+    page.mouse.move(spot["x"], spot["y"])
+    page.mouse.down()
+    page.mouse.move(spot["x"], spot["y"] - 100, steps=10)
+    page.mouse.up()
+    page.wait_for_timeout(1500)
+    tilted = view()
+    check(
+        "纵拖调仰角：往上拖，仰角变大（俯视得更多）", tilted["el"] > turned["el"], (turned, tilted)
+    )
+    page.locator(".overview-viewport").focus()
+    page.keyboard.press("0")
+    page.wait_for_timeout(800)
+    check("按 0 复位", view() == start, view())
 
-    page.locator(ISLAND).first.click()
+    page.locator(AMBER).first.click()
     page.wait_for_timeout(1000)
     check(
-        "点岛：地址带 sel=p:project-yimi，右边开出项目面板",
+        "点行星上的琥珀数：地址带 sel=p:project-yimi，右边开出项目面板",
         "sel=p:project-yimi" in page.url
         and page.locator("aside.overview-panel").count() == 1
         and "医米科研用药" in page.locator("aside.overview-panel").inner_text(),
@@ -95,9 +118,9 @@ with sync_playwright() as p:
             and window in label,
             label,
         )
-    page.locator(ISLAND).first.dblclick()
+    page.locator(ISLAND).first.click()
     page.wait_for_timeout(1800)
-    check("双击岛：进项目图", hash_of(page) == "#projects/project-yimi/graph", hash_of(page))
+    check("单击行星：进项目图", hash_of(page) == "#projects/project-yimi/graph", hash_of(page))
 
     lines = page.locator("main svg [role=button], main svg [tabindex]")
     check("项目图里有连线可以点", lines.count() >= 2, lines.count())

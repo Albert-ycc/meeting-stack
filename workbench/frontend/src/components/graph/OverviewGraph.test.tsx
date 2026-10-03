@@ -5,8 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, type ApiClient } from "../../api";
 import type { Project } from "../../types";
+import { layoutOverview, type IslandNode } from "./layoutOverview";
+import { NAME_BUDGET, rectOverlap, type Rect } from "./overviewLabels";
 import { OverviewGraph, forgetOverviewCache } from "./OverviewGraph";
-import { foldersPayload, island, overviewPayload } from "./overviewFixtures";
+import { crowdedOverview, daysAgo, foldersPayload, island, overviewPayload } from "./overviewFixtures";
+import { headingDegrees, turnToFront } from "./overviewProjection";
 import type { GraphOverview, GraphOverviewFetch, OverviewFolders } from "./overviewTypes";
 
 const PROJECTS: Project[] = [
@@ -103,6 +106,109 @@ function panel() {
   return screen.findByRole("complementary", { name: "详情面板" });
 }
 
+// ---------- jsdom 不排版：让星图真的摆一遍名字 ----------
+
+const CJK = /[⺀-鿿＀-￯　-〿]/;
+
+function textWidth(text: string, size: number) {
+  let width = 0;
+  for (const ch of text) width += CJK.test(ch) ? size : /[A-Z]/.test(ch) ? size * 0.64 : /\s/.test(ch) ? size * 0.3 : size * 0.55;
+  return width;
+}
+
+/** 星图里几种元素的尺寸，按字数估（名字 13px、说明 12px，行高 1.32） */
+function estimate(element: HTMLElement): { w: number; h: number } {
+  if (element.classList.contains("star-label")) {
+    const html = element.querySelector(".star-label__name")?.innerHTML ?? "";
+    const lines = html.split(/<br\s*\/?>/i).map((line) => line.replace(/<[^>]+>/g, ""));
+    return { w: Math.max(...lines.map((line) => textWidth(line, 13))) + 11, h: lines.length * 17.2 + 2 };
+  }
+  if (element.classList.contains("star-badge")) return { w: Math.max(18, 10 + 7.2 * (element.textContent ?? "").length), h: 18 };
+  if (element.classList.contains("star-chip")) return { w: textWidth(element.textContent ?? "", 12) + 32, h: 22 };
+  if (element.classList.contains("star-sun")) return { w: 92, h: 34 };
+  if (element.classList.contains("star-card")) return { w: 236, h: 150 };
+  return { w: 0, h: 0 };
+}
+
+/** 舞台 1162×716（1440×900 下的大小），名字、琥珀数、圈名按字数给尺寸；返回还原的函数 */
+function stageSize() {
+  const stubs = [
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+      return this.classList.contains("overview-viewport") ? 1162 : 0;
+    }),
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) {
+      return this.classList.contains("overview-viewport") ? 716 : 0;
+    }),
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return estimate(this).w;
+    }),
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return estimate(this).h;
+    }),
+  ];
+  return () => stubs.forEach((stub) => stub.mockRestore());
+}
+
+/** 系统设了「减少动态」：转盘、飞入都不放动画 */
+function reduceMotion() {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes("prefers-reduced-motion"),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
+
+/** 一个元素在舞台里的框：场景写进 transform 的位置 + 估的尺寸 */
+function boxOf(element: HTMLElement): Rect {
+  const match = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(element.style.transform);
+  const x = match ? Number(match[1]) : 0;
+  const y = match ? Number(match[2]) : 0;
+  const { w, h } = estimate(element);
+  return { x0: x, y0: y, x1: x + w, y1: y + h };
+}
+
+const shownLabels = (root: HTMLElement) =>
+  Array.from(root.querySelectorAll<HTMLElement>(".star-label")).filter((element) => !element.classList.contains("is-off"));
+
+/** 看得见的名字两两不重叠，也不压圈名、琥珀数、太阳的字；都在舞台里 */
+function expectNoOverlap(root: HTMLElement) {
+  const labels = shownLabels(root).map(boxOf);
+  const others = [
+    ...Array.from(root.querySelectorAll<HTMLElement>(".star-chip:not(.is-gone)")),
+    ...Array.from(root.querySelectorAll<HTMLElement>(".star-badge:not(.is-gone)")),
+    ...Array.from(root.querySelectorAll<HTMLElement>(".star-sun:not(.is-gone)")),
+  ].map(boxOf);
+  labels.forEach((box, index) => {
+    for (const other of labels.slice(index + 1)) expect(rectOverlap(box, other)).toBe(0);
+    for (const other of others) expect(rectOverlap(box, other)).toBe(0);
+    expect(box.x0).toBeGreaterThanOrEqual(0);
+    expect(box.y0).toBeGreaterThanOrEqual(0);
+    expect(box.x1).toBeLessThanOrEqual(1162);
+    expect(box.y1).toBeLessThanOrEqual(716);
+  });
+}
+
+/** 舞台里每一处字都不小于 12px（读的是样式表算出来的字号） */
+function expectReadableText(viewport: HTMLElement) {
+  for (const element of Array.from(viewport.querySelectorAll<HTMLElement>("*"))) {
+    const own = Array.from(element.childNodes).some((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
+    if (!own) continue;
+    const size = parseFloat(getComputedStyle(element).fontSize || "16");
+    expect(size, `${element.className}「${element.textContent?.slice(0, 12)}」`).toBeGreaterThanOrEqual(12);
+  }
+}
+
+const readout = (root: HTMLElement) => root.querySelector(".star-readout")?.textContent ?? "";
+
 beforeEach(() => {
   forgetOverviewCache();
   window.localStorage.clear();
@@ -113,27 +219,40 @@ afterEach(() => {
 });
 
 describe("OverviewGraph", () => {
-  it("先说正在画，再画出港湾、项目岛、琥珀点、幽灵岛、灰色文件夹岛和跨项目的线", async () => {
+  it("先说正在画，再画出港湾、项目、琥珀数、像新项目的名字、没挂的文件夹和跨项目的线", async () => {
     const apiClient = makeClient();
     const { container } = render(<Harness apiClient={apiClient} />);
     expect(screen.getByText("正在画关系图…")).toBeInTheDocument();
 
     const canvas = await screen.findByRole("application", { name: "全部项目关系图" });
     expect(apiClient.getGraphOverview).toHaveBeenCalledWith("28d", null);
-    const yuntu = within(canvas).getByRole("button", { name: "项目：云图AI，28 天 7 场，2 件在等你" });
-    expect(within(yuntu).getByText("2")).toHaveAttribute("title", "1 场可能是这个项目的、1 条任务待确认");
+    // 星图：太阳写窗口内项目上的会；三圈都画、各有圈名（三个项目都是这周开过会的，落在第一圈）
+    expect(within(canvas).getByRole("note", { name: "全部项目：28 天 9 场会" })).toHaveTextContent("全部项目28 天 9 场会");
+    expect(Array.from(container.querySelectorAll(".star-chip")).map((chip) => chip.textContent)).toEqual([
+      "R17 天内",
+      "R228 天内",
+      "R3更早或没开过会",
+    ]);
+    expect(within(canvas).getByRole("button", { name: "项目：云图AI，28 天 7 场，2 件在等你" })).toBeInTheDocument();
+    expect(within(canvas).getByRole("button", { name: "云图AI：2 件在等你，打开面板" })).toHaveAttribute(
+      "title",
+      "1 场可能是这个项目的、1 条任务待确认",
+    );
+    // 窗口里没会的项目写几天前开过会；停了卡片的名字后面挂 ⊘
     const quiet = within(canvas).getByRole("button", { name: /^项目：北辰仓，28 天 0 场/ });
-    expect(quiet).toHaveClass("is-quiet");
+    expect(quiet).toHaveTextContent("北辰仓2 天前⊘");
     expect(within(quiet).getByText("⊘")).toHaveAttribute("title", "2 张卡片停了");
 
     const harbour = within(canvas).getByRole("button", { name: "港湾：9 场没归项目的会" });
     expect(harbour).toHaveTextContent("等 AI 判断 2 · 待你选 3 · AI 没认出 2 · 像新项目 2");
-    const ghost = within(canvas).getByRole("group", { name: "像是新项目『云图看板』· 2 场会" });
-    expect(within(ghost).getByRole("button", { name: "建成项目" })).toBeInTheDocument();
-    expect(within(ghost).getByRole("button", { name: "建成需求" })).toBeInTheDocument();
+    // 像新项目的名字在港湾下面；［建成项目］［建成需求］在点开的面板里
+    await userEvent.click(within(canvas).getByRole("button", { name: "像是新项目『云图看板』· 2 场会" }));
+    const side = await panel();
+    expect(within(side).getByRole("button", { name: "建成项目" })).toBeInTheDocument();
+    expect(within(side).getByRole("button", { name: "建成需求" })).toBeInTheDocument();
 
     expect(await within(canvas).findByRole("button", { name: "没挂到项目的文件夹：旧资料" })).toBeInTheDocument();
-    expect(container.querySelectorAll(".overview-bridge")).toHaveLength(1);
+    expect(container.querySelectorAll(".star-bridge")).toHaveLength(1);
     expect(within(canvas).getByText("×2")).toBeInTheDocument();
     // 时间窗
     expect(screen.getByRole("button", { name: "28 天" })).toHaveAttribute("aria-pressed", "true");
@@ -178,7 +297,7 @@ describe("OverviewGraph", () => {
   it("项目岛面板：门口的会［归这里］、待确认任务［确认］，作答后那一行消失、重取概览", async () => {
     const apiClient = makeClient();
     render(<Harness apiClient={apiClient} />);
-    await userEvent.click(await screen.findByRole("button", { name: /^项目：云图AI/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "云图AI：2 件在等你，打开面板" }));
     const side = await panel();
     expect(within(side).getByRole("heading", { name: "云图AI" })).toBeInTheDocument();
     expect(screen.getByTestId("selection")).toHaveTextContent("p:a");
@@ -218,7 +337,7 @@ describe("OverviewGraph", () => {
       islands: [island("a", "云图AI", { meetings: 7, waiting: { review: 3, doorstep: 2, tasks: 0 } }), island("b", "数据中台", { color: "#7a5af8", meetings: 2 })],
     });
     render(<Harness apiClient={makeClient(overview, foldersPayload(), { meetings })} />);
-    await userEvent.click(await screen.findByRole("button", { name: /^项目：云图AI/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "云图AI：5 件在等你，打开面板" }));
     const side = await panel();
 
     for (const title of ["云图待复核0", "云图待复核1", "云图待复核2", "云图门口0", "云图门口1"]) {
@@ -279,7 +398,7 @@ describe("OverviewGraph", () => {
     expect(stops).toHaveLength(1);
   });
 
-  it("深链：选中的岛打开面板；折起来的项目选中「其余 N 个项目」；不在图上的说一声", async () => {
+  it("深链：选中的项目打开面板；服务器折起来的项目选中小行星带；不在图上的说一声", async () => {
     const apiClient = makeClient(
       overviewPayload({ islands_more: { count: 2, project_ids: ["x1", "x2"] } }),
     );
@@ -288,8 +407,8 @@ describe("OverviewGraph", () => {
     unmount();
 
     const folded = render(<Harness apiClient={apiClient} initial="p:x2" />);
-    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("islands:more"));
-    expect(within(await panel()).getByRole("heading", { name: "其余 2 个项目" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("belt"));
+    expect(within(await panel()).getByRole("heading", { name: "2 个项目" })).toBeInTheDocument();
     folded.unmount();
 
     render(<Harness apiClient={apiClient} initial="p:gone" />);
@@ -311,7 +430,7 @@ describe("OverviewGraph", () => {
     expect(id).toMatch(/^fd:[0-9a-z]+$/);
   });
 
-  it("双击岛进项目图；N 键跳到在等你的；「还有 N 个像新项目的名字」进资料库", async () => {
+  it("点项目行星直接进项目图、不开面板；N 键跳到在等你的；「还有 N 个像新项目的名字」进资料库", async () => {
     const onOpenProjectGraph = vi.fn();
     const onOpenLibrary = vi.fn();
     const apiClient = makeClient(
@@ -327,18 +446,22 @@ describe("OverviewGraph", () => {
     );
     render(<Harness apiClient={apiClient} handlers={{ onOpenLibrary, onOpenProjectGraph }} />);
     const yuntu = await screen.findByRole("button", { name: /^项目：云图AI/ });
-    await userEvent.dblClick(yuntu);
+    await userEvent.click(yuntu);
+    expect(onOpenProjectGraph).toHaveBeenCalledTimes(1);
     expect(onOpenProjectGraph).toHaveBeenCalledWith("a");
+    expect(screen.getByTestId("selection")).toHaveTextContent("");
+    expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull();
 
+    // 三个项目同一天开会、场次总数一样，同一圈里按名字排：北辰仓（停了卡片）在云图AI（在等你）前面
     fireEvent.keyDown(screen.getByRole("button", { name: /^项目：数据中台/ }), { key: "n" });
-    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("p:a"));
-    fireEvent.keyDown(yuntu, { key: "n" });
     await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("p:c"));
+    fireEvent.keyDown(yuntu, { key: "n" });
+    await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("p:a"));
     fireEvent.keyDown(yuntu, { key: "Escape" });
     await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent(""));
 
-    expect(screen.getAllByRole("group", { name: /^像是新项目/ })).toHaveLength(6);
-    await userEvent.click(screen.getByRole("button", { name: "还有 2 个像新项目的名字" }));
+    expect(screen.getAllByRole("button", { name: /^像是新项目/ })).toHaveLength(3);
+    await userEvent.click(screen.getByRole("button", { name: "还有 5 个像新项目的名字" }));
     expect(onOpenLibrary).toHaveBeenCalledWith("new_project");
   });
 
@@ -349,13 +472,20 @@ describe("OverviewGraph", () => {
     const apiClient = makeClient(
       overviewPayload({ islands: ids.map((id) => island(id, `项目${id}`)), bridges }),
     );
-    const { container } = render(<Harness apiClient={apiClient} />);
-    const first = await screen.findByRole("button", { name: /^项目：项目q0/ });
-    expect(container.querySelectorAll(".overview-bridge")).toHaveLength(0);
-    fireEvent.mouseEnter(first);
-    expect(container.querySelectorAll(".overview-bridge")).toHaveLength(8);
-    fireEvent.mouseLeave(first);
-    expect(container.querySelectorAll(".overview-bridge")).toHaveLength(0);
+    const restore = stageSize();
+    try {
+      const { container } = render(<Harness apiClient={apiClient} />);
+      const first = await screen.findByRole("button", { name: /^项目：项目q0/ });
+      const drawn = () => container.querySelectorAll(".star-bridge:not(.is-gone)").length;
+      await waitFor(() => expect(first.style.transform).not.toBe(""));
+      expect(drawn()).toBe(0);
+      await userEvent.hover(first);
+      await waitFor(() => expect(drawn()).toBe(8));
+      await userEvent.unhover(first);
+      await waitFor(() => expect(drawn()).toBe(0));
+    } finally {
+      restore();
+    }
   });
 
   it("一个项目都没有、总文件夹也没设时：空状态和提示岛都给［选项目总文件夹…］", async () => {
@@ -375,7 +505,7 @@ describe("OverviewGraph", () => {
 
   it("点面板里的字之后焦点落在页面上：Esc 照样关面板", async () => {
     render(<Harness apiClient={makeClient()} />);
-    await userEvent.click(await screen.findByRole("button", { name: /^项目：云图AI/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "云图AI：2 件在等你，打开面板" }));
     const side = await panel();
     await userEvent.click(within(side).getByRole("heading", { name: "云图AI" }));
     expect(document.activeElement).toBe(document.body);
@@ -388,7 +518,7 @@ describe("OverviewGraph", () => {
 
   it("面板开着时，输入法组合中的 Esc 不关", async () => {
     render(<Harness apiClient={makeClient()} />);
-    await userEvent.click(await screen.findByRole("button", { name: /^项目：云图AI/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "云图AI：2 件在等你，打开面板" }));
     await panel();
 
     fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
@@ -426,6 +556,151 @@ describe("OverviewGraph", () => {
     act(() => (document.activeElement as HTMLElement | null)?.blur());
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull());
+  });
+
+  it("点名字：镜头先飞过去，落定以后才进项目图；飞的时候读数、搜索框这些先藏起来", async () => {
+    const onOpenProjectGraph = vi.fn();
+    const restore = stageSize();
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame", "performance"] });
+    try {
+      render(<Harness apiClient={makeClient()} handlers={{ onOpenProjectGraph }} />);
+      const name = await screen.findByRole("button", { name: /^项目：云图AI/ });
+      act(() => vi.advanceTimersByTime(50));
+      fireEvent.click(name);
+      act(() => vi.advanceTimersByTime(400));
+      expect(onOpenProjectGraph).not.toHaveBeenCalled();
+      expect(screen.getByRole("application", { name: "全部项目关系图" })).toHaveClass("is-entering");
+      act(() => vi.advanceTimersByTime(500));
+      expect(onOpenProjectGraph).toHaveBeenCalledTimes(1);
+      expect(onOpenProjectGraph).toHaveBeenCalledWith("a");
+    } finally {
+      vi.useRealTimers();
+      restore();
+    }
+  });
+
+  it("系统设了减少动态：点名字不飞，直接进项目图", async () => {
+    const onOpenProjectGraph = vi.fn();
+    const restoreSize = stageSize();
+    const restoreMotion = reduceMotion();
+    try {
+      render(<Harness apiClient={makeClient()} handlers={{ onOpenProjectGraph }} />);
+      fireEvent.click(await screen.findByRole("button", { name: /^项目：数据中台/ }));
+      expect(onOpenProjectGraph).toHaveBeenCalledWith("b");
+    } finally {
+      restoreMotion();
+      restoreSize();
+    }
+  });
+
+  it("点琥珀数开这个项目的面板（琥珀数按下）；再点一下收起", async () => {
+    render(<Harness apiClient={makeClient()} />);
+    const amber = await screen.findByRole("button", { name: "云图AI：2 件在等你，打开面板" });
+    await userEvent.click(amber);
+    expect(within(await panel()).getByRole("heading", { name: "云图AI" })).toBeInTheDocument();
+    expect(screen.getByTestId("selection")).toHaveTextContent("p:a");
+    expect(amber).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(amber);
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "详情面板" })).toBeNull());
+    expect(screen.getByTestId("selection")).toHaveTextContent("");
+  });
+
+  it("深链选中的那颗转到正前方：读数里的方位角正好让它落在正前方", async () => {
+    const restoreSize = stageSize();
+    const restoreMotion = reduceMotion();
+    try {
+      const { container } = render(<Harness apiClient={makeClient()} initial="p:b" />);
+      expect(within(await panel()).getByRole("heading", { name: "数据中台" })).toBeInTheDocument();
+      const theta = (layoutOverview(overviewPayload(), null).byId.get("p:b") as IslandNode).theta;
+      const heading = String(headingDegrees(turnToFront(theta, 0))).padStart(3, "0");
+      expect(heading).not.toBe("000");
+      await waitFor(() => expect(readout(container)).toContain(`方位 ${heading}°`));
+    } finally {
+      restoreMotion();
+      restoreSize();
+    }
+  });
+
+  it("/ 聚焦「在图上找」：写几个字说命中几个，Esc 清空，回车进排第一的那个项目图", async () => {
+    const onOpenProjectGraph = vi.fn();
+    const { container } = render(<Harness apiClient={makeClient()} handlers={{ onOpenProjectGraph }} />);
+    await screen.findByRole("application", { name: "全部项目关系图" });
+    const input = screen.getByRole("textbox", { name: "在图上找项目，按 / 键聚焦" });
+    const count = () => container.querySelector(".star-finder__count")?.textContent ?? "";
+
+    await userEvent.keyboard("/");
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue("");
+    await userEvent.keyboard("数据");
+    expect(count()).toBe("1 个");
+    await userEvent.keyboard("{Escape}");
+    expect(input).toHaveValue("");
+    expect(count()).toBe("");
+    expect(input).not.toHaveFocus();
+
+    await userEvent.keyboard("/");
+    await userEvent.keyboard("不存在的项目");
+    expect(count()).toBe("没找到");
+    await userEvent.clear(input);
+    await userEvent.type(input, "云图{Enter}");
+    expect(onOpenProjectGraph).toHaveBeenCalledWith("a");
+  });
+
+  it("最外圈超过 12 个成小行星带：点带子的圈名开列表（最近开过会的在前，可搜索），点一行进项目图", async () => {
+    const onOpenProjectGraph = vi.fn();
+    const far = Array.from({ length: 13 }, (_, index) =>
+      island(`f${index}`, `远处的项目${index}`, { last_day: daysAgo(30 + index), meetings: 0 }),
+    );
+    render(
+      <Harness
+        apiClient={makeClient(overviewPayload({ islands: [island("a", "云图AI"), ...far], bridges: [] }))}
+        handlers={{ onOpenProjectGraph }}
+      />,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "更早或没开过会的 13 个项目，打开列表" }));
+    const side = await panel();
+    expect(within(side).getByRole("heading", { name: "13 个项目" })).toBeInTheDocument();
+    expect(screen.getByTestId("selection")).toHaveTextContent("belt");
+    const rows = () => within(side).getAllByRole("button", { name: /^远处的项目/ });
+    expect(rows().map((row) => row.querySelector(".overview-belt__name")?.textContent)).toEqual(
+      far.map((item) => item.name),
+    );
+    const search = within(side).getByRole("textbox", { name: "在这一圈里找项目" });
+    expect(search).toHaveFocus();
+    await userEvent.type(search, "12");
+    expect(rows().map((row) => row.querySelector(".overview-belt__name")?.textContent)).toEqual(["远处的项目12"]);
+    await userEvent.click(rows()[0]);
+    expect(onOpenProjectGraph).toHaveBeenCalledWith("f12");
+  });
+
+  it("150 个项目：最外圈成带，名字不超预算、互不重叠、字不小于 12px；放大以后放出更多名字（含带子里的），仍不重叠", async () => {
+    const restore = stageSize();
+    try {
+      const { container } = render(
+        <Harness apiClient={makeClient(crowdedOverview(), foldersPayload({ state: "unset", parent: null, folders: [] }))} />,
+      );
+      const viewport = await screen.findByRole("application", { name: "全部项目关系图" });
+      expect(within(viewport).getByRole("button", { name: "更早或没开过会的 116 个项目，打开列表" })).toHaveTextContent(
+        "R3更早 · 116 个项目",
+      );
+      await waitFor(() => expect(shownLabels(container).length).toBeGreaterThan(20));
+      const before = shownLabels(container);
+      expect(before.length).toBeLessThanOrEqual(NAME_BUDGET);
+      expect(before.some((element) => element.textContent?.startsWith("模拟项目") && element.dataset.nodeId?.startsWith("p:sim") && Number(element.dataset.nodeId.slice(5)) > 15)).toBe(false);
+      expectNoOverlap(container);
+      expectReadableText(viewport);
+
+      fireEvent.wheel(viewport, { deltaY: -300 });
+      await waitFor(() => expect(readout(container)).toContain("缩放 1.57×"));
+      await waitFor(() => expect(shownLabels(container).length).toBeGreaterThan(before.length));
+      const after = shownLabels(container);
+      // 带子里的项目（模拟项目 016 以后都在最外圈）放大以后也开始有名字
+      expect(after.some((element) => Number(element.dataset.nodeId?.replace("p:sim", "") ?? 0) > 15)).toBe(true);
+      expectNoOverlap(container);
+      expectReadableText(viewport);
+    } finally {
+      restore();
+    }
   });
 
   it("接口还没有概览时不报错", () => {

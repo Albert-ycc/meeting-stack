@@ -1,5 +1,5 @@
 /*
- * 关系图画布的平移缩放（d3-zoom），项目图和全部项目概览共用这一份：
+ * 项目图画布的平移缩放（d3-zoom），项目图和局部图共用这一份（全部项目概览是倾斜的星图，不用它）：
  * 拖空白处平移；触控板双指滑动（普通滚轮）平移，捏合或 Ctrl/⌘ 滚动缩放；双击不缩放；
  * 视角按 viewKey 记住，进对象页再回来还在；没记住时第一次打开把 initialBounds 放进可见区。
  */
@@ -24,17 +24,13 @@ const FIT_MAX_ZOOM = 1.25;
 const FIT_PAD = 32;
 
 /**
- * 算「把 box 装进 viewport」该用的缩放比例。
- * fitsWhole 是让 box 完整装下所需的最大缩放；minFitZoom 只是「宽裕时别缩太小」的偏好——
- * box 本身就大（比如 31 个项目），需要缩到比 minFitZoom 更小才能整个装下时，
- * 必须让位给 fitsWhole，否则内容会被切在可见区外（复位后仍看不到的 bug，见 D3）。
- * minFitZoom 只在 fitsWhole 原本就比它宽裕（即不会因此裁切）时才把画面拉近一些。
+ * 算「把 box 装进 viewport」该用的缩放比例：让 box 完整装下的最大缩放，
+ * 不超过 maxFitZoom（节点少时字不会大得离谱），也不低于画布本身的缩放下限。
  */
 export function calcFitZoom(
   box: Pick<Box, "w" | "h">,
   viewportW: number,
   viewportH: number,
-  minFitZoom = VIEWPORT_MIN_ZOOM,
   maxFitZoom = FIT_MAX_ZOOM,
 ): number {
   const fitsWhole = Math.min(
@@ -42,8 +38,7 @@ export function calcFitZoom(
     (viewportW - FIT_PAD * 2) / Math.max(box.w, 1),
     (viewportH - FIT_PAD * 2) / Math.max(box.h, 1),
   );
-  const k = fitsWhole >= minFitZoom ? Math.max(minFitZoom, fitsWhole) : fitsWhole;
-  return Math.min(maxFitZoom, Math.max(VIEWPORT_MIN_ZOOM, k));
+  return Math.min(maxFitZoom, Math.max(VIEWPORT_MIN_ZOOM, fitsWhole));
 }
 
 const savedViews = new Map<string, ViewTransform>();
@@ -60,8 +55,6 @@ export interface GraphViewportOptions {
   initialBounds: Box;
   /** 返回 true 时在这个元素上按下不平移（比如节点上的按钮、能拖的节点）；读的是最新的一份 */
   ignorePointer?: (target: HTMLElement) => boolean;
-  /** 适配时不缩到比这更小（默认是缩放下限）：概览要保证项目名读得清 */
-  minFitZoom?: number;
   /** 没记住视角时，第一次挂载适配（initialBounds）也给面板让出这么多像素（见 fitView 的 rightInset） */
   initialRightInset?: number;
 }
@@ -87,7 +80,6 @@ export function useGraphViewport({
   viewKey,
   initialBounds,
   ignorePointer,
-  minFitZoom = VIEWPORT_MIN_ZOOM,
   initialRightInset = 0,
 }: GraphViewportOptions): GraphViewport {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -109,7 +101,7 @@ export function useGraphViewport({
       // 面板浮在画布上不占布局，clientWidth 量出来的还是整个视口；算缩放和居中都只用
       // 面板让出来的那一段（usableWidth），内容就不会被摆到面板底下去（存疑 4）
       const usableWidth = Math.max(width - rightInset, 1);
-      const k = calcFitZoom(box, usableWidth, height, minFitZoom);
+      const k = calcFitZoom(box, usableWidth, height);
       const x = usableWidth / 2 - (box.x + box.w / 2) * k;
       const y = height / 2 - (box.y + box.h / 2) * k;
       const target = zoomIdentity.translate(x, y).scale(k);
@@ -117,7 +109,7 @@ export function useGraphViewport({
       if (animate && !reduceMotion) selection.transition().duration(260).call(behaviour.transform, target);
       else selection.call(behaviour.transform, target);
     },
-    [minFitZoom, reduceMotion],
+    [reduceMotion],
   );
 
   // 只在换 viewKey 时重新挂；布局变化不重置视角
