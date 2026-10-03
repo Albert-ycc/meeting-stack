@@ -105,5 +105,5 @@
 ## 参考实现
 
 - 纪要卡构造与纪要压缩：见 [`task-notify/minutes_card.py`](../task-notify/minutes_card.py)。
-- 任务卡与回调监听：见 [`task-notify/cards.py`](../task-notify/cards.py) 与
-  [`task-notify/card_listener.py`](../task-notify/card_listener.py)。
+- 任务卡构造：见 [`task-notify/cards.py`](../task-notify/cards.py)；回调监听实际跑的是
+  [`workbench/card_listener.py`](../workbench/card_listener.py)。

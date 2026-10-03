@@ -69,7 +69,8 @@ cp .env.example .env
 - **relay**（`relay_watchdog.py`、`relayctl`）作为命令启动时也读，找法一样，并且只取 relay 自己用的键
   （`MEETING_RELAY_*`、`RELAY_*`、`TRANSCRIBE_ENGINE`）。**已经在环境变量里的值优先**，`.env` 不覆盖，
   所以 launchd / ssh 启动命令里显式写的值照旧生效。转写脚本由 watchdog 拉起，拿到的环境里已经带着这些值。
-- 卡片监听**不读** `.env`，只认进程的环境变量，写进它自己的启动命令里。
+- **卡片监听**（`workbench/card_listener.py`）自己读，找法一样，只取它用的四项（目标群、本人的 open_id、飞书 CLI 路径、事件目录），
+  环境变量优先。目标群和本人缺了它不启动，写法见 [workbench/README.md](../workbench/README.md) 的「卡片回调监听」。
 
 `.env.example` 里的 `MEETING_RELAY_CONTROL_ENABLED=1` 必须保留，relay 启动时会读到它。不设时 watchdog 走旧同步路径：
 工作台入队的任务没人领；监听目录里短于 10 分钟的音频会被当成口述指令，转写后直接派给 Agent 执行。

@@ -252,7 +252,7 @@ Agent，那场会的全部文本立刻可用。这是前面说的方法论的落
    workbench/  资料库、全文与语义检索、播放、逐字稿编辑、项目/需求/任务、术语词典、通知、复制路径给 Agent
         │
         ▼
-   task-notify/  纪要卡 + 任务抽取 → 飞书卡片（确认/驳回按钮）→ 长连接回调 → 状态落库 → 卡片原地更新
+   workbench/card_listener.py  飞书卡片（确认/驳回按钮）→ 长连接回调 → 状态落库 → 卡片原地更新
 ```
 
 三个核心组件各自独立运行，停掉工作台不影响录音发现和转写。任务通知推送作为工作台的延伸，
@@ -263,7 +263,7 @@ Agent，那场会的全部文本立刻可用。这是前面说的方法论的落
 | [`workbench/`](workbench/) | Web 工作台 | FastAPI + React，默认 `127.0.0.1:8765` |
 | [`relay/`](relay/README.md) | 录音发现与派单 | 监听目录、时长分流、任务队列 |
 | [`transcribe/`](transcribe/) | 本地转写引擎 | FunASR + Whisper 双跑 |
-| [`task-notify/`](task-notify/) | 飞书通知与任务确认闭环 | 任务卡 + 纪要卡构造、长连接回调监听（参考实现） |
+| [`task-notify/`](task-notify/) | 飞书通知与任务确认闭环 | 任务卡 + 纪要卡构造（参考实现）；长连接回调监听实际跑的是 [`workbench/card_listener.py`](workbench/card_listener.py) |
 
 **不需要 iPhone。** Voice Memos 桥接只是可选入口之一，任何来源的音频文件放进监听目录都会被处理。
 
@@ -297,7 +297,7 @@ cp .env.example .env    # 至少改 MEETING_WORKBENCH_ARCHIVE_ROOT 和 MEETING_R
 ./workbench/scripts/remote-bootstrap.sh          # 工作台（自己读 .env）
 # 录音监听：relay 不读 .env，先把 .env 导成环境变量再起
 (set -a; source ./.env; set +a; exec python3 relay/quickstart/relay_watchdog.py)
-python3 task-notify/card_listener.py             # 任务确认卡片回调监听（可选）
+workbench/.venv/bin/python workbench/card_listener.py   # 任务确认卡片回调监听（可选，先配好群和本人，见下）
 ```
 
 relay 的环境里必须有 `MEETING_RELAY_CONTROL_ENABLED=1`（`.env.example` 里已写好，上面的写法会带进去）。
@@ -314,7 +314,8 @@ relay 的环境里必须有 `MEETING_RELAY_CONTROL_ENABLED=1`（`.env.example` �
 ## 配置
 
 所有配置走环境变量。工作台自己读 `.env`（仓库根和 `workbench/` 下的都读，两处都写了的项以 `workbench/.env`
-为准，与从哪个目录启动无关）；relay、转写脚本、卡片监听不读 `.env`，要以环境变量注入，写法见上面的启动命令。
+为准，与从哪个目录启动无关）；relay、转写脚本不读 `.env`，要以环境变量注入，写法见上面的启动命令；卡片监听自己读 `.env`
+里它用的几项，环境变量优先，见 [workbench/README.md](workbench/README.md) 的「卡片回调监听」。
 常用的几个：
 
 | 变量 | 默认 | 说明 |
@@ -325,11 +326,12 @@ relay 的环境里必须有 `MEETING_RELAY_CONTROL_ENABLED=1`（`.env.example` �
 | `MEETING_RELAY_CONTROL_ENABLED` | 空 | 必须设成 `1`，relay 才走工作台任务队列；不设走旧同步路径（见上） |
 | `MEETING_RELAY_AGENT` | `claude` | 派单目标，`claude` 或 `codex` |
 | `TRANSCRIBE_ENGINE` | `observe` | `observe`=双跑；relay 自动处理录音只支持它，`funasr` / `whisper` 单引擎仅供手工跑 `transcribe.sh` |
-| `MEETING_WORKBENCH_LARK_CHAT_ID` | 空 | 飞书任务确认卡发送到的群；留空则确认闭环在网页内完成 |
+| `MEETING_WORKBENCH_LARK_CHAT_ID` | 空 | 飞书任务确认卡发送到的群；留空则确认闭环在网页内完成。卡片回调监听也用它 |
+| `MEETING_WORKBENCH_LARK_OWNER_OPEN_ID` | 空 | 卡片回调监听只处理这个人（`ou_` 开头的 open_id）点的按钮；和上一项缺一项，监听进程都不启动 |
 | `MEETING_WORKBENCH_MATERIAL_BROWSE_ROOT` | `~` | 项目材料目录可浏览、可挂靠的范围 |
 | `MEETING_WORKBENCH_MATERIAL_CONTENT_ENABLED` | `true` | 后台读材料的正文、图片文字、录音；关掉只建文件名索引 |
 | `MEETING_WORKBENCH_FUNASR_PYTHON` | 同 `MEETING_RELAY_FUNASR_PYTHON` | 转写材料里的录音用哪个 FunASR Python |
-| `LARK_CLI_BIN` | `lark-cli` | 发卡/收回调用的飞书 CLI 路径 |
+| `MEETING_WORKBENCH_LARK_CLI_BIN` | `lark-cli` | 发卡/收回调用的飞书 CLI 路径 |
 
 完整清单见 [.env.example](.env.example) 与各组件 README。
 

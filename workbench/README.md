@@ -437,7 +437,39 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 
 `card_listener.py` 是单独的进程，确认/驳回后重建卡片用的是它启动时加载的 `notify.py`。
 改过任务卡片（例如这一版卡片上多了「项目：…」一行）后也要重启它，不然点完按钮刷新出来的
-还是旧样子的卡片。
+还是旧样子的卡片。它的配置和日志见下一节。
+
+### 卡片回调监听（`card_listener.py`）
+
+任务确认卡上的确认/驳回按钮靠它接：以应用机器人身份维持飞书长连接（子进程 `lark-cli event +subscribe`），
+收到按钮回调后调声档 API 改任务状态，再把卡片原地刷新。仓库里只有这一份。必须在 GUI 会话的 tmux 里跑
+（lark-cli 的凭证在钥匙串里），用工作台的 venv 起（在 `workbench/` 下）：
+
+```bash
+.venv/bin/python card_listener.py
+```
+
+配置不写在源码里，读环境变量；也可以写进 `workbench/.env` 或仓库根的 `.env`，规则和工作台一样：两份都写了的以
+`workbench/.env` 为准，环境变量优先。监听进程只从 `.env` 取下面几项，别的（webhook、key 文件路径）不取：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `MEETING_WORKBENCH_LARK_CHAT_ID` | 无，必填 | 任务确认卡所在的群，和上表的 `LARK_CHAT_ID` 是同一项 |
+| `MEETING_WORKBENCH_LARK_OWNER_OPEN_ID` | 无，必填 | 只处理这个人（`ou_` 开头的 open_id）点的按钮；回调里缺 `operator.open_id` 的一律拒绝 |
+| `MEETING_WORKBENCH_LARK_CLI_BIN` | `lark-cli` | 飞书 CLI 路径，工作台发卡用的是同一项 |
+| `MEETING_STACK_CARD_EVENTS_DIR` | `~/.meeting-workbench/card-events` | 订阅子进程写事件文件的目录 |
+
+前两项缺了监听进程不启动：在标准错误里说明缺哪项、写到哪里，日志里记一行，以退出码 78 退出。守护循环
+（例如 tmux 里的 `while true`）可以遇到 78 就停手，免得每 5 秒重启一次刷日志。
+
+日志在 `~/.meeting-workbench/logs/`，监听进程自己管的两份都按大小轮转：单个文件超过 2 MiB 就换新的，留 3 份旧的
+（`.1` 最新、`.3` 最旧），每份日志最多占 8 MiB。
+
+- `card-listener.log`：监听进程自己的日志。
+- `card-subscribe.log`：订阅子进程（lark-cli）的输出，主要是长连接的重连记录。子进程一直以追加方式开着这个文件，
+  能活过监听进程的重启，所以不能改名轮转：监听进程每分钟看一眼大小，超了就拷一份到 `.1`，再把原文件截空，
+  子进程接着往原路径写。拷贝和截断之间那一瞬写进来的几行会丢。
+- 启动脚本把标准输出、标准错误重定向到的文件（例如 `card-listener-launch.log`）由启动脚本管，监听进程够不着。
 
 ## 项目 → 需求 → 任务三层（260915 新增）
 

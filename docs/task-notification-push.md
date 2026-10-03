@@ -91,8 +91,8 @@
 - 回调事件里 `event.action.value` 携带自定义载荷，`event.context.open_message_id` 指向原卡，
   确认后据此原地更新。
 
-参考实现见 [`task-notify/cards.py`](../task-notify/cards.py) 与
-[`task-notify/card_listener.py`](../task-notify/card_listener.py)。
+卡片构造的参考实现见 [`task-notify/cards.py`](../task-notify/cards.py)，回调监听实际跑的是
+[`workbench/card_listener.py`](../workbench/card_listener.py)。
 
 ## 前置条件
 
@@ -103,6 +103,10 @@
 4. 任务抽取需要本地配置的 LLM（工作台可配置）。
 
 任一条不满足，确认闭环自动降级回工作台网页内完成——转写、归档、任务看板不受影响。
+
+卡片上的确认/驳回按钮要另有一个进程接：`workbench/card_listener.py`，并配好
+`MEETING_WORKBENCH_LARK_CHAT_ID`（目标群）和 `MEETING_WORKBENCH_LARK_OWNER_OPEN_ID`（只认这个人点的按钮），
+缺一项它就不启动。写法见 [workbench/README.md](../workbench/README.md) 的「卡片回调监听」。
 
 ## 与工作台的配合
 
