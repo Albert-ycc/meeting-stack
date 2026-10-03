@@ -163,6 +163,27 @@
   background: var(--raised);
 }
 
+/* .detail-card 自身不留白，正文和卡头一样缩进 18px */
+.timeline__body {
+  padding: 0 18px 16px;
+}
+
+/* 会名和文件、任务行同字号、同左缘（全局 .text-button 后加载，要多一级才压得住） */
+.timeline__item .timeline__meeting {
+  padding-inline: 0;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+}
+
+.timeline__item .timeline__meeting:hover {
+  color: var(--signal-dark);
+}
+
+.timeline__decisions .text-button {
+  padding-inline: 0;
+}
+
 .timeline__days,
 .timeline__items,
 .timeline__decisions {

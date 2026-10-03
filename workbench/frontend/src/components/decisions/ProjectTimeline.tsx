@@ -401,55 +401,57 @@ export function ProjectTimeline({ apiClient, projectId, canWrite, onOpenMeeting,
           ))}
         </div>
       </header>
-      {player.clip && <div className="decision-log__player">{player.node}</div>}
-      <NoticeBanner notice={notice} onDismiss={dismissNotice} />
-      {state === "loading" && (
-        <div aria-busy="true" className="decision-log__skeleton">
-          <span />
-          <span />
-          <span />
-        </div>
-      )}
-      {state === "error" && (
-        <p className="decision-log__empty">
-          没读到时间线，稍后再试
-          <button className="text-button" onClick={() => void load()} type="button">
-            重试
-          </button>
-        </p>
-      )}
-      {state === "ready" && first && (
-        <>
-          <LinksStateLine
-            apiClient={apiClient}
-            onAction={onAttachRoot ? () => onAttachRoot() : undefined}
-            onRetried={() => load(true)}
-            state={first.state.text ? { kind: first.state.kind, text: first.state.text, action: first.state.action } : null}
-          />
-          {days.length === 0 ? (
-            // 这几页的天都被滤掉了但更早还有：不说「还没有…」，只留［更早］
-            nextBefore ? null : <p className="decision-log__empty">{EMPTY[kind]}</p>
-          ) : (
-            <ol className="timeline__days">
-              {days.map((day) => (
-                <li className="timeline__day" key={day.day}>
-                  <h3>{day.label}</h3>
-                  <ul className="timeline__items">
-                    {day.items.map(renderItem)}
-                    {day.more_dirs > 0 && <li className="timeline__item timeline__item--muted">另有 {day.more_dirs} 个文件夹有变化</li>}
-                  </ul>
-                </li>
-              ))}
-            </ol>
-          )}
-          {nextBefore && (
-            <button className="text-button timeline__more" disabled={loadingMore} onClick={() => void more()} type="button">
-              更早
+      <div className="timeline__body">
+        {player.clip && <div className="decision-log__player">{player.node}</div>}
+        <NoticeBanner notice={notice} onDismiss={dismissNotice} />
+        {state === "loading" && (
+          <div aria-busy="true" className="decision-log__skeleton">
+            <span />
+            <span />
+            <span />
+          </div>
+        )}
+        {state === "error" && (
+          <p className="decision-log__empty">
+            没读到时间线，稍后再试
+            <button className="text-button" onClick={() => void load()} type="button">
+              重试
             </button>
-          )}
-          {showLogSince && logSince && <p className="timeline__since">文件从 {monthDay(logSince)} 起记录</p>}
-        </>
-      )}
+          </p>
+        )}
+        {state === "ready" && first && (
+          <>
+            <LinksStateLine
+              apiClient={apiClient}
+              onAction={onAttachRoot ? () => onAttachRoot() : undefined}
+              onRetried={() => load(true)}
+              state={first.state.text ? { kind: first.state.kind, text: first.state.text, action: first.state.action } : null}
+            />
+            {days.length === 0 ? (
+              // 这几页的天都被滤掉了但更早还有：不说「还没有…」，只留［更早］
+              nextBefore ? null : <p className="decision-log__empty">{EMPTY[kind]}</p>
+            ) : (
+              <ol className="timeline__days">
+                {days.map((day) => (
+                  <li className="timeline__day" key={day.day}>
+                    <h3>{day.label}</h3>
+                    <ul className="timeline__items">
+                      {day.items.map(renderItem)}
+                      {day.more_dirs > 0 && <li className="timeline__item timeline__item--muted">另有 {day.more_dirs} 个文件夹有变化</li>}
+                    </ul>
+                  </li>
+                ))}
+              </ol>
+            )}
+            {nextBefore && (
+              <button className="text-button timeline__more" disabled={loadingMore} onClick={() => void more()} type="button">
+                更早
+              </button>
+            )}
+            {showLogSince && logSince && <p className="timeline__since">文件从 {monthDay(logSince)} 起记录</p>}
+          </>
+        )}
+      </div>
     </section>
   );
 }
