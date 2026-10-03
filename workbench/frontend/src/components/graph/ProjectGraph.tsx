@@ -451,6 +451,7 @@ export function ProjectGraph({
   const [loading, setLoading] = useState(false);
   const [roots, setRoots] = useState<GraphRootsPayload | null>(() => rootsCache.get(projectId) ?? null);
   const [rootsTick, setRootsTick] = useState(0);
+  const [relatedTick, setRelatedTick] = useState(0);
   const [trail, setTrail] = useState<string[]>([]);
   const [highlight, setHighlight] = useState<{ key: string; ids: Set<string> } | null>(null);
   // 「在图上找」点亮的节点；状态句、面板里的点亮优先
@@ -548,8 +549,11 @@ export function ProjectGraph({
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
+      // 星图、资料盘状态、相关线各带各自的 etag 对一次，谁变了只换谁；相关线有自己的版本号（related_rev），
+      // 后台重算出新的相关线时图本身不一定变，不能等图变了才去取
       void load();
       setRootsTick((tick) => tick + 1);
+      setRelatedTick((tick) => tick + 1);
       const waiting = looseWaitingRef.current;
       if (waiting) {
         forgetBrief(waiting);
@@ -623,12 +627,14 @@ export function ProjectGraph({
     return cached ? { key: relatedKey, data: cached.related } : null;
   });
   const [relatedState, setRelatedState] = useState<"idle" | "loading" | "ready" | "failed" | "old">("idle");
-  const [relatedTick, setRelatedTick] = useState(0);
   useEffect(() => {
     if (!relatedOn || !graph) return;
     let active = true;
     const cached = relatedCache.get(relatedKey);
-    if (cached) setRelated({ key: relatedKey, data: cached.related });
+    // 同一份数据不换对象（304 时就是缓存里那份）：按它补出来的图、布局不跟着重算
+    const adopt = (data: RelatedEdges) =>
+      setRelated((current) => (current?.key === relatedKey && current.data === data ? current : { key: relatedKey, data }));
+    if (cached) adopt(cached.related);
     setRelatedState((current) => (cached ? "ready" : current === "ready" ? current : "loading"));
     apiClient
       .graphRelated(projectId, graph.window.effective, cached?.etag ?? null)
@@ -637,7 +643,7 @@ export function ProjectGraph({
         const data = fresh ?? cached?.related ?? null;
         if (data) {
           relatedCache.set(relatedKey, { etag, related: data });
-          setRelated({ key: relatedKey, data });
+          adopt(data);
         }
         setRelatedState("ready");
       })
@@ -645,7 +651,7 @@ export function ProjectGraph({
     return () => {
       active = false;
     };
-    // 图换了（时间窗、数据真变了）、写操作以后（relatedTick）重对一次，没变时 304
+    // 每 30 秒、图换了（时间窗、数据真变了）、写操作以后（relatedTick）各对一次，没变时 304
   }, [apiClient, graph, projectId, relatedKey, relatedOn, relatedTick]);
   const relatedData = relatedOn && related?.key === relatedKey ? related.data : null;
 
