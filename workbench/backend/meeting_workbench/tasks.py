@@ -341,7 +341,7 @@ def semantic_match_project(
             if not context:
                 continue
             center = semantic.embed_texts([context])[0]
-            score = sum(a * b for a, b in zip(query_vec, center))
+            score = sum(a * b for a, b in zip(query_vec, center, strict=True))
             if score > best_score:
                 best_score = score
                 best_id = row.get("id")

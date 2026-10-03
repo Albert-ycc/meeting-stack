@@ -803,7 +803,7 @@ def _minutes(connection: sqlite3.Connection, project_id: str, terms: Terms) -> l
         join = "LEFT JOIN hit ON hit.meeting_id = m.id"
         rank = "MIN(hit.rank)"
         conditions.append("hit.meeting_id IS NOT NULL")
-    for needle in terms.needles:
+    for _needle in terms.needles:
         conditions.append("instr(lower(mv.markdown), ?) > 0")
     params.append(project_id)
     params += [needle.lower() for needle in terms.needles]

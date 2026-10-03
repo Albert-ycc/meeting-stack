@@ -960,7 +960,7 @@ class MeetingService:
                             journal_path, strategy=strategy, phase="prepared"
                         )
                         if backup_dir.exists() or backup_dir.is_symlink():
-                            raise ConflictError("发布备份目录已存在，无法安全降级")
+                            raise ConflictError("发布备份目录已存在，无法安全降级") from error
                         os.replace(archive_dir, backup_dir)
                         swapped = True
                         fsync_directory(archive_dir.parent)

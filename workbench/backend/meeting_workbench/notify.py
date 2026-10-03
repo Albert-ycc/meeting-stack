@@ -274,7 +274,7 @@ def build_minutes_ready_cards(
     正文超过一张卡装得下的长度就顺序发多张，标题上标 n/N。
     """
     # 会议标题来自纪要 H1，常带「· 会议纪要」后缀被截掉后留个孤零零的分隔符。
-    title = (meeting_title or "").strip().rstrip("·-—|·").strip() or "未命名录音"
+    title = (meeting_title or "").strip().rstrip("·-—|").strip() or "未命名录音"
     chunks = split_markdown_for_cards(markdown) or [""]
     total = len(chunks)
     cards: list[dict[str, Any]] = []
@@ -801,7 +801,7 @@ class LarkNotifier:
         """
         if not self.chat_id:
             # webhook 通道：卡片 1.0 纯文本，同样是全文，同样不给跳转链接。
-            title = (meeting_title or "").strip().rstrip("·-—|·").strip() or "未命名录音"
+            title = (meeting_title or "").strip().rstrip("·-—|").strip() or "未命名录音"
             chunks = split_markdown_for_cards(markdown) or [""]
             payloads = []
             for index, chunk in enumerate(chunks):

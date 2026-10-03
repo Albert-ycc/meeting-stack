@@ -349,7 +349,7 @@ def database_leaks(connection: sqlite3.Connection, needle: str) -> list[str]:
         cursor = connection.execute(f'SELECT * FROM "{table}"')
         columns = [column[0] for column in cursor.description]
         for row in cursor:
-            for column, value in zip(columns, row):
+            for column, value in zip(columns, row, strict=True):
                 if (table, column) in MATERIAL_TEXT_COLUMNS:
                     continue
                 if isinstance(value, bytes):

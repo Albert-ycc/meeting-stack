@@ -769,7 +769,7 @@ def test_statement_count_does_not_grow_with_meetings(tmp_path):
         counts.append(
             count_reads(
                 db,
-                lambda connection: ar.retrieve(
+                lambda connection, semantic=semantic, vectors=vectors: ar.retrieve(
                     connection,
                     "p",
                     "驻场服务的报价单和AI",

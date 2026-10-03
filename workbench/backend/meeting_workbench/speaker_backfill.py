@@ -82,7 +82,7 @@ def apply_speaker_labels_with_connection(
             f"段数不一致：库内 {len(db_segments)} 段，funasr_json 解析出 {len(parsed)} 段"
         )
         return result
-    for db_row, parsed_row in zip(db_segments, parsed):
+    for db_row, parsed_row in zip(db_segments, parsed, strict=True):
         if db_row["text"] != parsed_row["text"]:
             result.skip_reason = "逐段文本比对不严格相等，判定 funasr_json 与目标版本不同源"
             return result
@@ -98,7 +98,7 @@ def apply_speaker_labels_with_connection(
         result.skip_reason = "解析文本内含乱码字符（U+FFFD），判定源文件编码不可信"
         return result
 
-    for db_row, label in zip(db_segments, labels):
+    for db_row, label in zip(db_segments, labels, strict=True):
         connection.execute(
             "UPDATE segments SET speaker_label = ? WHERE id = ?", (label, db_row["id"])
         )

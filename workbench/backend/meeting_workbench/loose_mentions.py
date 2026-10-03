@@ -944,7 +944,7 @@ def _t4(context: ProjectContext, key: str) -> dict[str, Match]:
         for stem in context.groups
         if len(stem) == len(key)
         and context.usability.get(stem) != STEM_TWICE
-        and sum(1 for a, b in zip(stem, key) if a != b) == 1
+        and sum(1 for a, b in zip(stem, key, strict=True) if a != b) == 1
     ]
     return {stem: Match(stem, 4, "stem") for stem in close}
 
