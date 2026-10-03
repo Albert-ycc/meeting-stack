@@ -24,6 +24,10 @@ _PATH_END_MARKS = ":;,)]}"
 # 没有引号的路径，目录名里可能带空格（「260905 EDC 系统选型」）：往后最多看这几个词，
 # 找到还带 / 的词，就当路径没完
 _LOOKAHEAD = 4
+# 失败原因是给人看的，几 KB 足够：更长的只处理前面这一段，后面换成一句省略，处理时间也就封了顶。
+# 省略的字另起一行：截断点落在路径中间时，接上去的字不会被当成路径的下一级
+_MAX_CHARS = 4096
+_OMITTED = "\n…（以下省略）"
 
 
 def _levels(path: str) -> int:
@@ -34,8 +38,9 @@ def _levels(path: str) -> int:
 def _quoted_end(text: str, start: int, quote: str) -> int:
     """引号包着的路径：到收尾的引号为止；被截断（没有收尾引号）的，到这一行结束。"""
     end = text.find(quote, start)
-    newline = text.find("\n", start)
-    if newline != -1 and (end == -1 or newline < end):
+    # 换行只在收尾引号前面找：每个路径都往后找到文末的话，没有换行的长文里路径一多就是 n²
+    newline = text.find("\n", start, len(text) if end == -1 else end)
+    if newline != -1:
         return newline
     return len(text) if end == -1 else end
 
@@ -45,13 +50,18 @@ def _unquoted_end(text: str, start: int) -> int:
     不是新路径的开头）就接着读；读到的还只有一级（/驳回）时不往后读，它多半不是路径。没加引号、
     目录名里空格又多过 4 个词的，目录名的后半段会留下来；Python 异常文本里的路径都带引号，不受这个限制。"""
     position = start
+    first_word = True
     while True:
         while position < len(text) and text[position] not in _WORD_BREAK:
             position += 1
         if position >= len(text) or text[position] != " " or text[position - 1] in _PATH_END_MARKS:
             return position
-        if _levels(text[start:position]) < 2:
-            return position
+        if first_word:
+            # 往后读只会多出级数、不会变少，所以只在第一个词读完时数一次：每接上一个词都把读过的整段
+            # 切出来重数，一长串带斜杠的词就是 n²（1MB 跑不完一分钟）
+            if _levels(text[start:position]) < 2:
+                return position
+            first_word = False
         probe = position
         for _ in range(_LOOKAHEAD):
             word = _NEXT_WORD.match(text, probe)
@@ -71,7 +81,10 @@ def _file_name(path: str) -> str:
 
 
 def redact_paths(text: str) -> str:
-    """文字里至少两级的绝对路径（带不带引号都算）换成最后一级的名字，别的字一个不动。"""
+    """文字里至少两级的绝对路径（带不带引号都算）换成最后一级的名字，别的字一个不动；
+    超过 _MAX_CHARS 个字的只留前面一段，后面标明省略。"""
+    if len(text) > _MAX_CHARS:
+        return redact_paths(text[: _MAX_CHARS - len(_OMITTED)]) + _OMITTED
     pieces: list[str] = []
     position = 0
     while match := _START.search(text, position):
