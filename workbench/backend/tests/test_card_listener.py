@@ -265,6 +265,7 @@ def test_fresh_home_import_creates_log_dir(tmp_path):
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
     )
     assert result.returncode == 0, result.stderr[-500:]
     assert result.stdout.strip() == "True"
@@ -280,6 +281,7 @@ def test_script_without_config_exits_with_a_readable_message(tmp_path):
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
     )
     assert result.returncode == CONFIG_MISSING_EXIT, result.stderr[-500:]
     assert CHAT_KEY in result.stderr and OWNER_KEY in result.stderr

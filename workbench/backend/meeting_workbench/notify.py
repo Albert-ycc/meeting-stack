@@ -713,6 +713,7 @@ class LarkNotifier:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
@@ -874,6 +875,7 @@ class LarkNotifier:
             capture_output=True,
             text=True,
             timeout=15,
+            check=False,
         )
 
     def _send_cards(self, cards: list[dict], *, kind: str, ref_key: str) -> bool:

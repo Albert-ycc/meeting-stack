@@ -168,7 +168,7 @@ def make_engines(
     def run(argv, **kwargs):
         if argv[0] == "xcode-select":
             return completed(argv, 2)
-        return subprocess.run(argv, **kwargs)
+        return subprocess.run(argv, **kwargs)  # noqa: PLW1510 照转调用方的参数，check 就在 kwargs 里
 
     vision = vision or FakeVision()
     engines = OcrEngines(
@@ -363,7 +363,9 @@ def test_tesseract_without_chinese_does_not_count(tmp_path):
         settings,
         system="darwin",
         run=lambda argv, **kw: (
-            subprocess.run(argv, **kw) if argv[0] != "xcode-select" else completed(argv, 2)
+            subprocess.run(argv, **kw)  # noqa: PLW1510 照转调用方的参数，check 就在 kw 里
+            if argv[0] != "xcode-select"
+            else completed(argv, 2)
         ),
         which=lambda name: english if name == "tesseract" else None,
         build=FakeBuild(settings.data_dir, ready=False),

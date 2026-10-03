@@ -55,10 +55,11 @@ line-length = 100
 # - DTZ：不带时区的 datetime.now()、date.today() 这类。要本机日期写 datetime.now().astimezone()，
 #   要北京日历用 task_due.BEIJING_TZ，要 UTC 写 UTC；确实要不带时区的本机墙上时间就加 noqa 写明为什么。
 # - B：flake8-bugbear，zip 不写 strict、闭包晚绑定循环变量、except 里抛新异常不带 from 这类。
+# - PLW1510：subprocess.run 要写明 check：自己看 returncode 的写 check=False，失败就该抛的写 check=True。
 # 宽 except（BLE001）不开：它对写了 logger.exception / exc_info 的放行，对只记类型名和位置的
 # describe_error 写法报错，开了等于逼着往日志里打整段 traceback（AI 相关的循环特意不这样记）；
 # 这里的宽 except 都是有意的（后台循环、旁路失败只记账），挨个加 noqa 只是把旁边的注释再说一遍。
-extend-select = ["RUF100", "DTZ", "B"]
+extend-select = ["RUF100", "DTZ", "B", "PLW1510"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI 的 Query(...) 写在参数默认值里是参数声明，不是 B008 说的「定义时算一次、每次调用共用同一个可变值」：

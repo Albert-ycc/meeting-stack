@@ -633,6 +633,7 @@ def test_transcriber_script_answers_only_on_stdout(tmp_path):
         text=True,
         env=env,
         timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     answers = [json.loads(line) for line in result.stdout.splitlines()]
