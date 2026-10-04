@@ -163,7 +163,9 @@ class BackupManager:
             source_connection = self.db.connect()
             destination_connection = sqlite3.connect(temporary)
             try:
-                source_connection.backup(destination_connection, pages=256)
+                # 一步拷完。分页拷时只要别的连接在两步之间提交，SQLite 就从第一页整库重拷，而服务每轮扫描
+                # 都写库。源库是 WAL，一步拷完只占一个读快照，不挡别人写，也不会重来。
+                source_connection.backup(destination_connection, pages=-1)
                 stripped = self._strip_derived_tables(destination_connection)
                 self._leave_wal_mode(destination_connection)
                 result = destination_connection.execute("PRAGMA integrity_check").fetchone()[0]

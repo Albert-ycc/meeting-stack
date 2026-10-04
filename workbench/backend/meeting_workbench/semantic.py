@@ -139,14 +139,19 @@ class SemanticIndex:
             self._rebuild_lock.release()
 
     def _rebuild_locked(self, *, force: bool) -> int:
+        # 扫描循环每轮都跑这条。先在 (segment_id, model) 主键索引里挑出不再属于当前版本的段落，
+        # 再按主键删。以前写成 NOT IN（全部当前段落），每轮要把十几万个段落 id 乱序灌进临时 B 树，
+        # 缓存装不下就反复溢写，一轮写两百多 MB 临时文件，还整表扫一遍五百多 MB 的向量。
         with self.db.transaction() as connection:
             connection.execute(
                 """DELETE FROM embeddings
-                   WHERE model = ? AND segment_id NOT IN (
-                     SELECT s.id FROM segments s
-                     JOIN meetings m ON m.current_transcript_version_id = s.version_id
+                   WHERE model = ? AND segment_id IN (
+                     SELECT e.segment_id FROM embeddings e
+                     LEFT JOIN segments s ON s.id = e.segment_id
+                     LEFT JOIN meetings m ON m.current_transcript_version_id = s.version_id
+                     WHERE e.model = ? AND m.id IS NULL
                    )""",
-                (self.settings.semantic_model,),
+                (self.settings.semantic_model, self.settings.semantic_model),
             )
         rows = self.db.query_all(
             """SELECT s.id, s.text FROM segments s JOIN meetings m ON m.current_transcript_version_id = s.version_id

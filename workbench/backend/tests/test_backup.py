@@ -334,3 +334,46 @@ def test_backup_strips_related_windows_and_their_mark(tmp_path):
     # 主库不动
     assert db.query_one("SELECT COUNT(*) AS n FROM meeting_windows") == {"n": 1}
     assert db.query_one("SELECT value FROM app_state WHERE key='related_chunk_mark'") is not None
+
+
+def test_backup_copies_in_one_step_while_another_connection_keeps_committing(tmp_path, monkeypatch):
+    """服务每轮扫描都写库。分页备份在两步之间遇到别的连接提交，会从第一页整库重拷（以前 256 页
+    一步，生产库要一千多步）。要一步拷完，别人在拷完之后怎么写都不影响。"""
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        archive_root=tmp_path / "missing-archive",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    _seed_segments_with_embeddings(db, 400)
+    writer = sqlite3.connect(settings.database_path)
+    steps: list[int] = []
+
+    class CommitAfterEveryStep(sqlite3.Connection):
+        def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
+            def after_step(_status, remaining, _total):
+                steps.append(remaining)
+                if len(steps) > 20:
+                    raise RuntimeError("备份一直在从头重来")
+                writer.execute(
+                    "INSERT INTO meetings(id, title) VALUES (?, '备份期间写入')",
+                    (f"vm-during-{len(steps)}",),
+                )
+                writer.commit()
+
+            return super().backup(target, pages=pages, progress=after_step, name=name, sleep=sleep)
+
+    monkeypatch.setattr(
+        db, "connect", lambda: sqlite3.connect(db.path, factory=CommitAfterEveryStep)
+    )
+
+    try:
+        result = BackupManager(db, settings).create()
+    finally:
+        writer.close()
+
+    assert steps == [0]
+    with sqlite3.connect(result.local_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM segments").fetchone()[0] == 400
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

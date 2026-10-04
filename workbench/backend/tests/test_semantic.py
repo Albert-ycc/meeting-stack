@@ -307,3 +307,61 @@ def test_segments_split_during_rebuild_are_skipped_not_fatal(tmp_path):
            WHERE e.segment_id IS NULL"""
     )["n"]
     assert missing == 0
+
+
+def test_semantic_orphan_cleanup_keeps_other_models_and_skips_full_segment_list(
+    tmp_path, monkeypatch
+):
+    """扫描循环每轮都清一次孤儿向量：只删本模型、不再属于当前版本的；也不能把全部当前段落 id
+    灌进临时表（生产十几万段落时一轮溢写两百多 MB）。"""
+    settings = Settings(data_dir=tmp_path, database_path=tmp_path / "db.sqlite3")
+    db = Database(settings.database_path)
+    db.initialize()
+    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-keep', '保留', 'published')")
+    version = db.create_transcript_version("vm-keep", "funasr", published=True)
+    db.replace_segments(
+        version,
+        "vm-keep",
+        [
+            {"id": "current-segment", "start_ms": 0, "end_ms": 1, "text": "随访"},
+            {"id": "dropped-segment", "start_ms": 1, "end_ms": 2, "text": "营养"},
+        ],
+    )
+    index = SemanticIndex(db, settings, embedder=FakeEmbedder(), busy_check=lambda: False)
+    index.rebuild()
+    db.execute(
+        """INSERT INTO embeddings(segment_id, model, dimensions, vector, created_at)
+           VALUES ('dropped-segment', 'other-model', 3, ?, '2026-10-04T00:00:00Z')""",
+        (np.zeros(3, dtype=np.float32).tobytes(),),
+    )
+    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-move', '挪走', 'published')")
+    moved = db.create_transcript_version("vm-move", "funasr", published=True)
+    db.execute(
+        "UPDATE segments SET version_id=?, meeting_id='vm-move' WHERE id='dropped-segment'",
+        (moved,),
+    )
+    db.execute("UPDATE meetings SET current_transcript_version_id=NULL WHERE id='vm-move'")
+    statements: list[str] = []
+    connect = db.connect
+
+    def traced_connect():
+        connection = connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(db, "connect", traced_connect)
+
+    index.rebuild()
+
+    rows = db.query_all("SELECT segment_id, model FROM embeddings ORDER BY segment_id, model")
+    assert rows == [
+        {"segment_id": "current-segment", "model": settings.semantic_model},
+        {"segment_id": "dropped-segment", "model": "other-model"},
+    ]
+    cleanup = next(sql for sql in statements if sql.lstrip().startswith("DELETE FROM embeddings"))
+    with db.autocommit() as connection:
+        plan = [row[3] for row in connection.execute("EXPLAIN QUERY PLAN " + cleanup)]
+    assert not any(step.startswith("SCAN s") for step in plan), plan
+    assert all(
+        "COVERING INDEX" in step for step in plan if step.startswith(("SCAN e", "SCAN embeddings"))
+    ), plan
