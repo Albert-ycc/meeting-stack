@@ -1906,7 +1906,7 @@ def process_whisper_retry_claim(claim: dict) -> bool:
             raise RuntimeError("source_audio_invalid")
         staging = Path(
             tempfile.mkdtemp(
-                prefix=f".whisper-retry-{generation}-",
+                prefix=_relay_control_module().whisper_retry_staging_prefix(job_id, generation),
                 dir=target.parent,
             )
         )

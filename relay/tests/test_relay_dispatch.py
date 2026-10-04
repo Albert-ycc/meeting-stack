@@ -1468,7 +1468,10 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         self.assertIn("turbo", command)
         self.assertIn("--model_dir", command)
         self.assertTrue(finish.call_args.kwargs["success"])
-        self.assertIsNotNone(finish.call_args.kwargs["artifact_dir"])
+        staging = Path(finish.call_args.kwargs["artifact_dir"])
+        # 暂存目录建在归档旁、名字带任务号和代数，认领者被强杀后对账才认得出哪些归它
+        self.assertEqual(target.parent, staging.parent)
+        self.assertTrue(staging.name.startswith(".whisper-retry-job-whisper-3-"), staging.name)
 
     def test_whisper_retry_uses_job_hotword_snapshot_not_global_prompt(self):
         module = load_watchdog_module()

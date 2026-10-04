@@ -2781,6 +2781,31 @@ class RelayControlTests(unittest.TestCase):
                 error="late",
             )
 
+    def test_reconcile_removes_staging_left_by_a_killed_whisper_retry_worker(self):
+        control, job_id, product = self._whisper_running_job()
+        control.record_substate(job_id, "whisper", "failed", error="engine", attempt_no=1)
+        control.retry_substate(job_id, "whisper")
+        claim = control.claim_whisper_retry(worker_id="relayctl-4242-whisper", job_id=job_id)
+        parent = Path(claim["target_archive_dir"]).parent
+        # 被强杀的 worker 留下的半成品；同一父目录里别的任务的暂存目录不能动
+        mine = parent / f"{self.module.whisper_retry_staging_prefix(job_id, 1)}abc123"
+        (mine / "whisper-ref").mkdir(parents=True)
+        (mine / "whisper-ref" / "whisper.log").write_text(" 37%|███", encoding="utf-8")
+        others = parent / f"{self.module.whisper_retry_staging_prefix('job-other', 1)}def456"
+        others.mkdir()
+        self._age_whisper(job_id, product)
+
+        with patch.object(self.module, "_worker_process_is_alive", return_value=True):
+            control.reconcile_pending_archives()
+        self.assertTrue(mine.is_dir())
+
+        with patch.object(self.module, "_worker_process_is_alive", return_value=False):
+            summary = control.reconcile_pending_archives()
+        self.assertEqual([job_id], summary["whisper_orphaned"])
+        self.assertFalse(mine.exists())
+        self.assertTrue(others.is_dir())
+        self.assertTrue(Path(claim["target_archive_dir"]).is_dir())
+
     def test_reconcile_fails_orphaned_running_whisper_of_a_failed_job(self):
         control, job_id, product = self._whisper_running_job(complete_minutes=False)
         control.fail(job_id, "minutes_generating", "agent_exit")

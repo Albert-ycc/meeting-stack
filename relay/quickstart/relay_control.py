@@ -1024,6 +1024,15 @@ _WHISPER_RETRY_QUEUE_WHERE = """
 _WHISPER_RETRY_QUEUE_ORDER = "whisper_updated_at, updated_at, job_id"
 
 
+def whisper_retry_staging_prefix(job_id: str, generation: int | None = None) -> str:
+    """单独重试在归档目录旁建的暂存目录名前缀（relay_watchdog.process_whisper_retry_claim）。
+
+    带上 job_id：平铺在归档根下的待校对归档，各任务的暂存目录建在同一个父目录里，收口时只能删自己的。
+    """
+    prefix = f".whisper-retry-{job_id}-"
+    return prefix if generation is None else f"{prefix}{generation}-"
+
+
 # 首轮 Whisper 对照稿是 transcribe.sh 放进后台（disown）跑的，任务库里只写 running、没有认领者；
 # 进程中途死掉就永远停在 running。对账据此判断还有没有人在出稿：没有活着的出稿进程，
 # 且 whisper.log / 子状态这么久没动过，才收口成 failed。长录音在 CPU 上要跑好几个小时，
@@ -2387,7 +2396,24 @@ class RelayControl:
                     "source": str(product_archive),
                 },
             )
+        if worker_id:
+            self._discard_whisper_retry_staging(row)
         return True
+
+    def _discard_whisper_retry_staging(self, row: sqlite3.Row) -> None:
+        """认领者死了（被强杀时 finally 不执行），它在归档旁建的暂存目录没人删，收口后一并删掉。
+
+        这一行已经收口成 failed，这个任务名下不会再有活着的认领；万一 Whisper 孙进程还在往里写，
+        目录没了它也只会写失败退出，回执早已被 CAS 拒掉。
+        """
+        try:
+            target = self._managed_unreviewed_archive(row)
+        except RelayControlError:
+            return
+        for staging in target.parent.glob(whisper_retry_staging_prefix(row["job_id"]) + "*"):
+            if staging.is_symlink() or not staging.is_dir():
+                continue
+            shutil.rmtree(staging, ignore_errors=True)
 
     def reconcile_pending_archives(self) -> dict[str, Any]:
         """提升遗留 hidden 归档，并回填已完成的产品 Whisper。"""
