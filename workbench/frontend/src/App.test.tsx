@@ -945,14 +945,14 @@ describe("列表页检索条件", () => {
     });
     render(<App apiClient={client({ todo } as Partial<ApiClient>)} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "待办" }));
+    fireEvent.click(await screen.findByRole("button", { name: "待办管理" }));
     await userEvent.type(await screen.findByPlaceholderText("输入任务名称"), "周报");
     await userEvent.click(screen.getByRole("button", { name: "查询" }));
     await waitFor(() => expect(todo).toHaveBeenLastCalledWith(expect.objectContaining({ q: "周报" })));
 
     fireEvent.click(screen.getByRole("button", { name: "录音档案" }));
     await screen.findByText("会议录音档案");
-    fireEvent.click(screen.getByRole("button", { name: "待办" }));
+    fireEvent.click(screen.getByRole("button", { name: "待办管理" }));
 
     expect(await screen.findByPlaceholderText("输入任务名称")).toHaveValue("周报");
     await waitFor(() => expect(todo).toHaveBeenLastCalledWith(expect.objectContaining({ q: "周报" })));

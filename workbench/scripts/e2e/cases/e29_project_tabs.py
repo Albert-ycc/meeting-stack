@@ -56,7 +56,7 @@ with sync_playwright() as p:
     page.reload(wait_until="networkidle")
     page.wait_for_timeout(1500)
     check("在材料上刷新：还在材料", "材料" in tab(), tab())
-    nav(page, "词典", 600)
+    nav(page, "词典管理", 600)
     nav(page, "项目管理", 800)
     page.get_by_role("button", name="进入医米科研用药").click()
     page.wait_for_timeout(1500)

@@ -71,7 +71,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(300)
     page.locator(".transcript-scroll textarea").nth(1).fill("保存中就切页")
     page.get_by_role("button", name="保存草稿").click()
-    nav(page, "词典", 1500)
+    nav(page, "词典管理", 1500)
     saved = page.evaluate(
         "async m => (await (await fetch('/api/meetings/' + m)).json()).segments[1].text", MEETING
     )

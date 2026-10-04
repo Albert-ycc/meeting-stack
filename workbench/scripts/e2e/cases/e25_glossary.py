@@ -28,7 +28,7 @@ def terms(page) -> list[str]:
 with sync_playwright() as p:
     b = launch(p)
     ctx, page = new_page(b)
-    c = Collector(page, "词典")
+    c = Collector(page, "词典管理")
     page.goto(BASE + "/#glossary", wait_until="networkidle")
     page.wait_for_timeout(600)
 

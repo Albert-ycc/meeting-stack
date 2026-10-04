@@ -16,11 +16,11 @@ VIEWS = {
     "工作台": "",
     "录音档案": "#library",
     "需求池": "#requirements",
-    "待办": "#tasks",
+    "待办管理": "#tasks",
     "项目管理": "#projects",
     "项目详情": "#projects/project-yimi",
     "项目关系图": "#projects/project-yimi/graph",
-    "词典": "#glossary",
+    "词典管理": "#glossary",
     "需求详情": "#requirements/req-jd",
 }
 MAX = "() => document.scrollingElement.scrollHeight - innerHeight"

@@ -13,7 +13,7 @@ from common import (
     sync_playwright,
 )
 
-VIEWS = ["工作台", "录音档案", "需求池", "待办", "词典", "项目管理"]
+VIEWS = ["工作台", "录音档案", "需求池", "待办管理", "词典管理", "项目管理"]
 
 with sync_playwright() as p:
     b = launch(p)

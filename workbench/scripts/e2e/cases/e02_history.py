@@ -18,15 +18,15 @@ from common import (
 SEQ = [
     ("录音档案", "#library"),
     ("需求池", "#requirements"),
-    ("词典", "#glossary"),
+    ("词典管理", "#glossary"),
     ("项目管理", "#projects"),
 ]
 # 刷新后该亮哪个入口
 RELOAD = [
     ("#library", "录音档案"),
     ("#requirements", "需求池"),
-    ("#tasks", "待办"),
-    ("#glossary", "词典"),
+    ("#tasks", "待办管理"),
+    ("#glossary", "词典管理"),
     ("#projects", "项目管理"),
     ("#graph", "关系图"),
     ("#jobs", "转写录音"),
@@ -55,7 +55,7 @@ with sync_playwright() as p:
         settle(page, 500)
         check(f"前进一步 → {want}", hash_of(page) == want, hash_of(page))
 
-    nav(page, "待办")
+    nav(page, "待办管理")
     check("点「待办」→ #tasks", hash_of(page) == "#tasks", hash_of(page))
 
     # 录音档案 → 打开会议 → 后退 / 前进 / ［← 返回］

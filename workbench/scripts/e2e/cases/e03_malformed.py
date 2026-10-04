@@ -62,7 +62,7 @@ with sync_playwright() as p:
         page.evaluate("h => { location.hash = h }", hash_)
         page.wait_for_timeout(700)
         check(f"已开着页面改成 {hash_}：没有页面异常", not c.pageerrors, c.pageerrors)
-        nav(page, "词典")
+        nav(page, "词典管理")
         check(f"改成 {hash_} 之后侧栏还能用", hash_of(page) == "#glossary", hash_of(page))
         ctx.close()
 

@@ -57,7 +57,7 @@ with sync_playwright() as p:
     check("改动和原文确实不一样（防这条检查空转）", edited != original)
 
     # 离开：有未保存改动先问一次
-    nav(page, "词典", 800)
+    nav(page, "词典管理", 800)
     check(f"点侧栏离开：问一次「{LEAVE_CONFIRM}」", natives == [LEAVE_CONFIRM], natives)
     check(
         "点了取消：还留在这场会，改动还在",
@@ -67,7 +67,7 @@ with sync_playwright() as p:
     )
     answer["accept"] = True
     natives.clear()
-    nav(page, "词典", 800)
+    nav(page, "词典管理", 800)
     check(
         "点了确定：离开到词典",
         hash_of(page) == "#glossary" and natives == [LEAVE_CONFIRM],

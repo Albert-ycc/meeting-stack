@@ -673,7 +673,7 @@ describe("待办：页头、页签与侧栏之外的壳", () => {
     renderPage(makeClient());
     await screen.findByText("安排与华谊的会");
 
-    expect(screen.getByRole("heading", { level: 1, name: "待办" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "待办管理" })).toBeInTheDocument();
     expect(screen.getByText("会上答应的事和需求拆出来的步骤，都在这里按截止排")).toBeInTheDocument();
     expect(screen.getByText("件 未完成").previousElementSibling).toHaveTextContent("6");
   });

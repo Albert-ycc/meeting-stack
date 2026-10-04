@@ -84,7 +84,7 @@ with sync_playwright() as p:
         MARK_M in (minutes_value(page) or ""),
         minutes_value(page) and minutes_value(page)[-30:],
     )
-    nav(page, "词典", 500)
+    nav(page, "词典管理", 500)
     check(
         "纪要还有没保存的改动时点侧栏：被拦下，还在这场会",
         any("未保存" in m for m in natives) and "#meetings/" in hash_of(page),

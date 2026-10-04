@@ -16,13 +16,13 @@ from common import (
 # 侧栏文字 → (地址 hash, 第一个标题)
 ENTRIES = [
     ("工作台", "", "工作台"),
-    ("录音档案", "#library", "会议录音档案"),
-    ("需求池", "#requirements", "需求池"),
-    ("待办", "#tasks", "待办"),
-    ("词典", "#glossary", "词典"),
-    ("项目管理", "#projects", "项目"),
     ("关系图", "#graph", "全部项目"),
+    ("项目管理", "#projects", "项目"),
+    ("需求池", "#requirements", "需求池"),
+    ("待办管理", "#tasks", "待办管理"),
+    ("录音档案", "#library", "会议录音档案"),
     ("转写录音", "#jobs", "录音流水线"),
+    ("词典管理", "#glossary", "词典管理"),
 ]
 FIRST_HEADING = "() => (document.querySelector('main h1, main h2') || {}).innerText || null"
 

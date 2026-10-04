@@ -16,7 +16,7 @@ NAV = [
     ("工作台", ""),
     ("录音档案", "#library"),
     ("需求池", "#requirements"),
-    ("待办", "#tasks"),
+    ("待办管理", "#tasks"),
     ("项目管理", "#projects"),
 ]
 

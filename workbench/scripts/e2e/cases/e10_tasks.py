@@ -30,7 +30,7 @@ def tab_state(page):
 with sync_playwright() as p:
     b = launch(p)
     ctx, page = new_page(b)
-    c = Collector(page, "待办")
+    c = Collector(page, "待办管理")
     page.goto(BASE + "/#tasks", wait_until="networkidle")
     page.wait_for_timeout(400)
     page.locator("main [role=tab]", has_text="待确认").first.click()
@@ -81,8 +81,8 @@ with sync_playwright() as p:
         want[0] is not None and "未完成" in want[0] and want[1] == "方案",
         want,
     )
-    nav(page, "词典", 400)
-    nav(page, "待办", 600)
+    nav(page, "词典管理", 400)
+    nav(page, "待办管理", 600)
     check("离开再回来：页签和查询词原样", tab_state(page) == want, tab_state(page))
     page.reload(wait_until="networkidle")
     page.wait_for_timeout(600)

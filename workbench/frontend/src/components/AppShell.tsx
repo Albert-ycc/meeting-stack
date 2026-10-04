@@ -155,14 +155,14 @@ function ThemeSwitch() {
 
 const navItems: Array<{ view: AppView; label: string; desktopOnly?: boolean }> = [
   { view: "overview", label: "工作台" },
-  { view: "library", label: "录音档案" },
-  { view: "requirements", label: "需求池" },
-  { view: "tasks", label: "待办" },
-  { view: "glossary", label: "词典" },
-  { view: "projects", label: "项目管理" },
   // 全部项目概览（2c）：画布只在电脑上有
   { view: "graph", label: "关系图", desktopOnly: true },
+  { view: "projects", label: "项目管理" },
+  { view: "requirements", label: "需求池" },
+  { view: "tasks", label: "待办管理" },
+  { view: "library", label: "录音档案" },
   { view: "jobs", label: "转写录音", desktopOnly: true },
+  { view: "glossary", label: "词典管理" },
 ];
 
 /** 需求详情页、新增和认领需求的二级页跟需求池共用高亮；项目详情（清单、关系图两种模式）跟项目管理共用高亮。 */

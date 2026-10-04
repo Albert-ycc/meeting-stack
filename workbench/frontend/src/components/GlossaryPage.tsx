@@ -894,7 +894,7 @@ export function GlossaryPage({
         <div>
           <span className="eyebrow">GLOSSARY / 术语词典</span>
           <div className="gw-titleline">
-            <h1>词典</h1>
+            <h1>词典管理</h1>
             <p>出纪要时，按这场会的内容挑出相关词条交给 AI 纠错；词典不改逐字稿。</p>
           </div>
         </div>

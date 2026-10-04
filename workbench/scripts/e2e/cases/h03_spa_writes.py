@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(600)
 
     # 驳回、撤销驳回
-    nav(page, "待办", 900)
+    nav(page, "待办管理", 900)
     page.locator("main [role=tab]", has_text="待确认").first.click()
     page.wait_for_timeout(600)
     reject = page.locator("button[aria-label^='驳回「']").first

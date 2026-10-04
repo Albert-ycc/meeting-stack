@@ -102,7 +102,7 @@ describe("地址栏锚点直达", () => {
 
     render(<App apiClient={client()} />);
 
-    expect(await screen.findByRole("heading", { name: "待办" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "待办管理" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#tasks");
   });
 
@@ -128,7 +128,7 @@ describe("地址栏锚点直达", () => {
 
     await waitFor(() => expect(window.location.hash).toBe("#library"));
     expect(screen.getByRole("heading", { name: "会议录音档案" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "待办" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "待办管理" })).not.toBeInTheDocument();
   });
 
   it("冷加载带 #library、启动接口还没回时就提交了检索：启动完成后检索结果还在，底下的视图和地址栏仍是录音档案", async () => {
@@ -676,7 +676,7 @@ describe("局部图和来龙去脉的地址（4f）", () => {
     forgetGraphCache();
     window.history.replaceState(null, "", "/#tasks");
     render(<App apiClient={localClient()} />);
-    await screen.findByRole("heading", { name: "待办" });
+    await screen.findByRole("heading", { name: "待办管理" });
     window.history.pushState({ app: true }, "", "/#projects/p/graph?file=7");
     window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
     expect(await screen.findByRole("heading", { name: "以『文件7.xlsx』为中心" })).toBeInTheDocument();
@@ -1164,8 +1164,8 @@ describe("需求二级页的来去（R04-1、R04-8）", () => {
     await screen.findByRole("heading", { name: "新增需求" });
 
     // 侧栏「任务池」已改名「待办」（项目页与待办改版 R07-1）
-    fireEvent.click(screen.getByRole("button", { name: "待办" }));
-    await screen.findByRole("heading", { name: "待办" });
+    fireEvent.click(screen.getByRole("button", { name: "待办管理" }));
+    await screen.findByRole("heading", { name: "待办管理" });
     act(() => window.history.back());
 
     expect(await screen.findByRole("heading", { name: "新增需求" })).toBeInTheDocument();
