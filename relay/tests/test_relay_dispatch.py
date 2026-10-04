@@ -9,7 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 # tests/ 没有 __init__，按文件路径跑单个文件时同目录的公共模块不在 sys.path 上
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1760,6 +1760,76 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertFalse(finish.call_args.kwargs["success"])
         self.assertEqual("whisper_process_failed", finish.call_args.kwargs["error"])
+
+    def test_whisper_retry_dispatcher_runs_one_at_a_time_without_waiting_for_it(self):
+        module = load_watchdog_module()
+        module.WHISPER_RETRY_POLL_INTERVAL_SEC = 30.0
+        first = {"job_id": "job-a", "generation": 1}
+        second = {"job_id": "job-b", "generation": 1}
+        running = Mock(pid=111)
+        running.poll.side_effect = [None, 0]
+        with (
+            patch.object(module.time, "monotonic", side_effect=[100.0, 201.0]),
+            patch.object(
+                module, "_control_next_whisper_retry", side_effect=[first, second]
+            ) as peek,
+            patch.object(
+                module, "_spawn_whisper_retry", side_effect=[running, Mock(pid=222)]
+            ) as spawn,
+        ):
+            # 派出去立刻返回；子进程没退出前不看队列、不派第二个；退出后接着派下一个
+            results = [module.run_whisper_retry_dispatcher_once() for _ in range(3)]
+
+        self.assertEqual(["job-a", None, "job-b"], results)
+        self.assertEqual(2, peek.call_count)
+        self.assertEqual([("job-a", 1), ("job-b", 1)], [call.args for call in spawn.call_args_list])
+
+    def test_whisper_retry_dispatcher_backs_off_when_the_process_never_claimed_it(self):
+        module = load_watchdog_module()
+        module.WHISPER_RETRY_POLL_INTERVAL_SEC = 30.0
+        stuck = {"job_id": "job-a", "generation": 1}
+        other = {"job_id": "job-b", "generation": 1}
+        exited = Mock(pid=111)
+        exited.poll.return_value = 1
+        ticks = [100.0, 131.0, 150.0, 191.0, 221.0, 341.0, 371.0]
+        with (
+            patch.object(module.time, "monotonic", side_effect=ticks),
+            patch.object(
+                module,
+                "_control_next_whisper_retry",
+                side_effect=[stuck, stuck, stuck, stuck, stuck, other],
+            ) as peek,
+            patch.object(module, "_spawn_whisper_retry", return_value=exited) as spawn,
+            self.assertLogs(module.log, level="WARNING") as logs,
+        ):
+            results = [module.run_whisper_retry_dispatcher_once() for _ in ticks]
+
+        # 同一代派出去又原样留在队列里：等 60 秒再派，再倒就等 120 秒；换了任务退避归零
+        self.assertEqual(["job-a", None, None, "job-a", None, "job-a", "job-b"], results)
+        self.assertEqual(6, peek.call_count)
+        self.assertEqual(4, spawn.call_count)
+        self.assertEqual(2, len(logs.output))
+        self.assertIn("60 秒后再派", logs.output[0])
+        self.assertIn("120 秒后再派", logs.output[1])
+        self.assertEqual(30.0, module._whisper_retry_backoff_sec)
+
+    def test_whisper_retry_dispatcher_backs_off_after_spawn_itself_fails(self):
+        module = load_watchdog_module()
+        module.WHISPER_RETRY_POLL_INTERVAL_SEC = 30.0
+        queued = {"job_id": "job-a", "generation": 1}
+        with (
+            patch.object(module.time, "monotonic", side_effect=[100.0, 131.0]),
+            patch.object(module, "_control_next_whisper_retry", return_value=queued),
+            patch.object(
+                module, "_spawn_whisper_retry", side_effect=OSError("relayctl 不见了")
+            ) as spawn,
+        ):
+            with self.assertRaises(OSError):
+                module.run_whisper_retry_dispatcher_once()
+            with self.assertLogs(module.log, level="WARNING"):
+                self.assertIsNone(module.run_whisper_retry_dispatcher_once())
+
+        self.assertEqual(1, spawn.call_count)
 
     def test_worker_once_reclaims_its_own_stranded_claim_and_moves_queue_on(self):
         module = load_watchdog_module()

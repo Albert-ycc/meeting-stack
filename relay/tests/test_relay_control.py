@@ -24,6 +24,7 @@ from isolated_env import isolate_environment
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTROL_PATH = REPO_ROOT / "quickstart" / "relay_control.py"
+WATCHDOG_PATH = REPO_ROOT / "quickstart" / "relay_watchdog.py"
 _RUNTIME_DB_ENV = "MEETING_RELAY_JOBS_DB"
 _ARCHIVE_LOCK_ENV = "MEETING_RELAY_ARCHIVE_LOCK"
 # 模块加载时的真实 HOME（setUpModule 还没把它指到临时目录），只拿来做字符串比较，不碰文件系统
@@ -4979,6 +4980,77 @@ class RelayControlTests(unittest.TestCase):
         self.assertEqual(job_id, payload["job_id"])
         self.assertEqual(1, payload["generation"])
         self.assertTrue(payload["executed"])
+
+    def _request_whisper_retry(self, audio: Path) -> str:
+        job_id = self.control.enqueue(audio)
+        self.control.record_stage(job_id, "transcribing")
+        self.control.record_stage(job_id, "transcript_ready")
+        self.control.record_stage(job_id, "minutes_generating")
+        archive = create_complete_archive(self.root, job_id, include_whisper=False, stem=audio.stem)
+        self.control.complete_minutes(job_id, archive)
+        self.control.record_substate(job_id, "whisper", "failed", error="engine")
+        self.control.retry_substate(job_id, "whisper")
+        return job_id
+
+    def test_next_whisper_retry_peeks_the_claim_and_yields_while_a_retry_is_alive(self):
+        self.assertIsNone(self.control.next_whisper_retry())
+        first = self._request_whisper_retry(self.audio)
+        second_audio = self.root / "vm-20260710-130000-DEF.m4a"
+        second_audio.write_bytes(b"audio")  # 归档夹具里的音频就是这几个字节，哈希要对上
+        second = self._request_whisper_retry(second_audio)
+
+        peeked = self.control.next_whisper_retry()
+        claim = self.control.claim_whisper_retry(worker_id="relayctl-4242-whisper")
+        self.assertEqual({"job_id": first, "generation": 1}, peeked)
+        self.assertEqual(first, claim["job_id"])
+        self.assertEqual("pending", self.control.status(second)["substates"]["whisper"]["status"])
+
+        # 有活着的认领者在跑重试就不派第二个；认领者死了不占位（留给对账收口）
+        with patch.object(self.module, "_worker_process_is_alive", return_value=True) as alive:
+            self.assertIsNone(self.control.next_whisper_retry())
+        alive.assert_called_once_with("relayctl-4242-whisper")
+        with patch.object(self.module, "_worker_process_is_alive", return_value=False):
+            self.assertEqual({"job_id": second, "generation": 1}, self.control.next_whisper_retry())
+
+    def test_watchdog_dispatches_whisper_retry_to_a_detached_relayctl_process(self):
+        """真起子进程：派发器不等它；子进程另起会话、用自己的 pid 指纹领取，跑完照常回执、输出进日志。"""
+        job_id = self._request_whisper_retry(self.audio)
+        with patch.dict(
+            os.environ,
+            {
+                "MEETING_RELAY_JOBS_DB": str(self.db_path),
+                "MEETING_RELAY_ARCHIVE_ROOT": str(self.root),
+            },
+        ):
+            spec = importlib.util.spec_from_file_location(
+                "relay_watchdog_under_test", WATCHDOG_PATH
+            )
+            watchdog = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(watchdog)
+            watchdog.WHISPER_RETRY_LOG_FILE = self.root / "whisper-retry.log"
+
+            self.assertEqual(job_id, watchdog.run_whisper_retry_dispatcher_once())
+            process = watchdog._whisper_retry_process
+            self.assertEqual(process.pid, os.getsid(process.pid))
+            # 隔离的 HOME 里没有 Whisper 模型，子进程在开跑前失败，回执 failed、退出码 1
+            self.assertEqual(1, process.wait(timeout=60))
+            self.assertIsNone(watchdog.run_whisper_retry_dispatcher_once())
+            self.assertIsNone(watchdog._whisper_retry_process)
+
+        current = self.control.status(job_id)
+        self.assertEqual("failed", current["substates"]["whisper"]["status"])
+        self.assertEqual("whisper_retry_exception", current["substates"]["whisper"]["error"])
+        claimed = [
+            event for event in current["events"] if event["event_type"] == "whisper_retry_claimed"
+        ]
+        self.assertEqual(1, len(claimed))
+        worker_id = claimed[0]["payload"]["worker_id"]
+        self.assertRegex(worker_id, rf"^relayctl-{process.pid}-[0-9a-f]{{12}}-whisper$")
+        self.assertFalse(self.module._worker_process_is_alive(worker_id))
+        output = (self.root / "whisper-retry.log").read_text(encoding="utf-8")
+        self.assertIn(f"派出 Whisper 单独重试 {job_id} generation=1", output)
+        self.assertIn(f"{job_id}  generation=1  executed=false", output)
 
     def test_list_jobs_filters_status_without_exposing_event_payloads(self):
         queued_id = self.control.enqueue(self.audio)

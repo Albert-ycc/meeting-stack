@@ -159,6 +159,12 @@ INBOX_RESCAN_INTERVAL_SEC = _positive_interval_from_env(
 )
 # 补扫按「上次扫描时刻」划线；留一点余量吸收文件系统时间戳粒度
 INBOX_SCAN_MARGIN_SEC = 120.0
+# 工作台点「重试 Whisper 对照稿」后排进队列的单独重试：watchdog 主循环隔这么久看一次队列，
+# 派给独立进程跑（见 run_whisper_retry_dispatcher_once）；派出去的进程没领到就倒下时按次翻倍退避。
+WHISPER_RETRY_POLL_INTERVAL_SEC = 30.0
+WHISPER_RETRY_BACKOFF_MAX_SEC = 3600.0
+WHISPER_RETRY_LOG_FILE = STATE_DIR / "whisper-retry.log"
+RELAYCTL = Path(__file__).resolve().with_name("relayctl")
 CODEX_CALLBACK_GRACE_SEC = float(os.getenv("MEETING_RELAY_CODEX_CALLBACK_GRACE", "30"))
 RUNTIME_HEARTBEAT_INTERVAL_SEC = 10.0
 CONTROL_ERROR_BACKOFF_MAX_SEC = 30.0
@@ -188,6 +194,11 @@ DISABLE_DUAL = os.getenv("RELAY_DISABLE_DUAL") == "1"
 STARTUP_EPOCH = time.time()
 _next_pending_reconcile_at = 0.0
 _next_audio_cleanup_at = 0.0
+_whisper_retry_process: subprocess.Popen | None = None
+_whisper_retry_last: dict | None = None  # 最近一次派出去的 {"job_id", "generation"}
+_whisper_retry_held = False
+_whisper_retry_backoff_sec = WHISPER_RETRY_POLL_INTERVAL_SEC
+_next_whisper_retry_at = 0.0
 
 logging.basicConfig(
     level=logging.INFO,
@@ -545,6 +556,89 @@ def _control_defer_unstable_source(
             expected_worker=expected_worker,
         )
     )
+
+
+def _control_next_whisper_retry() -> dict | None:
+    return _relay_control_module().next_whisper_retry()
+
+
+def _spawn_whisper_retry(job_id: str, generation: int) -> subprocess.Popen:
+    """起一个 relayctl run-whisper-retry 子进程领取并执行，不等它。
+
+    worker id 由子进程自己生成（relayctl-<pid>-<启动指纹>-whisper），对账靠它判断认领者是否还活着。
+    另起会话、输出写到自己的日志：watchdog 是经 ssh localhost 拉起的，子进程要是继承了 ssh 的管道，
+    watchdog 一重启 ssh 就会一直等到 Whisper 跑完（几个小时）才退，外层循环拉不起新的 watchdog；
+    另起会话也让 watchdog 重启时这次重试照常跑完回执。
+    """
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with WHISPER_RETRY_LOG_FILE.open("a", encoding="utf-8") as output:
+        output.write(
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')}  派出 Whisper 单独重试 {job_id} "
+            f"generation={generation}\n"
+        )
+        output.flush()
+        return subprocess.Popen(
+            [sys.executable, str(RELAYCTL), "run-whisper-retry", job_id],
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+
+def run_whisper_retry_dispatcher_once() -> str | None:
+    """主循环每秒调一次，派出 Whisper 单独重试时返回 job_id。
+
+    CPU 上跑长录音的 Whisper 要好几个小时，不能放进 control worker 占住主链 claim_next，
+    所以派给独立进程、不等它；同一时间最多一个：自己派的还没退出不派，库里有别的活着的认领者
+    （手动 relayctl、上一个 watchdog 派出的）也不派（next_whisper_retry 判断）。
+    """
+    global _whisper_retry_process, _whisper_retry_last, _whisper_retry_held
+    global _whisper_retry_backoff_sec, _next_whisper_retry_at
+    if _whisper_retry_process is not None:
+        returncode = _whisper_retry_process.poll()
+        if returncode is None:
+            return None
+        log.info(
+            "Whisper 单独重试进程已退出：%s（退出码 %s，输出见 %s）",
+            (_whisper_retry_last or {}).get("job_id", "-"),
+            returncode,
+            WHISPER_RETRY_LOG_FILE,
+        )
+        _whisper_retry_process = None
+    now = time.monotonic()
+    if now < _next_whisper_retry_at:
+        return None
+    _next_whisper_retry_at = now + WHISPER_RETRY_POLL_INTERVAL_SEC
+    candidate = _control_next_whisper_retry()
+    if candidate is None:
+        return None
+    if candidate == _whisper_retry_last:
+        if not _whisper_retry_held:
+            # 上一个进程退出了，同一代重试却还在排队：没领到就倒下了（启动失败、领取时报错）。
+            # 隔一段再拉、间隔逐次翻倍，别每轮拉起来再倒一次刷满日志。
+            _whisper_retry_backoff_sec = min(
+                _whisper_retry_backoff_sec * 2, WHISPER_RETRY_BACKOFF_MAX_SEC
+            )
+            _whisper_retry_held = True
+            _next_whisper_retry_at = now + _whisper_retry_backoff_sec
+            log.warning(
+                "Whisper 单独重试 %s 派出后没被领走，%.0f 秒后再派（输出见 %s）",
+                candidate["job_id"],
+                _whisper_retry_backoff_sec,
+                WHISPER_RETRY_LOG_FILE,
+            )
+            return None
+    else:
+        _whisper_retry_backoff_sec = WHISPER_RETRY_POLL_INTERVAL_SEC
+    _whisper_retry_held = False
+    # 先记下再起进程：起进程本身抛错时，下一轮同样按「没被领走」退避
+    _whisper_retry_last = candidate
+    _whisper_retry_process = _spawn_whisper_retry(candidate["job_id"], candidate["generation"])
+    log.info(
+        "已派出 Whisper 单独重试：%s（pid %s）", candidate["job_id"], _whisper_retry_process.pid
+    )
+    return candidate["job_id"]
 
 
 def _control_finish_whisper_retry(
@@ -2638,6 +2732,11 @@ if __name__ == "__main__":
                 except Exception:
                     log.exception("补扫监听目录失败，下一轮再扫")
                 next_inbox_rescan = now + INBOX_RESCAN_INTERVAL_SEC
+            if watchdog_mode == "controlled":
+                try:
+                    run_whisper_retry_dispatcher_once()
+                except Exception:
+                    log.exception("Whisper 单独重试派发失败，下一轮再试")
             if now >= next_watchdog_heartbeat:
                 _best_effort_runtime_heartbeat("watchdog", mode=watchdog_mode, status="running")
                 next_watchdog_heartbeat = now + RUNTIME_HEARTBEAT_INTERVAL_SEC

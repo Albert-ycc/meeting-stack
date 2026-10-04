@@ -1013,6 +1013,17 @@ def _worker_process_is_alive(worker_id: str | None) -> bool:
     return True
 
 
+# 排队等单独重试的 Whisper：claim_whisper_retry 领取和 next_whisper_retry 预看共用，两边挑的是同一个。
+_WHISPER_RETRY_QUEUE_WHERE = """
+    whisper_retry_requested = 1
+    AND whisper_status = 'pending'
+    AND whisper_attempt = current_attempt
+    AND archive_dir IS NOT NULL
+    AND status IN ('completed_unreviewed', 'draft_modified')
+"""
+_WHISPER_RETRY_QUEUE_ORDER = "whisper_updated_at, updated_at, job_id"
+
+
 # 首轮 Whisper 对照稿是 transcribe.sh 放进后台（disown）跑的，任务库里只写 running、没有认领者；
 # 进程中途死掉就永远停在 running。对账据此判断还有没有人在出稿：没有活着的出稿进程，
 # 且 whisper.log / 子状态这么久没动过，才收口成 failed。长录音在 CPU 上要跑好几个小时，
@@ -2291,7 +2302,7 @@ class RelayControl:
         if int(row["whisper_attempt"]) != int(row["current_attempt"]):
             return False
         if row["whisper_status"] == "pending" and int(row["whisper_retry_requested"]):
-            # 已请求单独重试、等 run-whisper-retry 领取，不归对账管。
+            # 已请求单独重试、等 watchdog 派出的 run-whisper-retry 领取，不归对账管。
             return False
         product = (
             product_archive
@@ -3997,6 +4008,33 @@ class RelayControl:
             )
         return self.status(job_id)
 
+    def next_whisper_retry(self) -> dict[str, Any] | None:
+        """watchdog 派 Whisper 重试前看一眼（只读）：已有活着的 worker 在跑重试就返回 None，
+        保证同一时间最多一个；否则返回 claim_whisper_retry 下一个会领的任务。"""
+        connection = self._connect()
+        try:
+            running = connection.execute(
+                """
+                SELECT whisper_worker_id FROM jobs
+                WHERE whisper_status = 'running' AND whisper_worker_id IS NOT NULL
+                """
+            ).fetchall()
+            row = connection.execute(
+                f"""
+                SELECT job_id, whisper_retry_generation FROM jobs
+                WHERE {_WHISPER_RETRY_QUEUE_WHERE}
+                ORDER BY {_WHISPER_RETRY_QUEUE_ORDER} LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        # 认领者死了的 running 不占位，交给对账收口成 failed（见 _fail_orphaned_whisper）。
+        if any(_worker_process_is_alive(item["whisper_worker_id"]) for item in running):
+            return None
+        return {"job_id": row["job_id"], "generation": int(row["whisper_retry_generation"])}
+
     def claim_whisper_retry(
         self,
         worker_id: str | None = None,
@@ -4007,19 +4045,12 @@ class RelayControl:
         token = worker_id or f"worker-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            query = """
-                SELECT * FROM jobs
-                WHERE whisper_retry_requested = 1
-                  AND whisper_status = 'pending'
-                  AND whisper_attempt = current_attempt
-                  AND archive_dir IS NOT NULL
-                  AND status IN ('completed_unreviewed', 'draft_modified')
-            """
+            query = f"SELECT * FROM jobs WHERE {_WHISPER_RETRY_QUEUE_WHERE}"
             parameters: list[Any] = []
             if job_id is not None:
                 query += " AND job_id = ?"
                 parameters.append(job_id)
-            query += " ORDER BY whisper_updated_at, updated_at, job_id LIMIT 1"
+            query += f" ORDER BY {_WHISPER_RETRY_QUEUE_ORDER} LIMIT 1"
             row = connection.execute(query, parameters).fetchone()
             if row is None:
                 return None
@@ -6843,6 +6874,10 @@ def claim_whisper_retry(
     job_id: str | None = None,
 ) -> dict[str, Any] | None:
     return _service(db_path).claim_whisper_retry(worker_id, job_id=job_id)
+
+
+def next_whisper_retry(db_path: str | Path | None = None) -> dict[str, Any] | None:
+    return _service(db_path).next_whisper_retry()
 
 
 def finish_whisper_retry(
