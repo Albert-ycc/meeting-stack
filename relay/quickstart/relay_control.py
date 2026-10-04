@@ -1013,6 +1013,30 @@ def _worker_process_is_alive(worker_id: str | None) -> bool:
     return True
 
 
+# 首轮 Whisper 对照稿是 transcribe.sh 放进后台（disown）跑的，任务库里只写 running、没有认领者；
+# 进程中途死掉就永远停在 running。对账据此判断还有没有人在出稿：没有活着的出稿进程，
+# 且 whisper.log / 子状态这么久没动过，才收口成 failed。长录音在 CPU 上要跑好几个小时，
+# 但活着时进度条一直在刷 whisper.log，所以宽限期管的是「进程刚起、还没写日志」这类空档。
+WHISPER_ORPHAN_GRACE_SEC = 30 * 60
+
+
+def _whisper_ref_writer_alive(product_archive: Path) -> bool | None:
+    """进程表里有没有命令行指向这份产物 whisper-ref 的进程；ps 跑不了返回 None（当作不确定）。"""
+    marker = os.sep.join(("", product_archive.parent.name, product_archive.name, "whisper-ref"))
+    try:
+        listing = subprocess.run(
+            ["ps", "-A", "-ww", "-o", "command="],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return any(marker in line for line in listing.stdout.splitlines())
+
+
 def _configured_volume_mount(path: Path) -> Path | None:
     try:
         relative = path.relative_to("/Volumes")
@@ -2262,6 +2286,98 @@ class RelayControl:
             finally:
                 connection.close()
 
+    def _fail_orphaned_whisper(self, row: sqlite3.Row, product_archive: Path) -> bool:
+        """产物不全、也没人在出稿的 Whisper 收口成 failed，工作台才会给「重试 Whisper 对照稿」。"""
+        if int(row["whisper_attempt"]) != int(row["current_attempt"]):
+            return False
+        if row["whisper_status"] == "pending" and int(row["whisper_retry_requested"]):
+            # 已请求单独重试、等 run-whisper-retry 领取，不归对账管。
+            return False
+        product = (
+            product_archive
+            if not product_archive.is_symlink() and product_archive.is_dir()
+            else None
+        )
+        log_path = product / "whisper-ref" / "whisper.log" if product is not None else None
+        activity: list[datetime] = []
+        for value in (row["whisper_updated_at"], row["whisper_claimed_at"]):
+            try:
+                activity.append(datetime.fromisoformat(value).astimezone(timezone.utc))
+            except (TypeError, ValueError):
+                pass
+        if log_path is not None:
+            for path in (log_path.parent, log_path):
+                try:
+                    activity.append(datetime.fromtimestamp(path.stat().st_mtime, timezone.utc))
+                except OSError:
+                    pass
+        current = datetime.now(timezone.utc)
+        if activity and (current - max(activity)).total_seconds() < WHISPER_ORPHAN_GRACE_SEC:
+            return False
+        worker_id = row["whisper_worker_id"]
+        if worker_id:
+            if _worker_process_is_alive(worker_id):
+                return False
+        elif _whisper_ref_writer_alive(product_archive) is not False:
+            return False
+        # 进程查完再看一次产物：两次之间写完了就留给下轮装成 ready。
+        inspection = (
+            inspect_whisper_ref(product)
+            if product is not None
+            else {"status": "absent", "missing": ["product_dir"]}
+        )
+        if inspection.get("status") == "ready":
+            return False
+        missing = ", ".join(str(item) for item in inspection.get("missing", [])) or "unknown"
+        error = f"Whisper 对照转写已没有进程在跑，产物不全（缺 {missing}），可重试"[:256]
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            # 带上读到的整组身份做 CAS：期间被重试、被领取、子状态被刷新过就不动，下轮再看。
+            updated = connection.execute(
+                """
+                UPDATE jobs
+                SET whisper_status = 'failed', whisper_error = ?,
+                    whisper_retry_requested = 0, whisper_worker_id = NULL,
+                    whisper_claimed_at = NULL, whisper_updated_at = ?, updated_at = ?
+                WHERE job_id = ? AND current_attempt = ? AND whisper_attempt = ?
+                  AND whisper_retry_generation = ? AND whisper_status = ?
+                  AND whisper_retry_requested = ? AND whisper_worker_id IS ?
+                  AND whisper_updated_at IS ?
+                """,
+                (
+                    error,
+                    now,
+                    now,
+                    row["job_id"],
+                    row["current_attempt"],
+                    row["whisper_attempt"],
+                    row["whisper_retry_generation"],
+                    row["whisper_status"],
+                    row["whisper_retry_requested"],
+                    worker_id,
+                    row["whisper_updated_at"],
+                ),
+            )
+            if updated.rowcount != 1:
+                return False
+            self._append_event(
+                connection,
+                row["job_id"],
+                row["current_attempt"],
+                "whisper_orphan_failed",
+                row["whisper_status"],
+                "failed",
+                stage="whisper",
+                payload={
+                    "error": error,
+                    "worker_id": worker_id,
+                    "last_activity_at": max(activity).isoformat() if activity else None,
+                    "source": str(product_archive),
+                },
+            )
+        return True
+
     def reconcile_pending_archives(self) -> dict[str, Any]:
         """提升遗留 hidden 归档，并回填已完成的产品 Whisper。"""
         summary = (
@@ -2310,12 +2426,15 @@ class RelayControl:
                     )
         summary["whisper_checked"] = []
         summary["whisper_ready"] = []
+        summary["whisper_orphaned"] = []
         with self._connect() as connection:
+            # 停在 running 的不论主任务状态都要看：主链失败的任务也可能留着一个死掉的后台 Whisper。
             rows = connection.execute(
                 """
                 SELECT * FROM jobs
-                WHERE status IN ('completed_unreviewed', 'draft_modified')
-                  AND whisper_status IN ('pending', 'running')
+                WHERE (status IN ('completed_unreviewed', 'draft_modified')
+                       AND whisper_status IN ('pending', 'running'))
+                   OR whisper_status = 'running'
                 ORDER BY updated_at, job_id
                 """
             ).fetchall()
@@ -2325,10 +2444,21 @@ class RelayControl:
                 audio_stem = Path(row["audio_path"]).stem
                 product_archive = self.products_root / audio_stem / audio_stem
                 summary["whisper_checked"].append(job_id)
-                if product_archive.is_symlink() or not product_archive.is_dir():
+                product_ready = (
+                    not product_archive.is_symlink()
+                    and product_archive.is_dir()
+                    and inspect_whisper_ref(product_archive).get("status") == "ready"
+                )
+                if product_ready:
+                    if row["status"] in {
+                        "completed_unreviewed",
+                        "draft_modified",
+                    } and self._reconcile_product_whisper(job_id, product_archive):
+                        summary["whisper_ready"].append(job_id)
                     continue
-                if self._reconcile_product_whisper(job_id, product_archive):
-                    summary["whisper_ready"].append(job_id)
+                # 产物不全：还有人在出稿就等下轮，没人了就收口成 failed，别每轮拿半成品去装。
+                if self._fail_orphaned_whisper(row, product_archive):
+                    summary["whisper_orphaned"].append(job_id)
             except Exception as exc:
                 summary["ok"] = False
                 summary["errors"].append(

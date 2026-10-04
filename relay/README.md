@@ -30,6 +30,11 @@ Voice Memos 桥接只是众多入口之一，任何来源的音频文件落进�
 对不上的、还没归档的、失败的任务一律不动。watchdog 启动时清一次，之后每天一次（`MEETING_RELAY_AUDIO_CLEANUP_INTERVAL`，
 单位秒，默认 86400）。每删一份在任务事件里记一条 `local_audio_removed`。
 
+Whisper 对照稿由 `transcribe.sh` 放到后台跑，任务库里的子状态只有 `running`、没有认领者。watchdog 每 30 秒对账时，
+产物目录 `whisper-ref/` 齐了就装进归档、标 `ready`；不齐的，只要进程表里还有往这个 `whisper-ref/` 写的进程，
+或者 `whisper.log` 和子状态 30 分钟内动过，就当它还在跑，不打扰；两样都没有，才标成 `failed`（事件
+`whisper_orphan_failed`），工作台随即给出「重试 Whisper 对照稿」（排上队的重试由 `relayctl run-whisper-retry` 领取执行）。对账出错的那一行日志会带上 job_id 和错误原文。
+
 **必须设 `MEETING_RELAY_CONTROL_ENABLED=1`。** 不设时 watchdog 走旧同步路径：不领工作台入队的任务，
 而是用 ffprobe 探测时长后分流——短于 10 分钟的当成口述指令，转写文本直接派给 AI Agent 执行；
 10 分钟以上的转写后派 Agent 写纪要。旧路径只是留着回滚用的。

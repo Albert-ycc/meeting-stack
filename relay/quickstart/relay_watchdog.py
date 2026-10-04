@@ -2361,8 +2361,18 @@ def run_control_worker_once() -> bool:
             pending_summary = _control_reconcile_pending_archives()
             if pending_summary.get("errors"):
                 log.warning(
-                    "待校对对账有 %d 个任务失败，已隔离并继续",
+                    "待校对对账有 %d 个任务失败，已隔离并继续：%s",
                     len(pending_summary["errors"]),
+                    "；".join(
+                        f"{item.get('job_id', '-')} [{item.get('stage', '-')}] "
+                        f"{item.get('error_type', '-')}: {item.get('error', '')}"
+                        for item in pending_summary["errors"]
+                    ),
+                )
+            if pending_summary.get("whisper_orphaned"):
+                log.warning(
+                    "Whisper 对照转写已没有进程在跑且产物不全，已标为失败（工作台可重试）：%s",
+                    ", ".join(pending_summary["whisper_orphaned"]),
                 )
         except Exception:
             # 对账是修复旁路，不得因单轮异常阻断主 worker 领取任务。

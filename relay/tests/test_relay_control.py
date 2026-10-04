@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -2641,6 +2642,177 @@ class RelayControlTests(unittest.TestCase):
         ):
             self.assertTrue((pending / "whisper-ref" / name).is_file(), name)
         self.assertFalse(hidden.exists())
+
+    def _whisper_running_job(self, *, complete_minutes: bool = True):
+        """走完纪要、首轮 Whisper 在后台跑到一半：产物目录里只有 whisper.log，任务库是 running 无认领者。"""
+        control = self._pending_control()
+        control.products_root = self.root / "products"
+        job_id = self._advance_to_minutes(control, self.audio)
+        if complete_minutes:
+            hidden = create_complete_archive(self.root, job_id, include_whisper=False)
+            control.complete_minutes(job_id, hidden, attempt_no=1)
+        control.record_substate(job_id, "whisper", "running", attempt_no=1)
+        product = control.products_root / self.audio.stem / self.audio.stem
+        (product / "whisper-ref").mkdir(parents=True)
+        (product / "whisper-ref" / "whisper.log").write_text(" 52%|█████", encoding="utf-8")
+        return control, job_id, product
+
+    def _age_whisper(self, job_id: str, product: Path | None = None) -> None:
+        """把子状态和 whisper.log 都拨回两小时前，越过收口宽限期。"""
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                """
+                UPDATE jobs SET whisper_updated_at = '2026-01-01T00:00:00.000+00:00',
+                    whisper_claimed_at = CASE WHEN whisper_claimed_at IS NULL THEN NULL
+                        ELSE '2026-01-01T00:00:00.000+00:00' END
+                WHERE job_id = ?
+                """,
+                (job_id,),
+            )
+        if product is not None:
+            for path in (product / "whisper-ref" / "whisper.log", product / "whisper-ref"):
+                if path.exists():
+                    old = path.stat().st_mtime - 7200
+                    os.utime(path, (old, old))
+
+    def test_reconcile_fails_orphaned_running_whisper_and_lets_it_be_retried(self):
+        control, job_id, product = self._whisper_running_job()
+        self._age_whisper(job_id, product)
+
+        with patch.object(self.module, "_whisper_ref_writer_alive", return_value=False):
+            summary = control.reconcile_pending_archives()
+
+        self.assertTrue(summary["ok"], summary)
+        self.assertEqual([job_id], summary["whisper_orphaned"])
+        whisper = control.status(job_id)["substates"]["whisper"]
+        self.assertEqual("failed", whisper["status"])
+        self.assertIn("json", whisper["error"])
+        self.assertIsNone(whisper["worker_id"])
+        events = [
+            event
+            for event in control.status(job_id)["events"]
+            if event["event_type"] == "whisper_orphan_failed"
+        ]
+        self.assertEqual(1, len(events))
+        self.assertEqual(("running", "failed"), (events[0]["from_status"], events[0]["to_status"]))
+        self.assertEqual(str(product), events[0]["payload"]["source"])
+
+        # 收口后工作台能重试；等领取的那一段对账不再拿半成品去装，也不再报错
+        retried = control.retry_substate(job_id, "whisper")
+        self.assertEqual("pending", retried["substates"]["whisper"]["status"])
+        with patch.object(self.module, "_whisper_ref_writer_alive", return_value=False):
+            quiet = control.reconcile_pending_archives()
+        self.assertEqual([], quiet["errors"])
+        self.assertEqual([], quiet["whisper_orphaned"])
+        claim = control.claim_whisper_retry(worker_id="worker-123456", job_id=job_id)
+        self.assertIsNotNone(claim)
+        self.assertEqual("running", control.status(job_id)["substates"]["whisper"]["status"])
+
+    def test_reconcile_leaves_running_whisper_alone_while_its_process_is_alive(self):
+        control, job_id, product = self._whisper_running_job()
+        self._age_whisper(job_id, product)
+
+        with patch.object(self.module, "_whisper_ref_writer_alive", return_value=True):
+            summary = control.reconcile_pending_archives()
+        with patch.object(self.module, "_whisper_ref_writer_alive", return_value=None):
+            unknown = control.reconcile_pending_archives()
+
+        for result in (summary, unknown):
+            self.assertEqual([], result["errors"])
+            self.assertEqual([], result["whisper_orphaned"])
+        self.assertEqual("running", control.status(job_id)["substates"]["whisper"]["status"])
+
+    def test_reconcile_does_not_probe_processes_while_whisper_log_is_fresh(self):
+        control, job_id, _product = self._whisper_running_job()
+
+        with patch.object(self.module, "_whisper_ref_writer_alive", return_value=False) as probe:
+            summary = control.reconcile_pending_archives()
+
+        probe.assert_not_called()
+        self.assertEqual([], summary["errors"])
+        self.assertEqual("running", control.status(job_id)["substates"]["whisper"]["status"])
+
+    def test_reconcile_installs_finished_whisper_even_after_its_process_is_gone(self):
+        control, job_id, product = self._whisper_running_job()
+        shutil.rmtree(product / "whisper-ref")
+        whisper_source = create_whisper_staging(self.root, stem=self.audio.stem) / "whisper-ref"
+        shutil.copytree(whisper_source, product / "whisper-ref")
+        self._age_whisper(job_id, product)
+
+        with patch.object(self.module, "_whisper_ref_writer_alive", return_value=False):
+            summary = control.reconcile_pending_archives()
+
+        self.assertTrue(summary["ok"], summary)
+        self.assertEqual([job_id], summary["whisper_ready"])
+        self.assertEqual([], summary["whisper_orphaned"])
+        self.assertEqual("ready", control.status(job_id)["substates"]["whisper"]["status"])
+
+    def test_reconcile_fails_claimed_whisper_retry_only_after_its_worker_dies(self):
+        control, job_id, product = self._whisper_running_job()
+        control.record_substate(job_id, "whisper", "failed", error="engine", attempt_no=1)
+        control.retry_substate(job_id, "whisper")
+        claim = control.claim_whisper_retry(worker_id="relayctl-4242-whisper", job_id=job_id)
+        self._age_whisper(job_id, product)
+
+        with (
+            patch.object(self.module, "_worker_process_is_alive", return_value=True),
+            patch.object(self.module, "_whisper_ref_writer_alive", return_value=False),
+        ):
+            alive = control.reconcile_pending_archives()
+        self.assertEqual([], alive["whisper_orphaned"])
+        self.assertEqual("running", control.status(job_id)["substates"]["whisper"]["status"])
+
+        with (
+            patch.object(self.module, "_worker_process_is_alive", return_value=False),
+            patch.object(self.module, "_whisper_ref_writer_alive", return_value=True),
+        ):
+            dead = control.reconcile_pending_archives()
+        self.assertEqual([job_id], dead["whisper_orphaned"])
+        self.assertEqual("failed", control.status(job_id)["substates"]["whisper"]["status"])
+        # 死掉的 worker 晚到的回执不能把收口翻回去
+        with self.assertRaises(self.module.InvalidTransitionError):
+            control.finish_whisper_retry(
+                job_id,
+                attempt_no=claim["attempt"],
+                generation=claim["generation"],
+                worker_id=claim["worker_id"],
+                success=False,
+                error="late",
+            )
+
+    def test_reconcile_fails_orphaned_running_whisper_of_a_failed_job(self):
+        control, job_id, product = self._whisper_running_job(complete_minutes=False)
+        control.fail(job_id, "minutes_generating", "agent_exit")
+        shutil.rmtree(product)
+        self._age_whisper(job_id)
+
+        with patch.object(self.module, "_whisper_ref_writer_alive", return_value=False):
+            summary = control.reconcile_pending_archives()
+
+        self.assertEqual([job_id], summary["whisper_orphaned"])
+        current = control.status(job_id)
+        self.assertEqual("failed", current["status"])
+        self.assertEqual("failed", current["substates"]["whisper"]["status"])
+        self.assertIn("product_dir", current["substates"]["whisper"]["error"])
+
+    def test_whisper_writer_probe_matches_process_writing_into_this_products_dir(self):
+        product = self.root / "products" / self.audio.stem / self.audio.stem
+        writer = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import time; time.sleep(60)",
+                "--output_dir",
+                str(product / "whisper-ref"),
+            ]
+        )
+        self.addCleanup(writer.wait)
+        self.addCleanup(writer.kill)
+
+        self.assertTrue(self.module._whisper_ref_writer_alive(product))
+        self.assertFalse(
+            self.module._whisper_ref_writer_alive(self.root / "products" / "vm-other" / "vm-other")
+        )
 
     def _archived_inbox_job(self, *, whisper: str = "ready"):
         """监听目录里一段录音，转写工作副本留在产物目录，走完纪要并提升到归档根下一级目录。"""

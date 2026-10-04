@@ -1166,6 +1166,33 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         claim_next.assert_called_once()
         process.assert_called_once_with(claim)
 
+    def test_worker_logs_which_job_failed_pending_reconcile_and_why(self):
+        module = load_watchdog_module()
+        summary = {
+            "ok": False,
+            "errors": [
+                {
+                    "job_id": "job-d1d2a1ae12ab49b0",
+                    "stage": "whisper_reconcile",
+                    "error_type": "RelayControlError",
+                    "error": "Whisper 安装临时副本复验失败",
+                }
+            ],
+            "whisper_orphaned": ["job-5be47d5e4496465e"],
+        }
+        with (
+            patch.object(module, "_control_reconcile_pending_archives", return_value=summary),
+            patch.object(module, "_control_cleanup_local_audio_copies", return_value={}),
+            patch.object(module, "_agent_pane_available", return_value=False),
+            self.assertLogs(module.log, level="WARNING") as logs,
+        ):
+            module.run_control_worker_once()
+
+        output = "\n".join(logs.output)
+        self.assertIn("job-d1d2a1ae12ab49b0", output)
+        self.assertIn("Whisper 安装临时副本复验失败", output)
+        self.assertIn("job-5be47d5e4496465e", output)
+
     def test_worker_throttles_pending_reconcile_without_delaying_claim_polling(self):
         module = load_watchdog_module()
         module.PENDING_RECONCILE_INTERVAL_SEC = 30.0
