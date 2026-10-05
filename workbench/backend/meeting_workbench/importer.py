@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -52,6 +53,9 @@ VM_RE = re.compile(
 )
 SAFE_MEETING_ID_RE = re.compile(r"^(?:vm|fp|legacy)-[a-z0-9][a-z0-9_-]{0,127}$")
 UNTITLED_TITLE_SUFFIX = "未命名录音"
+# 文件最后一次写入（mtime / ctime）离现在不到这么久，`_file_sha256` 算完不记，
+# 比 FAT 的 2 秒时间戳精度留点余量。
+SHA256_MEMO_SETTLE_NS = 3_000_000_000
 
 
 def input_transcript_name(manifest: dict[str, Any]) -> str:
@@ -402,8 +406,8 @@ class ArchiveImporter:
         self._cleanup_skipping_roots: set[str] = set()
         # 正处在「要清的记录超过一半」状态的根，warning 同样只在开始跳过时记一次。
         self._mass_cleanup_skipping_roots: set[str] = set()
-        # `_cached_sha256` 在进程内记下的结果：路径 → ((大小, mtime_ns, ctime_ns, inode), sha256)。
-        # 每走一遍归档根换一代，只留上一遍和这一遍用到的，目录删了记录跟着淘汰。
+        # `_file_sha256` 在进程内记下的结果：路径 → ((大小, mtime_ns, ctime_ns, inode), sha256)。
+        # 每轮扫描换一代，只留上一轮和这一轮用到的，文件删了记录跟着淘汰。
         self._sha256_memo: dict[str, tuple[tuple[int, int, int, int], str]] = {}
         self._sha256_memo_previous: dict[str, tuple[tuple[int, int, int, int], str]] = {}
 
@@ -415,6 +419,9 @@ class ArchiveImporter:
 
     def _scan_locked(self, *, allow_mass_cleanup: bool = False) -> ScanReport:
         report = ScanReport()
+        # 在这里换代而不是在发现阶段：发布时 `signature_for_meeting_locked` 也要走一遍
+        # 归档根，在那边换代会把上一轮记下的全部挤掉，下一轮整份重算一遍。
+        self._sha256_memo_previous, self._sha256_memo = self._sha256_memo, {}
         archive_available = root_available(self.settings.archive_root)
         walked_roots: set[str] = set()
         bundles: list[SourceBundle] = []
@@ -557,7 +564,6 @@ class ArchiveImporter:
         root = self.settings.archive_root
         if not root_available(root):
             return []
-        self._sha256_memo_previous, self._sha256_memo = self._sha256_memo, {}
         bundles: list[SourceBundle] = []
         try:
             bundles.extend(
@@ -1201,8 +1207,8 @@ class ArchiveImporter:
         return sha, pcm
 
     def _cached_sha256(self, path: Path) -> str:
-        """复用已经算过的 sha256：先查进程内记下的，再按 (path, size, mtime_ns) 查
-        fingerprint_cache，都没有才整份读一遍，结果只记在进程内。
+        """同 `_file_sha256`，只是进程内没记过时先按 (path, size, mtime_ns) 查
+        fingerprint_cache，查到就不整份读。
 
         fingerprint_cache 只读不写：这张表同时被 `_audio_fingerprints` 用来存音频的
         pcm 归一化指纹，这里要是插一行只有 sha256、没有 pcm_sha256 的记录，后续
@@ -1213,10 +1219,22 @@ class ArchiveImporter:
         不是当前 attempt 被拒，不会进 `_partition_directory`，fingerprint_cache 里
         永远没有它们的音频。261004 生产实测，后台每轮因此把 23 个旧 attempt 的
         音频（约 3.6GB）从外置盘整份重读一遍。
+        """
+        return self._file_sha256(path, fingerprint_cache=True)
 
-        文件变没变比 fingerprint_cache 多看 ctime 和 inode：草稿音频常带着源文件的
-        mtime 拷进去（261004 实测有任务第 1、3、4 次 attempt 的音频 mtime 一样），
-        整份替换或原地重写后 mtime 和大小可能都不变。
+    def _file_sha256(self, path: Path, *, fingerprint_cache: bool = False) -> str:
+        """整份算 sha256；文件从上次算过到现在没动过，就用进程内记下的结果。
+
+        扫描每轮都要拿源文件的 sha256 跟 artifacts 表比、写回 artifacts、查逐字稿
+        版本，一个文件一轮要算两三遍，轮轮如此。261005 生产快照实测第二轮起每轮
+        整份读 8095 次、850MiB，其实只有 5363 个文件、602MiB，而且一个都没变。
+
+        「没动过」比 artifacts 表和 fingerprint_cache 的 (大小, mtime) 多看 ctime 和
+        inode：文本源文件要认得出大小不变、mtime 被拨回原值的改写，草稿音频也常带着
+        源文件的 mtime 拷进去（261004 实测有任务第 1、3、4 次 attempt 的音频 mtime
+        一样）。APFS 上任何写入和改 mtime 都会刷新 ctime，整份替换会换 inode。外置
+        归档盘是 exFAT，ctime 读出来恒等于 mtime：原地写入同样长度的内容、再把 mtime
+        拨回原值（精确到 10 毫秒）这种改法看不出来，要等文件下次再变才会重算。
         """
         stat = path.stat()
         key = str(path)
@@ -1225,14 +1243,18 @@ class ArchiveImporter:
         if remembered and remembered[0] == stamp:
             self._sha256_memo[key] = remembered
             return remembered[1]
-        cached = self.db.query_one(
-            "SELECT sha256 FROM fingerprint_cache WHERE path = ? AND size_bytes = ? AND mtime_ns = ?",
-            (key, stat.st_size, stat.st_mtime_ns),
-        )
-        if cached:
-            return cached["sha256"]
+        if fingerprint_cache:
+            cached = self.db.query_one(
+                "SELECT sha256 FROM fingerprint_cache WHERE path = ? AND size_bytes = ? AND mtime_ns = ?",
+                (key, stat.st_size, stat.st_mtime_ns),
+            )
+            if cached:
+                return cached["sha256"]
         digest = sha256_file(path)
-        self._sha256_memo[key] = (stamp, digest)
+        # 刚写过的文件先不记：时间戳精度粗的盘（exFAT 10 毫秒、FAT 2 秒）上，同一个
+        # 刻度里再写一次改不动 mtime，这时记下来以后就一直拿旧结果。
+        if time.time_ns() - max(stat.st_mtime_ns, stat.st_ctime_ns) >= SHA256_MEMO_SETTLE_NS:
+            self._sha256_memo[key] = (stamp, digest)
         return digest
 
     def _transcript_hash(self, path: Path) -> str | None:
@@ -1647,7 +1669,7 @@ class ArchiveImporter:
                 logical_path = self._refresh_logical_path(
                     path, bundle.source_root, managed_directory
                 )
-                digest = sha256_file(path)
+                digest = self._file_sha256(path)
                 key = (bundle.source_root, logical_path, kind)
                 if bundle.source_root in {"draft", "staging"} and kind.startswith("whisper_"):
                     whisper[key] = digest
@@ -2016,7 +2038,7 @@ class ArchiveImporter:
             )
             if metadata_matches and path.suffix.lower() in AUDIO_EXTENSIONS:
                 continue
-            if not row.get("sha256") or sha256_file(path) != row["sha256"]:
+            if not row.get("sha256") or self._file_sha256(path) != row["sha256"]:
                 return True
         return False
 
@@ -2138,7 +2160,7 @@ class ArchiveImporter:
         kind_override: str | None = None,
         make_current: bool = True,
     ) -> str | None:
-        source_hash = sha256_file(transcript_file)
+        source_hash = self._file_sha256(transcript_file)
         parsed_kind, segments = self._parse_transcript(transcript_file)
         if not segments:
             return None
@@ -2258,7 +2280,7 @@ class ArchiveImporter:
                 ):
                     file_hash = existing["sha256"]
                 else:
-                    file_hash = sha256_file(path)
+                    file_hash = self._file_sha256(path)
                 prepared.append((bundle, path, stat, artifact_kind(path), file_hash, existing))
         with self.db.transaction() as connection:
             for bundle, path, stat, kind, file_hash, existing in prepared:

@@ -6,12 +6,18 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database
-from meeting_workbench.importer import ArchiveImporter, SourceBundle, artifact_kind
+from meeting_workbench.importer import (
+    SHA256_MEMO_SETTLE_NS,
+    ArchiveImporter,
+    SourceBundle,
+    artifact_kind,
+)
 from meeting_workbench.rendering import render_transcript_txt
 from meeting_workbench.service import MeetingService
 
@@ -2445,7 +2451,20 @@ def _counting_sha256_file(monkeypatch):
     return calls
 
 
-def test_old_draft_attempt_audio_is_hashed_once_across_scans(tmp_path, monkeypatch):
+# 2100-01-01：比用例里任何文件的写入时间都晚得多。
+SETTLED_NS = 4_102_444_800 * 1_000_000_000
+
+
+@pytest.fixture
+def settled_clock(monkeypatch):
+    """`_file_sha256` 只记写完超过 3 秒的文件。把导入器看到的时钟拨到 2100 年，用例里刚写的
+    文件就都算早已写完，结果不取决于机器跑得多快、现在几点。"""
+    monkeypatch.setattr(
+        "meeting_workbench.importer.time", SimpleNamespace(time_ns=lambda: SETTLED_NS)
+    )
+
+
+def test_old_draft_attempt_audio_is_hashed_once_across_scans(tmp_path, monkeypatch, settled_clock):
     # 261004 生产：任务重转写后旧 attempt 还留在草稿区，每轮扫描先比完音频哈希才因为
     # 不是当前 attempt 被拒，音频进不了 fingerprint_cache，后台每轮整份重读约 3.6GB。
     archive = tmp_path / "archive"
@@ -2500,7 +2519,7 @@ def test_old_draft_attempt_audio_is_hashed_once_across_scans(tmp_path, monkeypat
     assert str(old_audio) not in importer._sha256_memo_previous
 
 
-def test_cached_sha256_rehashes_when_file_changes(tmp_path, monkeypatch):
+def test_cached_sha256_rehashes_when_file_changes(tmp_path, monkeypatch, settled_clock):
     settings = Settings(
         data_dir=tmp_path / "data",
         archive_root=tmp_path / "archive",
@@ -2535,6 +2554,170 @@ def test_cached_sha256_rehashes_when_file_changes(tmp_path, monkeypatch):
     assert importer._cached_sha256(path) == hashlib.sha256(b"third--audio").hexdigest()
     assert len(calls) == 3
     assert db.query_one("SELECT COUNT(*) AS n FROM fingerprint_cache") == {"n": 0}
+
+
+def _importer_for(tmp_path, archive, *, staging=None, relay_db=None):
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=staging or tmp_path / "staging",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+        relay_jobs_db=relay_db or tmp_path / "relay.sqlite3",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    return db, ArchiveImporter(db, settings)
+
+
+def _artifact_hashes_match_files(db):
+    rows = db.query_all("SELECT path, sha256 FROM artifacts")
+    return bool(rows) and all(
+        row["sha256"] == hashlib.sha256(Path(row["path"]).read_bytes()).hexdigest() for row in rows
+    )
+
+
+def test_unchanged_sources_are_not_rehashed_on_later_scans(tmp_path, monkeypatch, settled_clock):
+    # 261005 生产：每轮扫描拿源文件的 sha256 跟 artifacts 表比、写回 artifacts、查逐字稿版本，
+    # 一个文件一轮算两三遍，文件没变也轮轮整份重算（第二轮起每轮 8095 次、850MiB）。
+    archive = tmp_path / "archive"
+    staging = tmp_path / "staging"
+    formal = write_meeting(archive, "正式会议", official=True, transcript_text="正式正文")
+    write_complete_whisper_reference(formal, "vm-20260101-120000")
+    write_meeting(staging, "staging-copy", official=False, transcript_text="降级稿内容")
+    db, importer = _importer_for(tmp_path, archive, staging=staging)
+    calls = _counting_sha256_file(monkeypatch)
+
+    assert importer.scan().errors == 0
+    # 音频在发现阶段还要进 fingerprint_cache，那条路不归这里管；其余文件一轮只读一遍。
+    text_calls = [path for path in calls if path.suffix != ".m4a"]
+    assert len(text_calls) == len(set(text_calls)) > 0
+
+    calls.clear()
+    for _ in range(2):
+        assert importer.scan().errors == 0
+    assert calls == []
+    assert _artifact_hashes_match_files(db)
+
+
+def test_open_external_change_conflict_is_not_rehashed_on_every_scan(
+    tmp_path, monkeypatch, settled_clock
+):
+    # 261005 生产：4 场会挂着外部改动冲突，每轮都重走一遍冲突捕获，其中两场还要把整份音频
+    # 读一遍去比 Whisper 刷新快照（_current_refresh_snapshots）。
+    archive = tmp_path / "archive"
+    meeting_id = "vm-20260712-223621-22853427"
+    job_id = "job-conflicted"
+    draft = write_managed_unreviewed_bundle(
+        archive / ".workbench-drafts" / job_id / "attempt-1", meeting_id, job_id, text="自动正文"
+    )
+    relay_db = tmp_path / "relay.sqlite3"
+    with sqlite3.connect(relay_db) as connection:
+        connection.execute(
+            "CREATE TABLE jobs(job_id TEXT PRIMARY KEY, status TEXT, current_attempt INTEGER, archive_dir TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES (?, 'completed_unreviewed', 1, ?)", (job_id, str(draft))
+        )
+    db, importer = _importer_for(tmp_path, archive, relay_db=relay_db)
+    importer.scan()
+    MeetingService(db, archive_root=archive).ensure_draft(meeting_id)
+    (draft / f"{meeting_id}.srt").write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\n外部改过的正文\n", encoding="utf-8"
+    )
+    assert importer.scan().conflicts == 1
+    calls = _counting_sha256_file(monkeypatch)
+
+    for _ in range(2):
+        report = importer.scan()
+        assert (report.errors, report.conflicts) == (0, 0)
+
+    assert calls == []
+    assert db.query_one("SELECT conflict FROM meetings WHERE id=?", (meeting_id,)) == {
+        "conflict": 1
+    }
+    assert _artifact_hashes_match_files(db)
+
+
+@pytest.mark.parametrize("rewrite", ["in_place", "replace"])
+def test_same_size_and_mtime_text_change_is_seen_after_hashes_are_remembered(
+    tmp_path, settled_clock, rewrite
+):
+    # 进程内记下 sha256 以后，文本源文件大小不变、mtime 拨回原值的改写照样要认出来：
+    # 原地改写刷新 ctime，整份替换换 inode。
+    archive = tmp_path / "archive"
+    formal = write_meeting(archive, "正式会议", official=True, transcript_text="正式正文")
+    db, importer = _importer_for(tmp_path, archive)
+    importer.scan()
+    importer.scan()
+    meeting_id = "vm-20260101-120000"
+    original_version = db.query_one(
+        "SELECT current_transcript_version_id FROM meetings WHERE id=?", (meeting_id,)
+    )["current_transcript_version_id"]
+    srt = formal / f"{meeting_id}.srt"
+    assert str(srt) in importer._sha256_memo
+    before = srt.stat()
+    changed_text = srt.read_text(encoding="utf-8").replace("正式正文", "外部改写")
+    if rewrite == "in_place":
+        srt.write_text(changed_text, encoding="utf-8")
+        os.utime(srt, ns=(before.st_atime_ns, before.st_mtime_ns))
+    else:
+        replacement = tmp_path / "replacement.srt"
+        replacement.write_text(changed_text, encoding="utf-8")
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.replace(replacement, srt)
+    after = srt.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+
+    importer.scan()
+
+    assert (
+        db.query_one(
+            "SELECT current_transcript_version_id FROM meetings WHERE id=?", (meeting_id,)
+        )["current_transcript_version_id"]
+        != original_version
+    )
+    assert segment_hits(db, "外部改写")
+    assert _artifact_hashes_match_files(db)
+
+
+def test_file_sha256_does_not_remember_a_file_written_moments_ago(tmp_path, monkeypatch):
+    # exFAT 的 mtime 精度 10 毫秒、ctime 恒等于 mtime：同一个刻度里再写一次，大小、mtime、
+    # ctime、inode 都不变。写完不到 3 秒的文件算完不记，下次照样整份读。
+    db, importer = _importer_for(tmp_path, tmp_path / "archive")
+    calls = _counting_sha256_file(monkeypatch)
+    path = tmp_path / "会议纪要.md"
+    path.write_text("# 纪要", encoding="utf-8")
+    written = max(path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+    now = {"ns": written + 1_000_000_000}
+    monkeypatch.setattr(
+        "meeting_workbench.importer.time", SimpleNamespace(time_ns=lambda: now["ns"])
+    )
+    digest = hashlib.sha256("# 纪要".encode("utf-8")).hexdigest()
+
+    assert importer._file_sha256(path) == digest
+    assert importer._file_sha256(path) == digest
+    assert len(calls) == 2
+
+    now["ns"] = written + SHA256_MEMO_SETTLE_NS
+    assert importer._file_sha256(path) == digest
+    assert importer._file_sha256(path) == digest
+    assert len(calls) == 3
+
+
+def test_publish_signature_lookup_keeps_remembered_hashes(tmp_path, monkeypatch, settled_clock):
+    # 发布时 signature_for_meeting 也要走一遍归档根。记下的 sha256 要是在那里换代，
+    # 每次发布后的下一轮扫描都把全部源文件整份重算一遍。
+    archive = tmp_path / "archive"
+    write_meeting(archive, "正式会议", official=True, transcript_text="正式正文")
+    db, importer = _importer_for(tmp_path, archive)
+    importer.scan()
+    importer.scan()
+    calls = _counting_sha256_file(monkeypatch)
+
+    assert importer.signature_for_meeting("vm-20260101-120000")
+    importer.scan()
+
+    assert calls == []
 
 
 def _scanned_archive_and_staging(tmp_path):
