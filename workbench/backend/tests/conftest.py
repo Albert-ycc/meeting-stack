@@ -33,6 +33,9 @@ os.environ["MEETING_WORKBENCH_LARK_APP_ID"] = ""
 os.environ["MEETING_WORKBENCH_LARK_APP_SECRET_FILE"] = "/nonexistent/meeting-workbench-lark-secret"
 os.environ["MEETING_WORKBENCH_LARK_CLI_BIN"] = "/nonexistent/meeting-workbench-test-lark-cli"
 os.environ["MEETING_WORKBENCH_ALLOWED_HOSTS"] = "testserver"
+# 扫描空闲退避默认关：老用例把 scan_interval_seconds 设成零点几秒、等扫描循环转几圈，间隔被拉长就等不到了。
+# 要测退避的用例（test_scan_idle_backoff.py）自己传 scan_idle_max_interval_seconds。
+os.environ["MEETING_WORKBENCH_SCAN_IDLE_MAX_INTERVAL_SECONDS"] = "0"
 
 from meeting_workbench.config import Settings
 

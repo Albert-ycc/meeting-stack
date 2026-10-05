@@ -136,6 +136,17 @@ class ScanReport:
     # 清理也不能把这些路径下的记录当成「本轮没发现」删掉。
     unwalked: list[str] = field(default_factory=list)
 
+    @property
+    def imported_anything(self) -> bool:
+        """这一轮有没有导入新东西。errors、quarantined 这类每轮都会重复报的存量状态不算，
+        否则一个常年坏着的文件会让后台扫描永远退不了到空闲节奏。"""
+        return bool(
+            self.meetings_created
+            or self.versions_imported
+            or self.conflicts
+            or self.speaker_backfill_applied
+        )
+
     def quarantine(self, directory: Path, reason: str) -> None:
         self.quarantined += 1
         self.quarantined_directories.append(str(directory))
@@ -196,14 +207,28 @@ ROOT_SOURCE_LABELS = {
 MASS_CLEANUP_MIN_RECORDS = 20
 
 
+def is_noise_name(name: str) -> bool:
+    """单个文件名是不是系统垃圾（AppleDouble、访达留下的 .DS_Store）。"""
+    return name.startswith("._") or name == ".DS_Store"
+
+
+def is_noise_directory(name: str) -> bool:
+    """单个目录名是不是声档自己的内部目录或回收站：里面的东西不参与导入。"""
+    return name == ".workbench-history" or name.startswith((".workbench-publish-", ".Trash"))
+
+
+def is_source_file_name(name: str) -> bool:
+    """文件名是不是导入会读的类型：扩展名在支持列表里，或没有扩展名的「原文」。
+    发现阶段和扫描指纹（scan_pacing.source_fingerprint）共用这一条，两边认的文件必须是同一批。"""
+    suffix = Path(name).suffix.lower()
+    return suffix in SUPPORTED_EXTENSIONS or (suffix == "" and "原文" in name)
+
+
 def is_noise(path: Path) -> bool:
-    internal = {".workbench-history"}
     return (
         path.is_symlink()
-        or path.name.startswith("._")
-        or path.name in {".DS_Store"}
-        or "/.Trash" in str(path)
-        or any(part in internal or part.startswith(".workbench-publish-") for part in path.parts)
+        or is_noise_name(path.name)
+        or any(is_noise_directory(part) for part in path.parts)
     )
 
 
@@ -978,12 +1003,7 @@ class ArchiveImporter:
                 if path.is_symlink():
                     _skip_unwalked(report, path)
                     continue
-                if not path.is_file() or is_noise(path):
-                    continue
-                suffix = path.suffix.lower()
-                if suffix not in SUPPORTED_EXTENSIONS and not (
-                    suffix == "" and "原文" in path.name
-                ):
+                if not path.is_file() or is_noise(path) or not is_source_file_name(path.name):
                     continue
                 files.append(path)
         return sorted(files)

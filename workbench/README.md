@@ -442,6 +442,11 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 - 语义模型固定为本地 `BAAI/bge-small-zh-v1.5`；运行时离线加载
 - 精确搜索随人工编辑即时更新；语义索引由后台扫描维护，最多延迟一个扫描周期。扫描是「上一轮结束后歇 15 秒再开下一轮」，
   一轮耗时看 `/api/health` 的 `last_started_at` / `last_completed_at`；受管目录校验复用 `fingerprint_cache`（按路径 + 大小 + mtime 命中就不重算音频哈希），未发布存量增长不会让每轮重读全部音频
+- 扫描空闲退避（`scan_idle_max_interval_seconds`，默认 600 秒）：一轮整份重读归档要几秒 CPU，连续几轮没导入新东西、也没做别的事，
+  两轮之间的间隔就从 15 秒逐步拉长（15、15、30、60、120、240、480，最长 600 秒），间隔当前值看 `/api/health` 的
+  `details.scanner.interval_seconds`。有变化立刻醒来、回到 15 秒的节奏：归档根和暂存根里导入会读的文件变了（退避期间每 15 秒
+  只做一次看大小和修改时间的指纹，约 40 毫秒；新录音出现的快慢和不退避时一样）、页面上有写操作做完、relay 任务状态变了
+  （排队、转写、失败的数量或正在跑的任务变化）、每日晨报的点。设成 0 或不大于 `scan_interval_seconds` 就是不退避。
 - `GET /api/health` 使用缓存的 Relay 探测结果，并分别报告扫描、语义索引、Relay worker、Qwen worker 与备份状态；
   `relayctl health --json` 的退出码 0/1/2 分别表示健康、降级和不可用
 - 无遥测、无自动更新

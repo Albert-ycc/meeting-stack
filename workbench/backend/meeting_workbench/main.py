@@ -27,11 +27,20 @@ from pydantic import (
     model_validator,
 )
 
-from .config import Settings
+from .config import SCANNER_STALE_AFTER_SECONDS, Settings
 from .backup import BackupManager
 from .db import ConflictStore, Database, dedupe_preserve_order, escape_like_pattern, utc_now
 from .importer import SAFE_MEETING_ID_RE, ArchiveImporter
-from .security import WriteProtectionMiddleware
+from .scan_pacing import (
+    API,
+    RELAY,
+    IdleBackoff,
+    ScanPacer,
+    did_work,
+    seconds_until_daily,
+    source_fingerprint,
+)
+from .security import WRITE_METHODS, WriteProtectionMiddleware
 from .path_redaction import redact_job_paths, redact_paths
 from .relay_client import RelayClient, RelayUnavailable
 from .safe_log import describe_error
@@ -66,6 +75,7 @@ from .attribution import (
     recognition_profile,
 )
 from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
+from . import task_due
 from . import project_seats, project_work, requirement_candidates, requirement_pool, todo
 from . import search as search_module
 from .cards import CardsError, CardWriter
@@ -105,7 +115,14 @@ from .project_names import (
     delete_empty_project,
     merge_project,
 )
-from .tasks import TaskService, _validate_date_only, llm_ready, recording_date_range
+from .tasks import (
+    DIGEST_HOUR,
+    DIGEST_MINUTE,
+    TaskService,
+    _validate_date_only,
+    llm_ready,
+    recording_date_range,
+)
 from .hotwords import hotword_audit, normalize_hotwords
 from .attention import (
     ATTENTION_KINDS,
@@ -1019,6 +1036,8 @@ def create_app(
         return {
             "loop_alive": False,
             "in_progress": False,
+            # 空闲退避之后两轮之间当前隔多久；健康检查按它放宽「扫描停滞」的线
+            "interval_seconds": settings.scan_interval_seconds,
             "last_started_at": None,
             "last_completed_at": None,
             "last_completed_monotonic": None,
@@ -1212,141 +1231,187 @@ def create_app(
 
     async def scan_loop(application: FastAPI) -> None:
         application.state.scanner_state["loop_alive"] = True
+        pacer: ScanPacer = application.state.scan_pacer
         semantic_retry_delay = 15.0
         semantic_retry_at = 0.0
         try:
             while True:
-                await asyncio.sleep(settings.scan_interval_seconds)
-                previous_failures = int(application.state.scanner_state["consecutive_failures"])
-                phase_errors: list[Exception] = []
+                application.state.scanner_state["interval_seconds"] = pacer.backoff.interval
+                await pacer.wait()
+                await pacer.snapshot()
+                # 这一轮有没有真的做了事：做了就不退避，没做事的连续轮数多了间隔才拉长（scan_pacing）
+                active = False
                 try:
-                    await asyncio.to_thread(uploads.cleanup_expired)
-                except Exception as error:
-                    phase_errors.append(error)
-                try:
-                    await asyncio.to_thread(enqueue_pending_uploads)
-                except Exception as error:
-                    phase_errors.append(error)
-                try:
-                    await run_scan()
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
+                    previous_failures = int(application.state.scanner_state["consecutive_failures"])
+                    phase_errors: list[Exception] = []
+                    try:
+                        await asyncio.to_thread(uploads.cleanup_expired)
+                    except Exception as error:
+                        phase_errors.append(error)
+                    try:
+                        recovered_uploads = await asyncio.to_thread(enqueue_pending_uploads)
+                        active = active or did_work(recovered_uploads)
+                    except Exception as error:
+                        phase_errors.append(error)
+                    try:
+                        report = await run_scan()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # 扫描失败不退避：按原来的节奏接着试
+                        active = True
+                        record_scanner_phase_errors(phase_errors, previous_failures)
+                        continue
+                    active = active or report.imported_anything
+                    try:
+                        checkup = await asyncio.to_thread(
+                            glossary_checkup.run_pending,
+                            db,
+                            service,
+                            on_minutes_changed=notify_relay_draft_modified,
+                        )
+                        active = active or did_work(checkup, "receipts", "checked", "auto_applied")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # 词典回执和纪要体检是旁路，失败只记账。
+                        phase_errors.append(error)
+                    try:
+                        recovered = await asyncio.to_thread(recover_stalled_minutes)
+                        active = active or did_work(recovered)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # 兜底是旁路，失败只记账，不影响扫描与语义索引。
+                        phase_errors.append(error)
+                    try:
+                        expired = await asyncio.to_thread(task_service.expire_stale_drafts)
+                        active = active or did_work(expired)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # 草稿过期归档是旁路，失败只记账。
+                        phase_errors.append(error)
+                    try:
+                        link_stats = await asyncio.to_thread(project_linker.link_pending)
+                        active = active or did_work(link_stats, "started")
+                        if isinstance(link_stats, dict) and link_stats.get("linked"):
+                            # 文件夹名、项目词算不算线索要看它们在别的项目的会里出现过没有，
+                            # 归属变了就重写快照，relay 认项目跟着变。
+                            await asyncio.to_thread(rewrite_snapshot, db, snapshot_path)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # 会议项目归属是旁路，失败只记账。排在任务抽取之前：抽出的任务直接
+                        # 继承会议的项目，飞书草稿卡片发出时归属也已经有了。
+                        phase_errors.append(error)
+                    try:
+                        cold = await asyncio.to_thread(cold_start.run, db, settings, project_linker)
+                        # done 只是「整理完了」的标志；还在整理才算做了事
+                        active = active or (
+                            isinstance(cold, dict)
+                            and (bool(cold.get("groups")) or did_work(cold, "reevaluated"))
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # 冷启动整理是一次性的旁路，失败只记账，下一轮接着做。
+                        phase_errors.append(error)
+                    try:
+                        extraction = await asyncio.to_thread(task_service.extract_pending)
+                        active = active or did_work(extraction, "started")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # 任务抽取是旁路，失败只记账，不影响扫描与纪要主链。
+                        phase_errors.append(error)
+                    try:
+                        mentions = await asyncio.to_thread(file_mentions.match_pending, db)
+                        active = active or did_work(mentions, "written")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # 会上提到文件名是旁路，每轮最多 20 场或 5 秒，失败只记账。
+                        phase_errors.append(error)
+                    try:
+                        cards = await asyncio.to_thread(card_writer.reconcile)
+                        active = active or did_work(cards, "written", "left")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # 会议卡片是旁路，排在任务抽取之后（卡片里的行动项才是最新的），失败只记账。
+                        phase_errors.append(error)
+                    try:
+                        notified = await asyncio.to_thread(task_service.run_notifications)
+                        active = active or did_work(notified, "stall_sent", "digest_sent")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # 通知失败只记账，由 notifications 台账在下轮自然补发。
+                        phase_errors.append(error)
                     record_scanner_phase_errors(phase_errors, previous_failures)
-                    continue
-                try:
-                    await asyncio.to_thread(
-                        glossary_checkup.run_pending,
-                        db,
-                        service,
-                        on_minutes_changed=notify_relay_draft_modified,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 词典回执和纪要体检是旁路，失败只记账。
-                    phase_errors.append(error)
-                try:
-                    await asyncio.to_thread(recover_stalled_minutes)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 兜底是旁路，失败只记账，不影响扫描与语义索引。
-                    phase_errors.append(error)
-                try:
-                    await asyncio.to_thread(task_service.expire_stale_drafts)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 草稿过期归档是旁路，失败只记账。
-                    phase_errors.append(error)
-                try:
-                    link_stats = await asyncio.to_thread(project_linker.link_pending)
-                    if isinstance(link_stats, dict) and link_stats.get("linked"):
-                        # 文件夹名、项目词算不算线索要看它们在别的项目的会里出现过没有，
-                        # 归属变了就重写快照，relay 认项目跟着变。
-                        await asyncio.to_thread(rewrite_snapshot, db, snapshot_path)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 会议项目归属是旁路，失败只记账。排在任务抽取之前：抽出的任务直接
-                    # 继承会议的项目，飞书草稿卡片发出时归属也已经有了。
-                    phase_errors.append(error)
-                try:
-                    await asyncio.to_thread(cold_start.run, db, settings, project_linker)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 冷启动整理是一次性的旁路，失败只记账，下一轮接着做。
-                    phase_errors.append(error)
-                try:
-                    await asyncio.to_thread(task_service.extract_pending)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 任务抽取是旁路，失败只记账，不影响扫描与纪要主链。
-                    phase_errors.append(error)
-                try:
-                    await asyncio.to_thread(file_mentions.match_pending, db)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 会上提到文件名是旁路，每轮最多 20 场或 5 秒，失败只记账。
-                    phase_errors.append(error)
-                try:
-                    await asyncio.to_thread(card_writer.reconcile)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 会议卡片是旁路，排在任务抽取之后（卡片里的行动项才是最新的），失败只记账。
-                    phase_errors.append(error)
-                try:
-                    await asyncio.to_thread(task_service.run_notifications)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # 通知失败只记账，由 notifications 台账在下轮自然补发。
-                    phase_errors.append(error)
-                record_scanner_phase_errors(phase_errors, previous_failures)
-                if not settings.semantic_enabled:
-                    continue
-                now = asyncio.get_running_loop().time()
-                if now < semantic_retry_at:
-                    continue
-                try:
-                    await refresh_semantic_index()
-                    semantic_retry_delay = 15.0
-                    semantic_retry_at = 0.0
-                except asyncio.CancelledError:
-                    raise
-                except SemanticBusy:
-                    application.state.semantic_details["status"] = "ready"
-                    application.state.semantic_status = "ready"
-                except SemanticPaused:
-                    details = application.state.semantic_details
-                    details["status"] = "paused"
-                    details["consecutive_failures"] = 0
-                    details["last_error_type"] = None
-                    application.state.semantic_status = "paused"
-                    semantic_retry_delay = 15.0
-                    semantic_retry_at = now + semantic_retry_delay
-                except Exception as error:
-                    details = application.state.semantic_details
-                    details["status"] = (
-                        "unavailable" if isinstance(error, SemanticUnavailable) else "degraded"
-                    )
-                    details["consecutive_failures"] += 1
-                    details["last_error_type"] = type(error).__name__
-                    application.state.semantic_status = details["status"]
-                    semantic_retry_at = now + semantic_retry_delay
-                    semantic_retry_delay = min(semantic_retry_delay * 2, 600.0)
+                    if not settings.semantic_enabled:
+                        continue
+                    now = asyncio.get_running_loop().time()
+                    if now < semantic_retry_at:
+                        continue
+                    try:
+                        indexed = await refresh_semantic_index()
+                        active = active or did_work(indexed)
+                        semantic_retry_delay = 15.0
+                        semantic_retry_at = 0.0
+                    except asyncio.CancelledError:
+                        raise
+                    except SemanticBusy:
+                        application.state.semantic_details["status"] = "ready"
+                        application.state.semantic_status = "ready"
+                    except SemanticPaused:
+                        details = application.state.semantic_details
+                        details["status"] = "paused"
+                        details["consecutive_failures"] = 0
+                        details["last_error_type"] = None
+                        application.state.semantic_status = "paused"
+                        semantic_retry_delay = 15.0
+                        semantic_retry_at = now + semantic_retry_delay
+                    except Exception as error:
+                        details = application.state.semantic_details
+                        details["status"] = (
+                            "unavailable" if isinstance(error, SemanticUnavailable) else "degraded"
+                        )
+                        details["consecutive_failures"] += 1
+                        details["last_error_type"] = type(error).__name__
+                        application.state.semantic_status = details["status"]
+                        semantic_retry_at = now + semantic_retry_delay
+                        semantic_retry_delay = min(semantic_retry_delay * 2, 600.0)
+                finally:
+                    pacer.finish_round(active=active)
         finally:
             application.state.scanner_state["loop_alive"] = False
 
+    def relay_activity_signature(health: dict[str, Any]) -> tuple[Any, ...]:
+        """relay 里任务有没有动静：各状态的数量、正在跑的任务和阶段。心跳时间这类每次都变的不放进来。"""
+        worker = health.get("worker") if isinstance(health.get("worker"), dict) else {}
+        counts = health.get("counts") if isinstance(health.get("counts"), dict) else {}
+        return (
+            health.get("status"),
+            tuple(sorted((str(key), str(value)) for key, value in counts.items())),
+            worker.get("current_job_id"),
+            worker.get("current_stage"),
+        )
+
     async def relay_health_loop(application: FastAPI) -> None:
         last_attention_refresh: float | None = None
+        last_activity: tuple[Any, ...] | None = None
         while True:
             application.state.relay_health = await probe_relay()
+            # 任务排队、开跑、收口、失败都会让这个签名变；扫描循环退避着也要马上去收这些结果。
+            # 探测超时、relayctl 偶尔起不来（unavailable）是探测本身的问题，不是任务有动静：
+            # 不拿它当签名，不然一次抖动前后各醒一回
+            if application.state.relay_health.get("status") != "unavailable":
+                activity = relay_activity_signature(application.state.relay_health)
+                if last_activity is not None and activity != last_activity:
+                    application.state.scan_pacer.wake(RELAY)
+                last_activity = activity
             now = time.monotonic()
             if (
                 last_attention_refresh is None
@@ -1497,6 +1562,16 @@ def create_app(
     @asynccontextmanager
     async def run_services(application: FastAPI):
         application.state.lifespan_active = True
+        application.state.scan_pacer = ScanPacer(
+            IdleBackoff(
+                base=settings.scan_interval_seconds,
+                cap=settings.scan_idle_max_interval_seconds,
+            ),
+            probe=lambda: source_fingerprint((settings.staging_root, settings.archive_root)),
+            seconds_to_deadline=lambda: seconds_until_daily(
+                DIGEST_HOUR, DIGEST_MINUTE, task_due.BEIJING_TZ
+            ),
+        )
         application.state.scanner_state = new_scanner_state()
         application.state.semantic_details = new_semantic_state()
         application.state.qwen_worker_state = new_qwen_worker_state()
@@ -1688,6 +1763,22 @@ def create_app(
         "probed_at": None,
     }
     app.state.lifespan_active = False
+
+    # 页面上的写操作做完了，扫描循环（退避中）马上醒来去收后续：发布、改纪要、改归属、上传、
+    # 手动刷新都从这里经过。排在 WriteProtectionMiddleware 里面，被它拒绝的请求到不了这里。
+    @app.middleware("http")
+    async def wake_scan_after_write(request: Request, call_next):
+        response = await call_next(request)
+        if (
+            request.method in WRITE_METHODS
+            and request.url.path.startswith("/api/")
+            and response.status_code < 400
+        ):
+            pacer = getattr(request.app.state, "scan_pacer", None)
+            if pacer is not None:
+                pacer.wake(API)
+        return response
+
     app.add_middleware(
         WriteProtectionMiddleware,
         cookie_name=settings.csrf_cookie_name,
@@ -1867,10 +1958,15 @@ def create_app(
         quarantine_details = list(last_scan.get("quarantine_details") or [])
         fatal_scan_error = getattr(app.state, "last_scan_error", None)
         scanner_details = dict(getattr(app.state, "scanner_state", new_scanner_state()))
+        # 空闲退避时两轮之间本来就隔得久，停滞的线跟着放宽同样的长度
+        current_interval = float(scanner_details.get("interval_seconds") or 0)
+        stale_after = SCANNER_STALE_AFTER_SECONDS + max(
+            0.0, current_interval - settings.scan_interval_seconds
+        )
         stale_scan = bool(
             app.state.lifespan_active
             and scanner_details.get("last_completed_monotonic") is not None
-            and time.monotonic() - float(scanner_details["last_completed_monotonic"]) > 180
+            and time.monotonic() - float(scanner_details["last_completed_monotonic"]) > stale_after
         )
         scanner_failed = bool(
             fatal_scan_error

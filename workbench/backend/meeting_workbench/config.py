@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     upload_session_ttl_seconds: int = 24 * 60 * 60
     max_incomplete_upload_bytes: int = 1024 * 1024 * 1024
     scan_interval_seconds: float = 15.0
+    # 扫描空闲退避：连续几轮没有变化时两轮之间的间隔逐步拉长，最长到这个值；有变化来源（归档文件
+    # 变了、页面上有写操作、relay 任务状态变了）立即醒来。0 或不大于 scan_interval_seconds 就是不退避。
+    scan_idle_max_interval_seconds: float = 600.0
     # Backups run every 24 hours.  Six hours of scheduling/runtime grace keeps
     # a small delay from paging while still detecting a dead daily session.
     backup_stale_after_seconds: int = 30 * 60 * 60
@@ -190,6 +193,10 @@ class Settings(BaseSettings):
             or self.scan_interval_seconds > MAX_SCAN_INTERVAL_SECONDS
         ):
             raise ValueError(f"scan_interval_seconds 不能超过 {MAX_SCAN_INTERVAL_SECONDS:g} 秒")
+        for name in ("scan_idle_max_interval_seconds",):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} 不能小于 0")
         if self.upload_chunk_bytes > self.max_json_upload_bytes:
             raise ValueError("upload_chunk_bytes 不能超过 max_json_upload_bytes")
         if self.upload_chunk_bytes > self.max_incomplete_upload_bytes:
