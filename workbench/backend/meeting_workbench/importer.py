@@ -402,6 +402,10 @@ class ArchiveImporter:
         self._cleanup_skipping_roots: set[str] = set()
         # 正处在「要清的记录超过一半」状态的根，warning 同样只在开始跳过时记一次。
         self._mass_cleanup_skipping_roots: set[str] = set()
+        # `_cached_sha256` 在进程内记下的结果：路径 → ((大小, mtime_ns, ctime_ns, inode), sha256)。
+        # 每走一遍归档根换一代，只留上一遍和这一遍用到的，目录删了记录跟着淘汰。
+        self._sha256_memo: dict[str, tuple[tuple[int, int, int, int], str]] = {}
+        self._sha256_memo_previous: dict[str, tuple[tuple[int, int, int, int], str]] = {}
 
     def scan(self, *, allow_mass_cleanup: bool = False) -> ScanReport:
         """allow_mass_cleanup：这一轮不做两道清理保护（根里一个文件都没发现、要清的记录超过
@@ -553,6 +557,7 @@ class ArchiveImporter:
         root = self.settings.archive_root
         if not root_available(root):
             return []
+        self._sha256_memo_previous, self._sha256_memo = self._sha256_memo, {}
         bundles: list[SourceBundle] = []
         try:
             bundles.extend(
@@ -1196,23 +1201,39 @@ class ArchiveImporter:
         return sha, pcm
 
     def _cached_sha256(self, path: Path) -> str:
-        """按 (path, size, mtime_ns) 复用 fingerprint_cache 里已经算过的 sha256。
+        """复用已经算过的 sha256：先查进程内记下的，再按 (path, size, mtime_ns) 查
+        fingerprint_cache，都没有才整份读一遍，结果只记在进程内。
 
-        只读不写：这张表同时被 `_audio_fingerprints` 用来存音频的 pcm 归一化
-        指纹，这里要是插一行只有 sha256、没有 pcm_sha256 的记录，后续
+        fingerprint_cache 只读不写：这张表同时被 `_audio_fingerprints` 用来存音频的
+        pcm 归一化指纹，这里要是插一行只有 sha256、没有 pcm_sha256 的记录，后续
         `_audio_fingerprints` 命中缓存时会把 `pcm_sha256 or sha256` 的空值兜底
-        误当成真实指纹，污染音频去重。只读意味着这里永远不会写坏那张表，
-        代价是首次扫描到的新目录仍会算一次——可接受，稳态下每轮扫描的
-        `_partition_directory` 早就替真正的音频写好了缓存行。
+        误当成真实指纹，污染音频去重。
+
+        进程内这份不能省：同一任务的旧 attempt 要先比完音频哈希、到后面才因为
+        不是当前 attempt 被拒，不会进 `_partition_directory`，fingerprint_cache 里
+        永远没有它们的音频。261004 生产实测，后台每轮因此把 23 个旧 attempt 的
+        音频（约 3.6GB）从外置盘整份重读一遍。
+
+        文件变没变比 fingerprint_cache 多看 ctime 和 inode：草稿音频常带着源文件的
+        mtime 拷进去（261004 实测有任务第 1、3、4 次 attempt 的音频 mtime 一样），
+        整份替换或原地重写后 mtime 和大小可能都不变。
         """
         stat = path.stat()
+        key = str(path)
+        stamp = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+        remembered = self._sha256_memo.get(key) or self._sha256_memo_previous.get(key)
+        if remembered and remembered[0] == stamp:
+            self._sha256_memo[key] = remembered
+            return remembered[1]
         cached = self.db.query_one(
             "SELECT sha256 FROM fingerprint_cache WHERE path = ? AND size_bytes = ? AND mtime_ns = ?",
-            (str(path), stat.st_size, stat.st_mtime_ns),
+            (key, stat.st_size, stat.st_mtime_ns),
         )
         if cached:
             return cached["sha256"]
-        return sha256_file(path)
+        digest = sha256_file(path)
+        self._sha256_memo[key] = (stamp, digest)
+        return digest
 
     def _transcript_hash(self, path: Path) -> str | None:
         _, segments = self._parse_transcript(path)

@@ -2432,6 +2432,111 @@ def test_cached_sha256_reuses_fingerprint_cache_row_without_rehashing(tmp_path, 
     assert calls == [miss_path]
 
 
+def _counting_sha256_file(monkeypatch):
+    from meeting_workbench.importer import sha256_file
+
+    calls: list[Path] = []
+
+    def counting(path):
+        calls.append(Path(path))
+        return sha256_file(path)
+
+    monkeypatch.setattr("meeting_workbench.importer.sha256_file", counting)
+    return calls
+
+
+def test_old_draft_attempt_audio_is_hashed_once_across_scans(tmp_path, monkeypatch):
+    # 261004 生产：任务重转写后旧 attempt 还留在草稿区，每轮扫描先比完音频哈希才因为
+    # 不是当前 attempt 被拒，音频进不了 fingerprint_cache，后台每轮整份重读约 3.6GB。
+    archive = tmp_path / "archive"
+    meeting_id = "vm-20261004-090000-aa00bb11"
+    job_id = "job-retried"
+    drafts = archive / ".workbench-drafts" / job_id
+    old_attempt = write_managed_unreviewed_bundle(
+        drafts / "attempt-1", meeting_id, job_id, attempt=1, text="旧一次正文"
+    )
+    current_attempt = write_managed_unreviewed_bundle(
+        drafts / "attempt-2", meeting_id, job_id, attempt=2, text="当前正文"
+    )
+    old_audio = old_attempt / f"{meeting_id}.m4a"
+    relay_db = tmp_path / "relay.sqlite3"
+    with sqlite3.connect(relay_db) as connection:
+        connection.execute(
+            "CREATE TABLE jobs(job_id TEXT PRIMARY KEY, status TEXT, current_attempt INTEGER, archive_dir TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES (?, 'completed_unreviewed', 2, ?)",
+            (job_id, str(current_attempt)),
+        )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=archive,
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "db.sqlite3",
+        relay_jobs_db=relay_db,
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    importer = ArchiveImporter(db, settings)
+    calls = _counting_sha256_file(monkeypatch)
+
+    for _ in range(3):
+        report = importer.scan()
+        assert report.errors == 0
+        assert report.meetings_seen == 1
+
+    assert calls.count(old_audio) == 1
+    assert db.query_one("SELECT canonical_dir FROM meetings WHERE id=?", (meeting_id,)) == {
+        "canonical_dir": str(current_attempt)
+    }
+    # 进程内记住，不往 fingerprint_cache 插只有 sha256 的行。
+    assert db.query_one("SELECT 1 FROM fingerprint_cache WHERE path=?", (str(old_audio),)) is None
+
+    # 旧 attempt 删掉以后，再走两遍归档根，记录就淘汰了，不会在进程里一直留着。
+    shutil.rmtree(old_attempt)
+    importer.scan()
+    importer.scan()
+    assert str(old_audio) not in importer._sha256_memo
+    assert str(old_audio) not in importer._sha256_memo_previous
+
+
+def test_cached_sha256_rehashes_when_file_changes(tmp_path, monkeypatch):
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        archive_root=tmp_path / "archive",
+        staging_root=tmp_path / "staging",
+        database_path=tmp_path / "data" / "workbench.sqlite3",
+    )
+    db = Database(settings.database_path)
+    db.initialize()
+    importer = ArchiveImporter(db, settings)
+    calls = _counting_sha256_file(monkeypatch)
+    path = tmp_path / "audio.m4a"
+    path.write_bytes(b"first")
+
+    assert importer._cached_sha256(path) == hashlib.sha256(b"first").hexdigest()
+    assert importer._cached_sha256(path) == hashlib.sha256(b"first").hexdigest()
+    assert len(calls) == 1
+
+    path.write_bytes(b"second-audio")
+    assert importer._cached_sha256(path) == hashlib.sha256(b"second-audio").hexdigest()
+    assert len(calls) == 2
+
+    # 带着原 mtime 拷来一份同样大小的新内容整份换掉：大小、mtime 都和上一份一样。
+    before = path.stat()
+    replacement = tmp_path / "replacement.m4a"
+    replacement.write_bytes(b"third--audio")
+    os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+    os.replace(replacement, path)
+    after = path.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    assert after.st_ino != before.st_ino
+
+    assert importer._cached_sha256(path) == hashlib.sha256(b"third--audio").hexdigest()
+    assert len(calls) == 3
+    assert db.query_one("SELECT COUNT(*) AS n FROM fingerprint_cache") == {"n": 0}
+
+
 def _scanned_archive_and_staging(tmp_path):
     real_archive = tmp_path / "real-archive"
     real_staging = tmp_path / "real-staging"
