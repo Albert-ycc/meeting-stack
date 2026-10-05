@@ -18,6 +18,9 @@ from meeting_workbench import cli
 from meeting_workbench import db as db_module
 from meeting_workbench.db import WAL_SIZE_LIMIT_BYTES, Database, utc_now
 
+# 被测的就是连接的开关和 -wal / -shm 的生命周期：不给这些用例常驻连接
+pytestmark = pytest.mark.real_database_files
+
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "meeting_workbench"
 UNCLOSED_PATTERN = re.compile(r"with\s+(?:sqlite3|self|[\w.]+)\.connect\(")

@@ -10,9 +10,14 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from meeting_workbench.backup import BackupManager
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database
+
+# 备份读的是带着 -wal 的库，连接关闭时的检查点也是被测行为：不给这些用例常驻连接
+pytestmark = pytest.mark.real_database_files
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 

@@ -12,13 +12,24 @@
 - Host 白名单放行 TestClient 的默认主机名 testserver（生产默认值里没有它）；
 - 自动生效的 _no_real_llm 拦下发给真 AI 的请求，teardown 时记下过就让测试失败。测本机假 AI 服务
   的测试标 allow_local_llm（只放行本机地址）；断言拦下了的测试自己把 fixture 的列表清空。
+
+写盘量（2026-10-05 全量一轮逻辑写盘 20GiB，是本机最大的写盘来源）：自动生效的 _cheap_databases 让用例里
+的库少写盘，查询语义不变，细节见它的文档。要看库文件、-wal / -shm 真实生命周期的用例标 real_database_files。
 """
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import os
+import shutil
+import sqlite3
+import sys
+import tempfile
+import threading
 import time
 import urllib.request
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
@@ -37,9 +48,12 @@ os.environ["MEETING_WORKBENCH_ALLOWED_HOSTS"] = "testserver"
 # 要测退避的用例（test_scan_idle_backoff.py）自己传 scan_idle_max_interval_seconds。
 os.environ["MEETING_WORKBENCH_SCAN_IDLE_MAX_INTERVAL_SECONDS"] = "0"
 
+from meeting_workbench import db as db_module
 from meeting_workbench.config import Settings
+from meeting_workbench.db import Database
 
 Settings.model_config["env_file"] = None
+REAL_INITIALIZE = Database.initialize
 
 pytest_plugins = ["pytester"]
 
@@ -51,6 +65,11 @@ NO_REAL_AI = "测试里不许调真的 AI"
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "allow_local_llm: 放行发给本机假 AI 服务的请求（真 AI 的主机照样拦）"
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_database_files: 用例要看库文件本身或 -wal / -shm 的真实生命周期（最后一个连接关掉时做检查点、"
+        "删边车文件，直接读库文件的大小和修改时间），_cheap_databases 不给它常驻空闲连接",
     )
 
 
@@ -154,3 +173,124 @@ def process_zone(request: pytest.FixtureRequest):
     else:
         os.environ["TZ"] = old
     time.tzset()
+
+
+def _clone_file(source: Path, destination: Path) -> None:
+    """复制库文件。macOS 的 APFS 上用 clonefile：不拷数据块，改到哪页才写哪页，克隆本身几乎不产生写入；
+    不支持的卷、别的系统退回普通复制（Linux 的文件系统支持 reflink 时同样不拷数据）。"""
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.clonefile(os.fsencode(source), os.fsencode(destination), 0) == 0:
+            return
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise FileExistsError(destination)
+        if code not in (errno.ENOTSUP, errno.EXDEV):
+            raise OSError(code, os.strerror(code), str(destination))
+    shutil.copyfile(source, destination)
+
+
+# 生产库是默认的 4096。WAL 里每次提交写的是改到的整页，页小了每次提交少写 3 到 4 倍（实测 1000 次单行
+# 插入 21MB → 8.8MB），页大小只改存储的分页，语句的结果不变。
+TEST_PAGE_SIZE = 1024
+
+
+@pytest.fixture(scope="session")
+def _schema_template():
+    """整个会话只真的建一次库：建表、建触发器要提交三百多次，每次都往 -wal 追加整页，一个空库写盘约
+    4.5MB（2026-10-05 实测，库文件本身不到 1MB），全量里有两千多个用例各建一遍。
+
+    模板就是真 initialize() 在空库上跑完的结果。app_state 里的六行是建库那一刻的时间戳（links_since 等）
+    和各自的默认值，留在模板里所有克隆都会带着会话开始的时间，所以清掉：克隆之后用例路径上照样会跑真
+    initialize()，INSERT OR IGNORE 按当时的 utc_now() 把这六行原样补回来。
+
+    返回 (模板路径, 模板建成时的 (SCHEMA, SCHEMA_VERSION))。"""
+    with tempfile.TemporaryDirectory(prefix="meeting-workbench-schema-template-") as folder:
+        template = Path(folder) / "template.sqlite3"
+        # 页大小只能在库里还没有表的时候定；WAL 模式一并先落下，之后真 initialize() 看到的是一个已经
+        # 是 WAL 的空库
+        connection = sqlite3.connect(template)
+        try:
+            connection.execute(f"PRAGMA page_size={TEST_PAGE_SIZE}")
+            connection.execute("PRAGMA journal_mode=WAL")
+        finally:
+            connection.close()
+        REAL_INITIALIZE(Database(template))
+        connection = sqlite3.connect(template)
+        try:
+            connection.execute("DELETE FROM app_state")
+            connection.commit()
+            assert connection.execute("PRAGMA page_size").fetchone()[0] == TEST_PAGE_SIZE
+        finally:
+            connection.close()
+        assert not Path(f"{template}-wal").exists(), "模板必须是单个文件"
+        yield template, (db_module.SCHEMA, db_module.SCHEMA_VERSION)
+
+
+@pytest.fixture(autouse=True)
+def _cheap_databases(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """用例里的库少写盘，库里的内容和语句的结果跟原来一样。四处：
+
+    1. 新库不再从零建表：Database.initialize() 碰到不存在的库文件时，先把模板克隆过去，再照常跑一遍真
+       initialize()（建表语句都是 IF NOT EXISTS，剩下的迁移、补种子行照样执行）。
+       只在表结构和版本号都还是模板建成时的样子时才克隆（用例改了 SCHEMA、SCHEMA_VERSION 就走原路）。
+    2. 页大小 1024（生产是默认的 4096），理由见 TEST_PAGE_SIZE。
+    3. 每条连接 temp_store=MEMORY：带触发器的 INSERT … ON CONFLICT 要开语句日志，默认放在磁盘临时文件里，
+       一条语句写 5KB 上下（test_decisions_log 里建 16 万条 relations，光这一项写 800MB）；放内存里一个字节
+       不落盘。用例里的库很小，内存不是问题。
+    4. 给这个库常驻一个空闲连接，用例结束时关掉，和生产里 Database.held_open() 一样：
+       用例里的 db.execute / db.query_one 每次都是用完就关的短连接，最后一个连接关掉时 SQLite 要把 -wal
+       整个写进主文件再删掉 -wal / -shm，下一次再建，一条语句要写 130KB 左右（实测 200 条插入 26MB，
+       常驻一个连接后 6.6MB）。
+
+    标了 real_database_files 的用例不做第 4 项：它们看库文件本身或 -wal / -shm 的真实生命周期（最后一个
+    连接关掉时做检查点、删边车文件）；第 1 到 3 项不改变这些行为，对谁都生效。"""
+    if getattr(Database.initialize, "cheap_databases", False):
+        # pytester 里嵌套跑的内层会话复制了这份 conftest，外层已经换过了，不再套第二层
+        yield
+        return
+
+    template, template_schema = request.getfixturevalue("_schema_template")
+    hold = request.node.get_closest_marker("real_database_files") is None
+    held: dict[str, sqlite3.Connection] = {}
+    lock = threading.Lock()
+    real_connect = Database.connect
+
+    def connect(self: Database) -> sqlite3.Connection:
+        connection = real_connect(self)
+        connection.execute("PRAGMA temp_store=MEMORY")
+        return connection
+
+    def hold_open(path: Path) -> None:
+        key = os.path.realpath(path)
+        with lock:
+            if key not in held:
+                # 线程池里建库、主线程收尾的用例有，所以不限线程
+                connection = sqlite3.connect(path, check_same_thread=False)
+                connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchall()
+                held[key] = connection
+
+    def initialize(self: Database, **kwargs) -> None:
+        sidecars = ("", "-wal", "-shm", "-journal")
+        fresh = not any(os.path.lexists(f"{self.path}{suffix}") for suffix in sidecars)
+        if fresh and (db_module.SCHEMA, db_module.SCHEMA_VERSION) == template_schema:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            _clone_file(template, self.path)
+            if hold:
+                # 克隆来的一定是好库，先常驻再跑 initialize：它里面的短连接就不是最后一个，关的时候不做检查点
+                hold_open(self.path)
+            REAL_INITIALIZE(self, **kwargs)
+            return
+        REAL_INITIALIZE(self, **kwargs)
+        if hold:
+            hold_open(self.path)
+
+    initialize.cheap_databases = True
+    monkeypatch.setattr(Database, "connect", connect)
+    monkeypatch.setattr(Database, "initialize", initialize)
+    yield
+    for connection in held.values():
+        try:
+            connection.close()
+        except sqlite3.Error:
+            pass  # 用例把库文件删了或挪了：连接指着的是旧文件，关不干净不影响结果

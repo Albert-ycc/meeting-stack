@@ -4,9 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+
 from meeting_workbench.backup import BackupManager
 from meeting_workbench.config import Settings
 from meeting_workbench.db import Database
+
+# 备份读的是带着 -wal 的库，连接关闭时的检查点也是被测行为：不给这些用例常驻连接
+pytestmark = pytest.mark.real_database_files
 
 
 def test_online_backup_is_readable_and_mirrored(tmp_path):
@@ -168,23 +173,28 @@ def test_failed_mirror_fsync_removes_installed_candidate(tmp_path):
 
 
 def _seed_segments_with_embeddings(db: Database, count: int) -> None:
-    db.execute("INSERT INTO meetings(id, title, status) VALUES ('vm-emb', '向量验证', 'published')")
-    db.execute(
-        """INSERT INTO transcript_versions(id, meeting_id, version_no, kind, published, created_at)
-           VALUES ('ver-emb', 'vm-emb', 1, 'asr', 1, '2026-08-09T00:00:00Z')"""
-    )
-    for ordinal in range(count):
-        segment_id = f"seg-{ordinal}"
+    # 这几条是备份的前置数据，不是被测的东西：共用一个连接逐条提交，写进去的内容和各开各的连接一样，
+    # 只是不必每条语句都关一次连接、把 -wal 整个写回主文件（800 条语句原来写盘 90MB）
+    with db.reuse_connection():
         db.execute(
-            """INSERT INTO segments(id, version_id, meeting_id, ordinal, start_ms, end_ms, text)
-               VALUES (?, 'ver-emb', 'vm-emb', ?, ?, ?, ?)""",
-            (segment_id, ordinal, ordinal * 1000, ordinal * 1000 + 900, f"第 {ordinal} 句转写"),
+            "INSERT INTO meetings(id, title, status) VALUES ('vm-emb', '向量验证', 'published')"
         )
         db.execute(
-            """INSERT INTO embeddings(segment_id, model, dimensions, vector, created_at)
-               VALUES (?, 'bge-small-zh-v1.5', 512, ?, '2026-08-09T00:00:00Z')""",
-            (segment_id, b"\x00" * 2048),
+            """INSERT INTO transcript_versions(id, meeting_id, version_no, kind, published, created_at)
+               VALUES ('ver-emb', 'vm-emb', 1, 'asr', 1, '2026-08-09T00:00:00Z')"""
         )
+        for ordinal in range(count):
+            segment_id = f"seg-{ordinal}"
+            db.execute(
+                """INSERT INTO segments(id, version_id, meeting_id, ordinal, start_ms, end_ms, text)
+                   VALUES (?, 'ver-emb', 'vm-emb', ?, ?, ?, ?)""",
+                (segment_id, ordinal, ordinal * 1000, ordinal * 1000 + 900, f"第 {ordinal} 句转写"),
+            )
+            db.execute(
+                """INSERT INTO embeddings(segment_id, model, dimensions, vector, created_at)
+                   VALUES (?, 'bge-small-zh-v1.5', 512, ?, '2026-08-09T00:00:00Z')""",
+                (segment_id, b"\x00" * 2048),
+            )
 
 
 def test_backup_excludes_embeddings_and_keeps_business_data(tmp_path):

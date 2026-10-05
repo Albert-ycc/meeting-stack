@@ -51,6 +51,19 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests   # 要用装了
 - **平台**：`sys.platform` 相关的分支要在用例里钉住，不然在 Mac 上会真去开访达。
 - **本机装的程序**：找程序的逻辑会去看 Homebrew 目录，用例要把这条路也挡掉。
 
+## 用例里的库少写盘
+
+全量一轮曾经逻辑写盘 20GiB（每个新库建表要提交三百多次，用例里 db.execute 每条语句开关一次连接、每次都把 -wal 整个写回主文件）。
+`backend/tests/conftest.py` 里自动生效的 `_cheap_databases` 让用例的库从模板克隆、页大小 1024、每条连接 temp_store=MEMORY、
+initialize() 之后常驻一个空闲连接；语句的结果和库里的内容不变（`test_cheap_databases.py` 拿克隆出来的库和真从零建的逐行对比）。
+
+- 用例要看库文件本身、-wal / -shm 的生命周期（最后一个连接关掉时做检查点、删边车文件）、备份读到的 WAL 状态，模块或用例上标
+  `pytest.mark.real_database_files`，它们不给常驻连接。新写这类用例别忘了标，不然常驻的连接会让它看到的和生产不一样。
+- `initialize()` 里新加带时间或随机 id 的种子行，要在 `_schema_template` 里和 app_state 一样处理（清掉，让克隆之后那一遍真 initialize()
+  重写），否则所有克隆共用模板建成那一刻的值；`test_cheap_databases.py` 会拦住。
+- 量写盘：`~/bin/pytest-writes.py --python <venv python> --profile out.jsonl -- backend/tests -o tmp_path_retention_policy=failed`，
+  再用 `~/bin/pytest_writes_report.py out.jsonl` 按文件、按用例看（读的是 proc_pid_rusage 的 ri_logical_writes）。
+
 ## 其他
 
 - 全量格式化的提交记在 `.git-blame-ignore-revs`；本地跑一次
