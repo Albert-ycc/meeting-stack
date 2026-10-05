@@ -5,6 +5,7 @@ import math
 import os
 import re
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -16,10 +17,16 @@ TIMING_LINE_RE = re.compile(r"^\s*[\d:,.]*\s*-->")
 MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_JSON_DEPTH = 128
 # 嵌套深度校验是纯 Python 逐字符扫描，一份 20MB 的转写 JSON 要 0.3～0.5 秒，而同一份文件
-# 导入时会被加载好几次。校验通过的文件按路径记下（大小、修改时间），没变就不再扫；
-# 只记通过的，文件一变（大小或修改时间不同）重扫，最多记 _DEPTH_CHECKED_LIMIT 份，挤掉最久没用的。
-_DEPTH_CHECKED_LIMIT = 512
-_depth_checked: OrderedDict[str, tuple[int, int]] = OrderedDict()
+# 导入时会被加载好几次，后台扫描每轮还要把全部 JSON 再过一遍（生产上约 2100 份、校验约 1750 次，
+# 占一轮 7.5 秒 CPU 里的 5.3 秒）。校验通过的文件按路径记下 (大小, mtime, ctime, inode)，
+# 没变就不再扫；口径和导入器的 sha256 进程内记录一致（见 importer._file_sha256）：
+# ctime 和 inode 能认出大小不变、mtime 被拨回原值的改写；刚写完不到 MEMO_SETTLE_NS 的文件不记，
+# 时间戳精度粗的盘上同一个刻度里再写一次改不动 mtime。
+# 只记通过的，最多记 _DEPTH_CHECKED_LIMIT 份，挤掉最久没用的。上限要大于一轮扫描碰到的 JSON 数：
+# 原来是 512，一轮轮流碰两千多份，最久没用的总是下一个要用的，等于一次都没命中。
+MEMO_SETTLE_NS = 3_000_000_000
+_DEPTH_CHECKED_LIMIT = 16384
+_depth_checked: OrderedDict[str, tuple[int, int, int, int]] = OrderedDict()
 _depth_checked_lock = threading.Lock()
 # 时间戳上限取 SRT 时间码能写出来的最大值 99:59:59,999：逐字稿要能按 SRT
 # 导出、再导回来（rendering 写两位小时，上面的 TIMECODE_RE 也只认两位），
@@ -134,7 +141,7 @@ def _validate_json_depth(content: str) -> None:
             depth = max(0, depth - 1)
 
 
-def _depth_already_checked(key: str, signature: tuple[int, int]) -> bool:
+def _depth_already_checked(key: str, signature: tuple[int, int, int, int]) -> bool:
     with _depth_checked_lock:
         if _depth_checked.get(key) != signature:
             return False
@@ -142,7 +149,7 @@ def _depth_already_checked(key: str, signature: tuple[int, int]) -> bool:
         return True
 
 
-def _remember_depth_checked(key: str, signature: tuple[int, int]) -> None:
+def _remember_depth_checked(key: str, signature: tuple[int, int, int, int]) -> None:
     with _depth_checked_lock:
         _depth_checked[key] = signature
         _depth_checked.move_to_end(key)
@@ -161,10 +168,11 @@ def load_json_file(path: Path) -> Any:
         raise ValueError("JSON file exceeds 64 MiB")
     content = content_bytes.decode("utf-8-sig", errors="replace")
     key = os.path.abspath(path)
-    signature = (status.st_size, status.st_mtime_ns)
+    signature = (status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino)
     if not _depth_already_checked(key, signature):
         _validate_json_depth(content)
-        _remember_depth_checked(key, signature)
+        if time.time_ns() - max(status.st_mtime_ns, status.st_ctime_ns) >= MEMO_SETTLE_NS:
+            _remember_depth_checked(key, signature)
     return json.loads(content)
 
 

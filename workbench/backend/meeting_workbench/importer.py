@@ -21,6 +21,7 @@ from .config import Settings
 from .db import Database, read_only_uri, utc_now
 from .minutes_evidence import is_manifest_exempt_path, manifest_meeting_id_matches
 from .parsers import (
+    MEMO_SETTLE_NS,
     load_json_file,
     parse_funasr_json,
     parse_srt,
@@ -56,7 +57,7 @@ SAFE_MEETING_ID_RE = re.compile(r"^(?:vm|fp|legacy)-[a-z0-9][a-z0-9_-]{0,127}$")
 UNTITLED_TITLE_SUFFIX = "未命名录音"
 # 文件最后一次写入（mtime / ctime）离现在不到这么久，`_file_sha256` 算完不记，
 # 比 FAT 的 2 秒时间戳精度留点余量。
-SHA256_MEMO_SETTLE_NS = 3_000_000_000
+SHA256_MEMO_SETTLE_NS = MEMO_SETTLE_NS
 
 
 def input_transcript_name(manifest: dict[str, Any]) -> str:

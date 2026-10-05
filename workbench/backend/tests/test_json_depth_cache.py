@@ -2,7 +2,7 @@
 
 _validate_json_depth 是纯 Python 逐字符扫描，实测一份 20MB 的转写 JSON 要 0.3～0.5 秒；
 导入同一份文件时会被加载好几次（登记检查、取会议 id、拆目录、核对清单……），
-每次都重扫一遍。缓存只记「已经校验通过」，键是（路径、大小、修改时间），文件变了就重扫。
+每次都重扫一遍。缓存只记「已经校验通过」，键是（路径）加（大小、mtime、ctime、inode），文件变了就重扫；\n刚写完不到 MEMO_SETTLE_NS 的文件不记。
 """
 
 import json
@@ -20,7 +20,10 @@ from .test_importer import write_meeting
 
 
 @pytest.fixture(autouse=True)
-def _fresh_cache():
+def _fresh_cache(monkeypatch):
+    # 用例里的文件都是刚写的：不把「刚写完不记」关掉，下面这些用例就什么都记不住。
+    # 这条规则有专门的用例（test_a_file_written_a_moment_ago_is_not_remembered）。
+    monkeypatch.setattr(parsers, "MEMO_SETTLE_NS", 0)
     parsers._depth_checked.clear()
     yield
     parsers._depth_checked.clear()
@@ -111,6 +114,59 @@ def test_the_remembered_files_are_bounded_and_the_oldest_is_forgotten(tmp_path, 
     assert len(scans) == 5
     parsers.load_json_file(paths[0])  # 最早的已经挤掉，要重扫
     assert len(scans) == 6
+
+
+def test_a_file_written_a_moment_ago_is_not_remembered(tmp_path, scans, monkeypatch):
+    monkeypatch.setattr(parsers, "MEMO_SETTLE_NS", 3_000_000_000)
+    path = _write(tmp_path / "fresh.json", {"v": 1})
+
+    for _ in range(3):
+        parsers.load_json_file(path)
+
+    # 时间戳精度粗的盘上，同一个刻度里再写一次改不动 mtime：刚写完的文件每次都重扫
+    assert len(scans) == 3
+    assert len(parsers._depth_checked) == 0
+
+
+def test_the_same_size_and_mtime_but_another_inode_is_checked_again(tmp_path, scans):
+    path = _write(tmp_path / "a.json", {"v": 1}, mtime_ns=1_700_000_000_000_000_000)
+    parsers.load_json_file(path)
+
+    # 整份替换：大小、内容长度、mtime 都和原来一样，inode 不同
+    replacement = _write(
+        tmp_path / "replacement.json", {"v": 2}, mtime_ns=1_700_000_000_000_000_000
+    )
+    os.replace(replacement, path)
+    assert parsers.load_json_file(path) == {"v": 2}
+
+    assert len(scans) == 2
+
+
+def test_an_in_place_rewrite_with_the_mtime_put_back_is_checked_again(tmp_path, scans):
+    path = _write(tmp_path / "a.json", _nested(3), mtime_ns=1_700_000_000_000_000_000)
+    parsers.load_json_file(path)
+
+    # 原地写进同样长度的内容，再把 mtime 拨回去：改动会刷新 ctime
+    path.write_text(json.dumps([[[2]]]), encoding="utf-8")
+    os.utime(path, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    assert len(path.read_bytes()) == len(json.dumps(_nested(3)))
+    assert parsers.load_json_file(path) == [[[2]]]
+
+    assert len(scans) == 2
+
+
+def test_one_round_over_more_files_than_the_old_limit_is_scanned_once_per_file(tmp_path, scans):
+    """一轮扫描轮流碰的 JSON 比以前的上限 512 多时，第二轮也要全部命中（原来每轮都是零命中）。"""
+    paths = [_write(tmp_path / f"{index}.json", {"i": index}) for index in range(700)]
+    for path in paths:
+        parsers.load_json_file(path)
+    first_round = len(scans)
+
+    for path in paths:
+        parsers.load_json_file(path)
+
+    assert first_round == 700
+    assert len(scans) == 700
 
 
 def test_oversized_and_missing_files_still_fail_the_same_way(tmp_path, monkeypatch):
