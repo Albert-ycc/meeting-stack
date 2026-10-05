@@ -3320,36 +3320,40 @@ def create_app(
         except (RelayUnavailable, AttributeError):
             return None
         items: list[dict[str, Any]] = []
-        for job in jobs:
-            if not needs_attention(job):
-                continue
-            job_id = str(job.get("job_id") or "")
-            if not job_id:
-                continue
-            meeting = db.query_one(
-                "SELECT id, title FROM meetings WHERE source_job_id=? LIMIT 1", (job_id,)
-            )
-            auto_recovery_left = False
-            if job.get("failure_stage") in RECOVERABLE_MINUTES_FAILURE_STAGES:
-                linked = find_meeting_for_job(job)
-                if (
-                    linked
-                    and int(linked["segment_count"] or 0) > 0
-                    and int(linked["minutes_count"] or 0) == 0
-                ):
-                    attempts = db.query_one(
-                        """SELECT COUNT(*) AS count FROM events
-                            WHERE job_id=? AND event_type='minutes_auto_recovery_requested'""",
-                        (job_id,),
-                    )
-                    auto_recovery_left = (
-                        int(attempts["count"] or 0) < MINUTES_AUTO_RECOVERY_MAX_ATTEMPTS
-                    )
-                    if meeting is None:
-                        meeting = db.query_one(
-                            "SELECT id, title FROM meetings WHERE id=?", (linked["id"],)
+        # 每 60 秒一轮、每个要关注的任务查几次库：一轮共用一个连接，不再每次新开
+        with db.reuse_connection():
+            for job in jobs:
+                if not needs_attention(job):
+                    continue
+                job_id = str(job.get("job_id") or "")
+                if not job_id:
+                    continue
+                meeting = db.query_one(
+                    "SELECT id, title FROM meetings WHERE source_job_id=? LIMIT 1", (job_id,)
+                )
+                auto_recovery_left = False
+                if job.get("failure_stage") in RECOVERABLE_MINUTES_FAILURE_STAGES:
+                    linked = find_meeting_for_job(job)
+                    if (
+                        linked
+                        and int(linked["segment_count"] or 0) > 0
+                        and int(linked["minutes_count"] or 0) == 0
+                    ):
+                        attempts = db.query_one(
+                            """SELECT COUNT(*) AS count FROM events
+                                WHERE job_id=? AND event_type='minutes_auto_recovery_requested'""",
+                            (job_id,),
                         )
-            items.append(describe_job(job, meeting=meeting, auto_recovery_left=auto_recovery_left))
+                        auto_recovery_left = (
+                            int(attempts["count"] or 0) < MINUTES_AUTO_RECOVERY_MAX_ATTEMPTS
+                        )
+                        if meeting is None:
+                            meeting = db.query_one(
+                                "SELECT id, title FROM meetings WHERE id=?", (linked["id"],)
+                            )
+                items.append(
+                    describe_job(job, meeting=meeting, auto_recovery_left=auto_recovery_left)
+                )
         return items
 
     app.state.refresh_attention_jobs = refresh_attention_jobs

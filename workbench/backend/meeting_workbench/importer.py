@@ -9,7 +9,8 @@ import sqlite3
 import subprocess
 import time
 import uuid
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -435,6 +436,9 @@ class ArchiveImporter:
         # 每轮扫描换一代，只留上一轮和这一轮用到的，文件删了记录跟着淘汰。
         self._sha256_memo: dict[str, tuple[tuple[int, int, int, int], str]] = {}
         self._sha256_memo_previous: dict[str, tuple[tuple[int, int, int, int], str]] = {}
+        # 一轮扫描里共用的 relay 任务库只读连接（见 _relay_jobs_connection）；轮外 _relay_sharing 为假
+        self._relay_sharing = False
+        self._relay_shared: sqlite3.Connection | None = None
 
     def scan(self, *, allow_mass_cleanup: bool = False) -> ScanReport:
         """allow_mass_cleanup：这一轮不做两道清理保护（根里一个文件都没发现、要清的记录超过
@@ -442,7 +446,34 @@ class ArchiveImporter:
 
         一轮逐场、逐个文件查库（生产上八千多次），查询共用一个连接，不再每次新开。"""
         with self.archive_lock, self.db.reuse_connection():
-            return self._scan_locked(allow_mass_cleanup=allow_mass_cleanup)
+            self._relay_sharing = True
+            try:
+                return self._scan_locked(allow_mass_cleanup=allow_mass_cleanup)
+            finally:
+                self._relay_sharing = False
+                if self._relay_shared is not None:
+                    self._relay_shared.close()
+                    self._relay_shared = None
+
+    @contextmanager
+    def _relay_jobs_connection(self) -> Iterator[sqlite3.Connection]:
+        """relay 任务库的只读连接。一轮扫描里每个受管草稿目录都要查一次（生产上每轮一百七十多次）：
+        轮内用到时才开、整轮共用一个，轮结束由 scan() 关掉；轮外（发布时算签名）照旧一次一个。
+        不缓存查询结果，每条语句各自读最新已提交的数据，和每次新开连接看到的一样。"""
+        if self._relay_sharing:
+            if self._relay_shared is None:
+                self._relay_shared = self._open_relay_jobs()
+            yield self._relay_shared
+            return
+        with closing(self._open_relay_jobs()) as connection:
+            yield connection
+
+    def _open_relay_jobs(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            read_only_uri(self.settings.relay_jobs_db), uri=True, timeout=5
+        )
+        connection.row_factory = sqlite3.Row
+        return connection
 
     def _scan_locked(self, *, allow_mass_cleanup: bool = False) -> ScanReport:
         report = ScanReport()
@@ -889,10 +920,7 @@ class ArchiveImporter:
                 return None, "输入逐字稿快照与登记不符"
         if not topic_minutes_pair(files) and not ({"minutes_md", "minutes_html"} <= kinds):
             return None, "manifest 登记的纪要产物缺失"
-        with closing(
-            sqlite3.connect(read_only_uri(self.settings.relay_jobs_db), uri=True, timeout=5)
-        ) as connection:
-            connection.row_factory = sqlite3.Row
+        with self._relay_jobs_connection() as connection:
             job_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
             }
