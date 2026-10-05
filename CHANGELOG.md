@@ -2,6 +2,12 @@
 
 ## 未发布
 
+- relay 健康探测改成在进程内读：原来每 5 秒起一个 `relayctl health` 子进程，每次要启动解释器、加载 7 千行的 `relay_control.py`、再起两个
+  `ps` 核对 worker 进程，实测约 57 毫秒 CPU，常驻约 1% 单核（工作台带着 `PYTHONDONTWRITEBYTECODE=1` 启动，`relay_control.py` 改过之后
+  字节码缓存过期又不更新，每次还要重新编译，这一项占约 24 毫秒）。现在 `RelayClient.health` 直接调 relay 自己的
+  `RelayControl.health`（只读打开任务库，字段和含义由同一份代码保证），一次约 4.5 毫秒，探测间隔仍是 5 秒，`/api/health` 的 relay 字段不变。
+  `relay_control.py` 被换掉（升级 relay）后下一次探测自动重新加载，不用重启工作台。只有健康探测改了：每 60 秒的「要你处理」刷新、
+  扫描里的 index 子状态同步仍然走 `relayctl list`。
 - 后台扫描空闲时退避：连续几轮没导入新东西、也没做别的事，两轮之间的间隔从 15 秒逐步拉长到最长 600 秒（`scan_idle_max_interval_seconds`），
   有变化立刻醒来：归档根和暂存根里导入会读的文件变了（退避期间每 15 秒做一次约 40 毫秒的大小加修改时间指纹，新录音出现得和以前一样快）、
   页面写操作做完、relay 任务状态变了、每日晨报的点。8765 空闲时一轮整份重读归档要约 8 秒 CPU，原来每 15 到 50 秒来一轮，占单核近三成。

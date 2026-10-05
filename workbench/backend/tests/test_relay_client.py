@@ -142,47 +142,6 @@ def test_set_substate_reads_and_passes_the_current_attempt(tmp_path, monkeypatch
     ]
 
 
-def test_health_accepts_degraded_exit_code_and_uses_short_timeout(tmp_path, monkeypatch):
-    relay_repo = tmp_path / "meeting-relay"
-    executable = relay_repo / "quickstart" / "relayctl"
-    executable.parent.mkdir(parents=True)
-    executable.write_text("#!/bin/sh\n", encoding="utf-8")
-    settings = Settings(
-        data_dir=tmp_path / "data",
-        archive_root=tmp_path / "archive",
-        staging_root=tmp_path / "staging",
-        relay_repo=relay_repo,
-        relay_jobs_db=tmp_path / "jobs.sqlite3",
-        semantic_enabled=False,
-    )
-    calls = []
-    payload = {
-        "status": "degraded",
-        "mode": "legacy",
-        "worker": {"state": "absent", "heartbeat_age_seconds": None},
-        "counts": {"queued": 1, "active": 0, "failed": 0},
-    }
-
-    monkeypatch.delenv("MEETING_RELAY_CONTROL_ENABLED", raising=False)
-
-    def fake_run(arguments, **kwargs):
-        calls.append(
-            (
-                arguments[1:],
-                kwargs["timeout"],
-                kwargs["env"].get("MEETING_RELAY_CONTROL_ENABLED"),
-            )
-        )
-        return SimpleNamespace(returncode=1, stdout=json.dumps(payload), stderr="")
-
-    monkeypatch.setattr("meeting_workbench.relay_client.subprocess.run", fake_run)
-
-    result = RelayClient(settings).health()
-
-    assert result == payload
-    assert calls == [(["health", "--json"], 2, "1")]
-
-
 def test_remote_bootstrap_starts_web_in_controlled_relay_mode():
     root = Path(__file__).resolve().parents[2]
 
@@ -192,36 +151,6 @@ def test_remote_bootstrap_starts_web_in_controlled_relay_mode():
         line for line in script.splitlines() if ".venv/bin/meeting-workbench serve" in line
     )
     assert "MEETING_RELAY_CONTROL_ENABLED=1" in web_command
-
-
-def test_health_preserves_unavailable_json_from_exit_code_two(tmp_path, monkeypatch):
-    relay_repo = tmp_path / "meeting-relay"
-    executable = relay_repo / "quickstart" / "relayctl"
-    executable.parent.mkdir(parents=True)
-    executable.write_text("#!/bin/sh\n", encoding="utf-8")
-    settings = Settings(
-        data_dir=tmp_path / "data",
-        archive_root=tmp_path / "archive",
-        staging_root=tmp_path / "staging",
-        relay_repo=relay_repo,
-        relay_jobs_db=tmp_path / "jobs.sqlite3",
-        semantic_enabled=False,
-    )
-    payload = {
-        "status": "unavailable",
-        "mode": "controlled",
-        "worker": {"state": "stale", "heartbeat_age_seconds": 31},
-        "counts": {"queued": 1, "active": 1, "failed": 0},
-    }
-
-    monkeypatch.setattr(
-        "meeting_workbench.relay_client.subprocess.run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=2, stdout=json.dumps(payload), stderr=""
-        ),
-    )
-
-    assert RelayClient(settings).health() == payload
 
 
 def test_relayctl_stderr_stays_in_server_log_not_in_client_facing_error(

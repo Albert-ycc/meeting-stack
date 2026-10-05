@@ -455,7 +455,8 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
   只做一次看大小和修改时间的指纹，约 40 毫秒；新录音出现的快慢和不退避时一样）、页面上有写操作做完、relay 任务状态变了
   （排队、转写、失败的数量或正在跑的任务变化）、每日晨报的点。设成 0 或不大于 `scan_interval_seconds` 就是不退避。
 - `GET /api/health` 使用缓存的 Relay 探测结果，并分别报告扫描、语义索引、Relay worker、Qwen worker 与备份状态；
-  `relayctl health --json` 的退出码 0/1/2 分别表示健康、降级和不可用
+  Relay 探测每 5 秒一次，在工作台进程内直接调 relay 的 `RelayControl.health`（不起子进程，和命令行 `relayctl health --json`
+  是同一份代码，该命令的退出码 0/1/2 分别表示健康、降级和不可用）
 - 无遥测、无自动更新
 
 正式归档根必须专用于会议资料。历史目录继续兼容没有 manifest 的 legacy 文本会议，因此不要把

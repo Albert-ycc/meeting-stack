@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
 import re
 import subprocess
 import tempfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Iterable, Iterator
 
 from .config import Settings
@@ -30,6 +33,32 @@ JOB_IDS_PER_LIST = 1000
 
 class RelayUnavailable(RuntimeError):
     pass
+
+
+# 进程内加载的 relay_control 模块，按文件路径存 ((mtime_ns, size), 模块)。
+_control_modules: dict[Path, tuple[tuple[int, int], ModuleType]] = {}
+_control_modules_lock = threading.Lock()
+
+
+def load_relay_control(path: Path) -> ModuleType:
+    """把 relay 的 relay_control.py 加载进本进程。
+
+    文件的 (mtime, 大小) 变了（升级 relay 后换了文件）就重新加载：原来每次起 relayctl 读的都是磁盘上
+    最新的代码，这里不能变成要重启工作台才认。不登记进 sys.modules，不动 sys.path。
+    """
+    stat = path.stat()
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    with _control_modules_lock:
+        cached = _control_modules.get(path)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        spec = importlib.util.spec_from_file_location("relay_control", path)
+        if spec is None or spec.loader is None:
+            raise ImportError("relay_control 加载不了")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _control_modules[path] = (stamp, module)
+        return module
 
 
 def check_job_id(job_id: str) -> str:
@@ -83,19 +112,33 @@ class RelayClient:
         return result.stdout.strip()
 
     def health(self) -> dict[str, Any]:
-        payload = self._json(
-            self._run(
-                ["health", "--json"],
-                timeout=2,
-                allowed_returncodes=frozenset({0, 1, 2}),
+        """relay 的运行健康。探测循环每 5 秒调一次，所以在进程内调 relay 自己的 RelayControl.health：
+        原来每次起一个 relayctl 子进程，解释器启动加编译 7 千行的 relay_control，实测约 57ms CPU/次。
+        字段和含义由同一份代码保证，不在工作台这边另写一遍。
+
+        control_enabled 恒为 True，和 _run 同一个理由：工作台只认受控 worker 的契约，不继承
+        launchd、tmux、SSH 启动时可能缺的开关。"""
+        module_path = self.settings.relay_repo / "quickstart" / "relay_control.py"
+        if not module_path.is_file():
+            # 绝对路径只进日志，理由同 _run
+            logger.error("relay_control 不存在：%s", module_path)
+            raise RelayUnavailable("中转程序找不到，详见服务日志")
+        try:
+            control = load_relay_control(module_path).RelayControl(
+                self.settings.relay_jobs_db,
+                archive_root=self.settings.archive_root,
+                initialize=False,
             )
-        )
+            payload = control.health(control_enabled=True)
+        except Exception as error:
+            logger.error("relay 健康读取失败：%s", error)
+            raise RelayUnavailable("relay 健康读取失败，详见服务日志") from error
         if not isinstance(payload, dict) or payload.get("status") not in {
             "healthy",
             "degraded",
             "unavailable",
         }:
-            raise RelayUnavailable("relayctl health 返回格式错误")
+            raise RelayUnavailable("relay health 返回格式错误")
         return payload
 
     @staticmethod
