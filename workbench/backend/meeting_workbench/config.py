@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # 扫描空闲退避：连续几轮没有变化时两轮之间的间隔逐步拉长，最长到这个值；有变化来源（归档文件
     # 变了、页面上有写操作、relay 任务状态变了）立即醒来。0 或不大于 scan_interval_seconds 就是不退避。
     scan_idle_max_interval_seconds: float = 600.0
+    # 非正式实例（数据目录不是 ~/.meeting-workbench，或端口不是 8765）的存活时限，到点自己退出。
+    # 沙箱、回归、临时验证起的实例常常没人收尾，2026-09-28 的 8799 沙箱挂了 5 天、写盘翻倍。0 = 不限时，
+    # 只给有意长期开着的第二实例用；正式实例不看这个值。
+    instance_lifetime_seconds: float = 4 * 60 * 60
     # Backups run every 24 hours.  Six hours of scheduling/runtime grace keeps
     # a small delay from paging while still detecting a dead daily session.
     backup_stale_after_seconds: int = 30 * 60 * 60
@@ -193,7 +197,7 @@ class Settings(BaseSettings):
             or self.scan_interval_seconds > MAX_SCAN_INTERVAL_SECONDS
         ):
             raise ValueError(f"scan_interval_seconds 不能超过 {MAX_SCAN_INTERVAL_SECONDS:g} 秒")
-        for name in ("scan_idle_max_interval_seconds",):
+        for name in ("scan_idle_max_interval_seconds", "instance_lifetime_seconds"):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} 不能小于 0")

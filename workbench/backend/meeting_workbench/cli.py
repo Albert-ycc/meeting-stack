@@ -1008,8 +1008,14 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         import uvicorn
 
+        from .instance_lifetime import start_lifetime_guard
+
+        # 先建好应用再计时：建应用慢的话，退出信号不能赶在 uvicorn 接管信号之前到
+        app = create_app(settings)
+        # 非正式实例（沙箱、回归、临时验证）到点自己退出；正式实例这一行什么都不做
+        start_lifetime_guard(settings)
         uvicorn.run(
-            create_app(settings),
+            app,
             host="127.0.0.1",
             port=settings.port,
             access_log=True,
