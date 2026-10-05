@@ -1092,16 +1092,21 @@ def create_app(
                  LEFT JOIN segments s ON s.version_id=m.current_transcript_version_id
                  LEFT JOIN embeddings e ON e.segment_id=s.id AND e.model=?
                 WHERE m.source_job_id IS NOT NULL
-                GROUP BY m.source_job_id""",
+                GROUP BY m.id""",
             (settings.semantic_model,),
         )
-        targets = {
-            row["job_id"]: (
-                "ready"
-                if int(row["segment_count"] or 0) > 0 and int(row["missing_count"] or 0) == 0
-                else "pending"
+        # 按会议主键分组走主键索引；按任务号分组要把连出来的全部段落排一遍序，生产库上每次
+        # 溢写约 12MiB 临时文件。一个任务号对应几场会时在这里合起来，口径和原来按任务号分组一样。
+        totals: dict[str, tuple[int, int]] = {}
+        for row in rows:
+            segments, missing = totals.get(row["job_id"], (0, 0))
+            totals[row["job_id"]] = (
+                segments + int(row["segment_count"] or 0),
+                missing + int(row["missing_count"] or 0),
             )
-            for row in rows
+        targets = {
+            job_id: "ready" if segments > 0 and missing == 0 else "pending"
+            for job_id, (segments, missing) in totals.items()
         }
         # 一次取回全部任务的现状再比对，只有不一致才写（原来每场会起一个 relayctl status 子进程）。
         # 每轮都读 relay 的现状、不记「上次同步过」：relay 那边会被别的动作改掉（比如子状态重试
@@ -1490,7 +1495,7 @@ def create_app(
             logger.error("补材料全文表失败，下次启动接着补：%s", describe_error(error))
 
     @asynccontextmanager
-    async def lifespan(application: FastAPI):
+    async def run_services(application: FastAPI):
         application.state.lifespan_active = True
         application.state.scanner_state = new_scanner_state()
         application.state.semantic_details = new_semantic_state()
@@ -1641,6 +1646,13 @@ def create_app(
             with suppress(asyncio.CancelledError):
                 await qwen_worker
             application.state.lifespan_active = False
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        # 服务在跑的整段时间常驻一个空闲连接，-wal/-shm 不随短连接关光被删了又建（见 held_open）
+        with db.held_open():
+            async with run_services(application):
+                yield
 
     app = FastAPI(title="本地会议录音工作台", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings

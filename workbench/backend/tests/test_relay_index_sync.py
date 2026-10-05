@@ -388,3 +388,30 @@ def test_job_ids_that_cannot_exist_in_relay_are_not_sent(tmp_path, monkeypatch, 
     sent = [item for call in relay.calls() for item in call]
     assert bad not in sent
     assert relay.index_status(ready_ids[0]) == "ready"
+
+
+def test_meetings_sharing_one_job_are_counted_together(tmp_path, monkeypatch):
+    """一个任务号挂着几场会时合起来算：有一场还缺向量，这个任务就是 pending。
+    查询按会议分组，排在后面、向量齐全的那场不能把前面那场的结果盖掉。"""
+    client, relay, ready_ids, pending_ids, _empty, headers = build(
+        tmp_path, monkeypatch, ready=1, pending=2
+    )
+    shared_job, folded_job = pending_ids
+    app_db = Database(tmp_path / "data" / "db.sqlite3")
+    later = app_db.query_one("SELECT id FROM meetings WHERE source_job_id=?", (folded_job,))["id"]
+    # 排在后面的那场补齐向量，再并到前面那场的任务号下
+    app_db.execute(
+        "INSERT INTO embeddings(segment_id, model, dimensions, vector, created_at) "
+        "SELECT ?, model, dimensions, vector, created_at FROM embeddings LIMIT 1",
+        (f"seg-{later}",),
+    )
+    app_db.execute("UPDATE meetings SET source_job_id=? WHERE id=?", (shared_job, later))
+    relay.add_job(ready_ids[0], "ready")
+    relay.add_job(shared_job, "ready")
+    relay.save()
+
+    sync_once(client, headers)
+
+    assert relay.counts() == Counter({"list": 1, "set-substate": 1})
+    assert relay.index_status(shared_job) == "pending"
+    assert relay.index_status(ready_ids[0]) == "ready"

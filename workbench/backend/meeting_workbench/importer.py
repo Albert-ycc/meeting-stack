@@ -413,8 +413,10 @@ class ArchiveImporter:
 
     def scan(self, *, allow_mass_cleanup: bool = False) -> ScanReport:
         """allow_mass_cleanup：这一轮不做两道清理保护（根里一个文件都没发现、要清的记录超过
-        一半），只给命令行 scan --allow-mass-cleanup 用；后台循环不传。"""
-        with self.archive_lock:
+        一半），只给命令行 scan --allow-mass-cleanup 用；后台循环不传。
+
+        一轮逐场、逐个文件查库（生产上八千多次），查询共用一个连接，不再每次新开。"""
+        with self.archive_lock, self.db.reuse_connection():
             return self._scan_locked(allow_mass_cleanup=allow_mass_cleanup)
 
     def _scan_locked(self, *, allow_mass_cleanup: bool = False) -> ScanReport:

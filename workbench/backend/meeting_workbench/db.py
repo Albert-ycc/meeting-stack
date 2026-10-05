@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import uuid
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -12,6 +13,11 @@ from typing import Any, Callable
 
 
 SCHEMA_VERSION = 19
+
+# 检查点做完、-wal 从头重用时，文件超过这个大小就截回来。服务常驻一个连接（Database.held_open）
+# 以后 -wal 不再随连接关光被删，偶尔一个大事务撑大的文件要靠它缩回去；平时写入方每 1000 页
+# （约 4MiB）就自动做检查点，碰不到这条线。
+WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
 
 CONFLICT_KINDS = {
     "external_source_change",
@@ -1609,6 +1615,8 @@ class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.conflicts = ConflictStore(self)
+        # reuse_connection() 借给本线程的连接，按线程分开
+        self._reuse = threading.local()
 
     def connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1618,7 +1626,50 @@ class Database:
         # 等写锁的上限只在这一处设：5 秒。connect() 的 timeout 也是同一个设置，
         # 两处都写会互相覆盖（以前写的 30 秒从来没生效过）。
         connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute(f"PRAGMA journal_size_limit={WAL_SIZE_LIMIT_BYTES}")
         return connection
+
+    @contextmanager
+    def held_open(self) -> Iterator[None]:
+        """这段时间里常驻一个空闲连接，-wal 和 -shm 不会在连接都关掉时被删了又建。
+
+        WAL 模式下进程里最后一个连接关掉时，SQLite 做一次检查点、删掉 -wal 和 -shm，下一个
+        连接再重新建。这里的读写都是用完就关的短连接，进程里常常一个不剩，于是几乎每次关闭都
+        删建一遍（每次约 49KiB 写入）：2026-10-04 生产上导入扫描一轮要来八千多次、写 400 多 MiB。
+        这个连接只在打开时读一次 schema，之后不执行语句、不占读快照，不挡检查点；检查点照旧由
+        写入方按页数自动做。
+        """
+        connection = self.connect()
+        try:
+            connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchall()
+            yield
+        finally:
+            connection.close()
+
+    @contextmanager
+    def reuse_connection(self) -> Iterator[None]:
+        """这段代码里，本线程先后调用的 query_one / query_all / execute / execute_rowcount /
+        autocommit 共用一个连接。
+
+        新连接第一次执行语句要把整套 schema（80 多张表、120 多个索引、90 多个触发器）解析一遍，
+        约 0.7 毫秒，比单行查询本身贵几百倍。导入扫描逐场、逐个文件查库，一轮开八千多次连接，
+        CPU 一大半花在这上面。
+
+        结果和各开各的一样：每次借用照旧在块结束时提交、出错回滚；连接正被外层的 autocommit
+        借着时，里面再调这些方法另开连接（和原来一样只看得到已提交的数据）；transaction()
+        不复用，照旧另开连接拿写锁。已经在复用里再进一次，沿用外层的连接。
+        """
+        if getattr(self._reuse, "connection", None) is not None:
+            yield
+            return
+        connection = self.connect()
+        self._reuse.connection = connection
+        self._reuse.lent = False
+        try:
+            yield
+        finally:
+            self._reuse.connection = None
+            connection.close()
 
     def user_version(self) -> int:
         if not self.path.is_file() or self.path.stat().st_size == 0:
@@ -2050,7 +2101,18 @@ class Database:
         sqlite3.Connection 的语句缓存反向引用连接本身，`with connect()` 只提交不关闭，
         句柄要等循环 GC 才释放；扫描高峰叠加页面请求会冲破进程句柄上限（2026-09-07、
         09-14 两次 EMFILE 宕机）。凡是不需要 BEGIN IMMEDIATE 的地方都走这里。
+
+        在 reuse_connection() 里、那个连接又没被外层借着时，借它用，不另开。
         """
+        shared = getattr(self._reuse, "connection", None)
+        if shared is not None and not self._reuse.lent and not shared.in_transaction:
+            self._reuse.lent = True
+            try:
+                with shared:
+                    yield shared
+            finally:
+                self._reuse.lent = False
+            return
         connection = self.connect()
         try:
             with connection:
