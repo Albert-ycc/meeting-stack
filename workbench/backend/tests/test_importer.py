@@ -15,6 +15,7 @@ from meeting_workbench.db import Database
 from meeting_workbench.importer import (
     SHA256_MEMO_SETTLE_NS,
     ArchiveImporter,
+    ScanReport,
     SourceBundle,
     artifact_kind,
 )
@@ -2718,6 +2719,100 @@ def test_publish_signature_lookup_keeps_remembered_hashes(tmp_path, monkeypatch,
     importer.scan()
 
     assert calls == []
+
+
+def _log_artifact_writes(db):
+    db.execute("CREATE TABLE artifact_write_log(op TEXT, path TEXT)")
+    for op in ("INSERT", "UPDATE"):
+        db.execute(
+            f"""CREATE TRIGGER log_artifact_{op.lower()} AFTER {op} ON artifacts
+                BEGIN INSERT INTO artifact_write_log VALUES ('{op}', NEW.path); END"""
+        )
+
+
+def _artifact_writes(db):
+    return [
+        (row["op"], row["path"])
+        for row in db.query_all("SELECT op, path FROM artifact_write_log ORDER BY rowid")
+    ]
+
+
+def test_scans_do_not_rewrite_artifact_rows_that_did_not_change(tmp_path):
+    # 261005 生产：稳态每轮 212 场会各开一个写事务，把 5706 行原值再写一遍。
+    archive = tmp_path / "archive"
+    staging = tmp_path / "staging"
+    formal = write_meeting(archive, "正式会议", official=True, transcript_text="正式正文")
+    write_complete_whisper_reference(formal, "vm-20260101-120000")
+    write_meeting(staging, "staging-copy", official=False, transcript_text="降级稿内容")
+    db, importer = _importer_for(tmp_path, archive, staging=staging)
+    importer.scan()
+    seen = db.query_one("SELECT COUNT(*) AS n FROM artifacts")["n"]
+    _log_artifact_writes(db)
+
+    for _ in range(2):
+        report = importer.scan()
+        assert report.errors == 0
+        assert report.artifacts_seen == seen
+    assert _artifact_writes(db) == []
+
+    srt = formal / "vm-20260101-120000.srt"
+    srt.write_text("1\n00:00:02,000 --> 00:00:04,000\n正式正文补了一句\n", encoding="utf-8")
+    importer.scan()
+
+    assert _artifact_writes(db) == [("UPDATE", str(srt))]
+    assert _artifact_hashes_match_files(db)
+
+
+@pytest.mark.parametrize("roots", [("staging", "archive"), ("archive", "staging")])
+def test_path_listed_twice_keeps_the_last_bundle_values(tmp_path, roots):
+    # 同一个路径在一场会的几个 bundle 里各出现一次时，原来是逐个写、后一次覆盖前一次。
+    # 跳过「没变」的行要跟这一轮前面定下的值比：拿扫描前的旧行比，后一次恰好等于旧行
+    # （staging 之后的 archive）时就会被跳过，留下前一次的值。
+    archive = tmp_path / "archive"
+    formal = write_meeting(archive, "正式会议", official=True, transcript_text="正式正文")
+    meeting_id = "vm-20260101-120000"
+    db, importer = _importer_for(tmp_path, archive)
+    importer.scan()
+    srt = formal / f"{meeting_id}.srt"
+    bundles = [SourceBundle(meeting_id, formal, root, 100, [srt]) for root in roots]
+    report = ScanReport()
+
+    importer._upsert_artifacts(meeting_id, bundles, report)
+
+    assert report.artifacts_seen == 2
+    assert db.query_one(
+        "SELECT meeting_id, source_root FROM artifacts WHERE path=?", (str(srt),)
+    ) == {"meeting_id": meeting_id, "source_root": roots[-1]}
+
+
+def test_reassigned_path_listed_twice_records_an_event_per_listing(tmp_path):
+    # 改挂事件和原来一样按扫描前的旧行判断：第二次出现时行已经改挂过来、值也没变，
+    # 照样记一条，不因为这一次不用写就少记。
+    archive = tmp_path / "archive"
+    formal = write_meeting(archive, "正式会议", official=True, transcript_text="正式正文")
+    meeting_id = "vm-20260101-120000"
+    other_id = "vm-20260101-130000"
+    db, importer = _importer_for(tmp_path, archive)
+    importer.scan()
+    srt = formal / f"{meeting_id}.srt"
+    db.execute("INSERT INTO meetings(id, title) VALUES (?, '另一场')", (other_id,))
+    db.execute("UPDATE artifacts SET meeting_id=? WHERE path=?", (other_id, str(srt)))
+    bundles = [SourceBundle(meeting_id, formal, "archive", 100, [srt]) for _ in range(2)]
+
+    importer._upsert_artifacts(meeting_id, bundles, ScanReport())
+
+    assert db.query_one("SELECT meeting_id FROM artifacts WHERE path=?", (str(srt),)) == {
+        "meeting_id": meeting_id
+    }
+    events = db.query_all(
+        """SELECT payload_json FROM events
+           WHERE meeting_id=? AND event_type='artifact_identity_reassigned'""",
+        (meeting_id,),
+    )
+    assert [json.loads(row["payload_json"])["previous_meeting_id"] for row in events] == [
+        other_id,
+        other_id,
+    ]
 
 
 def _scanned_archive_and_staging(tmp_path):

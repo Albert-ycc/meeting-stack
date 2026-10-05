@@ -2263,14 +2263,41 @@ class ArchiveImporter:
     def _upsert_artifacts(
         self, meeting_id: str, bundles: list[SourceBundle], report: ScanReport
     ) -> None:
+        """登记这场会的源文件：已有行一次查回来，和库里一模一样的行不再写。
+
+        稳态下文件都没变，原来每个文件一次查询、每场会一个写事务把原值再写一遍
+        （261005 生产快照每轮 5706 次查询、212 个 BEGIN IMMEDIATE）。artifacts 上
+        没有触发器，原值覆盖原值什么都不改，跳过它库里的结果一样。
+        """
+        unique_paths = list(dict.fromkeys(str(path) for bundle in bundles for path in bundle.files))
+        before: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(unique_paths), 500):
+            chunk = unique_paths[start : start + 500]
+            for row in self.db.query_all(
+                """SELECT id, meeting_id, kind, source_root, path, sha256, size_bytes, mtime_ns
+                   FROM artifacts WHERE path IN (%s)"""
+                % ",".join("?" for _ in chunk),
+                chunk,
+            ):
+                before[row["path"]] = row
+        # 同一个路径可能在这场会的几个 bundle 里各出现一次：要跟这一轮前面定下要写的值比，
+        # 不能跟扫描前的旧行比，否则后一次（比如 source_root 不同）会被当成没变跳过。
+        stored = {
+            path: (
+                row["meeting_id"],
+                row["kind"],
+                row["source_root"],
+                row["sha256"],
+                row["size_bytes"],
+                row["mtime_ns"],
+            )
+            for path, row in before.items()
+        }
         prepared = []
         for bundle in bundles:
             for path in bundle.files:
                 stat = path.stat()
-                existing = self.db.query_one(
-                    "SELECT id, meeting_id, sha256, size_bytes, mtime_ns FROM artifacts WHERE path = ?",
-                    (str(path),),
-                )
+                existing = before.get(str(path))
                 if (
                     existing
                     and existing["sha256"]
@@ -2281,30 +2308,50 @@ class ArchiveImporter:
                     file_hash = existing["sha256"]
                 else:
                     file_hash = self._file_sha256(path)
-                prepared.append((bundle, path, stat, artifact_kind(path), file_hash, existing))
-        with self.db.transaction() as connection:
-            for bundle, path, stat, kind, file_hash, existing in prepared:
-                connection.execute(
-                    """INSERT INTO artifacts
-                       (meeting_id, kind, role, source_root, path, sha256, size_bytes, mtime_ns, created_at)
-                       VALUES (?, ?, 'source', ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(path) DO UPDATE SET
-                         meeting_id=excluded.meeting_id, kind=excluded.kind,
-                         source_root=excluded.source_root, sha256=excluded.sha256,
-                         size_bytes=excluded.size_bytes,
-                         mtime_ns=excluded.mtime_ns""",
-                    (
-                        meeting_id,
-                        kind,
-                        bundle.source_root,
-                        str(path),
-                        file_hash,
-                        stat.st_size,
-                        stat.st_mtime_ns,
-                        utc_now(),
-                    ),
+                kind = artifact_kind(path)
+                values = (
+                    meeting_id,
+                    kind,
+                    bundle.source_root,
+                    file_hash,
+                    stat.st_size,
+                    stat.st_mtime_ns,
                 )
-                if existing and existing["meeting_id"] != meeting_id:
+                changed = stored.get(str(path)) != values
+                if changed:
+                    stored[str(path)] = values
+                # 改挂事件照旧按扫描前的旧行判断，同一个路径出现几次就记几条。
+                reassigned = bool(existing and existing["meeting_id"] != meeting_id)
+                prepared.append(
+                    (bundle, path, stat, kind, file_hash, existing, changed, reassigned)
+                )
+        report.artifacts_seen += len(prepared)
+        if not any(changed or reassigned for *_, changed, reassigned in prepared):
+            return
+        with self.db.transaction() as connection:
+            for bundle, path, stat, kind, file_hash, existing, changed, reassigned in prepared:
+                if changed:
+                    connection.execute(
+                        """INSERT INTO artifacts
+                           (meeting_id, kind, role, source_root, path, sha256, size_bytes, mtime_ns, created_at)
+                           VALUES (?, ?, 'source', ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(path) DO UPDATE SET
+                             meeting_id=excluded.meeting_id, kind=excluded.kind,
+                             source_root=excluded.source_root, sha256=excluded.sha256,
+                             size_bytes=excluded.size_bytes,
+                             mtime_ns=excluded.mtime_ns""",
+                        (
+                            meeting_id,
+                            kind,
+                            bundle.source_root,
+                            str(path),
+                            file_hash,
+                            stat.st_size,
+                            stat.st_mtime_ns,
+                            utc_now(),
+                        ),
+                    )
+                if reassigned:
                     connection.execute(
                         """INSERT INTO events
                            (meeting_id, event_type, actor, payload_json, created_at)
@@ -2323,7 +2370,6 @@ class ArchiveImporter:
                             utc_now(),
                         ),
                     )
-                report.artifacts_seen += 1
 
     @staticmethod
     def _preferred_file(bundles: list[SourceBundle], kinds: set[str]) -> Path | None:
