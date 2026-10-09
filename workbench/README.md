@@ -436,7 +436,7 @@ manifest 的身份判定与 `whisper-ref/` 豁免在导入器和证据读取之�
 - 项目和标签的颜色只收 `#rrggbb`（创建、修改都校验）
 - 移动端界面只读，用于资料库、检索、播放和阅读；接口权限仍由 Tailnet ACL 控制，不把 UA 或屏幕尺寸当成鉴权凭据
 - 大录音通过 4 MiB JSON 分块上传，仅接受 `m4a/mp3/wav`，不会在浏览器或服务端一次性展开整段 Base64
-- 数据库使用 schema v19；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层、项目材料的文件名索引、材料内容、第四期的深度关联和需求池（需求候选、需求来源、项目座次）都保存在 SQLite。
+- 数据库使用 schema v20；类型化冲突、ASR 金标、Qwen 影子任务、跨进程运行租约、术语词典、会议项目归属、项目/需求/任务三层、项目材料的文件名索引、材料内容、第四期的深度关联和需求池（需求候选、需求来源、项目座次、需求合并记录）都保存在 SQLite。
   外部文件与数据库草稿冲突时，必须明确选择保留草稿、
   采用外部版本或丢弃草稿；音频完整性及发布恢复冲突只能由对应复验流程关闭，解决一种冲突不会清除其他冲突
 - 逐字稿和纪要保存携带页面打开时的基础版本；遇到并发变化返回 409，并保留浏览器中的未保存文字
@@ -609,7 +609,8 @@ P0～P3、候选排在 P3 之后，再按最近一场会；没排座次的项目
 - 需求详情头部和海报一致（261001 跟着海报重画）：也是一张票。封面「出自录音」（`RequirementSourceCover`）画提出它的
   那场会的波形，这场会里的原话打标记（挨得近的错开几行，取不到波形时整块不画，没有来源时是静音线）；票根上待办 / 会议 /
   材料三个数点了滚到下面对应的卡。票下面的「来源」卡（`RequirementQuotes`）按会议时间列出全部原话，合并进来的 10 分钟内
-  能撤销。两块在 `pool/RequirementSourceCard.tsx` 里。点原话时间打开会议、从那一秒开始放（`App.tsx` 的
+  能撤销（候选合并进来的撤销那次候选合并，需求并进来的撤销那次需求合并，`undo_merge.kind` 区分）。两块在
+  `pool/RequirementSourceCard.tsx` 里。点原话时间打开会议、从那一秒开始放（`App.tsx` 的
   `openMeetingAtQuote`，播放器 `AudioPlayerHandle.play` 没读到录音时先记着），逐字稿把那一句滚到正中。
 - 海报上的［接下］和详情页的［复制给 Claude Code］是同一个动作：把 `GET /api/requirements/<id>/context` 的背景（需求名、
   说明、会上原话和时间锚、关联会议的纪要、材料文件夹路径）复制到剪贴板，不改需求状态（`pool/requirementCopy.ts`，
@@ -617,6 +618,20 @@ P0～P3、候选排在 P3 之后，再按最近一场会；没排座次的项目
   `markdown_paths`（正文里真写进去的路径）数。
 - 合并后 10 分钟内能撤销（`POST /api/requirement-candidates/<id>/unmerge`）：合并时候选上记下这次带进需求的原话、新加的
   关联会议、挂过去的任务（`merge_undo`），撤销只退回这些；需求详情给还在时限里的合并原话带 `undo_merge`。
+- 改状态（261009）：海报票根和详情头部的「⋯」里标记完成、搁置、重新打开（详情头部另有［标记完成］/［重新打开］按钮），
+  编辑页的状态三选一照旧。名下还有没做完的待办时先弹确认，默认［一起关掉］（记为已取消，待办动态写「需求「X」标记完成，一起关掉」），
+  也可以［待办留着］；走 `PATCH /api/requirements/<id>` 带 `close_open_tasks`。每次改状态记 `status_changed_at`（已完成、已搁置的
+  海报盖章，票根日期换成「MM-DD 完成 / 搁置」，北京日历；「已完成」页签按它倒排）和撤销记录 `status_undo`：10 分钟内
+  `POST /api/requirements/<id>/status-undo` 把需求和这次一起关掉、仍挂在这条需求上的待办都放回原状态，详情头部在时限里给
+  ［撤销标记完成］这类按钮。进行中、名下有过待办（不算已取消、已过期）且都做完了的海报出一行「待办都清了，完成了吗？」。
+- 需求并需求（261009，`requirement_merges.py`）：海报和详情的「⋯」→［并入其他需求…］，弹窗只列同项目的其他需求
+  （`GET /api/requirements/<id>/merge-targets`，三种状态都列）。`POST /api/requirements/<id>/merge` 把这条的原话（一律记成合并进来的，
+  `via_candidate_title` 记这条的名字）、关联会议、材料文件夹、待办（写 `requirement_changed` 事件）、认领进它的候选都交给主需求；
+  名字用主需求的，说明和出处主需求空着时接过这条的，等级取高，有一边进行中合并后就是进行中；这条的行删掉，`requirement_merges`
+  留一行。10 分钟内 `POST /api/requirements/<被并掉的 id>/unmerge` 照快照全部还原（期间在主需求上手改过的保留）。以前的链接和
+  其他需求接口打到被并掉的 id 回 404 带 `merged_into`（顺着链到仍在的那条），详情页和编辑页显示「这条需求已并入「X」」和［去看］。
+  会议页撤销「建成需求」时，那条需求之后被并走或有别的需求并进了它，回 409 让先撤销那次合并。
+  AI 候选可以并进已完成的需求，并进去后重新打开；撤销那次候选合并时，之后没有别的东西并进来才改回已完成。
 - 详情任务区新建任务固定挂在这条需求上（`TaskEditModal` 的 `fixedRequirement`）；移除一场带原话的关联会议前先确认
   （那场会的原话会被触发器一起删掉）。
 - 轻提示（`components/Toast.tsx`）是屏幕底部的深色条；带［撤销］的停 10 秒。
@@ -960,11 +975,13 @@ PDF 文字；图片认出的字、录音转的字、代码、数据和字幕文�
 
 ## 数据库迁移
 
-首次启动会自动备份并把数据库迁移到当前 schema v19（v7 曾新增 tasks / task_events /
+首次启动会自动备份并把数据库迁移到当前 schema v20（v7 曾新增 tasks / task_events /
 deliverables / task_extractions / notifications 五张表及 projects.origin 列；v8 新增
 术语词典 glossary_terms / glossary_suggestions 两张表，快照导出到
 `~/.meeting-workbench/glossary-snapshot.json` 供转写侧消费；v9 新增 `meetings.project_origin` 与
-`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`；v16 新增深度关联——`relations`、`decisions`、`decision_scan`、`mention_extractions`、`meeting_related_scan`、`meeting_windows`、`meeting_window_passages`、`material_file_events`、`glossary_candidates`、`glossary_mining_scan`、`glossary_mining_seeds` 十一张表，`meetings`、`requirement_meetings` 上各一个索引，以及文件流水、离开项目、版本号的触发器；`meeting_windows`、`meeting_window_passages`、`meeting_related_scan` 能重算，不进备份；v17 新增需求池改版——`requirement_candidates`（需求候选）、`requirement_sources`（需求来源：会议、会上原话、时间锚）两张表，`projects.seat`、`requirements.summary`、`tasks.candidate_id` 三列，候选表上撤销合并用的 `merged_at`、`merge_undo`，`requirement_meetings` 上一个触发器（一场会移出需求的关联会议时去掉这场会的原话），以及候选上线时刻 `requirement_candidates_since`（之前的纪要不自动抽候选），迁移里不回填任何候选；v18 新增任务截止 `tasks.due_date`、`tasks.due_phrase` 两列和撤销确认用的 `tasks.confirm_undo`，存量任务不回填；v19 不改表结构，只把存量的文件名词干按新规则重算一遍（见「文件名索引和会上提到文件名」），并把文件流水的 `day` 换成北京日期（两个触发器重建，存量按记下的那一刻重算，同一个文件改到北京同一天的几行并成一行）。都是只加不改）。
+`project_links` 表；v10 新增 `glossary_terms.project_id`，并把 `scope` 与项目同名的术语自动挂上项目；v11 新增 `job_acknowledgements`，记录资料库「需要处理」里确认归档过的失败任务，任务之后又有变化会重新出现；v12 新增项目 → 需求 → 任务三层——`project_material_roots`、`requirements`、`requirement_folders`、`requirement_meetings` 四张表及 `tasks.requirement_id` 列；v13 新增纪要全文索引 `minutes_fts`、归属用的 `name_decisions`、`app_state`（关系图版本号等）、会议卡片台账 `meeting_cards`、词典回执 `meeting_glossary_hits`，以及 `projects.also_names`、`project_links` 上的证据和候选列、`glossary_terms.also / is_cue`；v14 新增项目总文件夹和文件名索引——`requirement_name_decisions`、`pending_project_folders`、`folder_declines`、`root_fingerprints`、`material_files`、`material_dirs`、`material_index_state`、`meeting_file_mentions`、`meeting_file_scan` 九张表及 `project_links` 上的新需求名三列；v15 新增材料内容——`material_contents`、`material_chunks`、全文表 `material_chunks_fts`、`material_chunk_vectors`、`material_media_jobs`、`deliverable_files` 六张表，`material_files` 上的内容标识和出错记录六列、`material_dirs.symlinks`；v16 新增深度关联——`relations`、`decisions`、`decision_scan`、`mention_extractions`、`meeting_related_scan`、`meeting_windows`、`meeting_window_passages`、`material_file_events`、`glossary_candidates`、`glossary_mining_scan`、`glossary_mining_seeds` 十一张表，`meetings`、`requirement_meetings` 上各一个索引，以及文件流水、离开项目、版本号的触发器；`meeting_windows`、`meeting_window_passages`、`meeting_related_scan` 能重算，不进备份；v17 新增需求池改版——`requirement_candidates`（需求候选）、`requirement_sources`（需求来源：会议、会上原话、时间锚）两张表，`projects.seat`、`requirements.summary`、`tasks.candidate_id` 三列，候选表上撤销合并用的 `merged_at`、`merge_undo`，`requirement_meetings` 上一个触发器（一场会移出需求的关联会议时去掉这场会的原话），以及候选上线时刻 `requirement_candidates_since`（之前的纪要不自动抽候选），迁移里不回填任何候选；v18 新增任务截止 `tasks.due_date`、`tasks.due_phrase` 两列和撤销确认用的 `tasks.confirm_undo`，存量任务不回填；v19 不改表结构，只把存量的文件名词干按新规则重算一遍（见「文件名索引和会上提到文件名」），并把文件流水的 `day` 换成北京日期（两个触发器重建，存量按记下的那一刻重算，同一个文件改到北京同一天的几行并成一行）；v20 新增需求并需求和卡片改状态——`requirement_merges` 表（被并掉的需求留一行：并进了哪条、10 分钟内撤销用的快照）和 `requirements.status_changed_at`（存量取迁移时的 `updated_at`）、`requirements.status_undo` 两列。都是只加不改）。
+
+**从 v20 退回 v19**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=19` 后用 v19 的代码启动。两列和 `requirement_merges` 留着不用删：v19 不读它们。已经并掉的需求不会回来（行已删，东西都在主需求上），以前的链接在 v19 里打开是「需求不存在」；回滚期间改的状态不记 `status_changed_at`，回到 v20 后这些卡片上的完成日期是改之前的。回到 v20 时自动再迁一次。
 
 **从 v19 退回 v18**：停服务，恢复迁移时的自动备份；或保留数据，执行 `PRAGMA user_version=18` 后用 v18 的代码启动。新词干不用动：
 v18 的代码读它没有问题，下一次整轮重读材料文件名时会按旧规则改回去。文件流水的两个触发器留在北京日历（v18 建触发器用的是
