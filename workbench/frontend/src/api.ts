@@ -26,6 +26,8 @@ import type {
   RequirementDetail,
   RequirementFilesPayload,
   RequirementFilters,
+  RequirementMergeResult,
+  RequirementMergeTargets,
   RequirementPoolPayload,
   RequirementPriority,
   RequirementStatus,
@@ -1414,6 +1416,8 @@ export const api = {
       summary?: string;
       /** 传了才改来源：对象是换掉提出它的那句，null 是清空 */
       source?: RequirementSourceInput | null;
+      /** 改成已完成、已搁置时把名下没做完的待办一起关掉（记为已取消）；默认不关 */
+      close_open_tasks?: boolean;
     },
   ) =>
     write<RequirementDetail>(
@@ -1421,6 +1425,22 @@ export const api = {
       "PATCH",
       data,
     ),
+  /** 10 分钟内撤销最近一次改状态：需求回到原状态，这次一起关掉的待办回到各自原来的状态；过了时间 409 */
+  undoRequirementStatus: (requirementId: string) =>
+    write<RequirementDetail>(`/api/requirements/${encodeURIComponent(requirementId)}/status-undo`, "POST", {}),
+  /** 并入其他需求：同项目里除自己外的需求（q 按名称模糊筛），和这条要带过去的东西 */
+  requirementMergeTargets: (requirementId: string, q?: string) =>
+    read<RequirementMergeTargets>(
+      `/api/requirements/${encodeURIComponent(requirementId)}/merge-targets${queryString(q ? { q } : {})}`,
+    ),
+  /** 把这条并进主需求：返回主需求的详情，merged_from 是被并掉的这条 */
+  mergeRequirement: (requirementId: string, intoRequirementId: string) =>
+    write<RequirementMergeResult>(`/api/requirements/${encodeURIComponent(requirementId)}/merge`, "POST", {
+      into_requirement_id: intoRequirementId,
+    }),
+  /** 并入后 10 分钟内撤销：返回恢复出来的那条需求；过了时间 409 */
+  undoRequirementMerge: (mergedRequirementId: string) =>
+    write<RequirementDetail>(`/api/requirements/${encodeURIComponent(mergedRequirementId)}/unmerge`, "POST", {}),
   requirementFolderFiles: (
     requirementId: string,
     folderId: number,

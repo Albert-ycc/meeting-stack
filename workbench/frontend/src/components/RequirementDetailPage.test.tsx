@@ -1,12 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, type ApiClient, type RelationQuestion, type RequirementDecisionLog } from "../api";
 import { LinksFlagsContext } from "./links/LinksFlagsContext";
 import type { RequirementDetail, RequirementSource } from "../types";
 import { stubPeaksFetch } from "./pool/peaksFixtures";
-import { EXPORT_SOURCE, JD_SOURCE, RECEIPT_SOURCE } from "./pool/poolFixtures";
+import { EXPORT_SOURCE, JD_SOURCE, mergeTargetsPayload, RECEIPT_SOURCE, taskItem } from "./pool/poolFixtures";
 import { clearPeaksCache } from "./pool/PosterWaveform";
 import { RequirementDetailPage } from "./RequirementDetailPage";
 
@@ -1123,5 +1124,264 @@ describe("RequirementDetailPage 头部：超长需求名（审查 B6）", () => 
     expect(getComputedStyle(current).textOverflow).toBe("ellipsis");
     expect(getComputedStyle(current).whiteSpace).toBe("nowrap");
     expect(getComputedStyle(current).overflow).toBe("hidden");
+  });
+});
+
+// ---------------------------------------------------------------- 需求并需求 + 改状态（261009）
+
+describe("RequirementDetailPage 头部改状态、并入（D2、D4、D7～D11）", () => {
+  const OPEN = [
+    taskItem({ requirement_id: "req-1" }),
+    taskItem({ id: "task-fields", title: "整理四类接口的字段对照表", status: "in_progress", requirement_id: "req-1" }),
+    taskItem({ id: "task-kickoff", title: "约京东科研仓开对接启动会", status: "done", requirement_id: "req-1" }),
+  ];
+  const MAIN = baseDetail({
+    id: "requirement-receipt",
+    title: "京东仓签收凭证",
+    project_name: "医米科研用药",
+    priority: "P1",
+    meetings: [JD_MEETING],
+    folders: [],
+    tasks: [],
+  });
+
+  /** App 的样子：onOpenRequirement 换掉 requirementId，同一个页面实例接着显示另一条 */
+  function Harness({ apiClient, opened, canWrite = true }: { apiClient: ApiClient; opened: string[]; canWrite?: boolean }) {
+    const [requirementId, setRequirementId] = useState("req-1");
+    return (
+      <RequirementDetailPage
+        apiClient={apiClient}
+        canPickFolders
+        canWrite={canWrite}
+        onBack={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenProject={vi.fn()}
+        onOpenRequirement={(id) => {
+          opened.push(id);
+          setRequirementId(id);
+        }}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId={requirementId}
+      />
+    );
+  }
+
+  function renderHarness(api: Record<string, unknown>, canWrite = true) {
+    const opened: string[] = [];
+    render(<Harness apiClient={api as unknown as ApiClient} canWrite={canWrite} opened={opened} />);
+    return opened;
+  }
+
+  function actions() {
+    return within(document.querySelector(".requirement-detail__actions") as HTMLElement);
+  }
+
+  async function menuItems() {
+    await userEvent.click(actions().getByRole("button", { name: "更多操作" }));
+    return within(screen.getByRole("menu"))
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent);
+  }
+
+  it("进行中：「编辑需求」旁边是［标记完成］，「⋯」里是搁置、并入其他需求…", async () => {
+    renderHarness({ requirement: vi.fn().mockResolvedValue(jdDetail()) });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    const buttons = actions()
+      .getAllByRole("button")
+      .map((button) => button.textContent);
+    expect(buttons).toEqual(["复制给 Claude Code", "编辑需求", "标记完成", "⋯"]);
+    expect(await menuItems()).toEqual(["搁置", "并入其他需求…"]);
+  });
+
+  it("已完成、已搁置：按钮是［重新打开］，「⋯」里只有并入其他需求…", async () => {
+    renderHarness({ requirement: vi.fn().mockResolvedValue(jdDetail({ status: "done" })) });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    expect(actions().getByRole("button", { name: "重新打开" })).toBeInTheDocument();
+    expect(actions().queryByRole("button", { name: "标记完成" })).not.toBeInTheDocument();
+    expect(await menuItems()).toEqual(["并入其他需求…"]);
+    cleanup();
+
+    renderHarness({ requirement: vi.fn().mockResolvedValue(jdDetail({ status: "shelved" })) });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    expect(actions().getByRole("button", { name: "重新打开" })).toBeInTheDocument();
+    expect(await menuItems()).toEqual(["并入其他需求…"]);
+  });
+
+  it("没有写权限时没有这两个按钮", async () => {
+    renderHarness({ requirement: vi.fn().mockResolvedValue(jdDetail()) }, false);
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    expect(actions().queryByRole("button", { name: "标记完成" })).not.toBeInTheDocument();
+    expect(actions().queryByRole("button", { name: "更多操作" })).not.toBeInTheDocument();
+  });
+
+  it("有没做完的待办时标记完成：用详情里的待办清单弹确认，［一起关掉］发 close_open_tasks: true；改完重读，盖上已完成的章", async () => {
+    const requirement = vi
+      .fn()
+      .mockResolvedValueOnce(jdDetail({ tasks: OPEN, open_task_count: 2 }))
+      .mockResolvedValue(jdDetail({ status: "done", tasks: OPEN, open_task_count: 0 }));
+    const updateRequirement = vi.fn().mockResolvedValue(jdDetail({ status: "done", closed_task_count: 2 }));
+    renderHarness({ requirement, updateRequirement });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    await userEvent.click(actions().getByRole("button", { name: "标记完成" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "还有 2 条待办没做完" });
+    expect(within(dialog).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+      "跟京东确认签收凭证怎么回传给医米",
+      "整理四类接口的字段对照表",
+    ]);
+    // 待办清单就用页面上已有的，不再多取一次
+    expect(requirement).toHaveBeenCalledTimes(1);
+    await userEvent.click(within(dialog).getByRole("button", { name: "一起关掉" }));
+
+    expect(updateRequirement).toHaveBeenCalledWith("req-1", { status: "done", close_open_tasks: true });
+    expect(await screen.findByText("已完成「京东科研仓对接」，一起关掉 2 条待办")).toBeInTheDocument();
+    expect(await screen.findByText("已完成", { selector: ".requirement-detail__stamp" })).toBeInTheDocument();
+    expect(actions().getByRole("button", { name: "重新打开" })).toBeInTheDocument();
+  });
+
+  it("［待办留着］发 close_open_tasks: false", async () => {
+    const requirement = vi.fn().mockResolvedValue(jdDetail({ tasks: OPEN, open_task_count: 2 }));
+    const updateRequirement = vi.fn().mockResolvedValue(jdDetail({ status: "shelved" }));
+    renderHarness({ requirement, updateRequirement });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    await userEvent.click(actions().getByRole("button", { name: "更多操作" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "搁置" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "还有 2 条待办没做完" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "待办留着" }));
+    expect(updateRequirement).toHaveBeenCalledWith("req-1", { status: "shelved", close_open_tasks: false });
+    expect(await screen.findByText("已搁置「京东科研仓对接」")).toBeInTheDocument();
+  });
+
+  it("没有没做完的待办：直接改；［撤销］调 status-undo，重读回到原状态", async () => {
+    const requirement = vi
+      .fn()
+      .mockResolvedValueOnce(jdDetail({ open_task_count: 0 }))
+      .mockResolvedValueOnce(jdDetail({ status: "done" }))
+      .mockResolvedValue(jdDetail());
+    const updateRequirement = vi.fn().mockResolvedValue(jdDetail({ status: "done" }));
+    const undoRequirementStatus = vi.fn().mockResolvedValue(jdDetail());
+    renderHarness({ requirement, updateRequirement, undoRequirementStatus });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    await userEvent.click(actions().getByRole("button", { name: "标记完成" }));
+    expect(updateRequirement).toHaveBeenCalledWith("req-1", { status: "done" });
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    const toast = await screen.findByRole("status");
+    expect(toast).toHaveTextContent("已完成「京东科研仓对接」");
+    await waitFor(() => expect(actions().getByRole("button", { name: "重新打开" })).toBeInTheDocument());
+
+    await userEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+    expect(undoRequirementStatus).toHaveBeenCalledWith("req-1");
+    expect(await screen.findByText("「京东科研仓对接」回到进行中了")).toBeInTheDocument();
+    await waitFor(() => expect(actions().getByRole("button", { name: "标记完成" })).toBeInTheDocument());
+  });
+
+  it("并入其他需求：成了跳到主需求的详情，提示「已并入「主需求」」带［撤销］；撤销后回到这条", async () => {
+    const requirement = vi.fn((id: string) =>
+      Promise.resolve(id === "requirement-receipt" ? MAIN : jdDetail()),
+    );
+    const requirementMergeTargets = vi.fn().mockResolvedValue(mergeTargetsPayload());
+    const mergeRequirement = vi.fn().mockResolvedValue({
+      ...MAIN,
+      merged_from: { id: "req-1", title: "京东科研仓对接", undo_until: "2026-10-09T03:10:00+00:00" },
+    });
+    const undoRequirementMerge = vi.fn().mockResolvedValue(jdDetail());
+    const opened = renderHarness({ requirement, requirementMergeTargets, mergeRequirement, undoRequirementMerge });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    await userEvent.click(actions().getByRole("button", { name: "更多操作" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "并入其他需求…" }));
+    const dialog = await screen.findByRole("dialog", { name: "把「京东科研仓对接」并入" });
+    expect(requirementMergeTargets).toHaveBeenCalledWith("req-1", undefined);
+    await userEvent.click(await within(dialog).findByRole("radio", { name: /京东仓签收凭证/ }));
+    expect(within(dialog).getByText("合并后 P1（取较高）· 10 分钟内可撤销")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "并入" }));
+
+    expect(mergeRequirement).toHaveBeenCalledWith("req-1", "requirement-receipt");
+    expect(opened).toEqual(["requirement-receipt"]);
+    expect(await screen.findByRole("heading", { name: "京东仓签收凭证" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("已并入「京东仓签收凭证」");
+
+    await userEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "撤销" }));
+    expect(undoRequirementMerge).toHaveBeenCalledWith("req-1");
+    expect(await screen.findByRole("heading", { name: "京东科研仓对接" })).toBeInTheDocument();
+    expect(opened).toEqual(["requirement-receipt", "req-1"]);
+    expect(screen.getByRole("status")).toHaveTextContent("已撤销合并");
+  });
+});
+
+describe("RequirementDetailPage 打开被并掉的需求（D8）", () => {
+  const mergedAway = () =>
+    new ApiError("这条需求已并入「京东仓签收凭证」", 404, {
+      detail: "这条需求已并入「京东仓签收凭证」",
+      merged_into: { id: "requirement-receipt", title: "京东仓签收凭证" },
+    });
+
+  it("404 带着 merged_into：显示「这条需求已并入「X」」和［去看］，不显示需求不存在", async () => {
+    const onOpenRequirement = vi.fn();
+    const onBack = vi.fn();
+    render(
+      <RequirementDetailPage
+        apiClient={{ requirement: vi.fn().mockRejectedValue(mergedAway()) } as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        onBack={onBack}
+        onOpenMeeting={vi.fn()}
+        onOpenProject={vi.fn()}
+        onOpenRequirement={onOpenRequirement}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId="req-1"
+      />,
+    );
+
+    expect(await screen.findByText("这条需求已并入「京东仓签收凭证」")).toBeInTheDocument();
+    expect(screen.queryByText(/需求不存在/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "去看" }));
+    expect(onOpenRequirement).toHaveBeenCalledWith("requirement-receipt");
+    await userEvent.click(screen.getByRole("button", { name: "返回需求池" }));
+    expect(onBack).toHaveBeenCalled();
+  });
+
+  it("页面上开着别的需求时换到被并掉的那条：不把上一条的内容留着冒充", async () => {
+    const requirement = vi.fn((id: string) => (id === "req-1" ? Promise.resolve(jdDetail()) : Promise.reject(mergedAway())));
+    const props = {
+      apiClient: { requirement } as unknown as ApiClient,
+      canPickFolders: true,
+      canWrite: true,
+      onBack: vi.fn(),
+      onOpenMeeting: vi.fn(),
+      onOpenProject: vi.fn(),
+      onOpenRequirement: vi.fn(),
+      onOpenTask: vi.fn(),
+      projects: [],
+    };
+    const { rerender } = render(<RequirementDetailPage {...props} requirementId="req-1" />);
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    rerender(<RequirementDetailPage {...props} requirementId="req-gone" />);
+    expect(await screen.findByText("这条需求已并入「京东仓签收凭证」")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "京东科研仓对接" })).not.toBeInTheDocument();
+  });
+
+  it("别的 404（没有 merged_into）照旧是「需求不存在或已删除」", async () => {
+    render(
+      <RequirementDetailPage
+        apiClient={{ requirement: vi.fn().mockRejectedValue(new ApiError("需求不存在", 404, { detail: "需求不存在" })) } as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        onBack={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenProject={vi.fn()}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId="req-1"
+      />,
+    );
+    expect(await screen.findByText(/需求不存在或已删除/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "去看" })).not.toBeInTheDocument();
   });
 });

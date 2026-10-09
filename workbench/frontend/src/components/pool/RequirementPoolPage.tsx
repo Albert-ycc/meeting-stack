@@ -8,8 +8,10 @@ import { useToast } from "../Toast";
 import { DirectionBar } from "./DirectionBar";
 import { DroppedCandidatesDialog } from "./DroppedCandidatesDialog";
 import { MergeCandidateDialog } from "./MergeCandidateDialog";
+import { MergeRequirementDialog, mergedIntoMessage } from "./MergeRequirementDialog";
 import { PosterCard } from "./PosterCard";
 import { copiedMessage, copyFailureReason, copyRequirementBackground } from "./requirementCopy";
+import { useRequirementStatusChange } from "./requirementStatus";
 import "./RequirementPoolPage.css";
 
 /** 页签和筛选记在本机（R02-8），刷新、关掉再开都保持上次的选择 */
@@ -22,8 +24,12 @@ const WALL_LIMIT = 500;
 /** 认领、新建后落位的那张海报描边多久（R01-13） */
 const HIGHLIGHT_MS = 3000;
 
-/** 合并成功的轻提示（R01-14）：从认领页合并回来时由 App 用同一句 */
-export const mergedMessage = (title: string) => `已合并到「${title}」，这场会和原话已加进去`;
+/**
+ * 合并成功的轻提示（R01-14）：从认领页合并回来时由 App 用同一句。
+ * 并进的是已完成的需求时，后端把它重新打开了（D13），提示里说一声
+ */
+export const mergedMessage = (title: string, reopened = false) =>
+  `已合并到「${title}」，这场会和原话已加进去${reopened ? `；「${title}」已重新打开` : ""}`;
 /** 撤销合并以后：这 10 分钟里被改挂到别处的任务没有退回，说一声 */
 export const unmergedMessage = (keptTaskCount = 0) =>
   keptTaskCount > 0 ? `已撤销合并；有 ${keptTaskCount} 条任务已经挂到别处，没有退回` : "已撤销合并";
@@ -44,7 +50,7 @@ const TABS: Array<{ key: PoolTab; label: string }> = [
 const EMPTY_TEXT: Record<PoolTab, { title: string; hint: string }> = {
   pending: { title: "没有待认领的候选", hint: "会后 AI 会从纪要里抽需求候选，放进这里" },
   active: { title: "墙上还没有需求", hint: "会后 AI 会从纪要里抽需求候选，放进待认领" },
-  done: { title: "还没有已完成的需求", hint: "做完的需求在修改需求里改成已完成" },
+  done: { title: "还没有已完成的需求", hint: "做完的需求，在海报右下的「⋯」里点标记完成" },
   shelved: { title: "还没有搁置的需求", hint: "暂时不跟进的需求在修改需求里改成已搁置" },
   all: { title: "墙上还没有需求", hint: "会后 AI 会从纪要里抽需求候选，放进待认领" },
 };
@@ -107,6 +113,8 @@ export function RequirementPoolPage({
   const [payload, setPayload] = useState<RequirementPoolPayload | null>(null);
   const [failed, setFailed] = useState(false);
   const [merging, setMerging] = useState<PoolItem | null>(null);
+  // 「⋯」里的「并入其他需求…」：被并掉的这条
+  const [mergingInto, setMergingInto] = useState<PoolItem | null>(null);
   const [showDropped, setShowDropped] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const requestRef = useRef(0);
@@ -180,6 +188,23 @@ export function RequirementPoolPage({
   useEffect(() => {
     refreshRef.current = refreshAfterChange;
   });
+
+  // 标记完成、搁置、重新打开（D9～D11）：成了卡片离开当前页签、页签计数跟着变，撤销后回来
+  const statusChange = useRequirementStatusChange(apiClient, showToast, () => refreshRef.current());
+
+  // 需求并需求后撤销（D7）：这条回到墙上；失败提示后端给的原因。两种都把墙换成最新的
+  const undoMergeInto = useCallback(
+    async (mergedId: string) => {
+      try {
+        await apiClient.undoRequirementMerge(mergedId);
+        showToast(unmergedMessage());
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : "撤销失败，请稍后重试", { tone: "error" });
+      }
+      await refreshRef.current();
+    },
+    [apiClient, showToast],
+  );
 
   // 合并后撤销（R01-14）：成功回到待认领，失败（多半过了 10 分钟）提示后端给的原因；两种都把墙换成最新的
   const undoMerge = useCallback(
@@ -424,15 +449,17 @@ export function RequirementPoolPage({
         <div aria-busy={busyId !== null} className="pool-wall" ref={wallRef}>
           {items.map((item) => (
             <PosterCard
-              canWrite={canWrite && busyId !== item.id}
+              canWrite={canWrite && busyId !== item.id && statusChange.busyId !== item.id}
               highlighted={highlightId === item.id}
               item={item}
               key={`${item.kind}-${item.id}`}
               onClaim={(target) => onClaimCandidate(target.id)}
               onDrop={(target) => void dropCandidate(target)}
               onMerge={setMerging}
+              onMergeInto={setMergingInto}
               onOpen={openItem}
               onOpenMeeting={onOpenMeeting}
+              onSetStatus={(target, status) => void statusChange.change(target, status)}
               onTake={takeRequirement}
             />
           ))}
@@ -460,11 +487,25 @@ export function RequirementPoolPage({
           onMerged={(requirement) => {
             const candidateId = merging.id;
             setMerging(null);
-            showToast(mergedMessage(requirement.title), { onUndo: () => undoMerge(candidateId) });
+            showToast(mergedMessage(requirement.title, requirement.reopened), { onUndo: () => undoMerge(candidateId) });
             void refreshAfterChange();
           }}
         />
       )}
+      {mergingInto && (
+        <MergeRequirementDialog
+          apiClient={apiClient}
+          onClose={() => setMergingInto(null)}
+          onMerged={(result) => {
+            const mergedId = result.merged_from.id;
+            setMergingInto(null);
+            showToast(mergedIntoMessage(result.title), { onUndo: () => undoMergeInto(mergedId) });
+            void refreshAfterChange();
+          }}
+          requirement={mergingInto}
+        />
+      )}
+      {statusChange.dialog}
       {showDropped && (
         <DroppedCandidatesDialog
           apiClient={apiClient}

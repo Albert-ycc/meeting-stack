@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, type ApiClient } from "../../api";
 import type { CandidateDetail, MeetingSummary, Project, RequirementDetail, Segment } from "../../types";
-import { candidateItem, CVM, EXPORT_SOURCE, HENGRUI, HUAXIA, JD_SOURCE, RECEIPT_SOURCE, YIMI } from "./poolFixtures";
+import { candidateItem, CVM, EXPORT_SOURCE, HENGRUI, HUAXIA, JD_SOURCE, RECEIPT_SOURCE, taskItem, YIMI } from "./poolFixtures";
 import { cleanTitle, LEAVE_FORM_CONFIRM, RequirementFormPage, splitProjects, summaryLength } from "./RequirementFormPage";
 
 // 项目的座次和最近会议时间照生产库：座次 1～3 是「我的方向」，其余按最近一场会排
@@ -225,7 +225,7 @@ describe("RequirementFormPage", () => {
     expect(handlers.onDone).toHaveBeenCalledWith({ kind: "merged", requirement: merged });
   });
 
-  it("撞上的那条已完成：不能合并，只能改名；一改名提示就收起", async () => {
+  it("撞上的那条已完成：也给「改为合并到这条需求」（D13，并进去后它重新打开）；改个名字照样能走，一改名提示就收起", async () => {
     const existing = { id: "requirement-done", title: "京东仓签收凭证", status: "done" as const };
     renderForm({
       requirementCandidate: vi.fn().mockResolvedValue(candidateDetail()),
@@ -236,13 +236,29 @@ describe("RequirementFormPage", () => {
     const title = await screen.findByDisplayValue("京东仓签收凭证");
     await userEvent.click(submitButton("认领"));
 
-    expect(await screen.findByText("它已完成，不能合并，请改个名字")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "改为合并到这条需求" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "改为合并到这条需求" })).toBeInTheDocument();
+    expect(screen.queryByText("它已完成，不能合并，请改个名字")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "改个名字" }));
     expect(title).toHaveFocus();
 
     await userEvent.type(title, "（物流）");
     expect(screen.queryByText(/里已经有一条叫/)).not.toBeInTheDocument();
+  });
+
+  it("撞名撞到已完成的需求、改为合并：合并到那一条，返回的 reopened 原样交给 App 去提示（D13）", async () => {
+    const existing = { id: "requirement-done", title: "京东仓签收凭证", status: "done" as const };
+    const merged = { id: existing.id, title: existing.title, status: "active", reopened: true };
+    const mergeCandidate = vi.fn().mockResolvedValue(merged);
+    const handlers = renderForm({
+      requirementCandidate: vi.fn().mockResolvedValue(candidateDetail()),
+      requirementTitleCheck: vi.fn().mockResolvedValue({ existing }),
+      mergeCandidate,
+    });
+    await screen.findByDisplayValue("京东仓签收凭证");
+
+    await userEvent.click(await screen.findByRole("button", { name: "改为合并到这条需求" }));
+    expect(mergeCandidate).toHaveBeenCalledWith("candidate-receipt", "requirement-done", YIMI);
+    expect(handlers.onDone).toHaveBeenCalledWith({ kind: "merged", requirement: merged });
   });
 
   it("候选已经被处理过：提示一句，表单不能再提交", async () => {
@@ -441,6 +457,99 @@ describe("RequirementFormPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "清空来源" }));
     await userEvent.click(submitButton("保存"));
     expect(updateRequirement).toHaveBeenCalledWith("requirement-jd", { source: null });
+  });
+});
+
+describe("RequirementFormPage 修改页把状态改成已完成、已搁置（D3、D10）", () => {
+  const TASKS = [
+    taskItem(),
+    taskItem({ id: "task-fields", title: "整理四类接口的字段对照表", status: "pending_confirm" }),
+    taskItem({ id: "task-kickoff", title: "约京东科研仓开对接启动会", status: "done" }),
+  ];
+
+  async function saveAs(label: "已完成" | "已搁置", api: Partial<ApiClient>) {
+    const handlers = renderEdit({ requirement: vi.fn().mockResolvedValue(jdDetail({ tasks: TASKS, open_task_count: 2 })), ...api });
+    await screen.findByDisplayValue("京东科研仓对接");
+    await userEvent.click(within(screen.getByRole("group", { name: "状态" })).getByRole("button", { name: label }));
+    await userEvent.click(submitButton("保存"));
+    return handlers;
+  }
+
+  it("名下有没做完的待办：保存前同样弹「还有 N 条待办没做完」，［一起关掉］是默认，随 PATCH 发 close_open_tasks: true", async () => {
+    const updated = jdDetail({ status: "done", closed_task_count: 2 });
+    const updateRequirement = vi.fn().mockResolvedValue(updated);
+    const handlers = await saveAs("已完成", { updateRequirement });
+
+    const dialog = await screen.findByRole("alertdialog", { name: "还有 2 条待办没做完" });
+    expect(within(dialog).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+      "跟京东确认签收凭证怎么回传给医米",
+      "整理四类接口的字段对照表",
+    ]);
+    expect(updateRequirement).not.toHaveBeenCalled();
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "一起关掉" })).toHaveFocus());
+    await userEvent.click(within(dialog).getByRole("button", { name: "一起关掉" }));
+
+    expect(updateRequirement).toHaveBeenCalledWith("requirement-jd", { status: "done", close_open_tasks: true });
+    await waitFor(() => expect(handlers.onDone).toHaveBeenCalledWith({ kind: "edited", requirement: updated }));
+  });
+
+  it("［待办留着］：发 close_open_tasks: false；和别的改动一起提交", async () => {
+    const updateRequirement = vi.fn().mockResolvedValue(jdDetail({ status: "shelved" }));
+    renderEdit({ requirement: vi.fn().mockResolvedValue(jdDetail({ tasks: TASKS, open_task_count: 2 })), updateRequirement });
+    await screen.findByDisplayValue("京东科研仓对接");
+    await userEvent.click(priorityButton("P1"));
+    await userEvent.click(within(screen.getByRole("group", { name: "状态" })).getByRole("button", { name: "已搁置" }));
+    await userEvent.click(submitButton("保存"));
+
+    const dialog = await screen.findByRole("alertdialog", { name: "还有 2 条待办没做完" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "待办留着" }));
+    expect(updateRequirement).toHaveBeenCalledWith("requirement-jd", {
+      priority: "P1",
+      status: "shelved",
+      close_open_tasks: false,
+    });
+  });
+
+  it("弹窗里点 ✕：不保存，留在修改页，改动还在", async () => {
+    const updateRequirement = vi.fn();
+    const handlers = await saveAs("已完成", { updateRequirement });
+    const dialog = await screen.findByRole("alertdialog", { name: "还有 2 条待办没做完" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+
+    expect(updateRequirement).not.toHaveBeenCalled();
+    expect(handlers.onDone).not.toHaveBeenCalled();
+    expect(within(screen.getByRole("group", { name: "状态" })).getByRole("button", { name: "已完成" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(submitButton("保存")).toBeEnabled();
+  });
+
+  it("改回进行中、或者没改状态：不弹，也不带 close_open_tasks", async () => {
+    const updateRequirement = vi.fn().mockResolvedValue(jdDetail());
+    renderEdit({
+      requirement: vi.fn().mockResolvedValue(jdDetail({ status: "done", tasks: TASKS, open_task_count: 2 })),
+      updateRequirement,
+    });
+    await screen.findByDisplayValue("京东科研仓对接");
+    await userEvent.click(within(screen.getByRole("group", { name: "状态" })).getByRole("button", { name: "进行中" }));
+    await userEvent.click(submitButton("保存"));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(updateRequirement).toHaveBeenCalledWith("requirement-jd", { status: "active" });
+  });
+
+  it("墙上预览跟着状态盖章，底栏写今天完成（北京日历）", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: new Date("2026-10-08T17:30:00+00:00") });
+    try {
+      renderEdit();
+      await screen.findByDisplayValue("京东科研仓对接");
+      await userEvent.click(within(screen.getByRole("group", { name: "状态" })).getByRole("button", { name: "已完成" }));
+      const preview = screen.getByRole("article", { name: "需求：京东科研仓对接" });
+      expect(within(preview).getByText("已完成")).toHaveClass("poster__stamp");
+      expect(within(preview).getByText("10-09").parentElement).toHaveTextContent("10-09 完成");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

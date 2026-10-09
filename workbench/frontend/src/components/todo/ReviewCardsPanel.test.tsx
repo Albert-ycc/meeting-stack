@@ -685,6 +685,37 @@ describe("ReviewCardsPanel", () => {
     expect(apiClient.reviewCards.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it("合并进已完成的需求：提示里加一句它已重新打开（D13）", async () => {
+    const mergeCandidate = vi
+      .fn()
+      .mockResolvedValue({ id: "requirement-six", title: "直播间运营六项修正", status: "active", reopened: true });
+    const candidateMergeTargets = vi.fn().mockResolvedValue({
+      items: [
+        {
+          id: "requirement-six",
+          title: "直播间运营六项修正",
+          status: "done",
+          priority: "P1",
+          recommended: true,
+          meeting_title: null,
+          recording_date: null,
+        },
+      ],
+    });
+    const { onNotify } = setup({ mergeCandidate, candidateMergeTargets });
+    await screen.findByRole("region", { name: /260929/ });
+
+    await userEvent.click(screen.getByRole("button", { name: /^合并「/ }));
+    const dialog = await screen.findByRole("dialog", { name: "合并到已有需求" });
+    expect(await within(dialog).findByText("已完成")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("radio"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "合并" }));
+
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith("已合并到「直播间运营六项修正」；「直播间运营六项修正」已重新打开"),
+    );
+  });
+
   it("已处理的候选置灰，写明认领到哪、合并到哪", async () => {
     const merged = { ...CANDIDATE, id: "candidate-m", title: "另一条", status: "merged" as const, requirement_title: "老需求" };
     setup(

@@ -9,6 +9,7 @@ import type {
   RequirementDetail,
   RequirementFile,
   RequirementFolder,
+  RequirementMergedAway,
   Task,
   TaskStatus,
 } from "../types";
@@ -27,9 +28,12 @@ import { NoticeBanner, useNotice } from "./Notice";
 import { DecisionLogCard } from "./decisions/DecisionLogCard";
 import { MentionedBadge } from "./files/MentionedBadge";
 import { useMentionedCounts } from "./files/useMentionedCounts";
+import { MergeRequirementDialog, mergedIntoMessage } from "./pool/MergeRequirementDialog";
 import { RequirementQuotes, RequirementSourceCover } from "./pool/RequirementSourceCard";
 import { unmergedMessage } from "./pool/RequirementPoolPage";
 import { copiedMessage, copyFailureReason, copyRequirementBackground } from "./pool/requirementCopy";
+import { useRequirementStatusChange } from "./pool/requirementStatus";
+import { RowMenu, type RowMenuItem } from "./todo/RowMenu";
 
 interface RequirementDetailPageProps {
   apiClient: ApiClient;
@@ -54,10 +58,12 @@ interface RequirementDetailPageProps {
   /** 从修改页回来时提示一句，显示一次 */
   flash?: string | null;
   onFlashShown?: () => void;
+  /** 打开另一条需求：并入以后去主需求、撤销并入回到这条、被并掉的需求页上的［去看］ */
+  onOpenRequirement?: (requirementId: string) => void;
 }
 
-// missing：接口回 404，重试也没用，只给返回
-type LoadState = "loading" | "ready" | "error" | "missing";
+// missing：接口回 404，重试也没用，只给返回；merged：这条已经并进别的需求了（D8），给去看那条
+type LoadState = "loading" | "ready" | "error" | "missing" | "merged";
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
   pending_confirm: "待确认",
@@ -138,6 +144,7 @@ export function RequirementDetailPage({
   onEdit,
   flash,
   onFlashShown,
+  onOpenRequirement,
 }: RequirementDetailPageProps) {
   const { toastNode, showToast } = useToast();
   const [confirm, confirmDialog] = useConfirm();
@@ -150,6 +157,9 @@ export function RequirementDetailPage({
   const { notice, setNotice, dismissNotice } = useNotice();
   const [detail, setDetail] = useState<RequirementDetail | null>(null);
   const [state, setState] = useState<LoadState>("loading");
+  // 被并掉的需求顺着链找到的、仍然存在的那条
+  const [mergedInto, setMergedInto] = useState<RequirementMergedAway["merged_into"] | null>(null);
+  const [mergingInto, setMergingInto] = useState(false);
   const [editing, setEditing] = useState(false);
   const [linkingMeetings, setLinkingMeetings] = useState(false);
   const [pickingFolders, setPickingFolders] = useState(false);
@@ -214,7 +224,16 @@ export function RequirementDetailPage({
       setState("ready");
     } catch (error) {
       if (seq !== loadSeqRef.current) return;
-      if (silent) setNotice(error instanceof Error ? `刷新失败：${error.message}` : "刷新失败，请稍后重试", "error");
+      // 以前的链接打开被并掉的需求：404 带着并进去的那条，说一声已并入、给去看（D8）
+      const into =
+        error instanceof ApiError && error.status === 404
+          ? (error.data as Partial<RequirementMergedAway> | null)?.merged_into
+          : undefined;
+      if (into?.id) {
+        loadedIdRef.current = null;
+        setMergedInto(into);
+        setState("merged");
+      } else if (silent) setNotice(error instanceof Error ? `刷新失败：${error.message}` : "刷新失败，请稍后重试", "error");
       else setState(error instanceof ApiError && error.status === 404 ? "missing" : "error");
     }
     // showToast 每次渲染都是新函数，放进依赖会让 load 反复变化、页面循环刷新。
@@ -338,6 +357,34 @@ export function RequirementDetailPage({
       });
   };
 
+  // 标记完成、搁置、重新打开（D2、D9～D11）：待办清单就用详情里的，改完重读详情
+  const statusChange = useRequirementStatusChange(apiClient, showToast, async () => {
+    await load();
+    await onProjectsChanged?.();
+  });
+
+  // 并入其他需求（D4、D7）：成了去主需求的详情；撤销以后回到这条
+  const mergedAway = (result: { id: string; title: string; merged_from: { id: string } }) => {
+    const mergedId = result.merged_from.id;
+    setMergingInto(false);
+    showToast(mergedIntoMessage(result.title), {
+      onUndo: async () => {
+        try {
+          const restored = await apiClient.undoRequirementMerge(mergedId);
+          showToast(unmergedMessage());
+          void onProjectsChanged?.();
+          if (onOpenRequirement) onOpenRequirement(restored.id);
+          else void load();
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "撤销失败，请稍后重试", { tone: "error" });
+        }
+      },
+    });
+    void onProjectsChanged?.();
+    if (onOpenRequirement) onOpenRequirement(result.id);
+    else void load();
+  };
+
   const savePickedFolders = async (folders: MaterialFolderStat[]) => {
     setPickingFolders(false);
     await mutate(
@@ -346,10 +393,24 @@ export function RequirementDetailPage({
     );
   };
 
-  if (state === "loading" || !detail) {
+  if (state !== "ready" || !detail) {
     return (
       <section className="page-content requirement-detail">
-        {state === "missing" ? (
+        {/* 并入以后跳去主需求时页面先回到「正在读取」：提示和它的［撤销］要一直挂着 */}
+        {toastNode}
+        {state === "merged" && mergedInto ? (
+          <div className="requirement-detail__state">
+            这条需求已并入「{mergedInto.title}」
+            <div className="requirement-detail__state-actions">
+              {onOpenRequirement && (
+                <button onClick={() => onOpenRequirement(mergedInto.id)} type="button">
+                  去看
+                </button>
+              )}
+              <button onClick={onBack} type="button">返回{backLabel}</button>
+            </div>
+          </div>
+        ) : state === "missing" ? (
           <div className="requirement-detail__state requirement-detail__state--error" role="alert">
             需求不存在或已删除
             <div className="requirement-detail__state-actions">
@@ -372,6 +433,14 @@ export function RequirementDetailPage({
   }
 
   const currentProject = projects.find((project) => project.id === detail.project_id) ?? null;
+  const statusTarget = { id: detail.id, title: detail.title, open_task_count: detail.open_task_count, tasks: detail.tasks };
+  // 头部「⋯」（D2）：搁置只给进行中的；都能并入其他需求
+  const moreActions: RowMenuItem[] = [
+    ...(detail.status === "active"
+      ? [{ label: "搁置", act: () => void statusChange.change(statusTarget, "shelved") }]
+      : []),
+    { label: "并入其他需求…", act: () => setMergingInto(true) },
+  ];
 
   return (
     <section className="page-content requirement-detail">
@@ -439,6 +508,17 @@ export function RequirementDetailPage({
                     编辑需求
                   </button>
                 )}
+                {canWrite && (
+                  <button
+                    className="requirement-detail__status-action"
+                    disabled={statusChange.busyId !== null}
+                    onClick={() => void statusChange.change(statusTarget, detail.status === "active" ? "done" : "active")}
+                    type="button"
+                  >
+                    {detail.status === "active" ? "标记完成" : "重新打开"}
+                  </button>
+                )}
+                {canWrite && <RowMenu disabled={statusChange.busyId !== null} items={moreActions} label="更多操作" />}
               </div>
             </div>
             {detail.summary && <p className="requirement-detail__summary">{detail.summary}</p>}
@@ -732,6 +812,16 @@ export function RequirementDetailPage({
       )}
 
       {confirmDialog}
+      {statusChange.dialog}
+
+      {mergingInto && (
+        <MergeRequirementDialog
+          apiClient={apiClient}
+          onClose={() => setMergingInto(false)}
+          onMerged={mergedAway}
+          requirement={{ id: detail.id, title: detail.title, project_name: detail.project_name }}
+        />
+      )}
 
       {creatingTask && (
         <TaskEditModal

@@ -19,7 +19,10 @@ interface MergeCandidateDialogProps {
   onMerged: (requirement: RequirementDetail) => void;
 }
 
-/** S03 合并到已有需求：只列所属项目里进行中、已搁置的需求，AI 推荐的排第一。 */
+/**
+ * S03 合并到已有需求：列所属项目里进行中、已搁置、已完成的需求，AI 推荐的排第一。
+ * 并进已完成的需求后它会重新打开为进行中（D13），提示由调用方按返回的 reopened 说。
+ */
 export function MergeCandidateDialog({
   apiClient,
   candidate,
@@ -88,11 +91,11 @@ export function MergeCandidateDialog({
           </button>
         </header>
 
-        <p className="pool-dialog__section">{shownProject ?? "这个项目"} · 进行中和已搁置的需求</p>
+        <p className="pool-dialog__section">{shownProject ?? "这个项目"} · 进行中、已搁置和已完成的需求</p>
         {targets === null ? (
           <p className="pool-dialog__state">正在读取…</p>
         ) : targets.length === 0 ? (
-          <p className="pool-dialog__state">这个项目下没有进行中或已搁置的需求，只能认领或丢掉。</p>
+          <p className="pool-dialog__state">这个项目下还没有需求，只能认领或丢掉。</p>
         ) : (
           <div aria-label="要合并到哪条需求" className="merge-targets" role="radiogroup">
             {targets.map((target) => (

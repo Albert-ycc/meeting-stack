@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { PoolItem } from "../../types";
 import { stubPeaksFetch } from "./peaksFixtures";
 import { candidateItem, EXPORT_SOURCE, JD_SOURCE, requirementItem } from "./poolFixtures";
 import { PosterCard } from "./PosterCard";
@@ -252,5 +253,181 @@ describe("PosterCard 来源录音的波形（R02 异常：取不到就不画）"
 
     expect(container.querySelector(".poster-wave")).not.toBeNull();
     expect(container.querySelector(".poster-wave svg")).toBeNull();
+  });
+});
+
+describe("PosterCard 票根「⋯」菜单（D1）", () => {
+  function renderMenuCard(overrides: Partial<PoolItem> = {}, props: Partial<Parameters<typeof PosterCard>[0]> = {}) {
+    const handlers = { onOpen: vi.fn(), onSetStatus: vi.fn(), onMergeInto: vi.fn() };
+    render(<PosterCard canWrite item={requirementItem(overrides)} {...handlers} {...props} />);
+    return handlers;
+  }
+
+  function menuItems() {
+    return within(screen.getByRole("menu"))
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent);
+  }
+
+  it("进行中的卡：标记完成、搁置、并入其他需求…；点「⋯」和菜单项都不进详情", async () => {
+    const handlers = renderMenuCard();
+    const trigger = screen.getByRole("button", { name: "更多操作：京东科研仓对接" });
+    // 在「查看」「接下 →」后面
+    expect(trigger.closest(".poster__actions")?.lastElementChild).toContainElement(trigger);
+
+    await userEvent.click(trigger);
+    expect(menuItems()).toEqual(["标记完成", "搁置", "并入其他需求…"]);
+    expect(handlers.onOpen).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("menuitem", { name: "标记完成" }));
+    expect(handlers.onSetStatus).toHaveBeenCalledWith(expect.objectContaining({ id: "requirement-jd" }), "done");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("menuitem", { name: "搁置" }));
+    expect(handlers.onSetStatus).toHaveBeenLastCalledWith(expect.objectContaining({ id: "requirement-jd" }), "shelved");
+
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("menuitem", { name: "并入其他需求…" }));
+    expect(handlers.onMergeInto).toHaveBeenCalledWith(expect.objectContaining({ id: "requirement-jd" }));
+    expect(handlers.onOpen).not.toHaveBeenCalled();
+  });
+
+  it("已完成、已搁置的卡：重新打开、并入其他需求…", async () => {
+    const handlers = renderMenuCard({ status: "done" });
+    await userEvent.click(screen.getByRole("button", { name: "更多操作：京东科研仓对接" }));
+    expect(menuItems()).toEqual(["重新打开", "并入其他需求…"]);
+    await userEvent.click(screen.getByRole("menuitem", { name: "重新打开" }));
+    expect(handlers.onSetStatus).toHaveBeenCalledWith(expect.objectContaining({ status: "done" }), "active");
+    cleanup();
+
+    renderMenuCard({ status: "shelved" });
+    await userEvent.click(screen.getByRole("button", { name: "更多操作：京东科研仓对接" }));
+    expect(menuItems()).toEqual(["重新打开", "并入其他需求…"]);
+  });
+
+  it("键盘：回车、空格打开，焦点落在第一项；Esc 收起、焦点回到「⋯」；都不进详情", async () => {
+    const handlers = renderMenuCard();
+    const trigger = screen.getByRole("button", { name: "更多操作：京东科研仓对接" });
+    trigger.focus();
+
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "标记完成" })).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await userEvent.keyboard("{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: "搁置" })).toHaveFocus();
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await userEvent.keyboard(" ");
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(handlers.onOpen).not.toHaveBeenCalled();
+  });
+
+  it("点菜单外面收起，不进详情；菜单开着时海报压在别的海报上面（菜单不被下一排盖住）", async () => {
+    const handlers = renderMenuCard();
+    const poster = screen.getByRole("article", { name: "需求：京东科研仓对接" });
+    await userEvent.click(screen.getByRole("button", { name: "更多操作：京东科研仓对接" }));
+    expect(poster).toHaveClass("is-menu-open");
+
+    await userEvent.click(document.querySelector(".task-menu__scrim") as HTMLElement);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(poster).not.toHaveClass("is-menu-open");
+    expect(handlers.onOpen).not.toHaveBeenCalled();
+    expect(handlers.onSetStatus).not.toHaveBeenCalled();
+  });
+
+  it("没有写权限、墙上预览、没给回调（项目页）时没有「⋯」", () => {
+    renderMenuCard({}, { canWrite: false });
+    expect(screen.queryByRole("button", { name: /更多操作/ })).not.toBeInTheDocument();
+    cleanup();
+
+    renderMenuCard({}, { preview: true });
+    expect(screen.queryByRole("button", { name: /更多操作/ })).not.toBeInTheDocument();
+    cleanup();
+
+    render(<PosterCard canWrite item={requirementItem()} />);
+    expect(screen.queryByRole("button", { name: /更多操作/ })).not.toBeInTheDocument();
+  });
+
+  it("候选海报没有「⋯」", () => {
+    renderMenuCard({ ...candidateItem() });
+    expect(screen.queryByRole("button", { name: /更多操作/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("PosterCard 已完成、已搁置的卡（D12）", () => {
+  it("已完成：需求名后面盖「已完成」章；票根左下写状态变更那天「MM-DD 完成」（北京日历），不再写会上提出", () => {
+    // 北京 10-09 01:30 标的完成
+    render(<PosterCard canWrite item={requirementItem({ status: "done", status_changed_at: "2026-10-08T17:30:00+00:00" })} />);
+    const poster = screen.getByRole("article", { name: "需求：京东科研仓对接" });
+
+    expect(within(poster).getByRole("heading", { name: "京东科研仓对接" })).toBeInTheDocument();
+    expect(within(poster).getByText("已完成")).toHaveClass("poster__stamp", "poster__stamp--done");
+    expect(within(poster).getByText("10-09").parentElement).toHaveTextContent("10-09 完成");
+    expect(within(poster).queryByText(/会上提出/)).not.toBeInTheDocument();
+  });
+
+  it("已搁置：盖「已搁置」章，写「MM-DD 搁置」；老数据没有状态变更时间时取 updated_at", () => {
+    render(
+      <PosterCard
+        canWrite
+        item={requirementItem({ status: "shelved", status_changed_at: null, updated_at: "2026-09-30T08:00:00+00:00" })}
+      />,
+    );
+    expect(screen.getByText("已搁置")).toHaveClass("poster__stamp--shelved");
+    expect(screen.getByText("09-30").parentElement).toHaveTextContent("09-30 搁置");
+  });
+
+  it("进行中的不盖章，日子照旧写会上提出", () => {
+    render(<PosterCard canWrite item={requirementItem()} />);
+    expect(document.querySelector(".poster__stamp")).toBeNull();
+    expect(screen.getByText("09-17").parentElement).toHaveTextContent("09-17 会上提出");
+  });
+});
+
+describe("PosterCard「待办都清了，完成了吗？」（D14）", () => {
+  const NUDGE = "待办都清了，完成了吗？";
+
+  it("进行中、名下有过待办、没做完的为 0：票根出一行带［标记完成］；点了标记完成，不进详情", async () => {
+    const onOpen = vi.fn();
+    const onSetStatus = vi.fn();
+    render(
+      <PosterCard canWrite item={requirementItem({ task_count: 3, open_task_count: 0 })} onOpen={onOpen} onSetStatus={onSetStatus} />,
+    );
+
+    const nudge = screen.getByText(NUDGE).closest(".poster__nudge") as HTMLElement;
+    expect(nudge.closest(".poster__stub")).not.toBeNull();
+    await userEvent.click(within(nudge).getByRole("button", { name: "标记完成" }));
+    expect(onSetStatus).toHaveBeenCalledWith(expect.objectContaining({ id: "requirement-jd" }), "done");
+    await userEvent.click(nudge);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["从来没有过待办", { task_count: 0, open_task_count: 0 }],
+    ["还有没做完的", { task_count: 3, open_task_count: 1 }],
+    ["已完成的卡", { status: "done" as const, task_count: 3, open_task_count: 0 }],
+    ["已搁置的卡", { status: "shelved" as const, task_count: 3, open_task_count: 0 }],
+    ["老后端没有 task_count", { task_count: undefined, open_task_count: 0 }],
+  ])("%s：不出这一行", (_label, overrides) => {
+    render(<PosterCard canWrite item={requirementItem(overrides)} onSetStatus={vi.fn()} />);
+    expect(screen.queryByText(NUDGE)).not.toBeInTheDocument();
+  });
+
+  it("没有写权限、墙上预览、没给回调时也不出", () => {
+    const item = requirementItem({ task_count: 3, open_task_count: 0 });
+    render(<PosterCard canWrite={false} item={item} onSetStatus={vi.fn()} />);
+    expect(screen.queryByText(NUDGE)).not.toBeInTheDocument();
+    cleanup();
+    render(<PosterCard canWrite item={item} onSetStatus={vi.fn()} preview />);
+    expect(screen.queryByText(NUDGE)).not.toBeInTheDocument();
+    cleanup();
+    render(<PosterCard canWrite item={item} />);
+    expect(screen.queryByText(NUDGE)).not.toBeInTheDocument();
   });
 });

@@ -213,6 +213,22 @@ export function formatMonthDayClock(value: string | null | undefined): string {
   return `${formatMonthDay(value)} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
+const beijingDayFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Shanghai",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** 短日期 MM-DD，按北京日历（会都在北京白天开，「哪一天」全站按北京算），不随浏览器所在时区变；没有日期显示「—」。 */
+export function formatBeijingMonthDay(value: string | null | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(5, 10);
+  const parts = beijingDayFormatter.formatToParts(date);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("month")}-${part("day")}`;
+}
+
 /** 纪要没生成时标题会退成占位；这类会议需要在界面上标出来。 */
 export function isUntitled(title: string, meetingId: string): boolean {
   const trimmed = (title ?? "").trim();

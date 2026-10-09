@@ -1113,7 +1113,7 @@ export default function App({ apiClient = api }: AppProps) {
     setPoolFlash(
       result.kind === "merged"
         ? {
-            message: mergedMessage(requirement.title),
+            message: mergedMessage(requirement.title, requirement.reopened),
             undoMergeCandidateId: candidateId,
           }
         : {
@@ -1590,6 +1590,7 @@ export default function App({ apiClient = api }: AppProps) {
         onOpenMeeting={openMeetingAtQuote}
         onOpenPreview={(fileId) => setPreviewTarget({ fileId })}
         onOpenProject={openProjectDetail}
+        onOpenRequirement={openRequirementDetail}
         onOpenTask={setTaskDrawerId}
         onProjectsChanged={refreshProjects}
         projects={projects}

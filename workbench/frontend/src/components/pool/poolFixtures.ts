@@ -3,7 +3,14 @@
  * requirement_pool_world 是同一份），需求和候选的标题、说明用《口径书》的示意数据。
  * 用例的时区钉在 Asia/Shanghai：-07:00 的 09-16 19:01 显示成 09-17 10:01。
  */
-import type { PoolItem, PoolProject, RequirementPoolPayload, RequirementSource } from "../../types";
+import type {
+  PoolItem,
+  PoolProject,
+  RequirementMergeTargets,
+  RequirementPoolPayload,
+  RequirementSource,
+  Task,
+} from "../../types";
 
 export const YIMI = "project-59314319a40c43ea";
 export const HENGRUI = "project-587f318a77c84d46";
@@ -66,6 +73,47 @@ export function requirementItem(overrides: Partial<PoolItem> = {}): PoolItem {
     can_merge: false,
     created_at: "2026-09-16T06:48:37+00:00",
     updated_at: "2026-09-16T06:48:37+00:00",
+    status_changed_at: "2026-09-16T06:48:37+00:00",
+    task_count: 0,
+    ...overrides,
+  };
+}
+
+/** 京东科研仓对接名下的待办（需求并需求、改状态的用例用）；默认没做完 */
+export function taskItem(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "task-receipt",
+    title: "跟京东确认签收凭证怎么回传给医米",
+    detail: "",
+    status: "confirmed",
+    origin: "ai",
+    assignee: "me",
+    meeting_id: JD_SOURCE.meeting_id,
+    project_id: YIMI,
+    meeting_title: JD_SOURCE.meeting_title,
+    requirement_id: "requirement-jd",
+    requirement_title: "京东科研仓对接",
+    status_changed_at: "2026-09-17T02:00:00+00:00",
+    created_at: "2026-09-17T02:00:00+00:00",
+    updated_at: "2026-09-17T02:00:00+00:00",
+    stall_days: 0,
+    stalled: false,
+    ...overrides,
+  };
+}
+
+/**
+ * 并入其他需求的目标（D4）：同项目（医米科研用药）里除京东科研仓对接外的需求，
+ * 按进行中→已搁置→已完成、再按等级排；moving 是京东科研仓对接要带过去的东西
+ */
+export function mergeTargetsPayload(overrides: Partial<RequirementMergeTargets> = {}): RequirementMergeTargets {
+  return {
+    moving: { open_task_count: 2, task_count: 3, meeting_count: 2, source_count: 2, folder_count: 1, priority: "P2" },
+    items: [
+      { id: "requirement-receipt", title: "京东仓签收凭证", status: "active", priority: "P1", open_task_count: 1, meeting_count: 1 },
+      { id: "requirement-edc", title: "EDC 系统选型", status: "shelved", priority: "P3", open_task_count: 0, meeting_count: 1 },
+      { id: "requirement-scan", title: "扫码入组强提醒", status: "done", priority: "P2", open_task_count: 0, meeting_count: 2 },
+    ],
     ...overrides,
   };
 }

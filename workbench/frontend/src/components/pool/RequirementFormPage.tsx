@@ -12,12 +12,15 @@ import type {
   RequirementPriority,
   RequirementSource,
   RequirementStatus,
+  Task,
   TitleConflict,
 } from "../../types";
 import { MaterialFolderPickerModal } from "../MaterialFolderPickerModal";
 import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATUS_LABELS } from "../RequirementBadges";
+import { CloseTasksDialog } from "./CloseTasksDialog";
 import { anchorLabel, PosterCard } from "./PosterCard";
 import { PosterWaveform } from "./PosterWaveform";
+import { openTasksOf } from "./requirementStatus";
 import { SourcePickerDialog, type SourceDraft } from "./SourcePickerDialog";
 import "./RequirementFormPage.css";
 
@@ -88,7 +91,8 @@ export function splitProjects(projects: Project[]): { seated: Project[]; others:
   return { seated, others };
 }
 
-const MERGEABLE = new Set(["active", "shelved"]);
+// 已完成的也能并：候选并进去后需求重新打开为进行中（D13）
+const MERGEABLE = new Set(["active", "shelved", "done"]);
 // 修改需求时状态只在这三态之间切换，不能改回待认领（R04-5）
 const EDIT_STATUSES: RequirementStatus[] = ["active", "done", "shelved"];
 
@@ -422,6 +426,8 @@ export function RequirementFormPage({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // 改成已完成、已搁置时名下还有没做完的待办：先问一起关掉还是留着（D10），答了才保存
+  const [askingTasks, setAskingTasks] = useState<Task[] | null>(null);
   // 同项目里的同名需求：边填边查的结果，或保存时后端 409 带回来的；只对查它时的需求名和项目有效
   const [found, setFound] = useState<{ title: string; projectId: string; existing: ExistingRequirement | null } | null>(null);
   // 保存时 409 是后端刚给的结论，比任何更早发出去、还在路上的查重结果都新：每撞一次名就加一，旧的查重回来也不再盖掉它
@@ -622,6 +628,8 @@ export function RequirementFormPage({
     title: cleanedTitle,
     summary: summary.trim(),
     status: editing ? status : "active",
+    // 预览里改了状态：底栏写今天完成、搁置（D12），不写上一次改状态的日子
+    status_changed_at: editing && changed?.status ? new Date().toISOString() : (requirement?.status_changed_at ?? null),
     priority,
     project_id: projectId || null,
     project_name: project?.name ?? null,
@@ -652,7 +660,20 @@ export function RequirementFormPage({
     onCancel();
   };
 
-  const submit = async () => {
+  const submit = () => {
+    if (!canSave) return;
+    if (editing && changed?.status && status !== "active") {
+      const open = openTasksOf(requirement?.tasks ?? []);
+      if (open.length > 0) {
+        setAskingTasks(open);
+        return;
+      }
+    }
+    void save();
+  };
+
+  /** closeOpenTasks：问过待办怎么办才带（D10）；没问过不带，老调用不变 */
+  const save = async (closeOpenTasks?: boolean) => {
     if (!canSave) return;
     setSaving(true);
     setError("");
@@ -684,6 +705,7 @@ export function RequirementFormPage({
             ...(changed.status ? { status } : {}),
             ...(changed.project || (canPickFolders && changed.folders) ? { folder_paths: folderPaths } : {}),
             ...(changed.source ? { source: sourceInput } : {}),
+            ...(closeOpenTasks !== undefined ? { close_open_tasks: closeOpenTasks } : {}),
           }),
         });
       } else {
@@ -785,7 +807,7 @@ export function RequirementFormPage({
           className="form-card"
           onSubmit={(event) => {
             event.preventDefault();
-            void submit();
+            submit();
           }}
         >
           <label className="form-field">
@@ -1012,10 +1034,21 @@ export function RequirementFormPage({
         <button className="form-actions__cancel" disabled={saving} onClick={cancel} type="button">
           取消
         </button>
-        <button className="form-actions__submit" disabled={!canSave} onClick={() => void submit()} type="button">
+        <button className="form-actions__submit" disabled={!canSave} onClick={submit} type="button">
           {saving ? "保存中…" : claiming ? "认领" : editing ? "保存" : "创建"}
         </button>
       </footer>
+
+      {askingTasks && (
+        <CloseTasksDialog
+          onCancel={() => setAskingTasks(null)}
+          onDecide={(closeOpenTasks) => {
+            setAskingTasks(null);
+            void save(closeOpenTasks);
+          }}
+          tasks={askingTasks}
+        />
+      )}
 
       {pickingSource && (
         <SourcePickerDialog

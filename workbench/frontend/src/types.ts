@@ -1622,6 +1622,8 @@ export interface RequirementSummary {
   summary?: string;
   /** v17：所属项目的座次名次，未排座次为 null */
   project_seat?: number | null;
+  /** v20：最近一次改状态的时间（老数据为空时后端用 updated_at 兜底） */
+  status_changed_at?: string | null;
 }
 
 /** v17：需求的来源——提出它的会议、会上原话和时间锚（origin），或合并进来的原话（merged） */
@@ -1687,13 +1689,17 @@ export interface PoolItem {
   /** 候选：AI 判断的相近需求（还能合并时才有），默认动作是合并 */
   similar_requirement: { id: string; title: string; status: RequirementStatus } | null;
   default_action: "claim" | "merge" | null;
-  /** 候选所属项目下有进行中或已搁置的需求时才能合并 */
+  /** 候选所属项目下有可以并进的需求（进行中、已搁置、已完成）时才能合并 */
   can_merge: boolean;
   created_at: string;
   updated_at: string;
   /** 候选认领建成或合并进去的需求 */
   requirement_id?: string | null;
   dropped_at?: string | null;
+  /** v20 需求：最近一次改状态的时间（为空时后端用 updated_at），已完成、已搁置的海报底栏写这一天 */
+  status_changed_at?: string | null;
+  /** v20 需求：名下待办总数，含已完成、已取消 */
+  task_count?: number;
 }
 
 /** 「我的方向」条上的项目：已排座次的在前（seat 是名次），其后按最近会议排；count 是当前页签下的条数 */
@@ -1831,6 +1837,48 @@ export interface RequirementDetail extends RequirementSummary {
   /** v17：提出它的和合并进来的原话，按会议时间先后 */
   sources?: RequirementSource[];
   follow_up_count?: number;
+  /** v20：最近一次改状态的撤销截止时间，没有或已过期为 null */
+  status_undo_until?: string | null;
+  /** v20：这次改状态一起关掉的待办条数，没有为 0 */
+  closed_task_count?: number;
+  /** v20：候选并进已完成的需求后，需求重新打开了（只在候选合并的返回里有） */
+  reopened?: boolean;
+}
+
+/** 需求并需求：被并掉的那条（「这条」）要带过去的东西 */
+export interface RequirementMoving {
+  open_task_count: number;
+  task_count: number;
+  meeting_count: number;
+  source_count: number;
+  folder_count: number;
+  priority: RequirementPriority;
+}
+
+/** 需求并需求的目标：同项目里除自己外的需求 */
+export interface RequirementMergeTarget {
+  id: string;
+  title: string;
+  status: RequirementStatus;
+  priority: RequirementPriority;
+  open_task_count: number;
+  meeting_count: number;
+}
+
+export interface RequirementMergeTargets {
+  moving: RequirementMoving;
+  items: RequirementMergeTarget[];
+}
+
+/** 并入成功：返回主需求的详情，外加被并掉的那条（撤销用） */
+export interface RequirementMergeResult extends RequirementDetail {
+  merged_from: { id: string; title: string; undo_until: string };
+}
+
+/** 打开被并掉的需求时 404 的响应体：顺着链找到的、仍然存在的那条 */
+export interface RequirementMergedAway {
+  detail: string;
+  merged_into: { id: string; title: string };
 }
 
 export interface RequirementFilters {

@@ -603,7 +603,8 @@ export function ReviewCardsPanel({
             if (owner) expand(owner.meeting.id);
             setMergeCandidate(null);
             void refreshed();
-            onNotify(`已合并到「${requirement.title}」`);
+            // 并进的是已完成的需求时后端把它重新打开了（D13）
+            onNotify(`已合并到「${requirement.title}」${requirement.reopened ? `；「${requirement.title}」已重新打开` : ""}`);
           }}
         />
       )}

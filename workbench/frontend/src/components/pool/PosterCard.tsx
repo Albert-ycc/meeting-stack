@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
-import { formatDurationText, formatMonthDay, formatMonthDayClock, formatTime } from "../../format";
-import type { PoolItem } from "../../types";
+import { formatBeijingMonthDay, formatDurationText, formatMonthDay, formatMonthDayClock, formatTime } from "../../format";
+import type { PoolItem, RequirementStatus } from "../../types";
+import { REQUIREMENT_STATUS_LABELS } from "../RequirementBadges";
+import { RowMenu, type RowMenuItem } from "../todo/RowMenu";
 import { PosterWaveform } from "./PosterWaveform";
 import "./PosterCard.css";
 
@@ -22,6 +24,10 @@ interface PosterCardProps {
    * 所以这里只管调用；复制成功返回 true，按钮这才变「已复制」2 秒。
    */
   onTake?: (item: PoolItem) => Promise<boolean>;
+  /** 需求票根「⋯」里的标记完成、搁置、重新打开（D1），以及「待办都清了」那一行的［标记完成］（D14） */
+  onSetStatus?: (item: PoolItem, status: RequirementStatus) => void;
+  /** 需求票根「⋯」里的「并入其他需求…」（D1） */
+  onMergeInto?: (item: PoolItem) => void;
   /** 认领、新建后落位的那张：描边 3 秒（R01-13） */
   highlighted?: boolean;
 }
@@ -33,8 +39,17 @@ export function anchorLabel(milliseconds: number): string {
   return formatTime(milliseconds, true);
 }
 
-/** 海报底栏的日子：出自哪场会就写那场会的日子，没有来源写建的日子 */
+/**
+ * 海报底栏的日子：已完成、已搁置的需求写状态变更那天（D12，北京日历）；
+ * 其余出自哪场会就写那场会的日子，没有来源写建的日子
+ */
 export function posterDateLabel(item: PoolItem): { day: string; text: string } {
+  if (item.kind === "requirement" && (item.status === "done" || item.status === "shelved")) {
+    return {
+      day: formatBeijingMonthDay(item.status_changed_at || item.updated_at),
+      text: item.status === "done" ? "完成" : "搁置",
+    };
+  }
   if (item.source) return { day: formatMonthDay(item.source.recording_date), text: "会上提出" };
   return { day: formatMonthDay(item.created_at), text: "新建" };
 }
@@ -71,9 +86,12 @@ export function PosterCard({
   onMerge,
   onDrop,
   onTake,
+  onSetStatus,
+  onMergeInto,
   highlighted = false,
 }: PosterCardProps) {
   const candidate = item.kind === "candidate";
+  const stamped = !candidate && (item.status === "done" || item.status === "shelved");
   const source = item.source;
   const date = posterDateLabel(item);
   const open = () => {
@@ -125,12 +143,29 @@ export function PosterCard({
     : "";
   const mergeFirst = candidate && item.default_action === "merge" && item.can_merge;
 
+  // 「⋯」菜单（D1）：进行中的给标记完成、搁置，已完成、已搁置的给重新打开；都能并入其他需求
+  const writable = canWrite && !preview && !candidate;
+  const menu: RowMenuItem[] = [];
+  if (writable && onSetStatus) {
+    if (item.status === "active") {
+      menu.push({ label: "标记完成", act: () => onSetStatus(item, "done") });
+      menu.push({ label: "搁置", act: () => onSetStatus(item, "shelved") });
+    } else {
+      menu.push({ label: "重新打开", act: () => onSetStatus(item, "active") });
+    }
+  }
+  if (writable && onMergeInto) menu.push({ label: "并入其他需求…", act: () => onMergeInto(item) });
+  const [menuOpen, setMenuOpen] = useState(false);
+  // 待办都清了（名下有过待办、没做完的为 0）还挂在进行中：问一句完成了吗（D14）
+  const allCleared =
+    writable && onSetStatus !== undefined && item.status === "active" && (item.task_count ?? 0) >= 1 && item.open_task_count === 0;
+
   return (
     <article
       aria-label={`${candidate ? "候选" : "需求"}：${item.title}`}
       className={`poster ${candidate ? "poster--candidate" : ""} ${preview ? "poster--preview" : ""} ${
         highlighted ? "poster--highlight" : ""
-      }`}
+      } ${menuOpen ? "is-menu-open" : ""}`}
       data-poster-id={item.id}
       data-status={item.status}
       onClick={open}
@@ -193,7 +228,17 @@ export function PosterCard({
           )}
         </header>
 
-        <h3 className={`poster__title ${item.title ? "" : "is-placeholder"}`}>{item.title || "需求名"}</h3>
+        {stamped ? (
+          // 已完成、已搁置在需求名后面盖章（D12），和详情页头部一个意思
+          <div className="poster__title-row">
+            <h3 className={`poster__title ${item.title ? "" : "is-placeholder"}`}>{item.title || "需求名"}</h3>
+            <span className={`poster__stamp poster__stamp--${item.status}`}>
+              {REQUIREMENT_STATUS_LABELS[item.status as RequirementStatus]}
+            </span>
+          </div>
+        ) : (
+          <h3 className={`poster__title ${item.title ? "" : "is-placeholder"}`}>{item.title || "需求名"}</h3>
+        )}
         {(item.summary || preview) && (
           <p
             className={`poster__summary ${item.summary ? "" : "is-placeholder"} ${
@@ -228,6 +273,15 @@ export function PosterCard({
             </div>
           ))}
         </dl>
+
+        {allCleared && (
+          <p className="poster__nudge" onClick={stop}>
+            <span>待办都清了，完成了吗？</span>
+            <button className="poster__nudge-action" onClick={() => onSetStatus?.(item, "done")} type="button">
+              标记完成
+            </button>
+          </p>
+        )}
 
         <footer className="poster__foot">
           <span className="poster__date">
@@ -282,6 +336,9 @@ export function PosterCard({
                   </>
                 )}
               </button>
+              {menu.length > 0 && (
+                <RowMenu items={menu} label={`更多操作：${item.title}`} onOpenChange={setMenuOpen} open={menuOpen} />
+              )}
             </span>
           )}
         </footer>

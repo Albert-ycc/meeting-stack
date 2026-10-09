@@ -144,6 +144,39 @@
   border-radius: 12px;
 }
 
+/* 「编辑需求」旁边的标记完成 / 重新打开（D2）：描边，和「复制给 Claude Code」同一档 */
+.requirement-detail__status-action {
+  padding: 9px 16px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+}
+
+.requirement-detail__status-action:hover:not(:disabled) {
+  border-color: var(--ink-2);
+}
+
+/* 头部的「⋯」（D2）：和旁边的按钮一样高的描边方块；菜单本身的样子在 TasksPage.css 的 .task-menu */
+.requirement-detail__actions .task-menu {
+  display: flex;
+}
+
+.requirement-detail__actions .task-menu__trigger {
+  min-width: 36px;
+  padding: 0 10px;
+  color: var(--ink-2);
+  font-size: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+}
+
+.requirement-detail__actions .task-menu__pop button {
+  font-size: 13px;
+}
+
 /* 座次、项目、等级、进行中：和海报头一行一个样（S12） */
 .requirement-detail__meta {
   display: flex;

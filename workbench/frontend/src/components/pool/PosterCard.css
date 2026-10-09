@@ -24,6 +24,13 @@
   box-shadow: 0 12px 28px rgb(0 0 0 / calc(0.3 * var(--shadow-k)));
 }
 
+/* 票根「⋯」菜单开着（D1）：这张压在后面的海报上面，菜单往下伸出去也不被下一排盖住；
+ * 不再上浮——transform 会让菜单的透明遮罩只盖住这一张，点别处就点穿到别的海报上了 */
+.poster.is-menu-open {
+  z-index: 3;
+  transform: none;
+}
+
 .poster:focus-visible {
   outline: 2px solid var(--signal);
   outline-offset: 3px;
@@ -225,6 +232,42 @@
   -webkit-line-clamp: 2;
 }
 
+/* 已完成、已搁置：需求名后面盖章（D12），和详情页头部的章一个样，缩到海报的字号 */
+.poster__title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.poster__title-row .poster__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.poster__stamp {
+  flex: none;
+  margin-top: 4px;
+  padding: 0 7px;
+  border: 1.5px solid currentColor;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 20px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  transform: rotate(-6deg);
+}
+
+.poster__stamp--done {
+  color: var(--ok-strong);
+}
+
+.poster__stamp--shelved {
+  color: var(--warn-strong);
+}
+
 .poster__title.is-placeholder,
 .poster__summary.is-placeholder {
   color: var(--faint);
@@ -340,6 +383,38 @@
   font-weight: 400;
 }
 
+/* 待办都清了还挂在进行中（D14）：票根里多一行问一句，带［标记完成］ */
+.poster__nudge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 7px 8px 7px 12px;
+  border-radius: 10px;
+  background: var(--ok-bg);
+  color: var(--ok-strong);
+  font-size: 12.5px;
+  cursor: default;
+}
+
+.poster__nudge-action {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid currentColor;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.poster__nudge-action:hover {
+  background: var(--ok-strong);
+  color: var(--surface);
+}
+
 .poster__foot {
   display: flex;
   align-items: center;
@@ -422,4 +497,27 @@
 .poster__text-action:disabled,
 .poster__pill:disabled {
   cursor: default;
+}
+
+/* 票根右下的「⋯」：和「查看」同一档的字色，菜单项用海报上的字号（菜单本身的样子在 TasksPage.css 的 .task-menu） */
+.poster .task-menu__trigger {
+  min-width: 28px;
+  padding: 2px 6px;
+  color: var(--muted);
+  font-size: 16px;
+  letter-spacing: 0.04em;
+}
+
+.poster .task-menu__trigger:hover:not(:disabled),
+.poster .task-menu__trigger[aria-expanded="true"] {
+  color: var(--ink);
+  background: rgb(var(--fg-rgb) / 0.06);
+}
+
+.poster .task-menu__pop {
+  min-width: 148px;
+}
+
+.poster .task-menu__pop button {
+  font-size: 13px;
 }
