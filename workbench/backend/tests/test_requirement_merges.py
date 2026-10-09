@@ -1224,46 +1224,117 @@ def status_of(client, requirement_id):
     return client.get(f"/api/requirements/{requirement_id}").json()["status"]
 
 
-def test_candidate_unmerge_keeps_it_open_when_more_was_merged_in_after_the_reopen(tmp_path):
-    """B6：两条候选先后并进已完成的需求（第一条把它重新打开）。先撤第一条：之后还并进来过第二条，不改回已完成；
-    第二条没打开过它，撤了也不动。"""
+def undo_merge(client, headers, kind, merged_id):
+    path = (
+        f"/api/requirement-candidates/{merged_id}/unmerge"
+        if kind == "candidate"
+        else f"/api/requirements/{merged_id}/unmerge"
+    )
+    response = post(client, headers, path)
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_candidates_merged_into_a_done_requirement_close_it_again_once_all_are_undone(
+    tmp_path, reverse
+):
+    """B6、N1：两条候选先后并进已完成的需求（第一条把它重新打开）。撤完一条还开着；两条都撤完回到已完成，
+    和撤销顺序无关——先撤打开它的那条时，「重新打开」的记账转交给后并进来的那条。"""
     client, headers, db = make_world(tmp_path)
     target = create(client, headers, "yimi", "京东科研仓对接", "P0", status="done")
+    done_at = client.get(f"/api/requirements/{target}").json()["status_changed_at"]
     first = candidate(db, "receipt", "京东仓签收凭证")
     second = candidate(db, "inbound", "京东入库单推送")
     assert merge_candidate(client, headers, first, target)["reopened"] is True
     assert merge_candidate(client, headers, second, target)["reopened"] is False
 
-    unmerge_candidate(client, headers, first)
+    undo_order = [second, first] if reverse else [first, second]
+    unmerge_candidate(client, headers, undo_order[0])
     assert status_of(client, target) == "active"
-    unmerge_candidate(client, headers, second)
-    assert status_of(client, target) == "active"
+    unmerge_candidate(client, headers, undo_order[1])
+
+    detail = client.get(f"/api/requirements/{target}").json()
+    assert (detail["status"], detail["status_changed_at"]) == ("done", done_at)
 
 
-def test_candidate_unmerge_closes_it_again_once_later_merges_are_undone(tmp_path):
-    """B6 倒序：先撤后并进来的那条，再撤打开它的那条，回到已完成。"""
+@pytest.mark.parametrize("opener", ["candidate", "requirement"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_candidate_and_requirement_merges_close_it_again_once_both_are_undone(
+    tmp_path, opener, reverse
+):
+    """N1：重新打开它的可以是候选（D13）也可以是并进来的进行中需求（D6）；之后再并进来另一种。两次都撤完
+    回到已完成，和顺序无关。"""
+    client, headers, db = make_world(tmp_path)
+    target = create(client, headers, "yimi", "京东科研仓对接", "P0", status="done")
+    done_at = client.get(f"/api/requirements/{target}").json()["status_changed_at"]
+    cand = candidate(db, "receipt", "京东仓签收凭证")
+    if opener == "candidate":
+        assert merge_candidate(client, headers, cand, target)["reopened"] is True
+        other = create(client, headers, "yimi", "京东科研仓二期", "P1", status="shelved")
+        assert merge(client, headers, other, target).json()["status"] == "active"
+        merges = [("candidate", cand), ("requirement", other)]
+    else:
+        other = create(client, headers, "yimi", "京东科研仓二期", "P1")
+        assert merge(client, headers, other, target).json()["status"] == "active"
+        assert merge_candidate(client, headers, cand, target)["reopened"] is False
+        merges = [("requirement", other), ("candidate", cand)]
+
+    for kind, merged_id in reversed(merges) if reverse else merges:
+        assert status_of(client, target) == "active"
+        undo_merge(client, headers, kind, merged_id)
+
+    detail = client.get(f"/api/requirements/{target}").json()
+    assert (detail["status"], detail["status_changed_at"]) == ("done", done_at)
+
+
+def test_a_status_changed_by_hand_in_between_is_left_alone(tmp_path):
+    """N1：重新打开以后用户手动改过状态（标记完成又重新打开），之后撤销合并都不再改回已完成。"""
     client, headers, db = make_world(tmp_path)
     target = create(client, headers, "yimi", "京东科研仓对接", "P0", status="done")
     first = candidate(db, "receipt", "京东仓签收凭证")
     second = candidate(db, "inbound", "京东入库单推送")
     merge_candidate(client, headers, first, target)
     merge_candidate(client, headers, second, target)
+    patch(client, headers, target, {"status": "done"})
+    patch(client, headers, target, {"status": "active"})
 
+    unmerge_candidate(client, headers, first)
     unmerge_candidate(client, headers, second)
-    unmerge_candidate(client, headers, first)
-
-    assert status_of(client, target) == "done"
-
-
-def test_candidate_unmerge_keeps_it_open_after_a_requirement_was_merged_in(tmp_path):
-    """B6：候选把已完成的需求重新打开以后，又有一条需求并了进来：撤销候选合并不改回已完成。"""
-    client, headers, db = make_world(tmp_path)
-    target = create(client, headers, "yimi", "京东科研仓对接", "P0", status="done")
-    later = create(client, headers, "yimi", "京东科研仓二期", "P1", status="shelved")
-    first = candidate(db, "receipt", "京东仓签收凭证")
-    merge_candidate(client, headers, first, target)
-    assert merge(client, headers, later, target).status_code == 200
-
-    unmerge_candidate(client, headers, first)
 
     assert status_of(client, target) == "active"
+
+
+def test_task_pointed_at_a_merged_away_requirement_says_where_it_went(tmp_path):
+    """N4：旧页面把待办挂到已经并走的需求上，报并进了哪条（和需求接口同一个 404）。"""
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "京东科研仓对接", "P0")
+    gone = create(client, headers, "yimi", "京东仓签收凭证", "P2")
+    task_on(db, "task-sign", "和京东确认妥投拍照字段", None, "confirmed")
+    assert merge(client, headers, gone, main).status_code == 200
+
+    response = client.patch("/api/tasks/task-sign", json={"requirement_id": gone}, headers=headers)
+
+    assert (response.status_code, response.json()) == (
+        404,
+        {
+            "detail": "这条需求已并入「京东科研仓对接」",
+            "merged_into": {"id": main, "title": "京东科研仓对接"},
+        },
+    )
+    assert task_row(db, "task-sign")["requirement_id"] is None
+
+
+def test_merging_into_a_merged_away_requirement_says_where_it_went(tmp_path):
+    """N4：并入弹窗旧了，选中的主需求已经并进了别处。"""
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "京东科研仓对接", "P0")
+    gone = create(client, headers, "yimi", "京东仓签收凭证", "P2")
+    this = create(client, headers, "yimi", "京东入库单推送", "P1")
+    assert merge(client, headers, gone, main).status_code == 200
+
+    response = merge(client, headers, this, gone)
+
+    assert (response.status_code, response.json()) == (
+        404,
+        {"detail": "要并入的需求已并入「京东科研仓对接」"},
+    )

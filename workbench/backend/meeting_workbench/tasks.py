@@ -384,6 +384,12 @@ def resolve_requirement_and_project(
                 "SELECT project_id FROM requirements WHERE id=?", (requirement_id,)
             ).fetchone()
             if requirement is None:
+                # 页面旧了、挂的是已经并进别处的需求：报并进了哪条（和需求接口同一个 404，D8）
+                from .requirements import RequirementMergedAway, merged_into
+
+                into = merged_into(connection, requirement_id)
+                if into is not None:
+                    raise RequirementMergedAway(into)
                 raise NotFoundError(f"需求不存在：{requirement_id}")
             requirement_project_id = requirement["project_id"]
             if project_id_given and project_id and project_id != requirement_project_id:

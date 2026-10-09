@@ -561,6 +561,72 @@ def drop_merged_meeting(
             )
 
 
+REOPEN_KEYS = ("reopened_from", "reopened_at", "previous_status_changed_at")
+
+
+def settle_reopen(
+    connection: Any,
+    requirement_id: str,
+    record: dict[str, Any],
+    stamp: str,
+    *,
+    skip_merge: str | None = None,
+    skip_candidate: str | None = None,
+) -> None:
+    """撤销一次合并时处理它记着的「把需求重新打开了」（record 里的 reopened_from、reopened_at、
+    previous_status_changed_at：候选并进已完成的需求 D13、进行中的需求并进已完成/已搁置的 D6，或者别的合并
+    转交过来的）。需求还是那次打开的进行中（状态时间就是那一刻）时：那之后没有别的合并还在，就改回原来的状态；
+    还有，就把这份记账转交给那些之后的合并（候选的 merge_undo、需求合并的 undo），最后撤的那次改回，和撤销
+    顺序无关。期间状态被别处改过（状态时间不再是那一刻）的作废，不改回、不转交。
+    skip_merge / skip_candidate 是正在撤销的这一次。"""
+    if not record.get("reopened_from"):
+        return
+    reopen = {key: record[key] for key in REOPEN_KEYS}
+    row = connection.execute(
+        "SELECT status, status_changed_at FROM requirements WHERE id=?", (requirement_id,)
+    ).fetchone()
+    if row is None or (row["status"], row["status_changed_at"]) != (
+        "active",
+        reopen["reopened_at"],
+    ):
+        return
+    later_candidates = connection.execute(
+        """SELECT id, merge_undo FROM requirement_candidates
+            WHERE requirement_id=? AND status='merged' AND merge_undo IS NOT NULL AND id IS NOT ?
+              AND julianday(merged_at) > julianday(?)""",
+        (requirement_id, skip_candidate, reopen["reopened_at"]),
+    ).fetchall()
+    later_merges = [
+        (row["requirement_id"], json.loads(row["undo"]))
+        for row in connection.execute(
+            """SELECT requirement_id, undo FROM requirement_merges
+                WHERE into_requirement_id=? AND undo IS NOT NULL AND requirement_id IS NOT ?
+                  AND julianday(merged_at) > julianday(?)""",
+            (requirement_id, skip_merge, reopen["reopened_at"]),
+        ).fetchall()
+    ]
+    later_merges = [
+        (merged_id, undo) for merged_id, undo in later_merges if undo["into"] == requirement_id
+    ]
+    if not later_candidates and not later_merges:
+        connection.execute(
+            "UPDATE requirements SET status=?, status_changed_at=?, updated_at=? WHERE id=?",
+            (reopen["reopened_from"], reopen["previous_status_changed_at"], stamp, requirement_id),
+        )
+        return
+    for row in later_candidates:
+        merge_undo = {**json.loads(row["merge_undo"]), **reopen}
+        connection.execute(
+            "UPDATE requirement_candidates SET merge_undo=? WHERE id=?",
+            (json.dumps(merge_undo, ensure_ascii=False), row["id"]),
+        )
+    for merged_id, undo in later_merges:
+        connection.execute(
+            "UPDATE requirement_merges SET undo=? WHERE requirement_id=?",
+            (json.dumps({**undo, **reopen}, ensure_ascii=False), merged_id),
+        )
+
+
 def status_undo_until(
     requirement: dict[str, Any], status_undo: str | None, *, now: datetime | None = None
 ) -> str | None:

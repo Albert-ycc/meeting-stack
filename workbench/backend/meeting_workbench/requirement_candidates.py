@@ -33,6 +33,7 @@ from .requirements import (
     clean_source,
     clean_title,
     drop_merged_meeting,
+    settle_reopen,
     follow_up_count,
     get_requirement,
     insert_requirement,
@@ -1225,8 +1226,8 @@ def unmerge_candidate(
 ) -> dict[str, Any]:
     """撤销合并（R01-14）：合并后 10 分钟内，候选回到待认领，这次合并带进需求的原话、关联会议、任务按
     合并时记下的原样退回。原话已经不在那条需求里（比如那场会被移出了关联、原话跟着删了）时不能撤销；
-    任务在这 10 分钟里被改挂到别处的不动。合并时把已完成的需求重新打开了的（D13），需求还是那次打开的
-    进行中（状态和状态时间都没被别处改过），并且那之后没有别的候选、别的需求并进来，才回到已完成。"""
+    任务在这 10 分钟里被改挂到别处的不动。合并时把已完成的需求重新打开了的（D13，或别的合并转交过来的），
+    按 settle_reopen：并进来的都撤完时回到已完成，期间状态被别处改过的不动。"""
     moment = now or datetime.now(UTC)
     stamp = moment.isoformat()
     with task_service.db.transaction() as connection:
@@ -1274,26 +1275,7 @@ def unmerge_candidate(
                        VALUES (?, 'requirement_changed', ?, ?)""",
                     (task["id"], f"撤销合并：回到候选「{candidate['title']}」", stamp),
                 )
-        if record.get("reopened_from"):
-            connection.execute(
-                """UPDATE requirements
-                      SET status=:status, status_changed_at=:previous, updated_at=:stamp
-                    WHERE id=:id AND status='active' AND status_changed_at=:reopened
-                      AND NOT EXISTS (SELECT 1 FROM requirement_candidates
-                                       WHERE requirement_id=:id AND status='merged' AND id<>:candidate
-                                         AND julianday(merged_at) > julianday(:reopened))
-                      AND NOT EXISTS (SELECT 1 FROM requirement_merges
-                                       WHERE into_requirement_id=:id
-                                         AND julianday(merged_at) > julianday(:reopened))""",
-                {
-                    "status": record["reopened_from"],
-                    "previous": record["previous_status_changed_at"],
-                    "stamp": stamp,
-                    "id": requirement_id,
-                    "reopened": record["reopened_at"],
-                    "candidate": candidate_id,
-                },
-            )
+        settle_reopen(connection, requirement_id, record, stamp, skip_candidate=candidate_id)
         connection.execute(
             """UPDATE requirement_candidates
                   SET status='pending', requirement_id=NULL, merged_at=NULL, merge_undo=NULL,

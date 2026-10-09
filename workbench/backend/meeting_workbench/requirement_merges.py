@@ -22,6 +22,7 @@ from .requirements import (
     _requirement_row,
     drop_merged_meeting,
     get_requirement,
+    settle_reopen,
     merged_into,
 )
 from .service import ConflictError, NotFoundError
@@ -138,6 +139,9 @@ def merge_requirement(
             "SELECT * FROM requirements WHERE id=?", (into_requirement_id,)
         ).fetchone()
         if found is None:
+            into = merged_into(connection, into_requirement_id)
+            if into is not None:
+                raise NotFoundError(f"要并入的需求已并入「{into['title']}」")
             raise NotFoundError("要并入的需求不存在")
         main = dict(found)
         if main["project_id"] != this["project_id"]:
@@ -331,6 +335,13 @@ def merge_requirement(
             "main_before": {key: main[key] for key in after},
             "main_after": after,
         }
+        if after["status"] != main["status"]:
+            # D6 把主需求重新打开了：撤销时按 settle_reopen 改回（并进来的都撤完才改回，和顺序无关）
+            undo.update(
+                reopened_from=main["status"],
+                reopened_at=stamp,
+                previous_status_changed_at=main["status_changed_at"],
+            )
         connection.execute(
             """INSERT INTO requirement_merges
                    (requirement_id, title, project_id, into_requirement_id, merged_at, undo)
@@ -525,20 +536,16 @@ def unmerge_requirement(
             )
         _repoint_confirm_undo(connection, record["confirm_undo_tasks"], main_id, requirement_id)
 
-        # 主需求：还是合并后那个样子的字段退回合并前，这期间手动改过的留着
+        # 主需求：还是合并后那个样子的等级、说明退回合并前，这期间手动改过的留着；这次（或转交来的）重新打开
+        # 按 settle_reopen 处理
         before, after = record["main_before"], record["main_after"]
         restored = {key: before[key] for key in ("priority", "summary") if main[key] == after[key]}
-        if (main["status"], main["status_changed_at"]) == (
-            after["status"],
-            after["status_changed_at"],
-        ):
-            restored["status"] = before["status"]
-            restored["status_changed_at"] = before["status_changed_at"]
         connection.execute(
             f"""UPDATE requirements SET {"".join(f"{key}=?, " for key in restored)}updated_at=?
                  WHERE id=?""",
             (*restored.values(), stamp, main_id),
         )
+        settle_reopen(connection, main_id, record, stamp, skip_merge=requirement_id)
         connection.execute(
             "DELETE FROM requirement_merges WHERE requirement_id=?", (requirement_id,)
         )
