@@ -62,7 +62,7 @@ export function MergeRequirementDialog({ apiClient, requirement, onClose, onMerg
       })
       .catch((err: unknown) => {
         if (!active) return;
-        setItems((current) => current ?? []);
+        // 没读到不等于没有别的需求：不写「这个项目里没有别的需求」，只给后端的原因（比如这条已经在别处并走了）
         setError(err instanceof Error ? err.message : "读取需求失败");
       });
     return () => {
@@ -110,9 +110,11 @@ export function MergeRequirementDialog({ apiClient, requirement, onClose, onMerg
           />
         </label>
 
-        <p className="pool-dialog__section">{requirement.project_name ?? "这个项目"}里的其他需求</p>
+        {(items !== null || !error) && (
+          <p className="pool-dialog__section">{requirement.project_name ?? "这个项目"}里的其他需求</p>
+        )}
         {items === null ? (
-          <p className="pool-dialog__state">正在读取…</p>
+          !error && <p className="pool-dialog__state">正在读取…</p>
         ) : items.length === 0 ? (
           <p className="pool-dialog__state">
             {query.trim() ? `没有名称含「${query.trim()}」的需求` : "这个项目里没有别的需求"}
@@ -149,7 +151,7 @@ export function MergeRequirementDialog({ apiClient, requirement, onClose, onMerg
         {choice && moving && (
           <div className="merge-preview" aria-live="polite">
             <p>
-              带过去：{moving.task_count} 待办 · {moving.meeting_count} 场会 · {moving.source_count} 句原话 ·{" "}
+              带过去：{moving.open_task_count} 待办 · {moving.meeting_count} 场会 · {moving.source_count} 句原话 ·{" "}
               {moving.folder_count} 个文件夹
             </p>
             <p className="merge-preview__after">

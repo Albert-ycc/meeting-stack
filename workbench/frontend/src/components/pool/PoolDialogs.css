@@ -186,8 +186,13 @@
   font-size: 14px;
 }
 
+/* 聚焦时只亮外框一圈（和选来源弹窗的搜索框一样走 --signal），里面的输入框不再叠全站的 focus 外框 */
 .merge-search:focus-within {
-  border-color: var(--ink-2);
+  border-color: var(--signal);
+}
+
+.merge-search input:focus-visible {
+  outline: none;
 }
 
 /* 选中以后底部的预览：带过去多少东西、合并后的等级 */

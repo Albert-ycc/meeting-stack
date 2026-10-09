@@ -9,6 +9,7 @@ import type {
   PoolItem,
   Project,
   RequirementDetail,
+  RequirementMergedAway,
   RequirementPriority,
   RequirementSource,
   RequirementStatus,
@@ -414,6 +415,8 @@ export function RequirementFormPage({
   const [candidate, setCandidate] = useState<CandidateDetail | null>(null);
   const [requirement, setRequirement] = useState<RequirementDetail | null>(null);
   const [loadError, setLoadError] = useState("");
+  // 以前的修改链接打开被并掉的需求：不出空白表单，说一声已并入、给去看（F3）
+  const [mergedInto, setMergedInto] = useState<RequirementMergedAway["merged_into"] | null>(null);
   const [title, setTitle] = useState("");
   const [summary, setSummary] = useState("");
   const [projectId, setProjectId] = useState(prefill?.projectId ?? "");
@@ -484,7 +487,11 @@ export function RequirementFormPage({
         setSource(detail.source ? draftOf(detail.source) : null);
       })
       .catch((err: unknown) => {
-        if (active) setLoadError(err instanceof Error ? err.message : "需求读取失败");
+        if (!active) return;
+        const into =
+          err instanceof ApiError && err.status === 404 ? (err.data as Partial<RequirementMergedAway> | null)?.merged_into : undefined;
+        if (into?.id) setMergedInto(into);
+        else setLoadError(err instanceof Error ? err.message : "需求读取失败");
       });
     return () => {
       active = false;
@@ -766,6 +773,34 @@ export function RequirementFormPage({
       : prefill
         ? "来源已从逐字稿带入，补上需求名就能建。"
         : "从会上听到的一句话开始，或者直接写下要做的事。";
+
+  if (mergedInto) {
+    return (
+      <section className="page-content form-page">
+        <header className="form-page__head">
+          <p className="form-page__crumb">
+            <span>需求池 /</span> {heading}
+          </p>
+          <div className="form-page__title">
+            <h1>{heading}</h1>
+          </div>
+        </header>
+        <div className="form-page__gone">
+          <p>这条需求已并入「{mergedInto.title}」</p>
+          <div className="form-page__gone-actions">
+            {onOpenRequirement && (
+              <button onClick={() => onOpenRequirement(mergedInto.id)} type="button">
+                去看
+              </button>
+            )}
+            <button onClick={onCancel} type="button">
+              返回
+            </button>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="page-content form-page">

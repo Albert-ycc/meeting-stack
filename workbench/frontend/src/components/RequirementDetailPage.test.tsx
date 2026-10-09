@@ -971,7 +971,7 @@ describe("RequirementDetailPage 撤销合并（R01-14，S03-b）", () => {
   const NOW = new Date("2026-10-01T10:00:00+08:00");
   const undoable = (until: Date): RequirementSource => ({
     ...JD_MERGED,
-    undo_merge: { candidate_id: "candidate-receipt", until: until.toISOString() },
+    undo_merge: { kind: "candidate", candidate_id: "candidate-receipt", until: until.toISOString() },
   });
 
   beforeEach(() => {
@@ -1383,5 +1383,182 @@ describe("RequirementDetailPage 打开被并掉的需求（D8）", () => {
     );
     expect(await screen.findByText(/需求不存在或已删除/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "去看" })).not.toBeInTheDocument();
+  });
+});
+
+describe("RequirementDetailPage 常驻的撤销入口（F1）", () => {
+  const NOW = new Date("2026-10-09T12:00:00+08:00");
+  const inEight = new Date(NOW.getTime() + 8 * 60_000).toISOString();
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: NOW });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function renderDetail(api: Record<string, unknown>, extra: Partial<Parameters<typeof RequirementDetailPage>[0]> = {}) {
+    const onOpenRequirement = vi.fn();
+    render(
+      <RequirementDetailPage
+        apiClient={api as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        onBack={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenProject={vi.fn()}
+        onOpenRequirement={onOpenRequirement}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId="req-1"
+        {...extra}
+      />,
+    );
+    return onOpenRequirement;
+  }
+
+  const header = () => within(document.querySelector(".requirement-detail__actions") as HTMLElement);
+
+  it.each([
+    ["done", "撤销标记完成", "重新打开"],
+    ["shelved", "撤销搁置", "重新打开"],
+    ["active", "撤销重新打开", "标记完成"],
+  ] as const)("%s、status_undo_until 没过：状态按钮旁有「%s」", async (status, label, statusButton) => {
+    renderDetail({ requirement: vi.fn().mockResolvedValue(jdDetail({ status, status_undo_until: inEight })) });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    const undo = header().getByRole("button", { name: label });
+    expect(undo).toHaveClass("requirement-detail__status-undo");
+    expect(undo.previousElementSibling).toHaveTextContent(statusButton);
+  });
+
+  it("点了调 status-undo，提示回到哪个状态，重读后撤销入口跟着没了", async () => {
+    const requirement = vi
+      .fn()
+      .mockResolvedValueOnce(jdDetail({ status: "done", status_undo_until: inEight }))
+      .mockResolvedValue(jdDetail({ status: "active", status_undo_until: null }));
+    const undoRequirementStatus = vi.fn().mockResolvedValue(jdDetail({ status: "active" }));
+    renderDetail({ requirement, undoRequirementStatus });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    await userEvent.click(header().getByRole("button", { name: "撤销标记完成" }));
+    expect(undoRequirementStatus).toHaveBeenCalledWith("req-1");
+    expect(await screen.findByText("「京东科研仓对接」回到进行中了")).toBeInTheDocument();
+    await waitFor(() => expect(header().getByRole("button", { name: "标记完成" })).toBeInTheDocument());
+    expect(header().queryByRole("button", { name: /^撤销/ })).not.toBeInTheDocument();
+  });
+
+  it("到点自己消失，不用刷新页面；没有 status_undo_until、已经过了、没有写权限都不显示", async () => {
+    renderDetail({ requirement: vi.fn().mockResolvedValue(jdDetail({ status: "done", status_undo_until: inEight })) });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    expect(header().getByRole("button", { name: "撤销标记完成" })).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(8 * 60_000 + 1_000);
+    });
+    expect(header().queryByRole("button", { name: "撤销标记完成" })).not.toBeInTheDocument();
+    cleanup();
+
+    renderDetail({ requirement: vi.fn().mockResolvedValue(jdDetail({ status: "done", status_undo_until: null })) });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    expect(header().queryByRole("button", { name: /^撤销/ })).not.toBeInTheDocument();
+    cleanup();
+
+    const past = new Date(NOW.getTime() - 60_000).toISOString();
+    renderDetail({ requirement: vi.fn().mockResolvedValue(jdDetail({ status: "done", status_undo_until: past })) });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    expect(header().queryByRole("button", { name: /^撤销/ })).not.toBeInTheDocument();
+    cleanup();
+
+    renderDetail({ requirement: vi.fn().mockResolvedValue(jdDetail({ status: "done", status_undo_until: inEight })) }, { canWrite: false });
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+    expect(screen.queryByRole("button", { name: "撤销标记完成" })).not.toBeInTheDocument();
+  });
+
+  it("来源卡上需求并进来的原话：［撤销合并］调需求的 unmerge，提示后跳到恢复出来的那条", async () => {
+    const mark = { kind: "requirement" as const, requirement_id: "requirement-old", title: "京东仓签收凭证（旧）", until: inEight };
+    const merged: RequirementSource = { ...JD_MERGED, via_candidate_title: "京东仓签收凭证（旧）", undo_merge: mark };
+    const undoRequirementMerge = vi.fn().mockResolvedValue(jdDetail({ id: "requirement-old", title: "京东仓签收凭证（旧）" }));
+    const undoCandidateMerge = vi.fn();
+    const onOpenRequirement = renderDetail({
+      requirement: vi.fn().mockResolvedValue(jdDetail({ sources: [JD_ORIGIN, merged] })),
+      undoRequirementMerge,
+      undoCandidateMerge,
+    });
+
+    const card = within(await screen.findByRole("region", { name: "来源" }));
+    const button = card.getByRole("button", { name: "撤销合并" });
+    expect(button.closest("li")).toHaveTextContent("合并自「京东仓签收凭证（旧）」");
+    await userEvent.click(button);
+
+    expect(undoRequirementMerge).toHaveBeenCalledWith("requirement-old");
+    expect(undoCandidateMerge).not.toHaveBeenCalled();
+    expect(await screen.findByText("已撤销合并")).toBeInTheDocument();
+    expect(onOpenRequirement).toHaveBeenCalledWith("requirement-old");
+  });
+
+  it("来源卡上候选并进来的原话：照旧调候选的 unmerge，留在这条需求上", async () => {
+    const mark = { kind: "candidate" as const, candidate_id: "candidate-receipt", until: inEight };
+    const merged: RequirementSource = { ...JD_MERGED, undo_merge: mark };
+    const undoCandidateMerge = vi.fn().mockResolvedValue({});
+    const undoRequirementMerge = vi.fn();
+    const onOpenRequirement = renderDetail({
+      requirement: vi.fn().mockResolvedValue(jdDetail({ sources: [JD_ORIGIN, merged] })),
+      undoRequirementMerge,
+      undoCandidateMerge,
+    });
+
+    const card = within(await screen.findByRole("region", { name: "来源" }));
+    expect(card.getByRole("button", { name: "撤销合并" }).closest("li")).toHaveTextContent("合并自候选「京东仓签收凭证」");
+    await userEvent.click(card.getByRole("button", { name: "撤销合并" }));
+    expect(undoCandidateMerge).toHaveBeenCalledWith("candidate-receipt");
+    expect(undoRequirementMerge).not.toHaveBeenCalled();
+    expect(onOpenRequirement).not.toHaveBeenCalled();
+  });
+
+  it("需求合并撤销被拒（过了时限）：红色提示后端的原因，不跳走", async () => {
+    const mark = { kind: "requirement" as const, requirement_id: "requirement-old", title: "京东仓签收凭证（旧）", until: inEight };
+    const merged: RequirementSource = { ...JD_MERGED, undo_merge: mark };
+    const undoRequirementMerge = vi
+      .fn()
+      .mockRejectedValue(new ApiError("合并超过 10 分钟，不能撤销了", 409, { detail: "合并超过 10 分钟，不能撤销了" }));
+    const onOpenRequirement = renderDetail({
+      requirement: vi.fn().mockResolvedValue(jdDetail({ sources: [JD_ORIGIN, merged] })),
+      undoRequirementMerge,
+    });
+
+    const card = within(await screen.findByRole("region", { name: "来源" }));
+    await userEvent.click(card.getByRole("button", { name: "撤销合并" }));
+    await waitFor(() => expect(document.querySelector(".app-toast--error")).toHaveTextContent("合并超过 10 分钟，不能撤销了"));
+    expect(onOpenRequirement).not.toHaveBeenCalled();
+  });
+});
+
+describe("RequirementDetailPage 旧标签页里改已经并走的需求（F3）", () => {
+  it("点标记完成被拒：提示后端的原因，重读后页面换成「已并入」", async () => {
+    const gone = new ApiError("这条需求已并入「京东仓签收凭证」", 404, {
+      detail: "这条需求已并入「京东仓签收凭证」",
+      merged_into: { id: "requirement-receipt", title: "京东仓签收凭证" },
+    });
+    const requirement = vi.fn().mockResolvedValueOnce(jdDetail()).mockRejectedValue(gone);
+    const updateRequirement = vi.fn().mockRejectedValue(gone);
+    render(
+      <RequirementDetailPage
+        apiClient={{ requirement, updateRequirement } as unknown as ApiClient}
+        canPickFolders
+        canWrite
+        onBack={vi.fn()}
+        onOpenMeeting={vi.fn()}
+        onOpenProject={vi.fn()}
+        onOpenRequirement={vi.fn()}
+        onOpenTask={vi.fn()}
+        projects={[]}
+        requirementId="req-1"
+      />,
+    );
+    await screen.findByRole("heading", { name: "京东科研仓对接" });
+
+    await userEvent.click(screen.getByRole("button", { name: "标记完成" }));
+    await waitFor(() => expect(document.querySelector(".app-toast--error")).toHaveTextContent("这条需求已并入「京东仓签收凭证」"));
+    expect(await screen.findByText("这条需求已并入「京东仓签收凭证」", { selector: ".requirement-detail__state" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "去看" })).toBeInTheDocument();
   });
 });

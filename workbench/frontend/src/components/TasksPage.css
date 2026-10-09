@@ -534,6 +534,12 @@
   box-shadow: var(--shadow);
 }
 
+/* 下面放不下时往上展开（RowMenu 量过以后加 is-up） */
+.task-menu__pop.is-up {
+  top: auto;
+  bottom: calc(100% + 5px);
+}
+
 .task-menu__pop button {
   display: block;
   width: 100%;

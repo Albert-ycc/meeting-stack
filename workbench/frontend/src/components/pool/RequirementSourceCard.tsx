@@ -1,14 +1,16 @@
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type CSSProperties } from "react";
 
 import { formatDurationText, formatMonthDayClock, formatTime } from "../../format";
-import type { RequirementSource } from "../../types";
+import type { RequirementSource, UndoMergeMark } from "../../types";
 import { EMPTY_FLAG_LAYOUT, FLAG_ROW_HEIGHT, packFlags, sameFlagLayout, type FlagLayout } from "./flagLayout";
 import { anchorLabel } from "./PosterCard";
 import { PosterWaveform, usePeaks, type Peaks } from "./PosterWaveform";
 import "./RequirementSourceCard.css";
 
-function sourceLabel(source: RequirementSource, waveMeetingId: string): string {
+/** undoable：这句原话的撤销标记还在时限内；需求并进来的那次写并掉的那条的名字，和旁边的［撤销合并］对上 */
+function sourceLabel(source: RequirementSource, waveMeetingId: string, undoable: boolean): string {
   const where = source.meeting_id === waveMeetingId ? "" : ` · ${source.meeting_title}`;
+  if (undoable && source.undo_merge?.kind === "requirement") return `合并自「${source.undo_merge.title}」${where}`;
   // 选了来源会议、没挑原话：不能写「会上原话」，那一行底下没有原话
   if (source.kind === "origin") return `提出 · ${(source.quote || "").trim() ? "会上原话" : "只关联了会议"}${where}`;
   return source.via_candidate_title ? `合并自候选「${source.via_candidate_title}」${where}` : `合并进来的原话${where}`;
@@ -26,7 +28,7 @@ const MAX_TIMER_MS = 2_147_483_647;
  * 返回「现在」，并在最近一个截止时刻到来时重绘一次：撤销合并的按钮过了时限自己消失，不用等刷新页面。
  * 按本机时间判断（Date.now）。
  */
-function useExpiryClock(untils: string[]): number {
+export function useExpiryClock(untils: string[]): number {
   const [ticks, tick] = useReducer((count: number) => count + 1, 0);
   const key = untils.join("|");
   const rendered = Date.now();
@@ -197,8 +199,11 @@ export function RequirementSourceCover({ origin, sources, onOpenMeeting }: Sourc
 }
 
 interface RequirementQuotesProps extends SourceProps {
-  /** 合并进来的原话还在撤销时限内（R01-14）时，那一行给［撤销合并］；不传就不画这个按钮 */
-  onUndoMerge?: (candidateId: string) => void;
+  /**
+   * 合并进来的原话还在撤销时限内时，那一行给［撤销合并］；不传就不画这个按钮。
+   * 撤销哪次合并看标记的 kind：候选合并（R01-14）或需求并需求
+   */
+  onUndoMerge?: (mark: UndoMergeMark) => void;
   /** 撤销在进行中：按钮置灰，免得连点 */
   undoBusy?: boolean;
 }
@@ -208,6 +213,7 @@ export function RequirementQuotes({ origin, sources, onOpenMeeting, onUndoMerge,
   const now = useExpiryClock(sources.flatMap((source) => (source.undo_merge ? [source.undo_merge.until] : [])));
   const wave = origin ?? sources[0] ?? null;
   if (!wave || sources.length === 0) return null;
+  const undoable = (source: RequirementSource) => (source.undo_merge ? Date.parse(source.undo_merge.until) > now : false);
 
   return (
     <section aria-label="来源" className="requirement-detail__card source-card">
@@ -234,12 +240,12 @@ export function RequirementQuotes({ origin, sources, onOpenMeeting, onUndoMerge,
             )}
             <div className="source-card__quote">
               <div className="source-card__quote-head">
-                <small>{sourceLabel(source, wave.meeting_id)}</small>
-                {onUndoMerge && source.undo_merge && Date.parse(source.undo_merge.until) > now && (
+                <small>{sourceLabel(source, wave.meeting_id, undoable(source))}</small>
+                {onUndoMerge && source.undo_merge && undoable(source) && (
                   <button
                     className="source-card__undo"
                     disabled={undoBusy}
-                    onClick={() => onUndoMerge(source.undo_merge!.candidate_id)}
+                    onClick={() => onUndoMerge(source.undo_merge!)}
                     type="button"
                   >
                     撤销合并

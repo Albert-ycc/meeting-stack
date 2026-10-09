@@ -64,6 +64,37 @@
   cursor: pointer;
 }
 
+/* 修改链接打开的是被并掉的需求：不出表单，说一声并进了哪条、给去看（和需求详情页同一个样子） */
+.form-page__gone {
+  padding: 60px 0;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.form-page__gone p {
+  margin: 0;
+}
+
+.form-page__gone-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.form-page__gone-actions button {
+  min-height: 32px;
+  padding: 6px 14px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+
 /* 底栏左边的失败原因（固定在窗口底部，长表单、矮窗口也看得见） */
 .form-actions__error {
   align-self: center;

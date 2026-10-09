@@ -553,6 +553,37 @@ describe("RequirementFormPage 修改页把状态改成已完成、已搁置（D3
   });
 });
 
+describe("RequirementFormPage 修改链接打开被并掉的需求（F3）", () => {
+  it("显示「这条需求已并入「X」」和［去看］［返回］，不出空白表单", async () => {
+    const onOpenRequirement = vi.fn();
+    const requirement = vi.fn().mockRejectedValue(
+      new ApiError("这条需求已并入「京东仓签收凭证」", 404, {
+        detail: "这条需求已并入「京东仓签收凭证」",
+        merged_into: { id: "requirement-receipt", title: "京东仓签收凭证" },
+      }),
+    );
+    const handlers = renderEdit({ requirement }, { onOpenRequirement });
+
+    expect(await screen.findByText("这条需求已并入「京东仓签收凭证」")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "修改需求" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /需求名/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+    expect(handlers.onDirtyChange).not.toHaveBeenCalledWith(true);
+
+    await userEvent.click(screen.getByRole("button", { name: "去看" }));
+    expect(onOpenRequirement).toHaveBeenCalledWith("requirement-receipt");
+    await userEvent.click(screen.getByRole("button", { name: "返回" }));
+    expect(handlers.onCancel).toHaveBeenCalled();
+  });
+
+  it("别的读取失败照旧在表单上方写原因", async () => {
+    renderEdit({ requirement: vi.fn().mockRejectedValue(new ApiError("需求不存在", 404, { detail: "需求不存在" })) });
+    expect(await screen.findByRole("alert")).toHaveTextContent("需求不存在");
+    expect(screen.queryByRole("button", { name: "去看" })).not.toBeInTheDocument();
+  });
+});
+
 describe("RequirementFormPage 修改页只提交改过的字段（审查 B：两个标签页互相覆盖）", () => {
   it("另一个标签页刚改了名字，这边只点了 P1 就保存：只提交优先级，不会把名字改回原样", async () => {
     const updateRequirement = vi.fn().mockResolvedValue(jdDetail({ priority: "P1" }));

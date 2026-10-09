@@ -1640,9 +1640,16 @@ export interface RequirementSource {
   anchor_ms: number | null;
   /** 合并自哪条候选 */
   via_candidate_title: string | null;
-  /** 合并进来的原话：合并后 10 分钟内可撤销（R01-14），这时带上候选 id 和截止时间；过了时间或不是合并来的为 null */
-  undo_merge?: { candidate_id: string; until: string } | null;
+  /**
+   * 合并进来的原话：合并后 10 分钟内可撤销，这时带上撤销哪次合并和截止时间；过了时间或不是合并来的为 null。
+   * candidate：候选合并进来的（R01-14）；requirement：别的需求并进来的，requirement_id、title 是被并掉的那条
+   */
+  undo_merge?: UndoMergeMark | null;
 }
+
+export type UndoMergeMark =
+  | { kind: "candidate"; candidate_id: string; until: string }
+  | { kind: "requirement"; requirement_id: string; title: string; until: string };
 
 /** 需求池页的轻提示：认领、新建、从认领页合并之后由 App 带过来 */
 export interface PoolFlash {

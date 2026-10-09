@@ -159,6 +159,21 @@
   border-color: var(--ink-2);
 }
 
+/* 最近一次改状态 10 分钟内还能撤销：状态按钮旁一个文字按钮，到点消失 */
+.requirement-detail__status-undo {
+  padding: 9px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.requirement-detail__status-undo:hover:not(:disabled) {
+  color: var(--ink);
+}
+
 /* 头部的「⋯」（D2）：和旁边的按钮一样高的描边方块；菜单本身的样子在 TasksPage.css 的 .task-menu */
 .requirement-detail__actions .task-menu {
   display: flex;

@@ -10,8 +10,10 @@ import type {
   RequirementFile,
   RequirementFolder,
   RequirementMergedAway,
+  RequirementStatus,
   Task,
   TaskStatus,
+  UndoMergeMark,
 } from "../types";
 import { useConfirm } from "./ConfirmDialog";
 import { FolderIcon } from "./FolderIcon";
@@ -29,7 +31,7 @@ import { DecisionLogCard } from "./decisions/DecisionLogCard";
 import { MentionedBadge } from "./files/MentionedBadge";
 import { useMentionedCounts } from "./files/useMentionedCounts";
 import { MergeRequirementDialog, mergedIntoMessage } from "./pool/MergeRequirementDialog";
-import { RequirementQuotes, RequirementSourceCover } from "./pool/RequirementSourceCard";
+import { RequirementQuotes, RequirementSourceCover, useExpiryClock } from "./pool/RequirementSourceCard";
 import { unmergedMessage } from "./pool/RequirementPoolPage";
 import { copiedMessage, copyFailureReason, copyRequirementBackground } from "./pool/requirementCopy";
 import { useRequirementStatusChange } from "./pool/requirementStatus";
@@ -81,6 +83,13 @@ const STATUS_TONE: Record<TaskStatus, string> = {
   done: "done",
   cancelled: "muted",
   expired: "muted",
+};
+
+/** 头部常驻的撤销改状态（10 分钟内）：按现在的状态说撤销的是哪一下 */
+const STATUS_UNDO_LABEL: Record<RequirementStatus, string> = {
+  done: "撤销标记完成",
+  shelved: "撤销搁置",
+  active: "撤销重新打开",
 };
 
 function folderCountLabel(folder: RequirementFolder): string {
@@ -322,6 +331,27 @@ export function RequirementDetailPage({
       (result) => unmergedMessage(result?.kept_task_count),
     );
 
+  // 撤销一次需求并需求（D7）：提示条上的［撤销］和来源卡上的［撤销合并］同一个流程，成了去恢复出来的那条
+  const undoMergeInto = async (mergedId: string) => {
+    setMutating(true);
+    try {
+      const restored = await apiClient.undoRequirementMerge(mergedId);
+      showToast(unmergedMessage());
+      void onProjectsChanged?.();
+      if (onOpenRequirement) onOpenRequirement(restored.id);
+      else void load();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "撤销失败，请稍后重试", { tone: "error" });
+    } finally {
+      setMutating(false);
+    }
+  };
+
+  const undoSourceMerge = (mark: UndoMergeMark) => {
+    if (mark.kind === "candidate") undoMerge(mark.candidate_id);
+    else void undoMergeInto(mark.requirement_id);
+  };
+
   const removeFolder = (folderId: number) =>
     void mutate(() => apiClient.removeRequirementFolder(requirementId, folderId), "已移除材料文件夹");
 
@@ -367,23 +397,14 @@ export function RequirementDetailPage({
   const mergedAway = (result: { id: string; title: string; merged_from: { id: string } }) => {
     const mergedId = result.merged_from.id;
     setMergingInto(false);
-    showToast(mergedIntoMessage(result.title), {
-      onUndo: async () => {
-        try {
-          const restored = await apiClient.undoRequirementMerge(mergedId);
-          showToast(unmergedMessage());
-          void onProjectsChanged?.();
-          if (onOpenRequirement) onOpenRequirement(restored.id);
-          else void load();
-        } catch (error) {
-          showToast(error instanceof Error ? error.message : "撤销失败，请稍后重试", { tone: "error" });
-        }
-      },
-    });
+    showToast(mergedIntoMessage(result.title), { onUndo: () => undoMergeInto(mergedId) });
     void onProjectsChanged?.();
     if (onOpenRequirement) onOpenRequirement(result.id);
     else void load();
   };
+
+  // 最近一次改状态还能撤销（status_undo_until 没过）：头部常驻一个撤销入口，到点自己消失（F1）
+  const statusUndoNow = useExpiryClock(detail?.status_undo_until ? [detail.status_undo_until] : []);
 
   const savePickedFolders = async (folders: MaterialFolderStat[]) => {
     setPickingFolders(false);
@@ -434,6 +455,7 @@ export function RequirementDetailPage({
 
   const currentProject = projects.find((project) => project.id === detail.project_id) ?? null;
   const statusTarget = { id: detail.id, title: detail.title, open_task_count: detail.open_task_count, tasks: detail.tasks };
+  const statusUndoable = detail.status_undo_until ? Date.parse(detail.status_undo_until) > statusUndoNow : false;
   // 头部「⋯」（D2）：搁置只给进行中的；都能并入其他需求
   const moreActions: RowMenuItem[] = [
     ...(detail.status === "active"
@@ -518,6 +540,16 @@ export function RequirementDetailPage({
                     {detail.status === "active" ? "标记完成" : "重新打开"}
                   </button>
                 )}
+                {canWrite && statusUndoable && (
+                  <button
+                    className="requirement-detail__status-undo"
+                    disabled={statusChange.busyId !== null}
+                    onClick={() => void statusChange.undo(detail.id)}
+                    type="button"
+                  >
+                    {STATUS_UNDO_LABEL[detail.status]}
+                  </button>
+                )}
                 {canWrite && <RowMenu disabled={statusChange.busyId !== null} items={moreActions} label="更多操作" />}
               </div>
             </div>
@@ -561,7 +593,7 @@ export function RequirementDetailPage({
 
       <RequirementQuotes
         onOpenMeeting={onOpenMeeting}
-        onUndoMerge={canWrite ? undoMerge : undefined}
+        onUndoMerge={canWrite ? undoSourceMerge : undefined}
         origin={detail.source ?? null}
         sources={detail.sources ?? []}
         undoBusy={mutating}

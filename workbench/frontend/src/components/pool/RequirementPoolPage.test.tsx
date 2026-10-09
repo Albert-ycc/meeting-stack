@@ -902,6 +902,15 @@ describe("RequirementPoolPage 卡片改状态（D9～D11、D14、D16）", () => 
     expect(handlers.onOpenRequirement).not.toHaveBeenCalled();
   });
 
+  it("「已搁置」页签的空状态指向卡片「⋯」里的搁置（F5）", async () => {
+    window.localStorage.setItem("meeting-workbench:view:requirementPool.tab", JSON.stringify("shelved"));
+    renderPage({ requirementPool: vi.fn().mockResolvedValue(poolPayload({ status: "shelved", items: [], total: 0 })) });
+
+    expect(await screen.findByText("还没有搁置的需求")).toBeInTheDocument();
+    expect(screen.getByText("暂时不跟进的需求，在海报右下的「⋯」里点搁置")).toBeInTheDocument();
+    expect(screen.queryByText(/修改需求里改成已搁置/)).not.toBeInTheDocument();
+  });
+
   it("「已完成」页签的空状态指向卡片「⋯」里的标记完成（D16）", async () => {
     window.localStorage.setItem("meeting-workbench:view:requirementPool.tab", JSON.stringify("done"));
     renderPage({ requirementPool: vi.fn().mockResolvedValue(poolPayload({ status: "done", items: [], total: 0 })) });
@@ -953,7 +962,8 @@ describe("RequirementPoolPage 并入其他需求（D4、D7）", () => {
     const { dialog } = await openMergeDialog({});
 
     await userEvent.click(within(dialog).getByRole("radio", { name: /京东仓签收凭证/ }));
-    expect(within(dialog).getByText("带过去：3 待办 · 2 场会 · 2 句原话 · 1 个文件夹")).toBeInTheDocument();
+    // 待办数和墙上海报同一口径：没做完的（F2），名下总共 3 条、没做完的 2 条
+    expect(within(dialog).getByText("带过去：2 待办 · 2 场会 · 2 句原话 · 1 个文件夹")).toBeInTheDocument();
     // 这条 P2、主需求 P1：取 P1
     expect(within(dialog).getByText("合并后 P1（取较高）· 10 分钟内可撤销")).toBeInTheDocument();
 
@@ -1085,5 +1095,98 @@ describe("RequirementPoolPage 候选并进已完成的需求（D13）", () => {
     expect(mergedMessage("京东科研仓对接", true)).toBe(
       "已合并到「京东科研仓对接」，这场会和原话已加进去；「京东科研仓对接」已重新打开",
     );
+  });
+});
+
+describe("RequirementPoolPage 旧标签页里对已经并走的需求操作（F3）", () => {
+  // 后端对被并掉的 id 一律回 404，body 和详情接口一样带 merged_into（B4）
+  const goneError = () =>
+    new ApiError("这条需求已并入「京东仓签收凭证」", 404, {
+      detail: "这条需求已并入「京东仓签收凭证」",
+      merged_into: { id: "requirement-receipt", title: "京东仓签收凭证" },
+    });
+
+  it("改状态（没有待办，直接 PATCH）：提示后端的原因，墙上重新取、这张海报消失", async () => {
+    const requirementPool = vi
+      .fn()
+      .mockResolvedValueOnce(poolPayload())
+      .mockResolvedValue(poolPayload({ items: [], total: 0 }));
+    const updateRequirement = vi.fn().mockRejectedValue(goneError());
+    renderPage({ requirementPool, updateRequirement });
+
+    await openPosterMenu();
+    await userEvent.click(screen.getByRole("menuitem", { name: "标记完成" }));
+    await expectAlertToast("这条需求已并入「京东仓签收凭证」");
+    await waitFor(() => expect(screen.queryByRole("article", { name: "需求：京东科研仓对接" })).not.toBeInTheDocument());
+  });
+
+  it("改状态（有待办，先取详情）：取详情就被拒，同样提示后端的原因、不弹确认，墙上重新取", async () => {
+    const item = requirementItem({ open_task_count: 2, task_count: 3 });
+    const requirementPool = vi
+      .fn()
+      .mockResolvedValueOnce(poolPayload({ items: [item] }))
+      .mockResolvedValue(poolPayload({ items: [], total: 0 }));
+    const requirement = vi.fn().mockRejectedValue(goneError());
+    const updateRequirement = vi.fn();
+    renderPage({ requirementPool, requirement, updateRequirement });
+
+    await openPosterMenu();
+    await userEvent.click(screen.getByRole("menuitem", { name: "搁置" }));
+    await expectAlertToast("这条需求已并入「京东仓签收凭证」");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(updateRequirement).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole("article", { name: "需求：京东科研仓对接" })).not.toBeInTheDocument());
+  });
+
+  it("开并入弹窗：只写后端的原因，不说「这个项目里没有别的需求」；关掉弹窗墙上重新取", async () => {
+    const requirementPool = vi
+      .fn()
+      .mockResolvedValueOnce(poolPayload())
+      .mockResolvedValue(poolPayload({ items: [], total: 0 }));
+    const requirementMergeTargets = vi.fn().mockRejectedValue(goneError());
+    renderPage({ requirementPool, requirementMergeTargets });
+
+    await openPosterMenu();
+    await userEvent.click(screen.getByRole("menuitem", { name: "并入其他需求…" }));
+    const dialog = await screen.findByRole("dialog", { name: "把「京东科研仓对接」并入" });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("这条需求已并入「京东仓签收凭证」");
+    expect(within(dialog).queryByText("这个项目里没有别的需求")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("正在读取…")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("医米科研用药里的其他需求")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "并入" })).toBeDisabled();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("article", { name: "需求：京东科研仓对接" })).not.toBeInTheDocument());
+  });
+
+  it("搜索时没取到：已经列出来的留着，原因写在下面", async () => {
+    const requirementMergeTargets = vi
+      .fn()
+      .mockResolvedValueOnce(mergeTargetsPayload())
+      .mockRejectedValue(new ApiError("服务没有响应，稍后重试", 0));
+    renderPage({ requirementPool: vi.fn().mockResolvedValue(poolPayload()), requirementMergeTargets });
+
+    await openPosterMenu();
+    await userEvent.click(screen.getByRole("menuitem", { name: "并入其他需求…" }));
+    const dialog = await screen.findByRole("dialog", { name: "把「京东科研仓对接」并入" });
+    await within(dialog).findByRole("radio", { name: /京东仓签收凭证/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: "搜需求名称" }), "签收");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("服务没有响应，稍后重试");
+    expect(within(dialog).getAllByRole("radio")).toHaveLength(3);
+  });
+});
+
+describe("并入弹窗搜索框聚焦时只有一圈外框（F6）", () => {
+  const css = Object.values(
+    import.meta.glob("./PoolDialogs.css", { query: "?raw", import: "default", eager: true }) as Record<string, string>,
+  )[0].replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = (selector: string) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return css.match(new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+  };
+
+  it("输入框聚焦不叠全站的 focus 外框，外面那一圈换成 --signal（和选来源弹窗的搜索框一样）", () => {
+    expect(rule(".merge-search input:focus-visible")).toMatch(/outline:\s*none/);
+    expect(rule(".merge-search:focus-within")).toMatch(/border-color:\s*var\(--signal\)/);
   });
 });

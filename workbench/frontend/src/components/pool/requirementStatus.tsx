@@ -43,13 +43,19 @@ interface Asking {
  * 海报「⋯」和详情页头部共用的改状态（D9～D11）：
  * 标记完成、搁置时没有没做完的待办就直接改；有就先弹 CloseTasksDialog 问一起关掉还是留着，
  * 两个按钮都会改状态，只是 close_open_tasks 不同；✕、Esc 什么都不改。重新打开直接改。
- * 改成了提示一句带［撤销］，撤销调 status-undo。成没成都调 onChanged，让页面换成最新的。
+ * 改成了提示一句带［撤销］，撤销调 status-undo（详情页的常驻撤销入口也用 undo）。成没成都调 onChanged，让页面换成最新的：
+ * 旧标签页里对已经并走的需求操作，后端回的原因直接提示，刷新后海报消失、详情页换成「已并入」。
  */
 export function useRequirementStatusChange(
   apiClient: ApiClient,
   showToast: (message: string, options?: ToastOptions) => void,
   onChanged: () => void | Promise<void>,
-): { change: (target: StatusTarget, status: RequirementStatus) => Promise<void>; dialog: ReactNode; busyId: string | null } {
+): {
+  change: (target: StatusTarget, status: RequirementStatus) => Promise<void>;
+  undo: (requirementId: string) => Promise<void>;
+  dialog: ReactNode;
+  busyId: string | null;
+} {
   const [asking, setAsking] = useState<Asking | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   // 提示上的［撤销］停 10 秒，期间页面的筛选、打开的需求可能已经换了：回调里用最新的刷新
@@ -59,10 +65,13 @@ export function useRequirementStatusChange(
   });
 
   const undo = async (requirementId: string) => {
+    setBusyId(requirementId);
     try {
       showToast(statusUndoneMessage(await apiClient.undoRequirementStatus(requirementId)));
     } catch (error) {
       showToast(error instanceof Error ? error.message : "撤销失败，请稍后重试", { tone: "error" });
+    } finally {
+      setBusyId(null);
     }
     await changedRef.current();
   };
@@ -95,10 +104,11 @@ export function useRequirementStatusChange(
         tasks = (await apiClient.requirement(target.id)).tasks;
       } catch (error) {
         showToast(error instanceof Error ? error.message : "读取待办失败，请稍后重试", { tone: "error" });
-        return;
-      } finally {
         setBusyId(null);
+        await changedRef.current();
+        return;
       }
+      setBusyId(null);
     }
     const open = openTasksOf(tasks);
     // 海报上的数是取墙那一刻的：待办在别处已经做完了，就照没有待办直接改
@@ -117,5 +127,5 @@ export function useRequirementStatusChange(
     />
   ) : null;
 
-  return { change, dialog, busyId };
+  return { change, undo, dialog, busyId };
 }

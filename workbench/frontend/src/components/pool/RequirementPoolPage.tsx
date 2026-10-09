@@ -51,7 +51,7 @@ const EMPTY_TEXT: Record<PoolTab, { title: string; hint: string }> = {
   pending: { title: "没有待认领的候选", hint: "会后 AI 会从纪要里抽需求候选，放进这里" },
   active: { title: "墙上还没有需求", hint: "会后 AI 会从纪要里抽需求候选，放进待认领" },
   done: { title: "还没有已完成的需求", hint: "做完的需求，在海报右下的「⋯」里点标记完成" },
-  shelved: { title: "还没有搁置的需求", hint: "暂时不跟进的需求在修改需求里改成已搁置" },
+  shelved: { title: "还没有搁置的需求", hint: "暂时不跟进的需求，在海报右下的「⋯」里点搁置" },
   all: { title: "墙上还没有需求", hint: "会后 AI 会从纪要里抽需求候选，放进待认领" },
 };
 
@@ -495,7 +495,11 @@ export function RequirementPoolPage({
       {mergingInto && (
         <MergeRequirementDialog
           apiClient={apiClient}
-          onClose={() => setMergingInto(null)}
+          onClose={() => {
+            // 没并成（取消，或这条在别处已经并走了）：墙上换成最新的
+            setMergingInto(null);
+            void load();
+          }}
           onMerged={(result) => {
             const mergedId = result.merged_from.id;
             setMergingInto(null);

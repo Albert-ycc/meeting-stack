@@ -274,7 +274,11 @@ describe("出自录音：撤销合并（R01-14，S03-b）", () => {
   // 合并后 10 分钟内有撤销：until 是合并时刻加 10 分钟（后端算好给过来），前端按本机时间判断
   const NOW = new Date("2026-10-01T10:00:00+08:00");
   const UNTIL = new Date(NOW.getTime() + 10 * 60_000).toISOString();
-  const withUndo = { ...MERGED, audio_artifact_id: null, undo_merge: { candidate_id: "candidate-receipt", until: UNTIL } };
+  const withUndo = {
+    ...MERGED,
+    audio_artifact_id: null,
+    undo_merge: { kind: "candidate" as const, candidate_id: "candidate-receipt", until: UNTIL },
+  };
   const origin = { ...ORIGIN, audio_artifact_id: null };
 
   beforeEach(() => {
@@ -289,7 +293,7 @@ describe("出自录音：撤销合并（R01-14，S03-b）", () => {
     expect(buttons).toHaveLength(1);
     expect(buttons[0].closest("li")).toHaveTextContent("合并自候选「京东仓签收凭证」");
     fireEvent.click(buttons[0]);
-    expect(onUndoMerge).toHaveBeenCalledWith("candidate-receipt");
+    expect(onUndoMerge).toHaveBeenCalledWith({ kind: "candidate", candidate_id: "candidate-receipt", until: UNTIL });
   });
 
   it("到了 until：按钮自己消失，不用刷新页面（按本机时间判断）", () => {
@@ -324,5 +328,37 @@ describe("出自录音：撤销合并（R01-14，S03-b）", () => {
 
     rerender(<SourceSection onOpenMeeting={vi.fn()} onUndoMerge={vi.fn()} origin={origin} sources={[origin, withUndo]} undoBusy />);
     expect(screen.getByRole("button", { name: "撤销合并" })).toBeDisabled();
+  });
+});
+
+describe("来源：需求并进来的原话的撤销（F1，undo_merge.kind = requirement）", () => {
+  const NOW = new Date("2026-10-09T12:00:00+08:00");
+  const UNTIL = new Date(NOW.getTime() + 10 * 60_000).toISOString();
+  const mark = { kind: "requirement" as const, requirement_id: "requirement-jd-old", title: "京东科研仓对接（旧）", until: UNTIL };
+  const fromRequirement = { ...MERGED, audio_artifact_id: null, via_candidate_title: "京东科研仓对接（旧）", undo_merge: mark };
+  const origin = { ...ORIGIN, audio_artifact_id: null };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: NOW });
+  });
+
+  it("时限内：按钮旁写「合并自「被并掉那条的名字」」，［撤销合并］把整个标记交回去（调用方按 kind 分流）", () => {
+    const onUndoMerge = vi.fn();
+    const { card } = renderCard({ origin, sources: [origin, fromRequirement], onUndoMerge });
+
+    const button = card.getByRole("button", { name: "撤销合并" });
+    expect(button.closest(".source-card__quote-head")).toHaveTextContent("合并自「京东科研仓对接（旧）」");
+    expect(button.closest(".source-card__quote-head")).not.toHaveTextContent("合并自候选");
+    fireEvent.click(button);
+    expect(onUndoMerge).toHaveBeenCalledWith(mark);
+  });
+
+  it("过了时限：按钮消失，说明回到「合并自候选「X」」（D5 的文案）", () => {
+    renderCard({ origin, sources: [origin, fromRequirement], onUndoMerge: vi.fn() });
+    act(() => {
+      vi.advanceTimersByTime(10 * 60_000 + 1_000);
+    });
+    expect(screen.queryByRole("button", { name: "撤销合并" })).not.toBeInTheDocument();
+    expect(screen.getByText("合并自候选「京东科研仓对接（旧）」")).toBeInTheDocument();
   });
 });
