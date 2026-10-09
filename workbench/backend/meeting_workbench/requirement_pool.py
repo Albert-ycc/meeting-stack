@@ -2,7 +2,8 @@
 
 排序：项目座次 → 项目内 P0→P3（候选没有等级，排在 P3 之后）→ 最近会议时间由近到远；没有关联会议的
 排在同等级最后，彼此按创建时间由近到远。没排座次的项目在已排的后面、按项目最近会议时间排，项目下没有
-会议的再往后；「未归项目」（只有候选会是）永远最后。
+会议的再往后；「未归项目」（只有候选会是）永远最后。「已完成」页签按完成时间由近到远（D15），同一时刻
+完成的照上面排。
 
 筛选：状态页签（pending / active / done / shelved / all）、项目（多选，unassigned 是未归项目）、
 优先级（多选；候选没有等级，不受它影响）、需求名称。页签计数随项目、优先级、名称变，不随所选页签变；
@@ -33,8 +34,11 @@ def requirement_items(connection: Any) -> list[dict[str, Any]]:
     rows = connection.execute(
         f"""SELECT r.*, p.name AS project_name, p.color AS project_color,
                    julianday(r.created_at) AS created_jd,
+                   COALESCE(r.status_changed_at, r.updated_at) AS changed_at,
+                   julianday(COALESCE(r.status_changed_at, r.updated_at)) AS changed_jd,
                    (SELECT COUNT(*) FROM tasks t WHERE t.requirement_id = r.id
                        AND t.status IN ({open_placeholders})) AS open_task_count,
+                   (SELECT COUNT(*) FROM tasks t WHERE t.requirement_id = r.id) AS task_count,
                    (SELECT COUNT(*) FROM requirement_folders rf
                      WHERE rf.requirement_id = r.id) AS folder_count
               FROM requirements r JOIN projects p ON p.id = r.project_id""",
@@ -71,6 +75,8 @@ def requirement_items(connection: Any) -> list[dict[str, Any]]:
                 "project_color": row["project_color"],
                 "project_seat": seats.get(row["project_id"]),
                 "open_task_count": row["open_task_count"],
+                # 名下待办总数（含已完成、已取消）：「待办都清了，完成了吗？」要有过待办（D14）
+                "task_count": row["task_count"],
                 "meeting_count": len(linked["ids"]),
                 "folder_count": row["folder_count"],
                 "latest_meeting_date": linked["at"],
@@ -81,8 +87,11 @@ def requirement_items(connection: Any) -> list[dict[str, Any]]:
                 "can_merge": False,
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
+                # 状态变更时间：票根上「MM-DD 完成」「MM-DD 搁置」取它（D12）；老数据为空时用 updated_at
+                "status_changed_at": row["changed_at"],
                 "_latest_jd": linked["jd"],
                 "_created_jd": row["created_jd"],
+                "_changed_jd": row["changed_jd"],
             }
         )
     return items
@@ -185,6 +194,9 @@ def list_pool(
     selected = sorted(
         (item for item in matched if in_tab(item)), key=lambda item: _sort_key(item, order)
     )
+    if status == "done":
+        # D15：新完成的在前（sorted 是稳定的，同一时刻完成的保持上面的先后）
+        selected.sort(key=lambda item: -item["_changed_jd"])
     per_project = Counter(item["project_id"] for item in items if in_tab(item))
     for project in direction:
         project["count"] = per_project.get(project["id"], 0)

@@ -82,7 +82,7 @@ def test_migration_regroups_stored_stems_and_leaves_the_rest(tmp_path, monkeypat
     for name in (BASE, V2, THIRD, FINAL, GONE):
         assert after[name] == ("报价单", "报价单")
     assert after[OTHER] == before[OTHER] == ("云图AI项目周报", "云图ai项目周报")
-    assert db.user_version() == SCHEMA_VERSION == 19
+    assert db.user_version() == SCHEMA_VERSION
 
 
 def test_words_the_old_rule_cut_in_half_are_regrouped(tmp_path, monkeypatch):

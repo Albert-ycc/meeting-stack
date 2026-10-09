@@ -226,12 +226,15 @@ def test_merge_appends_the_quote_and_the_candidate_disappears(tmp_path):
 
     targets = client.get(f"/api/requirement-candidates/{candidate_id}/merge-targets").json()
 
-    # S03：只列候选所属项目里进行中、已搁置的需求，AI 推荐的排第一；已完成的、别的项目的不列
+    # S03：只列候选所属项目里的需求，AI 推荐的排第一，其余进行中 → 已搁置 → 已完成（D13 起已完成的也列）；
+    # 别的项目的不列
     assert targets["project_id"] == project_id("yimi")
     assert [(item["title"], item["recommended"]) for item in targets["items"]] == [
         ("京东科研仓对接", True),
         ("EDC 系统选型", False),
+        ("新患者注册：五个问题前置", False),
     ]
+    assert targets["items"][2]["status"] == "done"
     assert targets["items"][0]["meeting_title"] == "260916 医米京东科研仓系统对接"
     assert targets["items"][1]["meeting_title"] == "EDC 系统选型与产研对接决策"
     assert targets["items"][1]["id"] == shelved
@@ -264,19 +267,21 @@ def test_merge_appends_the_quote_and_the_candidate_disappears(tmp_path):
     assert wall(client, status="pending")["items"] == []
 
 
-def test_merge_only_into_open_requirements_of_the_same_project(tmp_path):
+def test_merge_only_into_requirements_of_the_same_project(tmp_path):
     client, headers, db = make_world(tmp_path)
-    done = create(client, headers, "yimi", "新患者注册：五个问题前置", "P2", status="done")
     elsewhere = create(client, headers, "hengrui", "亲友积分入口与导入字段", "P1")
     candidate_id = candidate(db, "receipt", "京东仓签收凭证")
     path = f"/api/requirement-candidates/{candidate_id}/merge"
 
-    assert post(client, headers, path, {"requirement_id": done}).status_code == 400
     assert post(client, headers, path, {"requirement_id": elsewhere}).status_code == 400
     assert post(client, headers, path, {"requirement_id": "requirement-missing"}).status_code == 404
     # 所属项目下没有可合并的需求：海报上不给［合并］
     item = wall(client, status="pending")["items"][0]
     assert (item["can_merge"], item["default_action"]) == (False, "claim")
+    # D13：项目里只有一条已完成的需求也能并进去（并进去的用例见 test_requirement_merges）
+    create(client, headers, "yimi", "新患者注册：五个问题前置", "P2", status="done")
+    item = wall(client, status="pending")["items"][0]
+    assert (item["can_merge"], item["default_action"]) == (True, "claim")
 
     unassigned = candidate(db, "doctor", "医生资质 AI 审核规则")
     assert client.get(f"/api/requirement-candidates/{unassigned}/merge-targets").json() == {
@@ -473,11 +478,12 @@ def test_default_action_falls_back_to_claim_when_the_similar_requirement_is_done
 
     client.patch(f"/api/requirements/{target}", json={"status": "done"}, headers=headers)
 
+    # D13 起已完成的需求也能并进去，［合并］还在；默认动作不再是合并到这条已完成的
     item = wall(client, status="pending")["items"][0]
     assert (item["default_action"], item["similar_requirement"], item["can_merge"]) == (
         "claim",
         None,
-        False,
+        True,
     )
 
 

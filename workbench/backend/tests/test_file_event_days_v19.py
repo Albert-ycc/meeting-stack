@@ -144,7 +144,7 @@ def test_old_triggers_are_replaced_and_stored_days_move_to_beijing(tmp_path, pro
 
     db.initialize()
 
-    assert db.user_version() == SCHEMA_VERSION == 19
+    assert db.user_version() == SCHEMA_VERSION
     assert set(triggers(db)) == {"material_file_events_insert", "material_file_events_update"}
     for sql in triggers(db).values():
         assert "localtime" not in sql and "'+8 hours'" in sql

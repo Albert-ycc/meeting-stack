@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # 检查点做完、-wal 从头重用时，文件超过这个大小就截回来。服务常驻一个连接（Database.held_open）
 # 以后 -wal 不再随连接关光被删，偶尔一个大事务撑大的文件要靠它缩回去；平时写入方每 1000 页
@@ -1360,6 +1360,20 @@ BEGIN
     DELETE FROM requirement_sources
      WHERE requirement_id = OLD.requirement_id AND meeting_id = OLD.meeting_id;
 END;
+
+-- v20：需求并需求（261009）。被并掉的需求行搬空后删除，这里留一行：以前的链接打开它时顺着
+-- into_requirement_id 找到并进去的那条（主需求再被并时，指向它的行改指新主需求，所以一跳就到）；
+-- undo 是 10 分钟内撤销用的快照（JSON，见 requirement_merges.merge_requirement），撤销成功后删掉这行。
+-- into_requirement_id 不加外键：主需求被并掉时这行要留着改指，不能跟着级联。
+CREATE TABLE IF NOT EXISTS requirement_merges (
+    requirement_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    into_requirement_id TEXT NOT NULL,
+    merged_at TEXT NOT NULL,
+    undo TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_requirement_merges_into ON requirement_merges(into_requirement_id);
 """
 
 # 北京日历的日期（SQLite date() 的修饰）：中国没有夏令时，北京时间就是 UTC 加 8 小时，和 task_due.BEIJING_TZ
@@ -1734,6 +1748,17 @@ class Database:
                 # v17：需求的说明（一两句话，最多 70 字），可空。
                 connection.execute(
                     "ALTER TABLE requirements ADD COLUMN summary TEXT NOT NULL DEFAULT ''"
+                )
+            # v20：状态变更时间（卡片上「MM-DD 完成」取它）和最近一次改状态的撤销记录（JSON）。
+            for name in ("status_changed_at", "status_undo"):
+                if name not in requirement_columns:
+                    connection.execute(f"ALTER TABLE requirements ADD COLUMN {name} TEXT")
+            if current_version < 20:
+                # 存量需求没有状态变更时间，取当下的 updated_at 定住：之后改名、合并进别的需求都会刷新
+                # updated_at，卡片上的完成日期不能跟着跳。
+                connection.execute(
+                    "UPDATE requirements SET status_changed_at = updated_at "
+                    "WHERE status_changed_at IS NULL"
                 )
             link_columns = {
                 row["name"]

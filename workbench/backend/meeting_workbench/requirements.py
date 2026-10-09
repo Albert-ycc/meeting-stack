@@ -29,7 +29,12 @@ from .materials import (
 )
 from .project_seats import MEETING_TIME_SQL, seat_ranks
 from .service import ConflictError, NotFoundError
-from .tasks import OPEN_TASK_STATUSES, TaskService, resolve_requirement_and_project
+from .tasks import (
+    OPEN_TASK_STATUSES,
+    STATUS_LABELS,
+    TaskService,
+    resolve_requirement_and_project,
+)
 
 REQUIREMENT_PRIORITIES = ("P0", "P1", "P2", "P3")
 REQUIREMENT_STATUSES = ("active", "done", "shelved")
@@ -40,8 +45,11 @@ FOLDER_PREVIEW_LIMIT = 6
 TITLE_MAX_CHARS = 200
 SUMMARY_MAX_CHARS = 70
 QUOTE_MAX_CHARS = 1000
-# 合并后多久内能撤销（R01-14、R02-11）
+# 合并后多久内能撤销（R01-14、R02-11）；需求并需求（D7）、改状态（D11）同一个时限
 MERGE_UNDO_MINUTES = 10
+STATUS_UNDO_MINUTES = MERGE_UNDO_MINUTES
+# 改状态时待办动态、撤销提示里的说法（D10、D11）
+_STATUS_ACTIONS = {"active": "重新打开", "done": "标记完成", "shelved": "搁置"}
 # 未完成任务在前，其余（已完成/已过期/已取消）在后，同组按创建时间倒序
 _TASK_ORDER_SQL = """
     CASE WHEN t.status IN ({open_statuses}) THEN 0 ELSE 1 END,
@@ -50,6 +58,35 @@ _TASK_ORDER_SQL = """
 # 一场会画波形用的录音：归档里的优先（和录音档案列表同一个取法）。
 AUDIO_ARTIFACT_SQL = """(SELECT a.id FROM artifacts a WHERE a.meeting_id = m.id AND a.kind = 'audio'
     ORDER BY CASE a.source_root WHEN 'archive' THEN 0 ELSE 1 END LIMIT 1)"""
+
+
+class RequirementMergedAway(NotFoundError):
+    """被并掉的需求（D8）：merged_into 是顺着合并记录找到、仍然在的那条（id、title）。"""
+
+    def __init__(self, merged_into: dict[str, Any]):
+        super().__init__(f"这条需求已并入「{merged_into['title']}」")
+        self.merged_into = merged_into
+
+
+def merged_into(connection: Any, requirement_id: str) -> dict[str, Any] | None:
+    """被并掉的需求现在在哪：顺着 requirement_merges 一路找到仍然在的那条（id、title）；不是被并掉的、
+    或者链断了（并进去的那条也不在了）返回 None。主需求再被并时指向它的行已改指新主需求，通常一跳就到。"""
+    seen: set[str] = set()
+    current = requirement_id
+    while current not in seen:
+        seen.add(current)
+        row = connection.execute(
+            "SELECT into_requirement_id FROM requirement_merges WHERE requirement_id=?", (current,)
+        ).fetchone()
+        if row is None:
+            return None
+        target = connection.execute(
+            "SELECT id, title FROM requirements WHERE id=?", (row["into_requirement_id"],)
+        ).fetchone()
+        if target is not None:
+            return dict(target)
+        current = row["into_requirement_id"]
+    return None
 
 
 class RequirementTitleConflict(ConflictError):
@@ -425,14 +462,35 @@ def _merge_undo_marks(
     return marks
 
 
+def status_undo_until(
+    requirement: dict[str, Any], status_undo: str | None, *, now: datetime | None = None
+) -> str | None:
+    """最近一次改状态还能撤销到什么时候（ISO）；没有、过期了、或者之后状态又被别处改过时为 None。"""
+    if not status_undo:
+        return None
+    at = json.loads(status_undo)["at"]
+    if requirement.get("status_changed_at") != at:
+        return None
+    until = datetime.fromisoformat(at) + timedelta(minutes=STATUS_UNDO_MINUTES)
+    return until.isoformat() if (now or datetime.now(UTC)) < until else None
+
+
 def get_requirement(
     task_service: TaskService, requirement_id: str, *, now: datetime | None = None
 ) -> dict[str, Any]:
     db = task_service.db
     row = db.query_one("SELECT * FROM requirements WHERE id=?", (requirement_id,))
     if row is None:
+        with db.autocommit() as connection:
+            into = merged_into(connection, requirement_id)
+        if into is not None:
+            raise RequirementMergedAway(into)
         raise NotFoundError(f"需求不存在：{requirement_id}")
+    status_undo = row.pop("status_undo", None)
     detail = _requirement_summary(db, row)
+    detail["status_changed_at"] = row.get("status_changed_at") or row["updated_at"]
+    detail["status_undo_until"] = status_undo_until(row, status_undo, now=now)
+    detail["closed_task_count"] = 0
     folder_rows = db.query_all(
         "SELECT * FROM requirement_folders WHERE requirement_id=? ORDER BY created_at",
         (requirement_id,),
@@ -497,9 +555,10 @@ def insert_requirement(
     try:
         connection.execute(
             """INSERT INTO requirements
-                   (id, project_id, title, summary, priority, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 'active', ?, ?)""",
-            (requirement_id, project_id, title, summary, priority, now, now),
+                   (id, project_id, title, summary, priority, status, status_changed_at,
+                    created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+            (requirement_id, project_id, title, summary, priority, now, now, now),
         )
     except sqlite3.IntegrityError as error:
         raise _title_conflict(connection, project_id, title) from error
@@ -549,15 +608,22 @@ def update_requirement(
     summary: str | None = None,
     source: dict[str, Any] | None = None,
     source_given: bool = False,
+    close_open_tasks: bool = False,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """source_given 时换掉提出它的那句（source 为 None 是清空）；状态只在进行中、已完成、
-    已搁置之间切换，不能改回待认领（R04-5，待认领的是候选，不在需求表里）。"""
+    已搁置之间切换，不能改回待认领（R04-5，待认领的是候选，不在需求表里）。
+
+    状态变了时记下变更时间和这次的撤销记录（10 分钟内能撤销，D11）；改成已完成、已搁置并且
+    close_open_tasks 时，名下没做完的待办一起记为已取消（D10），返回的详情里 closed_task_count 是条数。"""
     db = task_service.db
     if priority is not None:
         _assert_priority(priority)
     if status is not None:
         _assert_status(status)
-    now = utc_now()
+    moment = now or datetime.now(UTC)
+    stamp = moment.isoformat()
+    closed: list[dict[str, Any]] = []
     with db.transaction() as connection:
         requirement = _requirement_row(connection, requirement_id)
         project_changed = project_id is not None and project_id != requirement["project_id"]
@@ -589,12 +655,13 @@ def update_requirement(
         if priority is not None and priority != requirement["priority"]:
             changes.append("priority=?")
             values.append(priority)
-        if status is not None and status != requirement["status"]:
-            changes.append("status=?")
-            values.append(status)
+        status_changed = status is not None and status != requirement["status"]
+        if status_changed:
+            changes.append("status=?, status_changed_at=?")
+            values.extend([status, stamp])
         if changes or source_given:
             changes.append("updated_at=?")
-            values.append(now)
+            values.append(stamp)
             values.append(requirement_id)
             try:
                 connection.execute(
@@ -615,16 +682,114 @@ def update_requirement(
             for raw in target_folder_paths or []:
                 connection.execute(
                     "INSERT INTO requirement_folders(requirement_id, path, created_at) VALUES (?, ?, ?)",
-                    (requirement_id, str(Path(raw).resolve(strict=False)), now),
+                    (requirement_id, str(Path(raw).resolve(strict=False)), stamp),
                 )
 
         if project_changed:
             # D7：需求换项目，名下任务的项目在同一事务里跟着改。
             connection.execute(
                 "UPDATE tasks SET project_id=?, updated_at=? WHERE requirement_id=?",
-                (project_id, now, requirement_id),
+                (project_id, stamp, requirement_id),
             )
-    return get_requirement(task_service, requirement_id)
+
+        if status_changed:
+            if close_open_tasks and status in ("done", "shelved"):
+                title_now = _requirement_row(connection, requirement_id)["title"]
+                closed = _close_open_tasks(
+                    connection,
+                    requirement_id,
+                    f"需求「{title_now}」{_STATUS_ACTIONS[status]}",
+                    stamp,
+                )
+            connection.execute(
+                "UPDATE requirements SET status_undo=? WHERE id=?",
+                (
+                    json.dumps(
+                        {
+                            "at": stamp,
+                            "previous_status": requirement["status"],
+                            "previous_status_changed_at": requirement["status_changed_at"],
+                            "tasks": closed,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    requirement_id,
+                ),
+            )
+    detail = get_requirement(task_service, requirement_id, now=moment)
+    detail["closed_task_count"] = len(closed)
+    return detail
+
+
+def _close_open_tasks(
+    connection: Any, requirement_id: str, action: str, stamp: str
+) -> list[dict[str, Any]]:
+    """需求标记完成、搁置时「一起关掉」（D10）：名下没做完的待办记为已取消，待办动态写一行；
+    返回这些待办原来的状态和状态时间，撤销时照它退回。"""
+    placeholders = ", ".join("?" for _ in OPEN_TASK_STATUSES)
+    rows = [
+        dict(row)
+        for row in connection.execute(
+            f"""SELECT id, status, status_changed_at FROM tasks
+                 WHERE requirement_id=? AND status IN ({placeholders})
+                 ORDER BY id""",
+            (requirement_id, *OPEN_TASK_STATUSES),
+        ).fetchall()
+    ]
+    for row in rows:
+        connection.execute(
+            "UPDATE tasks SET status='cancelled', status_changed_at=?, updated_at=? WHERE id=?",
+            (stamp, stamp, row["id"]),
+        )
+        connection.execute(
+            """INSERT INTO task_events(task_id, kind, body, created_at)
+               VALUES (?, 'status_changed', ?, ?)""",
+            (row["id"], f"{action}，一起关掉", stamp),
+        )
+    return rows
+
+
+def undo_status(
+    task_service: TaskService, requirement_id: str, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """撤销最近一次改状态（D11）：10 分钟内，需求回到原来的状态和状态时间；这次一起关掉的待办回到各自
+    原来的状态——还是这次关掉时的样子（已取消、状态时间没变）的才动，这期间被别处改过的不动。
+    之后状态又被别处改过（合并、候选并进来重新打开）的不能撤销。"""
+    moment = now or datetime.now(UTC)
+    stamp = moment.isoformat()
+    with task_service.db.transaction() as connection:
+        requirement = _requirement_row(connection, requirement_id)
+        if not requirement["status_undo"]:
+            raise ConflictError("没有可以撤销的状态变更")
+        record = json.loads(requirement["status_undo"])
+        if requirement["status_changed_at"] != record["at"]:
+            raise ConflictError("需求状态之后又改过了，不能撤销")
+        if moment - datetime.fromisoformat(record["at"]) > timedelta(minutes=STATUS_UNDO_MINUTES):
+            raise ConflictError(f"改状态超过 {STATUS_UNDO_MINUTES} 分钟，不能撤销了")
+        action = f"撤销需求「{requirement['title']}」{_STATUS_ACTIONS[requirement['status']]}"
+        for task in record["tasks"]:
+            if connection.execute(
+                """UPDATE tasks SET status=?, status_changed_at=?, updated_at=?
+                    WHERE id=? AND status='cancelled' AND status_changed_at=?""",
+                (task["status"], task["status_changed_at"], stamp, task["id"], record["at"]),
+            ).rowcount:
+                connection.execute(
+                    """INSERT INTO task_events(task_id, kind, body, created_at)
+                       VALUES (?, 'reverted', ?, ?)""",
+                    (task["id"], f"{action}，恢复为{STATUS_LABELS[task['status']]}", stamp),
+                )
+        connection.execute(
+            """UPDATE requirements
+                  SET status=?, status_changed_at=?, status_undo=NULL, updated_at=?
+                WHERE id=?""",
+            (
+                record["previous_status"],
+                record["previous_status_changed_at"],
+                stamp,
+                requirement_id,
+            ),
+        )
+    return get_requirement(task_service, requirement_id, now=moment)
 
 
 def remove_folder(task_service: TaskService, requirement_id: str, folder_id: int) -> dict[str, Any]:

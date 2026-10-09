@@ -1,7 +1,8 @@
 """需求候选（需求池改版 260930，R01）：AI 从会议纪要里抽出来、还没认领的需求。
 
-候选认领后才建成正式需求（进行中，优先级默认 P2）；合并＝把它的会和原话并进同项目一条进行中或已搁置的
-需求，候选随即消失；丢掉的 30 天内能撤销，同一项目下同名候选以后不再提示（name_key 留着）。
+候选认领后才建成正式需求（进行中，优先级默认 P2）；合并＝把它的会和原话并进同项目一条需求（进行中、
+已搁置、已完成都行，并进已完成的那条重新打开，D13），候选随即消失；丢掉的 30 天内能撤销，同一项目下
+同名候选以后不再提示（name_key 留着）。
 挂在候选上的任务：认领后随需求走、合并后挂到目标需求、丢掉后回到未挂需求（撤销丢掉时，这期间没被挂到别处的挂回来）。
 已经被手动挂到别的需求上的任务不跟着动。
 
@@ -43,8 +44,12 @@ from .tasks import OPEN_TASK_STATUSES, TaskService, resolve_requirement_and_proj
 CANDIDATE_STATUSES = ("pending", "claimed", "merged", "dropped")
 CLAIM_DEFAULT_PRIORITY = "P2"
 DROP_UNDO_DAYS = 30
-# 合并只能并进同项目这两种状态的需求，不能并进已完成的（R01-8）。
-MERGE_TARGET_STATUSES = ("active", "shelved")
+# 合并能并进同项目这三种状态的需求；并进已完成的，那条需求重新打开为进行中（D13，原先 R01-8 不让并进
+# 已完成的）。
+MERGE_TARGET_STATUSES = ("active", "shelved", "done")
+# AI 判断相近、同名默认合并，只对照进行中、已搁置的需求：已完成的不在抽取对照清单里，候选默认动作不会是
+# 「合并到一条已完成的需求」（并进已完成的要用户在合并弹层里自己选，或认领撞名后改为合并）。
+SIMILAR_TARGET_STATUSES = ("active", "shelved")
 _HANDLED = {
     "claimed": "这条候选已经认领了",
     "merged": "这条候选已经合并了",
@@ -254,9 +259,9 @@ def extraction_context(connection: Any, meeting_id: str) -> dict[str, Any]:
         return context
     requirements = connection.execute(
         f"""SELECT id, title, status FROM requirements
-             WHERE project_id = ? AND status IN ({", ".join("?" for _ in MERGE_TARGET_STATUSES)})
+             WHERE project_id = ? AND status IN ({", ".join("?" for _ in SIMILAR_TARGET_STATUSES)})
              ORDER BY julianday(updated_at) DESC, id LIMIT ?""",
-        (project_id, *MERGE_TARGET_STATUSES, CONTEXT_LIMIT),
+        (project_id, *SIMILAR_TARGET_STATUSES, CONTEXT_LIMIT),
     ).fetchall()
     replaceable = {row["id"] for row in _replaceable(connection, meeting_id)}
     candidates = [
@@ -346,8 +351,8 @@ def _same_as(
         row = connection.execute(
             f"""SELECT 1 FROM requirements
                  WHERE id = ? AND project_id = ?
-                   AND status IN ({", ".join("?" for _ in MERGE_TARGET_STATUSES)})""",
-            (ref_id, project_id, *MERGE_TARGET_STATUSES),
+                   AND status IN ({", ".join("?" for _ in SIMILAR_TARGET_STATUSES)})""",
+            (ref_id, project_id, *SIMILAR_TARGET_STATUSES),
         ).fetchone()
     else:
         row = connection.execute(
@@ -366,9 +371,9 @@ def _requirement_keys(connection: Any, project_id: str | None) -> dict[str, str]
     for row in connection.execute(
         f"""SELECT id, title FROM requirements
              WHERE project_id = ?
-               AND status IN ({", ".join("?" for _ in MERGE_TARGET_STATUSES)})
+               AND status IN ({", ".join("?" for _ in SIMILAR_TARGET_STATUSES)})
              ORDER BY created_at, id""",
-        (project_id, *MERGE_TARGET_STATUSES),
+        (project_id, *SIMILAR_TARGET_STATUSES),
     ).fetchall():
         keys.setdefault(light_key(row["title"]), row["id"])
     return keys
@@ -764,8 +769,8 @@ def candidate_items(
 ) -> list[dict[str, Any]]:
     """候选在海报墙上的样子（kind="candidate"），字段和需求海报对齐；_latest_jd、_created_jd 只给排序用。
 
-    默认动作：AI 判断的相近需求还在同项目、还能合并（进行中或已搁置）时是「合并」，否则「认领」。
-    can_merge：所属项目下有可合并的需求才显示［合并］（未归项目的候选不能合并）。"""
+    默认动作：AI 判断的相近需求还在同项目、还是进行中或已搁置时是「合并」，否则「认领」。
+    can_merge：所属项目下有可合并的需求（三种状态都算）才显示［合并］（未归项目的候选不能合并）。"""
     clauses = [f"c.status IN ({', '.join('?' for _ in statuses)})"]
     params: list[Any] = [*statuses]
     if candidate_ids is not None:
@@ -835,7 +840,7 @@ def candidate_items(
         target = similar.get(row["similar_requirement_id"])
         mergeable_target = (
             target is not None
-            and target["status"] in MERGE_TARGET_STATUSES
+            and target["status"] in SIMILAR_TARGET_STATUSES
             and target["project_id"] == project_id
         )
         latest_row = latest.get(row["id"])
@@ -910,7 +915,8 @@ def list_dropped(db: Database, *, now: datetime | None = None) -> dict[str, Any]
 
 
 def merge_targets(db: Database, candidate_id: str, project_id: str | None = None) -> dict[str, Any]:
-    """合并弹层（S03）：候选所属项目里进行中、已搁置的需求，AI 判断的相近需求排第一、标 recommended。
+    """合并弹层（S03）：候选所属项目里进行中、已搁置、已完成的需求（D13），AI 判断的相近需求排第一、
+    标 recommended，其余按进行中 → 已搁置 → 已完成。
     每条带提出它的那场会（没有来源时取最近一场关联会议）。不跨项目；project_id 是认领页上改选的项目
     （候选改了所属项目后按新项目列，R01-8），不传时取来源会议的归属，未归项目的候选没有可选的。"""
     with db.autocommit() as connection:
@@ -1171,33 +1177,46 @@ def merge_candidate(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """合并（S03，或认领撞名后「改为合并到那条需求」）：这场会关联到目标需求、原话追加到它的来源，
-    候选消失。目标只能是所属项目里进行中或已搁置的需求；所属项目是认领页上选的 project_id，
-    不传时取来源会议的归属。不改会议归属。合并带进去的东西记在候选上，10 分钟内能撤销。"""
+    候选消失。目标是所属项目里的需求，三种状态都行；并进已完成的需求，那条重新打开为进行中（D13），
+    返回的详情里 reopened 为 true。所属项目是认领页上选的 project_id，不传时取来源会议的归属。
+    不改会议归属。合并带进去的东西记在候选上，10 分钟内能撤销。"""
     with task_service.db.transaction() as connection:
         candidate = _pending_candidate(connection, candidate_id)
         project_id = _merge_project(connection, candidate, project_id)
         if project_id is None:
             raise ValueError("候选还没归项目，不能合并；先在认领页选所属项目")
         target = connection.execute(
-            "SELECT id, project_id, status FROM requirements WHERE id=?", (requirement_id,)
+            "SELECT id, project_id, status, status_changed_at FROM requirements WHERE id=?",
+            (requirement_id,),
         ).fetchone()
         if target is None:
             raise NotFoundError(f"需求不存在：{requirement_id}")
         if target["project_id"] != project_id:
             raise ValueError("只能合并到所属项目里的需求")
-        if target["status"] not in MERGE_TARGET_STATUSES:
-            raise ValueError("不能合并到已完成的需求")
         before = _merge_before(connection, candidate_id, requirement_id)
         _hand_over(connection, candidate, requirement_id, merged=True)
         stamp = (now or datetime.now(UTC)).isoformat()
+        record = json.loads(_merge_record(connection, before, requirement_id))
+        reopened = target["status"] == "done"
+        if reopened:
+            # D13：之后的会又提到已完成的需求，并进去就重新打开；撤销这次合并时（状态没被别处再改过）回到已完成
+            record.update(
+                reopened_from="done",
+                reopened_at=stamp,
+                previous_status_changed_at=target["status_changed_at"],
+            )
+            connection.execute(
+                "UPDATE requirements SET status='active', status_changed_at=? WHERE id=?",
+                (stamp, requirement_id),
+            )
         connection.execute(
             "UPDATE requirement_candidates SET merged_at=?, merge_undo=? WHERE id=?",
-            (stamp, _merge_record(connection, before, requirement_id), candidate_id),
+            (stamp, json.dumps(record, ensure_ascii=False), candidate_id),
         )
         connection.execute(
             "UPDATE requirements SET updated_at=? WHERE id=?", (stamp, requirement_id)
         )
-    return get_requirement(task_service, requirement_id, now=now)
+    return {**get_requirement(task_service, requirement_id, now=now), "reopened": reopened}
 
 
 def unmerge_candidate(
@@ -1205,7 +1224,8 @@ def unmerge_candidate(
 ) -> dict[str, Any]:
     """撤销合并（R01-14）：合并后 10 分钟内，候选回到待认领，这次合并带进需求的原话、关联会议、任务按
     合并时记下的原样退回。原话已经不在那条需求里（比如那场会被移出了关联、原话跟着删了）时不能撤销；
-    任务在这 10 分钟里被改挂到别处的不动。"""
+    任务在这 10 分钟里被改挂到别处的不动。合并时把已完成的需求重新打开了的（D13），需求还是那次打开的
+    进行中（状态和状态时间都没被别处改过）就回到已完成。"""
     moment = now or datetime.now(UTC)
     stamp = moment.isoformat()
     with task_service.db.transaction() as connection:
@@ -1259,6 +1279,18 @@ def unmerge_candidate(
                        VALUES (?, 'requirement_changed', ?, ?)""",
                     (task["id"], f"撤销合并：回到候选「{candidate['title']}」", stamp),
                 )
+        if record.get("reopened_from"):
+            connection.execute(
+                """UPDATE requirements SET status=?, status_changed_at=?, updated_at=?
+                    WHERE id=? AND status='active' AND status_changed_at=?""",
+                (
+                    record["reopened_from"],
+                    record["previous_status_changed_at"],
+                    stamp,
+                    requirement_id,
+                    record["reopened_at"],
+                ),
+            )
         connection.execute(
             """UPDATE requirement_candidates
                   SET status='pending', requirement_id=NULL, merged_at=NULL, merge_undo=NULL,

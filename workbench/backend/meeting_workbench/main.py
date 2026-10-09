@@ -77,6 +77,7 @@ from .attribution import (
 from . import cold_start, glossary_checkup, graph as graph_module, materials, requirements
 from . import task_due
 from . import project_seats, project_work, requirement_candidates, requirement_pool, todo
+from . import requirement_merges
 from . import search as search_module
 from .cards import CardsError, CardWriter
 from . import name_actions, name_hints, project_folders
@@ -503,6 +504,14 @@ class RequirementUpdateInput(BaseModel):
     summary: str | None = Field(default=None, max_length=500)
     # 传了 source 才改来源：对象是换掉提出它的那句，null 是清空。
     source: RequirementSourceInput | None = None
+    # 改成已完成、已搁置时把名下没做完的待办一起关掉（记为已取消，D10）；默认不关
+    close_open_tasks: bool = False
+
+
+class RequirementMergeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    into_requirement_id: str = Field(min_length=1, max_length=64)
 
 
 class ProjectSeatsInput(BaseModel):
@@ -4878,7 +4887,13 @@ def create_app(
 
     @app.get("/api/requirements/{requirement_id}")
     def requirement_detail(requirement_id: str):
-        return requirements.get_requirement(task_service, requirement_id)
+        try:
+            return requirements.get_requirement(task_service, requirement_id)
+        except requirements.RequirementMergedAway as error:
+            # D8：以前的链接打开被并掉的需求，带上并进去的那条，详情页给［去看］
+            return JSONResponse(
+                {"detail": str(error), "merged_into": error.merged_into}, status_code=404
+            )
 
     @app.patch("/api/requirements/{requirement_id}")
     def update_requirement(requirement_id: str, body: RequirementUpdateInput):
@@ -4895,11 +4910,37 @@ def create_app(
                 summary=body.summary,
                 source=body.source.model_dump() if body.source else None,
                 source_given="source" in body.model_fields_set,
+                close_open_tasks=body.close_open_tasks,
             )
         except requirements.RequirementTitleConflict as error:
             return JSONResponse({"detail": str(error), "existing": error.existing}, status_code=409)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/requirements/{requirement_id}/status-undo")
+    def undo_requirement_status(requirement_id: str, _body: EmptyInput | None = None):
+        # 10 分钟内撤销最近一次改状态（D11）；超时、没有可撤销的 409
+        return requirements.undo_status(task_service, requirement_id)
+
+    @app.get("/api/requirements/{requirement_id}/merge-targets")
+    def requirement_merge_targets(
+        requirement_id: str, q: str | None = Query(default=None, max_length=200)
+    ):
+        return requirement_merges.merge_targets(db, requirement_id, q)
+
+    @app.post("/api/requirements/{requirement_id}/merge")
+    def merge_requirement(requirement_id: str, body: RequirementMergeInput):
+        try:
+            return requirement_merges.merge_requirement(
+                task_service, requirement_id, body.into_requirement_id
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/requirements/{requirement_id}/unmerge")
+    def unmerge_requirement(requirement_id: str, _body: EmptyInput | None = None):
+        # 并入后 10 分钟内撤销（D7）；超时、主需求之后又被并进别处时 409
+        return requirement_merges.unmerge_requirement(task_service, requirement_id)
 
     # v17 需求池改版：海报墙、项目座次、需求候选。
 
