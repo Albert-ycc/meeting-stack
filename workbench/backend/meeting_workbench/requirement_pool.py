@@ -38,7 +38,8 @@ def requirement_items(connection: Any) -> list[dict[str, Any]]:
                    julianday(COALESCE(r.status_changed_at, r.updated_at)) AS changed_jd,
                    (SELECT COUNT(*) FROM tasks t WHERE t.requirement_id = r.id
                        AND t.status IN ({open_placeholders})) AS open_task_count,
-                   (SELECT COUNT(*) FROM tasks t WHERE t.requirement_id = r.id) AS task_count,
+                   (SELECT COUNT(*) FROM tasks t WHERE t.requirement_id = r.id
+                       AND t.status NOT IN ('cancelled', 'expired')) AS task_count,
                    (SELECT COUNT(*) FROM requirement_folders rf
                      WHERE rf.requirement_id = r.id) AS folder_count
               FROM requirements r JOIN projects p ON p.id = r.project_id""",
@@ -75,7 +76,8 @@ def requirement_items(connection: Any) -> list[dict[str, Any]]:
                 "project_color": row["project_color"],
                 "project_seat": seats.get(row["project_id"]),
                 "open_task_count": row["open_task_count"],
-                # 名下待办总数（含已完成、已取消）：「待办都清了，完成了吗？」要有过待办（D14）
+                # 名下待办总数，不算已取消、已过期的（待确认、已确认、进行中、已完成）：「待办都清了，
+                # 完成了吗？」要名下有过真做的待办（D14）——一起关掉、驳回、放过期的都不算做过
                 "task_count": row["task_count"],
                 "meeting_count": len(linked["ids"]),
                 "folder_count": row["folder_count"],

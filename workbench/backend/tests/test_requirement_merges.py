@@ -522,7 +522,7 @@ def test_old_links_follow_a_chain_of_merges_to_the_last_one(tmp_path):
     }
 
 
-# ---------------------------------------------------------------- 会议页「建成需求」「不算新需求」跟着合并走
+# ---------------------------------------------------------------- 会议页「建成需求」「不算新需求」遇上合并
 
 
 def name_as_requirement(client, headers, meeting_key, title):
@@ -551,65 +551,100 @@ def event_payload(db, event_id):
     return json.loads(row["payload_json"])
 
 
-def test_undoing_name_as_requirement_after_a_merge_unlinks_the_meeting_from_the_main_requirement(
-    tmp_path,
-):
-    """会议页把 EDC 那场会建成需求「EDC 系统选型」，发现和已有的「EDC 产研对接」重复、并了进去；10 分钟内
-    再撤销「建成需求」：那场会从主需求上解除关联，主需求本身留着（它不是那次建出来的）。"""
+def test_undoing_name_as_requirement_is_refused_while_its_requirement_is_merged_away(tmp_path):
+    """会议页把 EDC 那场会建成需求「EDC 系统选型」，随后并进已有的「EDC 产研对接」；10 分钟内撤销「建成需求」
+    不动任何数据，提示先撤销那次合并。撤销合并以后再撤销建成需求，照原样删掉那次建出来的需求。"""
     client, headers, db = make_world(tmp_path)
     main = create(client, headers, "yimi", "EDC 产研对接", "P1")
+    before_name = snapshot(db)
     made = name_as_requirement(client, headers, "edc", "EDC 系统选型")
     assert made["existing"] is False
-    merged = merge(client, headers, made["requirement_id"], main).json()
-    assert [meeting["id"] for meeting in merged["meetings"]] == [meeting_id("edc")]
+    assert merge(client, headers, made["requirement_id"], main).status_code == 200
+    merged = snapshot(db)
     payload = event_payload(db, made["event_id"])
-    assert (payload["requirement_id"], payload["existing"]) == (main, True)
+
+    refused = post(client, headers, f"/api/meetings/{meeting_id('edc')}/name-as-requirement/undo")
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "「EDC 系统选型」已并入「EDC 产研对接」，要撤销建成需求，先撤销那次合并"
+    )
+    assert snapshot(db) == merged
+    assert event_payload(db, made["event_id"]) == payload
+    assert (payload["requirement_id"], payload["existing"]) == (made["requirement_id"], False)
+
+    assert (
+        post(client, headers, f"/api/requirements/{made['requirement_id']}/unmerge").status_code
+        == 200
+    )
+    undone = post(client, headers, f"/api/meetings/{meeting_id('edc')}/name-as-requirement/undo")
+
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["requirement_deleted"] is True
+    assert snapshot(db) == before_name
+
+
+def test_undoing_name_as_requirement_is_refused_after_another_requirement_merged_into_it(
+    tmp_path,
+):
+    """反过来：会议页在京东那场会建成「京东科研仓二期」，再把早就挂着这场会、出处也在这场会的「京东科研仓对接」
+    并进它。撤销建成需求要解除这场会、删掉那条，会连带删掉并进来的原话和出处：拒绝，什么都不改。"""
+    client, headers, db = make_world(tmp_path)
+    existing = create(client, headers, "yimi", "京东科研仓对接", "P0", source_key="inbound")
+    before_name = snapshot(db)
+    made = name_as_requirement(client, headers, "jd", "京东科研仓二期")
+    assert merge(client, headers, existing, made["requirement_id"]).status_code == 200
+    merged = snapshot(db)
+
+    refused = post(client, headers, f"/api/meetings/{meeting_id('jd')}/name-as-requirement/undo")
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "已有需求并入「京东科研仓二期」，要撤销建成需求，先撤销那次合并"
+    )
+    assert snapshot(db) == merged
+
+    assert post(client, headers, f"/api/requirements/{existing}/unmerge").status_code == 200
+    undone = post(client, headers, f"/api/meetings/{meeting_id('jd')}/name-as-requirement/undo")
+
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["requirement_deleted"] is True
+    assert snapshot(db) == before_name
+    assert (
+        client.get(f"/api/requirements/{existing}").json()["source"]["quote"]
+        == QUOTES["inbound"][1]
+    )
+
+
+def test_merges_from_before_the_name_action_do_not_block_its_undo(tmp_path):
+    """「建成需求」撞名关联到已有的需求（existing），那条需求以前就并进来过别的：撤销照常，只解除这场会。"""
+    client, headers, db = make_world(tmp_path)
+    existing = create(client, headers, "yimi", "EDC 产研对接", "P1")
+    older = create(client, headers, "yimi", "EDC 选型旧稿", "P2")
+    assert merge(client, headers, older, existing).status_code == 200
+    made = name_as_requirement(client, headers, "edc", "EDC 产研对接")
+    assert (made["existing"], made["requirement_id"]) == (True, existing)
 
     undone = post(client, headers, f"/api/meetings/{meeting_id('edc')}/name-as-requirement/undo")
 
     assert undone.status_code == 200, undone.text
     assert undone.json()["requirement_deleted"] is False
-    detail = client.get(f"/api/requirements/{main}").json()
-    assert (detail["title"], detail["meetings"]) == ("EDC 产研对接", [])
-
-
-def test_unmerge_points_the_name_events_back_to_the_restored_requirement(tmp_path):
-    client, headers, db = make_world(tmp_path)
-    main = create(client, headers, "yimi", "EDC 产研对接", "P1")
-    made = name_as_requirement(client, headers, "edc", "EDC 系统选型")
-    this = made["requirement_id"]
-    # 同一个名字随后又标了「不算新需求」：它的撤销记录里是原来那行「建成了这条」
-    ignored = ignore_requirement_name(client, headers, "EDC 系统选型")
-    before = {
-        event_id: event_payload(db, event_id)
-        for event_id in (made["event_id"], ignored["event_id"])
-    }
-    assert before[ignored["event_id"]]["undo"]["decisions"][0]["previous"]["requirement_id"] == this
-    assert merge(client, headers, this, main).status_code == 200
-    assert event_payload(db, made["event_id"])["requirement_id"] == main
-    assert (
-        event_payload(db, ignored["event_id"])["undo"]["decisions"][0]["previous"]["requirement_id"]
-        == main
-    )
-
-    assert post(client, headers, f"/api/requirements/{this}/unmerge").status_code == 200
-
-    for event_id, payload in before.items():
-        assert event_payload(db, event_id) == payload
-    # 指回来以后，撤销「建成需求」照原样删掉那次建出来的需求
-    undone = post(client, headers, f"/api/meetings/{meeting_id('edc')}/name-as-requirement/undo")
-    assert undone.json()["requirement_deleted"] is True
-    assert client.get(f"/api/requirements/{main}").status_code == 200
+    assert client.get(f"/api/requirements/{existing}").json()["meetings"] == []
 
 
 def test_undoing_an_ignored_requirement_name_after_a_merge_restores_it_onto_the_main_requirement(
     tmp_path,
 ):
+    """「不算新需求」的撤销记录里是原来那行「建成了这条」；这条之后被并走，撤销时顺着合并记录写成主需求，
+    事件本身不改。"""
     client, headers, db = make_world(tmp_path)
     main = create(client, headers, "yimi", "EDC 产研对接", "P1")
     made = name_as_requirement(client, headers, "edc", "EDC 系统选型")
     ignored = ignore_requirement_name(client, headers, "EDC 系统选型")
+    payload = event_payload(db, ignored["event_id"])
+    assert payload["undo"]["decisions"][0]["previous"]["requirement_id"] == made["requirement_id"]
     assert merge(client, headers, made["requirement_id"], main).status_code == 200
+    assert event_payload(db, ignored["event_id"]) == payload
 
     undone = post(client, headers, "/api/name-decisions/undo", {"event_id": ignored["event_id"]})
 
@@ -618,6 +653,7 @@ def test_undoing_an_ignored_requirement_name_after_a_merge_restores_it_onto_the_
         "SELECT decision, requirement_id FROM requirement_name_decisions WHERE name_key=?",
         (light_key("EDC 系统选型"),),
     ) == {"decision": "made", "requirement_id": main}
+    assert event_payload(db, ignored["event_id"]) == payload
 
 
 # ---------------------------------------------------------------- 1、2. 改状态（D9、D10、D11）
@@ -838,6 +874,7 @@ def test_done_tab_sorts_by_completion_time_newest_first(tmp_path):
     )
     task_on(db, "task-a", "推入库单接口", jd, "done")
     task_on(db, "task-b", "约京东仓现场看", jd, "cancelled")
+    task_on(db, "task-c", "补京东接口文档", jd, "expired")
 
     payload = wall(client, status="done")
 
@@ -848,7 +885,8 @@ def test_done_tab_sorts_by_completion_time_newest_first(tmp_path):
         "2026-09-25T03:00:00+00:00",
         "2026-09-20T03:00:00+00:00",
     ]
-    assert payload["items"][3]["task_count"] == 2
+    # 待办总数不算已取消、已过期的
+    assert payload["items"][3]["task_count"] == 1
     assert client.get(f"/api/requirements/{old}").json()["status_changed_at"] == (
         "2026-09-25T03:00:00+00:00"
     )
@@ -963,3 +1001,269 @@ def test_version_twenty_migration_adds_columns_table_and_freezes_status_time(tmp
     assert db.query_one("SELECT status_changed_at FROM requirements") == {
         "status_changed_at": "2026-09-28T03:00:00+00:00"
     }
+
+
+# ---------------------------------------------------------------- 第二轮审查（B2–B6）
+
+
+@pytest.mark.parametrize("order", ["first_merged_first", "last_merged_first"])
+def test_unmerging_two_merges_that_share_a_meeting_in_either_order_restores_everything(
+    tmp_path, order
+):
+    """B2：「京东科研仓对接」并进「赠药横跳拦截」时给它新加了京东那场会；「京东仓签收凭证」的原话也在京东
+    那场会，后并进来。先撤前一次时这场会因为还有后一次的原话留着，记账交给后一次；正序、倒序撤完都和合并前一样。"""
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "赠药横跳拦截", "P0", meeting_keys=("hengtiao",))
+    first = create(client, headers, "yimi", "京东科研仓对接", "P1", source_key="inbound")
+    second = create(client, headers, "yimi", "京东仓签收凭证", "P2", source_key="receipt")
+    before = snapshot(db)
+    assert merge(client, headers, first, main).status_code == 200
+    assert merge(client, headers, second, main).status_code == 200
+
+    undo_order = [first, second] if order == "first_merged_first" else [second, first]
+    for requirement_id in undo_order:
+        response = post(client, headers, f"/api/requirements/{requirement_id}/unmerge")
+        assert response.status_code == 200, response.text
+
+    assert snapshot(db) == before
+
+
+def test_unmerging_a_candidate_hands_a_shared_meeting_to_the_later_requirement_merge(tmp_path):
+    """B2 的候选那一边：候选并进来时新加了京东那场会，之后并进来的需求在这场会也有原话；先撤候选，再撤需求合并。"""
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "赠药横跳拦截", "P0", meeting_keys=("hengtiao",))
+    later = create(client, headers, "yimi", "京东科研仓对接", "P1", source_key="inbound")
+    candidate_id = candidate(db, "receipt", "京东仓签收凭证")
+    before = snapshot(db)
+    merged = post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{candidate_id}/merge",
+        {"requirement_id": main},
+    )
+    assert merged.status_code == 200, merged.text
+    assert merge(client, headers, later, main).status_code == 200
+
+    assert (
+        post(client, headers, f"/api/requirement-candidates/{candidate_id}/unmerge").status_code
+        == 200
+    )
+    assert meeting_id("jd") in [
+        m["id"] for m in client.get(f"/api/requirements/{main}").json()["meetings"]
+    ]
+    assert post(client, headers, f"/api/requirements/{later}/unmerge").status_code == 200
+
+    after = snapshot(db)
+    # 候选合并、撤销本来就刷新候选的 updated_at
+    for state in (before, after):
+        for row in state["requirement_candidates"]:
+            row.pop("updated_at")
+    assert after == before
+
+
+def test_undo_marks_point_at_the_merge_that_brought_each_quote(tmp_path):
+    """B3：候选「签收凭证拍照」「京东仓签收凭证」先后并进「京东仓签收凭证」，再把这条并进「京东科研仓对接」。
+    主需求上，这条搬过来的原话都打需求合并的标记（第二个候选名字和这条相同，两种都符合也取需求合并）；
+    直接并进主需求、名字还在原话上的候选打候选标记；主需求自己的出处不打。"""
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "京东科研仓对接", "P0", source_key="inbound")
+    this = create(client, headers, "yimi", "京东仓签收凭证", "P2", meeting_keys=("jd",))
+    photo = candidate(db, "receipt", "签收凭证拍照")
+    same_name = candidate(db, "inbound", "京东仓签收凭证")
+    direct = candidate(db, "export", "科室会预约后台导出")
+    db.execute(
+        "UPDATE meetings SET project_id=? WHERE id=?", (project_id("yimi"), meeting_id("cvm"))
+    )
+    for candidate_id, target in ((photo, this), (same_name, this), (direct, main)):
+        response = post(
+            client,
+            headers,
+            f"/api/requirement-candidates/{candidate_id}/merge",
+            {"requirement_id": target},
+        )
+        assert response.status_code == 200, response.text
+    marks = {
+        source["via_candidate_title"]: source["undo_merge"]
+        for source in client.get(f"/api/requirements/{this}").json()["sources"]
+    }
+    assert {title: mark["kind"] for title, mark in marks.items()} == {
+        "签收凭证拍照": "candidate",
+        "京东仓签收凭证": "candidate",
+    }
+    assert marks["签收凭证拍照"]["candidate_id"] == photo
+
+    detail = merge(client, headers, this, main).json()
+
+    by_quote = {
+        (source["kind"], source["quote"]): source["undo_merge"] for source in detail["sources"]
+    }
+    assert by_quote[("origin", QUOTES["inbound"][1])] is None
+    moved = [
+        mark
+        for (kind, quote), mark in by_quote.items()
+        if kind == "merged" and quote != QUOTES["export"][1]
+    ]
+    assert len(moved) == 2
+    for mark in moved:
+        assert {key: mark[key] for key in ("kind", "requirement_id", "title")} == {
+            "kind": "requirement",
+            "requirement_id": this,
+            "title": "京东仓签收凭证",
+        }
+        assert close_to_now(mark["until"], plus_minutes=10)
+    assert {
+        key: by_quote[("merged", QUOTES["export"][1])][key] for key in ("kind", "candidate_id")
+    } == {
+        "kind": "candidate",
+        "candidate_id": direct,
+    }
+
+
+def test_requirement_endpoints_on_a_merged_away_id_point_to_where_it_went(tmp_path):
+    """B4：被并掉的 id 打需求的其余接口，一律 404 带上并进去的那条；撤销合并照常能用。"""
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "京东科研仓对接", "P0")
+    gone = create(client, headers, "yimi", "京东仓签收凭证", "P2", meeting_keys=("jd",))
+    assert merge(client, headers, gone, main).status_code == 200
+    expected = {
+        "detail": "这条需求已并入「京东科研仓对接」",
+        "merged_into": {"id": main, "title": "京东科研仓对接"},
+    }
+    body_headers = {**headers, "Content-Type": "application/json"}
+    base = f"/api/requirements/{gone}"
+    calls = [
+        client.get(base),
+        client.patch(base, json={"priority": "P1"}, headers=headers),
+        client.post(f"{base}/status-undo", json={}, headers=headers),
+        client.get(f"{base}/merge-targets"),
+        client.post(f"{base}/merge", json={"into_requirement_id": main}, headers=headers),
+        client.get(f"{base}/context"),
+        client.get(f"{base}/decisions"),
+        client.put(f"{base}/meetings", json={"meeting_ids": []}, headers=headers),
+        client.post(f"{base}/meetings/{meeting_id('jd')}", json={}, headers=headers),
+        client.delete(f"{base}/meetings/{meeting_id('jd')}", headers=body_headers),
+        client.post(f"{base}/tasks", json={"task_ids": []}, headers=headers),
+        client.get(f"{base}/folders/1/files"),
+        client.delete(f"{base}/folders/1", headers=body_headers),
+    ]
+    for response in calls:
+        assert (response.status_code, response.json()) == (404, expected), response.request.url
+    # 从来没有过的 id 照旧
+    assert client.get("/api/requirements/requirement-missing/context").json() == {
+        "detail": "需求不存在"
+    }
+    assert post(client, headers, f"{base}/unmerge").status_code == 200
+
+
+def test_status_undo_leaves_tasks_moved_to_another_requirement(tmp_path):
+    """B5：一起关掉以后，一条待办被改挂到别的需求；撤销只恢复还挂在这条需求上的。"""
+    client, headers, db = make_world(tmp_path)
+    requirement_id = create(client, headers, "yimi", "京东科研仓对接", "P0")
+    other = create(client, headers, "yimi", "赠药横跳拦截", "P1")
+    task_on(db, "task-stay", "和京东确认妥投拍照字段", requirement_id, "confirmed")
+    task_on(db, "task-move", "推入库单接口", requirement_id, "in_progress")
+    patch(client, headers, requirement_id, {"status": "done", "close_open_tasks": True})
+    moved = client.patch("/api/tasks/task-move", json={"requirement_id": other}, headers=headers)
+    assert moved.status_code == 200, moved.text
+
+    assert (
+        post(client, headers, f"/api/requirements/{requirement_id}/status-undo").status_code == 200
+    )
+
+    assert task_row(db, "task-stay")["status"] == "confirmed"
+    assert task_row(db, "task-move")["status"] == "cancelled"
+    assert task_row(db, "task-move")["requirement_id"] == other
+
+
+def test_status_undo_still_restores_tasks_that_an_unmerge_sent_back(tmp_path):
+    """B5 的另一面：这条并进主需求，主需求标记完成、一起关掉（含并过来的待办）；撤销合并把待办退回这条，
+    再撤销主需求的完成——退回这条的待办照样恢复（撤销合并不算被别处挪走）。"""
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "京东科研仓对接", "P0")
+    this = create(client, headers, "yimi", "京东仓签收凭证", "P1")
+    task_on(db, "task-main", "推入库单接口", main, "in_progress")
+    task_on(db, "task-this", "和京东确认妥投拍照字段", this, "confirmed")
+    before = snapshot(db)
+    assert merge(client, headers, this, main).status_code == 200
+    closed = patch(client, headers, main, {"status": "done", "close_open_tasks": True}).json()
+    assert closed["closed_task_count"] == 2
+    assert post(client, headers, f"/api/requirements/{this}/unmerge").status_code == 200
+    assert task_row(db, "task-this") == {
+        "status": "cancelled",
+        "status_changed_at": closed["status_changed_at"],
+        "requirement_id": this,
+        "project_id": project_id("yimi"),
+    }
+
+    assert post(client, headers, f"/api/requirements/{main}/status-undo").status_code == 200
+
+    after = snapshot(db)
+    for state in (before, after):
+        for row in state["requirements"]:
+            row.pop("status_undo")
+    assert after == before
+
+
+def merge_candidate(client, headers, candidate_id, requirement_id):
+    response = post(
+        client,
+        headers,
+        f"/api/requirement-candidates/{candidate_id}/merge",
+        {"requirement_id": requirement_id},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def unmerge_candidate(client, headers, candidate_id):
+    response = post(client, headers, f"/api/requirement-candidates/{candidate_id}/unmerge")
+    assert response.status_code == 200, response.text
+
+
+def status_of(client, requirement_id):
+    return client.get(f"/api/requirements/{requirement_id}").json()["status"]
+
+
+def test_candidate_unmerge_keeps_it_open_when_more_was_merged_in_after_the_reopen(tmp_path):
+    """B6：两条候选先后并进已完成的需求（第一条把它重新打开）。先撤第一条：之后还并进来过第二条，不改回已完成；
+    第二条没打开过它，撤了也不动。"""
+    client, headers, db = make_world(tmp_path)
+    target = create(client, headers, "yimi", "京东科研仓对接", "P0", status="done")
+    first = candidate(db, "receipt", "京东仓签收凭证")
+    second = candidate(db, "inbound", "京东入库单推送")
+    assert merge_candidate(client, headers, first, target)["reopened"] is True
+    assert merge_candidate(client, headers, second, target)["reopened"] is False
+
+    unmerge_candidate(client, headers, first)
+    assert status_of(client, target) == "active"
+    unmerge_candidate(client, headers, second)
+    assert status_of(client, target) == "active"
+
+
+def test_candidate_unmerge_closes_it_again_once_later_merges_are_undone(tmp_path):
+    """B6 倒序：先撤后并进来的那条，再撤打开它的那条，回到已完成。"""
+    client, headers, db = make_world(tmp_path)
+    target = create(client, headers, "yimi", "京东科研仓对接", "P0", status="done")
+    first = candidate(db, "receipt", "京东仓签收凭证")
+    second = candidate(db, "inbound", "京东入库单推送")
+    merge_candidate(client, headers, first, target)
+    merge_candidate(client, headers, second, target)
+
+    unmerge_candidate(client, headers, second)
+    unmerge_candidate(client, headers, first)
+
+    assert status_of(client, target) == "done"
+
+
+def test_candidate_unmerge_keeps_it_open_after_a_requirement_was_merged_in(tmp_path):
+    """B6：候选把已完成的需求重新打开以后，又有一条需求并了进来：撤销候选合并不改回已完成。"""
+    client, headers, db = make_world(tmp_path)
+    target = create(client, headers, "yimi", "京东科研仓对接", "P0", status="done")
+    later = create(client, headers, "yimi", "京东科研仓二期", "P1", status="shelved")
+    first = candidate(db, "receipt", "京东仓签收凭证")
+    merge_candidate(client, headers, first, target)
+    assert merge(client, headers, later, target).status_code == 200
+
+    unmerge_candidate(client, headers, first)
+
+    assert status_of(client, target) == "active"

@@ -163,6 +163,9 @@ def _assert_status(status: str) -> None:
 def _requirement_row(connection: Any, requirement_id: str) -> dict[str, Any]:
     row = connection.execute("SELECT * FROM requirements WHERE id=?", (requirement_id,)).fetchone()
     if row is None:
+        into = merged_into(connection, requirement_id)
+        if into is not None:
+            raise RequirementMergedAway(into)
         raise NotFoundError(f"需求不存在：{requirement_id}")
     return dict(row)
 
@@ -448,21 +451,114 @@ def _folder_detail(
 def _merge_undo_marks(
     connection: Any, requirement_id: str, *, now: datetime | None = None
 ) -> dict[int, dict[str, str]]:
-    """合并进这条需求、还在撤销时限里的原话 → {candidate_id, until}：详情页在那一行给［撤销合并］。"""
+    """合并进这条需求、还在撤销时限里的原话 → 撤销标记，详情页在那一行给［撤销合并］：
+
+    - {kind: "candidate", candidate_id, until}：候选合并带进来、via_candidate_title 还是那条候选名字的原话
+      （候选并进的那条需求之后又被并进这条，原话改记成被并那条的名字，就不再打候选标记）；
+    - {kind: "requirement", requirement_id, title, until}：直接并进这条的需求（requirement_id 是被并掉那条，
+      title 是它的名字）搬过来的原话。
+
+    同一句原话两种都符合时取需求合并（更晚的那次）。"""
     moment = now or datetime.now(UTC)
+    via = {
+        row["id"]: row["via_candidate_title"]
+        for row in connection.execute(
+            "SELECT id, via_candidate_title FROM requirement_sources WHERE requirement_id=?",
+            (requirement_id,),
+        ).fetchall()
+    }
     marks: dict[int, dict[str, str]] = {}
-    rows = connection.execute(
-        """SELECT id, merged_at, merge_undo FROM requirement_candidates
+    for row in connection.execute(
+        """SELECT id, title, merged_at, merge_undo FROM requirement_candidates
             WHERE requirement_id=? AND status='merged' AND merge_undo IS NOT NULL""",
         (requirement_id,),
-    ).fetchall()
-    for row in rows:
+    ).fetchall():
         until = datetime.fromisoformat(row["merged_at"]) + timedelta(minutes=MERGE_UNDO_MINUTES)
         if moment >= until:
             continue
         for source in json.loads(row["merge_undo"]).get("sources", []):
-            marks[source["id"]] = {"candidate_id": row["id"], "until": until.isoformat()}
+            if source["id"] in via and via[source["id"]] == row["title"]:
+                marks[source["id"]] = {
+                    "kind": "candidate",
+                    "candidate_id": row["id"],
+                    "until": until.isoformat(),
+                }
+    for row in connection.execute(
+        """SELECT requirement_id, title, merged_at, undo FROM requirement_merges
+            WHERE into_requirement_id=? AND undo IS NOT NULL""",
+        (requirement_id,),
+    ).fetchall():
+        until = datetime.fromisoformat(row["merged_at"]) + timedelta(minutes=MERGE_UNDO_MINUTES)
+        record = json.loads(row["undo"])
+        # 链上改指过来的（并进的那条之后又并进这条）撤不了，先撤后一次，不打标记
+        if moment >= until or record["into"] != requirement_id:
+            continue
+        for source in record["sources"]:
+            if source["id"] in via:
+                marks[source["id"]] = {
+                    "kind": "requirement",
+                    "requirement_id": row["requirement_id"],
+                    "title": row["title"],
+                    "until": until.isoformat(),
+                }
     return marks
+
+
+def drop_merged_meeting(
+    connection: Any,
+    requirement_id: str,
+    meeting_id: str,
+    *,
+    skip_merge: str | None = None,
+    skip_candidate: str | None = None,
+) -> None:
+    """撤销合并时拆掉那次合并给需求新加的关联会议（R01-14、D7）。这场会还有别的原话留在需求里（之后又
+    并进来一条带着这场会原话的）时关联留着，「这场会是合并新加的」这份记账交给带来那些原话、还记着撤销
+    快照的合并（需求合并的 undo.meetings_added、候选合并的 merge_undo.meetings），撤销那一次时再拆。
+    skip_merge / skip_candidate 是正在撤销的这一次。"""
+    remaining = {
+        row["id"]
+        for row in connection.execute(
+            "SELECT id FROM requirement_sources WHERE requirement_id=? AND meeting_id=?",
+            (requirement_id, meeting_id),
+        ).fetchall()
+    }
+    if not remaining:
+        connection.execute(
+            "DELETE FROM requirement_meetings WHERE requirement_id=? AND meeting_id=?",
+            (requirement_id, meeting_id),
+        )
+        return
+    for row in connection.execute(
+        """SELECT requirement_id, undo FROM requirement_merges
+            WHERE into_requirement_id=? AND undo IS NOT NULL AND requirement_id IS NOT ?""",
+        (requirement_id, skip_merge),
+    ).fetchall():
+        record = json.loads(row["undo"])
+        if (
+            record["into"] == requirement_id
+            and meeting_id not in record["meetings_added"]
+            and remaining & {source["id"] for source in record["sources"]}
+        ):
+            record["meetings_added"].append(meeting_id)
+            connection.execute(
+                "UPDATE requirement_merges SET undo=? WHERE requirement_id=?",
+                (json.dumps(record, ensure_ascii=False), row["requirement_id"]),
+            )
+    for row in connection.execute(
+        """SELECT id, merge_undo FROM requirement_candidates
+            WHERE requirement_id=? AND status='merged' AND merge_undo IS NOT NULL AND id IS NOT ?""",
+        (requirement_id, skip_candidate),
+    ).fetchall():
+        record = json.loads(row["merge_undo"])
+        if meeting_id not in record["meetings"] and remaining & {
+            source["id"] for source in record["sources"]
+        }:
+            record["meetings"].append(meeting_id)
+            connection.execute(
+                "UPDATE requirement_candidates SET merge_undo=? WHERE id=?",
+                (json.dumps(record, ensure_ascii=False), row["id"]),
+            )
 
 
 def status_undo_until(
@@ -756,7 +852,8 @@ def undo_status(
     task_service: TaskService, requirement_id: str, *, now: datetime | None = None
 ) -> dict[str, Any]:
     """撤销最近一次改状态（D11）：10 分钟内，需求回到原来的状态和状态时间；这次一起关掉的待办回到各自
-    原来的状态——还是这次关掉时的样子（已取消、状态时间没变）的才动，这期间被别处改过的不动。
+    原来的状态——还挂在这条需求上、还是这次关掉时的样子（已取消、状态时间没变）的才动，这期间被别处改过、
+    改挂到别的需求的不动（撤销需求合并退回原需求的照样恢复，见 requirement_merges.unmerge_requirement）。
     之后状态又被别处改过（合并、候选并进来重新打开）的不能撤销。"""
     moment = now or datetime.now(UTC)
     stamp = moment.isoformat()
@@ -773,8 +870,15 @@ def undo_status(
         for task in record["tasks"]:
             if connection.execute(
                 """UPDATE tasks SET status=?, status_changed_at=?, updated_at=?
-                    WHERE id=? AND status='cancelled' AND status_changed_at=?""",
-                (task["status"], task["status_changed_at"], stamp, task["id"], record["at"]),
+                    WHERE id=? AND requirement_id=? AND status='cancelled' AND status_changed_at=?""",
+                (
+                    task["status"],
+                    task["status_changed_at"],
+                    stamp,
+                    task["id"],
+                    task.get("requirement_id", requirement_id),
+                    record["at"],
+                ),
             ).rowcount:
                 connection.execute(
                     """INSERT INTO task_events(task_id, kind, body, created_at)

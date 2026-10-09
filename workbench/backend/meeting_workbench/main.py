@@ -18,6 +18,7 @@ from typing import Annotated, Any, Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -204,6 +205,8 @@ def audio_media_type(path: Path) -> str:
 # 但对使用者是同一件事：录音已经转写好、能听能搜。
 MEETING_DONE_STATUSES = ("completed_unreviewed", "draft_modified", "published")
 MEETING_STATUS_GROUPS: dict[str, tuple[str, ...]] = {"done": MEETING_DONE_STATUSES}
+# 需求接口路径里的需求 id（被并掉的需求打这些接口时 404 带上并进去的那条，D8）
+REQUIREMENT_PATH = re.compile(r"^/api/requirements/([^/]+)")
 # 纪要阶段自动兜底：这些失败停在“逐字稿已好、纪要没生成”，重派一次即可救回。
 # 纪要可指定的模型后端，与 relay_control.LLM_BACKENDS 一致
 MINUTES_BACKENDS = frozenset({"claude", "deepseek"})
@@ -1884,9 +1887,28 @@ def create_app(
                 payload={"error": str(error)},
             )
 
+    def merged_requirement(path: str) -> dict[str, Any] | None:
+        """需求接口路径里的 id 是被并掉的那条时，顺着合并记录找到现在那条（id、title）。"""
+        match = REQUIREMENT_PATH.match(path)
+        if match is None:
+            return None
+        with db.autocommit() as connection:
+            return requirements.merged_into(connection, match.group(1))
+
     @app.exception_handler(MeetingServiceError)
-    async def meeting_service_error(_request: Request, error: MeetingServiceError):
+    async def meeting_service_error(request: Request, error: MeetingServiceError):
         if isinstance(error, NotFoundError):
+            # D8：被并掉的需求，详情和其余需求接口一律 404 带上并进去的那条（unmerge 照常能用，不走到这里）
+            into = (
+                error.merged_into
+                if isinstance(error, requirements.RequirementMergedAway)
+                else await run_in_threadpool(merged_requirement, request.url.path)
+            )
+            if into is not None:
+                return JSONResponse(
+                    {"detail": f"这条需求已并入「{into['title']}」", "merged_into": into},
+                    status_code=404,
+                )
             status = 404
         elif isinstance(error, (ConflictError, PublishValidationError)):
             status = 409
@@ -4373,7 +4395,7 @@ def create_app(
             try:
                 return card_index.requirement_context(connection, requirement_id)
             except card_index.RequirementMissing as error:
-                raise HTTPException(404, str(error)) from error
+                raise NotFoundError(str(error)) from error
 
     @app.get("/api/requirements/{requirement_id}/decisions")
     def requirement_decisions(requirement_id: str):
@@ -4383,7 +4405,7 @@ def create_app(
                     connection, requirement_id, worker=links_worker, settings=settings
                 )
             except decisions_module.RequirementNotFound as error:
-                raise HTTPException(404, str(error)) from error
+                raise NotFoundError(str(error)) from error
 
     # 4c：项目时间线，按有动静的天翻页；days 夹在 1 到 31 之间（超出不报错）
     @app.get("/api/projects/{project_id}/timeline")
@@ -4887,13 +4909,8 @@ def create_app(
 
     @app.get("/api/requirements/{requirement_id}")
     def requirement_detail(requirement_id: str):
-        try:
-            return requirements.get_requirement(task_service, requirement_id)
-        except requirements.RequirementMergedAway as error:
-            # D8：以前的链接打开被并掉的需求，带上并进去的那条，详情页给［去看］
-            return JSONResponse(
-                {"detail": str(error), "merged_into": error.merged_into}, status_code=404
-            )
+        # 被并掉的需求 404 带 merged_into（meeting_service_error），详情页给［去看］（D8）
+        return requirements.get_requirement(task_service, requirement_id)
 
     @app.patch("/api/requirements/{requirement_id}")
     def update_requirement(requirement_id: str, body: RequirementUpdateInput):

@@ -44,7 +44,7 @@ from .project_profile import (
     norm_key,
 )
 from .project_linking import last_reassignment, reassign_meeting, undo_reassign
-from .requirements import _validate_folder_paths, insert_requirement, link_meeting
+from .requirements import _validate_folder_paths, insert_requirement, link_meeting, merged_into
 from .materials import ROOT_ONLINE
 from .service import ConflictError, NotFoundError
 from .text_scan import FormScanner
@@ -602,9 +602,34 @@ def name_as_requirement(
     }
 
 
+def _refuse_across_merges(connection: Any, requirement_id: str | None, *, since: str) -> None:
+    """建成需求之后，那条需求被并走了、或者有需求并进了它：抛 ConflictError。只看建成需求之后的合并
+    （链接到已有需求的，那条需求以前就并进来过的不算）。"""
+    if not requirement_id:
+        return
+    gone = connection.execute(
+        "SELECT title FROM requirement_merges WHERE requirement_id=?", (requirement_id,)
+    ).fetchone()
+    if gone is not None:
+        into = merged_into(connection, requirement_id)
+        where = f"已并入「{into['title']}」" if into else "已并入别的需求"
+        raise ConflictError(f"「{gone['title']}」{where}，要撤销建成需求，先撤销那次合并")
+    merged_in = connection.execute(
+        """SELECT r.title FROM requirement_merges m JOIN requirements r ON r.id = m.into_requirement_id
+            WHERE m.into_requirement_id=? AND julianday(m.merged_at) >= julianday(?)
+            LIMIT 1""",
+        (requirement_id, since),
+    ).fetchone()
+    if merged_in is not None:
+        raise ConflictError(f"已有需求并入「{merged_in['title']}」，要撤销建成需求，先撤销那次合并")
+
+
 def undo_name_as_requirement(connection: Any, meeting_id: str) -> dict[str, Any]:
     """10 分钟内撤销建成需求：解除关联；需求在那之后没有别的会、任务、文件夹时删掉，否则留着；
-    改过归属的逐场撤销；名字和决定行恢复原样。调用方开事务。"""
+    改过归属的逐场撤销；名字和决定行恢复原样。调用方开事务。
+
+    这期间那条需求被并进了别处、或者有别的需求并进了它（需求并需求，D7）时不撤销、什么都不改：解除关联、
+    删需求会连带删掉合并带过来的原话和会，合并也就撤不回了。先撤销那次合并再撤销建成需求。"""
     latest = connection.execute(
         """SELECT id FROM events WHERE meeting_id=? AND event_type='name_made_requirement'
             ORDER BY id DESC LIMIT 1""",
@@ -617,6 +642,7 @@ def undo_name_as_requirement(connection: Any, meeting_id: str) -> dict[str, Any]
     )
     payload = event["payload"]
     requirement_id = payload.get("requirement_id")
+    _refuse_across_merges(connection, requirement_id, since=event["at"])
     linked = [str(item) for item in payload.get("linked_meeting_ids") or []]
     if linked:
         connection.execute(

@@ -396,7 +396,11 @@ def merge_undo(*parts: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def restore_settlement(connection: Any, undo: dict[str, Any]) -> int:
-    """照 settle_* 的返回值还原：批次上的名字只在当前仍为空时写回，决定行恢复原样。返回写回的批次数。"""
+    """照 settle_* 的返回值还原：批次上的名字只在当前仍为空时写回，决定行恢复原样。返回写回的批次数。
+
+    需求名的决定原来指着的需求这期间被并走了（需求并需求，D7）：顺着合并记录写成现在那条，事件不改。"""
+    from .requirements import merged_into
+
     restored = 0
     for link in undo.get("links") or []:
         column = link.get("column")
@@ -435,6 +439,8 @@ def restore_settlement(connection: Any, undo: dict[str, Any]) -> int:
                 ).fetchone()
                 is not None
             ):
+                requirement_id = previous["requirement_id"]
+                into = merged_into(connection, requirement_id) if requirement_id else None
                 connection.execute(
                     """INSERT OR REPLACE INTO requirement_name_decisions
                            (project_id, name_key, name, decision, requirement_id, decided_at)
@@ -444,7 +450,7 @@ def restore_settlement(connection: Any, undo: dict[str, Any]) -> int:
                         previous["name_key"],
                         previous["name"],
                         previous["decision"],
-                        previous["requirement_id"],
+                        into["id"] if into else requirement_id,
                         previous["decided_at"],
                     ),
                 )

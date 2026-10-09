@@ -20,6 +20,7 @@ from .requirements import (
     MERGE_UNDO_MINUTES,
     REQUIREMENT_PRIORITIES,
     _requirement_row,
+    drop_merged_meeting,
     get_requirement,
     merged_into,
 )
@@ -114,89 +115,6 @@ def _repoint_confirm_undo(connection: Any, task_ids: list[str], old: str, new: s
             )
 
 
-# events 里 payload 存着需求 id、10 分钟内还要照它撤销的两种事件：会议页「建成需求」（requirement_id，和 undo
-# 里需求名决定的旧行）、「不算新需求」（undo 里需求名决定的旧行）。别的事件的 payload 不存需求 id。
-_EVENTS_WITH_REQUIREMENT = ("name_made_requirement", "name_decision_made")
-
-
-def _requirement_paths(value: Any, requirement_id: str, path: tuple = ()) -> list[tuple]:
-    """JSON 里值等于 requirement_id 的 requirement_id 键在哪（键和下标组成的路径）。"""
-    found: list[tuple] = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if key == "requirement_id" and item == requirement_id:
-                found.append((*path, key))
-            else:
-                found.extend(_requirement_paths(item, requirement_id, (*path, key)))
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            found.extend(_requirement_paths(item, requirement_id, (*path, index)))
-    return found
-
-
-def _parent(payload: Any, path: list) -> Any:
-    for key in path[:-1]:
-        payload = payload[key]
-    return payload
-
-
-def _repoint_events(connection: Any, old: str, new: str) -> list[dict[str, Any]]:
-    """把事件 payload 里指着 old 的需求 id 改成 new，返回改了哪几条、哪些位置（撤销合并时照它改回）。
-    「建成需求」原来新建的那条被并进了合并前就有的主需求：existing 记成 true，撤销建成需求时只解除这几场会
-    的关联、不删主需求。"""
-    changed = []
-    placeholders = ", ".join("?" for _ in _EVENTS_WITH_REQUIREMENT)
-    for row in connection.execute(
-        f"""SELECT id, payload_json FROM events
-             WHERE event_type IN ({placeholders}) AND payload_json LIKE ?
-             ORDER BY id""",
-        (*_EVENTS_WITH_REQUIREMENT, f"%{old}%"),
-    ).fetchall():
-        try:
-            payload = json.loads(row["payload_json"])
-        except (TypeError, ValueError):
-            continue
-        paths = _requirement_paths(payload, old)
-        if not paths:
-            continue
-        for path in paths:
-            _parent(payload, path)[path[-1]] = new
-        entry: dict[str, Any] = {"id": row["id"], "paths": [list(path) for path in paths]}
-        if ("requirement_id",) in paths and payload.get("existing") is False:
-            entry["existing"] = False
-            payload["existing"] = True
-        connection.execute(
-            "UPDATE events SET payload_json=? WHERE id=?",
-            (json.dumps(payload, ensure_ascii=False), row["id"]),
-        )
-        changed.append(entry)
-    return changed
-
-
-def _restore_events(connection: Any, entries: list[dict[str, Any]], old: str, new: str) -> None:
-    """撤销合并：合并时改指主需求（old）的位置，现在还指着主需求的改回这条（new），existing 退回原值。"""
-    for entry in entries:
-        row = connection.execute(
-            "SELECT payload_json FROM events WHERE id=?", (entry["id"],)
-        ).fetchone()
-        if row is None:
-            continue
-        payload = json.loads(row["payload_json"])
-        for path in entry["paths"]:
-            try:
-                parent = _parent(payload, path)
-                if parent[path[-1]] == old:
-                    parent[path[-1]] = new
-            except (KeyError, IndexError, TypeError):
-                continue
-        if "existing" in entry:
-            payload["existing"] = entry["existing"]
-        connection.execute(
-            "UPDATE events SET payload_json=? WHERE id=?",
-            (json.dumps(payload, ensure_ascii=False), entry["id"]),
-        )
-
-
 def merge_requirement(
     task_service: TaskService,
     requirement_id: str,
@@ -207,8 +125,9 @@ def merge_requirement(
     """把这条并进同项目的主需求（D5、D6），返回主需求详情，外加 merged_from（这条的 id、名字、撤销截止时间）。
 
     引用需求 id 的地方全部改指主需求：待办、关联会议、材料文件夹、来源、候选（认领进这条的记成已合并）、
-    候选的相近需求、决议、需求名的决定、并进这条的合并记录、待办确认前的挂接、「建成需求」「不算新需求」
-    事件里撤销要用的需求 id。改指前的样子记进 requirement_merges.undo，撤销时照它还原。"""
+    候选的相近需求、决议、需求名的决定、并进这条的合并记录、待办确认前的挂接。改指前的样子记进
+    requirement_merges.undo，撤销时照它还原。会议页「建成需求」「不算新需求」事件里记的需求 id 不改：撤销
+    建成需求时遇到合并会先拒绝（name_actions.undo_name_as_requirement），撤销不算新需求时按合并链读到现在那条。"""
     if requirement_id == into_requirement_id:
         raise ValueError("不能并给自己")
     moment = now or datetime.now(UTC)
@@ -368,7 +287,6 @@ def merge_requirement(
             (into_requirement_id, requirement_id),
         )
         _repoint_confirm_undo(connection, confirm_undo, requirement_id, into_requirement_id)
-        events = _repoint_events(connection, requirement_id, into_requirement_id)
 
         # 5. 主需求：等级取较高，说明空着就接过这条的，有一边是进行中就是进行中
         after = {
@@ -410,7 +328,6 @@ def merge_requirement(
             "name_decisions": name_decisions,
             "merges": chained,
             "confirm_undo_tasks": confirm_undo,
-            "events": events,
             "main_before": {key: main[key] for key in after},
             "main_after": after,
         }
@@ -543,33 +460,40 @@ def unmerge_requirement(
                         VALUES ({", ".join("?" for _ in source)})""",
                     tuple(source.values()),
                 )
-        # 合并时给主需求新加的关联会议拆掉——那场会还有别的原话留在主需求里（之后又并进来一条）的留着；
-        # 新加的文件夹拿掉
+        # 合并时给主需求新加的关联会议拆掉——那场会还有别的原话留在主需求里（之后又并进来一条）的留着、
+        # 记账交给那一条；新加的文件夹拿掉
         for meeting_id in record["meetings_added"]:
-            connection.execute(
-                """DELETE FROM requirement_meetings
-                    WHERE requirement_id=? AND meeting_id=?
-                      AND NOT EXISTS (SELECT 1 FROM requirement_sources
-                                       WHERE requirement_id=? AND meeting_id=?)""",
-                (main_id, meeting_id, main_id, meeting_id),
-            )
+            drop_merged_meeting(connection, main_id, meeting_id, skip_merge=requirement_id)
         for folder_id in record["folders_added"]:
             connection.execute(
                 "DELETE FROM requirement_folders WHERE id=? AND requirement_id=?",
                 (folder_id, main_id),
             )
         # 待办：还挂在主需求上的挂回来，这期间改挂到别处的不动
+        returned = set()
         for task in record["tasks"]:
             if connection.execute(
                 """UPDATE tasks SET requirement_id=?, project_id=?, updated_at=?
                     WHERE id=? AND requirement_id=?""",
                 (requirement_id, this["project_id"], stamp, task["id"], main_id),
             ).rowcount:
+                returned.add(task["id"])
                 connection.execute(
                     """INSERT INTO task_events(task_id, kind, body, created_at)
                        VALUES (?, 'requirement_changed', ?, ?)""",
                     (task["id"], f"撤销合并：回到需求「{this['title']}」", stamp),
                 )
+        # 主需求最近一次改状态时一起关掉了其中几条：记下它们现在回到了这条，撤销那次改状态时照样恢复
+        # （改状态的撤销只恢复还挂在原处的待办，撤销合并退回的不算挪走）
+        if returned and main["status_undo"]:
+            status_record = json.loads(main["status_undo"])
+            for task in status_record["tasks"]:
+                if task["id"] in returned:
+                    task["requirement_id"] = requirement_id
+            connection.execute(
+                "UPDATE requirements SET status_undo=? WHERE id=?",
+                (json.dumps(status_record, ensure_ascii=False), main_id),
+            )
         for candidate in record["candidates"]:
             connection.execute(
                 """UPDATE requirement_candidates SET requirement_id=?, status=?
@@ -600,7 +524,6 @@ def unmerge_requirement(
                 (requirement_id, merged_id, main_id),
             )
         _repoint_confirm_undo(connection, record["confirm_undo_tasks"], main_id, requirement_id)
-        _restore_events(connection, record["events"], main_id, requirement_id)
 
         # 主需求：还是合并后那个样子的字段退回合并前，这期间手动改过的留着
         before, after = record["main_before"], record["main_after"]
