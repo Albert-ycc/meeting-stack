@@ -365,6 +365,9 @@ def list_requirements(
              LIMIT ? OFFSET ?""",
         (*OPEN_TASK_STATUSES, *params, limit, offset),
     )
+    for row in rows:
+        # 撤销改状态用的记录不往外给（详情里也去掉了，只给 status_undo_until）
+        row.pop("status_undo", None)
     return {
         "items": rows,
         "total": total,

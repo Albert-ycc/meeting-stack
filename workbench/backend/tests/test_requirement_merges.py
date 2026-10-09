@@ -522,6 +522,104 @@ def test_old_links_follow_a_chain_of_merges_to_the_last_one(tmp_path):
     }
 
 
+# ---------------------------------------------------------------- 会议页「建成需求」「不算新需求」跟着合并走
+
+
+def name_as_requirement(client, headers, meeting_key, title):
+    response = client.post(
+        f"/api/meetings/{meeting_id(meeting_key)}/name-as-requirement",
+        json={"title": title},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def ignore_requirement_name(client, headers, name):
+    response = post(
+        client,
+        headers,
+        "/api/project-names/ignore",
+        {"name": name, "kind": "requirement", "project_id": project_id("yimi")},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def event_payload(db, event_id):
+    row = db.query_one("SELECT payload_json FROM events WHERE id=?", (event_id,))
+    return json.loads(row["payload_json"])
+
+
+def test_undoing_name_as_requirement_after_a_merge_unlinks_the_meeting_from_the_main_requirement(
+    tmp_path,
+):
+    """会议页把 EDC 那场会建成需求「EDC 系统选型」，发现和已有的「EDC 产研对接」重复、并了进去；10 分钟内
+    再撤销「建成需求」：那场会从主需求上解除关联，主需求本身留着（它不是那次建出来的）。"""
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "EDC 产研对接", "P1")
+    made = name_as_requirement(client, headers, "edc", "EDC 系统选型")
+    assert made["existing"] is False
+    merged = merge(client, headers, made["requirement_id"], main).json()
+    assert [meeting["id"] for meeting in merged["meetings"]] == [meeting_id("edc")]
+    payload = event_payload(db, made["event_id"])
+    assert (payload["requirement_id"], payload["existing"]) == (main, True)
+
+    undone = post(client, headers, f"/api/meetings/{meeting_id('edc')}/name-as-requirement/undo")
+
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["requirement_deleted"] is False
+    detail = client.get(f"/api/requirements/{main}").json()
+    assert (detail["title"], detail["meetings"]) == ("EDC 产研对接", [])
+
+
+def test_unmerge_points_the_name_events_back_to_the_restored_requirement(tmp_path):
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "EDC 产研对接", "P1")
+    made = name_as_requirement(client, headers, "edc", "EDC 系统选型")
+    this = made["requirement_id"]
+    # 同一个名字随后又标了「不算新需求」：它的撤销记录里是原来那行「建成了这条」
+    ignored = ignore_requirement_name(client, headers, "EDC 系统选型")
+    before = {
+        event_id: event_payload(db, event_id)
+        for event_id in (made["event_id"], ignored["event_id"])
+    }
+    assert before[ignored["event_id"]]["undo"]["decisions"][0]["previous"]["requirement_id"] == this
+    assert merge(client, headers, this, main).status_code == 200
+    assert event_payload(db, made["event_id"])["requirement_id"] == main
+    assert (
+        event_payload(db, ignored["event_id"])["undo"]["decisions"][0]["previous"]["requirement_id"]
+        == main
+    )
+
+    assert post(client, headers, f"/api/requirements/{this}/unmerge").status_code == 200
+
+    for event_id, payload in before.items():
+        assert event_payload(db, event_id) == payload
+    # 指回来以后，撤销「建成需求」照原样删掉那次建出来的需求
+    undone = post(client, headers, f"/api/meetings/{meeting_id('edc')}/name-as-requirement/undo")
+    assert undone.json()["requirement_deleted"] is True
+    assert client.get(f"/api/requirements/{main}").status_code == 200
+
+
+def test_undoing_an_ignored_requirement_name_after_a_merge_restores_it_onto_the_main_requirement(
+    tmp_path,
+):
+    client, headers, db = make_world(tmp_path)
+    main = create(client, headers, "yimi", "EDC 产研对接", "P1")
+    made = name_as_requirement(client, headers, "edc", "EDC 系统选型")
+    ignored = ignore_requirement_name(client, headers, "EDC 系统选型")
+    assert merge(client, headers, made["requirement_id"], main).status_code == 200
+
+    undone = post(client, headers, "/api/name-decisions/undo", {"event_id": ignored["event_id"]})
+
+    assert undone.status_code == 200, undone.text
+    assert db.query_one(
+        "SELECT decision, requirement_id FROM requirement_name_decisions WHERE name_key=?",
+        (light_key("EDC 系统选型"),),
+    ) == {"decision": "made", "requirement_id": main}
+
+
 # ---------------------------------------------------------------- 1、2. 改状态（D9、D10、D11）
 
 
@@ -538,6 +636,12 @@ def test_mark_done_without_open_tasks_records_the_time_and_leaves_the_active_wal
     assert close_to_now(detail["status_changed_at"])
     assert close_to_now(detail["status_undo_until"], plus_minutes=10)
     assert "status_undo" not in detail
+    # 需求列表接口和详情一样，不带撤销记录的原始 JSON
+    listed = client.get("/api/requirements", params={"project_id": project_id("yimi")}).json()
+    assert [(item["id"], item["status_changed_at"]) for item in listed["items"]] == [
+        (requirement_id, detail["status_changed_at"])
+    ]
+    assert "status_undo" not in listed["items"][0]
     assert task_row(db, "task-done")["status"] == "done"
     assert wall(client, status="active")["items"] == []
     (item,) = wall(client, status="done")["items"]
