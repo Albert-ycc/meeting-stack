@@ -183,7 +183,9 @@ P0–P3 只挂在需求上，任务不单设优先级，从所属需求派生；
 录音文件 ──────────────────────► 永不离开本机
    │
    ├─► FunASR（paraformer-zh + fsmn-vad + ct-punc + cam++）
-   │     逐字稿、字幕、说话人分组          ← 本地模型，离线运行
+   │     初稿、切块、说话人分组            ← 本地模型，离线运行
+   │
+   ├─► Qwen3-ASR 带本场词典重转文字        ← 本地模型，离线运行
    │
    ├─► Whisper turbo 对照稿                ← 本地模型，离线运行
    │
@@ -213,8 +215,8 @@ P0–P3 只挂在需求上，任务不单设优先级，从所属需求派生；
 
 ## 特点
 
-**转写零成本。** 三类本地模型跑在自己机器上：FunASR 出主稿（含 cam++ 说话人分离）、
-Whisper turbo 出对照稿交叉核对字母类术语、bge-small-zh 建语义索引。没有按分钟计费的 API，
+**转写零成本。** 四类本地模型跑在自己机器上：FunASR 出初稿与 cam++ 说话人分离、Qwen3-ASR
+带本场词典把主稿文字重转一遍、Whisper turbo 出对照稿交叉核对字母类术语、bge-small-zh 建语义索引。没有按分钟计费的 API，
 录多久都一样。Apple Silicon 上 FunASR 约 5 倍实时速度。
 
 **纪要样式随你定。** 纪要生成是把逐字稿交给外部 Agent 完成的，写成什么样取决于你给的 prompt。
@@ -267,7 +269,7 @@ Agent，那场会的全部文本立刻可用。这是前面说的方法论的落
 |---|---|---|
 | [`workbench/`](workbench/) | Web 工作台 | FastAPI + React，默认 `127.0.0.1:8765` |
 | [`relay/`](relay/README.md) | 录音发现与派单 | 监听目录、时长分流、任务队列 |
-| [`transcribe/`](transcribe/) | 本地转写引擎 | FunASR + Whisper 双跑 |
+| [`transcribe/`](transcribe/) | 本地转写引擎 | FunASR 初稿 + Qwen3 精转出主稿，Whisper 出对照稿 |
 | [`task-notify/`](task-notify/) | 飞书通知与任务确认闭环 | 任务卡 + 纪要卡构造（参考实现）；长连接回调监听实际跑的是 [`workbench/card_listener.py`](workbench/card_listener.py) |
 
 **不需要 iPhone。** Voice Memos 桥接只是可选入口之一，任何来源的音频文件放进监听目录都会被处理。
@@ -291,6 +293,8 @@ python3 -m venv ~/.venvs/funasr
 ~/.venvs/funasr/bin/pip install funasr modelscope torch torchaudio
 python3 -m venv ~/.venvs/whisper
 ~/.venvs/whisper/bin/pip install openai-whisper
+python3 -m venv ~/.venvs/mlx-qwen3-asr                 # Apple Silicon；不装时主稿用 FunASR 原文
+~/.venvs/mlx-qwen3-asr/bin/pip install mlx-qwen3-asr
 
 # 3. 配置
 cp .env.example .env    # 至少改 MEETING_WORKBENCH_ARCHIVE_ROOT 和 MEETING_RELAY_ARCHIVE_ROOT（指向同一个目录）
@@ -332,6 +336,7 @@ relay 的环境里必须有 `MEETING_RELAY_CONTROL_ENABLED=1`（`.env.example` �
 | `MEETING_RELAY_CONTROL_ENABLED` | 空 | 必须设成 `1`，relay 才走工作台任务队列；不设走旧同步路径（见上） |
 | `MEETING_RELAY_AGENT` | `claude` | 派单目标，`claude` 或 `codex` |
 | `TRANSCRIBE_ENGINE` | `observe` | `observe`=双跑；relay 自动处理录音只支持它，`funasr` / `whisper` 单引擎仅供手工跑 `transcribe.sh` |
+| `TRANSCRIBE_TEXT_ENGINE` | `qwen3` | 主稿文字用 Qwen3-ASR 带本场词典重转；设 `paraformer` 关掉，主稿就是 FunASR 原文（见 [transcribe/README.md](transcribe/README.md)） |
 | `MEETING_WORKBENCH_LARK_CHAT_ID` | 空 | 飞书任务确认卡发送到的群；留空则确认闭环在网页内完成。卡片回调监听也用它 |
 | `MEETING_WORKBENCH_LARK_OWNER_OPEN_ID` | 空 | 卡片回调监听只处理这个人（`ou_` 开头的 open_id）点的按钮；和上一项缺一项，监听进程都不启动 |
 | `MEETING_WORKBENCH_MATERIAL_BROWSE_ROOT` | `~` | 项目材料目录可浏览、可挂靠的范围 |

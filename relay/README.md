@@ -14,7 +14,7 @@ relay 是整条链路的自动化中枢：发现新录音 → 入任务队列 �
 relay_watchdog.py   监听目录，新音频入工作台任务队列（受控模式，MEETING_RELAY_CONTROL_ENABLED=1），
                     逐个领取：转写后派 Agent 生成纪要，归档为 <YYMMDD 主题>/
         ↓
-../transcribe/transcribe.sh   本地转写（FunASR 主稿 + Whisper 对照稿）
+../transcribe/transcribe.sh   本地转写（FunASR 初稿 + Qwen3 精转出主稿，Whisper 出对照稿）
         ↓
 归档根 <YYMMDD 主题>/    音频、逐字稿、字幕、说话人分组、纪要
         ↓

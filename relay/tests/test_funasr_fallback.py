@@ -56,6 +56,8 @@ class FunAsrTextOnlyChunkTests(unittest.TestCase):
                 patch.object(module, "to_wav_chunks", return_value=(chunks, len(chunks))),
                 patch.object(sys, "argv", ["funasr_transcribe.py", "audio.m4a", str(out), "demo"]),
                 patch.object(module, "log"),
+                # 只测 FunASR 自己的回退句；Qwen 第二遍另有用例（test_qwen_text_pass.py）
+                patch.object(module.qwen_text_pass, "refine", return_value=None),
             ):
                 module.main()
             return srt_cues((out / "demo.srt").read_text(encoding="utf-8"))

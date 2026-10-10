@@ -17,8 +17,12 @@
   - 热词从 prompt 文件提取，上限 20 词——热词过多会造成假注入，实测无关的专有名词
     会被硬塞进完全不相干的会议里 5-6 处。实际采用的热词表打进 stdout 供审计。
   - batch_size_s 保持 60，调大能提速但内存峰值会上去，别随手改。
+  - FunASR 跑完后默认再用 Qwen3-ASR 带本场词典把文字重转一遍（qwen_text_pass.py），句子、
+    时间轴、正文换成 Qwen 的，说话人沿用 cam++；做不成或某段体检不过就用 FunASR 原文。
+    funasr.json 每块的 result 换成合并后的句子，FunASR 原始结果留在同一块的 paraformer 字段。
 """
 
+import gc
 import json
 import re
 import subprocess
@@ -26,6 +30,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import qwen_text_pass
 
 CHUNK_SEC = 3000  # 50 分钟硬上限
 CHUNK_TARGET_SEC = 2700  # 45 分钟目标长度
@@ -216,6 +223,8 @@ def main():
                     "end": s.get("end", 0) + off * 1000,
                     "text": s.get("text", "").strip(),
                     "spk": f"{prefix}spk{s.get('spk', '?')}",
+                    "spk_raw": s.get("spk"),
+                    "chunk": i,
                 }
                 if overlap_boundary and is_overlap_duplicate(sentence, sentences, overlap_boundary):
                     continue
@@ -225,13 +234,51 @@ def main():
                 start_ms = off * 1000
                 end_ms = max(float(chunk_plan.get("end", off)) * 1000, start_ms + 10)
                 sentences.append(
-                    {"start": start_ms, "end": end_ms, "text": info["text"], "spk": f"{prefix}spk?"}
+                    {
+                        "start": start_ms,
+                        "end": end_ms,
+                        "text": info["text"],
+                        "spk": f"{prefix}spk?",
+                        "spk_raw": None,
+                        "chunk": i,
+                    }
                 )
 
-    sentences = [s for s in sentences if s["text"]]
-    if not sentences:
-        log("ERROR: 转写结果为空")
-        sys.exit(1)
+        sentences = [s for s in sentences if s["text"]]
+        if not sentences:
+            log("ERROR: 转写结果为空")
+            sys.exit(1)
+
+        # 第二遍要另起 Qwen3-ASR 进程，先把 FunASR 的模型放掉
+        del model
+        gc.collect()
+        t2 = time.time()
+        refined = qwen_text_pass.refine(
+            audio,
+            sentences,
+            [item["offset_sec"] * 1000 for item in raw],
+            tmpdir,
+            log,
+        )
+        if refined is not None:
+            log(f"Qwen3 文字精转耗时 {time.time() - t2:.1f}s")
+            sentences = refined
+            for i, block in enumerate(raw):
+                offset_ms = block["offset_sec"] * 1000
+                block["paraformer"] = block["result"]
+                block["result"] = {
+                    "text_engine": "qwen3-asr",
+                    "sentence_info": [
+                        {
+                            "start": s["start"] - offset_ms,
+                            "end": s["end"] - offset_ms,
+                            "text": s["text"],
+                            "spk": s["spk_raw"],
+                        }
+                        for s in sentences
+                        if s["chunk"] == i
+                    ],
+                }
 
     # <stem>.txt：每句一行
     (outdir / f"{stem}.txt").write_text(
