@@ -28,8 +28,10 @@ import importlib.util
 import logging
 import os
 import re
+import select
 import shlex
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -146,8 +148,10 @@ def _positive_interval_from_env(name: str, default: str) -> float:
     return value
 
 
+# 待校对对账每轮要把全部「已完成未校对」的会过一遍（2026-10 时 180 场，一轮 100 毫秒以上），
+# 平时由门铃触发（任务库一改就对一次），这个间隔只是兜底
 PENDING_RECONCILE_INTERVAL_SEC = _positive_interval_from_env(
-    "MEETING_RELAY_PENDING_RECONCILE_INTERVAL", "30"
+    "MEETING_RELAY_PENDING_RECONCILE_INTERVAL", "300"
 )
 # 清理本机上已归档录音的冗余副本（监听目录原音频、产物目录工作副本），启动时一次，之后默认一天一次
 AUDIO_CLEANUP_INTERVAL_SEC = _positive_interval_from_env(
@@ -188,6 +192,12 @@ DISABLE_DUAL = os.getenv("RELAY_DISABLE_DUAL") == "1"
 STARTUP_EPOCH = time.time()
 _next_pending_reconcile_at = 0.0
 _next_audio_cleanup_at = 0.0
+# 门铃响过：下一轮先做一次待校对对账（任务刚被改过，可能有要提升的归档）
+_pending_reconcile_requested = False
+# 上一轮有事卡着（窗格被占、等纪要回执、收口补写被锁挡住）：按 CONTROL_POLL_INTERVAL_SEC 短间隔再看
+_short_poll_needed = False
+# control worker 的门铃，只在守护进程的 main() 里绑；用例和旧同步路径里是 None，退回定时轮询
+_worker_wake: "WorkerWake | None" = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -253,6 +263,10 @@ def _settle_pending_claims() -> bool:
 def _control_enqueue(audio: Path) -> str:
     # 文件创建事件不能做大音频哈希；worker 等稳定后再记录真源哈希。
     return _relay_control_module().enqueue(audio, compute_hash=False)
+
+
+def _control_pending_work() -> dict[str, bool]:
+    return _relay_control_module().pending_work()
 
 
 def _control_claim_next() -> dict | None:
@@ -2354,8 +2368,11 @@ def process_controlled_claim(claim: dict) -> bool:
 
 def run_control_worker_once() -> bool:
     global _next_pending_reconcile_at, _next_audio_cleanup_at
+    global _pending_reconcile_requested, _short_poll_needed
     now = time.monotonic()
-    if now >= _next_pending_reconcile_at:
+    _short_poll_needed = False
+    if now >= _next_pending_reconcile_at or _pending_reconcile_requested:
+        _pending_reconcile_requested = False
         _next_pending_reconcile_at = now + PENDING_RECONCILE_INTERVAL_SEC
         try:
             pending_summary = _control_reconcile_pending_archives()
@@ -2386,7 +2403,13 @@ def run_control_worker_once() -> bool:
             log.exception("冗余录音清理异常，下次再试")
     if not _settle_pending_claims():
         # 没补写完的那单还挂在本 worker 名下：不能把它当空闲 claim 回收，也领不了新任务。
+        _short_poll_needed = True
         return False
+    if not any(_control_pending_work().values()):
+        # 没排队的、没等纪要回执的、也没挂着的 claim：下面那套（三个子进程查 tmux 窗格）都不用跑
+        return False
+    # 有事要办但这一轮可能办不成（窗格被占、纪要回执还在宽限期内、别人手上的单没完）：短间隔再看
+    _short_poll_needed = True
     if not _agent_pane_available():
         return False
     reconciled = _control_reconcile_codex_handoffs()
@@ -2402,6 +2425,92 @@ def run_control_worker_once() -> bool:
     return True
 
 
+class WorkerWake:
+    """control worker 的门铃：relayctl 改了任务库、监听目录来了录音，就往这里发一个字节。
+
+    Unix 数据报套接字，绑在任务库旁边（relay_control.worker_wake_socket），发的一方见
+    relay_control.notify_worker。绑不上（路径太长、目录不可写）时 bound 为 False，worker 退回定时轮询。
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._socket: socket.socket | None = None
+        self._inode: int | None = None
+        try:
+            # 只清自己这条路径：上一个守护进程被杀时没来得及删的；同一时刻只跑一个 relay
+            path.unlink(missing_ok=True)
+            bell = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            try:
+                bell.bind(str(path))
+                bell.setblocking(False)
+            except OSError:
+                bell.close()
+                raise
+            self._socket = bell
+            self._inode = path.stat().st_ino
+        except OSError as exc:
+            log.warning(
+                "control worker 门铃绑不上（%s），退回每 %.1f 秒轮询",
+                exc,
+                CONTROL_POLL_INTERVAL_SEC,
+            )
+
+    @property
+    def bound(self) -> bool:
+        return self._socket is not None
+
+    def wait(self, timeout: float) -> bool:
+        """等门铃或超时；响过返回 True。积压的铃声一次收干净，多次按铃只算一次。"""
+        if self._socket is None:
+            return False
+        readable, _, _ = select.select([self._socket], [], [], max(0.0, timeout))
+        rang = False
+        while readable:
+            try:
+                self._socket.recv(64)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError:
+                break
+            rang = True
+        return rang
+
+    def ring(self) -> None:
+        if self._socket is None:
+            return
+        try:
+            self._socket.sendto(b"1", str(self.path))
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        if self._socket is None:
+            return
+        self._socket.close()
+        self._socket = None
+        try:
+            # 套接字文件换过人（新进程已经绑上同一路径）就不删
+            if self.path.stat().st_ino == self._inode:
+                self.path.unlink()
+        except OSError:
+            pass
+
+
+def _ring_worker() -> None:
+    if _worker_wake is not None:
+        _worker_wake.ring()
+
+
+def _wait_for_work(stop_event: threading.Event, timeout: float) -> None:
+    """空闲时等：有门铃就等门铃（最长到下次心跳），没门铃退回原来的定时轮询。"""
+    global _pending_reconcile_requested
+    if _short_poll_needed or _worker_wake is None or not _worker_wake.bound:
+        stop_event.wait(min(timeout, CONTROL_POLL_INTERVAL_SEC))
+        return
+    if _worker_wake.wait(timeout):
+        _pending_reconcile_requested = True
+
+
 def run_control_worker(stop_event: threading.Event):
     error_backoff = max(CONTROL_POLL_INTERVAL_SEC, 0.1)
     next_heartbeat = 0.0
@@ -2415,7 +2524,8 @@ def run_control_worker(stop_event: threading.Event):
                 worked = run_control_worker_once()
                 error_backoff = max(CONTROL_POLL_INTERVAL_SEC, 0.1)
                 if not worked:
-                    stop_event.wait(CONTROL_POLL_INTERVAL_SEC)
+                    # 心跳每 10 秒要写一次，等门铃最长等到那时；醒来那一轮的门槛查询也就是漏了门铃时的兜底
+                    _wait_for_work(stop_event, max(0.1, next_heartbeat - time.monotonic()))
             except Exception as exc:
                 log.exception("工作台 control worker 单轮异常，退避后继续")
                 try:
@@ -2463,6 +2573,7 @@ class AudioHandler(FileSystemEventHandler):
             if control_enabled():
                 job_id = _control_enqueue(path)
                 log.info("工作台任务已入队：%s", job_id)
+                _ring_worker()
                 handled = True
             else:
                 handled = handle_audio(path)
@@ -2602,6 +2713,7 @@ if __name__ == "__main__":
     worker_stop = threading.Event()
     worker = None
     if control_enabled():
+        _worker_wake = WorkerWake(_relay_control_module().worker_wake_socket())
         worker = threading.Thread(
             target=run_control_worker,
             args=(worker_stop,),
@@ -2609,7 +2721,12 @@ if __name__ == "__main__":
             daemon=True,
         )
         worker.start()
-        log.info("工作台控制层：已启用（轮询 %.1f 秒）", CONTROL_POLL_INTERVAL_SEC)
+        log.info(
+            "工作台控制层：已启用（%s）",
+            f"门铃 {_worker_wake.path}"
+            if _worker_wake.bound
+            else f"轮询 {CONTROL_POLL_INTERVAL_SEC:.1f} 秒",
+        )
     else:
         log.info("工作台控制层：关闭（旧同步路径）")
 
@@ -2637,7 +2754,10 @@ if __name__ == "__main__":
     finally:
         observer.stop()
         worker_stop.set()
+        _ring_worker()
         if worker is not None:
             worker.join(timeout=10)
+        if _worker_wake is not None:
+            _worker_wake.close()
         observer.join()
         _control_runtime_stop("watchdog")

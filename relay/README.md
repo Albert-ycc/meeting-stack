@@ -30,6 +30,14 @@ Voice Memos 桥接只是众多入口之一，任何来源的音频文件落进�
 对不上的、还没归档的、失败的任务一律不动。watchdog 启动时清一次，之后每天一次（`MEETING_RELAY_AUDIO_CLEANUP_INTERVAL`，
 单位秒，默认 86400）。每删一份在任务事件里记一条 `local_audio_removed`。
 
+领任务靠门铃，不靠轮询。watchdog 在任务库旁边绑一个 Unix 数据报套接字 `relay-worker.sock`，`relayctl` 每跑完一个会改
+任务库的子命令（入队、重试、停止、纪要回执、发布……只读的 list / status / health / check-whisper 除外）就往里发一个字节，
+监听目录来了新录音也一样。worker 醒来先用一条只读查询看有没有要办的事（排着队的、交给纪要 Agent 还没回执的、挂着 worker
+的进行中任务），三样都没有就接着睡，不去查 tmux 窗格；有事但这一轮办不成（窗格被占、纪要回执还在宽限期里）才按
+`MEETING_RELAY_POLL_INTERVAL`（默认 2 秒）短间隔再看。空闲时每 10 秒写一次心跳，醒来那一轮的查询也是漏了门铃时的兜底。
+套接字绑不上（路径超过 104 字节、目录不可写）时日志里说一声，退回每 2 秒轮询。待校对对账（把已完成会议的隐藏归档提升出来、
+回填 Whisper）在门铃响过后跑一次，平时每 `MEETING_RELAY_PENDING_RECONCILE_INTERVAL` 秒（默认 300）兜底一次。
+
 **必须设 `MEETING_RELAY_CONTROL_ENABLED=1`。** 不设时 watchdog 走旧同步路径：不领工作台入队的任务，
 而是用 ffprobe 探测时长后分流——短于 10 分钟的当成口述指令，转写文本直接派给 AI Agent 执行；
 10 分钟以上的转写后派 Agent 写纪要。旧路径只是留着回滚用的。

@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -28,6 +29,8 @@ DEFAULT_DB_PATH = Path.home() / ".meeting-relay" / "workbench-jobs.sqlite3"
 DEFAULT_ARCHIVE_ROOT = Path.home() / "MeetingArchive"
 DEFAULT_ARCHIVE_LOCK_PATH = Path.home() / ".meeting-workbench" / "archive.lock"
 DEFAULT_PRODUCTS_ROOT = Path.home() / "Movies" / "meeting-relay-products"
+# relay 的 control worker 在任务库旁边绑这个 Unix 数据报套接字当门铃，改了任务库的一方按一下（notify_worker）
+WORKER_WAKE_SOCKET_NAME = "relay-worker.sock"
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav"}
 MAX_INPUT_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 MAX_MINUTES_EVIDENCE_BYTES = 8 * 1024 * 1024
@@ -2927,6 +2930,38 @@ class RelayControl:
                 """,
                 (now, name),
             )
+
+    def pending_work(self) -> dict[str, bool]:
+        """worker 空闲时的门槛：三样都没有，就不用去查 tmux 窗格、也不用跑领取那一套。
+
+        - claimable：有排着队的 attempt（claim_next 只领 queued 且没要求停的）
+        - handoff：有交给纪要 Agent 还没回执的（reconcile_codex_handoffs 要盯着窗格回到 shell）
+        - claimed：有进行中的 attempt 挂着 worker（recover_orphaned_claims 要看属主还在不在）
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    EXISTS(
+                        SELECT 1 FROM jobs WHERE status = 'queued' AND stop_after_stage = 0
+                    ) AS claimable,
+                    EXISTS(
+                        SELECT 1 FROM jobs
+                        WHERE status = 'minutes_generating' AND codex_dispatched_at IS NOT NULL
+                    ) AS handoff,
+                    EXISTS(
+                        SELECT 1 FROM jobs
+                        WHERE worker_id IS NOT NULL
+                          AND status IN ('stabilizing', 'transcribing',
+                                         'transcript_ready', 'minutes_generating')
+                    ) AS claimed
+                """
+            ).fetchone()
+        return {
+            "claimable": bool(row["claimable"]),
+            "handoff": bool(row["handoff"]),
+            "claimed": bool(row["claimed"]),
+        }
 
     def health(
         self,
@@ -6911,6 +6946,30 @@ def health(
     return _service(db_path).health(stale_seconds=stale_seconds)
 
 
+def pending_work(db_path: str | Path | None = None) -> dict[str, bool]:
+    return _service(db_path).pending_work()
+
+
+def worker_wake_socket(db_path: str | Path | None = None) -> Path:
+    configured = db_path or os.getenv("MEETING_RELAY_JOBS_DB") or DEFAULT_DB_PATH
+    return Path(configured).expanduser().parent / WORKER_WAKE_SOCKET_NAME
+
+
+def notify_worker(db_path: str | Path | None = None) -> bool:
+    """按一下 relay control worker 的门铃：任务库刚被改过，可能多了能领的活、或正在跑的那单收口了。
+
+    worker 没在跑、套接字不在、路径太长都不算错，返回 False 就完——worker 醒着时每 10 秒写心跳会顺带
+    看一眼任务库，门铃只是让它不用等到那时候。
+    """
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as bell:
+            bell.setblocking(False)
+            bell.sendto(b"1", str(worker_wake_socket(db_path)))
+    except OSError:
+        return False
+    return True
+
+
 def record_stage(
     job_id: str,
     stage: str,
@@ -7144,8 +7203,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# 只读的子命令不按门铃：工作台刷新页面、同步状态时会频繁调它们。其余子命令都可能改任务库
+# （入队、重试、停止、纪要回执、发布……），跑完不论成败都按一下，多按一次 worker 只是多看一眼任务库。
+READ_ONLY_COMMANDS = {"list", "status", "health", "check-whisper"}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        return _run_command(args)
+    finally:
+        if args.command not in READ_ONLY_COMMANDS:
+            notify_worker()
+
+
+def _run_command(args: argparse.Namespace) -> int:
     control = RelayControl(initialize=args.command != "health")
     try:
         if args.command == "enqueue":

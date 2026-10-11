@@ -1001,6 +1001,69 @@ class ConstructionCostTests(unittest.TestCase):
         self.assertEqual(2, len(forks))
 
 
+class WorkerNotifyTests(unittest.TestCase):
+    """改了任务库就按 relay worker 的门铃；worker 空闲时只看 pending_work 这一条门槛。"""
+
+    def setUp(self):
+        self.module = load_control_module()
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.db_path = self.root / "jobs.sqlite3"
+        self.audio = self.root / "vm-20261010-120000-ABC.m4a"
+        self.audio.write_bytes(b"audio")
+        self.control = self.module.RelayControl(
+            self.db_path, archive_root=self.root, auto_pending_archive=False
+        )
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_pending_work_reports_what_the_worker_must_handle(self):
+        self.assertEqual(
+            {"claimable": False, "handoff": False, "claimed": False}, self.control.pending_work()
+        )
+        job_id = self.control.enqueue(self.audio, compute_hash=False)
+        self.assertEqual(
+            {"claimable": True, "handoff": False, "claimed": False}, self.control.pending_work()
+        )
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                """UPDATE jobs SET status = 'minutes_generating', worker_id = 'watchdog-1',
+                   codex_dispatched_at = '2026-10-10T00:00:00.000+00:00' WHERE job_id = ?""",
+                (job_id,),
+            )
+        self.assertEqual(
+            {"claimable": False, "handoff": True, "claimed": True}, self.control.pending_work()
+        )
+
+    def test_cli_rings_after_writes_but_not_after_reads(self):
+        env = {
+            "MEETING_RELAY_JOBS_DB": str(self.db_path),
+            "MEETING_RELAY_ARCHIVE_ROOT": str(self.root),
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch.object(self.module, "notify_worker") as ring,
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(0, self.module.main(["enqueue", str(self.audio)]))
+            job_id = output.getvalue().strip()
+            self.assertEqual(1, ring.call_count)
+            self.module.main(["status", job_id, "--json"])
+            self.module.main(["list", "--json"])
+            self.module.main(["health", "--json"])
+            self.assertEqual(1, ring.call_count)
+            # 失败的写命令也按：多按一次 worker 只是多看一眼任务库，漏按要等下次心跳
+            self.assertEqual(2, self.module.main(["cancel", "job-does-not-exist"]))
+            self.assertEqual(2, ring.call_count)
+
+    def test_ringing_with_nobody_listening_is_silent(self):
+        self.assertFalse(self.module.notify_worker(self.db_path))
+        self.assertEqual(
+            self.root / "relay-worker.sock", self.module.worker_wake_socket(self.db_path)
+        )
+
+
 class RelayControlTests(unittest.TestCase):
     def setUp(self):
         self.module = load_control_module()

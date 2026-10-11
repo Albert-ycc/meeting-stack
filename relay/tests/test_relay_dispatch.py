@@ -6,10 +6,11 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 # tests/ 没有 __init__，按文件路径跑单个文件时同目录的公共模块不在 sys.path 上
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -49,6 +50,11 @@ def tearDownModule():
             os.environ[name] = original
     if _runtime_db_tempdir is not None:
         _runtime_db_tempdir.cleanup()
+
+
+# 门槛查询（relay_control.pending_work）说队列里有可领的活：直接调 run_control_worker_once 的用例用
+QUEUE_HAS_WORK = {"claimable": True, "handoff": False, "claimed": False}
+QUEUE_IDLE = {"claimable": False, "handoff": False, "claimed": False}
 
 
 def load_watchdog_module():
@@ -534,6 +540,145 @@ class LarkNotifyTests(unittest.TestCase):
     def test_notify_lark_skips_when_nothing_configured(self):
         """群和私聊都没配时静默跳过，不影响主流程。"""
         self.assertEqual([], self._capture_notify(chat_id="", user_id=""))
+
+
+class WorkerDoorbellTests(unittest.TestCase):
+    """control worker 空闲时不查 tmux 窗格、等门铃；门铃来自 relayctl 改库和监听目录入队。"""
+
+    def setUp(self):
+        self.module = load_watchdog_module()
+        # AF_UNIX 路径上限 104 字节，跑用例的会话 TMPDIR 可能很长：门铃用例的目录固定开在 /tmp 下
+        self.tmp = tempfile.TemporaryDirectory(dir="/tmp")
+        self.db = Path(self.tmp.name) / "jobs.sqlite3"
+        self.bell_path = Path(self.tmp.name) / "relay-worker.sock"
+        self.control = self.module._relay_control_module()
+
+    def tearDown(self):
+        if self.module._worker_wake is not None:
+            self.module._worker_wake.close()
+            self.module._worker_wake = None
+        self.tmp.cleanup()
+
+    def _tick(self, pending, *, pane=True, claim=None):
+        module = self.module
+        with (
+            patch.object(module, "_control_pending_work", return_value=pending),
+            patch.object(module, "_agent_pane_available", return_value=pane) as pane_check,
+            patch.object(module, "_control_reconcile_pending_archives", return_value={}),
+            patch.object(module, "_control_cleanup_local_audio_copies", return_value={}),
+            patch.object(module, "_control_reconcile_codex_handoffs", return_value=0) as handoffs,
+            patch.object(module, "_control_recover_orphaned_claims", return_value=0),
+            patch.object(module, "_control_claim_next", return_value=claim) as claim_next,
+        ):
+            worked = module.run_control_worker_once()
+        return worked, pane_check, handoffs, claim_next
+
+    def test_idle_queue_skips_tmux_check_and_claim(self):
+        worked, pane_check, handoffs, claim_next = self._tick(QUEUE_IDLE)
+        self.assertFalse(worked)
+        pane_check.assert_not_called()
+        handoffs.assert_not_called()
+        claim_next.assert_not_called()
+        self.assertFalse(self.module._short_poll_needed)
+
+    def test_queued_work_behind_a_busy_pane_keeps_short_polling(self):
+        worked, pane_check, _handoffs, claim_next = self._tick(QUEUE_HAS_WORK, pane=False)
+        self.assertFalse(worked)
+        pane_check.assert_called_once_with()
+        claim_next.assert_not_called()
+        self.assertTrue(self.module._short_poll_needed)
+
+    def test_outstanding_minutes_handoff_is_still_watched(self):
+        waiting = {"claimable": False, "handoff": True, "claimed": True}
+        worked, pane_check, handoffs, _claim_next = self._tick(waiting)
+        self.assertFalse(worked)
+        pane_check.assert_called_once_with()
+        handoffs.assert_called_once_with()
+        self.assertTrue(self.module._short_poll_needed)
+
+    def test_doorbell_rings_from_relayctl_and_coalesces(self):
+        wake = self.module.WorkerWake(self.bell_path)
+        self.assertTrue(wake.bound)
+        for _ in range(3):
+            self.assertTrue(self.control.notify_worker(self.db))
+        started = time.monotonic()
+        self.assertTrue(wake.wait(5.0))
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertFalse(wake.wait(0.05))
+        wake.close()
+        self.assertFalse(self.bell_path.exists())
+        self.assertFalse(self.control.notify_worker(self.db))
+
+    def test_close_leaves_a_newer_socket_alone(self):
+        old = self.module.WorkerWake(self.bell_path)
+        new = self.module.WorkerWake(self.bell_path)
+        old.close()
+        self.assertTrue(self.bell_path.exists())
+        self.assertTrue(self.control.notify_worker(self.db))
+        self.assertTrue(new.wait(1.0))
+        new.close()
+        self.assertFalse(self.bell_path.exists())
+
+    def test_idle_wait_sleeps_on_the_doorbell_and_requests_a_reconcile(self):
+        module = self.module
+        module._worker_wake = module.WorkerWake(self.bell_path)
+        module._short_poll_needed = False
+        module._pending_reconcile_requested = False
+        stop_event = MagicMock()
+        ringer = threading.Timer(0.1, self.control.notify_worker, args=(self.db,))
+        ringer.start()
+        started = time.monotonic()
+        module._wait_for_work(stop_event, 5.0)
+        ringer.join()
+        self.assertLess(time.monotonic() - started, 2.0)
+        stop_event.wait.assert_not_called()
+        self.assertTrue(module._pending_reconcile_requested)
+
+    def test_short_poll_and_missing_doorbell_fall_back_to_the_poll_interval(self):
+        module = self.module
+        stop_event = MagicMock()
+        module._worker_wake = module.WorkerWake(self.bell_path)
+        module._short_poll_needed = True
+        module._wait_for_work(stop_event, 10.0)
+        stop_event.wait.assert_called_once_with(module.CONTROL_POLL_INTERVAL_SEC)
+
+        module._worker_wake.close()
+        module._worker_wake = module.WorkerWake(Path(self.tmp.name) / "no-such-dir" / "bell.sock")
+        self.assertFalse(module._worker_wake.bound)
+        module._short_poll_needed = False
+        stop_event.reset_mock()
+        module._wait_for_work(stop_event, 10.0)
+        stop_event.wait.assert_called_once_with(module.CONTROL_POLL_INTERVAL_SEC)
+
+    def test_doorbell_brings_the_pending_reconcile_forward(self):
+        module = self.module
+        module.PENDING_RECONCILE_INTERVAL_SEC = 300.0
+        module._next_pending_reconcile_at = time.monotonic() + 1000
+        module._next_audio_cleanup_at = time.monotonic() + 1000
+        module._pending_reconcile_requested = True
+        with (
+            patch.object(module, "_control_pending_work", return_value=QUEUE_IDLE),
+            patch.object(
+                module, "_control_reconcile_pending_archives", return_value={}
+            ) as reconcile_pending,
+        ):
+            module.run_control_worker_once()
+            module.run_control_worker_once()
+        reconcile_pending.assert_called_once_with()
+        self.assertFalse(module._pending_reconcile_requested)
+
+    def test_new_recording_in_the_inbox_rings_the_worker(self):
+        module = self.module
+        audio = Path(self.tmp.name) / "vm-20261010-120000-ABC.m4a"
+        audio.write_bytes(b"audio")
+        handler = module.AudioHandler()
+        with (
+            patch.object(module, "control_enabled", return_value=True),
+            patch.object(module, "_control_enqueue", return_value="job-new"),
+            patch.object(module, "_ring_worker") as ring,
+        ):
+            handler._handle(audio)
+        ring.assert_called_once_with()
 
 
 class WorkbenchControlCompatibilityTests(unittest.TestCase):
@@ -1151,6 +1296,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
         }
         with (
             patch.object(module, "_agent_pane_available", return_value=True),
+            patch.object(module, "_control_pending_work", return_value=QUEUE_HAS_WORK),
             patch.object(
                 module, "_control_reconcile_pending_archives", return_value={"ok": True}
             ) as reconcile_pending,
@@ -1177,6 +1323,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 return_value={"ok": True},
             ) as reconcile_pending,
             patch.object(module, "_agent_pane_available", return_value=True),
+            patch.object(module, "_control_pending_work", return_value=QUEUE_HAS_WORK),
             patch.object(module, "_control_reconcile_codex_handoffs", return_value=0),
             patch.object(module, "_control_recover_orphaned_claims", return_value=0),
             patch.object(module, "_control_claim_next", return_value=None) as claim_next,
@@ -1204,6 +1351,7 @@ class WorkbenchControlCompatibilityTests(unittest.TestCase):
                 side_effect=[OSError("外置盘没挂"), {"ok": True, "removed": ["/a.m4a"]}],
             ) as cleanup,
             patch.object(module, "_agent_pane_available", return_value=True),
+            patch.object(module, "_control_pending_work", return_value=QUEUE_HAS_WORK),
             patch.object(module, "_control_reconcile_codex_handoffs", return_value=0),
             patch.object(module, "_control_recover_orphaned_claims", return_value=0),
             patch.object(module, "_control_claim_next", return_value=None) as claim_next,
