@@ -5,7 +5,7 @@ watchdog、relayctl 作为命令启动时调 load_env_files()，把仓库根和 
 
 - 找法和工作台 config.py 的 ENV_FILES 一致：仓库根一份、workbench/ 下一份，两份都有时 workbench/ 的优先；
 - 已经在环境变量里的值优先，.env 不覆盖：启动命令里显式给的值、工作台起 relayctl 时传的值照旧生效；
-- 只补 relay 自己读的键（MEETING_RELAY_*、RELAY_*、TRANSCRIBE_ENGINE）。.env 是工作台那套，里头有飞书
+- 只补 relay 自己读的键（MEETING_RELAY_*、RELAY_*、TRANSCRIBE_ENGINE、TRANSCRIBE_TEXT_ENGINE）。.env 是工作台那套，里头有飞书
   webhook、AI key 文件路径这些，relay 和它起的子进程（转写、tmux、lark-cli）不该白得一份；
 - MEETING_RELAY_PROJECT_HINT 永远不从文件取：它是工作台每次入队、重试时按场次传的值，还特意先摘掉继承来的；
 - 不引入依赖，写法只认常用的一小撮：KEY=VALUE、# 注释、export 前缀、单双引号、行尾 # 注释。不加引号且以 ~
@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILES = (REPO_ROOT / ".env", REPO_ROOT / "workbench" / ".env")
 
 RELAY_KEY_PREFIXES = ("MEETING_RELAY_", "RELAY_")
-RELAY_KEY_NAMES = frozenset({"TRANSCRIBE_ENGINE"})
+RELAY_KEY_NAMES = frozenset({"TRANSCRIBE_ENGINE", "TRANSCRIBE_TEXT_ENGINE"})
 NEVER_FROM_FILE = frozenset({"MEETING_RELAY_PROJECT_HINT"})
 
 _ASSIGNMENT = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)")

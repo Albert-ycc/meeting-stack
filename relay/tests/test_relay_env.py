@@ -161,6 +161,7 @@ class LoadEnvFilesTests(unittest.TestCase):
             "MEETING_WORKBENCH_LARK_WEBHOOK_URL=https://example.invalid/hook\n"
             "MEETING_WORKBENCH_ARCHIVE_ROOT=/a\nDEEPSEEK_API_KEY=sk-x\nPATH=/evil\nHOME=/evil\n"
             "RELAY_LARK_USER_ID=ou_abc\nRELAY_DISABLE_DUAL=1\nTRANSCRIBE_ENGINE=observe\n"
+            "TRANSCRIBE_TEXT_ENGINE=paraformer\n"
             "MEETING_RELAY_WATCH_DIR=/inbox\nXMEETING_RELAY_AGENT=x\n",
         )
 
@@ -172,6 +173,7 @@ class LoadEnvFilesTests(unittest.TestCase):
                 "RELAY_DISABLE_DUAL",
                 "RELAY_LARK_USER_ID",
                 "TRANSCRIBE_ENGINE",
+                "TRANSCRIBE_TEXT_ENGINE",
             ],
             applied,
         )
