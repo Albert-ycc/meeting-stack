@@ -1283,6 +1283,11 @@ def build_agent_shell_command(prompt_file: Path, backend_override: str | None = 
         # 2026-07-31 该文件被切成 deepseek-v4-flash 后派单进程秒退，根因是
         # 裸跑没带 BASE_URL/token 去打官方端点，与模型档位无关——下面这条
         # 命令自带端点与鉴权，所以主模型走 flash 也不会重演。
+        # --strict-mcp-config：纪要 Agent 只用内置工具，不加载本机用户级 MCP。
+        # 非官方端点下 MCP 工具定义整份内联进每轮请求，2026-10-20 新装一个
+        # 两百多工具的 MCP 后每轮固定约 33 万 token，超出自动压缩的窗口，
+        # 连压三次仍满，进程直接退出、纪要没有回执。
+        no_mcp = "--strict-mcp-config"
         if backend == "deepseek":
             # DEEPSEEK_API_KEY 由 cc1 的登录 shell 提供；缺失时用 :? 立即报错，
             # 不静默回落 Claude——回落等于偷订阅额度，与配置意图相反。
@@ -1297,9 +1302,12 @@ def build_agent_shell_command(prompt_file: Path, backend_override: str | None = 
             )
             return (
                 f"cat {quoted_prompt} | {env_prefix} {claude_bin} "
-                f"--print --model {shlex.quote(DEEPSEEK_MODEL)}"
+                f"--print --model {shlex.quote(DEEPSEEK_MODEL)} {no_mcp}"
             )
-        return f"cat {quoted_prompt} | {claude_bin} --print --model {shlex.quote(CLAUDE_MODEL)}"
+        return (
+            f"cat {quoted_prompt} | {claude_bin} "
+            f"--print --model {shlex.quote(CLAUDE_MODEL)} {no_mcp}"
+        )
 
     args = [
         resolve_codex_bin(),

@@ -319,6 +319,9 @@ class RelayDispatchTests(unittest.TestCase):
         # attempt 级覆盖必须能把这一场拉回 Claude，且不再带 DeepSeek 端点
         self.assertIn("--model opus", pinned)
         self.assertNotIn("api.deepseek.com", pinned)
+        # 两个后端都不加载用户级 MCP：工具定义一多，DeepSeek 端每轮请求会被撑爆
+        self.assertIn("--strict-mcp-config", default)
+        self.assertIn("--strict-mcp-config", pinned)
 
     def test_attempt_backend_overrides_the_global_default(self):
         module = load_watchdog_module()
